@@ -389,12 +389,13 @@ static void checkLdsUsageFits(MlirContext ctx) {
       "    return %1 : !migraphx.shaped<1x64x64xf16, 4096x64x1>\n"
       "  }\n"
       "}\n";
-  MlirModule bigModule =
-      mlirModuleCreateParse(ctx, mlirStringRefCreateFromCString(bigGemmGemmSrc));
+  MlirModule bigModule = mlirModuleCreateParse(
+      ctx, mlirStringRefCreateFromCString(bigGemmGemmSrc));
   if (mlirModuleIsNull(bigModule)) {
     printf("failed to parse oversized gemm-gemm module\n");
   } else {
-    int bigModuleFits = mlirMIGraphXLDSUsageFitsArch(0, nullptr, f16, bigModule);
+    int bigModuleFits =
+        mlirMIGraphXLDSUsageFitsArch(0, nullptr, f16, bigModule);
     // CHECK: oversized module LDS fits : 0
     printf("oversized module LDS fits : %d\n", bigModuleFits);
     mlirModuleDestroy(bigModule);

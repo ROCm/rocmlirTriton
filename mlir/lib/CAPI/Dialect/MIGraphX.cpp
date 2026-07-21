@@ -170,7 +170,9 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   clonedMod->walk([&](mlir::rock::RockGemmGemmWrapperInterface op) {
     resolveTunableOp(
         op,
-        [](mlir::StringAttr s) { return mlir::rock::GemmGemmParamsAttr::get(s); },
+        [](mlir::StringAttr s) {
+          return mlir::rock::GemmGemmParamsAttr::get(s);
+        },
         [](mlir::MLIRContext *c) {
           return mlir::rock::getConservativeDefaultGemmGemmParams(c);
         });
