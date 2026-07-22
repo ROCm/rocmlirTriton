@@ -74,7 +74,8 @@ struct GemmGemmOrderingTestEnv {
         /*splitKV=*/builder.getI32IntegerAttr(1),
         /*softmaxType=*/TypeAttr{},
         /*params0=*/nullptr, /*params1=*/nullptr,
-        /*preSoftmaxHasSplitKVTransforms=*/BoolAttr{});
+        /*preSoftmaxHasSplitKVTransforms=*/BoolAttr{},
+        /*numDequantInputs=*/IntegerAttr{});
   }
 
   RockGemmGemmWrapperInterface op() {

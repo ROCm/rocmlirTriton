@@ -860,33 +860,28 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
 // elementwise inputs are dequantization operands so those inputs are skipped.
 static void getAttentionScaleBias(AttentionOp attnOp, bool &hasAttnScale,
                                   bool &hasAttnBias,
-                                  bool &hasTransposedAttnBias) {
+                                  bool &hasTransposedAttnBias,
+                                  bool &sharesAttnScaleBias) {
   hasAttnScale = false;
   hasAttnBias = false;
   hasTransposedAttnBias = false;
+  sharesAttnScaleBias = false;
   Region &body = attnOp.getPreSoftmaxBody();
   if (body.empty())
     return;
   unsigned numInputs = attnOp.getPreSoftmaxElemWiseInputs().size();
-  unsigned numQuantInputs =
-      std::min<unsigned>(attnOp.getNumDequantInputs(), numInputs);
-  if (numInputs <= numQuantInputs)
-    return;
-
-  SmallVector<PreSoftmaxInputRole> roles =
-      classifyPreSoftmaxInputRoles(body, numInputs, numQuantInputs);
-  for (unsigned i = numQuantInputs; i < numInputs; ++i) {
-    if (roles[i] == PreSoftmaxInputRole::Scale) {
-      hasAttnScale = true;
-      continue;
+  unsigned numDequantInputs = getEffectiveNumDequantInputs(attnOp);
+  SmallVector<PreSoftmaxInputRoleInfo> roles =
+      analyzePreSoftmaxInputRoles(body, numInputs, numDequantInputs);
+  for (unsigned i = 0; i < numInputs; ++i) {
+    hasAttnScale |= roles[i].hasScale;
+    sharesAttnScaleBias |= roles[i].hasScale && roles[i].hasBias;
+    if (roles[i].hasBias) {
+      hasAttnBias = true;
+      hasTransposedAttnBias |= classifyPreSoftmaxInputOrientation(
+                                   attnOp.getPreSoftmaxElemWiseInputs()[i]) ==
+                               PreSoftmaxInputOrientation::Transposed;
     }
-    if (roles[i] != PreSoftmaxInputRole::Bias)
-      continue;
-
-    hasAttnBias = true;
-    hasTransposedAttnBias |= classifyPreSoftmaxInputOrientation(
-                                 attnOp.getPreSoftmaxElemWiseInputs()[i]) ==
-                             PreSoftmaxInputOrientation::Transposed;
   }
 }
 
@@ -995,10 +990,13 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
 
   bool hasAttnScale = false, hasAttnBias = false;
   bool hasTransposedAttnBias = false;
+  bool sharesAttnScaleBias = false;
+  unsigned numDequantInputs = 0;
   if (isAttention) {
     auto attentionOp = cast<AttentionOp>(gemmGemmOp);
     getAttentionScaleBias(attentionOp, hasAttnScale, hasAttnBias,
-                          hasTransposedAttnBias);
+                          hasTransposedAttnBias, sharesAttnScaleBias);
+    numDequantInputs = getEffectiveNumDequantInputs(attentionOp);
     problemOS << "-causal ";
     if (attentionOp.getCausal())
       problemOS << "true" << sep;
@@ -1032,6 +1030,9 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << sep << "-with-attn-bias " << (hasAttnBias ? "true" : "false");
     problemOS << sep << "-transBias "
               << (hasTransposedAttnBias ? "true" : "false");
+    problemOS << sep << "-share-attn-scale-bias "
+              << (sharesAttnScaleBias ? "true" : "false");
+    problemOS << sep << "-num_dequant_inputs " << numDequantInputs;
   } else if (isConvGemm) {
     auto convGemmOp = cast<ConvElementwiseGemmOp>(gemmGemmOp);
     ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();

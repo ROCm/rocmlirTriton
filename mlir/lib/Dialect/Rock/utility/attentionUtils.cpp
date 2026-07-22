@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -26,16 +27,37 @@
 using namespace mlir;
 using namespace mlir::rock;
 
-SmallVector<PreSoftmaxInputRole>
-mlir::rock::classifyPreSoftmaxInputRoles(Region &region, unsigned numInputs,
-                                         unsigned numDequantInputs) {
-  SmallVector<PreSoftmaxInputRole> roles(numInputs, PreSoftmaxInputRole::Other);
+PreSoftmaxInputRole PreSoftmaxInputRoleInfo::getSingularRole() const {
+  if (numMerges != 1 || hasOther)
+    return PreSoftmaxInputRole::Other;
+  unsigned numRoles = hasDequant + hasScale + hasBias;
+  if (numRoles != 1)
+    return PreSoftmaxInputRole::Other;
+  if (hasDequant)
+    return PreSoftmaxInputRole::Dequant;
+  if (hasScale)
+    return PreSoftmaxInputRole::Scale;
+  return PreSoftmaxInputRole::Bias;
+}
+
+SmallVector<PreSoftmaxInputRoleInfo>
+mlir::rock::analyzePreSoftmaxInputRoles(Region &region, unsigned numInputs,
+                                        unsigned numDequantInputs) {
+  SmallVector<PreSoftmaxInputRoleInfo> roles(numInputs);
   if (region.empty() || !llvm::hasSingleElement(region))
     return roles;
 
   Block &block = region.front();
   if (block.getNumArguments() != numInputs + 1)
     return roles;
+
+  numDequantInputs = std::min(numDequantInputs, numInputs);
+  SmallVector<bool> pendingDequantMerge(numInputs, false);
+  for (unsigned inputIndex = 0; inputIndex < numDequantInputs; ++inputIndex) {
+    roles[inputIndex].hasDequant = true;
+    roles[inputIndex].numMerges = 1;
+    pendingDequantMerge[inputIndex] = true;
+  }
 
   const unsigned numProvenanceBits = numInputs + 1;
   llvm::DenseMap<Value, llvm::SmallBitVector> provenance;
@@ -44,9 +66,6 @@ mlir::rock::classifyPreSoftmaxInputRoles(Region &region, unsigned numInputs,
     bits.set(index);
     provenance.try_emplace(argument, std::move(bits));
   }
-
-  SmallVector<std::optional<PreSoftmaxInputRole>> firstMerge(numInputs);
-  SmallVector<bool> ambiguous(numInputs, false);
 
   for (Operation &op : block) {
     llvm::SmallBitVector resultProvenance(numProvenanceBits);
@@ -58,44 +77,75 @@ mlir::rock::classifyPreSoftmaxInputRoles(Region &region, unsigned numInputs,
 
     for (unsigned inputIndex = 0; inputIndex < numInputs; ++inputIndex) {
       unsigned inputBit = inputIndex + 1;
-      if (!resultProvenance.test(0) || !resultProvenance.test(inputBit))
+      bool hasScoreOperand = false;
+      bool hasFreshInputOperand = false;
+      for (Value operand : op.getOperands()) {
+        auto found = provenance.find(operand);
+        if (found == provenance.end())
+          continue;
+        hasScoreOperand |= found->second.test(0);
+        hasFreshInputOperand |=
+            found->second.test(inputBit) && !found->second.test(0);
+      }
+      if (!hasScoreOperand || !hasFreshInputOperand)
         continue;
 
-      bool operandAlreadyMerged =
-          llvm::any_of(op.getOperands(), [&](Value operand) {
-            auto found = provenance.find(operand);
-            return found != provenance.end() && found->second.test(0) &&
-                   found->second.test(inputBit);
-          });
-      if (operandAlreadyMerged)
+      if (pendingDequantMerge[inputIndex]) {
+        pendingDequantMerge[inputIndex] = false;
         continue;
+      }
 
-      PreSoftmaxInputRole role = PreSoftmaxInputRole::Other;
+      PreSoftmaxInputRoleInfo &role = roles[inputIndex];
+      ++role.numMerges;
       if (isa<arith::AddFOp>(op))
-        role = PreSoftmaxInputRole::Bias;
+        role.hasBias = true;
       else if (isa<arith::MulFOp>(op))
-        role = PreSoftmaxInputRole::Scale;
-
-      if (firstMerge[inputIndex])
-        ambiguous[inputIndex] = true;
+        role.hasScale = true;
       else
-        firstMerge[inputIndex] = role;
+        role.hasOther = true;
     }
 
     for (Value result : op.getResults())
       provenance[result] = resultProvenance;
   }
 
-  numDequantInputs = std::min(numDequantInputs, numInputs);
-  for (unsigned inputIndex = 0; inputIndex < numInputs; ++inputIndex) {
-    if (inputIndex < numDequantInputs) {
-      roles[inputIndex] = PreSoftmaxInputRole::Dequant;
-      continue;
-    }
-    if (!ambiguous[inputIndex] && firstMerge[inputIndex])
-      roles[inputIndex] = *firstMerge[inputIndex];
-  }
   return roles;
+}
+
+SmallVector<PreSoftmaxInputRole>
+mlir::rock::classifyPreSoftmaxInputRoles(Region &region, unsigned numInputs,
+                                         unsigned numDequantInputs) {
+  SmallVector<PreSoftmaxInputRoleInfo> analysis =
+      analyzePreSoftmaxInputRoles(region, numInputs, numDequantInputs);
+  return llvm::map_to_vector(analysis, [](const PreSoftmaxInputRoleInfo &info) {
+    return info.getSingularRole();
+  });
+}
+
+static unsigned getExplicitOrLegacyDequantCount(IntegerAttr countAttr,
+                                                Type queryType,
+                                                unsigned numInputs) {
+  if (countAttr) {
+    int64_t count = countAttr.getInt();
+    return count <= 0
+               ? 0
+               : std::min<unsigned>(static_cast<unsigned>(count), numInputs);
+  }
+  return queryType.isInteger(8) ? std::min(2u, numInputs) : 0;
+}
+
+unsigned mlir::rock::getEffectiveNumDequantInputs(AttentionOp op) {
+  return getExplicitOrLegacyDequantCount(
+      op.getNumDequantInputsAttr(), op.getQueries().getType().getElementType(),
+      op.getPreSoftmaxElemWiseInputs().size());
+}
+
+unsigned mlir::rock::getEffectiveNumDequantInputs(GridwiseAttentionOp op) {
+  if (!op.getEnableSoftmax() && !op.getNumDequantInputsAttr())
+    return 0;
+  return getExplicitOrLegacyDequantCount(
+      op.getNumDequantInputsAttr(), op.getQueries().getType().getElementType(),
+      op.getPreSoftmaxElemWiseInputs().size());
 }
 
 static bool isLayoutNeutralElementwise(Operation *op) {
@@ -106,7 +156,7 @@ static bool isLayoutNeutralElementwise(Operation *op) {
 }
 
 static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
-  return !__builtin_mul_overflow(lhs, rhs, &result);
+  return !llvm::MulOverflow(lhs, rhs, result);
 }
 
 /// Return false when a floor/mod expression couples multiple upper
@@ -173,7 +223,7 @@ static std::optional<int64_t> getPhysicalGranularity(AffineMap physicalOffset,
     coordinates[dim] = IntegerAttr::get(IndexType::get(context), coordinate);
     std::optional<int64_t> current = evaluate();
     int64_t delta;
-    if (!current || __builtin_sub_overflow(*current, *previous, &delta) ||
+    if (!current || llvm::SubOverflow(*current, *previous, delta) ||
         delta == std::numeric_limits<int64_t>::min())
       return std::nullopt;
     granularity = std::gcd(granularity, std::abs(delta));

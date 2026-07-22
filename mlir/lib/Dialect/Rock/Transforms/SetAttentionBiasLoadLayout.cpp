@@ -77,9 +77,74 @@ struct RematerializationPlan {
   tt::LoadOp load;
   SmallVector<BiasPathStep> path;
   Value endpoint;
+  Value scoreSource;
+  SmallVector<BiasPathStep> scorePath;
+  Value scoreEndpoint;
   Attribute target;
   bool bypassLDS;
 };
+
+struct PostScoreMerge {
+  Value endpoint;
+  Value scoreEndpoint;
+  SmallVector<BiasPathStep> scorePath;
+};
+
+static bool hasConflictingPlans(ArrayRef<RematerializationPlan> plans) {
+  llvm::DenseSet<Value> plannedValues;
+  llvm::DenseSet<Operation *> pathOps;
+  llvm::DenseMap<Value, unsigned> valueOwners;
+  SmallVector<SmallVector<Value>> externalOperands(plans.size());
+  for (auto indexedPlan : llvm::enumerate(plans)) {
+    unsigned planIndex = indexedPlan.index();
+    const RematerializationPlan &plan = indexedPlan.value();
+    auto recordOwnedValue = [&](Value value) {
+      if (!value)
+        return false;
+      auto [owner, inserted] = valueOwners.try_emplace(value, planIndex);
+      return !inserted && owner->second != planIndex;
+    };
+    auto recordPath = [&](ArrayRef<BiasPathStep> path) {
+      for (const BiasPathStep &step : path) {
+        if (!pathOps.insert(step.op).second)
+          return true;
+        for (Value result : step.op->getResults())
+          if (recordOwnedValue(result))
+            return true;
+        for (auto [operandIndex, operand] :
+             llvm::enumerate(step.op->getOperands()))
+          if (operandIndex != step.sourceOperand)
+            externalOperands[planIndex].push_back(operand);
+      }
+      return false;
+    };
+
+    if (!plan.endpoint.hasOneUse() ||
+        !plannedValues.insert(plan.endpoint).second)
+      return true;
+    if (recordOwnedValue(plan.load->getResult(0)) ||
+        recordOwnedValue(plan.endpoint) || recordOwnedValue(plan.scoreSource))
+      return true;
+    externalOperands[planIndex].append(plan.load->operand_begin(),
+                                       plan.load->operand_end());
+    if (plan.scoreEndpoint &&
+        (!plan.scoreEndpoint.hasOneUse() ||
+         !plannedValues.insert(plan.scoreEndpoint).second))
+      return true;
+    if (recordOwnedValue(plan.scoreEndpoint) || recordPath(plan.path) ||
+        recordPath(plan.scorePath))
+      return true;
+  }
+
+  for (auto [planIndex, operands] : llvm::enumerate(externalOperands)) {
+    for (Value operand : operands) {
+      auto owner = valueOwners.find(operand);
+      if (owner != valueOwners.end() && owner->second != planIndex)
+        return true;
+    }
+  }
+  return false;
+}
 } // end anonymous namespace
 
 static constexpr llvm::StringLiteral BypassLDSAttrName = "amdg.bypass_lds_load";
@@ -95,21 +160,20 @@ static bool isGfx942(ModuleOp module) {
 }
 
 static std::optional<SmallVector<BiasPathStep>>
-getBiasRematerializationPath(tt::LoadOp load, Value endpoint) {
-  Value loadResult = load.getResult();
+getRematerializationPath(Value source, Value endpoint) {
   Value current = endpoint;
   llvm::SetVector<Operation *> forwardSlice;
-  mlir::getForwardSlice(load.getOperation(), &forwardSlice);
-  if (current != loadResult &&
-      (!current.getDefiningOp() ||
-       !forwardSlice.contains(current.getDefiningOp()))) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "reject direct bias load: bias does not feed score C\n");
+  if (Operation *sourceOp = source.getDefiningOp())
+    mlir::getForwardSlice(sourceOp, &forwardSlice);
+  if (current != source && (!current.getDefiningOp() ||
+                            !forwardSlice.contains(current.getDefiningOp()))) {
+    LLVM_DEBUG(llvm::dbgs() << "reject direct bias load: source does not feed "
+                               "rematerialization endpoint\n");
     return std::nullopt;
   }
 
   SmallVector<BiasPathStep> reversePath;
-  while (current != loadResult) {
+  while (current != source) {
     if (!current.hasOneUse()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "reject direct bias load: shared accumulator path value\n");
@@ -133,10 +197,10 @@ getBiasRematerializationPath(tt::LoadOp load, Value endpoint) {
 
     std::optional<unsigned> sourceOperand;
     for (auto [index, operand] : llvm::enumerate(op->getOperands())) {
-      bool dependsOnLoad = operand == loadResult ||
-                           (operand.getDefiningOp() &&
-                            forwardSlice.contains(operand.getDefiningOp()));
-      if (!dependsOnLoad)
+      bool dependsOnSource =
+          operand == source || (operand.getDefiningOp() &&
+                                forwardSlice.contains(operand.getDefiningOp()));
+      if (!dependsOnSource)
         continue;
       if (sourceOperand) {
         LLVM_DEBUG(llvm::dbgs()
@@ -169,7 +233,7 @@ getBiasRematerializationPath(tt::LoadOp load, Value endpoint) {
     current = op->getOperand(*sourceOperand);
   }
 
-  if (!loadResult.hasOneUse()) {
+  if (!source.hasOneUse()) {
     LLVM_DEBUG(llvm::dbgs()
                << "reject direct bias load: bias load has multiple users\n");
     return std::nullopt;
@@ -195,6 +259,8 @@ static ttg::ConvertLayoutOp findPostScoreLoadConversion(tt::LoadOp load,
     if (auto conversion = dyn_cast<ttg::ConvertLayoutOp>(user)) {
       llvm::SetVector<Operation *> conversionForwardSlice;
       mlir::getForwardSlice(conversion.getOperation(), &conversionForwardSlice);
+      if (conversionForwardSlice.contains(dot))
+        return {};
       if (llvm::any_of(conversionForwardSlice, [&](Operation *candidate) {
             return dotForwardSlice.contains(candidate);
           }))
@@ -207,25 +273,73 @@ static ttg::ConvertLayoutOp findPostScoreLoadConversion(tt::LoadOp load,
   return {};
 }
 
-static void rematerializeBiasPath(tt::LoadOp load, ArrayRef<BiasPathStep> path,
-                                  Value endpoint, Attribute target,
-                                  bool bypassLDS) {
-  Operation *newLoad = convertDistributedOpEncoding(target, load);
-  if (bypassLDS)
-    newLoad->setAttr(BypassLDSAttrName,
-                     BoolAttr::get(newLoad->getContext(), true));
-  Value rematerialized = newLoad->getResult(0);
-  OpBuilder builder(*endpoint.getUsers().begin());
+static std::optional<PostScoreMerge> findPostScoreMerge(tt::LoadOp load,
+                                                        Operation *dot) {
+  if (!dot || dot->getNumResults() != 1)
+    return std::nullopt;
 
+  Value score = dot->getResult(0);
+  llvm::SetVector<Operation *> scoreForwardSlice;
+  mlir::getForwardSlice(dot, &scoreForwardSlice);
+
+  Value current = load.getResult();
+  while (current.hasOneUse()) {
+    Operation *user = *current.getUsers().begin();
+    if (user->getNumResults() != 1 || user->getNumRegions() != 0)
+      return std::nullopt;
+
+    if (user->hasTrait<OpTrait::Elementwise>()) {
+      Value scoreEndpoint;
+      for (Value operand : user->getOperands()) {
+        if (operand == current)
+          continue;
+        bool dependsOnScore =
+            operand == score ||
+            (operand.getDefiningOp() &&
+             scoreForwardSlice.contains(operand.getDefiningOp()));
+        if (!dependsOnScore)
+          continue;
+        if (scoreEndpoint)
+          return std::nullopt;
+        scoreEndpoint = operand;
+      }
+      if (scoreEndpoint) {
+        auto scorePath = getRematerializationPath(score, scoreEndpoint);
+        if (!scorePath)
+          return std::nullopt;
+        return PostScoreMerge{user->getResult(0), scoreEndpoint,
+                              std::move(*scorePath)};
+      }
+    } else if (!isa<ttg::ConvertLayoutOp>(user)) {
+      return std::nullopt;
+    }
+    current = user->getResult(0);
+  }
+  return std::nullopt;
+}
+
+static Value
+cloneRematerializationPath(OpBuilder &builder, Value source,
+                           ArrayRef<BiasPathStep> path, Attribute target,
+                           const llvm::DenseMap<Value, Value> &replacements) {
+  Value rematerialized = source;
   for (const BiasPathStep &step : path) {
     if (isa<ttg::ConvertLayoutOp>(step.op))
       continue;
 
     SmallVector<Value> operands;
     operands.reserve(step.op->getNumOperands());
-    for (auto [index, operand] : llvm::enumerate(step.op->getOperands())) {
+    for (auto [index, originalOperand] :
+         llvm::enumerate(step.op->getOperands())) {
       if (index == step.sourceOperand) {
         operands.push_back(rematerialized);
+        continue;
+      }
+
+      Value operand = originalOperand;
+      if (auto found = replacements.find(operand);
+          found != replacements.end()) {
+        operands.push_back(found->second);
         continue;
       }
 
@@ -251,38 +365,86 @@ static void rematerializeBiasPath(tt::LoadOp load, ArrayRef<BiasPathStep> path,
     state.addAttributes(step.op->getAttrs());
     rematerialized = builder.create(state)->getResult(0);
   }
-
-  endpoint.replaceAllUsesWith(rematerialized);
+  return rematerialized;
 }
 
-static bool maintainsLoadCoalescing(RankedTensorType loadType, Attribute target,
-                                    unsigned pointerContiguity) {
+static LogicalResult rematerializeBiasPath(const RematerializationPlan &plan) {
+  tt::LoadOp load = plan.load;
+  Value endpoint = plan.endpoint;
+  Attribute target = plan.target;
+  if (!endpoint.hasOneUse())
+    return failure();
+
+  Operation *newLoad = convertDistributedOpEncoding(target, load);
+  if (plan.bypassLDS)
+    newLoad->setAttr(BypassLDSAttrName,
+                     BoolAttr::get(newLoad->getContext(), true));
+  OpBuilder builder(*endpoint.getUsers().begin());
+
+  llvm::DenseMap<Value, Value> replacements;
+  if (plan.scoreSource) {
+    Value rematerializedScore = cloneRematerializationPath(
+        builder, plan.scoreSource, plan.scorePath, target, replacements);
+    replacements.insert({plan.scoreEndpoint, rematerializedScore});
+  }
+  Value rematerialized = cloneRematerializationPath(
+      builder, newLoad->getResult(0), plan.path, target, replacements);
+
+  Value replacement = rematerialized;
+  if (replacement.getType() != endpoint.getType())
+    replacement = ttg::ConvertLayoutOp::create(builder, endpoint.getLoc(),
+                                               endpoint.getType(), replacement);
+  endpoint.replaceAllUsesWith(replacement);
+  return success();
+}
+
+static bool hasSafeLoadDistribution(RankedTensorType loadType, Attribute target,
+                                    unsigned pointerContiguity,
+                                    bool allowScalarization) {
   auto source =
       dyn_cast_or_null<ttg::BlockedEncodingAttr>(loadType.getEncoding());
   auto targetDistributed = dyn_cast<ttg::DistributedEncodingTrait>(target);
-  if (!source || !targetDistributed)
+  if (!source || !targetDistributed || pointerContiguity == 0)
     return false;
 
   unsigned contiguousDim = source.getOrder().front();
   auto targetLinear =
       ttg::toGenericLinearEncoding(targetDistributed, loadType.getShape());
-  if (targetLinear.getContigPerThread()[contiguousDim] < pointerContiguity ||
-      targetLinear.getContigPerWarp()[contiguousDim] < pointerContiguity)
+  unsigned targetThreadWidth = targetLinear.getContigPerThread()[contiguousDim];
+  unsigned issuedWidth = std::min(pointerContiguity, targetThreadWidth);
+  if (issuedWidth == 0 || pointerContiguity % issuedWidth != 0)
+    return false;
+
+  bool scalarized = issuedWidth < pointerContiguity;
+  if (scalarized && (!allowScalarization || pointerContiguity > 8 ||
+                     pointerContiguity / issuedWidth > 8))
+    return false;
+
+  SmallVector<unsigned> issuedContiguity(loadType.getRank(), 1);
+  issuedContiguity[contiguousDim] = issuedWidth;
+  SmallVector<unsigned> waveContiguity =
+      targetLinear.getContig("lane", issuedContiguity);
+  if (waveContiguity[contiguousDim] < pointerContiguity)
     return false;
 
   const mlir::triton::LinearLayout &targetLayout =
       targetLinear.getLinearLayout();
-  auto warp = StringAttr::get(loadType.getContext(), "warp");
-  auto bases = targetLayout.getBases().find(warp);
-  return bases != targetLayout.getBases().end() &&
-         llvm::all_of(bases->second, [](const auto &basis) {
-           return llvm::any_of(basis, [](int32_t value) { return value != 0; });
-         });
+  for (StringRef inputName : {"lane", "warp"}) {
+    auto bases = targetLayout.getBases().find(
+        StringAttr::get(loadType.getContext(), inputName));
+    if (bases == targetLayout.getBases().end() ||
+        !llvm::all_of(bases->second, [](const auto &basis) {
+          return llvm::any_of(basis, [](int32_t value) { return value != 0; });
+        }))
+      return false;
+  }
+  return true;
 }
 
 static bool
 isSafeRematerializedLoad(tt::LoadOp load, Attribute target, int32_t numStages,
-                         tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+                         tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                         bool allowScalarization = false) {
   auto loadType = dyn_cast<RankedTensorType>(load.getType());
   auto pointerType = dyn_cast<RankedTensorType>(load.getPtr().getType());
   if (!loadType || !pointerType || loadType.getRank() != 2 ||
@@ -315,17 +477,19 @@ isSafeRematerializedLoad(tt::LoadOp load, Attribute target, int32_t numStages,
   if (!cvtNeedsSharedMemory(loadType, targetType))
     return false;
 
-  // The validated path deliberately uses scalar strided loads. Do not change
-  // the vectorization chosen for naturally contiguous inputs.
+  // Direct transposed bias loads may trade bounded per-thread vectorization for
+  // unit-stride accesses recovered across MFMA lanes. Auxiliary
+  // rematerializations must preserve their existing vector width.
   unsigned contiguity = axisInfoAnalysis.getContiguity(load.getPtr());
-  if (contiguity != 1) {
+  unsigned contiguousDim = source.getOrder().front();
+  tt::AxisInfo *pointerInfo = axisInfoAnalysis.getAxisInfo(load.getPtr());
+  if (!pointerInfo || pointerInfo->getContiguity(contiguousDim) < contiguity ||
+      !hasSafeLoadDistribution(loadType, target, contiguity,
+                               allowScalarization)) {
     LLVM_DEBUG(llvm::dbgs()
-               << "reject direct bias load: expected scalar pointer "
-                  "contiguity\n");
+               << "reject direct bias load: unsafe target load distribution\n");
     return false;
   }
-  if (!maintainsLoadCoalescing(loadType, target, contiguity))
-    return false;
 
   mlir::triton::LinearLayout targetLayout = ttg::toLinearLayout(targetType);
   if (!targetLayout.isInjective())
@@ -379,7 +543,8 @@ static bool isSafeDirectBiasLoad(tt::LoadOp load,
   if (targetWarps != static_cast<unsigned>(ttg::lookupNumWarps(load)))
     return false;
 
-  return isSafeRematerializedLoad(load, target, numStages, axisInfoAnalysis);
+  return isSafeRematerializedLoad(load, target, numStages, axisInfoAnalysis,
+                                  /*allowScalarization=*/true);
 }
 
 void RockSetAttentionBiasLoadLayoutPass::runOnOperation() {
@@ -470,12 +635,30 @@ void RockSetAttentionBiasLoadLayoutPass::runOnOperation() {
 
       SmallVector<RematerializationPlan> plans;
       Value accumulator = scoreDot->getOperand(2);
-      auto accumulatorPath =
-          getBiasRematerializationPath(directCandidate->load, accumulator);
-      if (!accumulatorPath)
-        continue;
-      plans.push_back({directCandidate->load, std::move(*accumulatorPath),
-                       accumulator, scoreEncoding, /*bypassLDS=*/true});
+      auto accumulatorPath = getRematerializationPath(
+          directCandidate->load.getResult(), accumulator);
+      if (accumulatorPath) {
+        plans.push_back({directCandidate->load, std::move(*accumulatorPath),
+                         accumulator,
+                         /*scoreSource=*/Value(),
+                         /*scorePath=*/{},
+                         /*scoreEndpoint=*/Value(), scoreEncoding,
+                         /*bypassLDS=*/true});
+      } else {
+        auto postScoreMerge =
+            findPostScoreMerge(directCandidate->load, scoreDot);
+        if (!postScoreMerge)
+          continue;
+        auto biasPath = getRematerializationPath(
+            directCandidate->load.getResult(), postScoreMerge->endpoint);
+        if (!biasPath)
+          continue;
+        plans.push_back({directCandidate->load, std::move(*biasPath),
+                         postScoreMerge->endpoint, scoreDot->getResult(0),
+                         std::move(postScoreMerge->scorePath),
+                         postScoreMerge->scoreEndpoint, scoreEncoding,
+                         /*bypassLDS=*/true});
+      }
 
       // Coalescing may have selected the transposed load's warp ownership for
       // other inputs in the same score expression. Rematerialize only those
@@ -497,18 +680,22 @@ void RockSetAttentionBiasLoadLayoutPass::runOnOperation() {
                                                  axisInfoAnalysis))
           continue;
 
-        auto path =
-            getBiasRematerializationPath(tagged.load, conversion.getResult());
+        auto path = getRematerializationPath(tagged.load.getResult(),
+                                             conversion.getResult());
         if (!path)
           continue;
         plans.push_back({tagged.load, std::move(*path), conversion.getResult(),
-                         target,
+                         /*scoreSource=*/Value(),
+                         /*scorePath=*/{},
+                         /*scoreEndpoint=*/Value(), target,
                          /*bypassLDS=*/false});
       }
 
+      if (hasConflictingPlans(plans))
+        continue;
       for (RematerializationPlan &plan : plans)
-        rematerializeBiasPath(plan.load, plan.path, plan.endpoint, plan.target,
-                              plan.bypassLDS);
+        if (failed(rematerializeBiasPath(plan)))
+          break;
     }
   }
 }

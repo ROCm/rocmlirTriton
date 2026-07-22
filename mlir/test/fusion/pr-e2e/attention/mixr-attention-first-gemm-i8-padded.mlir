@@ -4,7 +4,7 @@
 // CHECK: [1 1 1]
 // DEQUANT: rock.attention
 // DEQUANT: numDequantInputs = 1 : i32
-// KEY: -with-attn-scale false -with-attn-bias true -transBias false
+// KEY: -with-attn-scale false -with-attn-bias true -transBias false -share-attn-scale-bias false -num_dequant_inputs 1
 
 module {
   func.func @mlir_attention(%arg0: !migraphx.shaped<1x7x3xi8, 21x3x1>,

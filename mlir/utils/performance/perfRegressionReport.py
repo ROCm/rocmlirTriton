@@ -8,6 +8,23 @@ from perfRunner import get_num_cu
 from typing import Tuple
 
 
+def normalize_attention_identity_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if 'TransQ' not in df.columns:
+        return df
+    df = df.copy()
+    legacy_count = pd.Series((-1 if dtype == 'i8' else 0 for dtype in df['DataType']),
+                             index=df.index)
+    if 'NumDequantInputs' not in df.columns:
+        df['NumDequantInputs'] = legacy_count
+    else:
+        df['NumDequantInputs'] = df['NumDequantInputs'].fillna(legacy_count)
+    if 'ShareAttnScaleBias' not in df.columns:
+        df['ShareAttnScaleBias'] = False
+    else:
+        df['ShareAttnScaleBias'] = df['ShareAttnScaleBias'].fillna(False)
+    return df
+
+
 def load_mlir_data(filename: str):
     df = pd.read_csv(filename, sep=',', header=0, index_col=False)
     columns_dropped = [
@@ -24,7 +41,7 @@ def load_mlir_data(filename: str):
         df['PerfConfig'] = df['PerfConfig'].fillna('None')
     if 'numCU' not in df:
         df.insert(4, 'numCU', get_num_cu(df['Chip'][0]))
-    return df
+    return normalize_attention_identity_columns(df)
 
 
 def merge_perfconfigs(v: Tuple[str, str]) -> str:
@@ -45,6 +62,8 @@ def summarize_stat(grouped, func, data):
 
 def compute_perf_stats(old_df: pd.DataFrame, new_df: pd.DataFrame, old_label: str,
                        new_label: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    old_df = normalize_attention_identity_columns(old_df)
+    new_df = normalize_attention_identity_columns(new_df)
     is_gemm = "TransA" in new_df
     is_attn = "TransQ" in new_df
     parameters = reportUtils.CONV_TEST_PARAMETERS

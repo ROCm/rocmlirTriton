@@ -1000,7 +1000,8 @@ def get_attn_configurations(filename):
         "-return_lse": default_to_false,
         "-with-attn-scale": default_to_false,
         "-with-attn-bias": default_to_false,
-        "-transBias": default_to_false
+        "-transBias": default_to_false,
+        "-share-attn-scale-bias": default_to_false
     }
 
     configs = []
@@ -1036,6 +1037,19 @@ def get_attn_configurations(filename):
                     # Check for valid dtypes
                     found_dtype = re.search(r"-t\s+(\w+)", one_config)
                     if not found_dtype or found_dtype.group(1) not in DATA_TYPES_ATTENTION:
+                        continue
+                    found_dequant_count = re.search(r"-num_dequant_inputs\s+(\d+)", one_config)
+                    if found_dequant_count:
+                        dequant_count = int(found_dequant_count.group(1))
+                        if dequant_count > 2 or (dequant_count > 0
+                                                and found_dtype.group(1) != 'i8'):
+                            continue
+                    shared_scale_bias = re.search(
+                        r"-share-attn-scale-bias\s+true", one_config)
+                    if shared_scale_bias and (
+                            not re.search(r"-with-attn-scale\s+true", one_config)
+                            or not re.search(r"-with-attn-bias\s+true", one_config)
+                            or re.search(r"-transBias\s+true", one_config)):
                         continue
 
                     if one_config not in configs:
@@ -1620,11 +1634,21 @@ class AttentionConfiguration(PerfConfiguration):
                  num_chiplets: int,
                  perf_config: str = '',
                  current_seqlen: Optional[List[int]] = None,
-                 trans_bias: bool = False):
+                 trans_bias: bool = False,
+                 num_dequant_inputs: Optional[int] = None,
+                 share_attn_scale_bias: bool = False):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
         if trans_bias and not with_attn_bias:
             raise ValueError("--transBias requires --with-attn-bias")
+        if num_dequant_inputs is None:
+            num_dequant_inputs = 2 if dtype == 'i8' else 0
+        if num_dequant_inputs < 0 or num_dequant_inputs > 2:
+            raise ValueError("--num_dequant_inputs must be between 0 and 2")
+        if dtype != 'i8' and num_dequant_inputs != 0:
+            raise ValueError("--num_dequant_inputs requires i8 attention")
+        if share_attn_scale_bias and (not with_attn_scale or not with_attn_bias or trans_bias):
+            raise ValueError("--share-attn-scale-bias requires natural-layout scale and bias")
 
         self.datatype = dtype
         self.g = g
@@ -1637,6 +1661,8 @@ class AttentionConfiguration(PerfConfiguration):
         self.with_attn_scale = with_attn_scale
         self.with_attn_bias = with_attn_bias
         self.trans_bias = trans_bias
+        self.num_dequant_inputs = num_dequant_inputs
+        self.share_attn_scale_bias = share_attn_scale_bias
         self.trans_q = trans_q
         self.trans_k = trans_k
         self.trans_v = trans_v
@@ -1676,6 +1702,7 @@ class AttentionConfiguration(PerfConfiguration):
                 total_flops += g * self.seq_len_q * self.seq_len_k
             if self.with_attn_bias:
                 total_flops += g * self.seq_len_q * self.seq_len_k
+            total_flops += self.num_dequant_inputs * g * self.seq_len_q * self.seq_len_k
         return total_flops / (float(ns) * 1e-9) / 1e12
 
     def table_entry(self, nanoseconds):
@@ -1683,9 +1710,9 @@ class AttentionConfiguration(PerfConfiguration):
         values = [
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.trans_q, self.trans_k,
             self.trans_v, self.trans_o, self.causal, self.return_lse, self.split_kv,
-            self.with_attn_scale, self.with_attn_bias, self.trans_bias, self.g, self.seq_len_q,
-            self.seq_len_k, self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v,
-            self.perfconfig,
+            self.with_attn_scale, self.with_attn_bias, self.trans_bias, self.share_attn_scale_bias,
+            self.g, self.seq_len_q, self.seq_len_k, self.num_heads_q, self.num_heads_kv,
+            self.head_dim_qk, self.head_dim_v, self.num_dequant_inputs, self.perfconfig,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -1709,9 +1736,10 @@ class AttentionConfiguration(PerfConfiguration):
             str(self.head_dim_qk), '-head_dim_v',
             str(self.head_dim_v), f"-with-attn-scale={self.with_attn_scale}",
             f"-with-attn-bias={self.with_attn_bias}", f"-transBias={self.trans_bias}",
+            f"-share-attn-scale-bias={self.share_attn_scale_bias}",
             f"-transQ={self.trans_q}", f"-transK={self.trans_k}", f"-transV={self.trans_v}",
             f"-transO={self.trans_o}", f"-causal={self.causal}", f"-return_lse={self.return_lse}",
-            f"-split_kv={self.split_kv}",
+            f"-split_kv={self.split_kv}", f"-num_dequant_inputs={self.num_dequant_inputs}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -1742,6 +1770,8 @@ class AttentionConfiguration(PerfConfiguration):
         with_attn_scale = False
         with_attn_bias = False
         trans_bias = False
+        num_dequant_inputs = None
+        share_attn_scale_bias = False
         # Please keep this in sync with mlir::rock::getTuningProblemStr()
         for i in range(0, len(argv), 2):
             opt = argv[i]
@@ -1768,6 +1798,10 @@ class AttentionConfiguration(PerfConfiguration):
                 with_attn_bias = (val.lower() in ["1", "true"])
             elif opt.endswith("-transBias"):
                 trans_bias = (val.lower() in ["1", "true"])
+            elif opt.endswith("-num_dequant_inputs"):
+                num_dequant_inputs = int(val)
+            elif opt.endswith("-share-attn-scale-bias"):
+                share_attn_scale_bias = (val.lower() in ["1", "true"])
             elif opt.endswith("-transQ"):
                 trans_q = (val.lower() in ["1", "true"])
             elif opt.endswith("-transK"):
@@ -1815,7 +1849,9 @@ class AttentionConfiguration(PerfConfiguration):
                    num_cu,
                    num_chiplets,
                    perf_config,
-                   trans_bias=trans_bias)
+                   trans_bias=trans_bias,
+                   num_dequant_inputs=num_dequant_inputs,
+                   share_attn_scale_bias=share_attn_scale_bias)
 
     def to_command_line(self):
         return (
@@ -1828,7 +1864,9 @@ class AttentionConfiguration(PerfConfiguration):
             f"-seq_len_q {str(self.seq_len_q)} -seq_len_k {str(self.seq_len_k)} -num_heads_q {str(self.num_heads_q)} -num_heads_kv {str(self.num_heads_kv)} -head_dim_qk {str(self.head_dim_qk)} -head_dim_v {str(self.head_dim_v)} "
             + f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
             f"-with-attn-bias {str(self.with_attn_bias).lower()} " +
-            f"-transBias {str(self.trans_bias).lower()}")
+            f"-transBias {str(self.trans_bias).lower()} " +
+            f"-share-attn-scale-bias {str(self.share_attn_scale_bias).lower()} " +
+            f"-num_dequant_inputs {self.num_dequant_inputs}")
 
 
 def auto_precision_flags_att(config: PerfConfiguration) -> List[str]:
@@ -2024,6 +2062,10 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
             false_flags.append(" -with-attn-bias false")
         if not config.trans_bias:
             false_flags.append(" -transBias false")
+        if not config.share_attn_scale_bias:
+            false_flags.append(" -share-attn-scale-bias false")
+        if config.datatype != 'i8' and config.num_dequant_inputs == 0:
+            false_flags.append(" -num_dequant_inputs 0")
 
         # Older tuning DB rows may predate one or more false-valued attention
         # identity flags. Never strip a true-valued flag: those describe

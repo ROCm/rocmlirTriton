@@ -213,8 +213,8 @@ func.func @self_attention_perfconfig(%arg0: tensor<1x384x64xf32>, %arg1: tensor<
 // A constant dequant scale is cloned into the pre-softmax body, so the
 // following external bias is input zero and must not be counted as dequant.
 // CHECK-LABEL: func.func @self_attention_constant_dequant_scale
-// CHECK-NOT: numDequantInputs
 // CHECK: rock.attention
+// CHECK: numDequantInputs = 0 : i32
 // CHECK-NOT: rock.pre_softmax_dequant_input_count
 // CHECK: return
 func.func @self_attention_constant_dequant_scale(

@@ -25,8 +25,8 @@ CONV_COLUMNS = [
 ]
 ATTENTION_COLUMNS = [
     'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'WithAttnScale',
-    'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK',
-    'HeadDimV'
+    'WithAttnBias', 'TransBias', 'ShareAttnScaleBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ',
+    'NumHeadsKV', 'HeadDimQK', 'HeadDimV', 'NumDequantInputs'
 ]
 
 # Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
@@ -121,8 +121,24 @@ def load_data(files, no_splitk):
         print("Reading from stdin...")
         df = pd.read_csv(sys.stdin, sep='\t', index_col=None, low_memory=False)
 
-    if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
-        df['TransBias'] = False
+    if 'WithAttnBias' in df.columns:
+        if 'TransBias' not in df.columns:
+            df['TransBias'] = False
+        else:
+            df['TransBias'] = df['TransBias'].fillna(False)
+        if 'ShareAttnScaleBias' not in df.columns:
+            df['ShareAttnScaleBias'] = False
+        else:
+            df['ShareAttnScaleBias'] = df['ShareAttnScaleBias'].fillna(False)
+
+        # Legacy i8 rows are ambiguous: both one- and two-input dequant forms
+        # used the same key. Keep them distinct from all explicit new counts.
+        legacy_dequant_count = pd.Series(np.where(df['DataType'] == 'i8', -1, 0),
+                                         index=df.index)
+        if 'NumDequantInputs' not in df.columns:
+            df['NumDequantInputs'] = legacy_dequant_count
+        else:
+            df['NumDequantInputs'] = df['NumDequantInputs'].fillna(legacy_dequant_count)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)

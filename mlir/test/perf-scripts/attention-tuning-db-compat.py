@@ -41,9 +41,9 @@ PERFCONFIG = "attn:v4:32,256,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1"
 TMP_PREFIX = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/attention-tuning-db-compat")
 
 
-def make_config(extra_flags):
+def make_config(extra_flags, dtype="f16"):
     """Build a canonical attention config with the requested optional flags."""
-    key = ("-t f16 "
+    key = (f"-t {dtype} "
            "-transQ false -transK false -transV false -transO false "
            "-causal false -return_lse false -split_kv 1 -g 1 "
            "-seq_len_q 16 -seq_len_k 16 -num_heads_q 1 -num_heads_kv 1 "
@@ -83,7 +83,9 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         current_config = make_config(
             "-with-attn-scale false -with-attn-bias false -transBias false")
         legacy_key = drop_flags(current_config.to_command_line(), " -with-attn-scale false",
-                                " -with-attn-bias false", " -transBias false")
+                                " -with-attn-bias false", " -transBias false",
+                                " -share-attn-scale-bias false",
+                                " -num_dequant_inputs 0")
 
         self.assertEqual(self.lookup_from_legacy_key(current_config, legacy_key), PERFCONFIG)
 
@@ -121,6 +123,47 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("-transBias true", trans_bias_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(trans_bias_config, legacy_all_false_key))
 
+    def test_dequant_counts_are_distinct(self):
+        """One- and two-input i8 dequant forms must have different keys."""
+        count_one = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false "
+            "-num_dequant_inputs 1",
+            dtype="i8")
+        count_two = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false "
+            "-num_dequant_inputs 2",
+            dtype="i8")
+
+        self.assertNotEqual(count_one.to_command_line(), count_two.to_command_line())
+        self.assertIn("-num_dequant_inputs=1",
+                      count_one.generate_mlir_driver_commandline(""))
+        self.assertIn("-num_dequant_inputs=2",
+                      count_two.generate_mlir_driver_commandline(""))
+
+    def test_shared_scale_bias_is_distinct(self):
+        """Aliased and independent scale/bias argument layouts need separate keys."""
+        independent = make_config(
+            "-with-attn-scale true -with-attn-bias true -transBias false "
+            "-share-attn-scale-bias false")
+        shared = make_config(
+            "-with-attn-scale true -with-attn-bias true -transBias false "
+            "-share-attn-scale-bias true")
+
+        self.assertNotEqual(independent.to_command_line(), shared.to_command_line())
+        self.assertIn("-share-attn-scale-bias=True",
+                      shared.generate_mlir_driver_commandline(""))
+
+    def test_ambiguous_legacy_i8_key_does_not_match(self):
+        """Countless legacy i8 DB rows cannot safely select a current kernel."""
+        current_config = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false "
+            "-num_dequant_inputs 2",
+            dtype="i8")
+        legacy_key = drop_flags(current_config.to_command_line(),
+                                " -num_dequant_inputs 2")
+
+        self.assertIsNone(self.lookup_from_legacy_key(current_config, legacy_key))
+
     def test_quick_tuning_gen_defaults_missing_trans_bias_column(self):
         """Legacy debug TSV rows without TransBias get a false default."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
@@ -134,6 +177,10 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         df = load_data([str(debug_path)], no_splitk=False)
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
+        self.assertIn("NumDequantInputs", df.columns)
+        self.assertTrue(df["NumDequantInputs"].eq(0).all())
+        self.assertIn("ShareAttnScaleBias", df.columns)
+        self.assertTrue(df["ShareAttnScaleBias"].eq(False).all())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()

@@ -1738,11 +1738,22 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
 LogicalResult GridwiseAttentionOp::verify() {
-  int64_t numDequantInputs = getNumDequantInputs();
-  if (numDequantInputs < 0 ||
-      numDequantInputs >
-          static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
-    return emitError("numDequantInputs must index leading pre-softmax inputs");
+  int64_t numDequantInputs = 0;
+  if (IntegerAttr countAttr = getNumDequantInputsAttr()) {
+    numDequantInputs = countAttr.getInt();
+    if (numDequantInputs < 0 ||
+        numDequantInputs >
+            static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
+      return emitError(
+          "numDequantInputs must index leading pre-softmax inputs");
+    if (numDequantInputs > 2)
+      return emitError("numDequantInputs must be between zero and two");
+    if (!getEnableSoftmax() && numDequantInputs != 0)
+      return emitError("numDequantInputs only works for attention.");
+    if (numDequantInputs > 0 &&
+        !getQueries().getType().getElementType().isInteger(8))
+      return emitError("numDequantInputs requires i8 attention inputs");
+  }
 
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1769,9 +1780,6 @@ LogicalResult GridwiseAttentionOp::verify() {
 
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
-
-  if (!getEnableSoftmax() && numDequantInputs != 0)
-    return emitError("numDequantInputs only works for attention.");
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
@@ -2254,11 +2262,19 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
 }
 
 LogicalResult AttentionOp::verify() {
-  int64_t numDequantInputs = getNumDequantInputs();
-  if (numDequantInputs < 0 ||
-      numDequantInputs >
-          static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
-    return emitError("numDequantInputs must index leading pre-softmax inputs");
+  if (IntegerAttr countAttr = getNumDequantInputsAttr()) {
+    int64_t numDequantInputs = countAttr.getInt();
+    if (numDequantInputs < 0 ||
+        numDequantInputs >
+            static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
+      return emitError(
+          "numDequantInputs must index leading pre-softmax inputs");
+    if (numDequantInputs > 2)
+      return emitError("numDequantInputs must be between zero and two");
+    if (numDequantInputs > 0 &&
+        !getQueries().getType().getElementType().isInteger(8))
+      return emitError("numDequantInputs requires i8 attention inputs");
+  }
 
   if (getSplitKV() != 1 && !getLse())
     return emitError("Flash decoding needs LSE output");

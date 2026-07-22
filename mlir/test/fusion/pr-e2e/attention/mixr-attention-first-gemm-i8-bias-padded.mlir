@@ -3,6 +3,8 @@
 // CHECK: [1 1 1]
 // DEQUANT: rock.attention
 // DEQUANT: numDequantInputs = 2 : i32
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefix=KEY
+// KEY: -num_dequant_inputs 2
 
 module {
   func.func @mlir_attention(%arg0: !migraphx.shaped<1x7x3xi8, 21x3x1>,

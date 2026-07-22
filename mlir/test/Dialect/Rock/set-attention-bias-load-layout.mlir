@@ -51,6 +51,104 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
         : tensor<128x256xf32, #score_blocked>
     tt.return %result : tensor<128x256xf32, #score_blocked>
   }
+
+  // Shared path suffixes cannot be rematerialized independently. Reject all
+  // plans in the group instead of applying an order-dependent partial rewrite.
+  // SAFE-LABEL: tt.func @overlapping_auxiliary_paths_rejected
+  // SAFE: %[[DIRECT:.*]] = tt.load
+  // SAFE-SAME: inputIndex = 0
+  // SAFE-SAME: tensor<128x256x!tt.ptr<f32>, #ttg.blocked
+  // SAFE-SAME: warpsPerCTA = [1, 2]
+  // SAFE: %[[X:.*]] = tt.load
+  // SAFE-SAME: inputIndex = 1
+  // SAFE-SAME: tensor<128x256x!tt.ptr<f32>, #ttg.blocked
+  // SAFE-SAME: warpsPerCTA = [1, 2]
+  // SAFE: %[[Y:.*]] = tt.load
+  // SAFE-SAME: inputIndex = 2
+  // SAFE-SAME: tensor<128x256x!tt.ptr<f32>, #ttg.blocked
+  // SAFE-SAME: warpsPerCTA = [1, 2]
+  // SAFE: arith.addf %[[X]], %[[Y]]
+  tt.func @overlapping_auxiliary_paths_rejected(
+      %bias_ptr: tensor<128x256x!tt.ptr<f32>, #bias_blocked>,
+      %ptr0: tensor<128x256x!tt.ptr<f32>, #bias_blocked>,
+      %ptr1: tensor<128x256x!tt.ptr<f32>, #bias_blocked>,
+      %a: tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>,
+      %b: tensor<32x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>)
+      -> tensor<128x256xf32, #score_blocked> {
+    %bias = tt.load %bias_ptr {
+      rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = transposed>
+    } : tensor<128x256x!tt.ptr<f32>, #bias_blocked>
+    %bias_acc = ttg.convert_layout %bias
+        : tensor<128x256xf32, #bias_blocked> -> tensor<128x256xf32, #mma>
+    %score = tt.dot %a, %b, %bias_acc {
+      rock.attention_group = #rock.attention_group<0>
+    } : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>
+      * tensor<32x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
+      -> tensor<128x256xf32, #mma>
+    %x = tt.load %ptr0 {
+      rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 1, role = other, orientation = unknown>
+    } : tensor<128x256x!tt.ptr<f32>, #bias_blocked>
+    %y = tt.load %ptr1 {
+      rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 2, role = other, orientation = unknown>
+    } : tensor<128x256x!tt.ptr<f32>, #bias_blocked>
+    %sum = arith.addf %x, %y : tensor<128x256xf32, #bias_blocked>
+    %other_dist = ttg.convert_layout %sum
+        : tensor<128x256xf32, #bias_blocked>
+          -> tensor<128x256xf32, #score_blocked>
+    %score_dist = ttg.convert_layout %score
+        : tensor<128x256xf32, #mma>
+          -> tensor<128x256xf32, #score_blocked>
+    %result = arith.addf %score_dist, %other_dist
+        : tensor<128x256xf32, #score_blocked>
+    tt.return %result : tensor<128x256xf32, #score_blocked>
+  }
+
+  // A candidate path that consumes another plan's endpoint would add a use
+  // before that second plan mutates it. Reject the group atomically.
+  // SAFE-LABEL: tt.func @cross_plan_operand_dependency_rejected
+  // SAFE: %[[BIAS:.*]] = tt.load
+  // SAFE-NOT: amdg.bypass_lds_load = true
+  // SAFE-SAME: inputIndex = 0
+  // SAFE-SAME: tensor<128x256x!tt.ptr<f32>, #ttg.blocked
+  // SAFE-SAME: warpsPerCTA = [1, 2]
+  // SAFE: %[[AUX:.*]] = tt.load
+  // SAFE-SAME: inputIndex = 1
+  // SAFE-SAME: tensor<128x256x!tt.ptr<f32>, #ttg.blocked
+  // SAFE-SAME: warpsPerCTA = [1, 2]
+  tt.func @cross_plan_operand_dependency_rejected(
+      %bias_ptr: tensor<128x256x!tt.ptr<f32>, #bias_blocked>,
+      %aux_ptr: tensor<128x256x!tt.ptr<f32>, #bias_blocked>,
+      %a: tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>,
+      %b: tensor<32x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>)
+      -> tensor<128x256xf32, #score_blocked> {
+    %zero = arith.constant dense<0.0>
+        : tensor<128x256xf32, #mma>
+    %score = tt.dot %a, %b, %zero {
+      rock.attention_group = #rock.attention_group<0>
+    } : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>
+      * tensor<32x256xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
+      -> tensor<128x256xf32, #mma>
+    %bias = tt.load %bias_ptr {
+      rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = transposed>
+    } : tensor<128x256x!tt.ptr<f32>, #bias_blocked>
+    %aux = tt.load %aux_ptr {
+      rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 1, role = other, orientation = unknown>
+    } : tensor<128x256x!tt.ptr<f32>, #bias_blocked>
+    %bias_dist = ttg.convert_layout %bias
+        : tensor<128x256xf32, #bias_blocked>
+          -> tensor<128x256xf32, #score_blocked>
+    %aux_dist = ttg.convert_layout %aux
+        : tensor<128x256xf32, #bias_blocked>
+          -> tensor<128x256xf32, #score_blocked>
+    %combined_bias = arith.addf %bias_dist, %aux_dist
+        : tensor<128x256xf32, #score_blocked>
+    %score_dist = ttg.convert_layout %score
+        : tensor<128x256xf32, #mma>
+          -> tensor<128x256xf32, #score_blocked>
+    %result = arith.addf %score_dist, %combined_bias
+        : tensor<128x256xf32, #score_blocked>
+    tt.return %result : tensor<128x256xf32, #score_blocked>
+  }
 }
 
 // -----

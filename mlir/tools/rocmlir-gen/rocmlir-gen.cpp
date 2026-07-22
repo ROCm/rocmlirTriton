@@ -540,6 +540,17 @@ static llvm::cl::opt<bool> hasAttnBias(
     llvm::cl::desc("Generate an attention kernel that is using a bias"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> shareAttnScaleBias(
+    "share-attn-scale-bias",
+    llvm::cl::desc("Use one external attention operand as both scale and bias"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<unsigned> numDequantInputsOpt(
+    "num_dequant_inputs",
+    llvm::cl::desc("Number of leading first-GEMM dequantization inputs in "
+                   "attention (0..2; defaults to 2 for i8 and 0 otherwise)"),
+    llvm::cl::init(0));
+
 static llvm::cl::opt<bool>
     transposeBias("transBias",
                   llvm::cl::desc("whether the attention bias input is stored "
@@ -967,6 +978,8 @@ struct GenParams {
   std::optional<const rock::ConvGenerator::Config *> convConfig = std::nullopt;
   StringRef arch;
   StringRef perfConfig;
+  unsigned numDequantInputs = 0;
+  bool shareAttnScaleBias = false;
 
   /// When true, the CPU attention verifier picks the first-GEMM output
   /// element type to match the GPU's effective precision: f32 when no
@@ -2991,7 +3004,8 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
 }
 
 static void getAttentionTypes(SmallVectorImpl<Type> &result,
-                              ArrayRef<Type> elemTypes) {
+                              ArrayRef<Type> elemTypes,
+                              unsigned numDequantInputs, bool shareScaleBias) {
   SmallVector<int64_t> qDims{groupSize * numHeadsQ, sequenceLengthQ, headDimQK};
   SmallVector<int64_t> transposedQDims{groupSize * numHeadsQ, headDimQK,
                                        sequenceLengthQ};
@@ -3039,12 +3053,14 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
   result.push_back(qType);
   result.push_back(kType);
   result.push_back(vType);
-  if (isQuantized) {
+  if (isQuantized && numDequantInputs == 2) {
     // quant bias is to be broadcasted
     SmallVector<int64_t> quantBiasDims{1, 1, 1};
     RankedTensorType qbType = RankedTensorType::get(
         quantBiasDims, elemTypes[AttentionQuantizedArgIndex::quantBias]);
     result.push_back(qbType);
+  }
+  if (isQuantized && numDequantInputs >= 1) {
     // quant scale is to be broadcasted
     SmallVector<int64_t> quantScaleDims{1, 1, 1};
     RankedTensorType qsType = RankedTensorType::get(
@@ -3058,7 +3074,7 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
         RankedTensorType::get(scaleDims, elemTypes[scaleIndex]);
     result.push_back(sType);
   }
-  if (hasAttnBias) {
+  if (hasAttnBias && !shareScaleBias) {
     SmallVector<int64_t> biasDims{
         groupSize * numHeadsQ,
         transposeBias ? sequenceLengthK : sequenceLengthQ,
@@ -3094,7 +3110,8 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
 
 static void
 getAttentionDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
-                     ArrayRef<Type> elementTypes) {
+                     ArrayRef<Type> elementTypes, unsigned numDequantInputs,
+                     bool shareScaleBias) {
   result.reserve(elementTypes.size());
   constexpr StringLiteral gName = "g", seqQName = "seq_q", seqKName = "seq_k",
                           headQKName = "head_qk", headVName = "head_v";
@@ -3111,13 +3128,13 @@ getAttentionDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
   else
     result.emplace_back(SmallVector<StringRef>{gName, seqKName, headVName});
   bool isQuantized = elementTypes[0].isInteger(8);
-  if (isQuantized) {
+  if (isQuantized && numDequantInputs == 2)
     result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
+  if (isQuantized && numDequantInputs >= 1)
     result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
-  }
   if (hasAttnScale)
     result.emplace_back(SmallVector<StringRef>{gName, seqQName, seqKName});
-  if (hasAttnBias)
+  if (hasAttnBias && !shareScaleBias)
     result.emplace_back(
         SmallVector<StringRef>{gName, transposeBias ? seqKName : seqQName,
                                transposeBias ? seqQName : seqKName});
@@ -3613,7 +3630,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     module->setAttr(rock::ArchAttr::getMnemonic(), archAttr);
 
   SmallVector<Type, 5> argTypes;
-  getAttentionTypes(argTypes, params.types);
+  getAttentionTypes(argTypes, params.types, params.numDequantInputs,
+                    params.shareAttnScaleBias);
   bool isQuantized = params.types[0] == IntegerType::get(ctx, 8);
   SmallVector<Type, 5> flatArgTypes =
       llvm::map_to_vector(argTypes, rock::getFlattenedType);
@@ -3653,7 +3671,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
 
   SmallVector<Value> unflattenedArgs;
   SmallVector<SmallVector<StringRef>> allNames;
-  getAttentionDimNames(allNames, params.types);
+  getAttentionDimNames(allNames, params.types, params.numDequantInputs,
+                       params.shareAttnScaleBias);
 
   // Save output dim names/types and trim from expansion (output is last)
   SmallVector<StringRef> outputDimNames = allNames.back();
@@ -3698,10 +3717,12 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
 
   SmallVector<Value> elemwiseInputs;
   unsigned optionalArgsCounter = 3;
-  if (isQuantized) {
+  if (isQuantized && params.numDequantInputs == 2) {
     quantBias = unflattenedArgs[optionalArgsCounter++];
     quantBias = rock::insertBroadcast(builder, loc, quantBias, qkShape);
     elemwiseInputs.push_back(quantBias);
+  }
+  if (isQuantized && params.numDequantInputs >= 1) {
     quantScale = unflattenedArgs[optionalArgsCounter++];
     quantScale = rock::insertBroadcast(builder, loc, quantScale, qkShape);
     elemwiseInputs.push_back(quantScale);
@@ -3711,16 +3732,20 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     elemwiseInputs.push_back(scale);
   }
   if (hasAttnBias) {
-    bias = unflattenedArgs[optionalArgsCounter++];
-    if (transposeBias) {
-      auto biasType = cast<ShapedType>(bias.getType());
-      SmallVector<uint32_t> startDims{0, 2, 1};
-      SmallVector<uint32_t> endDims{0, 1, 2};
-      rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
-      transform.passThrough(endDims, startDims);
-      bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+    if (params.shareAttnScaleBias) {
+      bias = scale;
+    } else {
+      bias = unflattenedArgs[optionalArgsCounter++];
+      if (transposeBias) {
+        auto biasType = cast<ShapedType>(bias.getType());
+        SmallVector<uint32_t> startDims{0, 2, 1};
+        SmallVector<uint32_t> endDims{0, 1, 2};
+        rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
+        transform.passThrough(endDims, startDims);
+        bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+      }
+      elemwiseInputs.push_back(bias);
     }
-    elemwiseInputs.push_back(bias);
   }
   if (!currentSeqLen.empty()) {
     currentSeqLenTensor = broadcastBatchTensorRock(
@@ -3743,7 +3768,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       transposeV, transposeO, actualCausal, splitKV, softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr,
       /*preSoftmaxHasSplitKVTransforms=*/false,
-      /*numDequantInputs=*/isQuantized ? 2 : 0);
+      /*numDequantInputs=*/
+      builder.getI32IntegerAttr(params.numDequantInputs));
   {
     Block *preSoftmaxElemwiseBlock =
         &attention.getPreSoftmaxBody().emplaceBlock();
@@ -3757,28 +3783,35 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     Value qkTensor = preSoftmaxElemwiseBlock->addArgument(qkTensorRefType, loc);
     if (isQuantized) {
       auto qkBlockShape = cast<ShapedType>(qkTensor.getType()).getShape();
-      Value quantBiasI8 =
-          addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, quantBias);
-      Value quantScaleF16 = addTensorArgToBlock(
-          builder, loc, preSoftmaxElemwiseBlock, quantScale);
-      Value quantBiasI32 = rock::createTypeConversionOp(
-          builder, loc, quantBiasI8,
-          RankedTensorType::get(qkBlockShape, IntegerType::get(ctx, 32)));
-      qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
+      if (params.numDequantInputs == 2) {
+        Value quantBiasI8 = addTensorArgToBlock(
+            builder, loc, preSoftmaxElemwiseBlock, quantBias);
+        Value quantBiasI32 = rock::createTypeConversionOp(
+            builder, loc, quantBiasI8,
+            RankedTensorType::get(qkBlockShape, IntegerType::get(ctx, 32)));
+        qkTensor = arith::SubIOp::create(builder, loc, qkTensor, quantBiasI32);
+      }
       qkTensor = rock::createTypeConversionOp(
           builder, loc, qkTensor,
           RankedTensorType::get(qkBlockShape, Float16Type::get(ctx)));
 
-      qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
+      if (params.numDequantInputs >= 1) {
+        Value quantScaleF16 = addTensorArgToBlock(
+            builder, loc, preSoftmaxElemwiseBlock, quantScale);
+        qkTensor = arith::MulFOp::create(builder, loc, qkTensor, quantScaleF16);
+      }
     }
+    Value scaleTensor;
     if (hasAttnScale) {
-      Value scaleTensor =
+      scaleTensor =
           addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, scale);
       qkTensor = arith::MulFOp::create(builder, loc, qkTensor, scaleTensor);
     }
     if (hasAttnBias) {
-      Value biasTensor =
-          addTensorArgToBlock(builder, loc, preSoftmaxElemwiseBlock, bias);
+      Value biasTensor = params.shareAttnScaleBias
+                             ? scaleTensor
+                             : addTensorArgToBlock(
+                                   builder, loc, preSoftmaxElemwiseBlock, bias);
       qkTensor = arith::AddFOp::create(builder, loc, qkTensor, biasTensor);
     }
     rock::YieldOp::create(builder, loc, qkTensor);
@@ -4599,7 +4632,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   };
 
   SmallVector<Type, 5> argTypes;
-  getAttentionTypes(argTypes, params.types);
+  getAttentionTypes(argTypes, params.types, params.numDequantInputs,
+                    params.shareAttnScaleBias);
   // Convert tensor types to memref types for CPU verifier
   SmallVector<Type, 5> flatArgTypes;
   for (Type t : argTypes) {
@@ -4716,14 +4750,14 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   Value currentSeqLenTensor;
   Value prefixOffsetTensor;
   // Walk through optional arguments to find the correct indices.
-  // Argument layout: [q, k, v, (quantBias, quantScale)?, scale?, bias?,
+  // Argument layout: [q, k, v, dequant inputs?, scale?, bias?,
   //                   currentSeqLen?, prefixOffset?, lse?, output]
   unsigned optionalArgIndex = 3; // Start after q, k, v
   if (isQuantized)
-    optionalArgIndex += 2; // Skip quantBias, quantScale
+    optionalArgIndex += params.numDequantInputs;
   if (hasAttnScale)
     optionalArgIndex++; // Skip scale
-  if (hasAttnBias)
+  if (hasAttnBias && !params.shareAttnScaleBias)
     optionalArgIndex++; // Skip bias
   if (!currentSeqLen.empty()) {
     currentSeqLenTensor = loadMaskingTensor(optionalArgIndex++);
@@ -4748,24 +4782,31 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
 
   unsigned optionalArgsCounter = 3;
   if (isQuantized) {
-    // Quantized attention starts from i32 qk accumulators. Apply the quantized
-    // zero-point/bias in i32, then round to f16 before the quant scale multiply
-    // to mirror the GPU pre-softmax arithmetic.
-    auto quantBiasI8 = getTensorForBlockArg(optionalArgsCounter++);
-    Value quantBiasI32 = rock::tosa::createOpAndInfer<tosa::CastOp>(
-        builder, loc, IntegerType::get(ctx, 32), quantBiasI8);
-    qkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
-        builder, loc, IntegerType::get(ctx, 32), qkTensor, quantBiasI32);
+    // Quantized attention starts from i32 qk accumulators. Apply an optional
+    // zero-point/bias in i32, then round to f16 before an optional quant scale
+    // multiply to mirror the GPU pre-softmax arithmetic.
+    if (params.numDequantInputs == 2) {
+      auto quantBiasI8 = getTensorForBlockArg(optionalArgsCounter++);
+      Value quantBiasI32 = rock::tosa::createOpAndInfer<tosa::CastOp>(
+          builder, loc, IntegerType::get(ctx, 32), quantBiasI8);
+      qkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
+          builder, loc, IntegerType::get(ctx, 32), qkTensor, quantBiasI32);
+    }
     qkTensor = castTensor(qkTensor, Float16Type::get(ctx));
-    auto quantScaleF16 = getTensorForBlockArg(optionalArgsCounter++);
-    qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor, quantScaleF16,
-                                    Float16Type::get(ctx));
+    if (params.numDequantInputs >= 1) {
+      auto quantScaleF16 = getTensorForBlockArg(optionalArgsCounter++);
+      qkTensor = rock::tosa::getMulOp(builder, loc, qkTensor, quantScaleF16,
+                                      Float16Type::get(ctx));
+    }
   }
 
   bool fuseQuantizedScaleBias = isQuantized && hasAttnScale && hasAttnBias;
   Value pendingScaleForFma;
+  Value sharedScaleBiasTensor;
   if (hasAttnScale) {
     auto scaleTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
+    if (params.shareAttnScaleBias)
+      sharedScaleBiasTensor = scaleTensor;
     scaleTensor = applyPreSoftmaxInputMask(scaleTensor, 1.0f);
 
     if (fuseQuantizedScaleBias) {
@@ -4780,7 +4821,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   if (hasAttnBias) {
-    auto biasTensor = upcastF(getTensorForBlockArg(optionalArgsCounter++));
+    Value biasTensor =
+        params.shareAttnScaleBias
+            ? sharedScaleBiasTensor
+            : upcastF(getTensorForBlockArg(optionalArgsCounter++));
     if (transposeBias)
       biasTensor =
           rock::tosa::getTransposeOp(builder, loc, biasTensor, {0, 2, 1});
@@ -5970,10 +6014,10 @@ static LogicalResult populateHostHarnessLogic(
       int32_t optionalArgsCounter{3};
       bool isQuantized = genParams.types[0] == b.getI8Type();
       if (isQuantized)
-        optionalArgsCounter += 2;
+        optionalArgsCounter += genParams.numDequantInputs;
       if (hasAttnScale)
         ++optionalArgsCounter;
-      if (hasAttnBias)
+      if (hasAttnBias && !genParams.shareAttnScaleBias)
         ++optionalArgsCounter;
       if (!currentSeqLen.empty())
         ++optionalArgsCounter;
@@ -6397,9 +6441,29 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     (void)createGpuGemmElementwiseGemmKernel(module, genParams);
   } else if (isAttention) {
     auto elemType = typeFromString(inputDataType.getValue(), context);
+    bool isQuantized = elemType == IntegerType::get(context, 8);
+    unsigned resolvedNumDequantInputs =
+        numDequantInputsOpt.getNumOccurrences() > 0
+            ? numDequantInputsOpt.getValue()
+            : (isQuantized ? 2 : 0);
+    if (resolvedNumDequantInputs > 2 ||
+        (!isQuantized && resolvedNumDequantInputs != 0)) {
+      llvm::errs() << "num_dequant_inputs must be 0..2 for i8 attention and "
+                      "zero for non-i8 attention\n";
+      exit(1);
+    }
+    genParams.numDequantInputs = resolvedNumDequantInputs;
+    if (shareAttnScaleBias &&
+        (!hasAttnScale || !hasAttnBias || transposeBias)) {
+      llvm::errs() << "share-attn-scale-bias requires natural-layout attention "
+                      "with both scale and bias enabled\n";
+      exit(1);
+    }
+    genParams.shareAttnScaleBias = shareAttnScaleBias;
+
     // We only support first-gemm i8 version of attention
     // This will be changed when we support both gemms of i8.
-    if (elemType == IntegerType::get(context, 8)) {
+    if (isQuantized) {
       constexpr size_t maxNumArgs{10};
       genParams.types.resize(maxNumArgs);
       genParams.types[AttentionQuantizedArgIndex::q] =

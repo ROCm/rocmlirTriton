@@ -17,12 +17,33 @@
 namespace mlir {
 namespace rock {
 
-/// Classify each external pre-softmax input by the operation where its
-/// provenance first merges with the QK score provenance. Ambiguous or malformed
-/// dataflow is classified as Other.
+struct PreSoftmaxInputRoleInfo {
+  bool hasDequant = false;
+  bool hasScale = false;
+  bool hasBias = false;
+  bool hasOther = false;
+  unsigned numMerges = 0;
+
+  PreSoftmaxInputRole getSingularRole() const;
+};
+
+/// Analyze every operation where an external pre-softmax input independently
+/// merges with QK score provenance. This retains multiple semantic roles for
+/// tuning while allowing lowering to reject ambiguous inputs conservatively.
+SmallVector<PreSoftmaxInputRoleInfo>
+analyzePreSoftmaxInputRoles(Region &region, unsigned numInputs,
+                            unsigned numDequantInputs = 0);
+
+/// Return one role per input for load metadata. Inputs with multiple merge
+/// points or semantic roles are classified as Other.
 SmallVector<PreSoftmaxInputRole>
 classifyPreSoftmaxInputRoles(Region &region, unsigned numInputs,
                              unsigned numDequantInputs = 0);
+
+/// Resolve the explicit dequant input count, retaining the legacy inference of
+/// two leading inputs for i8 attention when the attribute is absent.
+unsigned getEffectiveNumDequantInputs(AttentionOp op);
+unsigned getEffectiveNumDequantInputs(GridwiseAttentionOp op);
 
 /// Determine whether the two trailing dimensions of `value` are naturally
 /// stored or physically transposed. The analysis is deliberately conservative:

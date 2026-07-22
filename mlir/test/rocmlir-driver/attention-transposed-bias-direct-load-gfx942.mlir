@@ -20,6 +20,11 @@
 // RUN:   -pv \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
+// RUN:     --mlir-print-ir-after=rock-set-attention-bias-load-layout 2>&1 \
 // RUN: | FileCheck %s
 
+// CHECK: IR Dump After {{.*}}RockSetAttentionBiasLoadLayout
+// CHECK: tt.load {{.*}}amdg.bypass_lds_load = true
+// CHECK-SAME: role = bias, orientation = transposed
+// CHECK-SAME: tensor<128x256x!tt.ptr<f16>, #mma>
 // CHECK: gpu.binary @rock_kernels

@@ -202,7 +202,7 @@ def Rock_AttentionOp
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms,
-          DefaultValuedOptionalAttr<I32Attr, "0">:$numDequantInputs)>,
+          OptionalAttr<I32Attr>:$numDequantInputs)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
           Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
   let summary = "Attention operation of transformer models";
@@ -240,9 +240,11 @@ def Rock_AttentionOp
     re-applying splitKV transforms when the IR is generated directly (e.g., via rocmlir-gen)
     without flash decoding detection.
 
-    The `numDequantInputs` attribute records how many leading pre-softmax
-    elementwise inputs belong to first-GEMM dequantization rather than
-    attention scale or bias.
+    When present, the `numDequantInputs` attribute records exactly how many
+    leading pre-softmax elementwise inputs belong to first-GEMM dequantization
+    rather than attention scale or bias. An absent attribute on i8 attention
+    retains the legacy two-input inference; explicit zero disables that
+    inference.
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
@@ -558,7 +560,7 @@ def Rock_GridwiseAttentionOp
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
                                     "false">:$preSoftmaxHasSplitKVTransforms,
-          DefaultValuedOptionalAttr<I32Attr, "0">:$numDequantInputs)>,
+          OptionalAttr<I32Attr>:$numDequantInputs)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
           Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
   let summary = "Gridwise attention";

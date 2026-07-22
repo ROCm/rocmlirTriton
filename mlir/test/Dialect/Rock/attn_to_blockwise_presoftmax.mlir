@@ -595,3 +595,124 @@ func.func @one_dequant_input_before_attention_bias(
       tensor<1x64x64xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
   return %result : tensor<1x64x32xf32>
 }
+
+// -----
+
+// Legacy i8 attention omitted numDequantInputs and implicitly used two leading
+// dequant operands. Preserve that interpretation for old textual and bytecode
+// IR while allowing explicit zero to disable the fallback.
+// CHECK-LABEL: func @legacy_omitted_dequant_count
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = dequant, orientation = natural>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 1, role = dequant, orientation = natural>
+func.func @legacy_omitted_dequant_count(
+    %q: tensor<1x64x32xi8>,
+    %k: tensor<1x32x64xi8>,
+    %v: tensor<1x64x32xf32>,
+    %dequant_bias: tensor<1x64x64xi8>,
+    %dequant_scale: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %dequant_bias, %dequant_scale) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xi32>,
+       %arg_dequant_bias: tensor<1x64x64xi8>,
+       %arg_dequant_scale: tensor<1x64x64xf32>):
+    %dequant_bias_i32 = arith.extsi %arg_dequant_bias
+        : tensor<1x64x64xi8> to tensor<1x64x64xi32>
+    %shifted = arith.subi %arg_qk, %dequant_bias_i32
+        : tensor<1x64x64xi32>
+    %shifted_f32 = arith.sitofp %shifted
+        : tensor<1x64x64xi32> to tensor<1x64x64xf32>
+    %dequantized = arith.mulf %shifted_f32, %arg_dequant_scale
+        : tensor<1x64x64xf32>
+    rock.yield %dequantized : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 2, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xi8>, tensor<1x32x64xi8>, tensor<1x64x32xf32>,
+      tensor<1x64x64xi8>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// An operand reused as both a scale and a bias has no safe singular role for
+// load-layout optimization.
+// CHECK-LABEL: func @shared_scale_and_bias
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = other, orientation = natural>
+func.func @shared_scale_and_bias(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %scale_bias: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %scale_bias) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>,
+       %arg_scale_bias: tensor<1x64x64xf32>):
+    %scaled = arith.mulf %arg_qk, %arg_scale_bias
+        : tensor<1x64x64xf32>
+    %biased = arith.addf %scaled, %arg_scale_bias
+        : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    numDequantInputs = 0 : i32,
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>,
+      tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// A leading dequant operand can acquire an attention role when it is reused
+// later. Keep the positional dequant semantics for tuning, but classify its
+// singular load metadata conservatively.
+// CHECK-LABEL: func @dequant_scale_reused_as_bias
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = other, orientation = natural>
+func.func @dequant_scale_reused_as_bias(
+    %q: tensor<1x64x32xi8>,
+    %k: tensor<1x32x64xi8>,
+    %v: tensor<1x64x32xf32>,
+    %dequant_scale: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %dequant_scale) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xi32>,
+       %arg_dequant_scale: tensor<1x64x64xf32>):
+    %qk_f32 = arith.sitofp %arg_qk
+        : tensor<1x64x64xi32> to tensor<1x64x64xf32>
+    %dequantized = arith.mulf %qk_f32, %arg_dequant_scale
+        : tensor<1x64x64xf32>
+    %biased = arith.addf %dequantized, %arg_dequant_scale
+        : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    numDequantInputs = 1 : i32,
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xi8>, tensor<1x32x64xi8>, tensor<1x64x32xf32>,
+      tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}

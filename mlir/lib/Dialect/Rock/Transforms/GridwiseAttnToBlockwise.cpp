@@ -923,8 +923,7 @@ struct GridwiseAttentionRewritePattern
     auto groupAttr = dyn_cast_or_null<AttentionGroupAttr>(
         op->getDiscardableAttr(AttentionGroupAttr::getNameStr()));
     SmallVector<PreSoftmaxInputRole> inputRoles = classifyPreSoftmaxInputRoles(
-        region, extraInputs.size(),
-        static_cast<unsigned>(op.getNumDequantInputs()));
+        region, extraInputs.size(), getEffectiveNumDequantInputs(op));
 
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];

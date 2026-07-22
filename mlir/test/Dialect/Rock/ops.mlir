@@ -291,14 +291,16 @@ func.func @rock_gridwise_attention(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384
 }
 // CHECK-LABEL: func.func @rock_gridwise_attention
 // CHECK: rock.gridwise_attention
+// CHECK-NOT: numDequantInputs
 
 func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
     qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
     softmax(qk) * %v : tensor<1x384x64xf16>
-  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32} -> tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, numDequantInputs = 0 : i32} -> tensor<1x384x64xf16>
   return %result : tensor<1x384x64xf16>
 }
 // CHECK-LABEL: func.func @rock_attention
 // CHECK: rock.attention
+// CHECK: numDequantInputs = 0 : i32
 
