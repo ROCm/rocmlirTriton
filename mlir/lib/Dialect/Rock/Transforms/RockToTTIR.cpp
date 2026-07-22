@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -77,7 +78,8 @@ static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
 }
 
 //===----------------------------------------------------------------------===//
-// RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
+// RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to
+// tt.reduce
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseReduceOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseReduceOp> {
@@ -90,29 +92,29 @@ struct RockBlockwiseReduceOpRewritePattern
     auto inputType = cast<RankedTensorType>(input.getType());
     Type elemType = inputType.getElementType();
     int axis = static_cast<int>(op.getAxisAttr().getInt());
-    
+
     // Create tt.reduce operation
-    auto reduceOp = triton::ReduceOp::create(
-        rewriter, loc, ValueRange{input}, axis);
-    
+    auto reduceOp =
+        triton::ReduceOp::create(rewriter, loc, ValueRange{input}, axis);
+
     // Build the combiner region
     Block *block = rewriter.createBlock(&reduceOp.getCombineOp());
-    
+
     // Add block arguments - tt.reduce expects scalar arguments for the combiner
     block->addArgument(elemType, loc);
     block->addArgument(elemType, loc);
-    
+
     // Create the combiner operation based on reduce method
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(block);
-    
+
     Value lhs = block->getArgument(0);
     Value rhs = block->getArgument(1);
     Value result;
-    
+
     ReduceMethod method = op.getReduceMethod();
     bool isFloat = isa<FloatType>(elemType);
-    
+
     if (method == ReduceMethod::Max) {
       if (isFloat) {
         result = arith::MaximumFOp::create(rewriter, loc, lhs, rhs);
@@ -129,10 +131,10 @@ struct RockBlockwiseReduceOpRewritePattern
     } else {
       return failure();
     }
-    
+
     // Create reduce.return
     triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
-    
+
     rewriter.replaceOp(op, reduceOp.getResults());
     return success();
   }
@@ -167,13 +169,12 @@ struct RockLoadPtrOpRewritePattern
     triton::PointerType ptrType = triton::PointerType::get(elementType, 1);
 
     // Create tensor of pointers: tensor<...x!tt.ptr<elementType>>
-    RankedTensorType ptrTensorOfPtrsType =
-        RankedTensorType::get(ptrTensorType.getShape(), ptrType,
-                              ptrTensorType.getEncoding());
+    RankedTensorType ptrTensorOfPtrsType = RankedTensorType::get(
+        ptrTensorType.getShape(), ptrType, ptrTensorType.getEncoding());
 
     // Convert tensor of i32/i64 to tensor of pointers
-    Value ptrTensorOfPtrs =
-        rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
+    Value ptrTensorOfPtrs = rock::CastToPtrOp::create(
+        rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
     // Create tt.load operation.
     // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
@@ -190,12 +191,13 @@ struct RockLoadPtrOpRewritePattern
     Value otherTensor =
         arith::ConstantOp::create(rewriter, loc, resultTensorType, zeroAttr);
 
-    Value result = triton::LoadOp::create(
+    auto loadOp = triton::LoadOp::create(
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
         /*other=*/otherTensor, cacheAttr, evictAttr, isVolatileAttr);
+    rock::copyPreSoftmaxLoadAttrs(op, loadOp);
 
     // Replace the op with the loaded tensor result
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOp(op, loadOp.getResult());
     return success();
   }
 };
@@ -225,10 +227,10 @@ struct RockBlockwiseGemmOpRewritePattern
     auto cTensorType = cast<RankedTensorType>(c.getType());
 
     // Use tt.dot_scaled when either:
-    //   (1) original element types were recorded, or 
+    //   (1) original element types were recorded, or
     //   (2) scale operands are present.
-    // This ensures f8 (or packed f4) uses float MFMA (via dot_scaled) instead of
-    // integer MFMA (via dot with i8 operands).
+    // This ensures f8 (or packed f4) uses float MFMA (via dot_scaled) instead
+    // of integer MFMA (via dot with i8 operands).
     bool hasOrigElemTypes = op.getMatrixAOrigElemType().has_value() ||
                             op.getMatrixBOrigElemType().has_value();
     bool hasScales = scaledA && scaledB;
@@ -325,8 +327,8 @@ struct RockStorePtrOpRewritePattern
           elementType.isIntOrIndex() ? triton::RMWOp::ADD : triton::RMWOp::FADD;
       // AtomicRMWOp returns the old value, but we don't need it
       triton::AtomicRMWOp::create(
-          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
-          triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore,
+          maskTensor, triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else if (storeMethod == rock::StoreMethod::AtomicMax) {
       // Use UMAX for unsigned int, MAX for signed int and float.
       // Triton's RMWOp enum lacks a dedicated FMAX, so we reuse MAX.
@@ -340,15 +342,15 @@ struct RockStorePtrOpRewritePattern
         rmwOp = triton::RMWOp::MAX;
       }
       triton::AtomicRMWOp::create(
-          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore, maskTensor,
-          triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
+          rewriter, loc, valueType, rmwOp, ptrTensorOfPtrs, valueToStore,
+          maskTensor, triton::MemSemantic::RELAXED, triton::MemSyncScope::GPU);
     } else {
       // Default: StoreMethod::Set - regular store
       // Signature: (ptr, value, mask, cache, evict)
-      triton::StoreOp::create(
-          rewriter, loc, ptrTensorOfPtrs, valueToStore, maskTensor,
-          /*cache=*/triton::CacheModifier::NONE,
-          /*evict=*/triton::EvictionPolicy::NORMAL);
+      triton::StoreOp::create(rewriter, loc, ptrTensorOfPtrs, valueToStore,
+                              maskTensor,
+                              /*cache=*/triton::CacheModifier::NONE,
+                              /*evict=*/triton::EvictionPolicy::NORMAL);
     }
 
     rewriter.eraseOp(op);
@@ -368,8 +370,7 @@ static bool hasFp8ElementType(Type t) {
 // ArithTruncFToFpToFpPattern - Convert arith.truncf (wider → FP8) to
 // tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
 //===----------------------------------------------------------------------===//
-struct ArithTruncFToFpToFpPattern
-    : public OpRewritePattern<arith::TruncFOp> {
+struct ArithTruncFToFpToFpPattern : public OpRewritePattern<arith::TruncFOp> {
   using OpRewritePattern<arith::TruncFOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(arith::TruncFOp op,
@@ -397,7 +398,7 @@ struct ArithTruncFToFpToFpPattern
     auto roundingAttr =
         triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(op, op.getOut().getType(),
-                                                   op.getIn(), roundingAttr);
+                                                  op.getIn(), roundingAttr);
     return success();
   }
 };
@@ -406,8 +407,7 @@ struct ArithTruncFToFpToFpPattern
 // ArithExtFToFpToFpPattern - Convert arith.extf (FP8 → wider) to
 // tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
 //===----------------------------------------------------------------------===//
-struct ArithExtFToFpToFpPattern
-    : public OpRewritePattern<arith::ExtFOp> {
+struct ArithExtFToFpToFpPattern : public OpRewritePattern<arith::ExtFOp> {
   using OpRewritePattern<arith::ExtFOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(arith::ExtFOp op,
@@ -415,7 +415,8 @@ struct ArithExtFToFpToFpPattern
     if (!hasFp8ElementType(op.getIn().getType()))
       return failure();
 
-    // FP8 → wider extension is exact (no precision loss), so no rounding needed.
+    // FP8 → wider extension is exact (no precision loss), so no rounding
+    // needed.
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(
         op, op.getOut().getType(), op.getIn(), /*rounding=*/nullptr);
     return success();
@@ -449,10 +450,12 @@ void RockToTTIRPass::runOnOperation() {
 
   // arith.truncf / arith.extf with FP8 types must be converted to
   // tt.fp_to_fp; Triton's LLVM lowering cannot handle them directly.
-  target.addDynamicallyLegalOp<arith::TruncFOp>(
-      [](arith::TruncFOp op) { return !hasFp8ElementType(op.getOut().getType()); });
-  target.addDynamicallyLegalOp<arith::ExtFOp>(
-      [](arith::ExtFOp op) { return !hasFp8ElementType(op.getIn().getType()); });
+  target.addDynamicallyLegalOp<arith::TruncFOp>([](arith::TruncFOp op) {
+    return !hasFp8ElementType(op.getOut().getType());
+  });
+  target.addDynamicallyLegalOp<arith::ExtFOp>([](arith::ExtFOp op) {
+    return !hasFp8ElementType(op.getIn().getType());
+  });
 
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);

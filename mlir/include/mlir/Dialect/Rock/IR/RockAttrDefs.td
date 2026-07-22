@@ -592,6 +592,73 @@ def Rock_OTransposed : Rock_Attr<"OTransposed"> {
   }];
 }
 
+def Rock_PreSoftmaxInputRoleOther : I32EnumAttrCase<"Other", 0, "other">;
+def Rock_PreSoftmaxInputRoleBias : I32EnumAttrCase<"Bias", 1, "bias">;
+def Rock_PreSoftmaxInputRoleScale : I32EnumAttrCase<"Scale", 2, "scale">;
+def Rock_PreSoftmaxInputRoleDequant : I32EnumAttrCase<"Dequant", 3, "dequant">;
+
+def Rock_PreSoftmaxInputRole
+    : Rock_I32Enum<"PreSoftmaxInputRole",
+                   "Semantic role of an external pre-softmax input",
+                   [Rock_PreSoftmaxInputRoleOther, Rock_PreSoftmaxInputRoleBias,
+                    Rock_PreSoftmaxInputRoleScale,
+                    Rock_PreSoftmaxInputRoleDequant]>;
+
+def Rock_PreSoftmaxInputOrientationUnknown
+    : I32EnumAttrCase<"Unknown", 0, "unknown">;
+def Rock_PreSoftmaxInputOrientationNatural
+    : I32EnumAttrCase<"Natural", 1, "natural">;
+def Rock_PreSoftmaxInputOrientationTransposed
+    : I32EnumAttrCase<"Transposed", 2, "transposed">;
+
+def Rock_PreSoftmaxInputOrientation
+    : Rock_I32Enum<"PreSoftmaxInputOrientation",
+                   "Physical orientation of an attention score-plane input",
+                   [Rock_PreSoftmaxInputOrientationUnknown,
+                    Rock_PreSoftmaxInputOrientationNatural,
+                    Rock_PreSoftmaxInputOrientationTransposed]>;
+
+def Rock_PreSoftmaxInput : Rock_Attr<"PreSoftmaxInput"> {
+  let mnemonic = "pre_softmax_input";
+  let description = [{
+    Function-local metadata that identifies one external pre-softmax input and
+    records its semantic role and physical orientation. Ambiguous role or
+    orientation analysis is represented explicitly and must disable layout
+    optimizations rather than being treated as a default.
+  }];
+
+  let parameters = (ins "uint32_t":$groupId, "uint32_t":$inputIndex,
+      EnumParameter<Rock_PreSoftmaxInputRole>:$role,
+      EnumParameter<Rock_PreSoftmaxInputOrientation>:$orientation);
+  let assemblyFormat = [{
+    `<` struct(params) `>`
+  }];
+
+  let extraClassDeclaration = [{
+    static constexpr ::llvm::StringLiteral getNameStr() {
+      return ::llvm::StringLiteral("rock.pre_softmax_input");
+    }
+  }];
+}
+
+def Rock_AttentionGroup : Rock_Attr<"AttentionGroup"> {
+  let mnemonic = "attention_group";
+  let description = [{
+    Function-local identifier associating a lowered attention score GEMM with
+    its pre-softmax input loads. The identifier has no meaning across
+    functions.
+  }];
+
+  let parameters = (ins "uint32_t":$groupId);
+  let assemblyFormat = "`<` $groupId `>`";
+
+  let extraClassDeclaration = [{
+    static constexpr ::llvm::StringLiteral getNameStr() {
+      return ::llvm::StringLiteral("rock.attention_group");
+    }
+  }];
+}
+
 def Rock_PrefillAttr : Rock_Attr<"Prefill"> {
   let mnemonic = "rock.prefill";
 

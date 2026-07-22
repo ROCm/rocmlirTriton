@@ -17,7 +17,6 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -45,6 +44,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -982,9 +982,8 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   auto kernelIds = rock::backwardDataKernelIds(strides, dilations, sizes.fil);
 
   assert(!kernelIds.empty());
-  GemmSize biggest =
-      bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
-                                 kernelIds.front());
+  GemmSize biggest = bwdDataGemmSizeForKernelId(sizes, padding, strides,
+                                                dilations, kernelIds.front());
   for (int64_t kernelId : llvm::drop_begin(kernelIds)) {
     GemmSize single = bwdDataGemmSizeForKernelId(sizes, padding, strides,
                                                  dilations, kernelId);
@@ -1739,6 +1738,12 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
 LogicalResult GridwiseAttentionOp::verify() {
+  int64_t numDequantInputs = getNumDequantInputs();
+  if (numDequantInputs < 0 ||
+      numDequantInputs >
+          static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
+    return emitError("numDequantInputs must index leading pre-softmax inputs");
+
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
   int64_t gemm0NPerBlock = gemm0TuningParams.getNPerBlock();
@@ -1765,6 +1770,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
+  if (!getEnableSoftmax() && numDequantInputs != 0)
+    return emitError("numDequantInputs only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1787,8 +1795,7 @@ LogicalResult TransformsToPtrOp::verify() {
   auto ptrType = cast<RankedTensorType>(getPointers().getType());
 
   size_t idxCount = getExtraIndices().size();
-  if (idxCount + ptrType.getRank() !=
-      static_cast<size_t>(sourceType.getRank()))
+  if (idxCount + ptrType.getRank() != static_cast<size_t>(sourceType.getRank()))
     return emitOpError(
                "extraIndices.size() + pointers rank must equal source rank")
            << " (" << idxCount << " + " << ptrType.getRank()
@@ -1901,8 +1908,7 @@ LogicalResult BlockwiseReduceOp::verify() {
     if (int64_t(inDim) == axis)
       continue;
     if (outShape[outDim] != inpShape[inDim])
-      return emitError(
-          "non-reduction dimension size mismatch at output dim ")
+      return emitError("non-reduction dimension size mismatch at output dim ")
              << outDim;
     ++outDim;
   }
@@ -2248,6 +2254,12 @@ GemmGemmSize AttentionOp::getGemmGemmSize() {
 }
 
 LogicalResult AttentionOp::verify() {
+  int64_t numDequantInputs = getNumDequantInputs();
+  if (numDequantInputs < 0 ||
+      numDequantInputs >
+          static_cast<int64_t>(getPreSoftmaxElemWiseInputs().size()))
+    return emitError("numDequantInputs must index leading pre-softmax inputs");
+
   if (getSplitKV() != 1 && !getLse())
     return emitError("Flash decoding needs LSE output");
 

@@ -349,8 +349,7 @@ static SetVector<int64_t> traceToRes(Value expectedTensor, func::FuncOp func) {
 }
 
 template <typename OpT>
-static LogicalResult setSplitKAttrs(OpT op, 
-                                    PatternRewriter &rw) {
+static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
   auto perfConfig = op->template getAttrOfType<StringAttr>("perf_config");
   if (perfConfig && rock::isSplitKRequested(perfConfig)) {
     func::FuncOp func = op->template getParentOfType<func::FuncOp>();
@@ -507,6 +506,9 @@ struct ElementwiseRegionFinder {
     if (!isRegionOp)
       return false;
 
+    auto dequantMarker = dyn_cast_or_null<IntegerAttr>(
+        op->getDiscardableAttr(rock::PreSoftmaxDequantInputCountAttrName));
+    size_t dequantInputsBegin = blockArgCandidates.size();
     bool reaches = false;
     for (Value operand : op->getOperands())
       reaches |= visit(operand);
@@ -524,6 +526,17 @@ struct ElementwiseRegionFinder {
     for (Value operand : op->getOperands())
       if (!reachesCache.lookup(operand))
         commitExternalInput(operand);
+    if (dequantMarker) {
+      size_t externalDequantInputs =
+          blockArgCandidates.size() - dequantInputsBegin;
+      if (malformedDequantMarker || numDequantInputs ||
+          dequantInputsBegin != 0 || dequantMarker.getInt() < 1 ||
+          externalDequantInputs > static_cast<size_t>(dequantMarker.getInt())) {
+        malformedDequantMarker = true;
+      } else {
+        numDequantInputs = externalDequantInputs;
+      }
+    }
     visitedOps.push_back(op);
     return reaches;
   }
@@ -539,6 +552,12 @@ struct ElementwiseRegionFinder {
     // value is tracked separately and materialized as block argument 0 by
     // rewrite().
     return llvm::to_vector(blockArgCandidates);
+  }
+
+  FailureOr<unsigned> getNumDequantInputs() const {
+    if (malformedDequantMarker)
+      return failure();
+    return static_cast<unsigned>(numDequantInputs.value_or(0));
   }
 
   void rewrite(Value input, OpBuilder &regionBuilder, Block *block,
@@ -561,8 +580,10 @@ struct ElementwiseRegionFinder {
                addBlockArgument(firstGemmBasedVal, block, loc));
     for (Value v : blockArgCandidates)
       mapper.map(v, addBlockArgument(v, block, loc));
-    for (Operation *op : visitedOps)
-      regionBuilder.clone(*op, mapper);
+    for (Operation *op : visitedOps) {
+      Operation *cloned = regionBuilder.clone(*op, mapper);
+      cloned->removeDiscardableAttr(rock::PreSoftmaxDequantInputCountAttrName);
+    }
     // Yield the final value of the elementwise chain, consistent with
     // rocmlir-gen which yields the result from preSecondGemmBody regions.
     rock::YieldOp::create(regionBuilder, loc, mapper.lookupOrDefault(input));
@@ -581,6 +602,8 @@ private:
 
   OpT firstGemmBasedOp = nullptr;
   Value firstGemmBasedVal = nullptr;
+  std::optional<size_t> numDequantInputs;
+  bool malformedDequantMarker = false;
   // Maps each visited value to whether its subtree reaches the first gemm. A
   // `true` entry marks a value produced inside the region (a kept op result or
   // the first-gemm value); presence also marks a value as visited.
@@ -1656,6 +1679,7 @@ struct AttentionMatcherValues {
   bool isCausal;
   Value prefixOffset;
   Type softmaxType;
+  unsigned numDequantInputs;
   ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder;
 };
 
@@ -2933,6 +2957,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       LLVM_DEBUG(llvm::dbgs() << "first matmul not found\n");
       return failure();
     }
+    FailureOr<unsigned> numDequantInputs =
+        preSoftmaxElementwiseFinder.getNumDequantInputs();
+    if (failed(numDequantInputs))
+      return failure();
 
     TypedValue<TensorType> matC = maybeFirstMatMul.value().getOutput();
     ArrayRef<int64_t> shapeC = matC.getType().getShape();
@@ -2977,6 +3005,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     attentionMatcherValues.lse = lse;
     attentionMatcherValues.causalMaskInput = causalMaskInput;
     attentionMatcherValues.currentSeqLen = currentSeqLen;
+    attentionMatcherValues.numDequantInputs = *numDequantInputs;
     attentionMatcherValues.preSoftmaxElementwiseFinder =
         preSoftmaxElementwiseFinder;
     return attentionMatcherValues;
@@ -3071,7 +3100,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
         /*splitKV=*/rewriter.getI32IntegerAttr(1), softmaxTypeAttr,
-        /*params0=*/nullptr, /*params1=*/nullptr);
+        /*params0=*/nullptr, /*params1=*/nullptr,
+        /*preSoftmaxHasSplitKVTransforms=*/nullptr,
+        rewriter.getI32IntegerAttr(attentionMatcherValues.numDequantInputs));
     Block *preSoftmaxElemwiseBlock = &attnOp.getPreSoftmaxBody().emplaceBlock();
     {
       PatternRewriter::InsertionGuard guard(rewriter);
@@ -3235,9 +3266,8 @@ public:
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
     // Only handle TOSA elementwise ops with 2+ operands and a single result.
-    if (!isa<tosa::TosaDialect>(op->getDialect()) ||
-        !isElementwiseOp(op) || op->getNumOperands() < 2 ||
-        op->getNumResults() != 1)
+    if (!isa<tosa::TosaDialect>(op->getDialect()) || !isElementwiseOp(op) ||
+        op->getNumOperands() < 2 || op->getNumResults() != 1)
       return failure();
 
     auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
@@ -3295,16 +3325,14 @@ public:
           rw.getStringAttr("exp" + std::to_string(i)).getValue());
     }
 
-    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(),
-                                       loc);
+    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(), loc);
     for (int64_t i = 0; i < rank; ++i) {
       if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
         padBuilder.passThrough(dimNames[i]);
       } else {
         if (outputType.getDimSize(i) < inputType.getDimSize(i))
-          return rw.notifyMatchFailure(
-              op, "output dim " + std::to_string(i) +
-                      " is smaller than input dim");
+          return rw.notifyMatchFailure(op, "output dim " + std::to_string(i) +
+                                               " is smaller than input dim");
         int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
         padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
       }

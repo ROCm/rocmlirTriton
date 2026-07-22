@@ -6,6 +6,7 @@ This directory holds downstream patch records against the vendored Triton tree
 
 ----------------------------------------------------------------------
 patch-wmma-preserve-discardable-attrs.patch
+patch-load-canonicalization-preserve-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
@@ -40,7 +41,7 @@ patch10498.patch
 patch10585.patch
   Fixes a case where the block ping pong schedule was wrongly being applied
   in situations where it was not safe to do so because of non-uniform masks.
-  
+
 patch-wmma-preserve-discardable-attrs.patch
   Lets rocmlirTriton choose the WMMA result transposition downstream instead
   of inside Triton.
@@ -58,6 +59,15 @@ patch-wmma-preserve-discardable-attrs.patch
   FMA paths) so downstream metadata such as `rock.o_transposed` survives the
   rewrite. It adds no Triton-side decision logic; the orientation is chosen
   by the downstream rock pass.
+
+patch-load-canonicalization-preserve-discardable-attrs.patch
+  Preserves discardable operation attributes when canonicalizing a masked
+  tt.load with an all-true mask and when Triton Combine folds a select into a
+  masked load. rocmlirTriton uses these attributes to carry typed attention
+  input metadata through Triton's preprocessing pipeline; dropping them
+  silently disables the guarded direct bias-load optimization. This generic
+  metadata-preservation fix should be upstreamed to Triton and dropped here
+  once the corresponding upstream change is imported.
 
 patch-float-atomic-minmax-lowering.patch
   Fixes Triton atomic max/min lowering for floating-point element types. The

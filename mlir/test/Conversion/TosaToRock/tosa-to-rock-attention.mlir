@@ -6,7 +6,7 @@ func.func @self_attention(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x384x64xf3
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%1, %arg3, %shift) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %3 = "tosa.reduce_max"(%2) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
   %4 = "tosa.sub"(%2, %3) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>) -> tensor<1x384x384xf32>
@@ -29,7 +29,7 @@ func.func @self_attention_no_scale(%arg0: tensor<1x384x64xf32>, %arg1: tensor<1x
   %5 = "tosa.exp"(%4) : (tensor<1x384x384xf32>) -> tensor<1x384x384xf32>
   %6 = "tosa.reduce_sum"(%5) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
   %7 = "tosa.reciprocal"(%6) : (tensor<1x1x384xf32>) -> tensor<1x1x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %8 = "tosa.mul"(%5, %7, %shift) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %9 = "tosa.matmul"(%8, %arg2, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x384xf32>, tensor<1x384x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x64xf32>
   return %9 : tensor<1x384x64xf32>
@@ -47,7 +47,7 @@ func.func @self_attention_with_bias_only(%arg0: tensor<1x384x64xf32>, %arg1: ten
   %5 = "tosa.exp"(%4) : (tensor<1x384x384xf32>) -> tensor<1x384x384xf32>
   %6 = "tosa.reduce_sum"(%5) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
   %7 = "tosa.reciprocal"(%6) : (tensor<1x1x384xf32>) -> tensor<1x1x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %8 = "tosa.mul"(%5, %7, %shift) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %9 = "tosa.matmul"(%8, %arg2, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x384xf32>, tensor<1x384x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x64xf32>
   return %9 : tensor<1x384x64xf32>
@@ -59,7 +59,7 @@ func.func @self_attention_with_scale_and_bias(%arg0: tensor<1x384x64xf32>, %arg1
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%1, %arg3, %shift) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %3 = "tosa.add"(%2, %arg4) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>) -> tensor<1x384x384xf32>
   %4 = "tosa.reduce_max"(%3) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
@@ -78,7 +78,7 @@ func.func @self_attention_with_scale_bias_exp(%arg0: tensor<1x384x64xf32>, %arg1
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%1, %arg3, %shift) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %3 = "tosa.add"(%2, %arg4) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>) -> tensor<1x384x384xf32>
   %exp = "tosa.exp"(%3) : (tensor<1x384x384xf32>) -> tensor<1x384x384xf32>
@@ -105,7 +105,7 @@ func.func @self_attention_with_reshapes(%arg0: tensor<1x12x384x64xf32>, %arg1: t
   %3 = "tosa.exp"(%2) : (tensor<1x12x384x384xf32>) -> tensor<1x12x384x384xf32>
   %4 = "tosa.reduce_sum"(%3) <{axis = 3 : i32}> : (tensor<1x12x384x384xf32>) -> tensor<1x12x384x1xf32>
   %5 = "tosa.reciprocal"(%4) : (tensor<1x12x384x1xf32>) -> tensor<1x12x384x1xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %6 = "tosa.mul"(%3, %5, %shift) : (tensor<1x12x384x384xf32>, tensor<1x12x384x1xf32>, tensor<1xi8>) -> tensor<1x12x384x384xf32>
   %collapsed_1 = tensor.collapse_shape %6 [[0, 1], [2], [3]] : tensor<1x12x384x384xf32> into tensor<12x384x384xf32>
   %collapsed_2 = tensor.collapse_shape %arg2 [[0, 1], [2], [3]] : tensor<1x12x384x64xf32> into tensor<12x384x64xf32>
@@ -123,7 +123,7 @@ func.func @self_attention_with_4d_scale(%arg0: tensor<1x12x256x256xf32> , %arg1:
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%collapsed, %collapsed_0, %a_zp, %b_zp) {acc_type = f32} : (tensor<12x256x256xf32>, tensor<12x256x256xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<12x256x256xf32>
   %expanded = tensor.expand_shape %1 [[0, 1], [2], [3]] output_shape [1, 12, 256, 256] : tensor<12x256x256xf32> into tensor<1x12x256x256xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%expanded, %arg1, %shift) : (tensor<1x12x256x256xf32>, tensor<1x12x256x256xf32>, tensor<1xi8>) -> tensor<1x12x256x256xf32>
   %3 = "tosa.reduce_max"(%2) <{axis = 3 : i32}> : (tensor<1x12x256x256xf32>) -> tensor<1x12x256x1xf32>
   %4 = "tosa.sub"(%2, %3) : (tensor<1x12x256x256xf32>, tensor<1x12x256x1xf32>) -> tensor<1x12x256x256xf32>
@@ -144,7 +144,7 @@ func.func @self_attention_with_dot_product(%arg0: tensor<1x1x64xf32>, %arg1: ten
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x1x64xf32>, tensor<1x64x1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x1x1xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%1, %arg3, %shift) : (tensor<1x1x1xf32>, tensor<1x1x1xf32>, tensor<1xi8>) -> tensor<1x1x1xf32>
   %3 = "tosa.add"(%2, %arg4) : (tensor<1x1x1xf32>, tensor<1x1x1xf32>) -> tensor<1x1x1xf32>
   %4 = "tosa.sub"(%3, %3) : (tensor<1x1x1xf32>, tensor<1x1x1xf32>) -> tensor<1x1x1xf32>
@@ -173,7 +173,7 @@ func.func @mlir_attention_where(%arg0: tensor<786432xf16>, %arg1: tensor<786432x
   %2 = tosa.matmul %expanded_4, %collapsed, %a_zp, %b_zp {acc_type = f32} : (tensor<12x256x256xf16>, tensor<12x256x256xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<12x256x256xf16>
   %expanded_5 = tensor.expand_shape %2 [[0, 1], [2], [3]] output_shape [1, 12, 256, 256] : tensor<12x256x256xf16> into tensor<1x12x256x256xf16>
   %3 = "tosa.const"() <{values = dense<1.250000e-01> : tensor<1x12x256x256xf16>}> : () -> tensor<1x12x256x256xf16>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %4 = tosa.mul %expanded_5, %3, %shift : (tensor<1x12x256x256xf16>, tensor<1x12x256x256xf16>, tensor<1xi8>) -> tensor<1x12x256x256xf16>
   %5 = tosa.cast %expanded_1 : (tensor<1x12x256x256xi8>) -> tensor<1x12x256x256xi1>
   %6 = tosa.select %5, %4, %expanded_0 : (tensor<1x12x256x256xi1>, tensor<1x12x256x256xf16>, tensor<1x12x256x256xf16>) -> tensor<1x12x256x256xf16>
@@ -198,7 +198,7 @@ func.func @self_attention_perfconfig(%arg0: tensor<1x384x64xf32>, %arg1: tensor<
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %1 = "tosa.matmul"(%arg0, %0, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x384xf32>
-  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8> 
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %2 = "tosa.mul"(%1, %arg3, %shift) : (tensor<1x384x384xf32>, tensor<1x384x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %3 = "tosa.reduce_max"(%2) {axis = 1 : i32} : (tensor<1x384x384xf32>) -> tensor<1x1x384xf32>
   %4 = "tosa.sub"(%2, %3) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>) -> tensor<1x384x384xf32>
@@ -208,4 +208,32 @@ func.func @self_attention_perfconfig(%arg0: tensor<1x384x64xf32>, %arg1: tensor<
   %8 = "tosa.mul"(%5, %7, %shift) : (tensor<1x384x384xf32>, tensor<1x1x384xf32>, tensor<1xi8>) -> tensor<1x384x384xf32>
   %9 = "tosa.matmul"(%8, %arg2, %a_zp, %b_zp) {acc_type = f32, perf_config = "sentinel-propagation-only"} : (tensor<1x384x384xf32>, tensor<1x384x64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x384x64xf32>
   return %9 : tensor<1x384x64xf32>
+}
+
+// A constant dequant scale is cloned into the pre-softmax body, so the
+// following external bias is input zero and must not be counted as dequant.
+// CHECK-LABEL: func.func @self_attention_constant_dequant_scale
+// CHECK-NOT: numDequantInputs
+// CHECK: rock.attention
+// CHECK-NOT: rock.pre_softmax_dequant_input_count
+// CHECK: return
+func.func @self_attention_constant_dequant_scale(
+    %q: tensor<1x16x8xf32>, %k: tensor<1x8x16xf32>,
+    %v: tensor<1x16x8xf32>, %bias: tensor<1x16x16xf32>)
+    -> tensor<1x16x8xf32>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %zero = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
+  %scale = "tosa.const"() <{values = dense<0.125> : tensor<1x16x16xf32>}> : () -> tensor<1x16x16xf32>
+  %qk = "tosa.matmul"(%q, %k, %zero, %zero) {acc_type = f32} : (tensor<1x16x8xf32>, tensor<1x8x16xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x16x16xf32>
+  %scaled = "tosa.mul"(%qk, %scale, %shift) {rock.pre_softmax_dequant_input_count = 1 : i32} : (tensor<1x16x16xf32>, tensor<1x16x16xf32>, tensor<1xi8>) -> tensor<1x16x16xf32>
+  %biased = "tosa.add"(%scaled, %bias) : (tensor<1x16x16xf32>, tensor<1x16x16xf32>) -> tensor<1x16x16xf32>
+  %max = "tosa.reduce_max"(%biased) {axis = 1 : i32} : (tensor<1x16x16xf32>) -> tensor<1x1x16xf32>
+  %centered = "tosa.sub"(%biased, %max) : (tensor<1x16x16xf32>, tensor<1x1x16xf32>) -> tensor<1x16x16xf32>
+  %exp = "tosa.exp"(%centered) : (tensor<1x16x16xf32>) -> tensor<1x16x16xf32>
+  %sum = "tosa.reduce_sum"(%exp) {axis = 1 : i32} : (tensor<1x16x16xf32>) -> tensor<1x1x16xf32>
+  %reciprocal = "tosa.reciprocal"(%sum) : (tensor<1x1x16xf32>) -> tensor<1x1x16xf32>
+  %softmax = "tosa.mul"(%exp, %reciprocal, %shift) : (tensor<1x16x16xf32>, tensor<1x1x16xf32>, tensor<1xi8>) -> tensor<1x16x16xf32>
+  %output = "tosa.matmul"(%softmax, %v, %zero, %zero) {acc_type = f32} : (tensor<1x16x16xf32>, tensor<1x16x8xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x16x8xf32>
+  return %output : tensor<1x16x8xf32>
 }

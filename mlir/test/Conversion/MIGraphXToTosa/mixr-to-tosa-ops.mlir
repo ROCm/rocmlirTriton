@@ -23,6 +23,7 @@ module  {
   // CHECK-NOT: tosa.sub
   // CHECK: tosa.cast
   // CHECK: tosa.mul
+  // CHECK-SAME: rock.pre_softmax_dequant_input_count = 1 : i32
   func.func @dequantize_scale(%arg: !migraphx.shaped<1x112x112x64xi32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
     %1 = migraphx.dequantizelinear %arg, %scale : <1x112x112x64xi32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1> -> <1x112x112x64xf32, 802816x7168x64x1>
     return %1 : !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>
@@ -50,6 +51,7 @@ module  {
   // CHECK: tosa.cast{{.*}}f32
   // CHECK: tosa.sub
   // CHECK: tosa.mul
+  // CHECK-SAME: rock.pre_softmax_dequant_input_count = 2 : i32
   func.func @dequantize_scale_bias(%arg: !migraphx.shaped<1x112x112x64xi32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xi32, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
     %1 = migraphx.dequantizelinear %arg, %scale, %bias : <1x112x112x64xi32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xi32, 64x64x64x1> -> <1x112x112x64xf32, 802816x7168x64x1>
     return %1 : !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>
@@ -646,7 +648,7 @@ module  {
     %0 = migraphx.slice %arg0 {axes = [1, 2], ends = [12, 284], starts = [0, 184]} : <1x36x384x64xf32, 884736x24576x64x1> -> <1x12x100x64xf32, 76800x6400x64x1>
     return %0 : !migraphx.shaped<1x12x100x64xf32, 76800x6400x64x1>
   }
-  
+
   // CHECK-LABEL: func.func @func_greater
   // CHECK: %[[ge:.+]] = tosa.greater {{.*}} : (tensor<1x36x384x64xi32>, tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi1>
   // CHECK-NEXT: tosa.cast %[[ge]] : (tensor<1x36x384x64xi1>) -> tensor<1x36x384x64xi32>

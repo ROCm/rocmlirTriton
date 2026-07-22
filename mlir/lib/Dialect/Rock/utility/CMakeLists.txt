@@ -1,4 +1,5 @@
 add_rocmlir_dialect_library(MLIRRockUtility
+  attentionUtils.cpp
   builderUtils.cpp
   loweringUtils.cpp
   transformMapUtils.cpp

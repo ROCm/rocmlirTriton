@@ -15,6 +15,15 @@
 // --- Transpose: 3D -> 3D (swap last two dims) ---
 #tmap_transpose = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["d0"] at [0] -> ["d0"] at [0]>, <PassThrough ["d1"] at [1] -> ["d2"] at [2]>, <PassThrough ["d2"] at [2] -> ["d1"] at [1]>] bounds = [1, 16, 16] -> [1, 16, 16]>
 
+// --- Broadcast M and transpose the physical group/N dimensions ---
+#tmap_group_n_transpose = #rock.transform_map<affine_map<(d0, d1, d2) -> (d2, d1, d0)> by [<PassThrough ["n", "m", "g"] at [0, 1, 2] -> ["g", "m", "n"] at [2, 1, 0]>] bounds = [64, 1, 64] -> [64, 1, 64]>
+#tmap_broadcast_m = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["m"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [64, 64, 64] -> [64, 1, 64]>
+#tmap_group_tile = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 16 + d3, d2 * 16 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{4, 16} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{4, 16} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [64, 4, 4, 16, 16] -> [64, 64, 64]>
+#tmap_multi_tile = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 16 + d3, d2 * 16 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{4, 16} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{4, 16} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 4, 4, 16, 16] -> [1, 64, 64]>
+#tmap_transpose_64 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["d0"] at [0] -> ["d0"] at [0]>, <PassThrough ["d1"] at [1] -> ["d2"] at [2]>, <PassThrough ["d2"] at [2] -> ["d1"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]>
+#tmap_pad_unit_m = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 15} ["m"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 16, 16] -> [1, 1, 16]>
+#tmap_broadcast_n_64 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d2)> by [<AddDim{1} ["gemmG"] at [0] -> [] at []>, <AddDim{64} ["gemmM"] at [1] -> [] at []>, <PassThrough ["gemmN"] at [2] -> ["n"] at [0]>] bounds = [1, 64, 64] -> [64]>
+
 // --- AddDim: 1D -> 2D (scalar-like, as in GridwiseAttnToBlockwise) ---
 #tmap_adddim = #rock.transform_map<affine_map<(d0, d1) -> (d1)> by [<AddDim{1} ["dummy"] at [0] -> [] at []>, <PassThrough ["gemmG"] at [1] -> ["gemmG"] at [0]>] bounds = [1, 1] -> [1]>
 
@@ -30,6 +39,7 @@ module {
   // CHECK: %[[T:.*]] = rock.transform %{{.*}} by
   // CHECK-SAME: tensor<1x16x16xf32> to tensor<1x1x1x16x16xf32>
   // CHECK: %[[BL:.*]] = rock.blockwise_load %[[T]][%{{.*}}, %{{.*}}, %{{.*}}]
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 3, inputIndex = 0, role = bias, orientation = natural>
   // CHECK-SAME: tensor<1x1x1x16x16xf32> -> tensor<16x16xf32>
   // CHECK-NOT: rock.load_marker
   // CHECK: %[[UT:.*]] = rock.untile %[[BL]]
@@ -41,7 +51,7 @@ module {
       %dest: tensor<1x16x16xf32>,
       %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
-    %lm = rock.load_marker %bias views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    %lm = rock.load_marker %bias views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 3, inputIndex = 0, role = bias, orientation = transposed>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
     %ut = rock.untile %lm : tensor<16x16xf32> -> tensor<1x16x16xf32>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf32>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
@@ -377,5 +387,98 @@ module {
       %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16> attributes {rock.kernel} {
     %lm = rock.load_marker %A views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier cs>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // Final-leaf orientation is recomputed even when earlier metadata was
+  // unknown. The composed transpose + tiling chain makes M physically fastest.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_refine_unknown_leaf_orientation
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 8, inputIndex = 0, role = bias, orientation = transposed>
+  // CHECK-SAME: tensor<1x1x1x16x16xf32> -> tensor<16x16xf32>
+  func.func @test_refine_unknown_leaf_orientation(
+      %bias: tensor<1x16x16xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %transposed = rock.transform %bias by #tmap_transpose : tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    %lm = rock.load_marker %transposed views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 8, inputIndex = 0, role = bias, orientation = unknown>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // ============================================================
+  // A broadcast column bias can carry its paired physical dimension in the
+  // grouped attention coordinate. Preserve that transposed orientation after
+  // the final tile view is composed.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_refine_broadcast_group_orientation
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 9, inputIndex = 0, role = bias, orientation = transposed>
+  // CHECK-SAME: tensor<64x4x4x16x16xf32> -> tensor<16x16xf32>
+  func.func @test_refine_broadcast_group_orientation(
+      %bias: tensor<64x1x64xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %swapped = rock.transform %bias by #tmap_group_n_transpose : tensor<64x1x64xf32> to tensor<64x1x64xf32>
+    %broadcast = rock.transform %swapped by #tmap_broadcast_m : tensor<64x1x64xf32> to tensor<64x64x64xf32>
+    %lm = rock.load_marker %broadcast views [#tmap_group_tile] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 9, inputIndex = 0, role = bias, orientation = unknown>} : tensor<64x64x64xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // ============================================================
+  // M/N block and iteration coordinates jointly represent the logical
+  // sequence axes. Both pieces must participate in final orientation.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_refine_transposed_multiblock_leaf_orientation
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 10, inputIndex = 0, role = bias, orientation = transposed>
+  // CHECK-SAME: tensor<1x4x4x16x16xf32> -> tensor<16x16xf32>
+  func.func @test_refine_transposed_multiblock_leaf_orientation(
+      %bias: tensor<1x64x64xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %transposed = rock.transform %bias by #tmap_transpose_64 : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+    %lm = rock.load_marker %transposed views [#tmap_multi_tile] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 10, inputIndex = 0, role = bias, orientation = unknown>} : tensor<1x64x64xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_refine_natural_multiblock_leaf_orientation
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 11, inputIndex = 0, role = bias, orientation = natural>
+  // CHECK-SAME: tensor<1x4x4x16x16xf32> -> tensor<16x16xf32>
+  func.func @test_refine_natural_multiblock_leaf_orientation(
+      %bias: tensor<1x64x64xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %lm = rock.load_marker %bias views [#tmap_multi_tile] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 11, inputIndex = 0, role = bias, orientation = unknown>} : tensor<1x64x64xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_padded_unit_transposed_leaf_stays_unknown
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 12, inputIndex = 0, role = bias, orientation = unknown>
+  func.func @test_padded_unit_transposed_leaf_stays_unknown(
+      %bias: tensor<1x1x16xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %padded = rock.transform %bias by #tmap_pad_unit_m : tensor<1x1x16xf32> to tensor<1x16x16xf32>
+    %transposed = rock.transform %padded by #tmap_transpose : tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    %lm = rock.load_marker %transposed views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 12, inputIndex = 0, role = bias, orientation = unknown>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_multiblock_vector_broadcast_leaf_stays_unknown
+  // CHECK: %[[BL:.*]] = rock.blockwise_load
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 13, inputIndex = 0, role = bias, orientation = unknown>
+  func.func @test_multiblock_vector_broadcast_leaf_stays_unknown(
+      %bias: tensor<64xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %broadcast = rock.transform %bias by #tmap_broadcast_n_64 : tensor<64xf32> to tensor<1x64x64xf32>
+    %lm = rock.load_marker %broadcast views [#tmap_multi_tile] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 13, inputIndex = 0, role = bias, orientation = unknown>} : tensor<1x64x64xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
   }
 }

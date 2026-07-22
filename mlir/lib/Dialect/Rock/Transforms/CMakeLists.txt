@@ -3,6 +3,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp
   ConvToGemm.cpp
+  SetAttentionBiasLoadLayout.cpp
   SetMatmulOutputTranspose.cpp
   SetReductionLayout.cpp
   DetectFlashDecoding.cpp

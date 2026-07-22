@@ -73,6 +73,7 @@ struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
     auto loadOp = BlockwiseLoadPtrOp::create(b, loc, op.getResult().getType(),
                                              pointerTensor, maskTensor,
                                              op.getCacheModifier());
+    rock::copyPreSoftmaxLoadAttrs(op, loadOp);
 
     b.replaceOp(op, loadOp.getResult());
     return success();

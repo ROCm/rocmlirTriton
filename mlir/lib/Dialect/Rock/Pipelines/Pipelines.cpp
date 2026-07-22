@@ -169,8 +169,10 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createTritonAMDGPUAccelerateMatmul(
       {options.arch, options.matrixInstrNonkdim, options.kpack}));
   // --- rocmlirTriton pass ----
-  // Must run after accelerate-matmul (consumes the accelerator dot) and before
-  // remove-layout-conversions (folds away the convert_layout ops it inserts).
+  // Both passes consume accelerator layouts and must precede
+  // remove-layout-conversions, which folds away their bridging conversions.
+  pm->addPass(
+      rock::createRockSetAttentionBiasLoadLayoutPass({options.numStages}));
   pm->addPass(rock::createRockSetMatmulOutputTransposePass());
   // --- rocmlirTriton pass ----
 

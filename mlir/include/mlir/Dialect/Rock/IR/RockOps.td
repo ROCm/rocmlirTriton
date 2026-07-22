@@ -201,18 +201,19 @@ def Rock_AttentionOp
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DefaultValuedOptionalAttr<BoolAttr,
-                                    "false">:$preSoftmaxHasSplitKVTransforms)>,
+                                    "false">:$preSoftmaxHasSplitKVTransforms,
+          DefaultValuedOptionalAttr<I32Attr, "0">:$numDequantInputs)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
           Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
   let summary = "Attention operation of transformer models";
   let description = [{
     Performs the operation out = SOFTMAX(preSoftmaxBody(queries * keys, preSoftmaxElemWiseInputs)) * values.
 
-    This operation performs attention mechanism of transformer models. There is an optional element-wise 
+    This operation performs attention mechanism of transformer models. There is an optional element-wise
     fusion just before the softmax, defined by `preSoftmaxBody` with inputs `preSoftmaxElemWiseInputs`.
 
     If none of the `transposed` attributes are set, then `queries` is [G] x seq_q x head_qk,
-    `keys` is [G] x head_qk x seq_k, `values` is [G] x seq_k x head_v and `out` is [G] x seq_q x head_v, 
+    `keys` is [G] x head_qk x seq_k, `values` is [G] x seq_k x head_v and `out` is [G] x seq_q x head_v,
     where G is the optional group dimension (which is assumed to be 1 if not set).
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
@@ -229,15 +230,19 @@ def Rock_AttentionOp
       lengths for each sequence in the batch
 
     LSE (log-sum-exp) is an optional output typically used for flash decoding.
-    For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled. 
-    Flash decoding multiplies the number of blocks by splitKV. Note that "lse" has to be non-null for splitKV > 1. 
+    For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled.
+    Flash decoding multiplies the number of blocks by splitKV. Note that "lse" has to be non-null for splitKV > 1.
     However, "lse" can be non-null even if splitKV = 1.
 
-    The `preSoftmaxHasSplitKVTransforms` attribute indicates whether the preSoftmaxBody inputs 
-    have splitKV transforms applied. It is set to true by DetectFlashDecoding when it detects 
-    and removes splitKV patterns. This prevents GridwiseGemmToBlockwise from unnecessarily 
-    re-applying splitKV transforms when the IR is generated directly (e.g., via rocmlir-gen) 
+    The `preSoftmaxHasSplitKVTransforms` attribute indicates whether the preSoftmaxBody inputs
+    have splitKV transforms applied. It is set to true by DetectFlashDecoding when it detects
+    and removes splitKV patterns. This prevents GridwiseGemmToBlockwise from unnecessarily
+    re-applying splitKV transforms when the IR is generated directly (e.g., via rocmlir-gen)
     without flash decoding detection.
+
+    The `numDequantInputs` attribute records how many leading pre-softmax
+    elementwise inputs belong to first-GEMM dequantization rather than
+    attention scale or bias.
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
@@ -279,7 +284,7 @@ def Rock_GemmElementwiseGemmOp
     fusion just before the second GEMM, defined by `preSecondGemmBody` with inputs `elemwiseInputs`.
 
     If none of the `transposed` attributes are set, then `a` is [G] x M x K,
-    `b` is [G] x K x N, `c` is [G] x N x O and `out` is [G] x M x O, where G is the 
+    `b` is [G] x K x N, `c` is [G] x N x O and `out` is [G] x M x O, where G is the
     optional group dimension (which is assumed to be 1 if not set).
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
@@ -479,11 +484,11 @@ def Rock_StoreOp
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Store tensor result to destination";
   let description = [{
-    The rock.store op is a placeholder marking where stores to global memory need to happen. 
-    This op is used to specify that the output of a given operation (i.e., rock.gemm) will be stored into 
-    a different (tensor) location. This is needed because we have rock.transform ops that are used to 
-    modify the way we load/store to memory, whereas ops like rock.gemm return a tensor result which do 
-    not take into account the rock.transform ops, so rock.store ops allow us to indicate that writing to 
+    The rock.store op is a placeholder marking where stores to global memory need to happen.
+    This op is used to specify that the output of a given operation (i.e., rock.gemm) will be stored into
+    a different (tensor) location. This is needed because we have rock.transform ops that are used to
+    modify the way we load/store to memory, whereas ops like rock.gemm return a tensor result which do
+    not take into account the rock.transform ops, so rock.store ops allow us to indicate that writing to
     the output will occur according to what the rock.transform op indicates.
   }];
   let hasVerifier = 1;
@@ -552,7 +557,8 @@ def Rock_GridwiseAttentionOp
           Rock_GemmParamsAttr:$params1,
           DefaultValuedOptionalAttr<BoolAttr, "true">:$enableSoftmax,
           DefaultValuedOptionalAttr<BoolAttr,
-                                    "false">:$preSoftmaxHasSplitKVTransforms)>,
+                                    "false">:$preSoftmaxHasSplitKVTransforms,
+          DefaultValuedOptionalAttr<I32Attr, "0">:$numDequantInputs)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result,
           Optional<TensorOf<[F32, F16, BF16]>>:$lse)> {
   let summary = "Gridwise attention";
@@ -650,7 +656,7 @@ def Rock_BlockwiseGemmOp
     `matrixAOrigElemType` or `matrixBOrigElemType` are defined. This is to avoid
     using `tt.dot` if we changed the datatype of A or B, it would be represented
     as i8 but it's really `matrixAOrigElemType`/`matrixBOrigElemType`.
-    
+
     When LegalizeFloatTypes converts sub-byte float types (e.g.
     f4E2M1FN) to integer types (i4, then packed to i8),
     `matrixAOrigElemType`/`matrixBOrigElemType` preserve the original float type
@@ -724,10 +730,11 @@ def Rock_BlockwiseLoadPtrOp
 /// ...
 /// %tile = rock.blockwise_load %tileSrc
 ///
-/// Where %tileSrc overlaps %dest in memory. This might not make sense logically,
-/// as rock.blockwise_store doesn't store to %dest, it just returns %result.
+/// Where %tileSrc overlaps %dest in memory. This might not make sense
+/// logically, as rock.blockwise_store doesn't store to %dest, it just returns
+/// %result.
 ///
-/// See more details in: 
+/// See more details in:
 /// https://github.com/ROCm/rocmlirTriton/pull/165#issuecomment-4379381305
 
 // blockwise_store
@@ -814,7 +821,7 @@ def Rock_BlockwiseReduceOp
   let summary = "Blockwise reduce operation";
   let description = [{
     The `rock.blockwise_reduce` op does reduce at a blockwise level and
-    to fill all elements of the input tensor with reduced values. 
+    to fill all elements of the input tensor with reduced values.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{

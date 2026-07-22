@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/Support/LogicalResult.h"
@@ -28,6 +29,18 @@ class Type;
 namespace rock {
 struct ConvolutionDims;
 struct GemmSize;
+
+inline constexpr llvm::StringLiteral PreSoftmaxInputAttrName =
+    "rock.pre_softmax_input";
+inline constexpr llvm::StringLiteral PreSoftmaxDequantInputCountAttrName =
+    "rock.pre_softmax_dequant_input_count";
+
+/// Preserve typed pre-softmax load metadata while replacing Rock load
+/// operations during lowering.
+inline void copyPreSoftmaxLoadAttrs(Operation *source, Operation *dest) {
+  if (Attribute attr = source->getDiscardableAttr(PreSoftmaxInputAttrName))
+    dest->setDiscardableAttr(PreSoftmaxInputAttrName, attr);
+}
 
 namespace layout {
 /// Struct containing the {g,m,n} block coordinates of a block

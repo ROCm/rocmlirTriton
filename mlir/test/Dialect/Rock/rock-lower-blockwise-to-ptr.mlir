@@ -6,7 +6,9 @@
 //      CHECK:   %[[TRANS1:.*]] = rock.transform %[[TRANS0]] by
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %[[TRANS1]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
 // The cache modifier on the blockwise_load is propagated to blockwise_load_ptr.
-//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier cs>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
+// CHECK-SAME:     rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 4, inputIndex = 0, role = bias, orientation = transposed>
+// CHECK-SAME:     tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //      CHECK:   rock.blockwise_store_ptr %[[RESULT]] -> %{{.*}}({{.*}}) by  set
 //      CHECK:   return
 //  CHECK-NOT:   rock.blockwise_load
@@ -19,7 +21,7 @@ func.func @test_blockwise_load(%arg0: tensor<32768xf16>, %dst: tensor<4096xf16>)
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 128 + d2)> by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]> : tensor<32768xf16> to tensor<1x256x128xf16>
   %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
 
-  %2 = rock.blockwise_load %1[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {cacheModifier = #rock<CacheModifier cs>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  %2 = rock.blockwise_load %1[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {cacheModifier = #rock<CacheModifier cs>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 4, inputIndex = 0, role = bias, orientation = transposed>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
 
   // Consume the loaded tile so the function is naturally void after lowering.
   %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>

@@ -1,0 +1,73 @@
+diff --git a/lib/Dialect/Triton/IR/Ops.cpp b/lib/Dialect/Triton/IR/Ops.cpp
+index 75ee5ed439..2ee7359b88 100644
+--- a/lib/Dialect/Triton/IR/Ops.cpp
++++ b/lib/Dialect/Triton/IR/Ops.cpp
+@@ -81,9 +81,11 @@ struct CanonicalizeMaskedLoadPattern : public OpRewritePattern<LoadOp> {
+
+     if (splatMask.getSplatValue<IntegerAttr>().getValue() == true) {
+       // mask = splat(1)
+-      rewriter.replaceOpWithNewOp<LoadOp>(
++      DictionaryAttr discardableAttrs = loadOp->getDiscardableAttrDictionary();
++      auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
+           loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
+           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
++      newLoad->setDiscardableAttrs(discardableAttrs);
+     } else {
+       // mask = splat(0)
+
+diff --git a/lib/Dialect/Triton/Transforms/Combine.cpp b/lib/Dialect/Triton/Transforms/Combine.cpp
+index 05fdca35ee..b62f66efd3 100644
+--- a/lib/Dialect/Triton/Transforms/Combine.cpp
++++ b/lib/Dialect/Triton/Transforms/Combine.cpp
+@@ -100,9 +100,11 @@ public:
+     if (splatCond != condSelect)
+       return failure();
+
+-    rewriter.replaceOpWithNewOp<LoadOp>(
++    DictionaryAttr discardableAttrs = loadOp->getDiscardableAttrDictionary();
++    auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
+         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
+         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
++    newLoad->setDiscardableAttrs(discardableAttrs);
+     return success();
+   }
+ };
+diff --git a/test/Triton/canonicalize.mlir b/test/Triton/canonicalize.mlir
+index b747cc02e7..4e819dc7d7 100644
+--- a/test/Triton/canonicalize.mlir
++++ b/test/Triton/canonicalize.mlir
+@@ -13,6 +13,19 @@ tt.func @dead_load(%ptr: tensor<32x128x!tt.ptr<f16>>) {
+
+ // -----
+
++// CHECK-LABEL: masked_load_preserves_metadata
++// CHECK: %[[LOADED:.*]] = tt.load %{{[^, ]+}} {tt.test_metadata = "kept"}
++// CHECK: tt.return %[[LOADED]]
++tt.func @masked_load_preserves_metadata(
++    %ptr: tensor<32x128x!tt.ptr<f32>>) -> tensor<32x128xf32> {
++  %mask = arith.constant dense<true> : tensor<32x128xi1>
++  %loaded = tt.load %ptr, %mask {tt.test_metadata = "kept"}
++      : tensor<32x128x!tt.ptr<f32>>
++  tt.return %loaded : tensor<32x128xf32>
++}
++
++// -----
++
+ // CHECK-LABEL: make_range
+ tt.func @make_range() -> (tensor<128x1xi32>, tensor<1xi32>) {
+   // CHECK-DAG: %[[c:.*]] = arith.constant dense<0> : tensor<128x1xi32>
+diff --git a/test/Triton/combine.mlir b/test/Triton/combine.mlir
+index a5e8ef905f..76d2728dc0 100644
+--- a/test/Triton/combine.mlir
++++ b/test/Triton/combine.mlir
+@@ -221,8 +221,8 @@ tt.func @test_combine_select_masked_load_pattern(%ptr: tensor<8x!tt.ptr<f32>>, %
+     %mask = tt.splat %cond : i1 -> tensor<8xi1>
+     %false_val = arith.constant dense<0.0> : tensor<8xf32>
+
+-    // CHECK: %[[res1:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<8x!tt.ptr<f32>>
+-    %x = tt.load %ptr, %mask, %false_val : tensor<8x!tt.ptr<f32>>
++    // CHECK: %[[res1:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} {tt.test_metadata = "kept"} : tensor<8x!tt.ptr<f32>>
++    %x = tt.load %ptr, %mask, %false_val {tt.test_metadata = "kept"} : tensor<8x!tt.ptr<f32>>
+     %0 = arith.select %cond, %x, %false_val : tensor<8xf32>
+
+     // CHECK: %[[res2:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<8x!tt.ptr<f32>>

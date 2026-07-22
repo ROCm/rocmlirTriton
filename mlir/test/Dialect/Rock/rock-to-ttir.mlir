@@ -4,11 +4,13 @@
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[ARG0]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
-//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]]
+// CHECK-SAME:     rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 5, inputIndex = 1, role = bias, orientation = transposed>
+// CHECK-SAME:     tensor<64x64x!tt.ptr<f16>>
 //      CHECK:   return %[[RESULT]] : tensor<64x64xf16>
 //  CHECK-NOT:   rock.blockwise_load_ptr
 func.func @test_load_conversion(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 5, inputIndex = 1, role = bias, orientation = transposed>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -620,4 +622,3 @@ func.func @test_scaled_gemm_carries_otransposed(
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
-

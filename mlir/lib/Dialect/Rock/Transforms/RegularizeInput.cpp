@@ -77,7 +77,7 @@ static FailureOr<Value> distributeLoadMarker(
     ArrayRef<TransformMapAttr> postTransforms, ArrayAttr extraViews,
     ValueRange extraIndices, Type tileType, CacheModifier cache,
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> &valueMapping,
-    func::FuncOp funcOp) {
+    func::FuncOp funcOp, Operation *markerMetadataSource) {
   ArrayAttr postTransformsAttr = builder.getArrayAttr(
       SmallVector<Attribute>(postTransforms.begin(), postTransforms.end()));
   std::pair<Value, ArrayAttr> cacheKey{originalVal, postTransformsAttr};
@@ -96,6 +96,7 @@ static FailureOr<Value> distributeLoadMarker(
     Value source = applyTransforms(builder, originalVal, postTransforms);
     auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
                                           extraViews, extraIndices, cache);
+    rock::copyPreSoftmaxLoadAttrs(markerMetadataSource, newMarker);
     valueMapping.insert({cacheKey, newMarker.getResult()});
     return newMarker.getResult();
   }
@@ -108,7 +109,8 @@ static FailureOr<Value> distributeLoadMarker(
 
     FailureOr<Value> result = distributeLoadMarker(
         builder, loc, transformOp.getInput(), newPostTransforms, extraViews,
-        extraIndices, tileType, cache, valueMapping, funcOp);
+        extraIndices, tileType, cache, valueMapping, funcOp,
+        markerMetadataSource);
     if (succeeded(result))
       valueMapping.insert({cacheKey, result.value()});
     return result;
@@ -124,7 +126,7 @@ static FailureOr<Value> distributeLoadMarker(
       auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
       FailureOr<Value> resolved = distributeLoadMarker(
           builder, loc, operand, postTransforms, extraViews, extraIndices,
-          operandTileType, cache, valueMapping, funcOp);
+          operandTileType, cache, valueMapping, funcOp, markerMetadataSource);
       if (failed(resolved))
         return failure();
       fusionMapping.map(operand, resolved.value());
@@ -187,7 +189,7 @@ void RockRegularizeInputPass::runOnOperation() {
     FailureOr<Value> replacement = distributeLoadMarker(
         builder, loc, markerOp.getSource(), /*postTransforms=*/{},
         markerOp.getExtraViews(), markerOp.getExtraIndices(), tileType,
-        markerOp.getCacheModifier(), valueMapping, funcOp);
+        markerOp.getCacheModifier(), valueMapping, funcOp, markerOp);
 
     if (failed(replacement)) {
       markerOp->emitError("Failed to distribute load_marker past fusions");

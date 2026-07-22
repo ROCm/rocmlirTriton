@@ -25,6 +25,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/attentionUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -57,6 +59,17 @@ struct LowerLoadMarker : public OpRewritePattern<LoadMarkerOp> {
     auto loadOp = BlockwiseLoadOp::create(rewriter, markerOp.getLoc(), source,
                                           markerOp.getExtraIndices(),
                                           markerOp.getCacheModifier());
+    rock::copyPreSoftmaxLoadAttrs(markerOp, loadOp);
+    auto inputAttr = dyn_cast_or_null<PreSoftmaxInputAttr>(
+        loadOp->getDiscardableAttr(PreSoftmaxInputAttr::getNameStr()));
+    if (inputAttr) {
+      auto leafOrientation = classifyPreSoftmaxInputOrientation(source);
+      loadOp->setDiscardableAttr(
+          PreSoftmaxInputAttr::getNameStr(),
+          PreSoftmaxInputAttr::get(
+              rewriter.getContext(), inputAttr.getGroupId(),
+              inputAttr.getInputIndex(), inputAttr.getRole(), leafOrientation));
+    }
 
     rewriter.replaceOp(markerOp, loadOp);
     return success();

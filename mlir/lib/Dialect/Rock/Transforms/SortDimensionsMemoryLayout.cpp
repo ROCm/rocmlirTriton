@@ -566,7 +566,8 @@ struct AttentionRewritePattern : public OpRewritePattern<rock::AttentionOp> {
         op.getNumHeadsKVAttr(), transposedQ, transposedK, transposedV,
         op.getOTransposedAttr(), op.getCausalAttr(), op.getSplitKVAttr(),
         op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
-        op.getPreSoftmaxHasSplitKVTransformsAttr());
+        op.getPreSoftmaxHasSplitKVTransformsAttr(),
+        op.getNumDequantInputsAttr());
 
     if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       b.inlineRegionBefore(op.getPreSoftmaxBody(), newOp.getPreSoftmaxBody(),

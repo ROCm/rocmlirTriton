@@ -51,8 +51,10 @@ module {
   // CHECK: %[[SM:.*]] = rock.store_marker
   // Two load_markers on individual block args
   // CHECK: %[[LM1:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 7, inputIndex = 2, role = bias, orientation = unknown>
   // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
   // CHECK: %[[LM2:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 7, inputIndex = 2, role = bias, orientation = unknown>
   // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
   // Tile-level addf replaces the original load_marker
   // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM1]], %[[LM2]] : tensor<16x16xf16>
@@ -63,7 +65,7 @@ module {
   func.func @test_fusion_addf(%tile: tensor<16x16xf16>, %t1: tensor<1x16x16xf16>, %t2: tensor<1x16x16xf16>, %dest: tensor<1x16x16xf16>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf16> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<16x16xf16> -> tensor<1x16x16xf16>
     %sum = arith.addf %t1, %t2 : tensor<1x16x16xf16>
-    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    %lm = rock.load_marker %sum views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>, rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 7, inputIndex = 2, role = bias, orientation = unknown>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     %ut = rock.untile %lm : tensor<16x16xf16> -> tensor<1x16x16xf16>
     %add = arith.addf %sm, %ut : tensor<1x16x16xf16>
     %r = rock.store %add to %dest by set : tensor<1x16x16xf16> -> tensor<1x16x16xf16> to tensor<1x16x16xf16>

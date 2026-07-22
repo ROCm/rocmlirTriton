@@ -1217,6 +1217,9 @@ LogicalResult DeQuantizeLinearConverter::matchAndRewrite(
   }
   tosa::MulOp scaled =
       rock::tosa::getMulOp(rewriter, loc, shifted, scale, outputType);
+  int32_t numDequantInputs = adaptor.getBias() ? 2 : 1;
+  scaled->setDiscardableAttr(rock::PreSoftmaxDequantInputCountAttrName,
+                             rewriter.getI32IntegerAttr(numDequantInputs));
   rewriter.replaceOp(op, scaled);
   return success();
 }

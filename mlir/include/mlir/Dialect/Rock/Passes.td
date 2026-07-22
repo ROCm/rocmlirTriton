@@ -108,11 +108,11 @@ def RockRegularizeOutputPass
     transforms are pushed past the fusions to sit between the last fusion and
     rock.store.
 
-    The end goal of the pass is to make sure there are no rock.transform ops 
+    The end goal of the pass is to make sure there are no rock.transform ops
     between the FusionRoot and rock.store, there can only be fusion ops between
-    FusionRoot and rock.store. Because of this, the pass inverts the 
-    transforms applied to the fusion ops, thus avoiding the transformation of the 
-    gemm output. This keeps all fusion computations in a canonical shape matching 
+    FusionRoot and rock.store. Because of this, the pass inverts the
+    transforms applied to the fusion ops, thus avoiding the transformation of the
+    gemm output. This keeps all fusion computations in a canonical shape matching
     the gemm output.
 
     Extra operands (non-gemm-chain inputs to the fusions) are handled by kind:
@@ -341,15 +341,15 @@ def RockTransformsInvariantCodeMotionPass
   let summary =
       "Hoist loop-invariant transforms_to_ptr arithmetic out of scf.for loops";
   let description = [{
-    Loop-invariant code motion for `rock.transforms_to_ptr` ops nested 
+    Loop-invariant code motion for `rock.transforms_to_ptr` ops nested
     inside `scf.for` loops. Runs before TransformsToPointerArith.
 
     The pass hoists only if 2 conditions are met:
     1. The pointer offset is an affine-linear function of the loop induction variable.
     2. The validity mask is loop-invariant
 
-    The rewrite replaces in loop pointer recomputation with a loop-invariant base + 
-    one constant stride per iteration, and computes the mask once before the loop. 
+    The rewrite replaces in loop pointer recomputation with a loop-invariant base +
+    one constant stride per iteration, and computes the mask once before the loop.
     That's only valid when:
     - The per-iteration offset change is one constant: this breaks for a non-contiguous
       Merge because the increment is not constant, they vary depending on specific values
@@ -773,6 +773,24 @@ def RockSetMatmulOutputTransposePass
       row-major output (oTransposed = false): isTransposed = (version > 1)
       col-major output (oTransposed = true):  isTransposed = (version == 1)
   }];
+  let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
+                           "triton::gpu::TritonGPUDialect"];
+}
+
+def RockSetAttentionBiasLoadLayoutPass
+    : Pass<"rock-set-attention-bias-load-layout", "::mlir::ModuleOp"> {
+  let summary = "Load eligible transposed attention bias directly in the "
+                "score accumulator layout";
+  let description = [{
+    Runs after Triton's accelerate-matmul pass. Typed function-local attention
+    metadata associates each pre-softmax input load with exactly one score dot.
+    A physically transposed additive bias is converted to that dot's MFMA
+    accumulator encoding only when conservative layout, architecture, stage,
+    wave, replication, and register-footprint checks prove the conversion
+    safe. Ambiguous metadata or unsupported configurations are left unchanged.
+  }];
+  let options = [Option<"numStages", "num-stages", "int32_t", "1",
+                        "Configured Triton software-pipeline stage count">];
   let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
                            "triton::gpu::TritonGPUDialect"];
 }

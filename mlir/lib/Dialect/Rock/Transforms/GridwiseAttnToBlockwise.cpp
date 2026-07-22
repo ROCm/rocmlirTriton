@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/utility/attentionUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -151,12 +152,12 @@ struct GridwiseAttentionRewritePattern
     auto rowType = cast<RankedTensorType>(rowVector.getType());
     int64_t numRows = rowType.getShape()[0];
     Type elemType = rowType.getElementType();
-    
+
     // Step 1: Expand dims [M] -> [M, 1]
     auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    rowVector, 1);
-    
+    Value expanded =
+        triton::ExpandDimsOp::create(rewriter, loc, expandedType, rowVector, 1);
+
     // Step 2: Broadcast [M, 1] -> [M, N]
     auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
     return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
@@ -164,20 +165,20 @@ struct GridwiseAttentionRewritePattern
 
   // This function computes exp(gemm0 - rowmax_j)
   Value expSubstractMaxFromGemm0(PatternRewriter &rewriter, Location loc,
-                                Value softmaxInput,
-                                Value softmaxMax,
-                                Value maxRow) const {
+                                 Value softmaxInput, Value softmaxMax,
+                                 Value maxRow) const {
     // TODO: arith.maxnumf?
-    Value maxRowNew = arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
-    
+    Value maxRowNew =
+        arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
+
     // Broadcast maxRowNew from [M] to [M, N] to match softmaxInput shape
     auto inputShape = cast<RankedTensorType>(softmaxInput.getType()).getShape();
-    Value maxRowBroadcast = broadcastRowTo2D(rewriter, loc, maxRowNew, inputShape[1]);
-    
+    Value maxRowBroadcast =
+        broadcastRowTo2D(rewriter, loc, maxRowNew, inputShape[1]);
+
     Value gemm0SubMaxRow =
         arith::SubFOp::create(rewriter, loc, softmaxInput, maxRowBroadcast);
-    Value softmaxExp =
-        math::Exp2Op::create(rewriter, loc, gemm0SubMaxRow);
+    Value softmaxExp = math::Exp2Op::create(rewriter, loc, gemm0SubMaxRow);
 
     return softmaxExp;
   }
@@ -189,22 +190,21 @@ struct GridwiseAttentionRewritePattern
   // l is the rowsum accumulator
   // m is the rowmax accmulator
   // P is exp(gemm0 - rowmax_j)
-  std::tuple<Value, Value, Value> updateRowSum(PatternRewriter &rewriter, Location loc,
-                    Value softmaxSum, Value softmaxMax, Value sumRow, Value maxRow) const {
+  std::tuple<Value, Value, Value> updateRowSum(PatternRewriter &rewriter,
+                                               Location loc, Value softmaxSum,
+                                               Value softmaxMax, Value sumRow,
+                                               Value maxRow) const {
     // TODO: arith.maxnumf?
-    Value maxRowNew = arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
+    Value maxRowNew =
+        arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
 
-    Value maxRowDiff =
-        arith::SubFOp::create(rewriter, loc, maxRow, maxRowNew);
-        
-    Value maxRowDiffExp =
-        math::Exp2Op::create(rewriter, loc, maxRowDiff);
+    Value maxRowDiff = arith::SubFOp::create(rewriter, loc, maxRow, maxRowNew);
+
+    Value maxRowDiffExp = math::Exp2Op::create(rewriter, loc, maxRowDiff);
 
     Value sumRowNew = maxRowDiffExp;
-    sumRowNew =
-        arith::MulFOp::create(rewriter, loc, sumRowNew, sumRow);
-    sumRowNew = arith::AddFOp::create(rewriter, loc, sumRowNew,
-                                            softmaxSum);
+    sumRowNew = arith::MulFOp::create(rewriter, loc, sumRowNew, sumRow);
+    sumRowNew = arith::AddFOp::create(rewriter, loc, sumRowNew, softmaxSum);
     return {maxRowDiffExp, sumRowNew, maxRowNew};
   }
 
@@ -228,12 +228,13 @@ struct GridwiseAttentionRewritePattern
 
     // convert to LSE type (need full tensor type, not just element type)
     auto sumRowType = cast<RankedTensorType>(sumRow.getType());
-    auto destTensorType = RankedTensorType::get(sumRowType.getShape(), lseElemType);
+    auto destTensorType =
+        RankedTensorType::get(sumRowType.getShape(), lseElemType);
     Value sumRowCasted =
         createTypeConversionOp(rewriter, loc, sumRow, destTensorType);
     Value maxRowCasted =
         createTypeConversionOp(rewriter, loc, maxRow, destTensorType);
-    
+
     // lse_i = (log2(l_i) + m_i)*log(2)
     // Migraphx expects LSE to be log
     Value log2Li = math::Log2Op::create(rewriter, loc, sumRowCasted);
@@ -245,14 +246,16 @@ struct GridwiseAttentionRewritePattern
   // This is the out of loop scaling of attention output
   // where its divided by the accumulated rowsum
   Value scaleFinalOutput(PatternRewriter &rewriter, Location loc,
-                        Value attentionAcc,
-                        Value sumRow) const {
+                         Value attentionAcc, Value sumRow) const {
     // Broadcast sumRow from [M] to [M, N] to match attentionAcc shape
     auto accType = cast<RankedTensorType>(attentionAcc.getType());
-    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
+    Value sumRowBroadcast =
+        broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
 
-    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
-    sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 ->
+    // f32)
+    sumRowBroadcast =
+        createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
 
     return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
   }
@@ -275,21 +278,23 @@ struct GridwiseAttentionRewritePattern
   // gemm1OutThreadwiseView [STORE] attentionOutAccBuffer =
   // attentionOutAccBufferMaxScaled
   Value createAttentionRowStateCorrections(PatternRewriter &rewriter,
-                                          Location loc,
-                                          Value gemm1Out,
-                                          Value attentionAcc,
-                                          Value expMaxDiffRow) const {
+                                           Location loc, Value gemm1Out,
+                                           Value attentionAcc,
+                                           Value expMaxDiffRow) const {
     // Broadcast expMaxDiffRow from [M] to [M, N] to match attentionAcc shape
     auto accType = cast<RankedTensorType>(attentionAcc.getType());
-    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
+    Value expMaxDiffBroadcast =
+        broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
 
-    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
-    expMaxDiffBroadcast = createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 ->
+    // f32)
+    expMaxDiffBroadcast =
+        createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
 
     Value scaledAttentionAcc =
         arith::MulFOp::create(rewriter, loc, attentionAcc, expMaxDiffBroadcast);
-    Value newAttentionAcc = arith::AddFOp::create(
-        rewriter, loc, scaledAttentionAcc, gemm1Out);
+    Value newAttentionAcc =
+        arith::AddFOp::create(rewriter, loc, scaledAttentionAcc, gemm1Out);
 
     return newAttentionAcc;
   }
@@ -319,7 +324,7 @@ struct GridwiseAttentionRewritePattern
     ArrayRef<int64_t> shape = getLowerShape(tileView);
     TopDownTMBuilder viewBuilder{
         rewriter, {"gemmG", "gemmN", "gemmM"}, shape, loc};
-        
+
     viewBuilder.unmerge("raw", 0, {"gemmG", "gemmN", "gemmM"}, shape);
 
     return prependUpperViews(rewriter, tileView,
@@ -373,17 +378,21 @@ struct GridwiseAttentionRewritePattern
         rewriter, loc, fakeTensor,
         ValueRange{gridCoords.g_block, gridCoords.m_block, gridCoords.n_block});
     Value maskTensor = transformsToPtrOp.getMask();
-    return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult, negInfTensor);
+    return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult,
+                                   negInfTensor);
   }
 
   enum class OutOfScopeType { KVCache, Causal, PrefixCausal };
 
-  Value setGemm0OutputOutOfScope(
-      PatternRewriter &rewriter, Location loc, OutOfScopeType outOfScopeType,
-      layout::GridCoordinates gridCoords, Value firstGemmResult,
-      Value fakeTensorM, Value fakeTensorN, Value negInfTensor, ArrayAttr tileView, bool enabled,
-      Value nLoopIV, Value gemm0NBlocksLastIter, Value currentSeqLen,
-      Value prefixOffset) const {
+  Value setGemm0OutputOutOfScope(PatternRewriter &rewriter, Location loc,
+                                 OutOfScopeType outOfScopeType,
+                                 layout::GridCoordinates gridCoords,
+                                 Value firstGemmResult, Value fakeTensorM,
+                                 Value fakeTensorN, Value negInfTensor,
+                                 ArrayAttr tileView, bool enabled,
+                                 Value nLoopIV, Value gemm0NBlocksLastIter,
+                                 Value currentSeqLen,
+                                 Value prefixOffset) const {
     if (enabled) {
       ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
       ArrayAttr mView = outputViewToM(rewriter, loc, tileView);
@@ -412,50 +421,55 @@ struct GridwiseAttentionRewritePattern
 
         switch (outOfScopeType) {
         case OutOfScopeType::KVCache: {
-        assert(currentSeqLen != nullptr);
-        auto splatType =
-            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
-                                  currentSeqLen.getType());
-        Value currentSeqLenSplat = triton::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
-        // pointerTensor is mIndex
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, currentSeqLenSplat);
-        break;
+          assert(currentSeqLen != nullptr);
+          auto splatType = RankedTensorType::get(
+              cast<ShapedType>(mIndex.getType()).getShape(),
+              currentSeqLen.getType());
+          Value currentSeqLenSplat =
+              triton::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
+          // pointerTensor is mIndex
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, currentSeqLenSplat);
+          break;
         }
         case OutOfScopeType::Causal: {
-        // pointerTensor is nIndex
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, mIndex);
-        break;
+          // pointerTensor is nIndex
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, mIndex);
+          break;
         }
         case OutOfScopeType::PrefixCausal: {
-        // Prefix causal: mask when key_pos > (query_pos + prefix_offset).
-        // This is used for prefix attention where:
-        // - A prefix of tokens (0..prefix_offset) is always visible
-        // - Anything after the prefix, standard causal masking applies
-        assert(prefixOffset != nullptr);
-        auto splatType =
-            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
-                                  prefixOffset.getType());
-        Value prefixOffsetSplat = triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
+          // Prefix causal: mask when key_pos > (query_pos + prefix_offset).
+          // This is used for prefix attention where:
+          // - A prefix of tokens (0..prefix_offset) is always visible
+          // - Anything after the prefix, standard causal masking applies
+          assert(prefixOffset != nullptr);
+          auto splatType = RankedTensorType::get(
+              cast<ShapedType>(mIndex.getType()).getShape(),
+              prefixOffset.getType());
+          Value prefixOffsetSplat =
+              triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
 
-        // Compute query_pos + prefix_offset
-        Value threshold =
-            arith::AddIOp::create(b, loc, mIndex, prefixOffsetSplat);
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, threshold);
-        break;
+          // Compute query_pos + prefix_offset
+          Value threshold =
+              arith::AddIOp::create(b, loc, mIndex, prefixOffsetSplat);
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, threshold);
+          break;
         }
         }
-        
-        return arith::SelectOp::create(b, loc, isInvalid, negInfTensor, firstGemmResult);
+
+        return arith::SelectOp::create(b, loc, isInvalid, negInfTensor,
+                                       firstGemmResult);
       };
 
       if (needsLastIterCheck) {
         auto isLastIteration =
             arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                   nLoopIV, gemm0NBlocksLastIter);
-        return arith::SelectOp::create(rewriter, loc, isLastIteration, generateMaskingLogic(rewriter), firstGemmResult);
+        return arith::SelectOp::create(rewriter, loc, isLastIteration,
+                                       generateMaskingLogic(rewriter),
+                                       firstGemmResult);
       } else {
         // For causal masking, apply on every iteration
         return generateMaskingLogic(rewriter);
@@ -561,8 +575,8 @@ struct GridwiseAttentionRewritePattern
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
 
-      auto resultType = RankedTensorType::get({1},
-                                          cast<ShapedType>(tensor.getType()).getElementType());
+      auto resultType = RankedTensorType::get(
+          {1}, cast<ShapedType>(tensor.getType()).getElementType());
 
       // add dim 1 for load_marker to make sense
       ArrayRef<int64_t> inpShape =
@@ -906,6 +920,12 @@ struct GridwiseAttentionRewritePattern
              << " non-QK block argument(s) but op has " << extraInputs.size()
              << " preSoftmaxElemWiseInputs";
 
+    auto groupAttr = dyn_cast_or_null<AttentionGroupAttr>(
+        op->getDiscardableAttr(AttentionGroupAttr::getNameStr()));
+    SmallVector<PreSoftmaxInputRole> inputRoles = classifyPreSoftmaxInputRoles(
+        region, extraInputs.size(),
+        static_cast<unsigned>(op.getNumDequantInputs()));
+
     for (unsigned i = 0; i < extraInputs.size(); ++i) {
       Value globalInput = extraInputs[i];
       Value root;
@@ -928,6 +948,14 @@ struct GridwiseAttentionRewritePattern
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
           rock::CacheModifier::NONE);
+      if (groupAttr) {
+        auto orientation = classifyPreSoftmaxInputOrientation(globalInput);
+        auto inputAttr = PreSoftmaxInputAttr::get(rewriter.getContext(),
+                                                  groupAttr.getGroupId(), i,
+                                                  inputRoles[i], orientation);
+        markerOp->setDiscardableAttr(PreSoftmaxInputAttr::getNameStr(),
+                                     inputAttr);
+      }
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
@@ -1032,8 +1060,8 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0N % gemm0NPerBlock == 0);
 
     // Get current workgroup ID.
-    Value bid =
-        triton::GetProgramIdOp::create(rewriter, op.getLoc(), triton::ProgramIDDim::X);
+    Value bid = triton::GetProgramIdOp::create(rewriter, op.getLoc(),
+                                               triton::ProgramIDDim::X);
 
     // Calculate different size derivations
     int64_t gemm1KPerBlock = gemm1TuningParams.getKPerBlock();
@@ -1080,26 +1108,29 @@ struct GridwiseAttentionRewritePattern
     SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
     // We need two different grid lengths because the V input tensor and the
     // output tensor have different shapes when splitKV > 1:
-    // - V tensor shape: [gemm0G, seqK, headDim] - splitKV is NOT in the batch dim
+    // - V tensor shape: [gemm0G, seqK, headDim] - splitKV is NOT in the batch
+    // dim
     // - Output tensor shape: [gemm0G * splitKV, seqQ, headDim] - splitKV IS in
     //   the batch dim (each split writes to a separate slice of the output)
     // Therefore, loadTile for V uses gemm1BidGridLengths, while the output
     // store transforms use gemm1BidGridLengthsForStore.
     SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks, 1};
-    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
+    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV,
+                                                           gemm1MBlocks, 1};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
-    Value splitKVConst =
-        (splitKV > 1) ? rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), splitKV)
-                      : nullptr;
+    Value splitKVConst = (splitKV > 1)
+                             ? rewriter.createOrFold<ConstantIntOp>(
+                                   loc, rewriter.getI32Type(), splitKV)
+                             : nullptr;
 
     auto maybeGridSize = rock::getGridSize(op);
     if (failed(maybeGridSize))
       return op->emitError("Failed to get grid_size");
 
     int64_t gridSize = maybeGridSize->getInt();
-        
+
     auto arch = rock::getArchValue(op);
 
     // Cache hint for the K/V loads: stream them when seqQ is skinny (decode)
@@ -1122,7 +1153,8 @@ struct GridwiseAttentionRewritePattern
         -std::numeric_limits<float>::infinity(), APFloat::opOK);
     Value sumRow = createConstantFloatOp(rewriter, loc, blockMTensorType,
                                          elemTypeSoftmax, 0.0, APFloat::opOK);
-    Value zero = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
+    Value zero =
+        rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
 
     Value gemm0NBlocksLastIter;
     Value currentSeqLen;
@@ -1215,8 +1247,8 @@ struct GridwiseAttentionRewritePattern
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
 
-      Value endKLoop =
-          rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(), kIterationsGemm0);
+      Value endKLoop = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), kIterationsGemm0);
       scf::ForOp kLoopOp = scf::ForOp::create(rewriter, loc, zero, endKLoop,
                                               one, ValueRange{initAcc});
       {
@@ -1240,15 +1272,19 @@ struct GridwiseAttentionRewritePattern
                            gridCoordsGemm0, gemm0KPerBlock, gemm0NPerBlock,
                            /*isKFirst=*/true, gemm0BidGridLengths, cacheK);
 
-        Value newAcc = BlockwiseGemmOp::create(
+        auto scoreGemm = BlockwiseGemmOp::create(
             rewriter, loc, loadedQ, loadedK, accArg,
             /*matrixScaleA=*/nullptr,
             /*matrixScaleB=*/nullptr, /*quantBlockSize=*/nullptr,
             /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
             /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
+        if (Attribute groupAttr =
+                op->getDiscardableAttr(AttentionGroupAttr::getNameStr()))
+          scoreGemm->setDiscardableAttr(AttentionGroupAttr::getNameStr(),
+                                        groupAttr);
 
         // Yield the new accumulator
-        scf::YieldOp::create(rewriter, loc, ValueRange{newAcc});
+        scf::YieldOp::create(rewriter, loc, ValueRange{scoreGemm.getResult()});
       }
       Value firstGemmResult = kLoopOp.getResult(0);
 
@@ -1300,8 +1336,10 @@ struct GridwiseAttentionRewritePattern
       if (op.getEnableSoftmax()) {
         // convert firstGemmResult to elemTypeSoftmax
         auto firstGemmType = cast<RankedTensorType>(firstGemmResult.getType());
-        auto softmaxInputType = RankedTensorType::get(firstGemmType.getShape(), elemTypeSoftmax);
-        Value softmaxInput = createTypeConversionOp(rewriter, loc, firstGemmResult, softmaxInputType);
+        auto softmaxInputType =
+            RankedTensorType::get(firstGemmType.getShape(), elemTypeSoftmax);
+        Value softmaxInput = createTypeConversionOp(
+            rewriter, loc, firstGemmResult, softmaxInputType);
 
         // Scale gemm0 output by (1/ln2)
         // So that we can use exp2 instead of exp.
@@ -1309,7 +1347,8 @@ struct GridwiseAttentionRewritePattern
             rewriter, loc, softmaxInput.getType(), elemTypeSoftmax, 1.44269504f,
             elemTypeSoftmax.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
                                                           : APFloat::opInexact);
-        softmaxInput = arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
+        softmaxInput =
+            arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
 
         // fakeTensor is needed to generate the views and indices+mask with
         // TransformsToPtrOp It represents the Q*K matrix (that is never written
@@ -1345,8 +1384,9 @@ struct GridwiseAttentionRewritePattern
         // cache is enabled, regardless of causal/prefix-causal mode.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isKVCache, nLoopIV, gemm0NBlocksLastIter, currentSeqLen,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isKVCache, nLoopIV, gemm0NBlocksLastIter,
+            currentSeqLen,
             /*prefixOffset=*/nullptr);
 
         // Causal masking: either prefix-causal or standard causal
@@ -1354,15 +1394,17 @@ struct GridwiseAttentionRewritePattern
         // This combines causal masking with a prefix offset
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isPrefixCausal, nLoopIV,
+            gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr, prefixOffset);
 
         // Standard causal masking: mask when key > query
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isCausal && !isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
+            gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr,
             /*prefixOffset=*/nullptr);
 
@@ -1377,14 +1419,15 @@ struct GridwiseAttentionRewritePattern
             rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Max));
 
         softmaxExp = expSubstractMaxFromGemm0(rewriter, loc, softmaxInput,
-                                 softmaxMax, maxRow);
+                                              softmaxMax, maxRow);
 
         // Softmax sum reduction
         Value softmaxSum = BlockwiseReduceOp::create(
             rewriter, loc, softmaxExp, reductionAxis,
             rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Sum));
 
-        std::tie(maxRowDiffExp, sumRow, maxRow) = updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
+        std::tie(maxRowDiffExp, sumRow, maxRow) =
+            updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
       }
 
       // Emit blockwise GEMM 1.
@@ -1435,22 +1478,23 @@ struct GridwiseAttentionRewritePattern
       } else {
         attentionAcc = gemm1Out;
       }
-        
-        // Yield the updated accumulators (attentionAcc, maxRow, sumRow)
-        scf::YieldOp::create(rewriter, loc, ValueRange{attentionAcc, maxRow, sumRow});
+
+      // Yield the updated accumulators (attentionAcc, maxRow, sumRow)
+      scf::YieldOp::create(rewriter, loc,
+                           ValueRange{attentionAcc, maxRow, sumRow});
     }
     Value outAcc = nLoopOp.getResult(0);
     maxRow = nLoopOp.getResult(1);
     sumRow = nLoopOp.getResult(2);
 
     if (op.getEnableSoftmax()) {
-        outAcc = scaleFinalOutput(rewriter, loc, outAcc,
-                            sumRow);
+      outAcc = scaleFinalOutput(rewriter, loc, outAcc, sumRow);
     }
     if (cast<ShapedType>(outAcc.getType()).getElementType() != elemTypeOut) {
-        auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
-        auto destType = RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
-        outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
+      auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
+      auto destType =
+          RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
+      outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
     }
     Value lseOut;
     if (lse) {
@@ -1483,8 +1527,9 @@ struct GridwiseAttentionRewritePattern
         rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output
-    FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
-        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengthsForStore);
+    FailureOr<ArrayAttr> maybeOutputViews =
+        computeOutputTransforms(rewriter, loc, gemm1MPerBlock, gemm1NPerBlock,
+                                gemm1BidGridLengthsForStore);
 
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");
@@ -1521,6 +1566,18 @@ struct GridwiseAttentionRewritePattern
 
 void RockGridwiseAttnToBlockwisePass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+
+  // IDs are intentionally function-local. They replace the shape-based
+  // association that is ambiguous when a function contains multiple
+  // attentions with equal score-tile shapes.
+  uint32_t nextAttentionGroup = 0;
+  getOperation().walk([&](GridwiseAttentionOp op) {
+    if (!op.getEnableSoftmax())
+      return;
+    op->setDiscardableAttr(AttentionGroupAttr::getNameStr(),
+                           AttentionGroupAttr::get(ctx, nextAttentionGroup++));
+  });
+
   ConversionTarget target(*ctx);
   target.addIllegalOp<GridwiseAttentionOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,

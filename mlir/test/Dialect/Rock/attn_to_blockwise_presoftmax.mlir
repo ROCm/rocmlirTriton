@@ -1,10 +1,14 @@
 // RUN: rocmlir-opt -rock-gridwise-attn-to-blockwise -split-input-file -verify-diagnostics %s | FileCheck %s
 
 // CHECK-LABEL: func @attn_mask_reshape_nonzero_qk_idx
+// CHECK: rock.blockwise_gemm
+// CHECK-SAME: rock.attention_group = #rock.attention_group<0>
 // The load_marker for the mask should bridge from tile coords to the
 // flat tensor<4096xi8> (Unmerge transform is on the external input,
 // captured by untransform into the LoadMarkerOp views).
-// CHECK: rock.load_marker {{.*}}tensor<4096xi8> -> tensor<32x32xi8>
+// CHECK: rock.load_marker
+// CHECK-SAME: rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = other, orientation = natural>
+// CHECK-SAME: tensor<4096xi8> -> tensor<32x32xi8>
 // The arith.trunci from the body should be cloned with tile-sized types.
 // CHECK: arith.trunci {{.*}} tensor<32x32xi8> to tensor<32x32xi1>
 func.func @attn_mask_reshape_nonzero_qk_idx(
@@ -38,7 +42,8 @@ func.func @attn_mask_reshape_nonzero_qk_idx(
 // The load_marker for the scale should bridge from tile coords to the
 // scalar tensor<1xf32> (broadcast + reshape transforms on external input,
 // captured by untransform into the LoadMarkerOp views).
-// CHECK: rock.load_marker {{.*}}tensor<1xf32> -> tensor<32x32xf32>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = scale, orientation = unknown>
+// CHECK-SAME: tensor<1xf32> -> tensor<32x32xf32>
 // The mulf should use tile-sized types.
 // CHECK: arith.mulf {{.*}} tensor<32x32xf32>
 func.func @attn_scalar_broadcast(
@@ -56,12 +61,85 @@ func.func @attn_scalar_broadcast(
   %s1 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0, 0, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <Broadcast{1} ["dim2"] at [2] -> ["dim2"] at [2]>] bounds = [1, 64, 64] -> [1, 1, 1]> : tensor<1x1x1xf32> to tensor<1x64x64xf32>
   %result = rock.gridwise_attention(%q, %k, %v, %s1) preSoftmaxOps = {
   ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_scale: tensor<1x64x64xf32>):
-    %0 = arith.mulf %arg_qk, %arg_scale : tensor<1x64x64xf32>
-    rock.yield %0 : tensor<1x64x64xf32>
+    %cst = arith.constant dense<1.000000e+00> : tensor<1x64x64xf32>
+    %adjusted = arith.addf %arg_scale, %cst : tensor<1x64x64xf32>
+    %scaled = arith.mulf %arg_qk, %adjusted : tensor<1x64x64xf32>
+    rock.yield %scaled : tensor<1x64x64xf32>
   } {
     operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
     params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
     params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_broadcast_column_orientation
+// CHECK: rock.load_marker {{.*}}inputIndex = 0, role = bias, orientation = natural
+// CHECK: rock.load_marker {{.*}}inputIndex = 1, role = bias, orientation = transposed
+func.func @attn_broadcast_column_orientation(
+    %q: tensor<64x64x32xf32>,
+    %k: tensor<64x32x64xf32>,
+    %v: tensor<64x64x32xf32>,
+    %natural_bias: tensor<64x1x64xf32>,
+    %transposed_bias: tensor<64x1x64xf32>) -> tensor<64x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 128 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %natural = rock.transform %natural_bias by <affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["m"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [64, 64, 64] -> [64, 1, 64]> : tensor<64x1x64xf32> to tensor<64x64x64xf32>
+  %swapped = rock.transform %transposed_bias by <affine_map<(d0, d1, d2) -> (d2, d1, d0)> by [<PassThrough ["n", "m", "g"] at [0, 1, 2] -> ["g", "m", "n"] at [2, 1, 0]>] bounds = [64, 1, 64] -> [64, 1, 64]> : tensor<64x1x64xf32> to tensor<64x1x64xf32>
+  %transposed = rock.transform %swapped by <affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["m"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [64, 64, 64] -> [64, 1, 64]> : tensor<64x1x64xf32> to tensor<64x64x64xf32>
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %natural, %transposed) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<64x64x64xf32>,
+       %arg_natural: tensor<64x64x64xf32>,
+       %arg_transposed: tensor<64x64x64xf32>):
+    %biased0 = arith.addf %arg_qk, %arg_natural
+        : tensor<64x64x64xf32>
+    %biased1 = arith.addf %biased0, %arg_transposed
+        : tensor<64x64x64xf32>
+    rock.yield %biased1 : tensor<64x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 2, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<64x64x32xf32>, tensor<64x32x64xf32>,
+      tensor<64x64x32xf32>, tensor<64x64x64xf32>,
+      tensor<64x64x64xf32> -> tensor<64x64x32xf32>
+  return %result : tensor<64x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_transposed_additive_bias
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = transposed>
+// CHECK-SAME: tensor<1x64x64xf32> -> tensor<32x32xf32>
+func.func @attn_transposed_additive_bias(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %bias: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %bias_transposed = rock.transform %bias by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  %result = rock.gridwise_attention(%q, %k, %v, %bias_transposed) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_bias: tensor<1x64x64xf32>):
+    %biased = arith.addf %arg_qk, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
     splitKV = 1 : i32
   } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
   return %result : tensor<1x64x32xf32>
@@ -341,5 +419,179 @@ func.func @attn_multi_chiplet_even(
     params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
     splitKV = 1 : i32
   } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_scale_and_transposed_bias
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = scale, orientation = natural>
+// CHECK-SAME: tensor<1x64x64xf32> -> tensor<32x32xf32>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 1, role = bias, orientation = transposed>
+// CHECK-SAME: tensor<1x64x64xf32> -> tensor<32x32xf32>
+func.func @attn_scale_and_transposed_bias(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %scale: tensor<1x64x64xf32>,
+    %bias: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %bias_transposed = rock.transform %bias by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  %result = rock.gridwise_attention(%q, %k, %v, %scale, %bias_transposed) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_scale: tensor<1x64x64xf32>, %arg_bias: tensor<1x64x64xf32>):
+    %scaled = arith.mulf %arg_qk, %arg_scale : tensor<1x64x64xf32>
+    %biased = arith.addf %scaled, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 2, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_canceling_bias_transposes
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = natural>
+func.func @attn_canceling_bias_transposes(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %bias: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %bias_t0 = rock.transform %bias by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  %bias_t1 = rock.transform %bias_t0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  %result = rock.gridwise_attention(%q, %k, %v, %bias_t1) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_bias: tensor<1x64x64xf32>):
+    %biased = arith.addf %arg_qk, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result : tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @attn_non_sequence_permutation
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = unknown>
+func.func @attn_non_sequence_permutation(
+    %q: tensor<2x32x16xf32>,
+    %k: tensor<2x16x32xf32>,
+    %v: tensor<2x32x16xf32>,
+    %bias: tensor<32x2x32xf32>) -> tensor<2x32x16xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %bias_permuted = rock.transform %bias by <affine_map<(d0, d1, d2) -> (d1, d0, d2)> by [<PassThrough ["g"] at [0] -> ["root_m"] at [1]>, <PassThrough ["m"] at [1] -> ["root_g"] at [0]>, <PassThrough ["n"] at [2] -> ["root_n"] at [2]>] bounds = [2, 32, 32] -> [32, 2, 32]> : tensor<32x2x32xf32> to tensor<2x32x32xf32>
+  %result = rock.gridwise_attention(%q, %k, %v, %bias_permuted) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<2x32x32xf32>, %arg_bias: tensor<2x32x32xf32>):
+    %biased = arith.addf %arg_qk, %arg_bias : tensor<2x32x32xf32>
+    rock.yield %biased : tensor<2x32x32xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<2x32x16xf32>, tensor<2x16x32xf32>, tensor<2x32x16xf32>, tensor<2x32x32xf32> -> tensor<2x32x16xf32>
+  return %result : tensor<2x32x16xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @two_equal_shape_attentions
+// CHECK: rock.blockwise_gemm{{.*}}rock.attention_group = #rock.attention_group<0>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = bias, orientation = natural>
+// CHECK: rock.blockwise_gemm{{.*}}rock.attention_group = #rock.attention_group<1>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 1, inputIndex = 0, role = bias, orientation = transposed>
+func.func @two_equal_shape_attentions(
+    %q: tensor<1x64x32xf32>,
+    %k: tensor<1x32x64xf32>,
+    %v: tensor<1x64x32xf32>,
+    %bias0: tensor<1x64x64xf32>,
+    %bias1: tensor<1x64x64xf32>)
+    -> (tensor<1x64x32xf32>, tensor<1x64x32xf32>)
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %bias1_transposed = rock.transform %bias1 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["n"] at [2]>, <PassThrough ["n"] at [2] -> ["m"] at [1]>] bounds = [1, 64, 64] -> [1, 64, 64]> : tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  %result0 = rock.gridwise_attention(%q, %k, %v, %bias0) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_bias: tensor<1x64x64xf32>):
+    %biased = arith.addf %arg_qk, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  %result1 = rock.gridwise_attention(%q, %k, %v, %bias1_transposed) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_bias: tensor<1x64x64xf32>):
+    %biased = arith.addf %arg_qk, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x32xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
+  return %result0, %result1 : tensor<1x64x32xf32>, tensor<1x64x32xf32>
+}
+
+// -----
+
+// CHECK-LABEL: func @one_dequant_input_before_attention_bias
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 0, role = dequant, orientation = natural>
+// CHECK: rock.load_marker {{.*}}rock.pre_softmax_input = #rock.pre_softmax_input<groupId = 0, inputIndex = 1, role = bias, orientation = natural>
+func.func @one_dequant_input_before_attention_bias(
+    %q: tensor<1x64x32xi8>,
+    %k: tensor<1x32x64xi8>,
+    %v: tensor<1x64x32xf32>,
+    %dequant_scale: tensor<1x64x64xf32>,
+    %bias: tensor<1x64x64xf32>) -> tensor<1x64x32xf32>
+    attributes {
+      rock.block_size = 256 : i32,
+      rock.grid_size = 2 : i32,
+      rock.kernel,
+      rock.arch = "amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"
+    } {
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %dequant_scale, %bias) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xi32>,
+       %arg_dequant_scale: tensor<1x64x64xf32>,
+       %arg_bias: tensor<1x64x64xf32>):
+    %qk_f32 = arith.sitofp %arg_qk : tensor<1x64x64xi32> to tensor<1x64x64xf32>
+    %dequantized = arith.mulf %qk_f32, %arg_dequant_scale : tensor<1x64x64xf32>
+    %biased = arith.addf %dequantized, %arg_bias : tensor<1x64x64xf32>
+    rock.yield %biased : tensor<1x64x64xf32>
+  } {
+    numDequantInputs = 1 : i32,
+    operandSegmentSizes = array<i32: 1, 1, 1, 2, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x64x32xi8>, tensor<1x32x64xi8>, tensor<1x64x32xf32>,
+      tensor<1x64x64xf32>, tensor<1x64x64xf32> -> tensor<1x64x32xf32>
   return %result : tensor<1x64x32xf32>
 }

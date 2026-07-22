@@ -22,6 +22,31 @@ func.func @gridwise_attn_prefix_offset_requires_causal(
   return %r : tensor<1x384x64xf32>
 }
 
+func.func @gridwise_attn_dequant_count_requires_softmax(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>, %scale: tensor<1x384x384xf32>)
+    -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32,
+                rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{numDequantInputs only works for attention}}
+  %r = rock.gridwise_attention(%q, %k, %v, %scale) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>,
+       %arg_scale: tensor<1x384x384xf32>):
+    %scaled = arith.mulf %arg_qk, %arg_scale : tensor<1x384x384xf32>
+    rock.yield %scaled : tensor<1x384x384xf32>
+  } {
+    enableSoftmax = false,
+    numDequantInputs = 1 : i32,
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>,
+      tensor<1x384x64xf32>, tensor<1x384x384xf32>
+      -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // attention tests
 // -----------------------------------------------------------------------------
@@ -73,7 +98,7 @@ func.func @attention_prefix_offset_requires_causal(%q: tensor<1x384x64xf16>, %k:
 }
 
 // -----------------------------------------------------------------------------
-// gemm tests 
+// gemm tests
 // -----------------------------------------------------------------------------
 
 // Float input must produce a floating-point output type
@@ -183,7 +208,7 @@ func.func @gemm_scaled_missing_quantblocksize(%a: tensor<64x128xf4E2M1FN>, %b: t
 }
 
 // Test case: ScaleA with invalid rank (rank 1)
-func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
+func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
                                   %scaleA: tensor<64xf8E8M0FNU>,
                                   %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] D, K}}
@@ -193,7 +218,7 @@ func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32
 }
 
 // Test case: ScaleA with invalid rank (rank 4)
-func.func @gemm_scaleA_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
+func.func @gemm_scaleA_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
                              %scaleA: tensor<1x2x64x128xf8E8M0FNU>,
                              %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{scaleA must be a rank 2 or rank 3 tensor representing [G,] D, K}}
@@ -203,7 +228,7 @@ func.func @gemm_scaleA_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2
 }
 
 // Test case: ScaleB with invalid rank (rank 1)
-func.func @gemm_scaleB_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
+func.func @gemm_scaleB_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
                                   %scaleA: tensor<64x4xf8E8M0FNU>,
                                   %scaleB: tensor<32xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] D, K}}
@@ -213,7 +238,7 @@ func.func @gemm_scaleB_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32
 }
 
 // Test case: ScaleB with invalid rank (rank 4)
-func.func @gemm_scaleB_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
+func.func @gemm_scaleB_rank4(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
                              %scaleA: tensor<64x4xf8E8M0FNU>,
                              %scaleB: tensor<1x2x128x32xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{scaleB must be a rank 2 or rank 3 tensor representing [G,] D, K}}
@@ -328,7 +353,7 @@ func.func @gemm_kperblock_not_divisible_by_quantblocksize(
 }
 
 // -----------------------------------------------------------------------------
-// Gridwise gemm tests 
+// Gridwise gemm tests
 // -----------------------------------------------------------------------------
 #common_params = #rock.gemm_params<
   kPerBlock = 4,
@@ -1310,6 +1335,26 @@ func.func @attention_pre_softmax_multi_block(
   return %r : tensor<1x4x2xf16>
 }
 
+// The dequantization count must refer to leading external pre-softmax inputs.
+func.func @attention_invalid_num_dequant_inputs(
+    %q: tensor<1x4x4xf16>, %k: tensor<1x4x4xf16>,
+    %v: tensor<1x4x2xf16>, %scale: tensor<1x4x4xf16>)
+    -> tensor<1x4x2xf16>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{numDequantInputs must index leading pre-softmax inputs}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+   qk = elementwise otherIns(%scale : tensor<1x4x4xf16>) {
+   ^bb0(%qk_in: tensor<1x4x4xf16>, %scale_in: tensor<1x4x4xf16>):
+     %scaled = arith.mulf %qk_in, %scale_in : tensor<1x4x4xf16>
+     rock.yield %scaled : tensor<1x4x4xf16>
+   }
+   softmax(qk) * %v : tensor<1x4x2xf16>
+  } {numDequantInputs = 2 : i32, numHeadsKV = 1 : i32,
+     numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x4x2xf16>
+  return %r : tensor<1x4x2xf16>
+}
+
 // Sanity check that the body verifier also runs for
 // `rock.conv_elementwise_gemm`'s single-block requirement.
 func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
@@ -1333,4 +1378,3 @@ func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
      strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
   return %r : tensor<1x8x3xf32>
 }
-

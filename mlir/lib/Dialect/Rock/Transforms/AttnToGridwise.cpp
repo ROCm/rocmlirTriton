@@ -478,7 +478,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
     IntegerAttr splitKV, ValueRange elementwiseInputs,
     Region &preSecondOpRegion, bool enableSoftmax, TypeAttr softmaxType,
     int64_t numHeadsQ, int64_t numHeadsKV,
-    BoolAttr preSoftmaxHasSplitKVTransforms) {
+    BoolAttr preSoftmaxHasSplitKVTransforms, IntegerAttr numDequantInputs) {
   Location loc = op->getLoc();
 
   if (!op.getGemm0Params().has_value()) {
@@ -617,7 +617,8 @@ static LogicalResult commonAttentionGemmElmtGemm(
       currentSeqLen, prefixOffset, causal, splitKV,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
-      rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
+      rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms,
+      numDequantInputs);
   bool fusionsFound = rock::gemmGemmHasPreSecondGemmFusion(op);
   if (fusionsFound) {
     rw.inlineRegionBefore(preSecondOpRegion, newOp.getPreSoftmaxBody(),
@@ -675,7 +676,8 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
       adaptor.getCausalAttr(), adaptor.getSplitKVAttr(),
       adaptor.getPreSoftmaxElemWiseInputs(), op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
-      adaptor.getNumHeadsKV(), adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
+      adaptor.getNumHeadsKV(), adaptor.getPreSoftmaxHasSplitKVTransformsAttr(),
+      adaptor.getNumDequantInputsAttr());
 }
 
 LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
@@ -689,7 +691,8 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
       splitKV, adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
       /*numHeadsKV=*/1,
-      /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));
+      /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false),
+      /*numDequantInputs=*/rw.getI32IntegerAttr(0));
 }
 
 void RockAttnToGridwisePass::runOnOperation() {
