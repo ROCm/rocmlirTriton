@@ -13,6 +13,19 @@ tt.func @dead_load(%ptr: tensor<32x128x!tt.ptr<f16>>) {
 
 // -----
 
+// CHECK-LABEL: masked_load_preserves_metadata
+// CHECK: %[[LOADED:.*]] = tt.load %{{[^, ]+}} {tt.test_metadata = "kept"}
+// CHECK: tt.return %[[LOADED]]
+tt.func @masked_load_preserves_metadata(
+    %ptr: tensor<32x128x!tt.ptr<f32>>) -> tensor<32x128xf32> {
+  %mask = arith.constant dense<true> : tensor<32x128xi1>
+  %loaded = tt.load %ptr, %mask {tt.test_metadata = "kept"}
+      : tensor<32x128x!tt.ptr<f32>>
+  tt.return %loaded : tensor<32x128xf32>
+}
+
+// -----
+
 // CHECK-LABEL: make_range
 tt.func @make_range() -> (tensor<128x1xi32>, tensor<1xi32>) {
   // CHECK-DAG: %[[c:.*]] = arith.constant dense<0> : tensor<128x1xi32>

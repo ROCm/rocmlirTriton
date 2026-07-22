@@ -221,8 +221,8 @@ tt.func @test_combine_select_masked_load_pattern(%ptr: tensor<8x!tt.ptr<f32>>, %
     %mask = tt.splat %cond : i1 -> tensor<8xi1>
     %false_val = arith.constant dense<0.0> : tensor<8xf32>
 
-    // CHECK: %[[res1:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<8x!tt.ptr<f32>>
-    %x = tt.load %ptr, %mask, %false_val : tensor<8x!tt.ptr<f32>>
+    // CHECK: %[[res1:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} {tt.test_metadata = "kept"} : tensor<8x!tt.ptr<f32>>
+    %x = tt.load %ptr, %mask, %false_val {tt.test_metadata = "kept"} : tensor<8x!tt.ptr<f32>>
     %0 = arith.select %cond, %x, %false_val : tensor<8xf32>
 
     // CHECK: %[[res2:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<8x!tt.ptr<f32>>

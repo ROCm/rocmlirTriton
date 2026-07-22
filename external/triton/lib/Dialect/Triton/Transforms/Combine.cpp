@@ -100,9 +100,11 @@ public:
     if (splatCond != condSelect)
       return failure();
 
-    rewriter.replaceOpWithNewOp<LoadOp>(
+    DictionaryAttr discardableAttrs = loadOp->getDiscardableAttrDictionary();
+    auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+    newLoad->setDiscardableAttrs(discardableAttrs);
     return success();
   }
 };
