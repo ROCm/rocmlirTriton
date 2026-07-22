@@ -127,6 +127,9 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
 // arith-expand's compare/select expansion does not preserve the signed-zero
 // ordering of arith.maximumf, and not all LLVM backends currently preserve it
 // either. Correct both float variants explicitly when both operands are zero.
+// The maximum of two zeros is negative only when both inputs are negative, so
+// bitwise AND their representations to preserve max(-0.0, -0.0) = -0.0 while
+// still producing +0.0 for either ordering of mixed-sign zeros.
 struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::MaximumOp op,
@@ -160,7 +163,17 @@ struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
     Value in2IsZero = arith::CmpFOp::create(
         rewriter, loc, arith::CmpFPredicate::OEQ, in2, zero);
     Value bothZero = arith::AndIOp::create(rewriter, loc, in1IsZero, in2IsZero);
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, bothZero, zero, max);
+    Type intElemTy =
+        rewriter.getIntegerType(elemTy.getIntOrFloatBitWidth());
+    Type intShapedTy = shapedTy.clone(intElemTy);
+    Value in1Bits =
+        arith::BitcastOp::create(rewriter, loc, intShapedTy, in1);
+    Value in2Bits =
+        arith::BitcastOp::create(rewriter, loc, intShapedTy, in2);
+    Value maxZeroBits = arith::AndIOp::create(rewriter, loc, in1Bits, in2Bits);
+    Value maxZero =
+        arith::BitcastOp::create(rewriter, loc, shapedTy, maxZeroBits);
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, bothZero, maxZero, max);
     return success();
   }
 };

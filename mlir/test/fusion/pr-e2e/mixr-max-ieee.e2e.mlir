@@ -4,12 +4,14 @@
 // below. rock-allow-fast-math-flags.mlir separately verifies that the default
 // pipeline leaves Max-derived arith.maximumf operations precise.
 //
-// Verify NaN propagation from both operand positions, +0 over -0, infinity
-// ordering, and ordinary finite values. Two +inf outputs are expected: one
-// from max(-inf, +inf), and one from 1 / max(-0, +0). The latter distinguishes
-// +0 from -0 without relying on how the runner prints signed zero.
+// Verify NaN propagation from both operand positions, +0 over -0, preservation
+// of -0 for max(-0, -0), infinity ordering, and ordinary finite values. Two
+// +inf outputs are expected: one from max(-inf, +inf), and one from
+// 1 / max(-0, +0). The -inf output comes from 1 / max(-0, -0), distinguishing
+// both zero-sign cases without relying on how the runner prints signed zero.
 // CHECK-COUNT-30: nan
 // CHECK-COUNT-2: [inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf,  inf]
+// CHECK: [-inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf,  -inf]
 // CHECK: [2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2]
 
 module {
@@ -17,6 +19,7 @@ module {
       %arg0: !migraphx.shaped<1x5x4xf32, 20x4x1>,
       %arg1: !migraphx.shaped<1x4x3xf32, 12x3x1>)
       -> (!migraphx.shaped<1x5x3xf32, 15x3x1>,
+          !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
@@ -52,6 +55,12 @@ module {
     %zero_sign_result = migraphx.div %one, %max_zero
         : <1x5x3xf32, 15x3x1>, <1x5x3xf32, 15x3x1>
         -> <1x5x3xf32, 15x3x1>
+    %max_neg_zero = migraphx.max %neg_zero, %neg_zero
+        : <1x5x3xf32, 15x3x1>, <1x5x3xf32, 15x3x1>
+        -> <1x5x3xf32, 15x3x1>
+    %same_zero_sign_result = migraphx.div %one, %max_neg_zero
+        : <1x5x3xf32, 15x3x1>, <1x5x3xf32, 15x3x1>
+        -> <1x5x3xf32, 15x3x1>
     %pos_inf = migraphx.div %one, %zero
         : <1x5x3xf32, 15x3x1>, <1x5x3xf32, 15x3x1>
         -> <1x5x3xf32, 15x3x1>
@@ -72,8 +81,9 @@ module {
         : <1x5x3xf32, 15x3x1>, <1x5x3xf32, 15x3x1>
         -> <1x5x3xf32, 15x3x1>
     return %nan_lhs_result, %nan_rhs_result, %zero_sign_result, %inf_result,
-           %finite_result
+           %same_zero_sign_result, %finite_result
         : !migraphx.shaped<1x5x3xf32, 15x3x1>,
+          !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
           !migraphx.shaped<1x5x3xf32, 15x3x1>,
