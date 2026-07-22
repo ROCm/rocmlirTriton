@@ -601,13 +601,6 @@ struct TransformsToPtrRewritePattern
                             "linearized index, but got ")
              << computed.size() << " results";
     }
-    // baseAddrSplat and the offset share indexElemType, so the add type-checks
-    // directly. Its *value* is a placeholder: RockTensorToTritonPtr replaces
-    // this splat with a genuine !tt.ptr tensor and turns this add into a
-    // tt.addptr, so the actual address width is handled there.
-    auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
-    Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
-
     // Create the mask tensor by broadcasting isValid to the right shape
     Value maskTensor;
     if (isa<RankedTensorType>(isValid.getType())) {
@@ -625,6 +618,29 @@ struct TransformsToPtrRewritePattern
       auto maskType = RankedTensorType::get(shape, b.getI1Type());
       maskTensor = triton::SplatOp::create(b, loc, maskType, isValid);
     }
+
+    auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
+
+    // Zero the offset of masked-out lanes so every lane stays in-bounds: AMD
+    // lowers masked loads as load-then-select, so a masked lane with an
+    // out-of-bounds offset (e.g. from a Pad transform) would still access
+    // memory and can page-fault. The mask still discards the loaded value and
+    // predicates stores, so this is safe. Skip trivial (all-valid) masks.
+    bool trivialMask = false;
+    if (auto cst = isValid.getDefiningOp<arith::ConstantOp>())
+      if (auto boolAttr = dyn_cast<BoolAttr>(cst.getValue()))
+        trivialMask = boolAttr.getValue();
+    if (!trivialMask) {
+      auto offsetTy = cast<RankedTensorType>(offset.getType());
+      Value zeroOffset =
+          arith::ConstantOp::create(b, loc, offsetTy, b.getZeroAttr(offsetTy));
+      offset = arith::SelectOp::create(b, loc, maskTensor, offset, zeroOffset);
+    }
+    // baseAddrSplat and the offset share indexElemType, so the add type-checks
+    // directly. Its *value* is a placeholder: RockTensorToTritonPtr replaces
+    // this splat with a genuine !tt.ptr tensor and turns this add into a
+    // tt.addptr, so the actual address width is handled there.
+    Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
 
     // Replace the op with the tensor results
     b.replaceOp(op, {pointerTensor, maskTensor});
