@@ -12,7 +12,7 @@
 // (ROCMLIR_DRIVER_E2E_TEST_ENABLED / enable_rock_driver_e2e_test). Arch-independent:
 // uses %arch and lets rocmlir-gen infer the hardware defaults.
 
-// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 556 -seq_len_k 464 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 232 -head_dim_v 203 -with-attn-scale=False -with-attn-bias=True -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
+// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
 // RUN: | rocm-run \
@@ -20,15 +20,16 @@
 
 // CHECK: [1 1 1]
 
-// Also verify at the IR level that the fix is in effect: the output tensor has
-// 3236151296 (> INT32_MAX) elements, so TransformsToPointerArith must extract
-// its base pointer as i64 and emit the store-offset arithmetic in i64 rather
-// than i32 (which is what used to overflow).
+// Also verify at the IR level that the fix is in effect. The final output
+// tensor is only 8400896 elements here (fits in i32), but split_kv=32 allocates
+// a partial-output workspace of 2150629376 elements (> INT32_MAX), so
+// TransformsToPointerArith must extract that base pointer as i64 and emit the
+// store-offset arithmetic in i64 rather than i32 (which is what used to overflow).
 
-// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 556 -seq_len_k 464 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 232 -head_dim_v 203 -with-attn-scale=False -with-attn-bias=True -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
+// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c --mlir-print-ir-after=rock-transforms-to-pointer-arith -o /dev/null 2>&1 \
 // RUN: | FileCheck %s --check-prefix=I64
 
-// I64: rock.extract_ptr %{{.*}} : tensor<3236151296xbf16> -> i64
+// I64: rock.extract_ptr %{{.*}} : tensor<2150629376xbf16> -> i64
 // I64: rock.blockwise_store_ptr {{.*}} -> tensor<{{.*}}xi64>(

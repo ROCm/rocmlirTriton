@@ -112,10 +112,25 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX950_ON
 
+// gfx1170 default: in-thread-transpose pass is scheduled. gfx11.7 is in the
+// per-arch default set (gfx942 / gfx110 / gfx115 / gfx117 / gfx120), matching
+// compiler.py's is_in_thread_transpose_enabled.
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_DEFAULT
+
+// gfx1170 with useInThreadTranspose=0: override beats the per-arch default, so
+// the pass is absent.
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,0,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_OFF
+
 // ITT_GFX942_DEFAULT: tritonamdgpu-in-thread-transpose
 // ITT_GFX942_OFF-NOT: tritonamdgpu-in-thread-transpose
 // ITT_GFX950_DEFAULT-NOT: tritonamdgpu-in-thread-transpose
 // ITT_GFX950_ON: tritonamdgpu-in-thread-transpose
+// ITT_GFX1170_DEFAULT: tritonamdgpu-in-thread-transpose
+// ITT_GFX1170_OFF-NOT: tritonamdgpu-in-thread-transpose
 
 //===----------------------------------------------------------------------===//
 // useBufferOps / useBufferAtomics

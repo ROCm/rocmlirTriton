@@ -248,9 +248,23 @@ def get_nanoseconds(filename):
         return result
 
 
+# Architectures where rocprof hardware-counter collection (``-i <metrics>``) is
+# skipped. gfx950's counters are unsupported; on gfx1170 the counter-collection
+# path wedges rocprofv3 in an uninterruptible state (the metrics we request,
+# e.g. LDSBankConflict, are not yet wired up for this arch). These metrics are
+# diagnostic-only -- benchmark timing comes from ``--kernel-trace --stats`` -- so
+# skipping them keeps benchmarking working without the (optional) bank-conflict
+# stats.
+ROCPROF_METRICS_UNSUPPORTED_CHIPS = ["gfx950", "gfx1170"]
+
+
 def get_profiler_output_path(arch: str, base_out_path):
     chip = GFX_CHIP_RE.search(arch).group(0)
-    if (chip not in ["gfx950"]):
+    # rocprof only emits the ``pmc_1/`` subdirectory when a hardware-counter
+    # (pmc) pass runs, i.e. when metrics collection is enabled. Arches that skip
+    # metrics (see ROCPROF_METRICS_UNSUPPORTED_CHIPS) write the stats file
+    # directly, so must not look under ``pmc_1/``.
+    if (chip not in ROCPROF_METRICS_UNSUPPORTED_CHIPS):
         return os.path.join('pmc_1', base_out_path)
     return base_out_path
 
@@ -260,7 +274,7 @@ def get_metric_args_for_rocprof(arch: str):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     metrics_path = os.path.join(current_dir, ROCMLIR_INPUT_METRICS_FILE_NAME)
     metrics = []
-    if (chip not in ["gfx950"]):
+    if (chip not in ROCPROF_METRICS_UNSUPPORTED_CHIPS):
         metrics = ['-i', metrics_path]
     return metrics
 

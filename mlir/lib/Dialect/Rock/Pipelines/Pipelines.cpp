@@ -76,6 +76,9 @@ using namespace mlir::triton;
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
 
+  // Mirror compiler.py make_ttir(): archs WITHOUT TDM must lower tensor
+  // descriptors to raw pointers (they lack the hardware to consume them);
+  // only TDM-capable archs (gfx1250) keep the descriptors.
   if (!rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
   }
@@ -127,7 +130,8 @@ static bool isInThreadTransposeEnabled(StringRef arch,
   if (useInThreadTransposeOverride != rock::kKnobDefault)
     return useInThreadTransposeOverride;
   return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
-         arch.starts_with("gfx115") || arch.starts_with("gfx120");
+         arch.starts_with("gfx115") || arch.starts_with("gfx117") ||
+         arch.starts_with("gfx120");
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {

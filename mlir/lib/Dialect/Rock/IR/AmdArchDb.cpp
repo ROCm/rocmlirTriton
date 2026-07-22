@@ -261,6 +261,9 @@ bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
+    // gfx1170 has FeatureFlatAtomicFaddF32Inst (F32 only); it lacks the gfx12
+    // packed F16/BF16 atomic-add features, so it matches RDNA3 here.
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
       return true;
@@ -301,6 +304,8 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
+    // gfx1170 shares the RDNA F32 atomic-max instruction.
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
       return true;
@@ -432,6 +437,8 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 30;
   case ISAFamily::RDNA3:
+  // gfx1170 is an RDNA3-class part; use the same conservative minimum.
+  case ISAFamily::GFX1170:
     return 2;
   case ISAFamily::RDNA4:
     return 12;
@@ -476,6 +483,13 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
+  // gfx1170 ("RDNA 4m") is an APU/iGPU with no Infinity Cache/MALL; its
+  // last-level cache is the GPU L2 (~1-2 MiB observed on hardware), not the
+  // 96 MiB RDNA3 desktop Infinity Cache. A too-large value skews the
+  // cache-streaming heuristic (chooseGemmLoadCacheModifiers) and the
+  // tuning-driver cache flush.
+  // TODO(gfx1170, AIROCMLIR-1092): confirm the exact L2 size against hardware
+  // (rocminfo / hipDeviceProp_t::l2CacheSize) and update if needed.
   case ISAFamily::GFX1170:
     return 2 * kMiB;
   case ISAFamily::RDNA4:
@@ -499,6 +513,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
     return 16;
@@ -532,6 +547,9 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
       return 1536;
     return 1024;
   case ISAFamily::GFX1170:
+    // gfx11.7 (FeatureISAVersion11_7_Common) does NOT pull in Feature1536VGPRs
+    // the way gfx1100/gfx1101/gfx1151 do, so it keeps the default 1024-entry
+    // VGPR file. See AMDGPU.td / getTotalNumVGPRs() in AMDGPUBaseInfo.cpp.
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
