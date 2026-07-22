@@ -13,9 +13,11 @@
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
 //      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
 //      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
-//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
-// A trivial (all-valid) mask keeps the original offset chain: no clamp is emitted.
+// A trivial (all-valid) mask keeps the original offset chain: no clamp is emitted
+// anywhere in the pointer-forming region (bounded here by the mask splat above and
+// the load below, which is where a regressed clamp would appear).
 //  CHECK-NOT:   arith.select
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %c0_i32 = arith.constant 0 : i32
