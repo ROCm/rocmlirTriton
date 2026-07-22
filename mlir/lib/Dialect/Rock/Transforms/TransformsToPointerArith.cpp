@@ -601,46 +601,50 @@ struct TransformsToPtrRewritePattern
                             "linearized index, but got ")
              << computed.size() << " results";
     }
-    // Create the mask tensor by broadcasting isValid to the right shape
-    Value maskTensor;
-    if (isa<RankedTensorType>(isValid.getType())) {
-      // isValid is already a tensor, ensure it has the right shape
-      auto isValidTensorType = cast<RankedTensorType>(isValid.getType());
-      if (isValidTensorType.getShape() != shape) {
-        // Need to broadcast using triton.broadcast
-        auto maskType = RankedTensorType::get(shape, b.getI1Type());
-        maskTensor = triton::BroadcastOp::create(b, loc, maskType, isValid);
-      } else {
-        maskTensor = isValid;
-      }
-    } else {
-      // isValid is a scalar, splat it to tensor using triton.splat
-      auto maskType = RankedTensorType::get(shape, b.getI1Type());
-      maskTensor = triton::SplatOp::create(b, loc, maskType, isValid);
-    }
-
     auto [base, offset] = ensureCompatible(b, loc, baseAddrSplat, computed[0]);
 
-    // Zero the offset of masked-out lanes so every lane stays in-bounds: AMD
-    // lowers masked loads as load-then-select, so a masked lane with an
-    // out-of-bounds offset (e.g. from a Pad transform) would still access
-    // memory and can page-fault. The mask still discards the loaded value and
-    // predicates stores, so this is safe. Skip trivial (all-valid) masks.
+    // Broadcast/splat `isValid` into a per-lane mask tensor of the result shape.
+    auto buildMaskTensor = [&]() -> Value {
+      if (auto isValidTy = dyn_cast<RankedTensorType>(isValid.getType())) {
+        if (isValidTy.getShape() == shape)
+          return isValid;
+        auto maskType = RankedTensorType::get(shape, b.getI1Type());
+        return triton::BroadcastOp::create(b, loc, maskType, isValid);
+      }
+      auto maskType = RankedTensorType::get(shape, b.getI1Type());
+      return triton::SplatOp::create(b, loc, maskType, isValid);
+    };
+
+    // A non-trivial validity mask means some lanes are out-of-bounds: a
+    // validity-impacting transform (e.g. `Pad`) passes its OOB coordinate
+    // through to the offset and records the out-of-boundsness only in the mask.
+    // On AMD a masked load lowers to load-then-select, so such a lane would
+    // still issue the access and can page-fault; zero its offset so every lane
+    // addresses in-bounds memory. The mask still discards the loaded value on
+    // loads and predicates stores, so this is safe. Trivial (all-valid) masks
+    // keep the original offset chain (and its downstream buffer-op analysis).
     bool trivialMask = false;
     if (auto cst = isValid.getDefiningOp<arith::ConstantOp>())
       if (auto boolAttr = dyn_cast<BoolAttr>(cst.getValue()))
         trivialMask = boolAttr.getValue();
-    if (!trivialMask) {
-      auto offsetTy = cast<RankedTensorType>(offset.getType());
-      Value zeroOffset =
-          arith::ConstantOp::create(b, loc, offsetTy, b.getZeroAttr(offsetTy));
-      offset = arith::SelectOp::create(b, loc, maskTensor, offset, zeroOffset);
-    }
+
     // baseAddrSplat and the offset share indexElemType, so the add type-checks
     // directly. Its *value* is a placeholder: RockTensorToTritonPtr replaces
     // this splat with a genuine !tt.ptr tensor and turns this add into a
     // tt.addptr, so the actual address width is handled there.
-    Value pointerTensor = arith::AddIOp::create(b, loc, base, offset);
+    Value maskTensor;
+    Value pointerTensor;
+    if (trivialMask) {
+      pointerTensor = arith::AddIOp::create(b, loc, base, offset);
+      maskTensor = buildMaskTensor();
+    } else {
+      maskTensor = buildMaskTensor();
+      auto offsetTy = cast<RankedTensorType>(offset.getType());
+      Value zeroOffset =
+          arith::ConstantOp::create(b, loc, offsetTy, b.getZeroAttr(offsetTy));
+      offset = arith::SelectOp::create(b, loc, maskTensor, offset, zeroOffset);
+      pointerTensor = arith::AddIOp::create(b, loc, base, offset);
+    }
 
     // Replace the op with the tensor results
     b.replaceOp(op, {pointerTensor, maskTensor});

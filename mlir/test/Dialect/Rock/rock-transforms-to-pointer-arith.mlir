@@ -14,6 +14,8 @@
 //      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
 //      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+// A trivial (all-valid) mask keeps the original offset chain: no clamp is emitted.
+//  CHECK-NOT:   arith.select
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %c0_i32 = arith.constant 0 : i32
@@ -97,7 +99,10 @@ func.func @test_extract_ptr_hoisting(%arg0: tensor<8192xf16>, %arg1: tensor<8192
 
 // -----
 
-// Verifies Pad transforms produce non-trivial validity masks with bounds checks
+// Verifies Pad transforms produce non-trivial validity masks with bounds checks,
+// and that masked-out lanes' offset is clamped to zero before the pointer add so
+// they never address out-of-bounds memory (AMD lowers masked loads as
+// load-then-select, i.e. the access still issues for masked lanes).
 // CHECK-LABEL: @test_pad_mask
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4032xf16>)
 //      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<4032xf16> -> i32
@@ -105,12 +110,14 @@ func.func @test_extract_ptr_hoisting(%arg0: tensor<8192xf16>, %arg1: tensor<8192
 //      CHECK:   tt.expand_dims {{.*}} : tensor<64xi32> -> tensor<64x1xi32>
 //      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
 //      CHECK:   tt.expand_dims {{.*}} : tensor<64xi32> -> tensor<1x64xi32>
-//      CHECK:   %[[BOUND:.*]] = arith.constant 63 : i32
 //      CHECK:   arith.cmpi ult, {{.*}}, {{.*}} : tensor<64x1xi32>
 //      CHECK:   arith.andi {{.*}} : tensor<64x1xi1>
+//      CHECK:   %[[OFFSET:.*]] = arith.addi {{.*}} : tensor<64x64xi32>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
-//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
-//      CHECK:   tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
+//      CHECK:   %[[MASK:.*]] = tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
+//      CHECK:   %[[ZERO:.*]] = arith.constant dense<0> : tensor<64x64xi32>
+//      CHECK:   %[[SAFE:.*]] = arith.select %[[MASK]], %[[OFFSET]], %[[ZERO]] : tensor<64x64xi1>, tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}}, %[[SAFE]] : tensor<64x64xi32>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_pad_mask(%arg0: tensor<4032xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
