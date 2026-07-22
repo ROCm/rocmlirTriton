@@ -18,20 +18,20 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
-/* //
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
-        cmakeBuild generator: 'Ninja',\
-            buildDir: 'build',\
-            buildType: 'RelWithDebInfo',\
-            installation: 'InSearchPath',\
-            steps: [[args: target]],\
-            cmakeArgs: """-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-              -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
-              ${cmakeOpts}"""
+        // Collapse multi-line Groovy strings into a single line for cmake.sh
+        sh """
+            export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+            export C_COMPILER=/opt/rocm/llvm/bin/clang
+            bash cmake.sh ${cmakeOpts.replaceAll('\\s+', ' ').trim()}
+        """
+        dir('build') {
+            int limit_lit_workers = setLitWorkerCount()
+            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja ${target}"
+        }
     }
 }
-*/
 
 // Lightweight Git probe: verifies auth + network + ref exists
 void gitHealthCheck() {
@@ -142,63 +142,44 @@ boolean isRetriableScmCheckoutError(String msg) {
         "transfer closed with outstanding read data remaining",
         "bytes of body are still expected",
         "unexpected disconnect while reading sideband packet",
-        "fatal: early eof",
-        "invalid index-pack output",
-        "bad pack header"
+        "bad pack header",
+        "git-remote-https died of signal 15",
+        "early eof",
+        "invalid index-pack output"
     ].any { msg.contains(it) }
 }
 
 // Retry checkout without shallow clone if GitSCM chokes on a specific SHA
-void robustScmCheckout(Map opts = [:]) {
+void robustScmCheckout() {
     int maxAttempts = 2
-    String repoUrl = opts.get('repoUrl', null) as String
-    String ref = opts.get('ref', opts.get('branch', null)) as String
-    String repoName = opts.get('repoName', repoUrl ?: 'SCM') as String
-    boolean externalCheckout = repoUrl as boolean
-
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            // This inner 'try' handles the "reference is not a tree" fallback for the main SCM checkout.
+            // This inner 'try' handles the "reference is not a tree" fallback
             try {
-                echo "[SCM] Attempting ${repoName} checkout (${attempt}/${maxAttempts})..."
-                if (externalCheckout) {
-                    if (!ref) {
-                        error "[SCM] Missing ref/branch for ${repoName} checkout"
-                    }
-                    checkout(changelog: false, poll: false, scm: [
-                        $class: 'GitSCM',
-                        branches: [[name: ref]],
-                        doGenerateSubmoduleConfigurations: false,
-                        extensions: [
-                            [$class: 'CloneOption', timeout: GIT_SCM_TIMEOUT_MINUTES],
-                            [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
-                        ],
-                        userRemoteConfigs: [[url: repoUrl]]
-                    ])
-                } else {
-                    checkout(scmWithGitTimeout())
-                }
-                echo "[SCM] ${repoName} checkout successful"
+                echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
+                checkout(scmWithGitTimeout())
+                echo "[SCM] Checkout successful"
+                // If checkout succeeds, exit the function immediately
                 return
             } catch (err) {
                 def msg = "${err}".toLowerCase()
-                if (externalCheckout || (!msg.contains("reference is not a tree") && !msg.contains("could not checkout"))) {
-                    // If it's not a known shallow-checkout problem, re-throw it to be caught by the outer block.
+                if (!msg.contains("reference is not a tree") && !msg.contains("could not checkout")) {
+                    // If it's not a known transient error, re-throw it to be caught by the outer block
                     throw err
                 }
 
-                // This is the fallback logic for the "reference is not a tree" error.
+                // This is the fallback logic for the "reference is not a tree" error
                 echo "[SCM] Default checkout failed: ${err}. Retrying ONCE with robust deep clone"
                 String repo = scm?.userRemoteConfigs?.getAt(0)?.url
                 String cred = scm?.userRemoteConfigs?.getAt(0)?.credentialsId
-                String currentRef = env.CHANGE_ID ? "refs/pull/${env.CHANGE_ID}/head"
+                String ref  = env.CHANGE_ID ? "refs/pull/${env.CHANGE_ID}/head"
                                           : env.BRANCH_NAME ? "refs/heads/${env.BRANCH_NAME}"
                                           : "HEAD"
 
                 def deepScm = [
                     $class: 'GitSCM',
-                    userRemoteConfigs: [[url: repo, credentialsId: cred, refspec: "+${currentRef}:${currentRef}"]],
-                    branches: [[name: currentRef]],
+                    userRemoteConfigs: [[url: repo, credentialsId: cred, refspec: "+${ref}:${ref}"]],
+                    branches: [[name: ref]],
                     doGenerateSubmoduleConfigurations: false,
                     extensions: [
                         [$class: 'CloneOption', depth: 0, shallow: false, noTags: false, honorRefspec: true, timeout: GIT_SCM_TIMEOUT_MINUTES],
@@ -207,23 +188,73 @@ void robustScmCheckout(Map opts = [:]) {
                 ]
                 checkout(deepScm)
                 echo "[SCM] Deep clone checkout successful."
+                // If the deep clone succeeds, exit the function
                 return
             }
         } catch (err) {
-            // This outer 'catch' block is specifically for retrying network errors.
+            // This outer 'catch' block is specifically for retrying network errors
             def msg = scmCheckoutRetryContext(err)
             if (isRetriableScmCheckoutError(msg) && attempt < maxAttempts) {
-                echo "[SCM] ${repoName} checkout attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
-                if (externalCheckout) {
-                    echo "[SCM] Removing partial ${repoName} checkout before retrying..."
-                    deleteDir()
-                }
+                echo "[SCM] Attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
                 echo "[SCM] Waiting 2 minutes before retrying..."
                 sleep(time: 2, unit: 'MINUTES')
+                // The loop will now continue to the next attempt.
             } else {
-                echo "[SCM] Unrecoverable ${repoName} checkout error after ${attempt} attempt(s)."
+                // This is either not a network error, or it was the final attempt. Fail the build
+                echo "[SCM] Unrecoverable SCM error after ${attempt} attempt(s)."
                 throw err
             }
+        }
+    }
+}
+
+Map externalGitScm(String url, String ref) {
+    return [
+        $class: 'GitSCM',
+        branches: [[name: ref]],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [
+            [
+                $class: 'CloneOption',
+                depth: 0,
+                shallow: false,
+                noTags: false,
+                reference: '',
+                honorRefspec: false,
+                timeout: GIT_SCM_TIMEOUT_MINUTES
+            ],
+            [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+        ],
+        submoduleCfg: [],
+        userRemoteConfigs: [[url: url]]
+    ]
+}
+
+void robustExternalCheckout(String url, String ref) {
+    int maxAttempts = 2
+    if (!ref) {
+        error "[SCM] Missing ref/branch for external checkout"
+    }
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            // Discard a partial pack before retrying the clone.
+            deleteDir()
+            checkout(
+                changelog: false,
+                poll: false,
+                scm: externalGitScm(url, ref)
+            )
+            return
+        } catch (err) {
+            String context = scmCheckoutRetryContext(err)
+            if (attempt == maxAttempts || !isRetriableScmCheckoutError(context)) {
+                throw err
+            }
+
+            echo "[SCM] External checkout attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
+            echo "[SCM] Waiting 2 minutes before retrying..."
+            sleep(time: 2, unit: 'MINUTES')
         }
     }
 }
@@ -371,14 +402,13 @@ void buildMIGraphX(String cmakeOpts) {
 }
 
 void getAndBuildMIGraphX(String cmakeOpts) {
-    robustScmCheckout(repoUrl: 'https://github.com/ROCm/AMDMIGraphX.git', ref: params.MIGraphXBranch, repoName: 'MIGraphX')
+    robustExternalCheckout('https://github.com/ROCm/AMDMIGraphX.git', params.MIGraphXBranch)
     buildMIGraphX(cmakeOpts)
 }
 
 /*
 void getAndBuildCK(String cmakeOpts) {
-    git branch: params.CKBranch, poll: false,\
-        url: 'https://github.com/ROCm/composable_kernel.git'
+    robustExternalCheckout('https://github.com/ROCm/composable_kernel.git', params.CKBranch)
     buildCK(cmakeOpts)
 }
 */
@@ -634,7 +664,7 @@ String getLabelFromChip(String chip) {
 int setLitWorkerCount() {
     int limit_lit_workers = 8
     def gpu_arch = get_gpu_architecture()
-    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a')) {
+    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a') || gpu_arch.contains('gfx950')) {
         limit_lit_workers = 20
     } else if (gpu_arch.contains('gfx942')) {
         limit_lit_workers = 64
@@ -642,11 +672,10 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-/*
-void build_fixedE2ETests(String codepath) {
-    // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
+void build_fixedE2ETests() {
+    // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-mlir-build-only check-rocmlir-build-only${params.nightly ? ' hipblaslt-benchmark-driver' : ''}", """
+    buildProject("check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
@@ -656,17 +685,23 @@ void build_fixedE2ETests(String codepath) {
              """)
 }
 
-void check_randomE2ETests(String codepath) {
-    // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
+void check_randomE2ETests() {
     int limit_lit_workers = setLitWorkerCount()
-    buildProject('check-rocmlir', """
-              -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
-              -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
-              -DROCK_E2E_TEST_ENABLED=1
-              -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
-              -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=1
-             """)
+    timeout(time: 60, activity: true, unit: 'MINUTES') {
+        dir('build') {
+            // Use cmake directly instead of buildProject/cmake.sh because
+            // cmake.sh wipes the build directory. We only need to reconfigure
+            // flags (add RANDOM_DATA_SEED=1) after build_fixedE2ETests.
+            sh """cmake .. \
+                -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \
+                -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
+                -DROCK_E2E_TEST_ENABLED=1 \
+                -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1 \
+                -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}' \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=1"""
+            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
+        }
+    }
 }
 
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
@@ -674,6 +709,9 @@ void check_randomE2ETests(String codepath) {
 // attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
 // same ``-j``/``--samples``/``--log-failures`` interface and ship in
 // <build>/bin/ via the ``ci-performance-scripts`` target.
+// Kept commented out alongside its (also commented) call sites in the
+// NIGHTLY/WEEKLY stages block; restore together when re-enabling sweeps.
+/*
 void runSweep(String script, String kind, int samples, String codepath) {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 300, activity: true, unit: 'MINUTES') {
@@ -683,6 +721,7 @@ void runSweep(String script, String kind, int samples, String codepath) {
     }
 }
 */
+
 
 boolean shouldRunFromCodepath(String codepath) {
     // Run vanilla on public CI
@@ -1193,14 +1232,7 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            sh """
-                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh \\
-                                                                    -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'} \\
-                                                                    -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'} \\
-                                                                    -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
-                                                            """
+                                                            build_fixedE2ETests()
                                                         }
                                                     }
 
@@ -1210,12 +1242,18 @@ pipeline {
                                                         }
                                                     }
 
-                                                    stage('Run tests') {
+                                                    stage('Shared Library: fixed E2E') {
+                                                        int limit_lit_workers = setLitWorkerCount()
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             dir('build') {
-                                                                int limit_lit_workers = setLitWorkerCount()
                                                                 sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                             }
+                                                        }
+                                                    }
+
+                                                    if (params.nightly) {
+                                                        stage('Shared Library: random E2E') {
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 
@@ -1226,17 +1264,17 @@ pipeline {
                                                             echo "Container environment:"
                                                             showEnv()
 
-                                                            build_fixedE2ETests("${CODEPATH}")
+                                                            build_fixedE2ETests()
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                                sh 'cd build; ninja check-mlir check-rocmlir'
+                                                                sh 'cd build; ninja check-rocmlir'
                                                             }
                                                         }
                                                     }
                                                     
                                                     if (params.sharedLib && params.nightly) {
                                                         stage('Shared Library: random E2E') {
-                                                            check_randomE2ETests("${CODEPATH}")
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 

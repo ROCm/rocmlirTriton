@@ -38,6 +38,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
+#include <algorithm>
 #include <cstdint>
 #include <random>
 
@@ -114,6 +115,24 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
   if (!llvm::is_contained(kPerBlockList, cap))
     kPerBlockList.push_back(cap);
+}
+
+// Triton caps every tensor at 2^20 elements and enforces it via
+// OpTrait::impl::verifyTensorSize. Hand-mirrored from `maxTensorNumElements` in
+// external/triton/include/triton/Dialect/Triton/IR/Traits.h; re-audited on
+// every Triton bump (see docs/bump_triton_version.md section 5.4.1).
+static constexpr int64_t kTritonMaxTensorNumElements = 1048576;
+
+// A GEMM tile lowered through the Rock->Triton bridge materialises kPerBlock x
+// (M|N)PerBlock index/mask tensors (a tt.broadcast from tensor<kPerBlock x 1>).
+// If kPerBlock * max(mPerBlock, nPerBlock) exceeds Triton's per-tensor element
+// cap, that broadcast fails verifyTensorSize and the kernel cannot compile. In
+// exhaustive mode a single such combo aborts the whole config, so drop these
+// combos from the tuning space up front.
+static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
+                                   uint32_t kPerBlock) {
+  int64_t maxMN = std::max(mPerBlock, nPerBlock);
+  return static_cast<int64_t>(kPerBlock) * maxMN > kTritonMaxTensorNumElements;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -376,13 +395,32 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
+  // gemm1's N tile is derived, not tuned: gemm1NPerBlock = PowerOf2Ceil(head
+  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). GemmGemmSize::o is
+  // that head-dim-of-V, already extracted transpose-aware, so guard gemm1's
+  // lowered tensor against the same Triton per-tensor cap as gemm0.
+  uint32_t gemm1NPerBlock =
+      static_cast<uint32_t>(llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().o));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
       auto optimalSplitKFactors =
           computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
 
+      // gemm1 lowers a gemm0NPerBlock x max(gemm0MPerBlock, gemm1NPerBlock)
+      // index/mask tensor (its contraction tile is gemm0NPerBlock). Guard it
+      // against the same cap as gemm0; this depends only on the gemm0 M/N
+      // tiles, so check it once outside the gemmKPerBlock loop.
+      if (exceedsTritonTensorCap(gemm0MPerBlock, gemm1NPerBlock,
+                                 gemm0NPerBlock))
+        continue;
+
       for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
+        // Skip tiles whose lowered index/mask tensors would exceed Triton's
+        // per-tensor element cap (see exceedsTritonTensorCap).
+        if (exceedsTritonTensorCap(gemm0MPerBlock, gemm0NPerBlock,
+                                   gemmKPerBlock))
+          continue;
         for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
           for (uint32_t numWaves : validRangeGemmGemmParams[4]) {
             for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[5]) {
@@ -534,6 +572,11 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
       for (uint32_t gemmKPerBlock : params[2]) {
+        // Skip tiles whose lowered index/mask tensors would exceed Triton's
+        // per-tensor element cap; they cannot compile (see
+        // exceedsTritonTensorCap).
+        if (exceedsTritonTensorCap(gemmMPerBlock, gemmNPerBlock, gemmKPerBlock))
+          continue;
         for (uint32_t gemmKPack : params[3]) {
           for (uint32_t numWaves : params[4]) {
             for (uint32_t matrixInstrNonkdim : params[5]) {

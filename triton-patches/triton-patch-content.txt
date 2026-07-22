@@ -14,6 +14,7 @@ patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
+patch10928.patch
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -115,3 +116,21 @@ patch10635.patch
 
   Drop this patch on the next Triton bump that pulls PR #10635 (upstream main at
   f12e94d or later) into external/triton.
+
+patch10928.patch
+  Supports a blocked/shared order mismatch for direct-to-LDS loads on gfx9.
+  When the blocked and shared encodings have different orders, the srcToShared
+  layout has contig=1 (smaller than the blocked encoding), so CoalesceAsyncCopy
+  either skipped rewriting the blocked encoding or rewrote it incorrectly,
+  yielding non-coalesced LDS writes. The pass now detects when the layout
+  restricts contiguity below the load contiguity and always rewrites the src
+  layout, distributing lanes/warps along the shared order while keeping the
+  original blocked order for the final encoding. The lowering
+  (canLoadDirectToLDS) also no longer bails out when the pointer contiguity
+  exceeds the srcToShared contiguity: instead it clamps the load width down to
+  the coalesced chunk size and splits the load into multiple narrower
+  direct-to-LDS ops. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10928 exactly.
+
+  Drop this patch on the next Triton bump that pulls PR #10928 into
+  external/triton.
