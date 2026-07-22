@@ -32,9 +32,25 @@ func.func @sub_f16(%arg0: tensor<8x16xf16>, %arg1: tensor<8x16xf16>) -> tensor<8
 
 // CHECK-LABEL: @maximum_f32
 // CHECK-NOT:   tosa.maximum
-// CHECK:       arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
+// CHECK:       %[[MAX:.*]] = arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
+// CHECK-NEXT:  %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<4x8xf32>
+// CHECK-NEXT:  %[[LHS_ZERO:.*]] = arith.cmpf oeq, %arg0, %[[ZERO]]
+// CHECK-NEXT:  %[[RHS_ZERO:.*]] = arith.cmpf oeq, %arg1, %[[ZERO]]
+// CHECK-NEXT:  %[[BOTH_ZERO:.*]] = arith.andi %[[LHS_ZERO]], %[[RHS_ZERO]]
+// CHECK-NEXT:  arith.select %[[BOTH_ZERO]], %[[ZERO]], %[[MAX]]
 func.func @maximum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
   %0 = tosa.maximum %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @maximum_f32_ignore_nan
+// CHECK-NOT:   tosa.maximum
+// CHECK:       %[[MAX:.*]] = arith.maxnumf %arg0, %arg1 : tensor<4x8xf32>
+// CHECK:       arith.select %{{.*}}, %{{.*}}, %[[MAX]]
+func.func @maximum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.maximum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 
@@ -630,6 +646,17 @@ func.func @bitwise_and_broadcast(%arg0: tensor<8x4xi32>, %arg1: tensor<1x4xi32>)
 // CHECK:       arith.divui %arg0, %arg1 : tensor<8xi32>
 func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
   %0 = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_div"} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  return %0 : tensor<8xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @unsigned_max
+// CHECK-NOT:   tosa.custom
+// CHECK-NOT:   arith.maxsi
+// CHECK:       arith.maxui %arg0, %arg1 : tensor<8xi32>
+func.func @unsigned_max(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_max"} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
   return %0 : tensor<8xi32>
 }
 
