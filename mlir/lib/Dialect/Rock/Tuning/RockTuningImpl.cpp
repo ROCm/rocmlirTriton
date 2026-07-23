@@ -107,13 +107,14 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 
 // Drop kPerBlock candidates larger than the K dimension rounded up to the next
 // power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
-// work. Guarantees the capping tile itself stays so K is always covered.
+// work.
 static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
-  if (k <= 0)
-    return;
+  assert(k > 0 && !kPerBlockList.empty() &&
+         "capKPerBlockByK expects a positive K and a non-empty candidate list");
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
+  uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
-  if (!llvm::is_contained(kPerBlockList, cap))
+  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
     kPerBlockList.push_back(cap);
 }
 
