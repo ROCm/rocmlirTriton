@@ -692,6 +692,9 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
   case ISAFamily::CDNA4:
     return getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(cm, isLoad);
   case ISAFamily::RDNA3:
+  // gfx1170 uses the gfx11/RDNA3 buffer/cache encoding (it is not a gfx12
+  // target), so cache-modifier control bits follow RDNA3.
+  case ISAFamily::GFX1170:
     return getCtrlBitsForCacheModifierOnRDNA3(cm, isLoad);
   case ISAFamily::RDNA4:
     return getCtrlBitsForCacheModifierOn_GFX12(cm, isLoad, /*$ bypass*/ false);

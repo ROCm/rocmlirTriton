@@ -1,4 +1,7 @@
 // RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1200 matrix-instruction-size=0" | FileCheck %s
+// gfx1170 is gfx11-based but ships the gfx12/RDNA4 128-bit WMMA engine
+// (incl. fp8/bf8 WMMA), so it must select the same WMMA v2 layout as gfx1200.
+// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1170 matrix-instruction-size=0" | FileCheck %s
 
 // CHECK: #[[DOT_OP_PARENT:.+]] = #ttg.blocked<{{.*}}>
 // CHECK: #[[WMMA_0:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = {{\[\[0, 1\], \[0, 2\]\]}}}}>
