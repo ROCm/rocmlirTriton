@@ -199,20 +199,26 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 //
 // Empirically, this gives a small amount of candidates and always
 // captures the best kPerBlock candidate (i.e., we dont need to consider all
-// possible kPerBlock candidates).
+// possible kPerBlock candidates) for the convolutions reported in
+// https://github.com/ROCm/rocmlirTriton/pull/340. We might want to retune this
+// heuristic in the future.
 //
 // Intuition behind each rule:
 //   (1) We avoid a remainder iteration and K padding/masking.
-//   (2) The more segments, the more overhead.
+//
+//   (2) Having more than 2 usually involves having really small segments (i.e.,
+//   8, 4, 2), which must be compiled to FMA (non-accel), so they will very
+//   likely perform worse compared to 2 segment decompositions.
+//
 //   (3) LDS used per K-iteration is kPerBlock*(mPerBlock+nPerBlock), so
-//   kPerBlock trades loop/sync overhead (small K -> many iterations)
-//   against LDS pressure/occupancy (large K -> fewer resident
-//   workgroups). The useful range is at the block's own scale:
-//   after min(mPerBlock,nPerBlock) the K tile dominates LDS and occupancy
-//   drops, so a bigger K stops helping, hence the upper bound.
-//   The lower bound min(mPerBlock,nPerBlock)/2 is just the next pow2 down:
-//   the only non-pow2 K that is worth adding are the ones between the
-//   largest pow2 gap; smaller K is already sampled by the pow2 list.
+//   kPerBlock trades loop/sync overhead (small K -> many iterations) against
+//   LDS pressure/occupancy (large K -> fewer resident workgroups). The useful
+//   range is at the block's own scale: after min(mPerBlock,nPerBlock) the K
+//   tile dominates LDS and occupancy drops, so a bigger K stops helping, hence
+//   the upper bound. The lower bound min(mPerBlock,nPerBlock)/2 is just the
+//   next pow2 down: the only non-pow2 K that is worth adding are the ones
+//   between the largest pow2 gap; smaller K is already sampled by the pow2
+//   list.
 //
 // Its real strength is that it barely grows the search space. It is evaluated
 // per (mPerBlock,nPerBlock) tile and returns only the two-segment divisors of
@@ -236,8 +242,8 @@ static SmallVector<uint32_t, 2>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK) {
   SmallVector<uint32_t, 2> candidates;
-  if (gemmK <= 0)
-    return candidates;
+  assert(gemmK > 0 && "gemmK must be greater than 0");
+
   uint32_t minMN = std::min(mPerBlock, nPerBlock);
   uint32_t lo = std::max(minBaseK, minMN / 2);
   uint32_t hi = std::min<uint32_t>(maxK, minMN);
