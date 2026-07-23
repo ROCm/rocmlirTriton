@@ -30,10 +30,7 @@
 // CHECK-MFMA-GFX950-KPACK: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
 // A large-K GEMM must cap kPerBlock at the largest tuning-space candidate
-// (512 for MFMA). capKPerBlockByK previously appended PowerOf2Ceil(K) (here
-// 16384) whenever it exceeded every candidate -- an oversized tile far beyond
-// the designed maximum that made the compiler consume many GB of RAM and then
-// failed to compile. The fix only ever caps kPerBlock down (never above the
+// (512 for MFMA). We should cap kPerBlock down only (never above the
 // candidate max), so neither the 16384 capping tile nor any kPerBlock > 512
 // may be emitted; 512 must still appear.
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 256 -k 16384 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
