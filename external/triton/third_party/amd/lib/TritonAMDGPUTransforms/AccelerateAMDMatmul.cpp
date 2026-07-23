@@ -67,6 +67,7 @@ int getWmmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
   case ISAFamily::RDNA3:
     return 1;
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
     return 2;
   case ISAFamily::GFX1250:
@@ -366,6 +367,11 @@ OperandTypesVector getOperandTypesForWmmaOp(PatternRewriter &rewriter,
       // {bf16, bf16, bf16, bf16},
       // {i4, i4, i32, i32} - are supported configurations
       // by WMMA instruction, but not supported by triton
+      // TODO(gfx1170): enable {i4, i4, i32, i32} to expose
+      // v_wmma_i32_16x16x32_iu4 (WMMA v2) / v_wmma_i32_16x16x16_iu4 (v1).
+      // The WMMA intrinsic DB and integer operand lowering already support it;
+      // this needs i4 dot-operand support validated end-to-end plus a lit test
+      // before enabling.
       // clang-format on
   };
   if (version == 2 || version == 3) {
@@ -1960,6 +1966,7 @@ struct TritonAMDGPUAccelerateMatmulPass
                                         /*benefit=*/2);
       break;
     case ISAFamily::RDNA3:
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
       ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
                                                   /*benefit=*/3);

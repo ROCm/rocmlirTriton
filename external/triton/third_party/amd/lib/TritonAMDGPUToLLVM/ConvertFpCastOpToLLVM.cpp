@@ -42,6 +42,24 @@ bool isCDNA4OrHigher(ISAFamily family) {
   return family == ISAFamily::CDNA4 || family == ISAFamily::GFX1250;
 }
 
+// TODO(gfx1170): use hardware OCP fp8/bf8 cvt instructions on
+// gfx1170/RDNA4. gfx1170 and RDNA4 (gfx1200/1201) have
+// FeatureFP8ConversionInsts, i.e. the plain v_cvt_f32_fp8/bf8,
+// v_cvt_pk_f32_fp8/bf8, v_cvt_pk_fp8/bf8_f32 and v_cvt_sr_fp8/bf8_f32 ops
+// (assembler-confirmed; RDNA3/gfx1100 lacks them). Today these families are
+// excluded from isCDNA4OrHigher(), so every OCP fp8 conversion falls back to
+// the software bit-manipulation path. It can't simply be enabled because:
+//   - the CDNA4 OCP HW converters use the *scaled* ops (ROCDL::CvtScaleF32Pk*,
+//     v_cvt_scalef32_pk_*) which gfx1170 does NOT have; and
+//   - the plain ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op ops (which gfx1170 does
+//     have) are currently only wired into the CDNA3 FNUZ ("nanoo") converters,
+//     the wrong fp8 flavor for gfx1170's OCP E4M3FN/E5M2.
+// Enabling this needs new OCP fp8<->f32 HW converters built on the plain
+// ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op/CvtSrFp8F32Op (with an f32 hop for
+// f16/bf16), gated on a new {GFX1170, RDNA4} capability, plus HW numeric
+// validation. Latent perf gap, not a correctness bug: results are already
+// correct via the software path.
+
 // List of architectures that have hardware support for FNUZ fp8 formats. On
 // those architectures we will use the HW instructions to do the conversion
 // instead of the software fallback.

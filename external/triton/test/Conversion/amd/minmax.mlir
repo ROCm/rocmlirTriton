@@ -1,5 +1,6 @@
 // RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s --check-prefix=GFX942
 // RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s --check-prefix=GFX950
+// RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s --check-prefix=GFX1170
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
 
@@ -14,6 +15,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 // GFX950: llvm.func @min_max
 // GFX950: llvm.intr.minimum
 // GFX950-NEXT: llvm.intr.maximum
+
+// gfx1170 has FeatureIEEEMinimumMaximumInsts (v_minimum_f32/v_maximum_f32),
+// so it uses the same hardware NaN-propagating path as CDNA4/gfx950.
+// GFX1170: llvm.func @min_max
+// GFX1170: llvm.intr.minimum
+// GFX1170-NEXT: llvm.intr.maximum
   tt.func public @min_max(%arg0: f32, %arg1: f32) {
     %0 = arith.minimumf %arg0, %arg1 : f32
     %1 = arith.maximumf %arg0, %arg1 : f32

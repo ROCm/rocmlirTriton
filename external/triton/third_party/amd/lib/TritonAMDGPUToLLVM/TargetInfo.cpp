@@ -688,7 +688,8 @@ bool TargetInfo::supportBitwidth32Elementwise() const {
 
 unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {
   // AMD has native ternary max/min instructions: v_max3/v_min3 on all GFX9+,
-  // and v_maximum3/v_minimum3 additionally on GFX950 and GFX1250.
+  // and v_maximum3/v_minimum3 (FeatureMinimum3Maximum3F32/F16) additionally on
+  // GFX950, GFX1170, and GFX1250.
   // Use a ternary reduction tree so these map 1:1 to hardware.
   if (isa<arith::MaximumFOp, arith::MinimumFOp, arith::MaxNumFOp,
           arith::MinNumFOp>(combinerOp))
@@ -775,6 +776,7 @@ TargetInfo::getSharedLdStTiles(int32_t vecBitwidth) const {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
     if (vecBitwidth == 128)
       return {/*load tile*/ {{}, {0, 1, 4}}, /*store tile*/ {}};
     break;
