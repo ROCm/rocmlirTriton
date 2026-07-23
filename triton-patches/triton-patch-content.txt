@@ -10,6 +10,7 @@ patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
+patch-gfx1170.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
@@ -75,6 +76,24 @@ patch-skip-subbyte-reduce-data-duplication.patch
   local memory. Triton's convert-layout lowering already widens these transfers
   to i8 and truncates back to the logical element type, so introducing local
   memory here is incorrect for sub-byte element types.
+
+patch-gfx1170.patch
+  Adds gfx1170 (ISA 11.7) as its own ISAFamily::GFX1170 in the vendored Triton
+  AMD backend. gfx1170 is a gfx11/RDNA3-based core (wave32, RDNA3 memory model,
+  RDNA3 buffer/cache encoding) that ships the gfx12/RDNA4 matrix engine
+  (128-bit WMMA v2 + SWMMAC, fp8 conversion insts, IEEE min/max), so it is
+  classified before the generic gfx11 -> RDNA3 catch-all in
+  TargetFeatures::getISAFamily and then treated as RDNA3 for memory-model
+  pieces (buffer atomics, cache-modifier bits, shared ld/st tiles) but as
+  RDNA4 for the matrix engine (getWmmaVersion -> v2, supportMaximumMinimum,
+  scaled-blocked decomposition). Also wires gfx117 into compiler.py
+  is_in_thread_transpose_enabled and adds RDNA3/gfx1170 lit coverage. Carries
+  TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, fp8 dot4 in
+  DotOpToLLVM/FMA, i4 WMMA) documenting latent perf gaps that are correct via
+  the software/upcast fallback today.
+
+  Drop this patch on the next Triton bump that pulls gfx1170 support upstream
+  into external/triton.
 
 patch10497.patch
   Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
