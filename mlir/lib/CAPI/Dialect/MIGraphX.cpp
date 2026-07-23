@@ -29,10 +29,14 @@
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/TargetSelect.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
+#include <cassert>
 #include <mutex>
 #include <vector>
 
@@ -121,6 +125,72 @@ static void applyDeviceNameToOptions(const mlir::RocmDeviceName &devName,
   backendOpts.optLevel = optLevel;
 }
 
+struct ResolvedTunableConfig {
+  mlir::rock::RockTuningParamAttrInterface params;
+  mlir::StringAttr arch;
+};
+
+static mlir::FailureOr<ResolvedTunableConfig>
+resolveTunableConfig(mlir::ModuleOp module) {
+  mlir::MLIRContext *ctx = module.getContext();
+  ResolvedTunableConfig resolved;
+
+  auto resolveTunableOp = [&](auto op, auto parse, auto makeDefault) {
+    mlir::rock::RockTuningParamAttrInterface cfg;
+    if (auto existing =
+            op->template getAttrOfType<mlir::StringAttr>("perf_config"))
+      cfg = parse(existing);
+    if (!cfg) {
+      auto def = makeDefault(ctx);
+      op->setAttr("perf_config", def.getPerfConfigAttr());
+      cfg = def;
+    }
+    resolved.params = cfg;
+    if (auto a = mlir::rock::getArch(op.getOperation()); mlir::succeeded(a))
+      resolved.arch = *a;
+  };
+
+  mlir::rock::RockGemmGemmWrapperInterface gemmGemmOp;
+  mlir::rock::RockGemmWrapperInterface gemmOp;
+  module.walk([&](mlir::Operation *op) {
+    if (auto candidate =
+            llvm::dyn_cast<mlir::rock::RockGemmGemmWrapperInterface>(op)) {
+      assert(!gemmOp &&
+             "gemm+gemm and gemm tunable ops should be mutually exclusive");
+      gemmGemmOp = candidate;
+      return;
+    }
+    if (auto candidate =
+            llvm::dyn_cast<mlir::rock::RockGemmWrapperInterface>(op)) {
+      assert(!gemmGemmOp &&
+             "gemm+gemm and gemm tunable ops should be mutually exclusive");
+      gemmOp = candidate;
+    }
+  });
+
+  if (gemmGemmOp) {
+    resolveTunableOp(
+        gemmGemmOp,
+        [](mlir::StringAttr s) {
+          return mlir::rock::GemmGemmParamsAttr::get(s);
+        },
+        [](mlir::MLIRContext *c) {
+          return mlir::rock::getConservativeDefaultGemmGemmParams(c);
+        });
+  } else if (gemmOp) {
+    resolveTunableOp(
+        gemmOp,
+        [](mlir::StringAttr s) { return mlir::rock::GemmParamsAttr::get(s); },
+        [](mlir::MLIRContext *c) {
+          return mlir::rock::getConservativeDefaultGemmParams(c);
+        });
+  }
+
+  if (!resolved.params)
+    return mlir::failure();
+  return resolved;
+}
+
 // Authoritative LDS check for a concrete module: lower a clone through the
 // kernel + Triton + backend pipeline and let the hardware LDS gate
 // (ResolveKernelLaunchParams) decide. Returns true iff the pipeline succeeds
@@ -144,68 +214,47 @@ static bool ldsUsageFitsForModule(MlirModule module) {
                          mlir::PassManager::Nesting::Implicit);
     mlir::migraphx::addMIGraphXPipeline(pm);
     mlir::rock::buildHighlevelPipeline(pm);
-    if (mlir::failed(pm.run(clonedMod)))
+    if (mlir::failed(pm.run(clonedMod))) {
+      llvm::errs()
+          << "could not check module LDS usage: failed to lower to Rock\n";
       return false;
+    }
   }
 
   // Honor an existing `perf_config`; otherwise stamp the smallest conservative
-  // config. Keep the chosen config to derive the Triton/backend options below.
-  mlir::rock::RockTuningParamAttrInterface params;
-  mlir::StringAttr archAttr;
-  auto resolveTunableOp = [&](auto op, auto parse, auto makeDefault) {
-    mlir::rock::RockTuningParamAttrInterface cfg;
-    if (auto existing =
-            op->template getAttrOfType<mlir::StringAttr>("perf_config"))
-      cfg = parse(existing);
-    if (!cfg) {
-      auto def = makeDefault(ctx);
-      op->setAttr("perf_config", def.getPerfConfigAttr());
-      cfg = def;
-    }
-    params = cfg;
-    if (auto a = mlir::rock::getArch(op.getOperation()); mlir::succeeded(a))
-      archAttr = *a;
-  };
-
-  clonedMod->walk([&](mlir::rock::RockGemmGemmWrapperInterface op) {
-    resolveTunableOp(
-        op,
-        [](mlir::StringAttr s) {
-          return mlir::rock::GemmGemmParamsAttr::get(s);
-        },
-        [](mlir::MLIRContext *c) {
-          return mlir::rock::getConservativeDefaultGemmGemmParams(c);
-        });
-  });
-  if (!params)
-    clonedMod->walk([&](mlir::rock::RockGemmWrapperInterface op) {
-      resolveTunableOp(
-          op,
-          [](mlir::StringAttr s) { return mlir::rock::GemmParamsAttr::get(s); },
-          [](mlir::MLIRContext *c) {
-            return mlir::rock::getConservativeDefaultGemmParams(c);
-          });
-    });
-
+  // config. Gemm+gemm is tried before regular gemm because fused attention
+  // carries a different perf-config schema.
+  mlir::FailureOr<ResolvedTunableConfig> tunable =
+      resolveTunableConfig(clonedMod);
   // No tunable kernel means nothing allocates LDS through this path; trivially
   // fits.
-  if (!params)
+  if (mlir::failed(tunable))
     return true;
 
-  if (!archAttr)
+  ResolvedTunableConfig config = *tunable;
+  if (!config.arch) {
+    llvm::errs() << "could not check module LDS usage: missing target "
+                    "architecture on tunable op\n";
     return false;
+  }
 
   mlir::RocmDeviceName devName;
-  if (mlir::failed(devName.parse(archAttr.strref())))
+  if (mlir::failed(devName.parse(config.arch.strref()))) {
+    llvm::errs() << "could not check module LDS usage: invalid architecture '"
+                 << config.arch.strref() << "'\n";
     return false;
+  }
 
   mlir::rock::TritonOptions tritonOpts;
   mlir::rock::BackendOptions backendOpts;
   applyDeviceNameToOptions(devName, /*optLevel=*/3, tritonOpts, backendOpts);
   backendOpts.compile = true;
-  if (mlir::failed(
-          mlir::rock::fillCompilationConfigs(params, tritonOpts, backendOpts)))
+  if (mlir::failed(mlir::rock::fillCompilationConfigs(config.params, tritonOpts,
+                                                      backendOpts))) {
+    llvm::errs()
+        << "could not check module LDS usage: failed to configure backend\n";
     return false;
+  }
 
   // Phase 2: Rock -> Triton -> backend (runs the LDS gate; full codegen).
   {
@@ -215,8 +264,11 @@ static bool ldsUsageFitsForModule(MlirModule module) {
     mlir::rock::buildKernelPipeline(pm, kOpts);
     mlir::rock::buildTritonPipeline(pm, tritonOpts);
     mlir::rock::buildBackendPipeline(pm, backendOpts);
-    if (mlir::failed(pm.run(clonedMod)))
+    if (mlir::failed(pm.run(clonedMod))) {
+      llvm::errs()
+          << "could not check module LDS usage: backend lowering failed\n";
       return false;
+    }
   }
 
   // A `rock.not_applicable` marker means a rock pass (e.g. the LDS gate)
@@ -238,17 +290,20 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
     return false;
   }
 
-  mlir::Type elemType = unwrap(elementType);
-  if (!elemType) {
-    llvm::errs() << "elementType must not be null when checking LDS usage\n";
+  llvm::StringRef archStr(arch);
+  mlir::RocmDeviceName devName;
+  auto [chip, _] = mlir::rock::parseArchString(archStr);
+  if (archStr.empty() || mlir::failed(devName.parse(archStr)) ||
+      mlir::triton::amdgpu::TargetFeatures(chip).getISAFamily() ==
+          mlir::triton::amdgpu::ISAFamily::Unknown) {
+    llvm::errs() << "could not estimate LDS usage: invalid architecture '"
+                 << archStr << "'\n";
     return false;
   }
 
-  llvm::StringRef archStr(arch);
-  mlir::RocmDeviceName devName;
-  if (archStr.empty() || mlir::failed(devName.parse(archStr))) {
-    llvm::errs() << "could not estimate LDS usage: invalid architecture '"
-                 << archStr << "'\n";
+  mlir::Type elemType = unwrap(elementType);
+  if (!elemType) {
+    llvm::errs() << "elementType must not be null when checking LDS usage\n";
     return false;
   }
 
