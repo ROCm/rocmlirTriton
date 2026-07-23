@@ -109,8 +109,8 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 // power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
 // work.
 static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
-  if (k <= 0 || kPerBlockList.empty())
-    return;
+  assert(k > 0 && !kPerBlockList.empty() &&
+         "capKPerBlockByK expects a positive K and a non-empty candidate list");
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
   uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
