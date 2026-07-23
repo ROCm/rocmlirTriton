@@ -200,6 +200,7 @@ class Options:
     timeout: Optional[int]
     perf_config_timeout: int
     gpu_run_timeout: int
+    compile_only: bool
 
 
 @dataclass
@@ -216,6 +217,7 @@ class TuningResult:
     max_tflops: Optional[float] = None
     entries: List[Dict] = field(default_factory=list)
     verify_tflops: Optional[float] = None
+    compiled_count: Optional[int] = None
 
 
 # =============================================================================
@@ -1363,6 +1365,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
         tuning_driver_args.append("--flush-last-level-cache")
+    if options.compile_only:
+        tuning_driver_args.append("--compile-only")
 
     env = make_isolated_gpu_env(gpu_id)
 
@@ -1469,6 +1473,16 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         elif options.verbose and tuning_errors.strip():
             # Log any stderr output from tuning driver because it may contain warnings
             gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+
+        # In --compile-only mode the driver reports each config as 'compiled'
+        # or 'N/A' and never benchmarks, so there is no winner to select.
+        if options.compile_only:
+            compiled_count = sum(1 for line in tuning_output.splitlines()
+                                 if line.strip().endswith('\tcompiled'))
+            return TuningResult(test_vector=test_vector,
+                                success=True,
+                                gpu_id=gpu_id,
+                                compiled_count=compiled_count)
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
                                                                    config, paths, options, gpu_id)
@@ -1639,7 +1653,12 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
             for completed_future in as_completed(pending_futures):
                 result = completed_future.result()
 
-                if result.success:
+                if result.success and ctx.options.compile_only:
+                    print(f"Compiled : {result.test_vector} : "
+                          f"{result.compiled_count} config(s) built",
+                          file=sys.stderr,
+                          flush=True)
+                elif result.success:
                     results_writer.write_result(result)
                     if debug_writer:
                         debug_writer.write_result(result)
@@ -2055,6 +2074,15 @@ def parse_arguments(gpu_topology: GpuTopology,
         "marked 'gpu_timed_out' and tuning advances to the next problem config "
         "(retry with '--retry gpu_timed_out').")
 
+    parser.add_argument(
+        "--compile-only",
+        action='store_true',
+        default=False,
+        help="Run the full compilation sweep for each problem but do not run on "
+        "the GPU. Each config is compiled and reported as built or N/A; nothing "
+        "is written to the tuning DB since there is no timing. Useful for "
+        "verifying that every config builds when the GPU is in a bad state.")
+
     parser.add_argument("-s",
                         "--status",
                         action='store_true',
@@ -2144,7 +2172,8 @@ def main(args=None):
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
                       timeout=parsed_args.timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
-                      gpu_run_timeout=parsed_args.gpu_run_timeout)
+                      gpu_run_timeout=parsed_args.gpu_run_timeout,
+                      compile_only=parsed_args.compile_only)
 
     ctx = TuningContext(configs=configs,
                         conf_class=conf_class,
