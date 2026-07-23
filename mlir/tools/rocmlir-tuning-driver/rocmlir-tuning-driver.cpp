@@ -250,6 +250,17 @@ static llvm::cl::opt<unsigned> gpuRunTimeout(
         "state and advances to the next problem config."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
+static llvm::cl::opt<bool> compileOnly(
+    "compile-only",
+    llvm::cl::desc(
+        "Run the full compilation sweep for the selected tuning space but "
+        "never touch the GPU: no device buffer allocation, kernel launch, "
+        "stream synchronization, or GPU cleanup is performed. Each config is "
+        "reported as 'compiled', 'N/A' (not applicable / timed out), or the "
+        "sweep aborts on a real compilation failure. Useful when the GPU is in "
+        "a bad state but you still want to verify that every config builds."),
+    llvm::cl::init(false));
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
@@ -431,6 +442,7 @@ struct BenchmarkParams {
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
+  bool compileOnly;
 };
 
 enum class CompilationStatus {
@@ -966,6 +978,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   if (failed(extractFuncOps(source, funcs)))
     return failure();
 
+  // Capture --compile-only now, before any PassManager::run() resets the cl
+  // opts. In compile-only mode we never touch the GPU (no buffer allocation,
+  // launch, sync, or cleanup), so this must be read up front and threaded
+  // through the buffer-allocation guard and the scope-exit cleanup below.
+  const bool compileOnlyMode = compileOnly;
+
   SmallVector<size_t> bufferLengths;
   ArrayRef<Type> argTypes = funcs[0].getArgumentTypes();
   for (Type argType : argTypes) {
@@ -999,6 +1017,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   llvm::scope_exit bufferCleanup([&]() {
     for (void *buffer : hostBuffers)
       free(buffer);
+    // In compile-only mode no GPU buffers or cache-flush artifacts were ever
+    // allocated, so skip every HIP call here to keep the process off the GPU.
+    if (compileOnlyMode)
+      return;
     for (void *buffer : gpuBuffers) {
       // hipFree does not allow nullptrs, so make sure to check for it first
       if (!buffer)
@@ -1015,19 +1037,24 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   });
   assert(argTypes.size() == bufferLengths.size() &&
          "number of arguments and buffer lengths must match");
-  for (auto [argType, bufferLength] : llvm::zip(argTypes, bufferLengths)) {
-    benchmark::DataType type = getDataType(getElementTypeOrSelf(argType));
-    void *hostBuffer = benchmark::allocAndFill(type, bufferLength);
-    void *gpuBuffer = nullptr;
-    hipError_t hipStatus = hipMalloc(&gpuBuffer, bufferLength);
-    if (hipStatus != hipSuccess) {
-      free(hostBuffer);
-      llvm::errs() << "HIP error in hipMalloc(gpuBuffer): "
-                   << hipGetErrorString(hipStatus) << "\n";
-      return failure();
+  // Allocate host/device buffers only when we intend to run kernels. The
+  // first hipMalloc triggers HIP runtime/device context initialization, which
+  // hangs on a wedged GPU, so --compile-only skips this entirely.
+  if (!compileOnlyMode) {
+    for (auto [argType, bufferLength] : llvm::zip(argTypes, bufferLengths)) {
+      benchmark::DataType type = getDataType(getElementTypeOrSelf(argType));
+      void *hostBuffer = benchmark::allocAndFill(type, bufferLength);
+      void *gpuBuffer = nullptr;
+      hipError_t hipStatus = hipMalloc(&gpuBuffer, bufferLength);
+      if (hipStatus != hipSuccess) {
+        free(hostBuffer);
+        llvm::errs() << "HIP error in hipMalloc(gpuBuffer): "
+                     << hipGetErrorString(hipStatus) << "\n";
+        return failure();
+      }
+      hostBuffers.push_back(hostBuffer);
+      gpuBuffers.push_back(gpuBuffer);
     }
-    hostBuffers.push_back(hostBuffer);
-    gpuBuffers.push_back(gpuBuffer);
   }
 
   // 4. Multi-iteration tuning loop
@@ -1048,7 +1075,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            benchmarkConfig,
                                            flushLastLevelCache,
                                            perfConfigTimeout,
-                                           gpuRunTimeout};
+                                           gpuRunTimeout,
+                                           compileOnly};
 
   unsigned numTuningIterations =
       rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
@@ -1323,6 +1351,15 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       assert(result.status == CompilationStatus::Success &&
              "Unexpected compilation status in benchmarking phase");
+
+      // In compile-only mode we have verified the config builds; report it as
+      // compiled and never touch the GPU. There is no timing to update the
+      // best config with, so just count it as valid and move on.
+      if (benchmarkParams.compileOnly) {
+        llvm::outs() << "compiled\n";
+        validResults++;
+        continue;
+      }
 
       FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
                                                    bufferLengths, benchmarkParams);
