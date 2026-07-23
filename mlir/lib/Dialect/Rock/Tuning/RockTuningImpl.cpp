@@ -114,7 +114,7 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
   uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
-  if (!llvm::is_contained(kPerBlockList, cap) && cap <= maxCandidateK)
+  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
     kPerBlockList.push_back(cap);
 }
 
