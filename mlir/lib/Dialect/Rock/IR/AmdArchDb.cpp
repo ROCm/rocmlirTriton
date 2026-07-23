@@ -476,6 +476,8 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
+  case ISAFamily::GFX1170:
+    return 2 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
@@ -528,6 +530,8 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
     // llvm/lib/Target/AMDGPU/AMDGPU.td.
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
+    return 1024;
+  case ISAFamily::GFX1170:
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
