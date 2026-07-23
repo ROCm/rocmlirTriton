@@ -1477,8 +1477,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         # In --compile-only mode the driver reports each config as 'compiled'
         # or 'N/A' and never benchmarks, so there is no winner to select.
         if options.compile_only:
-            compiled_count = sum(1 for line in tuning_output.splitlines()
-                                 if line.strip().endswith('\tcompiled'))
+            compiled_count = sum(
+                1 for line in tuning_output.splitlines() if line.strip().endswith('\tcompiled'))
             return TuningResult(test_vector=test_vector,
                                 success=True,
                                 gpu_id=gpu_id,
@@ -1654,10 +1654,11 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                 result = completed_future.result()
 
                 if result.success and ctx.options.compile_only:
-                    print(f"Compiled : {result.test_vector} : "
-                          f"{result.compiled_count} config(s) built",
-                          file=sys.stderr,
-                          flush=True)
+                    print(
+                        f"Compiled : {result.test_vector} : "
+                        f"{result.compiled_count} config(s) built",
+                        file=sys.stderr,
+                        flush=True)
                 elif result.success:
                     results_writer.write_result(result)
                     if debug_writer:
@@ -2074,14 +2075,13 @@ def parse_arguments(gpu_topology: GpuTopology,
         "marked 'gpu_timed_out' and tuning advances to the next problem config "
         "(retry with '--retry gpu_timed_out').")
 
-    parser.add_argument(
-        "--compile-only",
-        action='store_true',
-        default=False,
-        help="Run the full compilation sweep for each problem but do not run on "
-        "the GPU. Each config is compiled and reported as built or N/A; nothing "
-        "is written to the tuning DB since there is no timing. Useful for "
-        "verifying that every config builds when the GPU is in a bad state.")
+    parser.add_argument("--compile-only",
+                        action='store_true',
+                        default=False,
+                        help="Run the full compilation sweep for each problem but do not run on "
+                        "the GPU. Each config is compiled and reported as built or N/A; nothing "
+                        "is written to the tuning DB since there is no timing. Useful for "
+                        "verifying that every config builds when the GPU is in a bad state.")
 
     parser.add_argument("-s",
                         "--status",
