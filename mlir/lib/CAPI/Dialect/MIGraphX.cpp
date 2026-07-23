@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir-c/Dialect/MIGraphX.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
 #include "mlir/CAPI/Registration.h"
@@ -35,7 +36,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/TargetSelect.h"
-#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include <cassert>
 #include <mutex>
 #include <vector>

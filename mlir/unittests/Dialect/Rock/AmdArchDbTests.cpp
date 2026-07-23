@@ -46,8 +46,7 @@ TEST(AmdArchDbTest, ParseArchString) {
     EXPECT_EQ(features, 0u);
   }
   {
-    auto [chip, features] =
-        parseArchString("amdgcn-amd-amdhsa:gfx942:xnack-");
+    auto [chip, features] = parseArchString("amdgcn-amd-amdhsa:gfx942:xnack-");
     EXPECT_EQ(chip.str(), "gfx942");
     EXPECT_EQ(features, 0u);
   }
