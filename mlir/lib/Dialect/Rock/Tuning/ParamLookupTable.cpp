@@ -23,6 +23,8 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   // GEMM tables and cross-falls-back to gfx1201 for conv/attention, all of
   // which fit. This alias is scoped to tuning-table selection only; WMMA
   // detection, LDS sizing, and pipeline gating still use the real gfx1170.
+  // TODO(AIROCMLIR-705): generate a proper quick-tuning table for gfx1170 and
+  // remove this alias.
   if (arch == "gfx1170")
     arch = "gfx1200";
   auto key = makeKey(arch, op, dataType);

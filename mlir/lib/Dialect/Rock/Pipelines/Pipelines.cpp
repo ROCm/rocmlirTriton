@@ -76,9 +76,6 @@ using namespace mlir::triton;
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
 
-  // Mirror compiler.py make_ttir(): archs WITHOUT TDM must lower tensor
-  // descriptors to raw pointers (they lack the hardware to consume them);
-  // only TDM-capable archs (gfx1250) keep the descriptors.
   if (!rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
   }

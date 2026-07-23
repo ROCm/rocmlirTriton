@@ -261,8 +261,6 @@ bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
-    // gfx1170 has FeatureFlatAtomicFaddF32Inst (F32 only); it lacks the gfx12
-    // packed F16/BF16 atomic-add features, so it matches RDNA3 here.
     case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
@@ -304,7 +302,6 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
-    // gfx1170 shares the RDNA F32 atomic-max instruction.
     case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
@@ -437,7 +434,6 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 30;
   case ISAFamily::RDNA3:
-  // gfx1170 is an RDNA3-class part; use the same conservative minimum.
   case ISAFamily::GFX1170:
     return 2;
   case ISAFamily::RDNA4:
