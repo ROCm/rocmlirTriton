@@ -125,26 +125,39 @@ static void applyDeviceNameToOptions(const mlir::RocmDeviceName &devName,
   backendOpts.optLevel = optLevel;
 }
 
-struct ResolvedTunableConfig {
-  mlir::rock::RockTuningParamAttrInterface params;
-  mlir::StringAttr arch;
+enum class TunableConfigStatus {
+  NoTunableOp,
+  MalformedPerfConfig,
+  Resolved,
 };
 
-static mlir::FailureOr<ResolvedTunableConfig>
-resolveTunableConfig(mlir::ModuleOp module) {
+struct TunableConfigResolution {
+  TunableConfigStatus status = TunableConfigStatus::NoTunableOp;
+  mlir::rock::RockTuningParamAttrInterface params;
+  mlir::StringAttr arch;
+  mlir::StringAttr malformedPerfConfig;
+};
+
+static TunableConfigResolution resolveTunableConfig(mlir::ModuleOp module) {
   mlir::MLIRContext *ctx = module.getContext();
-  ResolvedTunableConfig resolved;
+  TunableConfigResolution resolved;
 
   auto resolveTunableOp = [&](auto op, auto parse, auto makeDefault) {
     mlir::rock::RockTuningParamAttrInterface cfg;
     if (auto existing =
-            op->template getAttrOfType<mlir::StringAttr>("perf_config"))
+            op->template getAttrOfType<mlir::StringAttr>("perf_config")) {
       cfg = parse(existing);
-    if (!cfg) {
+      if (!cfg) {
+        resolved.status = TunableConfigStatus::MalformedPerfConfig;
+        resolved.malformedPerfConfig = existing;
+        return;
+      }
+    } else {
       auto def = makeDefault(ctx);
       op->setAttr("perf_config", def.getPerfConfigAttr());
       cfg = def;
     }
+    resolved.status = TunableConfigStatus::Resolved;
     resolved.params = cfg;
     if (auto a = mlir::rock::getArch(op.getOperation()); mlir::succeeded(a))
       resolved.arch = *a;
@@ -186,8 +199,6 @@ resolveTunableConfig(mlir::ModuleOp module) {
         });
   }
 
-  if (!resolved.params)
-    return mlir::failure();
   return resolved;
 }
 
@@ -225,14 +236,17 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   // Honor an existing `perf_config`; otherwise stamp the smallest conservative
   // config. Gemm+gemm is tried before regular gemm because fused attention
   // carries a different perf-config schema.
-  mlir::FailureOr<ResolvedTunableConfig> tunable =
-      resolveTunableConfig(clonedMod);
+  TunableConfigResolution config = resolveTunableConfig(clonedMod);
+  if (config.status == TunableConfigStatus::MalformedPerfConfig) {
+    llvm::errs() << "could not check module LDS usage: invalid perf_config '"
+                 << config.malformedPerfConfig.strref() << "'\n";
+    return false;
+  }
   // No tunable kernel means nothing allocates LDS through this path; trivially
   // fits.
-  if (mlir::failed(tunable))
+  if (config.status == TunableConfigStatus::NoTunableOp)
     return true;
 
-  ResolvedTunableConfig config = *tunable;
   if (!config.arch) {
     llvm::errs() << "could not check module LDS usage: missing target "
                     "architecture on tunable op\n";
