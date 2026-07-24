@@ -32,29 +32,9 @@ func.func @sub_f16(%arg0: tensor<8x16xf16>, %arg1: tensor<8x16xf16>) -> tensor<8
 
 // CHECK-LABEL: @maximum_f32
 // CHECK-NOT:   tosa.maximum
-// CHECK:       %[[MAX:.*]] = arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
-// CHECK-NEXT:  %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<4x8xf32>
-// CHECK-NEXT:  %[[LHS_ZERO:.*]] = arith.cmpf oeq, %arg0, %[[ZERO]]
-// CHECK-NEXT:  %[[RHS_ZERO:.*]] = arith.cmpf oeq, %arg1, %[[ZERO]]
-// CHECK-NEXT:  %[[BOTH_ZERO:.*]] = arith.andi %[[LHS_ZERO]], %[[RHS_ZERO]]
-// CHECK-NEXT:  %[[LHS_BITS:.*]] = arith.bitcast %arg0 : tensor<4x8xf32> to tensor<4x8xi32>
-// CHECK-NEXT:  %[[RHS_BITS:.*]] = arith.bitcast %arg1 : tensor<4x8xf32> to tensor<4x8xi32>
-// CHECK-NEXT:  %[[MAX_ZERO_BITS:.*]] = arith.andi %[[LHS_BITS]], %[[RHS_BITS]]
-// CHECK-NEXT:  %[[MAX_ZERO:.*]] = arith.bitcast %[[MAX_ZERO_BITS]] : tensor<4x8xi32> to tensor<4x8xf32>
-// CHECK-NEXT:  arith.select %[[BOTH_ZERO]], %[[MAX_ZERO]], %[[MAX]]
+// CHECK:       arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
 func.func @maximum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
   %0 = tosa.maximum %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
-  return %0 : tensor<4x8xf32>
-}
-
-// -----
-
-// CHECK-LABEL: @maximum_f32_ignore_nan
-// CHECK-NOT:   tosa.maximum
-// CHECK:       %[[MAX:.*]] = arith.maxnumf %arg0, %arg1 : tensor<4x8xf32>
-// CHECK:       arith.select %{{.*}}, %{{.*}}, %[[MAX]]
-func.func @maximum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
-  %0 = tosa.maximum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 

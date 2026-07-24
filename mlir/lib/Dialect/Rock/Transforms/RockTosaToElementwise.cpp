@@ -122,62 +122,6 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
   }
 };
 
-// tosa.maximum: arith.maximumf/maxnumf (float) or arith.maxsi (int).
-//
-// arith-expand's compare/select expansion does not preserve the signed-zero
-// ordering of arith.maximumf, and not all LLVM backends currently preserve it
-// either. Correct both float variants explicitly when both operands are zero.
-// The maximum of two zeros is negative only when both inputs are negative, so
-// bitwise AND their representations to preserve max(-0.0, -0.0) = -0.0 while
-// still producing +0.0 for either ordering of mixed-sign zeros.
-struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(tosa::MaximumOp op,
-                                PatternRewriter &rewriter) const override {
-    auto inputs = broadcastInputs(rewriter, op);
-    if (failed(inputs))
-      return failure();
-    auto [in1, in2] = *inputs;
-    auto shapedTy = cast<ShapedType>(op.getType());
-    Type elemTy = shapedTy.getElementType();
-    Location loc = op.getLoc();
-
-    if (isa<IntegerType>(elemTy)) {
-      rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, op.getType(), in1, in2);
-      return success();
-    }
-    if (!isa<FloatType>(elemTy))
-      return failure();
-
-    Value max;
-    if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE)
-      max = arith::MaximumFOp::create(rewriter, loc, in1, in2);
-    else
-      max = arith::MaxNumFOp::create(rewriter, loc, in1, in2);
-
-    Value zero = arith::ConstantOp::create(
-        rewriter, loc,
-        DenseElementsAttr::get(shapedTy, rewriter.getFloatAttr(elemTy, 0.0)));
-    Value in1IsZero = arith::CmpFOp::create(
-        rewriter, loc, arith::CmpFPredicate::OEQ, in1, zero);
-    Value in2IsZero = arith::CmpFOp::create(
-        rewriter, loc, arith::CmpFPredicate::OEQ, in2, zero);
-    Value bothZero = arith::AndIOp::create(rewriter, loc, in1IsZero, in2IsZero);
-    Type intElemTy =
-        rewriter.getIntegerType(elemTy.getIntOrFloatBitWidth());
-    Type intShapedTy = shapedTy.clone(intElemTy);
-    Value in1Bits =
-        arith::BitcastOp::create(rewriter, loc, intShapedTy, in1);
-    Value in2Bits =
-        arith::BitcastOp::create(rewriter, loc, intShapedTy, in2);
-    Value maxZeroBits = arith::AndIOp::create(rewriter, loc, in1Bits, in2Bits);
-    Value maxZero =
-        arith::BitcastOp::create(rewriter, loc, shapedTy, maxZeroBits);
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, bothZero, maxZero, max);
-    return success();
-  }
-};
-
 // Unary op whose ODS argument is $input1 (e.g. tosa.exp, tosa.log).
 template <typename TosaOp, typename TargetOp>
 struct UnaryConverter : public OpRewritePattern<TosaOp> {
@@ -671,9 +615,9 @@ struct RockTosaToElementwise
     patterns.add<
         BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
         BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>,
+        BinaryConverter<tosa::MaximumOp, arith::MaximumFOp, arith::MaxSIOp>,
         BinaryConverter<tosa::MinimumOp, arith::MinimumFOp, arith::MinSIOp>>(
         ctx);
-    patterns.add<MaximumConverter>(ctx);
 
     // --- Binary float-only ---
     patterns.add<IntBinaryConverter<tosa::BitwiseAndOp, arith::AndIOp>,

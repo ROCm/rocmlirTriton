@@ -1,9 +1,9 @@
 // RUN: rocmlir-opt --migraphx-to-tosa --mlir-print-op-generic -verify-diagnostics %s | FileCheck %s --check-prefix=TOSA
 // RUN: rocmlir-opt -pass-pipeline="builtin.module(func.func(migraphx-to-tosa),func.func(rocmlir-custom-tosa-to-linalg),func.func(tosa-to-linalg-named),func.func(tosa-to-linalg))" -verify-diagnostics %s | FileCheck %s --check-prefixes=LINALG,UNSIGNED
 
-// IEEE maximum propagates a NaN from either operand, orders +0 above -0, and
-// handles infinities using their normal ordering. Check both the explicit TOSA
-// contract and the scalar operation selected by TOSA-to-Linalg.
+// Floating-point Max propagates a NaN from either operand. Check both the
+// explicit TOSA contract and the scalar operation selected by TOSA-to-Linalg.
+// Signed-zero behavior is intentionally relaxed later with `nsz`.
 
 // TOSA: sym_name = "max_f32"
 // TOSA: "tosa.maximum"

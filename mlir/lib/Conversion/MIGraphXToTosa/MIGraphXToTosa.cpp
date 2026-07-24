@@ -1127,6 +1127,9 @@ MaxConverter::matchAndRewrite(migraphx::MaxOp op, OpAdaptor adaptor,
   Location loc = op.getLoc();
   auto resultType = cast<RankedTensorType>(
       getTypeConverter()->convertType(op.getResult().getType()));
+  // MIGraphX_ElementwiseBinaryOp supplies AllElementTypesMatch, and MaxOp adds
+  // AllShapesMatch. Erasing the layout must therefore produce identical tensor
+  // types for both converted operands and the result.
   assert(llvm::all_of(
              adaptor.getOperands(),
              [&](Value value) { return value.getType() == resultType; }) &&

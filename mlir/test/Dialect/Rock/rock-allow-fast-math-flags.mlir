@@ -2,8 +2,7 @@
 // flag(s) the AMDGPU backend can exploit for that specific kind of op.
 //   arith.divf                              -> nsz + arcp + afn         (hw reciprocal + approx)
 //   arith.{add,sub,mul}f, math.fma          -> nsz + contract           (nsz peepholes + fma fusion)
-//   arith.{neg,rem,minimum}f                -> nsz                      (sign-bit XOR / ±0 peepholes)
-//   arith.maximumf                         -> no added flags           (preserve IEEE signed zero)
+//   arith.{neg,rem,maximum,minimum}f        -> nsz                      (sign-bit XOR / ±0 peepholes)
 //   math.{absf,copysign,clampf}             -> nsz                      (±0 peepholes only; not approximated)
 //   math.* transcendental (incl. sincos)    -> nsz + contract + afn     (hw approximate impl)
 //
@@ -70,29 +69,23 @@ module @perop_tests {
   }
 
   // arith ops in the `nszOnly` bucket: `negf` (sign-bit XOR for `0 - x`),
-  // `remf` (±0 peepholes around the IEEE remainder), and `minimumf`.
+  // `remf` (±0 peepholes around the IEEE remainder), and
+  // `maximumf`/`minimumf`. `nsz` does not imply `nnan`, so maximumf still
+  // propagates NaNs.
   // These must NOT receive `contract`/`arcp`/`afn` -- a wrong flag set on the
   // registration would show up as extra bits here.
   // CHECK-LABEL: func.func @nsz_only_arith_ops_add_nsz
   // CHECK: arith.negf %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.remf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  // CHECK: arith.maximumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   func.func @nsz_only_arith_ops_add_nsz(%a: f32, %b: f32) -> f32
       attributes {rock.kernel} {
     %0 = arith.negf %a : f32
     %1 = arith.remf %0, %b : f32
-    %2 = arith.minimumf %1, %a : f32
-    return %2 : f32
-  }
-
-  // `maximumf` distinguishes +0 from -0, so adding `nsz` would violate its
-  // IEEE maximum contract.
-  // CHECK-LABEL: func.func @maximumf_preserves_signed_zero
-  // CHECK: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : f32
-  func.func @maximumf_preserves_signed_zero(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
-    %0 = arith.maximumf %a, %b : f32
-    return %0 : f32
+    %2 = arith.maximumf %1, %b : f32
+    %3 = arith.minimumf %2, %a : f32
+    return %3 : f32
   }
 
   // Non-transcendental math ops (`absf`, `copysign`, `clampf`) are exact
@@ -199,25 +192,18 @@ func.func @migraphx_pipeline_adds_per_op_flags(
   return %neg : !migraphx.shaped<2x3xf32, 3x1>
 }
 
-// A Max-derived `maximumf` must stay free of `nsz` after the default fast-math
-// pass, and its explicit both-zero correction must survive, so that +0 remains
-// greater than -0.
-// TOSA-LABEL: func.func @migraphx_max_preserves_signed_zero
+// Max requests NaN propagation through TOSA and lowers to `maximumf`. The
+// fast-math pass adds only `nsz`, which permits signed-zero optimizations but
+// does not imply `nnan`.
+// TOSA-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
 // TOSA: tosa.maximum
 
-// ROCK-LABEL: func.func @migraphx_max_preserves_signed_zero
-// ROCK-DAG:  %[[MAX:.*]] = arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
-// ROCK-DAG:  %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<2x3xf32>
-// ROCK:      %[[BOTH_ZERO:.*]] = arith.andi
-// ROCK-NEXT: arith.select %[[BOTH_ZERO]], %[[ZERO]], %[[MAX]]
+// ROCK-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
+// ROCK: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
 
-// FAST-LABEL: func.func @migraphx_max_preserves_signed_zero
-// FAST-DAG:  %[[MAX:.*]] = arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
-// FAST-DAG:  %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<2x3xf32>
-// FAST:      %[[BOTH_ZERO:.*]] = arith.andi
-// FAST-NEXT: arith.select %[[BOTH_ZERO]], %[[ZERO]], %[[MAX]]
-// FAST: return
-func.func @migraphx_max_preserves_signed_zero(
+// FAST-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
+// FAST: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} fastmath<nsz> : tensor<2x3xf32>
+func.func @migraphx_max_propagates_nan_with_nsz(
     %a: !migraphx.shaped<2x3xf32, 3x1>,
     %b: !migraphx.shaped<2x3xf32, 3x1>)
     -> !migraphx.shaped<2x3xf32, 3x1>
