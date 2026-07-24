@@ -543,9 +543,6 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
       return 1536;
     return 1024;
   case ISAFamily::GFX1170:
-    // gfx11.7 (FeatureISAVersion11_7_Common) does NOT pull in Feature1536VGPRs
-    // the way gfx1100/gfx1101/gfx1151 do, so it keeps the default 1024-entry
-    // VGPR file. See AMDGPU.td / getTotalNumVGPRs() in AMDGPUBaseInfo.cpp.
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
