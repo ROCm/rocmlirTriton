@@ -162,6 +162,7 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   patterns.add<AddFastMathFlagsPattern<arith::NegFOp>,
                AddFastMathFlagsPattern<arith::RemFOp>,
                AddFastMathFlagsPattern<arith::MaximumFOp>,
+               AddFastMathFlagsPattern<arith::MaxNumFOp>,
                AddFastMathFlagsPattern<arith::MinimumFOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::ExpOp>,
                AddFastMathFlagsPattern<math::Exp2Op>,

@@ -2,7 +2,7 @@
 // flag(s) the AMDGPU backend can exploit for that specific kind of op.
 //   arith.divf                              -> nsz + arcp + afn         (hw reciprocal + approx)
 //   arith.{add,sub,mul}f, math.fma          -> nsz + contract           (nsz peepholes + fma fusion)
-//   arith.{neg,rem,maximum,minimum}f        -> nsz                      (sign-bit XOR / ±0 peepholes)
+//   arith.{neg,rem,maximum,maxnum,minimum}f -> nsz                      (sign-bit XOR / ±0 peepholes)
 //   math.{absf,copysign,clampf}             -> nsz                      (±0 peepholes only; not approximated)
 //   math.* transcendental (incl. sincos)    -> nsz + contract + afn     (hw approximate impl)
 //
@@ -70,22 +70,24 @@ module @perop_tests {
 
   // arith ops in the `nszOnly` bucket: `negf` (sign-bit XOR for `0 - x`),
   // `remf` (±0 peepholes around the IEEE remainder), and
-  // `maximumf`/`minimumf`. `nsz` does not imply `nnan`, so maximumf still
-  // propagates NaNs.
+  // `maximumf`/`maxnumf`/`minimumf`. `nsz` does not imply `nnan`, so maximumf
+  // still propagates NaNs.
   // These must NOT receive `contract`/`arcp`/`afn` -- a wrong flag set on the
   // registration would show up as extra bits here.
   // CHECK-LABEL: func.func @nsz_only_arith_ops_add_nsz
   // CHECK: arith.negf %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.remf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.maximumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  // CHECK: arith.maxnumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   func.func @nsz_only_arith_ops_add_nsz(%a: f32, %b: f32) -> f32
       attributes {rock.kernel} {
     %0 = arith.negf %a : f32
     %1 = arith.remf %0, %b : f32
     %2 = arith.maximumf %1, %b : f32
-    %3 = arith.minimumf %2, %a : f32
-    return %3 : f32
+    %3 = arith.maxnumf %2, %b : f32
+    %4 = arith.minimumf %3, %a : f32
+    return %4 : f32
   }
 
   // Non-transcendental math ops (`absf`, `copysign`, `clampf`) are exact

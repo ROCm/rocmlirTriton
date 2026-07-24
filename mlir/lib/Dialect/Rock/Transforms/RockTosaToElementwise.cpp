@@ -122,6 +122,33 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
   }
 };
 
+// tosa.maximum selects the floating operation from its NaN propagation mode.
+struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::MaximumOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    Type elemTy = cast<ShapedType>(op.getType()).getElementType();
+
+    if (isa<IntegerType>(elemTy)) {
+      rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, op.getType(), in1, in2);
+      return success();
+    }
+    if (!isa<FloatType>(elemTy))
+      return failure();
+
+    if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE)
+      rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, op.getType(), in1,
+                                                     in2);
+    else
+      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getType(), in1, in2);
+    return success();
+  }
+};
+
 // Unary op whose ODS argument is $input1 (e.g. tosa.exp, tosa.log).
 template <typename TosaOp, typename TargetOp>
 struct UnaryConverter : public OpRewritePattern<TosaOp> {
@@ -615,9 +642,9 @@ struct RockTosaToElementwise
     patterns.add<
         BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
         BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>,
-        BinaryConverter<tosa::MaximumOp, arith::MaximumFOp, arith::MaxSIOp>,
         BinaryConverter<tosa::MinimumOp, arith::MinimumFOp, arith::MinSIOp>>(
         ctx);
+    patterns.add<MaximumConverter>(ctx);
 
     // --- Binary float-only ---
     patterns.add<IntBinaryConverter<tosa::BitwiseAndOp, arith::AndIOp>,
