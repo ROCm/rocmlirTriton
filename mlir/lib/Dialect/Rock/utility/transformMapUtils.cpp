@@ -1101,6 +1101,48 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
   return result;
 }
 
+bool mlir::rock::transformChainDependsOnAnyDim(
+    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
+  if (dims.empty())
+    return false;
+
+  AffineMap composed = composeTransforms(transforms);
+  if (!composed)
+    return true;
+
+  return llvm::any_of(dims, [&](unsigned dim) {
+    return dim >= composed.getNumDims() || composed.isFunctionOfDim(dim);
+  });
+}
+
+bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
+                                         ArrayRef<unsigned> dims,
+                                         std::size_t firstTransform) {
+  assert(firstTransform <= transforms.size() &&
+         "first transform must be within the transform chain");
+  if (dims.empty())
+    return false;
+
+  for (std::size_t index = firstTransform; index < transforms.size(); ++index) {
+    TransformMapAttr transform = transforms[index];
+    SmallVector<unsigned> upperDims = validityImpactingUpperDims(transform);
+    if (upperDims.empty())
+      continue;
+
+    AffineMap above = composeTransforms(transforms.take_front(index));
+    for (unsigned upperDim : upperDims) {
+      AffineExpr coordinate =
+          above ? above.getResult(upperDim)
+                : getAffineDimExpr(upperDim, transform.getContext());
+      if (llvm::any_of(dims, [&](unsigned dim) {
+            return coordinate.isFunctionOfDim(dim);
+          }))
+        return true;
+    }
+  }
+  return false;
+}
+
 bool mlir::rock::isIdentityOnShape(AffineMap map, ArrayRef<int64_t> shape) {
   if (!map || map.getNumDims() != map.getNumResults() ||
       map.getNumResults() != shape.size())
@@ -2438,53 +2480,53 @@ static bool hasReloadTransform(TransformMapAttr map) {
   return false;
 }
 
-// Walks the def chain of `value` (a kernel operand) back to the kernel block
-// arguments, traversing view (rock.transform) ops and input-fusion ops.
-// Collects the reached block arguments in `kernelArgs` and sets
-// `hasNonInjective` if any rock.transform in the chain reloads data (see
-// hasReloadTransform). Returns failure if the chain hits an unexpected op.
 static LogicalResult
-walkInputFusionChain(Value value, SmallVectorImpl<BlockArgument> &kernelArgs,
-                     bool &hasNonInjective) {
-  SmallVector<Value> worklist;
-  DenseSet<Value> visited;
-  worklist.push_back(value);
-  visited.insert(value);
-  hasNonInjective = false;
-
-  while (!worklist.empty()) {
-    Value currValue = worklist.pop_back_val();
-    if (auto maybeBlockArg = dyn_cast<BlockArgument>(currValue)) {
-      kernelArgs.push_back(maybeBlockArg);
-    } else if (auto viewOp =
-                   dyn_cast<ViewLikeOpInterface>(currValue.getDefiningOp())) {
-      if (auto transformOp = dyn_cast<TransformOp>(currValue.getDefiningOp()))
-        hasNonInjective |= hasReloadTransform(transformOp.getTransform());
-      Value src = viewOp.getViewSource();
-      if (visited.insert(src).second)
-        worklist.push_back(src);
-    } else if (isFusionOp(currValue.getDefiningOp())) {
-      for (auto operand : currValue.getDefiningOp()->getOperands()) {
-        if (visited.insert(operand).second)
-          worklist.push_back(operand);
-      }
-    } else if (isa<arith::ConstantOp>(currValue.getDefiningOp())) {
-      // nothing to do with constants, just skip them
-      continue;
-    } else {
-      LLVM_DEBUG(llvm::dbgs() << "walkInputFusionChain: Found unexpected op = "
-                              << currValue.getDefiningOp() << "\n");
-      return failure();
-    }
+collectInputFusionPathsImpl(Value value, ArrayRef<TransformMapAttr> transforms,
+                            SmallVectorImpl<InputFusionPath> &paths) {
+  if (isa<BlockArgument>(value) || value.getDefiningOp<arith::ConstantOp>()) {
+    paths.push_back({value, SmallVector<TransformMapAttr>(transforms.begin(),
+                                                          transforms.end())});
+    return success();
   }
-  return success();
+
+  Operation *defOp = value.getDefiningOp();
+  if (auto transformOp = dyn_cast_or_null<TransformOp>(defOp)) {
+    SmallVector<TransformMapAttr> nextTransforms(transforms);
+    nextTransforms.push_back(transformOp.getTransform());
+    return collectInputFusionPathsImpl(transformOp.getInput(), nextTransforms,
+                                       paths);
+  }
+
+  if (isFusionOp(defOp)) {
+    for (Value operand : defOp->getOperands())
+      if (failed(collectInputFusionPathsImpl(operand, transforms, paths)))
+        return failure();
+    return success();
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "collectInputFusionPaths: Found unexpected op = "
+                          << defOp << "\n");
+  return failure();
+}
+
+FailureOr<SmallVector<InputFusionPath>>
+mlir::rock::collectInputFusionPaths(Value value) {
+  SmallVector<InputFusionPath> paths;
+  if (failed(collectInputFusionPathsImpl(value, /*transforms=*/{}, paths)))
+    return failure();
+  return paths;
 }
 
 FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
-  bool hasNonInjective = false;
-  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
     return failure();
+
+  SmallVector<BlockArgument> kernelArgs;
+  for (const InputFusionPath &path : *paths)
+    if (auto blockArg = dyn_cast<BlockArgument>(path.leaf))
+      kernelArgs.push_back(blockArg);
 
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
@@ -2495,12 +2537,14 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
 }
 
 FailureOr<bool> mlir::rock::isInputNonInjective(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
-  bool hasNonInjective = false;
-  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
     return failure();
 
-  return hasNonInjective;
+  return llvm::any_of(*paths, [](const InputFusionPath &path) {
+    return llvm::any_of(path.transforms, hasReloadTransform);
+  });
 }
 
 FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {

@@ -150,16 +150,10 @@ struct GridwiseAttentionRewritePattern
                          Value rowVector, int64_t numCols) const {
     auto rowType = cast<RankedTensorType>(rowVector.getType());
     int64_t numRows = rowType.getShape()[0];
-    Type elemType = rowType.getElementType();
-    
-    // Step 1: Expand dims [M] -> [M, 1]
-    auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    rowVector, 1);
-    
-    // Step 2: Broadcast [M, 1] -> [M, N]
-    auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
-    return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
+    auto resultType =
+        RankedTensorType::get({numRows, numCols}, rowType.getElementType());
+    return expandDimAndBroadcast(rewriter, loc, rowVector, /*axis=*/1,
+                                 resultType);
   }
 
   // This function computes exp(gemm0 - rowmax_j)

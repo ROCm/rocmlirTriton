@@ -630,7 +630,8 @@ def RockRegularizeInputPass
         %res = arith.addf %A0, %A1
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "math::MathDialect"];
+                           "arith::ArithDialect", "math::MathDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {

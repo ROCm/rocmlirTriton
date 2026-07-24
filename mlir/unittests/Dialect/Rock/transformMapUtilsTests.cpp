@@ -385,8 +385,63 @@ TEST(IsIdentityOnShapeTest, EmptyShape) {
 }
 
 //===----------------------------------------------------------------------===//
-// isInputNonInjective Tests
+// transformChainDependsOnAnyDim Tests
 //===----------------------------------------------------------------------===//
+
+TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder transform(b, {"m"}, {8}, loc);
+  transform.addDim("k", 1, 16);
+  transform.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+
+  SmallVector<TransformMapAttr> transforms{transform.get()};
+  SmallVector<unsigned> mDim{0};
+  SmallVector<unsigned> kDim{1};
+  SmallVector<unsigned> bothDims{0, 1};
+  SmallVector<unsigned> invalidDim{2};
+  SmallVector<unsigned> noDims;
+  SmallVector<TransformMapAttr> noTransforms;
+
+  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, mDim));
+  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, kDim));
+  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, bothDims));
+  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, noDims));
+  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, invalidDim));
+  EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
+}
+
+//===----------------------------------------------------------------------===//
+// validityDependsOnAnyDim Tests
+//===----------------------------------------------------------------------===//
+
+TEST(ValidityDependsOnAnyDimTest, RespectsFirstTransform) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder lower(b, {"m", "k"}, {8, 16}, loc);
+  lower.passThrough("m");
+  lower.pad("kPad", "k", 1, 1);
+  TransformMapAttr lowerAttr = lower.get();
+
+  BottomUpTMBuilder upper = BottomUpTMBuilder::above(lower, lowerAttr);
+  upper.pad("mPad", "m", 1, 1);
+  upper.passThrough("kPad");
+  TransformMapAttr upperAttr = upper.get();
+
+  SmallVector<TransformMapAttr> transforms{upperAttr, lowerAttr};
+  SmallVector<unsigned> mDim{0};
+  SmallVector<unsigned> kDim{1};
+  SmallVector<unsigned> bothDims{0, 1};
+  SmallVector<unsigned> noDims;
+  EXPECT_TRUE(validityDependsOnAnyDim(transforms, bothDims));
+  EXPECT_FALSE(validityDependsOnAnyDim(transforms, noDims));
+  EXPECT_FALSE(validityDependsOnAnyDim(transforms, mDim, /*firstTransform=*/1));
+  EXPECT_TRUE(validityDependsOnAnyDim(transforms, kDim, /*firstTransform=*/1));
+}
 
 // Create a zero constant tensor of the given shape/element type.
 static Value makeConstant(OpBuilder &b, Location loc, ArrayRef<int64_t> shape,
@@ -402,6 +457,39 @@ static Value applyTransform(OpBuilder &b, Location loc, Value src,
                             TransformMapAttr transform) {
   return TransformOp::create(b, loc, src, transform);
 }
+
+//===----------------------------------------------------------------------===//
+// collectInputFusionPaths Tests
+//===----------------------------------------------------------------------===//
+
+TEST(CollectInputFusionPathsTest, PreservesTransformsPerLeaf) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value baseA = makeConstant(b, loc, {16}, b.getF32Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.passThrough("a");
+  TransformMapAttr transform = tm.get();
+  Value transformedA = applyTransform(b, loc, baseA, transform);
+
+  Value baseB = makeConstant(b, loc, {16}, b.getF32Type());
+  Value fused = arith::AddFOp::create(b, loc, transformedA, baseB).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(fused);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, baseA);
+  ASSERT_EQ((*paths)[0].transforms.size(), 1U);
+  EXPECT_EQ((*paths)[0].transforms[0], transform);
+  EXPECT_EQ((*paths)[1].leaf, baseB);
+  EXPECT_TRUE((*paths)[1].transforms.empty());
+}
+
+//===----------------------------------------------------------------------===//
+// isInputNonInjective Tests
+//===----------------------------------------------------------------------===//
 
 // PassThrough is injective: indexing distinct upper coords reads distinct
 // elements.

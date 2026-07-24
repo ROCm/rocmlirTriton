@@ -2,6 +2,7 @@
 #define MLIR_DIALECT_ROCK_UTILITY_BUILDERUTILS_H
 
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
@@ -28,6 +29,11 @@ Value createZeroConstantOp(OpBuilder &b, Location loc, Type type);
 /// Utility function to emit type conversion ops.
 Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
                              Type destType);
+
+/// Insert a unit dimension at `axis` with tt.expand_dims, then broadcast the
+/// expanded tensor to `resultType`.
+Value expandDimAndBroadcast(OpBuilder &b, Location loc, Value source,
+                            int64_t axis, RankedTensorType resultType);
 
 /// Saturating + truncating float-to-int conversion implementing MIGraphX's
 /// reference `convert` op semantics. Used by both the CPU lowering path
