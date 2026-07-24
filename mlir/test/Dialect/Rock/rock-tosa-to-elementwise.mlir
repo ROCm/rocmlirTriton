@@ -50,6 +50,16 @@ func.func @maximum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>
 
 // -----
 
+// CHECK-LABEL: @maximum_f32_propagate_nan
+// CHECK-NOT:   tosa.maximum
+// CHECK:       arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
+func.func @maximum_f32_propagate_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.maximum %arg0, %arg1 {nan_mode = PROPAGATE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
 // CHECK-LABEL: @maximum_i32
 // CHECK-NOT:   tosa.maximum
 // CHECK:       arith.maxsi %arg0, %arg1 : tensor<4x8xi32>
