@@ -207,8 +207,9 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   mlir::ScopedDiagnosticHandler diagHandler(
       ctx, [](mlir::Diagnostic &) { return mlir::success(); });
 
-  // Phase 1: MIGraphX -> Rock (high level). Must complete before we can stamp
-  // perf configs on the resulting Rock ops.
+  // Phase 1: MIGraphX/MIXR -> Rock (high level). The input module is expected
+  // to still be in the MIGraphX dialect; lowering must complete before we can
+  // stamp perf configs on the resulting Rock ops.
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
@@ -307,6 +308,8 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
     return false;
   }
 
+  // The problem-size-only estimate assumes Q/K/V (gemm0 A/B and gemm1 B) use a
+  // common element width. Mixed-type kernels should be checked via `module`.
   mlir::FailureOr<int64_t> ldsBytes =
       mlir::rock::estimateGemmGemmLdsBytes(elemType, gemmO);
   if (mlir::failed(ldsBytes)) {

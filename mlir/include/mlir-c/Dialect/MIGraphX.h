@@ -68,7 +68,12 @@ MLIR_CAPI_EXPORTED bool mlirGetBinary(MlirModule module, size_t *size,
 // GEMM+GEMM/Attention problem on `arch` fits within that arch's shared-memory
 // capacity. This is a conservative gate: it returns false both when the
 // estimate exceeds the arch capacity and when no estimate can be produced.
-// `elementType` supplies the element bit width for the estimate.
+// When `module` is null, `elementType` supplies the output element bit width of
+// the GEMM/Attention op. For mixed-type fusions, provide `module` so the check
+// can use the concrete lowered types.
+// If `module` is non-null, it must be a MIGraphX/MIXR-level module; this API
+// lowers the module through the MIGraphX and Rock high-level pipelines before
+// checking the concrete lowered kernel.
 // Note: A well-formed but unsupported architecture is a caller error and
 // results in undefined behavior, so callers must pass a supported `gfx*` arch.
 MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
