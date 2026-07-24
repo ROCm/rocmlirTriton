@@ -708,8 +708,8 @@ class ConvConfiguration(PerfConfiguration):
 
     def to_command_line(self):
         return (
-            f"conv{ {'f32':'', 'f16':'fp16', 'bf16':'bfp16', 'i8':'int8','fp8_fp8':'fp8_fp8', 'fp8': 'fp8'}[self.datatype]} "
-            + f"-F { {'fwd':1, 'bwd':2, 'wrw':4}[self.direction]} " +
+            f"conv{dict(f32='', f16='fp16', bf16='bfp16', i8='int8', fp8_fp8='fp8_fp8', fp8='fp8')[self.datatype]} "
+            + f"-F {dict(fwd=1, bwd=2, wrw=4)[self.direction]} " +
             f"-f {inverse_filter_layouts(self.filter_layout)} -I {self.input_layout.upper()} " +
             f"-O {inverse_output_layouts(self.output_layout)} " +
             f"-n {self.n} -c {self.c} -H {self.hi} -W {self.wi} -k {self.k} " +
@@ -1644,8 +1644,9 @@ class AttentionConfiguration(PerfConfiguration):
         self.causal = causal
         self.return_lse = return_lse
         self.split_kv = split_kv
-        # Only set in KV-cache mode (seq_len_q == 1). Picked up by the sweep
-        # script's test_config to add ``--current_seq_len=...`` to rocmlir-gen.
+        # Only set in KV-cache mode (seq_len_q == 1). This is a runtime input,
+        # so generate_mlir_driver_commandline emits it while to_command_line
+        # intentionally omits it from the tuning problem identity.
         self.current_seqlen = current_seqlen
 
         self.arch = arch
@@ -1712,6 +1713,8 @@ class AttentionConfiguration(PerfConfiguration):
             f"-transQ={self.trans_q}", f"-transK={self.trans_k}", f"-transV={self.trans_v}",
             f"-transO={self.trans_o}", f"-causal={self.causal}", f"-return_lse={self.return_lse}",
             f"-split_kv={self.split_kv}",
+            *([f"-current_seq_len={','.join(map(str, self.current_seqlen))}"]
+              if self.current_seqlen else []),
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
