@@ -39,6 +39,29 @@ struct ArchTestEnv {
 };
 } // namespace
 
+TEST(AmdArchDbTest, ParseArchString) {
+  {
+    auto [chip, features] = parseArchString("gfx942");
+    EXPECT_EQ(chip.str(), "gfx942");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("amdgcn-amd-amdhsa:gfx942:xnack-");
+    EXPECT_EQ(chip.str(), "gfx942");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("gfx999");
+    EXPECT_EQ(chip.str(), "gfx999");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("badarch");
+    EXPECT_TRUE(chip.empty());
+    EXPECT_EQ(features, 0u);
+  }
+}
+
 // --- isFastAtomicAddSupported ---
 
 TEST(AmdArchDbTest, FastAtomicAddF32) {

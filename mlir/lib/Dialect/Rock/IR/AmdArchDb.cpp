@@ -34,7 +34,7 @@ using namespace mlir;
 using namespace mlir::rock;
 using namespace mlir::triton::amdgpu;
 
-static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
+std::tuple<StringRef, unsigned> mlir::rock::parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
 
   StringRef firstPart, remainingParts;
