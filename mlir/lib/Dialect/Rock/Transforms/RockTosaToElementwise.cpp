@@ -122,6 +122,33 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
   }
 };
 
+// tosa.maximum selects the floating operation from its NaN propagation mode.
+struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::MaximumOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    Type elemTy = cast<ShapedType>(op.getType()).getElementType();
+
+    if (isa<IntegerType>(elemTy)) {
+      rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, op.getType(), in1, in2);
+      return success();
+    }
+    if (!isa<FloatType>(elemTy))
+      return failure();
+
+    if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE)
+      rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, op.getType(), in1,
+                                                     in2);
+    else
+      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getType(), in1, in2);
+    return success();
+  }
+};
+
 // Unary op whose ODS argument is $input1 (e.g. tosa.exp, tosa.log).
 template <typename TosaOp, typename TargetOp>
 struct UnaryConverter : public OpRewritePattern<TosaOp> {
@@ -489,7 +516,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
 };
 
 // tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
-// and fp_to_int_cast.
+// unsigned_max, and fp_to_int_cast.
 // These are custom TOSA ops that represent operations which standard TOSA
 // doesn't support or where we need to override upstream lowering behavior.
 struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
@@ -536,6 +563,12 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
 
     if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
       rewriter.replaceOpWithNewOp<arith::DivUIOp>(
+          op, outType, op.getInputList()[0], op.getInputList()[1]);
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_MAX) {
+      rewriter.replaceOpWithNewOp<arith::MaxUIOp>(
           op, outType, op.getInputList()[0], op.getInputList()[1]);
       return success();
     }
@@ -601,6 +634,7 @@ struct RockTosaToElementwise
       StringRef name = op.getOperatorName();
       return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
              name != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+             name != ROCK_CUSTOMOP_UNSIGNED_MAX &&
              name != ROCK_CUSTOMOP_FP_TO_INT_CAST;
     });
 
@@ -608,9 +642,9 @@ struct RockTosaToElementwise
     patterns.add<
         BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
         BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>,
-        BinaryConverter<tosa::MaximumOp, arith::MaximumFOp, arith::MaxSIOp>,
         BinaryConverter<tosa::MinimumOp, arith::MinimumFOp, arith::MinSIOp>>(
         ctx);
+    patterns.add<MaximumConverter>(ctx);
 
     // --- Binary float-only ---
     patterns.add<IntBinaryConverter<tosa::BitwiseAndOp, arith::AndIOp>,
