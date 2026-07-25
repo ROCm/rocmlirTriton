@@ -92,10 +92,10 @@ template <typename OpTy>
 static FailureOr<std::pair<Value, Value>>
 broadcastInputs(PatternRewriter &rewriter, OpTy op) {
   auto resultShape = cast<ShapedType>(op.getType()).getShape();
-  auto b1 =
-      createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(), resultShape);
-  auto b2 =
-      createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(), resultShape);
+  auto b1 = createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(),
+                                     resultShape);
+  auto b2 = createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(),
+                                     resultShape);
   if (failed(b1) || failed(b2))
     return failure();
   return std::make_pair(*b1, *b2);
@@ -441,8 +441,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
           rewriter, op.getLoc(),
           DenseElementsAttr::get(srcShapedTy,
                                  rewriter.getFloatAttr(srcTy, 0.0)));
-      rewriter.replaceOpWithNewOp<arith::CmpFOp>(
-          op, arith::CmpFPredicate::UNE, op.getInput(), zero);
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, arith::CmpFPredicate::UNE,
+                                                 op.getInput(), zero);
       return success();
     }
 
@@ -460,11 +460,10 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
       Value zero = arith::ConstantOp::create(
           rewriter, op.getLoc(),
-          DenseElementsAttr::get(
-              srcShapedTy,
-              rewriter.getIntegerAttr(srcTy, 0)));
-      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-          op, arith::CmpIPredicate::ne, op.getInput(), zero);
+          DenseElementsAttr::get(srcShapedTy,
+                                 rewriter.getIntegerAttr(srcTy, 0)));
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, arith::CmpIPredicate::ne,
+                                                 op.getInput(), zero);
       return success();
     }
 
@@ -484,7 +483,7 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         rewriter.replaceOp(op, op.getInput());
       return success();
     }
-  
+
     return failure();
   }
 };
@@ -671,4 +670,3 @@ struct RockTosaToElementwise
 };
 
 } // namespace
-
