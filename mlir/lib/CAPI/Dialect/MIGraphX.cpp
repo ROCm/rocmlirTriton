@@ -8,6 +8,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir-c/Dialect/MIGraphX.h"
+#include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
+#include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
 #include "mlir/CAPI/Registration.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -15,13 +17,26 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/MIGraphX/Pipeline/Pipeline.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/TargetSelect.h"
+#include <cassert>
 #include <mutex>
 #include <vector>
 
@@ -96,6 +111,231 @@ MLIR_CAPI_EXPORTED bool mlirGetBinary(MlirModule module, size_t *size,
   return success;
 }
 
+// Map a parsed ROCm device name onto the Triton/backend option structs. Shared
+// by the module LDS gate and `parseBackendOptions` so both derive arch-specific
+// options the same way.
+static void applyDeviceNameToOptions(const mlir::RocmDeviceName &devName,
+                                     int optLevel,
+                                     mlir::rock::TritonOptions &tritonOpts,
+                                     mlir::rock::BackendOptions &backendOpts) {
+  tritonOpts.arch = devName.getChip().str();
+  backendOpts.triple = devName.getTriple().str();
+  backendOpts.chip = devName.getChip().str();
+  backendOpts.features = devName.getFeaturesForBackend();
+  backendOpts.optLevel = optLevel;
+}
+
+enum class TunableConfigStatus {
+  NoTunableOp,
+  MalformedPerfConfig,
+  Resolved,
+};
+
+struct TunableConfigResolution {
+  TunableConfigStatus status = TunableConfigStatus::NoTunableOp;
+  mlir::rock::RockTuningParamAttrInterface params;
+  mlir::StringAttr arch;
+  mlir::StringAttr malformedPerfConfig;
+};
+
+static TunableConfigResolution resolveTunableConfig(mlir::ModuleOp module) {
+  mlir::MLIRContext *ctx = module.getContext();
+  TunableConfigResolution resolved;
+
+  auto resolveTunableOp = [&](auto op, auto parse, auto makeDefault) {
+    mlir::rock::RockTuningParamAttrInterface cfg;
+    if (auto existing =
+            op->template getAttrOfType<mlir::StringAttr>("perf_config")) {
+      cfg = parse(existing);
+      if (!cfg) {
+        resolved.status = TunableConfigStatus::MalformedPerfConfig;
+        resolved.malformedPerfConfig = existing;
+        return;
+      }
+    } else {
+      auto def = makeDefault(ctx);
+      op->setAttr("perf_config", def.getPerfConfigAttr());
+      cfg = def;
+    }
+    resolved.status = TunableConfigStatus::Resolved;
+    resolved.params = cfg;
+    if (auto a = mlir::rock::getArch(op.getOperation()); mlir::succeeded(a))
+      resolved.arch = *a;
+  };
+
+  mlir::rock::RockGemmGemmWrapperInterface gemmGemmOp;
+  mlir::rock::RockGemmWrapperInterface gemmOp;
+  module.walk([&](mlir::Operation *op) {
+    if (auto candidate =
+            llvm::dyn_cast<mlir::rock::RockGemmGemmWrapperInterface>(op)) {
+      assert(!gemmOp &&
+             "gemm+gemm and gemm tunable ops should be mutually exclusive");
+      gemmGemmOp = candidate;
+      return;
+    }
+    if (auto candidate =
+            llvm::dyn_cast<mlir::rock::RockGemmWrapperInterface>(op)) {
+      assert(!gemmGemmOp &&
+             "gemm+gemm and gemm tunable ops should be mutually exclusive");
+      gemmOp = candidate;
+    }
+  });
+
+  if (gemmGemmOp) {
+    resolveTunableOp(
+        gemmGemmOp,
+        [](mlir::StringAttr s) {
+          return mlir::rock::GemmGemmParamsAttr::get(s);
+        },
+        [](mlir::MLIRContext *c) {
+          return mlir::rock::getConservativeDefaultGemmGemmParams(c);
+        });
+  } else if (gemmOp) {
+    resolveTunableOp(
+        gemmOp,
+        [](mlir::StringAttr s) { return mlir::rock::GemmParamsAttr::get(s); },
+        [](mlir::MLIRContext *c) {
+          return mlir::rock::getConservativeDefaultGemmParams(c);
+        });
+  }
+
+  return resolved;
+}
+
+// Authoritative LDS check for a concrete module: lower a clone through the
+// kernel + Triton + backend pipeline and let the hardware LDS gate
+// (ResolveKernelLaunchParams) decide. Returns true iff the pipeline succeeds
+// and no rock pass marked the module `rock.not_applicable`.
+static bool ldsUsageFitsForModule(MlirModule module) {
+  // Operate on a clone: lowering is destructive and the caller's module must
+  // be left untouched.
+  mlir::ModuleOp clonedMod = unwrap(module).clone();
+  mlir::OwningOpRef<mlir::ModuleOp> cloneGuard(clonedMod);
+  mlir::MLIRContext *ctx = clonedMod.getContext();
+
+  // This is a gate, so an inapplicable problem is an expected, non-fatal
+  // outcome; swallow the diagnostics the pipelines emit on failure.
+  mlir::ScopedDiagnosticHandler diagHandler(
+      ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+
+  // Phase 1: MIGraphX/MIXR -> Rock (high level). The input module is expected
+  // to still be in the MIGraphX dialect; lowering must complete before we can
+  // stamp perf configs on the resulting Rock ops.
+  {
+    mlir::PassManager pm(clonedMod->getName(),
+                         mlir::PassManager::Nesting::Implicit);
+    mlir::migraphx::addMIGraphXPipeline(pm);
+    mlir::rock::buildHighlevelPipeline(pm);
+    if (mlir::failed(pm.run(clonedMod))) {
+      llvm::errs()
+          << "could not check module LDS usage: failed to lower to Rock\n";
+      return false;
+    }
+  }
+
+  // Honor an existing `perf_config`; otherwise stamp the smallest conservative
+  // config. Gemm+gemm is tried before regular gemm because fused attention
+  // carries a different perf-config schema.
+  TunableConfigResolution config = resolveTunableConfig(clonedMod);
+  if (config.status == TunableConfigStatus::MalformedPerfConfig) {
+    llvm::errs() << "could not check module LDS usage: invalid perf_config '"
+                 << config.malformedPerfConfig.strref() << "'\n";
+    return false;
+  }
+  // No tunable kernel means nothing allocates LDS through this path; trivially
+  // fits.
+  if (config.status == TunableConfigStatus::NoTunableOp)
+    return true;
+
+  if (!config.arch) {
+    llvm::errs() << "could not check module LDS usage: missing target "
+                    "architecture on tunable op\n";
+    return false;
+  }
+
+  mlir::RocmDeviceName devName;
+  if (mlir::failed(devName.parse(config.arch.strref()))) {
+    llvm::errs() << "could not check module LDS usage: invalid architecture '"
+                 << config.arch.strref() << "'\n";
+    return false;
+  }
+
+  mlir::rock::TritonOptions tritonOpts;
+  mlir::rock::BackendOptions backendOpts;
+  applyDeviceNameToOptions(devName, /*optLevel=*/3, tritonOpts, backendOpts);
+  backendOpts.compile = true;
+  if (mlir::failed(mlir::rock::fillCompilationConfigs(config.params, tritonOpts,
+                                                      backendOpts))) {
+    llvm::errs()
+        << "could not check module LDS usage: failed to configure backend\n";
+    return false;
+  }
+
+  // Phase 2: Rock -> Triton -> backend (runs the LDS gate; full codegen).
+  {
+    mlir::PassManager pm(clonedMod->getName(),
+                         mlir::PassManager::Nesting::Implicit);
+    mlir::rock::KernelOptions kOpts;
+    mlir::rock::buildKernelPipeline(pm, kOpts);
+    mlir::rock::buildTritonPipeline(pm, tritonOpts);
+    mlir::rock::buildBackendPipeline(pm, backendOpts);
+    if (mlir::failed(pm.run(clonedMod))) {
+      llvm::errs()
+          << "could not check module LDS usage: backend lowering failed\n";
+      return false;
+    }
+  }
+
+  // A `rock.not_applicable` marker means a rock pass (e.g. the LDS gate)
+  // refused the config; treat that as "does not fit".
+  return !clonedMod->hasAttr(mlir::rock::NotApplicableAttr::getMnemonic());
+}
+
+MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
+                                                     const char *arch,
+                                                     MlirType elementType,
+                                                     MlirModule module) {
+  // When a module is provided, its lowering is the authoritative answer and
+  // supersedes the problem-size estimate below.
+  if (!mlirModuleIsNull(module))
+    return ldsUsageFitsForModule(module);
+
+  if (!arch) {
+    llvm::errs() << "arch must not be null when checking LDS usage\n";
+    return false;
+  }
+
+  llvm::StringRef archStr(arch);
+  mlir::RocmDeviceName devName;
+  auto [chip, _] = mlir::rock::parseArchString(archStr);
+  if (archStr.empty() || mlir::failed(devName.parse(archStr)) ||
+      mlir::triton::amdgpu::TargetFeatures(chip).getISAFamily() ==
+          mlir::triton::amdgpu::ISAFamily::Unknown) {
+    llvm::errs() << "could not estimate LDS usage: invalid architecture '"
+                 << archStr << "'\n";
+    return false;
+  }
+
+  mlir::Type elemType = unwrap(elementType);
+  if (!elemType) {
+    llvm::errs() << "elementType must not be null when checking LDS usage\n";
+    return false;
+  }
+
+  // The problem-size-only estimate assumes Q/K/V (gemm0 A/B and gemm1 B) use a
+  // common element width. Mixed-type kernels should be checked via `module`.
+  mlir::FailureOr<int64_t> ldsBytes =
+      mlir::rock::estimateGemmGemmLdsBytes(elemType, gemmO);
+  if (mlir::failed(ldsBytes)) {
+    llvm::errs() << "could not estimate LDS usage for the given problem on "
+                 << archStr << "\n";
+    return false;
+  }
+
+  // The estimate fits when it is within the arch's shared-memory capacity.
+  return ldsBytes.value() <= mlir::rock::getLDSSize(archStr);
+}
+
 // pipelines
 
 MLIR_CAPI_EXPORTED
@@ -128,11 +368,7 @@ static bool parseBackendOptions(MlirPassManager pm,
     return false;
   }
 
-  tritonOpts.arch = devName.getChip().str();
-  backendOpts.triple = devName.getTriple().str();
-  backendOpts.chip = devName.getChip().str();
-  backendOpts.features = devName.getFeaturesForBackend();
-  backendOpts.optLevel = opts.optLevel;
+  applyDeviceNameToOptions(devName, opts.optLevel, tritonOpts, backendOpts);
 
   llvm::StringRef configStr(opts.perfConfig);
   if (configStr.empty()) {
