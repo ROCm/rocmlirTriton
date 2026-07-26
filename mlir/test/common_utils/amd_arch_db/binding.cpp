@@ -42,6 +42,7 @@ PYBIND11_MODULE(amd_arch_db, m) {
       .value("RDNA1", ISAFamily::RDNA1)
       .value("RDNA2", ISAFamily::RDNA2)
       .value("RDNA3", ISAFamily::RDNA3)
+      .value("GFX1170", ISAFamily::GFX1170)
       .value("RDNA4", ISAFamily::RDNA4)
       .value("GFX1250", ISAFamily::GFX1250);
 
