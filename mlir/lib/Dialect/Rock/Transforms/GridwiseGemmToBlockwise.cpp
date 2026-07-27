@@ -87,6 +87,10 @@ struct RockGridwiseGemmToBlockwisePass
 
 } // end anonymous namespace
 
+static bool is4Bit(Type t) {
+  return t.isIntOrFloat() && t.getIntOrFloatBitWidth() == 4;
+}
+
 static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
                                  Value end, ValueRange iterArgs) {
   Value one = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -275,14 +279,43 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
-    // If needed, peel a non-power-of-two kPerBlock into power-of-two segments
-    // (e.g. kPerBlock = 48 -> {32, 16}).
+    // If needed, decompose a non-power-of-two kPerBlock into power-of-two
+    // segments (e.g. kPerBlock = 48 -> {32, 16}).
     SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
-    bool peelK = kSegs.size() > 1;
-    if (peelK && isScaledGemm) {
+    bool decomposeK = kSegs.size() > 1;
+    if (decomposeK && isScaledGemm) {
       return op->emitOpError(
           "non-power-of-two kPerBlock is not supported for "
           "scaled gemm (should have been rejected by affix)");
+    }
+
+    // Decomposing does not work with 4-bit operands due to limitations in
+    // LegalizeFloatTypes.
+    if (decomposeK && (is4Bit(elementTypeA) || is4Bit(elementTypeB) ||
+                       is4Bit(elementTypeALoad) || is4Bit(elementTypeBLoad))) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "4-bit operands");
+    }
+
+    // An integer GEMM accumulates in i32 (rock::getAccType). A segment
+    // narrower than `minIntKSegment` matches neither an MFMA k-dimension nor
+    // v_dot4's `k % 4 == 0`, so Triton legalizes that dot as f32 and routes
+    // the i32 accumulator through sitofp/fptosi once per K iteration. That
+    // round trip is lossy past f32's exact-integer range (2^24), silently
+    // returning wrong sums, so refuse the tile instead. Float operands are
+    // unaffected: they accumulate in f32 to begin with.
+    constexpr int64_t minIntKSegment = 4;
+    if (decomposeK && isa<IntegerType>(elementTypeA) &&
+        isa<IntegerType>(elementTypeB) &&
+        llvm::any_of(kSegs, [](const Pow2Segment &seg) {
+          return seg.length < minIntKSegment;
+        })) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "integer operands when it decomposes into K "
+                             "segments narrower than ")
+             << minIntKSegment;
     }
 
     // Build the operand views for each K segment. sliceBlockedDims returns

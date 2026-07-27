@@ -286,11 +286,19 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
 
   // Also tune non-pow2 K tiles (only on non-scaled GEMMs).
   if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
+    // An integer GEMM keeps its i32 accumulator exact only while every K
+    // segment is at least 4 wide, which rock-gridwise-gemm-to-blockwise
+    // enforces; a tile is fully covered by that rule iff it is a multiple of 4.
+    bool isIntegerGemm = isa<IntegerType>(gemmOp.getAType()) &&
+                         isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              /*maxK=*/256))
+                                              /*maxK=*/256)) {
+      if (isIntegerGemm && d % 4 != 0)
+        continue;
       if (!llvm::is_contained(kList, d))
         kList.push_back(d);
+    }
     llvm::sort(kList);
   }
   return kList;

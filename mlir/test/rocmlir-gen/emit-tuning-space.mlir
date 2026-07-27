@@ -127,6 +127,21 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-DIVK
 // CHECK-MFMA-DIVK: gemm:v4:{{[0-9]+,[0-9]+,48,1,}}
 
+// An integer GEMM accumulates in i32 and keeps that accumulator exact only
+// while every K decomposed segment is at least 4 wide (enforced in
+// rock-gridwise-gemm-to-blockwise), so tiles that would peel into a 1- or
+// 2-wide segment are not offered. K = 576 makes 18 (= 16 + 2) a divisor in the
+// min(m,n)=32 window: it is offered for f16 but not for i8, while the
+// multiple-of-4 tiles stay for both.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-NARROW-SEG-F16
+// CHECK-MFMA-NARROW-SEG-F16: gemm:v4:{{[0-9]+,[0-9]+,18,1,}}
+
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t i8 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-NARROW-SEG-I8 \
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,18,}}"
+// CHECK-MFMA-NARROW-SEG-I8: gemm:v4:{{[0-9]+,[0-9]+,24,1,}}
+
 // A K that is a pure power of two (K = 128) must not introduce any non-pow2
 // kPerBlock: only 32/64/128 appear on WMMA (256 is capped out by K = 128).
 // RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 128 -n 256 --emit-tuning-space=full 2>&1 \
