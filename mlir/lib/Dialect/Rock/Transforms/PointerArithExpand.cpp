@@ -482,9 +482,9 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
       return failure();
     result.offset = broadcastToShape(b, loc, computed[0], outShape);
     if (!result.offset)
-      return emitError(loc) << "cannot broadcast offset of type "
-                            << computed[0].getType()
-                            << " to the output tile shape";
+      return emitError(loc)
+             << "cannot broadcast offset of type " << computed[0].getType()
+             << " to the output tile shape";
   }
   return result;
 }

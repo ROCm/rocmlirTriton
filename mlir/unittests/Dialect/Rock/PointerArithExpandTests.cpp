@@ -42,7 +42,8 @@ struct TestEnv {
 
   // A scalar i32 SSA value.
   Value scalar() {
-    return arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(0));
+    return arith::ConstantOp::create(builder, loc,
+                                     builder.getI32IntegerAttr(0));
   }
 
   // A tensor<...xi32> SSA value of the requested shape.
@@ -75,7 +76,8 @@ TEST(BroadcastToShape, MatchingShapeIsIdentity) {
 // A unit dim is broadcast up to the peer size.
 TEST(BroadcastToShape, UnitDimIsBroadcast) {
   TestEnv env;
-  Value res = broadcastToShape(env.builder, env.loc, env.tensor({1, 8}), {4, 8});
+  Value res =
+      broadcastToShape(env.builder, env.loc, env.tensor({1, 8}), {4, 8});
   ASSERT_TRUE(res);
   auto tt = dyn_cast<RankedTensorType>(res.getType());
   ASSERT_TRUE(tt);
@@ -93,15 +95,17 @@ TEST(BroadcastToShape, RankMismatchReturnsNull) {
 // A non-unit dim that would have to change size is not broadcastable.
 TEST(BroadcastToShape, NonUnitDimMismatchReturnsNull) {
   TestEnv env;
-  Value res = broadcastToShape(env.builder, env.loc, env.tensor({2, 8}), {4, 8});
+  Value res =
+      broadcastToShape(env.builder, env.loc, env.tensor({2, 8}), {4, 8});
   EXPECT_FALSE(res);
 }
 
 // makeRange restores rank with unit dims around the non-unit dim and keeps i32.
 TEST(MakeRange, RestoresRankAtI32) {
   TestEnv env;
-  Value res = makeRange(env.builder, env.loc, /*start=*/0, /*end=*/8,
-                        /*numDims=*/2, /*nonUnitDim=*/1, env.builder.getI32Type());
+  Value res =
+      makeRange(env.builder, env.loc, /*start=*/0, /*end=*/8,
+                /*numDims=*/2, /*nonUnitDim=*/1, env.builder.getI32Type());
   ASSERT_TRUE(res);
   auto tt = dyn_cast<RankedTensorType>(res.getType());
   ASSERT_TRUE(tt);
@@ -112,8 +116,9 @@ TEST(MakeRange, RestoresRankAtI32) {
 // A wider index type sign-extends the i32 range.
 TEST(MakeRange, WidensToI64) {
   TestEnv env;
-  Value res = makeRange(env.builder, env.loc, /*start=*/0, /*end=*/8,
-                        /*numDims=*/1, /*nonUnitDim=*/0, env.builder.getI64Type());
+  Value res =
+      makeRange(env.builder, env.loc, /*start=*/0, /*end=*/8,
+                /*numDims=*/1, /*nonUnitDim=*/0, env.builder.getI64Type());
   ASSERT_TRUE(res);
   auto tt = dyn_cast<RankedTensorType>(res.getType());
   ASSERT_TRUE(tt);
