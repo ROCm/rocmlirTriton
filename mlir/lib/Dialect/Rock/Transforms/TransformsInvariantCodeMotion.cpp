@@ -80,6 +80,7 @@ namespace {
 /// i.e. when the merged dim's lower dims are laid out contiguously underneath
 /// (their buffer strides nest as the merge factors). When that does not hold
 /// the offset is only piecewise-linear in the iv, and we bail.
+///
 /// Propagate an upper-space coordinate `diff` through a single transform `map`,
 /// returning the resulting lower-space diff. This is the pure per-transform
 /// index-diff rule set (no carry-neutrality guard); both `linearizedDiffStride`
