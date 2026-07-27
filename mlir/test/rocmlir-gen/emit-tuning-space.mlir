@@ -131,17 +131,18 @@
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,(32|64|128|256|512),}}" \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
-// CHECK-NAVI: gemm:v5:{{(32|64|128),(32|64|128),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI: gemm:v5:{{(16|32|64|128|256),(16|32|64|128|256),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
-// so this exercises the non-accel `getRangeGemmGemm` path.
+// so this exercises the non-accel `getRangeGemmGemm` path. Per AIROCMLIR-938
+// the non-accel attention M/N space is {16, 32, 64, 128} (16 added, 256 not).
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
 // RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,2,}}" \
 // RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}" \
-// RUN:       --implicit-check-not="attn:v6:{{(16|256),}}" \
-// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,(16|256),}}"
-// CHECK-NAVI-ATTN: attn:v6:{{(32|64|128),(32|64|128),0,[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// RUN:       --implicit-check-not="attn:v6:{{256,}}" \
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,256,}}"
+// CHECK-NAVI-ATTN: attn:v6:{{(16|32|64|128),(16|32|64|128),0,[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
 
 //===----------------------------------------------------------------------===//
 // Non-power-of-two kPerBlock candidates that evenly divide K

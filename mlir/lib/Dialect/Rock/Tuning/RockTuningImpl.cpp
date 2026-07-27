@@ -68,23 +68,13 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
-  auto arch = rock::getArchValue(op);
-  bool hasAcceleration = false;
-  if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmOp);
-  else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmGemmOp);
-  else
-    llvm_unreachable("Unexpected op");
-
+  // M/N per-block tiles are the same for the accel and non-accel paths
+  // ({16, 32, 64, 128, 256}); The attention (gemm+gemm) non-accel path 
+  // drops 256 and is handled separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
-  if (hasAcceleration) {
-    for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
-      dPerBlockList.push_back(dPerBlock);
-  } else {
-    // non-accel
-    dPerBlockList = {32, 64, 128, 256};
-  }
+  for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
+    dPerBlockList.push_back(dPerBlock);
+
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
   // tile that covers the dimension tightly and drop the now-oversized larger
@@ -454,8 +444,9 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  // Non-accel path.
-  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
+  // Non-accel path. Attention adds 16 but not 256 (256 didn't help and
+  // inflated Navi compile time). See AIROCMLIR-938.
+  std::vector<uint32_t> dPerBlockNonAccel = {16, 32, 64, 128};
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64, 128, 256}) {
     if (blockSize % waveSize == 0)
