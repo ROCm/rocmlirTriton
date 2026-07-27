@@ -87,8 +87,8 @@ struct RockGridwiseGemmToBlockwisePass
 
 } // end anonymous namespace
 
-static bool is4Bit(Type t) {
-  return t.isIntOrFloat() && t.getIntOrFloatBitWidth() == 4;
+static bool isSubByte(Type t) {
+  return t.isIntOrFloat() && t.getIntOrFloatBitWidth() < 8;
 }
 
 static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
@@ -289,13 +289,14 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
           "scaled gemm (should have been rejected by affix)");
     }
 
-    // Decomposing does not work with 4-bit operands due to limitations in
+    // Decomposing does not work with sub-byte operands due to limitations in
     // LegalizeFloatTypes.
-    if (decomposeK && (is4Bit(elementTypeA) || is4Bit(elementTypeB) ||
-                       is4Bit(elementTypeALoad) || is4Bit(elementTypeBLoad))) {
+    if (decomposeK &&
+        (isSubByte(elementTypeA) || isSubByte(elementTypeB) ||
+         isSubByte(elementTypeALoad) || isSubByte(elementTypeBLoad))) {
       rock::markAsNotApplicable(op);
       return op->emitOpError("non-power-of-two kPerBlock is not supported for "
-                             "4-bit operands");
+                             "sub-byte operands");
     }
 
     // An integer GEMM accumulates in i32 (rock::getAccType). A segment
