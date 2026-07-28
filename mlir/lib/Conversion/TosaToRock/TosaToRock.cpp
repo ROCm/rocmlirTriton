@@ -1609,6 +1609,8 @@ struct AttentionMatcherValues {
   Value currentSeqLen;
   bool isCausal;
   Value prefixOffset;
+  std::optional<int32_t> seqLenClipMin;
+  std::optional<int32_t> seqLenClipMax;
   Type softmaxType;
   ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder;
 };
@@ -1963,6 +1965,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     Value inputToContinue; // The value to continue pattern matching with
     Value seqLen;          // The sequence length
     Value prefixOffset;    // The prefix offset value
+    std::optional<int32_t> seqLenClipMin;
+    std::optional<int32_t> seqLenClipMax;
   };
 
   // Helper to try detecting prefix causal pattern: add(row_indices, offset)
@@ -2019,9 +2023,73 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     return unwrappedOffset;
   }
 
-  // Helper to try detecting KV-cache pattern
-  // Returns the seqLen value if successful
-  FailureOr<Value>
+  struct KVCacheResult {
+    Value seqLen;
+    std::optional<int32_t> clipMin;
+    std::optional<int32_t> clipMax;
+  };
+
+  struct ClipResult {
+    Value input;
+    int32_t clipMin;
+    int32_t clipMax;
+  };
+
+  // Detect min(max(input, clipMin), clipMax), allowing the constant to appear
+  // on either side of each commutative operation.
+  FailureOr<ClipResult> tryClipPattern(Value input) const {
+    DenseSet<StringRef> expandAndCollapse{
+        tensor::CollapseShapeOp::getOperationName(),
+        tensor::ExpandShapeOp::getOperationName()};
+
+    auto extractI32Constant = [&](Value value) -> std::optional<int32_t> {
+      auto maybeSkipped = getValueSkipping(value, expandAndCollapse);
+      Value unwrapped = succeeded(maybeSkipped) ? *maybeSkipped : value;
+      DenseElementsAttr attr;
+      if (!matchPattern(unwrapped, m_Constant(&attr)) ||
+          !attr.getElementType().isInteger(32) || !attr.isSplat())
+        return std::nullopt;
+      return attr.getSplatValue<int32_t>();
+    };
+
+    auto maybeMin =
+        getDefiningOpSkipping<tosa::MinimumOp>(input, expandAndCollapse);
+    if (failed(maybeMin))
+      return failure();
+
+    Value maxCandidate;
+    std::optional<int32_t> clipMax = extractI32Constant(maybeMin->getInput2());
+    if (clipMax) {
+      maxCandidate = maybeMin->getInput1();
+    } else {
+      clipMax = extractI32Constant(maybeMin->getInput1());
+      if (!clipMax)
+        return failure();
+      maxCandidate = maybeMin->getInput2();
+    }
+
+    auto maybeMax =
+        getDefiningOpSkipping<tosa::MaximumOp>(maxCandidate, expandAndCollapse);
+    if (failed(maybeMax))
+      return failure();
+
+    Value unclippedInput;
+    std::optional<int32_t> clipMin = extractI32Constant(maybeMax->getInput2());
+    if (clipMin) {
+      unclippedInput = maybeMax->getInput1();
+    } else {
+      clipMin = extractI32Constant(maybeMax->getInput1());
+      if (!clipMin)
+        return failure();
+      unclippedInput = maybeMax->getInput2();
+    }
+
+    return ClipResult{unclippedInput, *clipMin, *clipMax};
+  }
+
+  // Helper to try detecting a KV-cache pattern and an optional clip on its
+  // sequence length.
+  FailureOr<KVCacheResult>
   tryKVCachePattern(Value input, const DenseSet<StringRef> &seqLenSkip) const {
     DenseSet<StringRef> expandAndCollapse{
         tensor::CollapseShapeOp::getOperationName(),
@@ -2040,8 +2108,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         !llvm::all_of(shape.slice(2), [](int32_t v) { return v == 1; }))
       return failure();
 
+    KVCacheResult result;
+    Value seqLenCandidate = *maybeNonOne;
+    auto maybeClip = tryClipPattern(seqLenCandidate);
+    if (succeeded(maybeClip)) {
+      seqLenCandidate = maybeClip->input;
+      result.clipMin = maybeClip->clipMin;
+      result.clipMax = maybeClip->clipMax;
+    }
+
     auto maybeCurrentSeqLen =
-        getValueSkipping(maybeNonOne.value(), expandAndCollapse);
+        getValueSkipping(seqLenCandidate, expandAndCollapse);
     assert(succeeded(maybeCurrentSeqLen) && "Must have non-reshape op");
     Value currentSeqLen = maybeCurrentSeqLen.value();
 
@@ -2049,7 +2126,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     if (!isI32BlockArgument(currentSeqLen, seqLenSkip))
       return failure();
 
-    return currentSeqLen;
+    result.seqLen = currentSeqLen;
+    return result;
   }
 
   /*
@@ -2231,7 +2309,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     if (!result.seqLen) {
       auto maybeKVCache = tryKVCachePattern(input2, seqLenSkip);
       if (succeeded(maybeKVCache)) {
-        result.seqLen = maybeKVCache.value();
+        result.seqLen = maybeKVCache->seqLen;
+        result.seqLenClipMin = maybeKVCache->clipMin;
+        result.seqLenClipMax = maybeKVCache->clipMax;
       }
     }
 
@@ -2265,7 +2345,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
                                    tosa::MulOp::getOperationName()};
 
     Value inputToContinue = select.getInput3();
-    SeqLenMaskResult currentResult{inputToContinue, nullptr, nullptr};
+    SeqLenMaskResult currentResult{inputToContinue, nullptr, nullptr,
+                                   std::nullopt, std::nullopt};
 
     // Analyze the first (outer) select
     analyzeSelectForSeqLenMask(select, currentResult, opsToSkip, seqLenSkip);
@@ -2848,12 +2929,15 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // Note that non KV-Cache fusions might have tosa.select
     // so, if the checks fail, we just keep going
     Value kvCacheInput, currentSeqLen, prefixOffset;
+    std::optional<int32_t> seqLenClipMin, seqLenClipMax;
     auto maybeSeqLenMask = getSeqLenMask(softmaxInput);
     if (succeeded(maybeSeqLenMask)) {
       auto result = maybeSeqLenMask.value();
       kvCacheInput = result.inputToContinue;
       currentSeqLen = result.seqLen;
       prefixOffset = result.prefixOffset;
+      seqLenClipMin = result.seqLenClipMin;
+      seqLenClipMax = result.seqLenClipMax;
     } else {
       kvCacheInput = softmaxInput;
     }
@@ -2931,6 +3015,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     attentionMatcherValues.lse = lse;
     attentionMatcherValues.causalMaskInput = causalMaskInput;
     attentionMatcherValues.currentSeqLen = currentSeqLen;
+    attentionMatcherValues.seqLenClipMin = seqLenClipMin;
+    attentionMatcherValues.seqLenClipMax = seqLenClipMax;
     attentionMatcherValues.preSoftmaxElementwiseFinder =
         preSoftmaxElementwiseFinder;
     return attentionMatcherValues;
@@ -3005,6 +3091,33 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     prepareBlockArgTensor(currentSeqLen);
     prepareBlockArgTensor(prefixOffset);
+
+    // Preserve clipping that was stripped while identifying the underlying
+    // currentSeqLen block argument.
+    if (currentSeqLen) {
+      auto seqLenType = cast<RankedTensorType>(currentSeqLen.getType());
+      Type elementType = seqLenType.getElementType();
+      if (attentionMatcherValues.seqLenClipMin) {
+        auto clipMinAttr = DenseElementsAttr::get(
+            seqLenType,
+            rewriter.getIntegerAttr(elementType,
+                                    *attentionMatcherValues.seqLenClipMin));
+        Value clipMin =
+            tosa::ConstOp::create(rewriter, loc, seqLenType, clipMinAttr);
+        currentSeqLen = tosa::MaximumOp::create(rewriter, loc, seqLenType,
+                                                currentSeqLen, clipMin);
+      }
+      if (attentionMatcherValues.seqLenClipMax) {
+        auto clipMaxAttr = DenseElementsAttr::get(
+            seqLenType,
+            rewriter.getIntegerAttr(elementType,
+                                    *attentionMatcherValues.seqLenClipMax));
+        Value clipMax =
+            tosa::ConstOp::create(rewriter, loc, seqLenType, clipMaxAttr);
+        currentSeqLen = tosa::MinimumOp::create(rewriter, loc, seqLenType,
+                                                currentSeqLen, clipMax);
+      }
+    }
 
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
     ElementwiseRegionFinder<tosa::MatMulOp> elemwiseRegion =
