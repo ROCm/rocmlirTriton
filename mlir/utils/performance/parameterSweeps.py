@@ -790,6 +790,7 @@ def sample_perf_config(rng: random.Random,
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
+    if pow2_only or not amd_arch_db.supports_non_pow2_k_per_block(arch):
         k_choices = [v for v in k_choices if _is_pow2(v)]
     return (
         rng.choice(m_choices),

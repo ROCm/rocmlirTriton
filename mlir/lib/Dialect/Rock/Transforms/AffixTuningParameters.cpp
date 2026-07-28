@@ -313,10 +313,13 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles (M/N) nor
   // by the K decomposition in rock-gridwise-gemm-to-blockwise, so keep the
   // power-of-two M/N and K requirements for them; plain GEMMs allow both to be
-  // non-pow2.
+  // non-pow2. Arches where the peeled K loop miscompiles keep the power-of-two
+  // K requirement as well (see rock::supportsNonPow2KPerBlock).
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
+  bool requirePow2K =
+      isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
   if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
-                                /*requirePow2K=*/isScaledGemm)))
+                                /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();

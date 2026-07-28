@@ -284,8 +284,10 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
   // K tiles far larger than the problem's K.
   capKPerBlockByK(kList, k);
 
-  // Also tune non-pow2 K tiles (only on non-scaled GEMMs).
-  if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
+  // Also tune non-pow2 K tiles, on non-scaled GEMMs and on the arches where the
+  // peeled K loop is known to compile correctly.
+  if (!gemmOp.getScaleA() && !gemmOp.getScaleB() &&
+      rock::supportsNonPow2KPerBlock(arch)) {
     // An integer GEMM keeps its i32 accumulator exact only while every K
     // segment is at least 4 wide, which rock-gridwise-gemm-to-blockwise
     // enforces; a tile is fully covered by that rule iff it is a multiple of 4.
