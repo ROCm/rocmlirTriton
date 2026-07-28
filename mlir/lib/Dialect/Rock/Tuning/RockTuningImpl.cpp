@@ -69,7 +69,7 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   // M/N per-block tiles are the same for the accel and non-accel paths
-  // ({16, 32, 64, 128, 256}); The attention (gemm+gemm) non-accel path 
+  // ({16, 32, 64, 128, 256}); The attention (gemm+gemm) non-accel path
   // drops 256 and is handled separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
   for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
