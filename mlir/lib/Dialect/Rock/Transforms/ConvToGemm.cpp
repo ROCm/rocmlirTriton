@@ -1699,6 +1699,18 @@ template struct ConvRewritePattern<ConvBwdWeightOp>;
 
 void RockConvToGemmPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+  func::FuncOp func = getOperation();
+
+  // Annotate the function as a convolution kernel.
+  WalkResult convWalk = func.walk([](Operation *op) {
+    if (isa<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
+            rock::ConvElementwiseGemmOp>(op))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  if (convWalk.wasInterrupted())
+    func->setAttr(rock::ConvKernelAttr::getMnemonic(), UnitAttr::get(ctx));
+
   RewritePatternSet preConvToGemmPatterns(ctx);
   preConvToGemmPatterns.add<MatchLayoutsToInput, MatchFilterToInput>(ctx);
 

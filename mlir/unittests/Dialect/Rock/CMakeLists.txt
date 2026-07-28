@@ -10,6 +10,7 @@ set(ROCK_UNITTEST_SOURCES
   TosaUtilsTests.cpp
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp
+  PointerArithExpandTests.cpp
 )
 
 add_rocmlir_unittest(MLIRRockUnitTests
@@ -22,6 +23,7 @@ target_link_libraries(MLIRRockUnitTests
   MLIRRockOps
   MLIRRockUtility
   MLIRRockTuning
+  MLIRRockTransforms
   MLIRArithDialect
   MLIRBufferizationDialect
   MLIRMemRefDialect
@@ -31,3 +33,13 @@ target_link_libraries(MLIRRockUnitTests
   TritonAMDGPUToLLVM
   TritonAMDUtils
 )
+
+# PointerArithExpandTests.cpp includes the (private) shared helpers header that
+# lives alongside the Rock transform passes, and exercises helpers that emit
+# Triton ops, so it needs both the Transforms source dir and the Triton
+# includes.
+target_include_directories(MLIRRockUnitTests
+  PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../lib/Dialect/Rock/Transforms
+)
+rocmlir_add_triton_includes(MLIRRockUnitTests)
