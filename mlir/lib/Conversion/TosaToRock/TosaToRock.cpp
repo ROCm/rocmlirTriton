@@ -2084,6 +2084,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       unclippedInput = maybeMax->getInput2();
     }
 
+    // Rock lowers currentSeqLen masking with unsigned comparisons. A negative
+    // clip bound can therefore change the signed TOSA mask semantics.
+    if (*clipMin < 0 || *clipMax < 0)
+      return failure();
+
     return ClipResult{unclippedInput, *clipMin, *clipMax};
   }
 
@@ -2606,9 +2611,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       op->moveAfter(expandedOutLse);
   }
 
-  // This function identifies when the currentSeqLen is a block argument
-  // that is one dimensional, and broadcasts it to the correct shape, and with
-  // the correct batch, numHeads values
+  // Broadcast a currentSeqLen block argument shaped [B] or [B, 1] across the
+  // query heads.
   FailureOr<Value> addBroadcastForBlockArg(PatternRewriter &rewriter,
                                            Value currentSeqLen,
                                            Value matrixQ) const {
@@ -2616,13 +2620,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     if (!currentSeqLen)
       return failure();
 
-    // Exit early if currentSeqLen is not a 1D block argument
-    if (!isa<BlockArgument>(currentSeqLen) ||
-        cast<ShapedType>(currentSeqLen.getType()).getRank() != 1)
+    if (!isa<BlockArgument>(currentSeqLen))
       return failure();
 
-    // Extract the shape information
-    auto origShape = cast<ShapedType>(currentSeqLen.getType()).getShape()[0];
+    auto currentSeqLenType =
+        dyn_cast<RankedTensorType>(currentSeqLen.getType());
+    if (!currentSeqLenType)
+      return failure();
+    ArrayRef<int64_t> currentSeqLenShape = currentSeqLenType.getShape();
+    if (currentSeqLenShape.size() != 1 &&
+        (currentSeqLenShape.size() != 2 || currentSeqLenShape[1] != 1))
+      return failure();
 
     // Find the original shape of matrixQ (before reshaping) to get the batch
     // and numHeads values
@@ -2646,17 +2654,20 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     int64_t batch = srcShape[0];
     int64_t numHeads = srcShape[1];
+    if (currentSeqLenShape[0] != batch)
+      return failure();
 
-    // Create a tensor.expand_shape from 1D to 2D
     auto loc = currentSeqLen.getLoc();
-    auto elemTy = cast<ShapedType>(currentSeqLen.getType()).getElementType();
-    SmallVector<int64_t, 2> expandedShape{origShape, 1};
-    auto expandedType = RankedTensorType::get(expandedShape, elemTy);
-    SmallVector<ReassociationIndices, 1> reassoc{{0, 1}};
-    Value expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
-                                                   currentSeqLen, reassoc);
+    Type elemTy = currentSeqLenType.getElementType();
+    Value expanded = currentSeqLen;
+    if (currentSeqLenShape.size() == 1) {
+      auto expandedType = RankedTensorType::get({batch, 1}, elemTy);
+      SmallVector<ReassociationIndices, 1> reassoc{{0, 1}};
+      expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
+                                               currentSeqLen, reassoc);
+    }
 
-    // Create a tosa.const that is all zeros, but in our desired shape of
+    // Create a tosa.const that is all ones in our desired shape of
     // batch x numHeads
     auto broadcastTy = RankedTensorType::get({batch, numHeads}, elemTy);
     auto oneElems = cast<ElementsAttr>(rewriter.getOneAttr(broadcastTy));
