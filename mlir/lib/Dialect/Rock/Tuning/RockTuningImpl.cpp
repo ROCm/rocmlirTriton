@@ -194,7 +194,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 //
 //   (1) It must divide K evenly
 //   (2) It must generate exactly two power-of-two K segments
-//   (3) Tile size must be within [min(mPerBlock,nPerBlock)/2,
+//   (3) kPerBlock must be within [min(mPerBlock,nPerBlock)/2,
 //                                 min(mPerBlock,nPerBlock))
 //
 // Empirically, this gives a small amount of candidates and always
