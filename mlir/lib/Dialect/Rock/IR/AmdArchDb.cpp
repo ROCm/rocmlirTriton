@@ -479,11 +479,6 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
-  // gfx1170 ("RDNA 4m") is an APU/iGPU with no Infinity Cache/MALL; its
-  // last-level cache is the 1 MiB GPU L2, not the 96 MiB RDNA3 desktop
-  // Infinity Cache. A too-large value skews the
-  // cache-streaming heuristic (chooseGemmLoadCacheModifiers) and the
-  // tuning-driver cache flush.
   case ISAFamily::GFX1170:
     return 1 * kMiB;
   case ISAFamily::RDNA4:
