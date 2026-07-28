@@ -2305,9 +2305,7 @@ LogicalResult AttentionOp::verify() {
 
   // Validate sliding window constraints.
   // Max seq len is the key N dimension.
-  ShapedType kType = cast<ShapedType>(getKeys().getType());
-  ArrayRef<int64_t> kLastDims = kType.getShape().slice(kType.getRank() - 2);
-  int64_t maxSeqLen = getKTransposed() ? kLastDims[0] : kLastDims[1];
+  int64_t maxSeqLen = getGemmGemmSize().n;
   if (failed(verifySlidingWindowConstraints(getOperation(),
                                             getSlidingWindowSize(),
                                             getCurrentSeqLen(), maxSeqLen)))

@@ -453,7 +453,7 @@ struct GridwiseAttentionRewritePattern
           // Sliding window: mask when key_pos < max(0, currentSeqLen -
           // windowSize). slidingWindowLowerBound is precomputed as
           // max(0, currentSeqLen - windowSize). The key position is nIndex in
-          // the Triton (N-loop) lowering.
+          // the rocmlirTriton (N-loop) lowering.
           assert(slidingWindowLowerBound != nullptr);
           auto splatType = RankedTensorType::get(
               cast<ShapedType>(nIndex.getType()).getShape(),
