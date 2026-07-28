@@ -1,8 +1,10 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 
 // CHECK-LABEL: func @mlir_attention
-// CHECK: %[[MAX:.*]] = tosa.maximum %arg3, {{.*}} : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
-// CHECK: %[[CLIPPED:.*]] = tosa.minimum %[[MAX]], {{.*}} : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
+// CHECK: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1024> : tensor<32xi32>}> : () -> tensor<32xi32>
+// CHECK: %[[LOWER:.*]] = "tosa.const"() <{values = dense<0> : tensor<32xi32>}> : () -> tensor<32xi32>
+// CHECK: %[[MAX:.*]] = tosa.maximum %arg3, %[[LOWER]] : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
+// CHECK: %[[CLIPPED:.*]] = tosa.minimum %[[MAX]], %[[UPPER]] : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
 // CHECK: rock.attention
 // CHECK: currentSeqLen = (%[[CLIPPED]] : tensor<32xi32>)
 func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
@@ -28,9 +30,12 @@ func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, 
   %expanded_5 = tensor.expand_shape %arg3 [[0, 1, 2, 3]] output_shape [1, 32, 1, 1] : tensor<32xi32> into tensor<1x32x1x1xi32>
   %clip_min = "tosa.const"() <{values = dense<0> : tensor<1x32x1x1xi32>}> : () -> tensor<1x32x1x1xi32>
   %clip_max = "tosa.const"() <{values = dense<1024> : tensor<1x32x1x1xi32>}> : () -> tensor<1x32x1x1xi32>
-  %clamped = tosa.maximum %expanded_5, %clip_min : (tensor<1x32x1x1xi32>, tensor<1x32x1x1xi32>) -> tensor<1x32x1x1xi32>
-  %clipped = tosa.minimum %clamped, %clip_max : (tensor<1x32x1x1xi32>, tensor<1x32x1x1xi32>) -> tensor<1x32x1x1xi32>
-  %8 = tosa.mul %clipped, %6, %shift : (tensor<1x32x1x1xi32>, tensor<1x32x1x1024xi32>, tensor<1xi8>) -> tensor<1x32x1x1024xi32>
+  %clip_broadcast_ones = "tosa.const"() <{values = dense<1> : tensor<1x32x1x1xi32>}> : () -> tensor<1x32x1x1xi32>
+  // Exercise commuted clip operands; the reconstructed clip is canonicalized.
+  %clamped = tosa.maximum %clip_min, %expanded_5 : (tensor<1x32x1x1xi32>, tensor<1x32x1x1xi32>) -> tensor<1x32x1x1xi32>
+  %clipped = tosa.minimum %clip_max, %clamped : (tensor<1x32x1x1xi32>, tensor<1x32x1x1xi32>) -> tensor<1x32x1x1xi32>
+  %clipped_head_broadcast = tosa.mul %clipped, %clip_broadcast_ones, %shift : (tensor<1x32x1x1xi32>, tensor<1x32x1x1xi32>, tensor<1xi8>) -> tensor<1x32x1x1xi32>
+  %8 = tosa.mul %clipped_head_broadcast, %6, %shift : (tensor<1x32x1x1xi32>, tensor<1x32x1x1024xi32>, tensor<1xi8>) -> tensor<1x32x1x1024xi32>
   %9 = tosa.greater %7, %8 : (tensor<1x32x1x1024xi32>, tensor<1x32x1x1024xi32>) -> tensor<1x32x1x1024xi1>
   %10 = tosa.cast %9 : (tensor<1x32x1x1024xi1>) -> tensor<1x32x1x1024xi32>
   %11 = tosa.cast %10 : (tensor<1x32x1x1024xi32>) -> tensor<1x32x1x1024xi8>

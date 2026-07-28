@@ -2110,6 +2110,16 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     KVCacheResult result;
     Value seqLenCandidate = *maybeNonOne;
+    // MIGraphX may broadcast currentSeqLen more than once, for example first
+    // across heads and then across the key sequence dimension. Peel all
+    // broadcast-only multiplications before looking for a clip.
+    while (true) {
+      FailureOr<Value> maybeInnerBroadcast = mulBroadcast(seqLenCandidate);
+      if (failed(maybeInnerBroadcast))
+        break;
+      seqLenCandidate = *maybeInnerBroadcast;
+    }
+
     auto maybeClip = tryClipPattern(seqLenCandidate);
     if (succeeded(maybeClip)) {
       seqLenCandidate = maybeClip->input;
