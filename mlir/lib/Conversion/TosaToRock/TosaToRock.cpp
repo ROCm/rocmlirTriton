@@ -3115,29 +3115,25 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     // Preserve clipping that was stripped while identifying the underlying
     // currentSeqLen block argument.
-    if (currentSeqLen) {
+    if (currentSeqLen && attentionMatcherValues.seqLenClipMin &&
+        attentionMatcherValues.seqLenClipMax) {
       auto seqLenType = cast<RankedTensorType>(currentSeqLen.getType());
       Type elementType = seqLenType.getElementType();
-      if (attentionMatcherValues.seqLenClipMin) {
-        auto clipMinAttr = DenseElementsAttr::get(
-            seqLenType,
-            rewriter.getIntegerAttr(elementType,
-                                    *attentionMatcherValues.seqLenClipMin));
-        Value clipMin =
-            tosa::ConstOp::create(rewriter, loc, seqLenType, clipMinAttr);
-        currentSeqLen = tosa::MaximumOp::create(rewriter, loc, seqLenType,
-                                                currentSeqLen, clipMin);
-      }
-      if (attentionMatcherValues.seqLenClipMax) {
-        auto clipMaxAttr = DenseElementsAttr::get(
-            seqLenType,
-            rewriter.getIntegerAttr(elementType,
-                                    *attentionMatcherValues.seqLenClipMax));
-        Value clipMax =
-            tosa::ConstOp::create(rewriter, loc, seqLenType, clipMaxAttr);
-        currentSeqLen = tosa::MinimumOp::create(rewriter, loc, seqLenType,
-                                                currentSeqLen, clipMax);
-      }
+      auto clipMinAttr = DenseElementsAttr::get(
+          seqLenType, rewriter.getIntegerAttr(
+                          elementType, *attentionMatcherValues.seqLenClipMin));
+      Value clipMin =
+          tosa::ConstOp::create(rewriter, loc, seqLenType, clipMinAttr);
+      currentSeqLen = tosa::MaximumOp::create(rewriter, loc, seqLenType,
+                                              currentSeqLen, clipMin);
+
+      auto clipMaxAttr = DenseElementsAttr::get(
+          seqLenType, rewriter.getIntegerAttr(
+                          elementType, *attentionMatcherValues.seqLenClipMax));
+      Value clipMax =
+          tosa::ConstOp::create(rewriter, loc, seqLenType, clipMaxAttr);
+      currentSeqLen = tosa::MinimumOp::create(rewriter, loc, seqLenType,
+                                              currentSeqLen, clipMax);
     }
 
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
