@@ -2060,87 +2060,76 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     std::optional<int32_t> clipMax;
   };
 
-  // Struct for clip detection result
-  struct ClipBounds {
+  struct ClipResult {
+    Value input;
     int32_t clipMin;
     int32_t clipMax;
   };
 
-  // Helper to detect a clip pattern on a value:
-  //   tosa.minimum(tosa.maximum(x, constLo), constHi)
-  FailureOr<ClipBounds> tryClipPattern(Value input) const {
+  // Detect min(max(input, clipMin), clipMax), allowing the constant to appear
+  // on either side of each commutative operation.
+  FailureOr<ClipResult> tryClipPattern(Value input) const {
     DenseSet<StringRef> expandAndCollapse{
         tensor::CollapseShapeOp::getOperationName(),
         tensor::ExpandShapeOp::getOperationName()};
 
-    // Helper to extract a splat i32 constant from a value
-    auto extractI32Constant = [&](Value val) -> std::optional<int32_t> {
-      auto maybeSkipped = getValueSkipping(val, expandAndCollapse);
-      Value v = succeeded(maybeSkipped) ? maybeSkipped.value() : val;
+    auto extractI32Constant = [&](Value value) -> std::optional<int32_t> {
+      auto maybeSkipped = getValueSkipping(value, expandAndCollapse);
+      Value unwrapped = succeeded(maybeSkipped) ? *maybeSkipped : value;
       DenseElementsAttr attr;
-      if (!matchPattern(v, m_Constant(&attr)))
-        return std::nullopt;
-      if (!attr.getElementType().isInteger(32) || !attr.isSplat())
+      if (!matchPattern(unwrapped, m_Constant(&attr)) ||
+          !attr.getElementType().isInteger(32) || !attr.isSplat())
         return std::nullopt;
       return attr.getSplatValue<int32_t>();
     };
 
-    // Look for tosa.minimum (the outer clip op)
     auto maybeMin =
         getDefiningOpSkipping<tosa::MinimumOp>(input, expandAndCollapse);
     if (failed(maybeMin))
       return failure();
-    auto minOp = maybeMin.value();
 
-    // One input of minimum is a constant (clipMax), the other is maximum
     Value maxCandidate;
-    std::optional<int32_t> clipMax;
-    clipMax = extractI32Constant(minOp.getInput2());
+    std::optional<int32_t> clipMax = extractI32Constant(maybeMin->getInput2());
     if (clipMax) {
-      maxCandidate = minOp.getInput1();
+      maxCandidate = maybeMin->getInput1();
     } else {
-      clipMax = extractI32Constant(minOp.getInput1());
-      if (clipMax)
-        maxCandidate = minOp.getInput2();
-      else
+      clipMax = extractI32Constant(maybeMin->getInput1());
+      if (!clipMax)
         return failure();
+      maxCandidate = maybeMin->getInput2();
     }
 
-    // Look for tosa.maximum (the inner clip op)
     auto maybeMax =
         getDefiningOpSkipping<tosa::MaximumOp>(maxCandidate, expandAndCollapse);
     if (failed(maybeMax))
       return failure();
-    auto maxOp = maybeMax.value();
 
-    // One input of maximum is a constant (clipMin)
-    std::optional<int32_t> clipMin;
-    clipMin = extractI32Constant(maxOp.getInput2());
-    if (!clipMin)
-      clipMin = extractI32Constant(maxOp.getInput1());
-    if (!clipMin)
-      return failure();
+    Value unclippedInput;
+    std::optional<int32_t> clipMin = extractI32Constant(maybeMax->getInput2());
+    if (clipMin) {
+      unclippedInput = maybeMax->getInput1();
+    } else {
+      clipMin = extractI32Constant(maybeMax->getInput1());
+      if (!clipMin)
+        return failure();
+      unclippedInput = maybeMax->getInput2();
+    }
 
     // Rock lowers currentSeqLen masking with unsigned comparisons. A negative
     // clip bound can therefore change the signed TOSA mask semantics.
     if (*clipMin < 0 || *clipMax < 0)
       return failure();
 
-    return ClipBounds{*clipMin, *clipMax};
+    return ClipResult{unclippedInput, *clipMin, *clipMax};
   }
 
-  // Helper to try detecting KV-cache pattern.
-  // Also detects an optional clip (min(max(x, lo), hi)) on currentSeqLen.
+  // Helper to try detecting a KV-cache pattern and an optional clip on its
+  // sequence length.
   FailureOr<KVCacheResult>
   tryKVCachePattern(Value input, const DenseSet<StringRef> &seqLenSkip) const {
     DenseSet<StringRef> expandAndCollapse{
         tensor::CollapseShapeOp::getOperationName(),
         tensor::ExpandShapeOp::getOperationName()};
-    DenseSet<StringRef> expandCollapseMinMax{
-        tensor::CollapseShapeOp::getOperationName(),
-        tensor::ExpandShapeOp::getOperationName(),
-        tosa::MaximumOp::getOperationName(),
-        tosa::MinimumOp::getOperationName()};
     FailureOr<Value> maybeNonOne = mulBroadcast(input);
     if (failed(maybeNonOne))
       return failure();
@@ -2155,19 +2144,27 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         !llvm::all_of(shape.slice(2), [](int32_t v) { return v == 1; }))
       return failure();
 
-    // Try to detect a clip pattern on currentSeqLen before skipping through
-    // min/max. The clip (min(max(x, lo), hi)) may wrap the block argument
-    // and applies to all masks that use currentSeqLen.
     KVCacheResult result;
-    auto maybeClip = tryClipPattern(maybeNonOne.value());
+    Value seqLenCandidate = *maybeNonOne;
+    // MIGraphX may broadcast currentSeqLen more than once, for example first
+    // across heads and then across the key sequence dimension. Peel all
+    // broadcast-only multiplications before looking for a clip.
+    while (true) {
+      FailureOr<Value> maybeInnerBroadcast = mulBroadcast(seqLenCandidate);
+      if (failed(maybeInnerBroadcast))
+        break;
+      seqLenCandidate = *maybeInnerBroadcast;
+    }
+
+    auto maybeClip = tryClipPattern(seqLenCandidate);
     if (succeeded(maybeClip)) {
+      seqLenCandidate = maybeClip->input;
       result.clipMin = maybeClip->clipMin;
       result.clipMax = maybeClip->clipMax;
     }
 
-    // Skip through expand/collapse/min/max to reach the block argument
     auto maybeCurrentSeqLen =
-        getValueSkipping(maybeNonOne.value(), expandCollapseMinMax);
+        getValueSkipping(seqLenCandidate, expandAndCollapse);
     assert(succeeded(maybeCurrentSeqLen) && "Must have non-reshape op");
     Value currentSeqLen = maybeCurrentSeqLen.value();
 
@@ -2202,13 +2199,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     DenseSet<StringRef> expandAndCollapse{
         tensor::CollapseShapeOp::getOperationName(),
         tensor::ExpandShapeOp::getOperationName()};
-    // The seq-len operand may be wrapped in a clip (min(max(x, lo), hi)); skip
-    // those the same way the KV-cache detector does to reach the block arg.
-    DenseSet<StringRef> expandCollapseMinMax{
-        tensor::CollapseShapeOp::getOperationName(),
-        tensor::ExpandShapeOp::getOperationName(),
-        tosa::MaximumOp::getOperationName(),
-        tosa::MinimumOp::getOperationName()};
 
     // Trace through broadcast multiplication (mul by 1)
     FailureOr<Value> maybeNonOne = mulBroadcast(input);
@@ -2260,8 +2250,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // silently drop its clip).
     std::optional<int32_t> clipMin;
     std::optional<int32_t> clipMax;
-    auto maybeClip = tryClipPattern(seqLenOperand);
+    Value seqLenCandidate = seqLenOperand;
+    while (true) {
+      FailureOr<Value> maybeInnerBroadcast = mulBroadcast(seqLenCandidate);
+      if (failed(maybeInnerBroadcast))
+        break;
+      seqLenCandidate = *maybeInnerBroadcast;
+    }
+
+    auto maybeClip = tryClipPattern(seqLenCandidate);
     if (succeeded(maybeClip)) {
+      seqLenCandidate = maybeClip->input;
       clipMin = maybeClip->clipMin;
       clipMax = maybeClip->clipMax;
     }
@@ -2270,8 +2269,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // block argument. Without this, an unrelated greater(x - const, col) mask
     // would be misclassified as sliding-window attention.
     FailureOr<Value> maybeSeqLen =
-        getValueSkipping(seqLenOperand, expandCollapseMinMax);
-    Value seqLen = succeeded(maybeSeqLen) ? maybeSeqLen.value() : seqLenOperand;
+        getValueSkipping(seqLenCandidate, expandAndCollapse);
+    Value seqLen =
+        succeeded(maybeSeqLen) ? maybeSeqLen.value() : seqLenCandidate;
     if (!isI32BlockArgument(seqLen, seqLenSkip))
       return failure();
 
