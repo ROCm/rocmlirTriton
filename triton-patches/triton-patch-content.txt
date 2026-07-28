@@ -10,10 +10,12 @@ patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
+patch-gfx1170.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
-=======
+patch10635.patch
+patch10928.patch
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -75,6 +77,24 @@ patch-skip-subbyte-reduce-data-duplication.patch
   to i8 and truncates back to the logical element type, so introducing local
   memory here is incorrect for sub-byte element types.
 
+patch-gfx1170.patch
+  Adds gfx1170 (ISA 11.7) as its own ISAFamily::GFX1170 in the vendored Triton
+  AMD backend. gfx1170 is a gfx11/RDNA3-based core (wave32, RDNA3 memory model,
+  RDNA3 buffer/cache encoding) that ships the gfx12/RDNA4 matrix engine
+  (128-bit WMMA v2 + SWMMAC, fp8 conversion insts, IEEE min/max), so it is
+  classified before the generic gfx11 -> RDNA3 catch-all in
+  TargetFeatures::getISAFamily and then treated as RDNA3 for memory-model
+  pieces (buffer atomics, cache-modifier bits, shared ld/st tiles) but as
+  RDNA4 for the matrix engine (getWmmaVersion -> v2, supportMaximumMinimum,
+  scaled-blocked decomposition). Also wires gfx117 into compiler.py
+  is_in_thread_transpose_enabled and adds RDNA3/gfx1170 lit coverage. Carries
+  TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, fp8 dot4 in
+  DotOpToLLVM/FMA, i4 WMMA) documenting latent perf gaps that are correct via
+  the software/upcast fallback today.
+
+  Drop this patch on the next Triton bump that pulls gfx1170 support upstream
+  into external/triton.
+
 patch10497.patch
   Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
   coverage for f32 FMA dots on RDNA. When WMMA cannot handle the dot, the FMA
@@ -101,3 +121,35 @@ patch10832.patch
 
   Drop this patch on the next Triton bump that pulls PR #10832 (upstream main at
   cf8bb65 or later) into external/triton.
+
+patch10635.patch
+  Fixes AMD software pipelining for undersized direct-to-LDS tiles. The
+  pipeliner's async-copy eligibility check now first applies Triton's standard
+  `triton::canBeConvertedToAsyncLoad` contiguity/alignment check, then rejects
+  scatter-less direct-to-LDS targets when the CTA tile does not contain enough
+  data for each warp lane to write at least 32 bits into LDS
+  (`hasEnoughCTABytesForDirectToLds`, `ctaTileBits >= 32 * warpSize`). This
+  keeps undersized tiles on the register path instead of creating async copies
+  that later fail direct-to-LDS lowering. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10635 exactly.
+
+  Drop this patch on the next Triton bump that pulls PR #10635 (upstream main at
+  f12e94d or later) into external/triton.
+
+patch10928.patch
+  Supports a blocked/shared order mismatch for direct-to-LDS loads on gfx9.
+  When the blocked and shared encodings have different orders, the srcToShared
+  layout has contig=1 (smaller than the blocked encoding), so CoalesceAsyncCopy
+  either skipped rewriting the blocked encoding or rewrote it incorrectly,
+  yielding non-coalesced LDS writes. The pass now detects when the layout
+  restricts contiguity below the load contiguity and always rewrites the src
+  layout, distributing lanes/warps along the shared order while keeping the
+  original blocked order for the final encoding. The lowering
+  (canLoadDirectToLDS) also no longer bails out when the pointer contiguity
+  exceeds the srcToShared contiguity: instead it clamps the load width down to
+  the coalesced chunk size and splits the load into multiple narrower
+  direct-to-LDS ops. Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/10928 exactly.
+
+  Drop this patch on the next Triton bump that pulls PR #10928 into
+  external/triton.

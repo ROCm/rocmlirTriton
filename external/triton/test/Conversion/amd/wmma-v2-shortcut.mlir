@@ -1,4 +1,7 @@
 // RUN: triton-opt %s --tritongpu-reduce-data-duplication --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch="gfx1200" -reconcile-unrealized-casts -split-input-file | FileCheck %s
+// gfx1170 carries the gfx12 matrix engine, so it uses WMMA v2 and takes the
+// same convert_layout shortcut as gfx1200 (RDNA4).
+// RUN: triton-opt %s --tritongpu-reduce-data-duplication --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch="gfx1170" -reconcile-unrealized-casts -split-input-file | FileCheck %s
 
 #wmmaTv2 = #ttg.amd_wmma<{version = 2, ctaLayout = {register = [], warp = []}, isTranspose = true}>
 #dotop0v2 = #ttg.dot_op<{opIdx = 0, parent = #wmmaTv2, kWidth=8}>

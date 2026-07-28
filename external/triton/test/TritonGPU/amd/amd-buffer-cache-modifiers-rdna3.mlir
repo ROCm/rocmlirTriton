@@ -1,4 +1,7 @@
 // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1150 | FileCheck %s
+// gfx1170 uses the gfx11/RDNA3 buffer cache-modifier encoding
+// (getCtrlBitsForCacheModifierOnRDNA3), so it emits the same aux values.
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
 
 // Verify that RDNA3 (and 3.5) cache modifier qualifiers emit the correct cachepolicy
 // aux values in rocdl.raw.ptr.buffer.load/store operations.
@@ -16,6 +19,13 @@
 // CHECK-LABEL: buffer_load_cg
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
   tt.func @buffer_load_cg(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<128xi32, #blocked> {tt.divisibility = 16 : i32}) {
+    // The resource descriptor is built by createResourceDescriptor with the
+    // RDNA-family flags word 822243328 ((7<<12)|(4<<15)|(1<<24)|(3<<28)); the
+    // CDNA path (e.g. gfx942) emits 159744 instead. This is emitted for the
+    // whole RDNA family (RDNA2/RDNA3/gfx1170/RDNA4), so both the gfx1150 and
+    // gfx1170 RUN lines above share this check.
+    // CHECK: %[[flags:.*]] = llvm.mlir.constant(822243328 : i32) : i32
+    // CHECK: rocdl.make.buffer.rsrc {{.*}}, {{.*}}, {{.*}}, %[[flags]]
     // .cg load on RDNA3.5: aux = 1 (GLC)
     // CHECK: %[[aux:.*]] = llvm.mlir.constant(1 : i32) : i32
     // CHECK: rocdl.raw.ptr.buffer.load {{.*}}, {{.*}}, {{.*}}, %[[aux]]

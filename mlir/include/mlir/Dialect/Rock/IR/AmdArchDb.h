@@ -59,6 +59,10 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
 
+/// Extract the bare gfx token from an architecture string, stripping any
+/// target-triple prefix and `:feature` suffixes.
+std::tuple<StringRef, unsigned> parseArchString(StringRef arch);
+
 /// Extract the ISAFamily and chip name from an architecture string. The chip
 /// name is the bare gfx token (e.g. "gfx1100"), with any target-triple prefix
 /// and `:feature` suffixes stripped.

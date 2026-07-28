@@ -183,13 +183,9 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
     ``_repro_command`` (to print the failure-summary repro line) so the two
     cannot drift."""
+    # Each configuration owns its complete rocmlir-gen argument list, including
+    # runtime-only options such as attention's current_seq_len.
     opts = config.generate_mlir_driver_commandline('', kernel_repeats=None).split()
-    # current_seqlen is only set on AttentionConfiguration in KV-cache
-    # mode (seq_len_q == 1); generate_mlir_driver_commandline doesn't
-    # know about it.
-    if (isinstance(config, perfRunner.AttentionConfiguration) and
-            getattr(config, "current_seqlen", None) is not None):
-        opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
     # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64)
     # attached by callers such as attentionSweeps.to_attn_test to combat

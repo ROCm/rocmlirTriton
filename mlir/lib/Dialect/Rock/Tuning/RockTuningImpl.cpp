@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -26,14 +27,18 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
+#include <algorithm>
 #include <cstdint>
 #include <random>
 
@@ -77,7 +82,7 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
       dPerBlockList.push_back(dPerBlock);
   } else {
     // non-accel
-    return {4, 8, 16, 32, 64};
+    dPerBlockList = {32, 64, 128, 256};
   }
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
@@ -98,6 +103,37 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   }
 
   return dPerBlockList;
+}
+
+// Drop kPerBlock candidates larger than the K dimension rounded up to the next
+// power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
+// work.
+static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
+  assert(k > 0 && !kPerBlockList.empty() &&
+         "capKPerBlockByK expects a positive K and a non-empty candidate list");
+  uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
+  uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
+  llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
+  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
+    kPerBlockList.push_back(cap);
+}
+
+// Triton caps every tensor at 2^20 elements and enforces it via
+// OpTrait::impl::verifyTensorSize. Hand-mirrored from `maxTensorNumElements` in
+// external/triton/include/triton/Dialect/Triton/IR/Traits.h; re-audited on
+// every Triton bump (see docs/bump_triton_version.md section 5.4.1).
+static constexpr int64_t kTritonMaxTensorNumElements = 1048576;
+
+// A GEMM tile lowered through the Rock->Triton bridge materialises kPerBlock x
+// (M|N)PerBlock index/mask tensors (a tt.broadcast from tensor<kPerBlock x 1>).
+// If kPerBlock * max(mPerBlock, nPerBlock) exceeds Triton's per-tensor element
+// cap, that broadcast fails verifyTensorSize and the kernel cannot compile. In
+// exhaustive mode a single such combo aborts the whole config, so drop these
+// combos from the tuning space up front.
+static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
+                                   uint32_t kPerBlock) {
+  int64_t maxMN = std::max(mPerBlock, nPerBlock);
+  return static_cast<int64_t>(kPerBlock) * maxMN > kTritonMaxTensorNumElements;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -186,6 +222,12 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
           ? std::vector<uint32_t>{32, 64, 128, 256}
           : std::vector<uint32_t>{32, 64};
 
+  // Cap the K tiles by the actual K dimension so we don't tune (and pad) K
+  // tiles that are far larger than the problem's K.
+  int64_t gemmK = gemmOp.getGemmSize().k;
+  capKPerBlockByK(kPerBlockMFMA, gemmK);
+  capKPerBlockByK(kPerBlockWMMA, gemmK);
+
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
@@ -218,9 +260,10 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters.
-  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
-  std::vector<uint32_t> kPerBlockNonAccel = {4, 8, 16};
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
+  // dedicated non-accel branch and caps by the actual M/N dimension).
+  std::vector<uint32_t> kPerBlockNonAccel = {1, 4, 8, 16};
+  capKPerBlockByK(kPerBlockNonAccel, gemmK);
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -228,8 +271,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   }
   assert(!numWavesNonAccel.empty() && "numWavesNonAccel must be non-empty");
   std::vector<std::vector<uint32_t>> validRangeNonAccelParams = {
-      dPerBlockNonAccel, // M/block
-      dPerBlockNonAccel, // N/block
+      mPerBlock,         // M/block
+      nPerBlock,         // N/block
       kPerBlockNonAccel, // K/block
       {1},               // kPackList (no kpack on non-accel FMA path)
       numWavesNonAccel,  // numWaves (= blockSize / waveSize)
@@ -256,17 +299,15 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   std::vector<uint32_t> wavesPerEUList = {0};
   std::vector<uint32_t> gridGroupSizeList = {0};
 
+  int64_t gemm0K = gemmGemmOp.getGemmGemmSize().k;
+
   std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
   // use the actual K dimension, typically it's 128 for attention
   if (kind != TuningParamSetKind::Exhaustive) {
-    auto aShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
-    int idx = gemmGemmOp.getTransposedA() ? 0 : 1;
-    assert(aShape.size() == 3 || aShape.size() == 2);
-    if (aShape.size() == 3)
-      idx++;
-    uint32_t gemm0KPerBlock = llvm::PowerOf2Ceil(aShape[idx]);
-    kPerBlock = {gemm0KPerBlock};
+    kPerBlock = {static_cast<uint32_t>(llvm::PowerOf2Ceil(gemm0K))};
   }
+  // Drop K tiles larger than PowerOf2Ceil(K).
+  capKPerBlockByK(kPerBlock, gemm0K);
 
   auto arch = rock::getArchValue(gemmGemmOp);
   std::vector<uint32_t> numCTAsList;
@@ -355,13 +396,32 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
+  // gemm1's N tile is derived, not tuned: gemm1NPerBlock = PowerOf2Ceil(head
+  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). GemmGemmSize::o is
+  // that head-dim-of-V, already extracted transpose-aware, so guard gemm1's
+  // lowered tensor against the same Triton per-tensor cap as gemm0.
+  uint32_t gemm1NPerBlock =
+      static_cast<uint32_t>(llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().o));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
     for (uint32_t gemm0NPerBlock : validRangeGemmGemmParams[1]) {
       auto optimalSplitKFactors =
           computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
 
+      // gemm1 lowers a gemm0NPerBlock x max(gemm0MPerBlock, gemm1NPerBlock)
+      // index/mask tensor (its contraction tile is gemm0NPerBlock). Guard it
+      // against the same cap as gemm0; this depends only on the gemm0 M/N
+      // tiles, so check it once outside the gemmKPerBlock loop.
+      if (exceedsTritonTensorCap(gemm0MPerBlock, gemm1NPerBlock,
+                                 gemm0NPerBlock))
+        continue;
+
       for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
+        // Skip tiles whose lowered index/mask tensors would exceed Triton's
+        // per-tensor element cap (see exceedsTritonTensorCap).
+        if (exceedsTritonTensorCap(gemm0MPerBlock, gemm0NPerBlock,
+                                   gemmKPerBlock))
+          continue;
         for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
           for (uint32_t numWaves : validRangeGemmGemmParams[4]) {
             for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[5]) {
@@ -513,6 +573,11 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
       for (uint32_t gemmKPerBlock : params[2]) {
+        // Skip tiles whose lowered index/mask tensors would exceed Triton's
+        // per-tensor element cap; they cannot compile (see
+        // exceedsTritonTensorCap).
+        if (exceedsTritonTensorCap(gemmMPerBlock, gemmNPerBlock, gemmKPerBlock))
+          continue;
         for (uint32_t gemmKPack : params[3]) {
           for (uint32_t numWaves : params[4]) {
             for (uint32_t matrixInstrNonkdim : params[5]) {
@@ -778,6 +843,95 @@ extractLayouts(Operation *op, llvm::StringMap<unsigned> &fLayoutMap,
   return success();
 }
 
+// Walk backward through a transform chain and report whether any individual
+// transform preserves rank and element extents while applying a non-identity
+// permutation. This catches layout-only changes, such as transposed attention
+// bias, even when they are surrounded by flatten/unflatten transforms.
+static bool hasRankPreservingNonIdentityPermutation(Value value) {
+  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
+    auto valueType = dyn_cast<ShapedType>(transformOp.getResult().getType());
+    auto inputType = dyn_cast<ShapedType>(transformOp.getInput().getType());
+    if (valueType && inputType && valueType.getRank() == inputType.getRank()) {
+      SmallVector<int64_t> valueShape(valueType.getShape());
+      SmallVector<int64_t> inputShape(inputType.getShape());
+      llvm::sort(valueShape);
+      llvm::sort(inputShape);
+
+      AffineMap map = transformOp.getTransform().getMap().getAffineMap();
+      if (valueShape == inputShape && map && map.isPermutation() &&
+          !isIdentityOnShape(map, valueType.getShape()))
+        return true;
+    }
+    value = transformOp.getInput();
+  }
+  return false;
+}
+
+// Determine whether an attention op fuses a pre-softmax scale and/or bias, as
+// created by rocmlir-gen's `--with-attn-scale` / `--with-attn-bias`. Scale
+// folds an extra elementwise multiply of the QK^T scores by an external input;
+// bias folds an elementwise add. Both change the generated kernel (and thus its
+// optimal perf config), so they are part of the tuning-problem identity and
+// must appear in the tuning key. A rank-preserving non-identity permutation on
+// the bias input records that the bias is loaded transposed.
+//
+// The fusion is encoded as ops inside the `preSoftmaxBody` region that consume
+// the region's block arguments. Block argument 0 is the QK^T product; the
+// remaining block arguments map 1:1 to `preSoftmaxElemWiseInputs`. Constant
+// scales/biases
+// and causal masks are not external inputs (they are folded into the body or
+// captured by the `causal` attribute), so they are intentionally not treated as
+// attn scale/bias here. For quantized (i8) attention the first two elementwise
+// inputs are dequantization operands, not the attention scale/bias, so they are
+// skipped.
+static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
+                                  bool &hasAttnScale, bool &hasAttnBias,
+                                  bool &hasTransposedAttnBias) {
+  hasAttnScale = false;
+  hasAttnBias = false;
+  hasTransposedAttnBias = false;
+  Region &body = attnOp.getPreSoftmaxBody();
+  if (body.empty())
+    return;
+  Block &entry = body.front();
+  unsigned numInputs = attnOp.getPreSoftmaxElemWiseInputs().size();
+  unsigned numQuantInputs = isQuantized ? 2u : 0u;
+  if (numInputs <= numQuantInputs)
+    return;
+
+  // Entry block argument 0 is the QK^T product; arguments 1.. correspond 1:1 to
+  // the pre-softmax elementwise inputs. AttentionOp::verify pins this arity
+  // (see verifyGemmPlusGemmLikeOp).
+  assert(entry.getNumArguments() == 1 + numInputs &&
+         "pre-softmax body arguments must match elementwise inputs");
+
+  for (unsigned i = numQuantInputs; i < numInputs; ++i) {
+    // Walk forward from the input through its use chain, stepping over any
+    // intermediate op (e.g. a `rock.transform` reshaping the input to match the
+    // scores) until we reach the multiply (scale) or add (bias) that consumes
+    // it.
+    SmallVector<Value> worklist{entry.getArgument(i + 1)};
+    llvm::SmallPtrSet<Value, 8> seen;
+    bool isTransposedInput = hasRankPreservingNonIdentityPermutation(
+        attnOp.getPreSoftmaxElemWiseInputs()[i]);
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      if (!seen.insert(v).second)
+        continue;
+      for (Operation *user : v.getUsers()) {
+        if (isa<arith::MulFOp>(user))
+          hasAttnScale = true;
+        else if (isa<arith::AddFOp>(user)) {
+          hasAttnBias = true;
+          hasTransposedAttnBias |= isTransposedInput;
+        } else {
+          llvm::append_range(worklist, user->getResults());
+        }
+      }
+    }
+  }
+}
+
 static LogicalResult
 getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
                     SmallVectorImpl<char> &out) {
@@ -881,8 +1035,12 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
   else
     problemOS << "false" << sep;
 
+  bool hasAttnScale = false, hasAttnBias = false;
+  bool hasTransposedAttnBias = false;
   if (isAttention) {
     auto attentionOp = cast<AttentionOp>(gemmGemmOp);
+    getAttentionScaleBias(attentionOp, elemTypeQ.isInteger(8), hasAttnScale,
+                          hasAttnBias, hasTransposedAttnBias);
     problemOS << "-causal ";
     if (attentionOp.getCausal())
       problemOS << "true" << sep;
@@ -909,6 +1067,13 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
     problemOS << "-seq_len_k " << seqLenK << sep;
     problemOS << "-head_dim_qk " << headDimQK << sep;
     problemOS << "-head_dim_v " << headDimV;
+    // Keep these last and in this order to match the layout parsed by
+    // AttentionConfiguration.from_command_line() in perfRunner.py.
+    problemOS << sep << "-with-attn-scale "
+              << (hasAttnScale ? "true" : "false");
+    problemOS << sep << "-with-attn-bias " << (hasAttnBias ? "true" : "false");
+    problemOS << sep << "-transBias "
+              << (hasTransposedAttnBias ? "true" : "false");
   } else if (isConvGemm) {
     auto convGemmOp = cast<ConvElementwiseGemmOp>(gemmGemmOp);
     ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();
