@@ -2096,9 +2096,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   // sequence length.
   FailureOr<KVCacheResult>
   tryKVCachePattern(Value input, const DenseSet<StringRef> &seqLenSkip) const {
-    DenseSet<StringRef> expandAndCollapse{
-        tensor::CollapseShapeOp::getOperationName(),
-        tensor::ExpandShapeOp::getOperationName()};
     FailureOr<Value> maybeNonOne = mulBroadcast(input);
     if (failed(maybeNonOne))
       return failure();
@@ -2132,16 +2129,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       result.clipMax = maybeClip->clipMax;
     }
 
-    auto maybeCurrentSeqLen =
-        getValueSkipping(seqLenCandidate, expandAndCollapse);
-    assert(succeeded(maybeCurrentSeqLen) && "Must have non-reshape op");
-    Value currentSeqLen = maybeCurrentSeqLen.value();
-
-    // Verify currentSeqLen is i32 and traces back to a block argument
-    if (!isI32BlockArgument(currentSeqLen, seqLenSkip))
+    // Resolve through the remaining reshape, transpose, and broadcast chain.
+    // Returning the block argument (rather than an intermediate [B, 1] op
+    // result) lets addBroadcastForBlockArg reconstruct the [B, H] head
+    // broadcast after the nested broadcasts above have been peeled.
+    FailureOr<Value> maybeCurrentSeqLen =
+        getValueSkipping(seqLenCandidate, seqLenSkip);
+    if (failed(maybeCurrentSeqLen) ||
+        !isI32BlockArgument(*maybeCurrentSeqLen, seqLenSkip))
       return failure();
 
-    result.seqLen = currentSeqLen;
+    result.seqLen = *maybeCurrentSeqLen;
     return result;
   }
 
