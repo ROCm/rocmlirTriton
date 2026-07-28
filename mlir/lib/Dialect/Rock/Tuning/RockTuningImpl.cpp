@@ -444,9 +444,11 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  // Non-accel path. Attention adds 16 but not 256 (256 didn't help and
-  // inflated Navi compile time). See AIROCMLIR-938.
-  std::vector<uint32_t> dPerBlockNonAccel = {16, 32, 64, 128};
+  // Non-accel path. Attention keeps the reduced {32, 64, 128} M/N space:
+  // exhaustive tuning on Navi showed neither 16 nor 256 is worth widening the
+  // attention tuning space (16 helped only one shape, 256 never won and is
+  // LDS-bound). See AIROCMLIR-938.
+  std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64, 128, 256}) {
     if (blockSize % waveSize == 0)
