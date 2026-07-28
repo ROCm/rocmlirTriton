@@ -190,6 +190,21 @@ def RockLegalizeFloatTypesPass
                            "scf::SCFDialect", "triton::TritonDialect"];
 }
 
+def RockReduceBlockwiseAtomicsPass
+    : Pass<"rock-reduce-blockwise-atomics", "::mlir::func::FuncOp"> {
+  let summary = "Sum repeated-address atomic contributions before storing them";
+  let description = [{
+    A reduction fused into a GEMM is represented by broadcasting the smaller
+    destination back to the tile shape and turning the store into an atomic
+    add, so every tile element contributes its own atomic to an address that
+    many of its neighbours share. When a whole tile axis maps to a single
+    address, those contributions can be summed in registers with a
+    `rock.blockwise_reduce` and committed with one atomic per remaining
+    coordinate, which is what this pass does.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockLowerBlockwiseToPtrPass
     : Pass<"rock-lower-blockwise-to-ptr", "::mlir::func::FuncOp"> {
   let summary = "Lower blockwise load/store ops to pointer-based variants";

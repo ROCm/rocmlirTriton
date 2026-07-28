@@ -2382,18 +2382,20 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
           }
         } break;
         case TransformType::Broadcast: {
-          auto newSize = trAttr.getParams()[0];
-          int64_t lowDim = trAttr.getLowerDims()[0];
-          int64_t upperDim = trAttr.getUpperDims()[0];
-          if (currSubDimInfo.contains(upperDim)) {
-            // size is not used for reduction output (broadcast not supported),
-            // so we can skip this for now
-            // TODO: fix this
-            if (currSubDimInfo.at(upperDim).size() > 1)
-              LLVM_DEBUG(llvm::dbgs()
-                         << "broadcast size info will be incorrect, make sure "
-                            "to fix this if it's ever used for anything\n");
-
+          // A single Broadcast attribute can cover several dimensions, so every
+          // triple has to be walked; missing one would drop a tracked dimension
+          // and make it look like the lower coordinate does not depend on it.
+          for (auto [upperDim, lowDim, newSize] :
+               llvm::zip_equal(trAttr.getUpperDims(), trAttr.getLowerDims(),
+                               trAttr.getParams())) {
+            if (!currSubDimInfo.contains(upperDim))
+              continue;
+            // Broadcast maps the coordinate to `upper % newSize`, so the image
+            // holds at most `newSize` distinct values whatever arrived here.
+            // Reporting `newSize` for each incoming sub-dimension can therefore
+            // overstate the spread but never understate it, which is the safe
+            // direction for callers proving that a dimension does not move the
+            // address.
             for (const SubDimInfo &sdInfo : currSubDimInfo.at(upperDim)) {
               nextSubDimInfo[lowDim].push_back({newSize, sdInfo.stride});
               LLVM_DEBUG(llvm::dbgs() << "broadcast from size " << sdInfo.size
