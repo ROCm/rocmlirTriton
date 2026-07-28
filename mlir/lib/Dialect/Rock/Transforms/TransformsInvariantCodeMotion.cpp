@@ -59,28 +59,6 @@ struct RockTransformsInvariantCodeMotionPass
 
 namespace {
 
-/// Propagate a constant coordinate *diff* through a transform chain and return
-/// the resulting constant change in the single linearized buffer offset, or
-/// failure if it is not a compile-time constant.
-///
-/// This mirrors rocMLIR's index-diff rules (`IndexDiffUpdateRewritePattern` in
-/// SugarToLoops.cpp): each transform maps an upper-space diff to a lower-space
-/// diff. Because the input diff is a compile-time constant (a unit iv step) and
-/// every rule is constant arithmetic, the whole propagation stays constant -
-/// including through `Merge`/`Unmerge` reconstructions (e.g. the conv `gemmK`
-/// packing) where a flattened affine map would keep opaque floordiv/mod.
-///
-/// `transforms` is ordered from the view (index 0) down to the buffer, as
-/// produced by `untransform`. `diff` is indexed by the upper-space dims of
-/// `transforms[0]`.
-///
-/// Carry-neutrality guard: rocMLIR keeps the running coordinate valid via carry
-/// propagation on `Merge`. We instead want a single loop-invariant stride,
-/// which is only valid when those carries do not change the linearized offset,
-/// i.e. when the merged dim's lower dims are laid out contiguously underneath
-/// (their buffer strides nest as the merge factors). When that does not hold
-/// the offset is only piecewise-linear in the iv, and we bail.
-///
 /// Propagate an upper-space coordinate `diff` through a single transform `map`,
 /// returning the resulting lower-space diff. This is the pure per-transform
 /// index-diff rule set (no carry-neutrality guard); both `linearizedDiffStride`
@@ -160,6 +138,23 @@ applyDiffOneMap(TransformMapAttr map, const DenseMap<unsigned, int64_t> &diff) {
   return lower;
 }
 
+/// Propagate a constant coordinate *diff* through a transform chain and return
+/// the resulting constant change in the single linearized buffer offset, or
+/// failure if that change is not a compile-time constant.
+///
+/// This mirrors rocMLIR's index-diff rules (`IndexDiffUpdateRewritePattern` in
+/// SugarToLoops.cpp): each transform maps an upper-space diff to a lower-space
+/// diff. Because the input diff is a compile-time constant and every rule is
+/// constant arithmetic, the whole propagation stays constant - including
+/// through `Merge`/`Unmerge` reconstructions (e.g. the conv `gemmK` packing)
+/// where a flattened affine map would keep opaque floordiv/mod.
+///
+/// Carry-neutrality guard: rocMLIR keeps the running coordinate valid via carry
+/// propagation on `Merge`. We instead want a single loop-invariant stride,
+/// which is only valid when those carries do not change the linearized offset,
+/// i.e. when the merged dim's lower dims are laid out contiguously underneath
+/// (their buffer strides nest as the merge factors). When that does not hold,
+/// we bail.
 static FailureOr<int64_t>
 linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
                      DenseMap<unsigned, int64_t> diff) {
@@ -254,13 +249,14 @@ static bool maskDependsOnIv(ArrayRef<TransformMapAttr> transforms,
 
 /// Returns true if a unit change in the merge-lower coordinate `pos` reaches a
 /// validity-impacting bound check while propagating down `belowMaps` (the
-/// sub-chain below the iv-traversed merge). Coordinates that impact validity
-/// (the spatial taps of a conv: they feed a halo Pad / sliding-window Embed)
-/// must be carried as full distributed tiles so the per-element mask can be
-/// rebuilt without a cross-lane broadcast; coordinates that do not (the conv
-/// channel, which only scales the buffer offset) need not be persisted at all -
-/// their offset contribution is recovered from the carry-out of the coordinate
-/// below them. Mirrors the bound checks emitted by `updateValidityAfter`.
+/// sub-chain below the iv-traversed merge). Mirrors the bound checks emitted by
+/// `updateValidityAfter`.
+///
+/// Coordinates that impact validity must be carried as full distributed tiles,
+/// so the per-element mask can be rebuilt without a cross-lane broadcast.
+/// Coordinates that do not impact validity need not be persisted at all: their
+/// offset contribution is recovered from the carry-out of the coordinate below
+/// them.
 static bool variantImpactsValidity(ArrayRef<TransformMapAttr> belowMaps,
                                    unsigned pos) {
   DenseMap<unsigned, int64_t> diff;
@@ -443,6 +439,17 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
   }
   if (mergeIdx == -1)
     return bail("no iv-traversed merge found");
+
+  // No nested Merge may sit below the iv-traversed merge.
+  //
+  // Rejecting these chains costs nothing in practice: the mask rebuild has to
+  // re-expand the sub-chain below the merge, so we would put the
+  // floordiv/mod back into the loop body (so we would gain nothing).
+  for (TransformMapAttr map : transforms.drop_front(mergeIdx + 1))
+    for (TransformAttr t : map.getOps())
+      if (t.getType() == TransformType::Merge)
+        return bail("a nested merge sits below the iv-traversed merge; the "
+                    "validity classification is not reliable through it");
 
   // Per-iteration coord steps: the merged coordinate advances by `D` each loop
   // step, delinearized against the merge's nested place values (suffix
@@ -871,6 +878,12 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     // find the first impacting coord (everything before it is non-impacting by
     // construction) and require everything from there on to also impact. The
     // non-impacting prefix is dropped, so it may be at most one coord.
+    //
+    // We support only one prefix mainly because the implementation currently
+    // assumes so. For instance, `emitFullTileCarry` assumes this: it models the
+    // dropped prefix as a single scalar step/stride pair fed by one carry.
+    //
+    // TODO: Support cases with more than one prefix coord.
     auto *firstImpact = llvm::find(impacts, true);
     if (firstImpact != impacts.end()) {
       prefixSize = std::distance(impacts.begin(), firstImpact);
