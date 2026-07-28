@@ -540,12 +540,6 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
-  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
-  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
-  // arith.extf/truncf on fp8 element types crash bufferization with
-  // unsupported builtin.unrealized_conversion_cast.
-  pm.addPass(createEmulateFp8ExtTruncPass());
-
   // CPU optimization phase.
 
   // Rewrite linalg.generic convolutions in CPU-verifier funcs into a
@@ -564,6 +558,16 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   cpuOpts.dumpSchedulesPath = dumpCpuSchedules.str();
   cpuOpts.phase = cpu::CPU_PHASE_OPTIMIZE;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
+
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run after the
+  // CPU optimization phase above (its VectorizationSchedule vectorizes the
+  // matmul body, and cannot form a named contraction if the fp8 extf has
+  // already been rewritten into a memref.load table lookup), but before
+  // OneShotBufferize below — otherwise stray arith.extf/truncf on fp8 element
+  // types crash bufferization with unsupported
+  // builtin.unrealized_conversion_cast. The emulation pattern handles the
+  // vector-typed extf/truncf produced by vectorization element-wise.
+  pm.addPass(createEmulateFp8ExtTruncPass());
 
   // Bufferize tensor ops to memref ops for the whole module.
   // This handles both the CPU verifier functions and their call sites,
