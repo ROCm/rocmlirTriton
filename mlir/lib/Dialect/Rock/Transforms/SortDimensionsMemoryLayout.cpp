@@ -444,19 +444,25 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
     if (noChange)
       return failure();
 
+    // Read every attribute carried over to the new op before the replacement:
+    // replaceOpWithNewOp erases `op`, and attributes stay valid on their own
+    // because they are uniqued in the context.
+    auto perfConfigAttr = op->template getAttrOfType<StringAttr>("perf_config");
+    auto outputLayoutAttr =
+        op->template getAttrOfType<ArrayAttr>("output_layout");
+
     auto newOp = b.replaceOpWithNewOp<rock::ConvOp>(
         op, op->getResultTypes(), newFilter, newInput, op.getPaddingAttr(),
         op.getStridesAttr(), op.getDilationsAttr(),
         op.getParams() ? *op.getParams()
                        : rock::RockTuningParamAttrInterface{});
 
-    if (auto attr = op->template getAttrOfType<StringAttr>("perf_config"))
-      newOp->setAttr("perf_config", attr);
+    if (perfConfigAttr)
+      newOp->setAttr("perf_config", perfConfigAttr);
 
     newOp->setAttr("filter_layout", newFilterLayout);
     newOp->setAttr("input_layout", newInputLayout);
-    auto outputLayoutAttr =
-        op->template getAttrOfType<ArrayAttr>("output_layout");
+
     if (outputLayoutAttr)
       newOp->setAttr("output_layout", outputLayoutAttr);
 
