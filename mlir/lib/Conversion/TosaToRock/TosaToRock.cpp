@@ -2127,9 +2127,6 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   // sequence length.
   FailureOr<KVCacheResult>
   tryKVCachePattern(Value input, const DenseSet<StringRef> &seqLenSkip) const {
-    DenseSet<StringRef> expandAndCollapse{
-        tensor::CollapseShapeOp::getOperationName(),
-        tensor::ExpandShapeOp::getOperationName()};
     FailureOr<Value> maybeNonOne = mulBroadcast(input);
     if (failed(maybeNonOne))
       return failure();
@@ -2163,13 +2160,13 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       result.clipMax = maybeClip->clipMax;
     }
 
-    auto maybeCurrentSeqLen =
-        getValueSkipping(seqLenCandidate, expandAndCollapse);
-    assert(succeeded(maybeCurrentSeqLen) && "Must have non-reshape op");
-    Value currentSeqLen = maybeCurrentSeqLen.value();
-
-    // Verify currentSeqLen is i32 and traces back to a block argument
-    if (!isI32BlockArgument(currentSeqLen, seqLenSkip))
+    // Resolve through the remaining reshape, transpose, and broadcast chain.
+    // Returning the block argument lets addBroadcastForBlockArg reconstruct
+    // the head broadcast after nested broadcasts have been peeled.
+    FailureOr<Value> maybeCurrentSeqLen =
+        getValueSkipping(seqLenCandidate, seqLenSkip);
+    if (failed(maybeCurrentSeqLen) ||
+        !isI32BlockArgument(*maybeCurrentSeqLen, seqLenSkip))
       return failure();
 
     result.seqLen = *maybeCurrentSeqLen;
@@ -2269,13 +2266,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // block argument. Without this, an unrelated greater(x - const, col) mask
     // would be misclassified as sliding-window attention.
     FailureOr<Value> maybeSeqLen =
-        getValueSkipping(seqLenCandidate, expandAndCollapse);
-    Value seqLen =
-        succeeded(maybeSeqLen) ? maybeSeqLen.value() : seqLenCandidate;
-    if (!isI32BlockArgument(seqLen, seqLenSkip))
+        getValueSkipping(seqLenCandidate, seqLenSkip);
+    if (failed(maybeSeqLen) || !isI32BlockArgument(*maybeSeqLen, seqLenSkip))
       return failure();
 
-    return SlidingWindowResult{maybeWindowSize.value(), seqLen, clipMin,
+    return SlidingWindowResult{maybeWindowSize.value(), *maybeSeqLen, clipMin,
                                clipMax};
   }
 
