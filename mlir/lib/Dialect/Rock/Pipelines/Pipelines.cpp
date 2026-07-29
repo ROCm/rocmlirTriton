@@ -569,10 +569,10 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
   // Lower FP8 extf/truncf to memref-based table lookups. This pass emits
-  // memref IR (memref.get_global / memref.load), and we expect this 
+  // memref IR (memref.get_global / memref.load), and we expect this
   // should only happen when the IR is bufferized. Otherwise, this pass
   // introduces memref ops while the surrounding IR is still tensor-based.
-  // Thus, it makes more sense to run this pass after bufferization. 
+  // Thus, it makes more sense to run this pass after bufferization.
   pm.addPass(createEmulateFp8ExtTruncPass());
 
   // Lower to LLVM phase (after bufferization)
