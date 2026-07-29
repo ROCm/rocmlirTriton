@@ -2,10 +2,10 @@
 
 // RUNNER: Host Backend pipeline:
 // RUNNER-NEXT: {{^}}builtin.module
-// RUNNER-SAME: (emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
-// RUNNER-SAME: cpu-conv-to-gemm,
+// RUNNER-SAME: (cpu-conv-to-gemm,
 // RUNNER-SAME: cpu-lower-verifier{dump-schedules-path= phase=1},
 // RUNNER-SAME: one-shot-bufferize{allow-return-allocs-from-loops=false allow-unknown-ops=false analysis-fuzzer-seed=0 analysis-heuristic=bottom-up buffer-alignment=64 bufferize-function-boundaries=true check-parallel-regions=true copy-before-write=false{{ ?}}dump-alias-sets=false function-boundary-type-conversion=identity-layout-map must-infer-memory-space=false{{ ?}}print-conflicts=false test-analysis-only=false unknown-type-conversion=fully-dynamic-layout-map use-encoding-for-memory-space=false},
+// RUNNER-SAME: emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
 // RUNNER-SAME: cpu-lower-verifier{dump-schedules-path= phase=2},
 // RUNNER-SAME: convert-linalg-to-loops,
 // RUNNER-SAME: arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false},
