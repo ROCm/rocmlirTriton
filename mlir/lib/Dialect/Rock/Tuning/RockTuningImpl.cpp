@@ -69,12 +69,11 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   // M/N per-block tiles are the same for the accel and non-accel paths
-  // ({16, 32, 64, 128, 256}); The attention (gemm+gemm) non-accel path
-  // drops 256 and is handled separately in getRangeGemmGemm.
+  // ({16, 32, 64, 128, 256}); the attention (gemm+gemm) non-accel path keeps
+  // the {32, 64, 128} space and is handled separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
   for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
     dPerBlockList.push_back(dPerBlock);
-
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
   // tile that covers the dimension tightly and drop the now-oversized larger
@@ -351,8 +350,11 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
-  // dedicated non-accel branch and caps by the actual M/N dimension).
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (the same
+  // {16, 32, 64, 128, 256} space as the accel paths, capped by the actual M/N
+  // dimension).
+  std::vector<uint32_t> kPerBlockNonAccel = {1, 4, 8, 16};
+  capKPerBlockByK(kPerBlockNonAccel, gemmK);
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)

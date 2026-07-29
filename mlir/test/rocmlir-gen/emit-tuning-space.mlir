@@ -132,6 +132,13 @@
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
 // CHECK-NAVI: gemm:v5:{{(16|32|64|128|256),(16|32|64|128|256),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// Positively assert the two newly added non-accel tiles (16 and 256) 
+// on both the M and N axes; these fail if computeDPerBlock's non-accel 
+// extension is reverted.
+// CHECK-NAVI-DAG: gemm:v4:16,{{[0-9]+,(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-DAG: gemm:v4:256,{{[0-9]+,(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-DAG: gemm:v4:{{[0-9]+}},16,{{(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-DAG: gemm:v4:{{[0-9]+}},256,{{(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
 // so this exercises the non-accel `getRangeGemmGemm` path.
