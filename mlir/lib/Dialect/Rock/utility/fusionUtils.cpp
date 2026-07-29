@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
@@ -217,6 +218,28 @@ LogicalResult mlir::rock::testFusionLegalityBwdDataConv(ModuleOp mod) {
   return success(isFusible);
 }
 
+// Report whether a view on the attention output chain moves elements rather
+// than just re-describing their nesting. Flatten/unflatten views keep every
+// element at the same linear offset, so the LSE combine still finds the partial
+// results where it expects them; a transpose does not.
+static bool permutesLayout(TransformOp transformOp) {
+  auto resType = dyn_cast<ShapedType>(transformOp.getResult().getType());
+  auto inType = dyn_cast<ShapedType>(transformOp.getInput().getType());
+  if (!resType || !inType || resType.getRank() != inType.getRank())
+    return false;
+
+  SmallVector<int64_t> resShape(resType.getShape());
+  SmallVector<int64_t> inShape(inType.getShape());
+  llvm::sort(resShape);
+  llvm::sort(inShape);
+  if (resShape != inShape)
+    return false;
+
+  AffineMap map = transformOp.getTransform().getMap().getAffineMap();
+  return map && map.isPermutation() &&
+         !isIdentityOnShape(map, resType.getShape());
+}
+
 LogicalResult
 mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
   // Input fusions and fusions between the two GEMMs stay legal with
@@ -232,6 +255,13 @@ mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
     for (Operation *fusionOp : fusionInfo.fusionOps)
       if (!isa<ExtFOp>(fusionOp))
         return WalkResult::interrupt();
+
+    // The combine writes the output in its natural layout, so the extf
+    // exception only holds while the chain leaves that layout alone.
+    for (Value chainValue : fusionInfo.chainValues)
+      if (auto transformOp = chainValue.getDefiningOp<TransformOp>())
+        if (permutesLayout(transformOp))
+          return WalkResult::interrupt();
 
     return WalkResult::advance();
   });
