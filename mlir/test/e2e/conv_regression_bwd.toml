@@ -88,15 +88,27 @@ config = "-groupsize=1 -batchsize=128 -in_channels=256 -out_channels=128 -in_h=2
 [[suite.test]]
 config = "-groupsize=1 -batchsize=512 -in_channels=256 -out_channels=512 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
 
+# Large K_eff (N*outH*outW = 200704) for bwd_weight with random data. An -atol
+# override replaces the K-scaled default rather than raising it, and the default
+# differs by ~100x between f32 and f16 here, so this config is split by data type
+# to keep each dtype on a tolerance calibrated for it.
 [[suite.test]]
-# Large K_eff (N*outH*outW = 200704) for bwd_weight with random data.
-# Accumulation-order differences at large f16 magnitudes cause arch-dependent
-# worst-case errors (valNum≈48192, gpuNum≈48288, fixed seed):
-#   gfx942: passes with default atol (≤2.5)
-#   gfx950: absDiff≈16, needs atol≥15.9
-#   gfx90a:  absDiff=96, needs atol≥47.81
-# atol=52 covers the observed gfx90a worst case with ~9% headroom.
-config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 --atol 52"
+# f32: the K-scaled default atol is 2.007 and the observed worst case is 2.17,
+# so 2.5 gives ~15% headroom.
+config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 --atol 2.5"
+[[suite.test.exclude]]
+name = "data type"
+values = ["f16"]
+
+[[suite.test]]
+# f16: keeps the K-scaled default atol (223.0), which is the precision floor the
+# model derives for this reduction length. Overriding below it fails spuriously
+# on accumulation-order differences at large f16 magnitudes (absDiff up to 160
+# near valNum ~48352 on gfx908/gfx90a).
+config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
+[[suite.test.exclude]]
+name = "data type"
+values = ["f32"]
 
 ############################################################################################
 # Cases reported in https://github.com/ROCm/rocMLIR-internal/issues/71 #
