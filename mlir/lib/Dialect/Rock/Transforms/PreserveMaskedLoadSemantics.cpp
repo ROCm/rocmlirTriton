@@ -56,6 +56,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
 namespace mlir {
 namespace rock {
 #define GEN_PASS_DEF_ROCKPRESERVEMASKEDLOADSEMANTICSPASS
@@ -81,41 +83,76 @@ static bool isTrivialMask(Value mask) {
   return attr.getSplatValue<bool>();
 }
 
-/// Starting from a load result, follow uses through fusion ops and collect
-/// "leaf" values — fusion op results that have at least one non-fusion use.
-static void collectFusionChainLeaves(Value loadResult,
-                                     SmallVectorImpl<Value> &leaves) {
-  SmallVector<Value> worklist;
-  DenseSet<Operation *> visited;
-  worklist.push_back(loadResult);
+/// Return true for shape-only operations inserted when RegularizeInput
+/// reconstructs a narrowed broadcast load. The load's validity mask must follow
+/// the same shape changes before it can be applied to the reconstructed fusion
+/// result.
+static bool isNarrowLoadShapeOp(Operation *op) {
+  return isa<triton::ExpandDimsOp, triton::BroadcastOp>(op);
+}
+
+static bool isFusionChainOp(Operation *op) {
+  return rock::isFusionOp(op) || isNarrowLoadShapeOp(op);
+}
+
+/// Apply one narrowed-load shape operation to a validity mask.
+static Value propagateMaskThroughShapeOp(OpBuilder &builder, Operation *op,
+                                         Value mask) {
+  assert(isNarrowLoadShapeOp(op) && "expected a narrowed-load shape operation");
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointAfter(op);
+  IRMapping mapping;
+  mapping.map(op->getOperand(0), mask);
+  Operation *maskOp = builder.clone(*op, mapping);
+  auto resultType = cast<RankedTensorType>(maskOp->getResult(0).getType());
+  maskOp->getResult(0).setType(
+      resultType.cloneWith(resultType.getShape(), builder.getI1Type()));
+  return maskOp->getResult(0);
+}
+
+/// Starting from a load result, follow uses through fusion ops and the
+/// expand/broadcast pair used to reconstruct narrowed loads. Collect
+/// (fusion-leaf, mask) pairs, expanding and broadcasting the mask alongside the
+/// load value so it still matches the leaf shape.
+static void
+collectFusionChainLeaves(OpBuilder &builder, Value loadResult, Value loadMask,
+                         SmallVectorImpl<std::pair<Value, Value>> &leaves) {
+  SmallVector<std::pair<Value, Value>> worklist;
+  DenseSet<std::pair<Operation *, Value>> visited;
+  worklist.push_back({loadResult, loadMask});
 
   while (!worklist.empty()) {
-    Value current = worklist.pop_back_val();
+    auto [current, currentMask] = worklist.pop_back_val();
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
-      if (!rock::isFusionOp(owner) || visited.count(owner))
+      if (!isFusionChainOp(owner) ||
+          !visited.insert({owner, currentMask}).second)
         continue;
-      visited.insert(owner);
 
       Value result = owner->getResult(0);
+      Value resultMask =
+          isNarrowLoadShapeOp(owner)
+              ? propagateMaskThroughShapeOp(builder, owner, currentMask)
+              : currentMask;
       bool hasNonFusionUse = false;
       bool hasFusionUse = false;
       for (OpOperand &resultUse : result.getUses()) {
-        if (rock::isFusionOp(resultUse.getOwner()))
+        if (isFusionChainOp(resultUse.getOwner()))
           hasFusionUse = true;
         else
           hasNonFusionUse = true;
       }
-      if (hasNonFusionUse)
-        leaves.push_back(result);
+      if (hasNonFusionUse && rock::isFusionOp(owner))
+        leaves.push_back({result, resultMask});
       if (hasFusionUse)
-        worklist.push_back(result);
+        worklist.push_back({result, resultMask});
     }
   }
 }
 
-/// Trace backwards from a value through fusion ops and collect all
-/// BlockwiseLoadPtrOp ops that feed into it (directly or indirectly).
+/// Trace backwards from a value through fusion ops and narrowed-load shape
+/// operations, and collect all BlockwiseLoadPtrOp ops that feed into it
+/// (directly or indirectly).
 static void collectContributingLoads(Value val,
                                      SmallVectorImpl<BlockwiseLoadPtrOp> &loads,
                                      DenseSet<Operation *> &visited) {
@@ -126,7 +163,7 @@ static void collectContributingLoads(Value val,
     loads.push_back(loadOp);
     return;
   }
-  if (!rock::isFusionOp(defOp))
+  if (!rock::isFusionOp(defOp) && !isNarrowLoadShapeOp(defOp))
     return;
   if (!visited.insert(defOp).second)
     return;
@@ -250,7 +287,7 @@ static bool hasMaxReduceConsumer(Value value) {
       if (reduceOp && reduceOp.getReduceMethod() == ReduceMethod::Max)
         return true;
 
-      if (isa<ViewLikeOpInterface>(owner)) {
+      if (isa<ViewLikeOpInterface>(owner) || isNarrowLoadShapeOp(owner)) {
         for (Value result : owner->getResults())
           worklist.push_back(result);
       }
@@ -265,7 +302,7 @@ static bool useNeedsMaxNeutralFill(Operation *useOwner) {
   if (reduceOp)
     return reduceOp.getReduceMethod() == ReduceMethod::Max;
 
-  if (!isa<ViewLikeOpInterface>(useOwner))
+  if (!isa<ViewLikeOpInterface>(useOwner) && !isNarrowLoadShapeOp(useOwner))
     return false;
 
   for (Value result : useOwner->getResults()) {
@@ -372,11 +409,11 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
     if (hasMaxReduceConsumer(loadResult))
       recordMaskCandidate(loadResult, mask);
 
-    SmallVector<Value> leaves;
-    collectFusionChainLeaves(loadResult, leaves);
+    SmallVector<std::pair<Value, Value>> leaves;
+    collectFusionChainLeaves(builder, loadResult, mask, leaves);
 
-    for (Value leaf : leaves)
-      recordMaskCandidate(leaf, mask);
+    for (auto [leaf, leafMask] : leaves)
+      recordMaskCandidate(leaf, leafMask);
   });
 
   if (leafMasks.empty())

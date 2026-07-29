@@ -810,6 +810,42 @@ module {
   }
 
   // ============================================================
+  // A four-bit fusion leaf must remain a rank-2 load. The later
+  // rock-legalize-float-types pass traces directly through fusion ops to the
+  // load when packing four-bit kernel inputs; narrowing would insert
+  // tt.expand_dims/tt.broadcast in that path and hide the load.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_four_bit_input
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[DATA_VIEW:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf4E2M1FN> to tensor<1x16x16xf4E2M1FN>
+  // CHECK: %[[DATA:.*]] = rock.load_marker %[[DATA_VIEW]] views
+  // CHECK-SAME: tensor<1x16x16xf4E2M1FN> -> tensor<16x16xf4E2M1FN>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[CONVERTED:.*]] = arith.extf %[[DATA]]
+  // CHECK-SAME: tensor<16x16xf4E2M1FN> to tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[CONVERTED]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_does_not_narrow_four_bit_input(
+      %activation: tensor<1x16x16xf16>,
+      %dataRaw: tensor<16xf4E2M1FN>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %data = rock.transform %dataRaw by #tmap_broadcast_n_16
+      : tensor<16xf4E2M1FN> to tensor<1x16x16xf4E2M1FN>
+    %converted = arith.extf %data
+      : tensor<1x16x16xf4E2M1FN> to tensor<1x16x16xf16>
+    %fused = arith.addf %activation, %converted : tensor<1x16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n]
+      {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>}
+      : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
   // No load_marker at all: only store_marker → store.
   // Pass has nothing to process.
   // ============================================================
