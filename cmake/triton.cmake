@@ -92,7 +92,7 @@ add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
 set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
 # Cache MLIR_DIR so Triton's find_package(MLIR) uses the in-tree package on a
 # clean configure. Mirrors the LLVM_DIR caching below.
-set(MLIR_DIR "${MLIR_CMAKE_DIR}" CACHE PATH "Path to in-tree MLIR CMake package" FORCE)
+set(MLIR_DIR "${MLIR_CMAKE_DIR}" CACHE PATH "Path to in-tree MLIR CMake package")
 
 set(LLVM_LIBRARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib${LLVM_LIBDIR_SUFFIX}")
 set(LLVM_CMAKE_DIR "${LLVM_LIBRARY_DIR}/cmake/llvm")
@@ -157,9 +157,6 @@ if(NOT DEFINED ROCM_PATH)
 endif()
 file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 message(STATUS "ROCM_PATH: ${ROCM_PATH}")
-
-# Expose the standard package-prefix layout to subdirectories.
-list(APPEND CMAKE_PREFIX_PATH "${ROCM_PATH}")
 
 # Preserve the legacy module path where it is supported.
 if(NOT WIN32)

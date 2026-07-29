@@ -3,7 +3,7 @@ llvm_canonicalize_cmake_booleans(BUILD_FAT_LIBROCKCOMPILER)
 if(BUILD_FAT_LIBROCKCOMPILER)
   # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
   # /opt/rocm stays as the Linux fallback.
-  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS ${ROCM_PATH} /opt/rocm)
+  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 

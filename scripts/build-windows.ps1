@@ -45,7 +45,7 @@ param(
     [string]$RocmTestChipset = "",
 
     [ValidateSet("Release", "RelWithDebInfo", "Debug", "MinSizeRel")]
-    [string]$BuildType = "Release",
+    [string]$BuildType = "RelWithDebInfo",
 
     # Parallel build jobs. 0 -> all logical processors.
     [int]$Jobs = 0,
@@ -56,8 +56,8 @@ param(
     # Configure only; skip the build step.
     [switch]$ConfigureOnly,
 
-    # Specific build targets. Empty -> default (all) targets.
-    [string[]]$Targets = @()
+    # Specific build targets.
+    [string[]]$Targets = @("check-rocmlir-build-only")
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,7 +116,9 @@ $configureArgs = @(
     "-DROCM_PATH=$RocmPath",
     "-DGPU_TARGETS=$GpuTargets",
     "-DROCM_TEST_CHIPSET=$RocmTestChipset",
-    "-DMLIR_ENABLE_ROCM_CONVERSIONS=ON"
+    "-DBUILD_FAT_LIBROCKCOMPILER=ON",
+    "-DLLD_BUILD_TOOLS=ON",
+    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 ) + $CMakeArgs
 
 Invoke-CMake $configureArgs
