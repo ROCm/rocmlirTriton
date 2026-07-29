@@ -261,7 +261,7 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 2 * kMiB); // APU L2, no MALL
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // APU L2, no MALL
   EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 64 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 256 * kMiB);
 }
