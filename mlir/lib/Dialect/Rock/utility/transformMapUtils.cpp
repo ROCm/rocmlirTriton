@@ -2538,8 +2538,13 @@ collectInputFusionPathsImpl(Value value, ArrayAttr transforms,
     return success();
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "collectInputFusionPaths: Found unexpected op = "
-                          << defOp << "\n");
+  // Give up rather than skip past this op. A view-like op that is not a
+  // rock.transform lands here deliberately: it contributes no TransformMapAttr,
+  // so continuing to its source would drop part of the coordinate mapping the
+  // collected path is meant to describe.
+  LLVM_DEBUG(llvm::dbgs()
+             << "collectInputFusionPaths: no path representation for op = "
+             << *defOp << "\n");
   return failure();
 }
 
