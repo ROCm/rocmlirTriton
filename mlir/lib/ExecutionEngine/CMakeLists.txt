@@ -9,14 +9,6 @@ add_mlir_library(conv-validation-wrappers SHARED
 )
 set_target_properties(conv-validation-wrappers PROPERTIES EXCLUDE_FROM_ALL ${BUILD_FAT_LIBROCKCOMPILER})
 
-# Drive the CVW_EXPORT macro (see conv-validation-wrappers.cpp) to emit
-# __declspec(dllexport) for the extern "C" JIT entry points when building this
-# DLL. Only these entry points are exported; WINDOWS_EXPORT_ALL_SYMBOLS would
-# also leak the statically-linked LLVMSupport symbols. No-op on
-# Linux, where ELF default visibility already exports them.
-target_compile_definitions(conv-validation-wrappers
-  PRIVATE CONV_VALIDATION_WRAPPERS_BUILDING)
-
 target_link_libraries(conv-validation-wrappers
   PUBLIC
   LLVMSupport

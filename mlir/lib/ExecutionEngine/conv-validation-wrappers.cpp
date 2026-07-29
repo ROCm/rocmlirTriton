@@ -29,11 +29,7 @@
 // symbols by default; explicit exports avoid exposing linked C++/CRT internals.
 // Other platforms use default visibility.
 #if defined(_WIN32)
-#ifdef CONV_VALIDATION_WRAPPERS_BUILDING
 #define CVW_EXPORT __declspec(dllexport)
-#else
-#define CVW_EXPORT __declspec(dllimport)
-#endif
 #else
 #define CVW_EXPORT __attribute__((visibility("default")))
 #endif

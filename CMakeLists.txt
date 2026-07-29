@@ -8,56 +8,67 @@ cmake_policy(SET CMP0048 NEW)
 # NOTE: This MUST happen before project() so CMake doesn't detect MSVC first.
 #===----------------------------------------------------------------------===//
 
-if(WIN32 AND NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
+if(CMAKE_HOST_WIN32)
   # Resolve the ROCm/HIP root. Precedence matches cmake/triton.cmake so a single
   # -DROCM_PATH drives both the toolchain here and the HIP package discovery
   # there:  -DROCM_PATH (cache) -> ENV{ROCM_PATH} -> ENV{HIP_PATH} -> C:/opt/rocm
   if(DEFINED ROCM_PATH)
-    set(_rocmlir_hip_root "${ROCM_PATH}")
+    set(_rocmlir_rocm_root "${ROCM_PATH}")
   elseif(DEFINED ENV{ROCM_PATH})
-    set(_rocmlir_hip_root "$ENV{ROCM_PATH}")
+    set(_rocmlir_rocm_root "$ENV{ROCM_PATH}")
   elseif(DEFINED ENV{HIP_PATH})
-    set(_rocmlir_hip_root "$ENV{HIP_PATH}")
+    set(_rocmlir_rocm_root "$ENV{HIP_PATH}")
   else()
-    set(_rocmlir_hip_root "C:/opt/rocm")
+    set(_rocmlir_rocm_root "C:/opt/rocm")
   endif()
-  file(TO_CMAKE_PATH "${_rocmlir_hip_root}" _rocmlir_hip_root)
+  file(TO_CMAKE_PATH "${_rocmlir_rocm_root}" _rocmlir_rocm_root)
 
-  # clang-cl lives under lib/llvm/bin in the TheRock / Linux-style ROCm layout,
-  # and directly under bin in the Windows HIP SDK. Prefer the former.
-  if(EXISTS "${_rocmlir_hip_root}/lib/llvm/bin/clang-cl.exe")
-    set(_rocmlir_clang_cl "${_rocmlir_hip_root}/lib/llvm/bin/clang-cl.exe")
-  elseif(EXISTS "${_rocmlir_hip_root}/bin/clang-cl.exe")
-    set(_rocmlir_clang_cl "${_rocmlir_hip_root}/bin/clang-cl.exe")
-  endif()
-
-  if(_rocmlir_clang_cl)
-    set(CMAKE_C_COMPILER   "${_rocmlir_clang_cl}" CACHE FILEPATH "")
-    set(CMAKE_CXX_COMPILER "${_rocmlir_clang_cl}" CACHE FILEPATH "")
-    message(STATUS "Using ROCm clang-cl at ${_rocmlir_clang_cl}")
+  if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
+    # clang-cl lives under lib/llvm/bin in TheRock and under bin in the HIP SDK.
+    if(EXISTS "${_rocmlir_rocm_root}/lib/llvm/bin/clang-cl.exe")
+      set(_rocmlir_compiler_dir "${_rocmlir_rocm_root}/lib/llvm/bin")
+    elseif(EXISTS "${_rocmlir_rocm_root}/bin/clang-cl.exe")
+      set(_rocmlir_compiler_dir "${_rocmlir_rocm_root}/bin")
+    else()
+      message(FATAL_ERROR
+        "clang-cl not found under ${_rocmlir_rocm_root} "
+        "(checked lib/llvm/bin and bin). Set ROCM_PATH/HIP_PATH or -DROCM_PATH to "
+        "your ROCm/HIPSDK install (or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER).")
+    endif()
+    set(CMAKE_C_COMPILER
+        "${_rocmlir_compiler_dir}/clang-cl.exe" CACHE FILEPATH "")
+    set(CMAKE_CXX_COMPILER
+        "${_rocmlir_compiler_dir}/clang-cl.exe" CACHE FILEPATH "")
   else()
+    if(NOT EXISTS "${CMAKE_C_COMPILER}" OR
+       NOT EXISTS "${CMAKE_CXX_COMPILER}")
+      message(FATAL_ERROR
+        "Set CMAKE_C_COMPILER and CMAKE_CXX_COMPILER to existing clang-cl executables.")
+    endif()
+    get_filename_component(
+      _rocmlir_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  endif()
+  message(STATUS "Using ROCm clang-cl at ${CMAKE_CXX_COMPILER}")
+
+  if(NOT CMAKE_LINKER)
+    set(CMAKE_LINKER
+        "${_rocmlir_compiler_dir}/lld-link.exe"
+        CACHE FILEPATH "Path to lld-link")
+  endif()
+  if(NOT EXISTS "${CMAKE_LINKER}" OR
+     NOT CMAKE_LINKER MATCHES "lld-link(\\.exe)?$")
     message(FATAL_ERROR
-      "clang-cl not found under ${_rocmlir_hip_root} "
-      "(checked lib/llvm/bin and bin). Set ROCM_PATH/HIP_PATH or -DROCM_PATH to "
-      "your ROCm/HIP install (or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER).")
+      "Set CMAKE_LINKER to an existing lld-link executable.")
   endif()
+  message(STATUS "Using lld-link at ${CMAKE_LINKER}")
 endif()
 
-# Use LLD (lld-link) as the linker on Windows. The CMake-native
-# `CMAKE_LINKER_TYPE` knob would be cleaner but requires CMake 3.29+; we keep
-# `cmake_minimum_required(VERSION 3.20)` for Linux compatibility, so we pass
-# `-fuse-ld=lld` directly to the clang-cl driver, which translates it to
-# `lld-link.exe` internally on Windows.
-if(WIN32)
-  add_link_options("-fuse-ld=lld")
-endif()
-
-# Default to a Release build on Windows. This must happen before project() so
+# Default to RelWithDebInfo on Windows. This must happen before project() so
 # that LLVM's add_unittest() / gtest discovery (which snapshots CMAKE_BUILD_TYPE
 # eagerly and maps its per-object variables) does not latch onto CMake's
 # implicit default (which Ninja picks up as Debug on MSVC-flavored toolchains).
-if(WIN32 AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+if(CMAKE_HOST_WIN32 AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
 project(rocMLIR VERSION 2.0.0 LANGUAGES CXX C)
