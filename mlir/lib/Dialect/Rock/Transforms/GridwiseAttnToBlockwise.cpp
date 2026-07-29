@@ -738,11 +738,14 @@ struct GridwiseAttentionRewritePattern
       // exit, see runEarlyExit() for details.
       // Use ceiling division so each split gets at least 1 iteration when
       // gemm0N < gemm0NPerBlock * splitKV (e.g. seq_len_k=64, block=64,
-      // splitKV=2).
-      int64_t nIterPerSplit =
-          llvm::divideCeil(llvm::divideCeil(gemm0N, gemm0NPerBlock), splitKV);
+      // splitKV=2). Truncating division would give 0 iterations per split,
+      // skipping the softmax entirely and leaving 0/0 in the final rescale.
+      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
+      int64_t nIterPerSplit = llvm::divideCeil(gemm0NBlocks, splitKV);
       Value gemm0NIterations = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), nIterPerSplit);
+      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NBlocks);
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
       start = arith::MulIOp::create(rewriter, loc, gridCoordsGemm0.split_block,
@@ -751,6 +754,9 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, gridCoordsGemm0.split_block, one);
       end =
           arith::MulIOp::create(rewriter, loc, splitPlusOne, gemm0NIterations);
+      // Rounding up means the trailing splits can overshoot, so clamp them to
+      // the real block count; splits that start past the end become empty.
+      end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
     } else {
       start = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 0);
