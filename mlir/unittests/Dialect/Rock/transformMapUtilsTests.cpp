@@ -401,7 +401,6 @@ TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
   SmallVector<unsigned> mDim{0};
   SmallVector<unsigned> kDim{1};
   SmallVector<unsigned> bothDims{0, 1};
-  SmallVector<unsigned> invalidDim{2};
   SmallVector<unsigned> noDims;
   SmallVector<TransformMapAttr> noTransforms;
 
@@ -409,7 +408,6 @@ TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
   EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, kDim));
   EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, bothDims));
   EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, noDims));
-  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, invalidDim));
   EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
 }
 

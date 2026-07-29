@@ -1106,13 +1106,20 @@ bool mlir::rock::transformChainDependsOnAnyDim(
   if (dims.empty())
     return false;
 
+  // An empty chain passes its coordinates through unchanged, so the lower
+  // coordinates depend on every upper dim. It also has no domain to check
+  // `dims` against.
   AffineMap composed = composeTransforms(transforms);
   if (!composed)
     return true;
 
-  return llvm::any_of(dims, [&](unsigned dim) {
-    return dim >= composed.getNumDims() || composed.isFunctionOfDim(dim);
-  });
+  assert(llvm::all_of(
+             dims,
+             [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
+         "queried dim is not an upper coordinate of the transform chain");
+
+  return llvm::any_of(
+      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
 }
 
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
@@ -1120,8 +1127,19 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
                                          std::size_t firstTransform) {
   assert(firstTransform <= transforms.size() &&
          "first transform must be within the transform chain");
-  if (dims.empty())
+  // An empty chain generates no validity checks, and has no upper coordinate
+  // space to check `dims` against.
+  if (dims.empty() || transforms.empty())
     return false;
+
+  assert(llvm::all_of(dims,
+                      [&](unsigned dim) {
+                        return dim < transforms.front()
+                                         .getMap()
+                                         .getAffineMap()
+                                         .getNumDims();
+                      }) &&
+         "queried dim is not an upper coordinate of the transform chain");
 
   for (std::size_t index = firstTransform; index < transforms.size(); ++index) {
     TransformMapAttr transform = transforms[index];

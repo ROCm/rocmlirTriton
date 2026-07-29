@@ -98,6 +98,8 @@ static Value applyTransforms(OpBuilder &builder, Value source,
 /// its underlying input, so maps after this prefix are specific to that input.
 /// Requires at least one path.
 static size_t getCommonViewPrefix(ArrayRef<AnalyzedInputPath> paths) {
+  assert(!paths.empty() && "a common view prefix needs at least one path");
+
   // A common prefix cannot be longer than the shortest transform chain.
   size_t commonSize = paths.front().transforms.size();
   for (const AnalyzedInputPath &path : paths)
