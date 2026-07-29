@@ -52,7 +52,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -95,45 +94,33 @@ static bool isFusionChainOp(Operation *op) {
   return rock::isFusionOp(op) || isNarrowLoadShapeOp(op);
 }
 
-/// Apply one narrowed-load shape operation to a validity mask.
-static Value propagateMaskThroughShapeOp(OpBuilder &builder, Operation *op,
-                                         Value mask) {
-  assert(isNarrowLoadShapeOp(op) && "expected a narrowed-load shape operation");
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointAfter(op);
-  IRMapping mapping;
-  mapping.map(op->getOperand(0), mask);
-  Operation *maskOp = builder.clone(*op, mapping);
-  auto resultType = cast<RankedTensorType>(maskOp->getResult(0).getType());
-  maskOp->getResult(0).setType(
-      resultType.cloneWith(resultType.getShape(), builder.getI1Type()));
-  return maskOp->getResult(0);
-}
-
 /// Starting from a load result, follow uses through fusion ops and the
 /// expand/broadcast pair used to reconstruct narrowed loads. Collect
-/// (fusion-leaf, mask) pairs, expanding and broadcasting the mask alongside the
-/// load value so it still matches the leaf shape.
-static void
-collectFusionChainLeaves(OpBuilder &builder, Value loadResult, Value loadMask,
-                         SmallVectorImpl<std::pair<Value, Value>> &leaves) {
-  SmallVector<std::pair<Value, Value>> worklist;
-  DenseSet<std::pair<Operation *, Value>> visited;
-  worklist.push_back({loadResult, loadMask});
+/// fusion leaves together with the shape-op path their masks must follow.
+/// Mask operations are materialized later, after zero-preservation analysis
+/// determines that the leaf actually needs re-masking.
+static SmallVector<std::pair<Value, SmallVector<Operation *>>>
+collectFusionChainLeaves(Value loadResult) {
+  SmallVector<std::pair<Value, SmallVector<Operation *>>> leaves;
+  SmallVector<std::pair<Value, SmallVector<Operation *>>> worklist;
+  DenseSet<std::pair<Operation *, Operation *>> visited;
+  worklist.push_back({loadResult, {}});
 
   while (!worklist.empty()) {
-    auto [current, currentMask] = worklist.pop_back_val();
-    for (OpOperand &use : current.getUses()) {
+    auto [value, shapeOps] = worklist.pop_back_val();
+    for (OpOperand &use : value.getUses()) {
       Operation *owner = use.getOwner();
+      // Each shape op has one input, so its identity uniquely identifies the
+      // shape path. Keep converging paths distinct when their masks differ.
+      Operation *lastShapeOp = shapeOps.empty() ? nullptr : shapeOps.back();
       if (!isFusionChainOp(owner) ||
-          !visited.insert({owner, currentMask}).second)
+          !visited.insert({owner, lastShapeOp}).second)
         continue;
 
       Value result = owner->getResult(0);
-      Value resultMask =
-          isNarrowLoadShapeOp(owner)
-              ? propagateMaskThroughShapeOp(builder, owner, currentMask)
-              : currentMask;
+      SmallVector<Operation *> resultShapeOps = shapeOps;
+      if (isNarrowLoadShapeOp(owner))
+        resultShapeOps.push_back(owner);
       bool hasNonFusionUse = false;
       bool hasFusionUse = false;
       for (OpOperand &resultUse : result.getUses()) {
@@ -143,11 +130,29 @@ collectFusionChainLeaves(OpBuilder &builder, Value loadResult, Value loadMask,
           hasNonFusionUse = true;
       }
       if (hasNonFusionUse && rock::isFusionOp(owner))
-        leaves.push_back({result, resultMask});
+        leaves.push_back({result, resultShapeOps});
       if (hasFusionUse)
-        worklist.push_back({result, resultMask});
+        worklist.push_back({result, std::move(resultShapeOps)});
     }
   }
+  return leaves;
+}
+
+/// Clone the recorded shape-op path with the validity mask as its input.
+static Value materializeMaskPath(OpBuilder &builder, Value mask,
+                                 ArrayRef<Operation *> shapeOps) {
+  for (Operation *op : shapeOps) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(op);
+    IRMapping mapping;
+    mapping.map(op->getOperand(0), mask);
+    Operation *maskOp = builder.clone(*op, mapping);
+    auto resultType = cast<RankedTensorType>(maskOp->getResult(0).getType());
+    maskOp->getResult(0).setType(
+        resultType.cloneWith(resultType.getShape(), builder.getI1Type()));
+    mask = maskOp->getResult(0);
+  }
+  return mask;
 }
 
 /// Trace backwards from a value through fusion ops and narrowed-load shape
@@ -380,13 +385,15 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
   // follow its fusion chain to find leaves. Skip leaves whose chains preserve
   // zero unless a max-reduction consumer needs the type's minimum value instead
   // of zero. Record the mask contribution for the rest.
-  // Result: leafMasks[leaf] = set of non-trivial masks from contributing loads
-  //         that need re-masking.
-  DenseMap<Value, SetVector<Value>> leafMasks;
+  // Result: leafMasks[leaf] = paths from contributing non-trivial masks to the
+  //         leaf shape for values that need re-masking.
+  DenseMap<Value, SmallVector<std::pair<Value, SmallVector<Operation *>>>>
+      leafMasks;
   DenseSet<Value> zeroPreserving;
   OpBuilder builder(funcOp.getContext());
 
-  auto recordMaskCandidate = [&](Value candidate, Value mask) {
+  auto recordMaskCandidate = [&](Value candidate, Value mask,
+                                 SmallVector<Operation *> shapeOps) {
     bool needsMaxNeutralFill = hasMaxReduceConsumer(candidate);
     if (!needsMaxNeutralFill && zeroPreserving.contains(candidate))
       return;
@@ -397,7 +404,11 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
       return;
     }
 
-    leafMasks[candidate].insert(mask);
+    auto &paths = leafMasks[candidate];
+    for (const auto &[existingMask, existingShapeOps] : paths)
+      if (existingMask == mask && existingShapeOps == shapeOps)
+        return;
+    paths.push_back({mask, std::move(shapeOps)});
   };
 
   funcOp.walk([&](BlockwiseLoadPtrOp loadOp) {
@@ -407,13 +418,12 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
     Value mask = loadOp.getMaskTensor();
     Value loadResult = loadOp.getResult();
     if (hasMaxReduceConsumer(loadResult))
-      recordMaskCandidate(loadResult, mask);
+      recordMaskCandidate(loadResult, mask, {});
 
-    SmallVector<std::pair<Value, Value>> leaves;
-    collectFusionChainLeaves(builder, loadResult, mask, leaves);
+    auto leaves = collectFusionChainLeaves(loadResult);
 
-    for (auto [leaf, leafMask] : leaves)
-      recordMaskCandidate(leaf, leafMask);
+    for (auto &[leaf, shapeOps] : leaves)
+      recordMaskCandidate(leaf, mask, std::move(shapeOps));
   });
 
   if (leafMasks.empty())
@@ -425,7 +435,7 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
   // ---- Phase 2: Emit masking IR ----
   // For each remaining leaf, insert arith.select to restore a neutral value at
   // OOB positions.
-  for (auto &[leaf, masks] : leafMasks) {
+  for (auto &[leaf, maskPaths] : leafMasks) {
     LLVM_DEBUG(llvm::dbgs() << "Inserting OOB mask for: " << leaf << "\n");
 
     Location loc = leaf.getLoc();
@@ -440,10 +450,14 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
         usesToReplace.emplace_back(owner, use.getOperandNumber());
     }
 
-    // Combine masks with `and` once, right after the leaf. Each mask is an
-    // operand of a BlockwiseLoadPtrOp upstream of the leaf, so the `and`
-    // dominates every non-fusion use of the leaf and can be shared across
-    // them.
+    SmallVector<Value> masks;
+    masks.reserve(maskPaths.size());
+    for (const auto &[mask, shapeOps] : maskPaths)
+      masks.push_back(materializeMaskPath(builder, mask, shapeOps));
+
+    // Combine masks with `and` once, right after the leaf. Each materialized
+    // mask path dominates every non-fusion use of the leaf, so the `and` can be
+    // shared across them.
     builder.setInsertionPointAfterValue(leaf);
     auto it = masks.begin();
     Value combinedMask = *it;
