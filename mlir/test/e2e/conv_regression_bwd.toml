@@ -103,9 +103,8 @@ name = "data type"
 values = ["f16"]
 
 [[suite.test]]
-# f16: no override for either operation, which is deliberate. This restores the
-# defaults both operations used before the blanket --atol 52 was introduced, and
-# each is derived from its own reduction length.
+# f16: no override, deliberately, so each operation keeps its own K-scaled
+# default, which already covers the error observed for this config.
 config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
 [[suite.test.exclude]]
 name = "data type"
