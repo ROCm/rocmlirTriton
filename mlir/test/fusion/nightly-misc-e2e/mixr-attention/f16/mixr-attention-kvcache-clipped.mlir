@@ -2,9 +2,10 @@
 // RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand_min_int 4 -rand_max_int 5 -rand_type_int_for_inputs=3 -rand 1 -rand_type float -fut mlir_attention --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=E2E
 
 // IR-LABEL: func.func @mlir_attention
-// IR: %[[CLIPPED:.*]] = linalg.generic
-// IR-DAG: arith.maxsi
-// IR-DAG: arith.minsi
+// IR-DAG: %[[CLIP_MAX:.*]] = arith.constant dense<2> : tensor<2xi32>
+// IR-DAG: %[[CLIP_MIN:.*]] = arith.constant dense<0> : tensor<2xi32>
+// IR: %[[MAXED:.*]] = arith.maxsi %{{.*}}, %[[CLIP_MIN]] : tensor<2xi32>
+// IR: %[[CLIPPED:.*]] = arith.minsi %[[MAXED]], %[[CLIP_MAX]] : tensor<2xi32>
 // IR: rock.attention
 // IR: currentSeqLen = (%[[CLIPPED]] : tensor<2xi32>)
 
