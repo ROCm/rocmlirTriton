@@ -495,7 +495,7 @@ class TuningStateFile:
     File format:
     {
         "contexts": {
-            "<arch>/<num_cu>/<num_chiplets>/<tuning_space>": {
+            "<chip>/<num_cu>/<num_chiplets>/<tuning_space>": {
                 "test_vector_1": "failed",
                 "test_vector_2": "crashed"
             }
@@ -505,10 +505,10 @@ class TuningStateFile:
     If filepath is None, all operations are no-ops.
     """
 
-    def __init__(self, filepath: Optional[str], arch: str, num_cu: int, num_chiplets: int,
-                 tuning_space: str, conf_class: type):
+    def __init__(self, filepath: Optional[str], chip: str, arch: str, num_cu: int,
+                 num_chiplets: int, tuning_space: str, conf_class: type):
         self.filepath = filepath
-        self.context_key = f"{arch}/{num_cu}/{num_chiplets}/{tuning_space}"
+        self.context_key = f"{chip}/{num_cu}/{num_chiplets}/{tuning_space}"
         self._arch = arch
         self._num_cu = num_cu
         self._num_chiplets = num_chiplets
@@ -526,6 +526,7 @@ class TuningStateFile:
         For the active context only:
         - INTERRUPTED configs are removed (will be retried)
         - RUNNING configs become CRASHED (stale = crash)
+        - Entries that don't parse are kept verbatim so they survive a save/load round-trip
         """
         if not self.filepath or not os.path.exists(self.filepath):
             return
@@ -539,21 +540,26 @@ class TuningStateFile:
             for tv, state_str in self._all_contexts[self.context_key].items():
                 try:
                     state = ConfigState(state_str)
-                    if state == ConfigState.INTERRUPTED:
-                        continue  # Remove - will retry
-                    if state == ConfigState.RUNNING:
-                        state = ConfigState.CRASHED  # Stale running = crashed
-                    # Canonicalize so a legacy / non-canonical key still matches
-                    # the canonicalized configs we tune. Keep the raw key on
-                    # failure so it survives a save/load round-trip.
-                    try:
-                        tv = canonicalize_test_vector(tv, self._conf_class, self._arch,
-                                                      self._num_cu, self._num_chiplets)
-                    except ValueError:
-                        pass
-                    self._state.configs[tv] = state
                 except ValueError:
                     logger.warning(f"Unknown state '{state_str}' for config '{tv}' in state file")
+                    continue
+
+                if state == ConfigState.INTERRUPTED:
+                    continue  # Remove - will retry
+                if state == ConfigState.RUNNING:
+                    state = ConfigState.CRASHED  # Stale running = crashed
+
+                # Canonicalize so a legacy / non-canonical key still matches
+                # the canonicalized configs we tune. Keep the raw key on
+                # failure so it survives a save/load round-trip.
+                try:
+                    canonical_tv = canonicalize_test_vector(tv, self._conf_class, self._arch,
+                                                            self._num_cu, self._num_chiplets)
+                except ValueError as e:
+                    logger.debug(f"Failed to canonicalize config in state file: {e}")
+                    canonical_tv = tv  # Keep the raw key so it survives a save/load round-trip
+
+                self._state.configs[canonical_tv] = state
 
     @property
     def state(self) -> TuningState:
@@ -693,11 +699,13 @@ class TunedConfigsCache:
                 if not column_indices:
                     continue
 
-                # Parse data line
                 result = cls._parse_data_line(line.split('\t'), column_indices, options, conf_class,
                                               header_tuning_space, current_commit, warned_commits)
-                if result:
-                    results[result.test_vector] = result
+                if not result:
+                    logger.debug(f"Skipping invalid output file line: {line}")
+                    continue
+
+                results[result.test_vector] = result
 
         return cls(_results=results)
 
@@ -739,7 +747,7 @@ class TunedConfigsCache:
         - arch matches current system (chip or arch for backwards compatibility)
         - numCUs and numChiplets match current system
         - tuning space matches (from column or header)
-        - testVector is present
+        - testVector is present, parseable, and belongs to the expected operation
         - perfConfig is present and not 'None'
         """
 
@@ -1447,7 +1455,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path] + tuning_driver_args
 
         if not test_vector.endswith(".mlir"):
-            command_line = test_vector.split(sep=' ')
+            command_line = test_vector.split()
             config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                   options.num_chiplets)
             command_line_options = config.generate_mlir_driver_commandline(
@@ -1470,7 +1478,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                                  gpu_id=gpu_id))
                 return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
             result = output.strip().split('\t')
-            command_line = result[2].split(sep=' ')
+            command_line = result[2].split()
             config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                   options.num_chiplets)
             tuning_driver_command += [test_vector]
@@ -2039,7 +2047,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
 
     # Load state file
     state_file = TuningStateFile(get_state_filepath(ctx.options.output), ctx.options.chip,
-                                 ctx.options.num_cu, ctx.options.num_chiplets,
+                                 ctx.options.arch, ctx.options.num_cu, ctx.options.num_chiplets,
                                  ctx.options.tuning_space_kind, ctx.conf_class)
     state = state_file.state
 
@@ -2252,7 +2260,7 @@ def extract_fusion_configs(test_dir: str,
             logger.debug("Duplicate entry skipped")
             continue
 
-        command_line = test_vector.split(sep=' ')
+        command_line = test_vector.split()
         if command_line[0].startswith('conv'):
             if op_type == Operation.FUSION:
                 op_type = Operation.CONV
@@ -2302,6 +2310,9 @@ def load_configs_from_stdin() -> str:
 def load_configs(op_type: Operation,
                  parsed_args: argparse.Namespace,
                  paths: Paths,
+                 arch: str,
+                 num_cu: int,
+                 num_chiplets: int,
                  target_chip: Optional[str] = None) -> List[str]:
     """Load configurations based on operation type and arguments."""
     if parsed_args.config:
@@ -2309,24 +2320,27 @@ def load_configs(op_type: Operation,
 
     loaders = {
         Operation.CONV:
-            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path,
-                                                       target_chip=target_chip),
+            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path, arch, num_cu,
+                                                       num_chiplets, target_chip=target_chip),
         Operation.GEMM:
-            lambda: perfRunner.get_gemm_configurations(paths.configuration_file_path,
-                                                       *perfRunner.parse_data_types(parsed_args.
-                                                                                    data_type),
-                                                       parsed_args.scale_type,
-                                                       target_chip=target_chip),
+            lambda: perfRunner.get_gemm_configurations(
+                paths.configuration_file_path, arch, num_cu, num_chiplets,
+                *perfRunner.parse_data_types(parsed_args.data_type), parsed_args.scale_type,
+                target_chip=target_chip),
         Operation.ATTENTION:
-            lambda: perfRunner.get_attn_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_attn_configurations(paths.configuration_file_path, arch, num_cu,
+                                                       num_chiplets),
         Operation.GEMM_GEMM:
-            lambda: perfRunner.get_gemm_gemm_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_gemm_gemm_configurations(paths.configuration_file_path, arch,
+                                                            num_cu, num_chiplets),
         Operation.CONV_GEMM:
-            lambda: perfRunner.get_conv_gemm_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_conv_gemm_configurations(paths.configuration_file_path, arch,
+                                                            num_cu, num_chiplets),
     }
 
     if op_type not in loaders:
         raise ValueError(f"No config loader for operation: {str(op_type)}")
+
     return loaders[op_type]()
 
 
@@ -2684,7 +2698,8 @@ def main(args=None):
         if op_type == Operation.FUSION:
             op_type = extract_fusion_configs(parsed_args.test_dir, paths, target_chip=chip)
 
-        configs = load_configs(op_type, parsed_args, paths, target_chip=chip)
+        configs = load_configs(op_type, parsed_args, paths, arch, num_cu, num_chiplets,
+                               target_chip=chip)
     finally:
         if stdin_temp_file:
             os.unlink(stdin_temp_file)
@@ -2758,7 +2773,7 @@ def main(args=None):
                       allow_commit_mismatch=parsed_args.allow_commit_mismatch)
 
     ctx = TuningContext(configs=configs,
-                        conf_class=conf_class,
+                        conf_class=get_config_class(op_type),
                         paths=paths,
                         options=options,
                         gpu_topology=get_gpu_topology() if parsed_args.gpus else None,

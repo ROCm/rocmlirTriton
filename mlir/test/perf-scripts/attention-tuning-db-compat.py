@@ -98,7 +98,8 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         """Look up a current config against a DB row written with a legacy key."""
         path = Path(f"{self.tmp_prefix}.tsv")
         write_tuning_db(path, legacy_key)
-        return lookup_tuning_db(read_tuning_db(str(path)), ARCH, config, config.to_command_line())
+        tuning_db = read_tuning_db(str(path), AttentionConfiguration, NUM_CU, NUM_CHIPLETS)
+        return lookup_tuning_db(tuning_db, ARCH, config, config.to_command_line())
 
     def test_last_valid_kv_index_is_runtime_only(self):
         """The runtime KV index reaches rocmlir-gen without changing tuning identity."""
