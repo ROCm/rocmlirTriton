@@ -236,6 +236,47 @@ unmergeBackForSplitKV(PatternRewriter &rewriter, Location loc, Value tensor,
   return std::make_pair(newBatch, intermediate);
 }
 
+// Slice the splitKV component out of a 1D per-batch tensor (currentSeqLen or
+// prefixOffset) by fixing the splitKV coordinate to 0. These values are
+// duplicated across the split, so every splitKV coordinate holds the same
+// value.
+// [batch*splitKV] -> [batch, splitKV] -> [batch]
+static FailureOr<Value> sliceSplitKVFromBatch(PatternRewriter &rewriter,
+                                              Location loc, Value tensor,
+                                              int64_t splitKV) {
+  ArrayRef<int64_t> shape = cast<ShapedType>(tensor.getType()).getShape();
+  if (shape.size() != 1) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Expected 1D tensor, got " << shape.size() << "D\n");
+    return failure();
+  }
+
+  int64_t currentBatch = shape[0];
+  if (currentBatch % splitKV != 0) {
+    LLVM_DEBUG(llvm::dbgs() << "Batch dimension " << currentBatch
+                            << " not divisible by splitKV " << splitKV << "\n");
+    return failure();
+  }
+
+  rock::BottomUpTMBuilder unmergeBuilder(rewriter, {"batch_merged"}, shape,
+                                         loc);
+  unmergeBuilder.unmerge({"batch", "splitKV"}, {0, 1}, "batch_merged",
+                         {currentBatch / splitKV, splitKV});
+  TransformMapAttr unmergeMap = unmergeBuilder.get();
+  Value intermediate =
+      rock::TransformOp::create(rewriter, loc, tensor, unmergeMap);
+
+  rock::BottomUpTMBuilder sliceBuilder(
+      rewriter, {"batch", "splitKV"},
+      cast<ShapedType>(intermediate.getType()).getShape(), loc);
+  sliceBuilder.passThrough({"batch"}, {0}, {"batch"});
+  sliceBuilder.dropDimAtIndex("splitKV", /*constantVal=*/0);
+  TransformMapAttr sliceMap = sliceBuilder.get();
+
+  return rock::TransformOp::create(rewriter, loc, intermediate, sliceMap)
+      .getResult();
+}
+
 // Add a transform on top of Q tensor to remove splitKV from batch dimension
 // Q: [B*H*SplitKV, M, K] -> [B*H, M, K]
 static FailureOr<Value> removeSplitKVFromQ(PatternRewriter &rewriter,
@@ -408,15 +449,38 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
     Value newKeys = maybeNewKeys.value();
     Value newValues = maybeNewValues.value();
 
+    // currentSeqLen and prefixOffset are indexed by the logical batch, so they
+    // must be sliced like Q/K/V. Otherwise the rewritten op keeps
+    // batch * splitKV entries while the verifier expects batch entries.
+    int64_t splitKV = splitKVFromQ;
+    auto sliceOptionalOperand = [&](Value tensor) -> FailureOr<Value> {
+      if (!tensor)
+        return Value{};
+      return sliceSplitKVFromBatch(rewriter, op.getLoc(), tensor, splitKV);
+    };
+
+    auto maybeNewCurrentSeqLen = sliceOptionalOperand(op.getCurrentSeqLen());
+    if (failed(maybeNewCurrentSeqLen)) {
+      op.emitError("Failed to slice currentSeqLen for splitKV");
+      return failure();
+    }
+
+    auto maybeNewPrefixOffset = sliceOptionalOperand(op.getPrefixOffset());
+    if (failed(maybeNewPrefixOffset)) {
+      op.emitError("Failed to slice prefixOffset for splitKV");
+      return failure();
+    }
+
     Type resultType = op.getResult().getType();
     Type lseType = op.getLse().getType();
 
     auto newOp = rock::AttentionOp::create(
         rewriter, op->getLoc(), resultType, lseType, newQueries, newKeys,
-        newValues, op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
-        op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
-        op.getQTransposedAttr(), op.getKTransposedAttr(),
-        op.getVTransposedAttr(), op.getOTransposedAttr(), op.getCausalAttr(),
+        newValues, op.getPreSoftmaxElemWiseInputs(),
+        maybeNewCurrentSeqLen.value(), maybeNewPrefixOffset.value(),
+        op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(), op.getQTransposedAttr(),
+        op.getKTransposedAttr(), op.getVTransposedAttr(),
+        op.getOTransposedAttr(), op.getCausalAttr(),
         rewriter.getI32IntegerAttr(splitKVFromQ), op.getSlidingWindowSizeAttr(),
         op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
         /*preSoftmaxHasSplitKVTransforms=*/rewriter.getBoolAttr(true));
