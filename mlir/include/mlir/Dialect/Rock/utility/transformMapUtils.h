@@ -309,10 +309,11 @@ struct InputFusionPath {
 /// routes that agree on the transforms along the way is collected once.
 ///
 /// Returns failure if a path reaches any other operation, including a view-like
-/// op that is not a rock.transform: a path is described by the TransformMapAttrs
-/// along it, and such a view has none to contribute, so its source cannot be
-/// reached without losing the coordinate mapping. Among the ops producing the
-/// tensors these walks start from, only rock.transform is view-like today.
+/// op that is not a rock.transform: a path is described by the
+/// TransformMapAttrs along it, and such a view has none to contribute, so its
+/// source cannot be reached without losing the coordinate mapping. Among the
+/// ops producing the tensors these walks start from, only rock.transform is
+/// view-like today.
 FailureOr<SmallVector<InputFusionPath>> collectInputFusionPaths(Value value);
 
 // Given a mlir::Value as input (representing the operand of a kernel,
