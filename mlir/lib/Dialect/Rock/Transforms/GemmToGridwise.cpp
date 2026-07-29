@@ -201,6 +201,16 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
 
+  // Plain (non-scaled, non-split-K) GEMMs peel a non-multiple K tail in
+  // rock-gridwise-gemm-to-blockwise instead of padding K up to a full
+  // (power-of-two) kPerBlock, which avoids a mostly-masked final reduction
+  // iteration. Drop the K padding for them; M/N are still padded so the
+  // blockwise M/N tiling stays exact. Scaled GEMMs and split-K keep the padded,
+  // exactly-K-divisible operands they rely on.
+  bool peelKTail = !(scaleA && scaleB) && splitKFactor == 1;
+  if (peelKTail)
+    extraPad.k = 0;
+
   a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
   b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
   transformViews([&](Value v) {

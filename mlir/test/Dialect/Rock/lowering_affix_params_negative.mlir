@@ -57,6 +57,25 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=SCALED-NPERBLOCK-NOT-POW2
 
+// ---- kPerBlock: positive (gemm) vs power-of-two (gemm+gemm / scaled) -------
+
+// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
+// RUN:   --perf_config "gemm:v1:128,128,0,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=KPERBLOCK-NON-POSITIVE
+
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v1:64,64,3,1,1,1,0,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=KPERBLOCK-NOT-POW2
+
+// RUN: rocmlir-gen -t f4E2M1FN -m 80 -n 80 -k 256 -out_dtype f32 --scaledGemm \
+// RUN:   --arch gfx950 --operation gemm -p \
+// RUN:   --perf_config "gemm:v1:128,128,3,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=SCALED-KPERBLOCK-NOT-POW2
+
 // ---- validateKpack: both branches (non-positive, exceeds max) -------------
 
 // RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
@@ -155,7 +174,9 @@
 // NPERBLOCK-NOT-POW2:    error: nPerBlock=3 must be a positive power of two
 // SCALED-MPERBLOCK-NOT-POW2: error: mPerBlock=80 must be a positive power of two
 // SCALED-NPERBLOCK-NOT-POW2: error: nPerBlock=80 must be a positive power of two
+// KPERBLOCK-NON-POSITIVE: error: kPerBlock=0 must be positive
 // KPERBLOCK-NOT-POW2:    error: kPerBlock=3 must be a positive power of two
+// SCALED-KPERBLOCK-NOT-POW2: error: kPerBlock=3 must be a positive power of two
 // KPACK-NON-POSITIVE:    error: kpack=0 must be positive
 // KPACK-TOO-LARGE:       error: kpack=16 exceeds max (2) for amdgcn-amd-amdhsa:gfx90a
 // NUMCTAS-NON-POSITIVE:  error: numCTAs=0 must be >= 1
