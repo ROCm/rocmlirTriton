@@ -11,7 +11,7 @@
 // No kernel is involved, so the kernel pipeline is a no-op.
 
 // RUN: rocmlir-driver -c -arch %arch %s \
-// RUN:   | mlir-runner --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void \
+// RUN:   | mlir-runner --shared-libs=%conv_validation_wrapper_library_dir/%shlibprefixconv-validation-wrappers%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_runner_utils%shlibext,%linalg_test_lib_dir/%shlibprefixmlir_c_runner_utils%shlibext --entry-point-result=void \
 // RUN:   | FileCheck %s
 
 // `mcpuVerifyFloatAllclose` C signature:

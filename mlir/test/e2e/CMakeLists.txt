@@ -16,6 +16,12 @@ endif()
 
 set(E2E_DIR ${CMAKE_CURRENT_BINARY_DIR})
 set(E2E_GEN_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/generateE2ETest.py")
+set(E2E_GEN_COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT})
+if(WIN32)
+  set(E2E_GEN_COMMAND
+      ${CMAKE_COMMAND} -E env "ROCM_PATH=${ROCM_PATH}"
+      ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT})
+endif()
 set(CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(LOCAL_CONFIG_FILE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/lit.local.cfg)
 set(LOCAL_CONFIG_FILE_BIN ${CMAKE_CURRENT_BINARY_DIR}/lit.local.cfg)
@@ -120,11 +126,20 @@ foreach(config ${CONFIGS})
   endif()
   add_custom_command(OUTPUT ${config_file_copy}
     COMMAND ${CMAKE_COMMAND} -E copy ${config_file} ${config_file_copy}
-    COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
-    COMMAND if [ -f "${lit_cfg_file}" ]\; then cp "${lit_cfg_file}" ${E2E_DIR}/${config}/lit.local.cfg\; fi
+    COMMAND ${E2E_GEN_COMMAND} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
     DEPENDS ${config_deps}
     COMMENT "Generating rock E2E tests for ${config}"
   )
+  # Copy the optional per-config lit gate (.cfg) into the generated test dir as
+  # lit.local.cfg. Whether the .cfg exists is known at configure time (it is a
+  # source file), so use a configure-time `if(EXISTS)` + cross-platform CMake
+  # copy instead of a runtime `[ -f ... ]` shell test, which cmd.exe on Windows
+  # cannot parse.
+  if(EXISTS ${lit_cfg_file})
+    add_custom_command(OUTPUT ${config_file_copy} APPEND
+      COMMAND ${CMAKE_COMMAND} -E copy ${lit_cfg_file} ${E2E_DIR}/${config}/lit.local.cfg
+    )
+  endif()
 endforeach()
 
 # Add a target to trigger E2E tests generation conditionally
@@ -140,9 +155,15 @@ foreach(config ${CONFIGS})
   set(config_file ${CONFIG_DIR}/${config}.toml)
   set(lit_cfg_file ${CONFIG_DIR}/${config}.cfg)
   add_custom_command(TARGET re-gen-e2e-tests
-    COMMAND ${Python3_EXECUTABLE} ${E2E_GEN_SCRIPT} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
-    COMMAND if [ -f "${lit_cfg_file}" ]\; then cp "${lit_cfg_file}" ${E2E_DIR}/${config}/lit.local.cfg\; fi
+    COMMAND ${E2E_GEN_COMMAND} -d ${E2E_DIR} -i ${config_file} ${GEN_MODE}
   )
+  # Cross-platform conditional copy of the optional lit gate (see note above);
+  # avoids a `[ -f ... ]` shell test that cmd.exe on Windows cannot parse.
+  if(EXISTS ${lit_cfg_file})
+    add_custom_command(TARGET re-gen-e2e-tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy ${lit_cfg_file} ${E2E_DIR}/${config}/lit.local.cfg
+    )
+  endif()
 endforeach()
 
 # Add a new target to run the E2E test only

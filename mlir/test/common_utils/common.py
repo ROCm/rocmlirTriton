@@ -1,6 +1,14 @@
+import os
+import shutil
 import subprocess
+import sys
 
-from hip import hip
+# hip-python is the in-process GPU enumeration path on Linux; the Windows HIP
+# SDK has no published wheel, so tolerate its absence and fall back below.
+try:
+    from hip import hip
+except ImportError:
+    hip = None
 
 
 def hip_check(call_result):
@@ -13,16 +21,62 @@ def hip_check(call_result):
     return result
 
 
-def get_agents():
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+def _find_amdgpu_arch(rocm_path=None):
+    # amdgpu-arch prints the gfx arch of each installed GPU, one per line. Its
+    # location differs by ROCm distribution: <root>/bin (HIP SDK) and
+    # <root>/lib/llvm/bin (TheRock). Search the ROCm/HIP root first so we do not
+    # pick up an unrelated amdgpu-arch on PATH (e.g. the one bundled with Visual
+    # Studio's LLVM, which cannot enumerate AMD GPUs); PATH is the last resort.
+    exe = 'amdgpu-arch.exe' if sys.platform == 'win32' else 'amdgpu-arch'
+    root = rocm_path or os.environ.get('ROCM_PATH') or os.environ.get('HIP_PATH')
+    if root:
+        for sub in ('bin', os.path.join('lib', 'llvm', 'bin')):
+            cand = os.path.join(root, sub, exe)
+            if os.path.isfile(cand):
+                return cand
+    return shutil.which('amdgpu-arch')
 
-    return agents
+
+def get_agents(rocm_path=None):
+    if sys.platform == 'win32':
+        env_arch = os.environ.get('ROCMLIR_TEST_TARGET_ARCH')
+        if env_arch:
+            agents = set(a.strip() for a in env_arch.split(',') if a.strip())
+            if len(agents) != 1:
+                raise ValueError("ROCMLIR_TEST_TARGET_ARCH requires one architecture")
+            return agents
+
+    # Linux primary path: hip-python FFI.
+    if hip is not None:
+        agents = set()
+        device_count = hip_check(hip.hipGetDeviceCount())
+        for device in range(device_count):
+            props = hip.hipDeviceProp_t()
+            hip_check(hip.hipGetDeviceProperties(props, device))
+            agents.add(props.gcnArchName.decode('utf-8'))
+        return agents
+
+    # Windows fallback: amdgpu-arch (HIP SDK <root>/bin, TheRock
+    # <root>/lib/llvm/bin).
+    if sys.platform == 'win32':
+        tool = _find_amdgpu_arch(rocm_path)
+        if tool:
+            try:
+                out = subprocess.check_output([tool], stderr=subprocess.DEVNULL).decode()
+            except (subprocess.CalledProcessError, OSError):
+                out = ''
+            # Keep only gfx* lines: TheRock's amdgpu-arch prints a
+            # "HIP Library Path: ..." banner on stdout before the arch.
+            agents = {ln.strip() for ln in out.splitlines() if ln.strip().startswith('gfx')}
+            if agents:
+                if len(agents) != 1:
+                    raise ValueError("amdgpu-arch reported multiple architectures")
+                return agents
+
+    raise subprocess.CalledProcessError(1,
+                                        'hip-python/amdgpu-arch',
+                                        output=b'',
+                                        stderr=b'no GPU enumeration mechanism available')
 
 
 def apply_arch_features(config, lit_config):
@@ -57,19 +111,19 @@ def apply_arch_features(config, lit_config):
         return
 
     try:
-        agents = get_agents()
-    except subprocess.CalledProcessError:
+        agents = get_agents(config.rocm_path)
+    except ValueError as e:
+        lit_config.fatal(str(e))
+    except (subprocess.CalledProcessError, RuntimeError):
+        # RuntimeError: hip-python loaded but a HIP API call failed at runtime.
+        config.no_AMD_GPU = True
+        return
+
+    if not agents:
         config.no_AMD_GPU = True
         return
 
     config.arch = ','.join(agents)
-    if not config.arch:
-        config.no_AMD_GPU = True
-        return
-
-    # Take the first agent for feature gating. Multi-arch CI runners are
-    # expected to be homogeneous; if that ever changes, switch this to an
-    # all()/any() reduction over agents.
     chip = next(iter(agents)).split(':')[0]
     config.arch_support_atomic_add_f32 = amd_arch_db.is_fast_atomic_add_supported(
         chip, amd_arch_db.Dtype.F32)
