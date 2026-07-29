@@ -378,6 +378,26 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
                            "arith::ArithDialect", "triton::TritonDialect"];
 }
 
+def RockVerifyTTIRPass : Pass<"rock-verify-ttir", "::mlir::func::FuncOp"> {
+  let summary = "Check Rock-emitted Triton IR against Triton frontend legality "
+                "rules";
+  let description = [{
+    Rock emits Triton IR directly from C++, so the legality checks in Triton's
+    Python frontend (`python/triton/language/semantic.py`) never run on our
+    kernels. This pass re-asserts the ones that neither MLIR's verifiers nor
+    Triton's own op verifiers cover, so an illegal kernel fails to compile
+    instead of silently producing wrong results.
+
+    Element-type violations are hard diagnostics: they mean a Rock pass built
+    IR that the Triton frontend would have rejected. Violations that depend on
+    the tile shape (and therefore on the perf config) additionally mark the
+    module `rock.not_applicable`, so tuning skips the config rather than
+    aborting the sweep.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "triton::TritonDialect"];
+}
+
 def RockSortDimensionsMemoryLayoutPass
     : Pass<"rock-sort-dimensions-memory-layout", "::mlir::func::FuncOp"> {
   let summary = "Sort dimensions by stride of the underlying memory layout";

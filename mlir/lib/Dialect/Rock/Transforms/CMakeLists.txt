@@ -26,6 +26,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TransformsInvariantCodeMotion.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
+  VerifyTTIR.cpp
   SerializeHostFuncs.cpp
   TensorToTritonPtr.cpp
   ResolveKernelLaunchParams.cpp

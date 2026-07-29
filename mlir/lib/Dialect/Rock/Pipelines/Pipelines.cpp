@@ -512,6 +512,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(createCanonicalizerPass());
 
   funcPm2.addPass(rock::createRockToTTIRPass());
+  // Re-assert the Triton frontend legality rules that semantic.py would have
+  // applied, now that the Triton ops exist. Must run while the kernel is still
+  // a func.func carrying rock.arch, i.e. before RockTensorToTritonPtrPass.
+  funcPm2.addPass(rock::createRockVerifyTTIRPass());
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());
