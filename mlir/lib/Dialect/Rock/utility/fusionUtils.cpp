@@ -216,3 +216,35 @@ LogicalResult mlir::rock::testFusionLegalityBwdDataConv(ModuleOp mod) {
 
   return success(isFusible);
 }
+
+LogicalResult
+mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
+  // Input fusions and fusions between the two GEMMs stay legal with
+  // splitKV > 1, so only the chain hanging off the attention result is
+  // inspected. Those partial results still need the LSE-based combine in a
+  // later stage, which a fused elementwise op would run ahead of. A widening
+  // extf is the one exception, being lossless and commuting with the combine.
+  WalkResult walkResult = func.walk([](rock::AttentionOp attnOp) -> WalkResult {
+    if (attnOp.getSplitKV() <= 1)
+      return WalkResult::advance();
+
+    auto fusionInfo = rock::collectFusionInfo(attnOp.getResult());
+    for (Operation *fusionOp : fusionInfo.fusionOps)
+      if (!isa<ExtFOp>(fusionOp))
+        return WalkResult::interrupt();
+
+    return WalkResult::advance();
+  });
+
+  return success(!walkResult.wasInterrupted());
+}
+
+LogicalResult mlir::rock::testFusionLegalityAttentionSplitKV(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  bool isFusible = true;
+  for (auto f : funcs) {
+    isFusible &= succeeded(testFusionLegalityAttentionSplitKV(f));
+  }
+
+  return success(isFusible);
+}
