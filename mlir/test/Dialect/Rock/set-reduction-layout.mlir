@@ -7,10 +7,6 @@
 // `rock.conv_kernel` attribute, so they force the rewrite on with
 // `use-reduction-layout=1` (the default only rewrites convolution kernels).
 // RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --mlir-print-local-scope --split-input-file %s | FileCheck %s
-//
-// The conflict path (a single load feeding dot operands with disagreeing
-// reduction dims) emits a warning to stderr; check it separately.
-// RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --split-input-file %s 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // The B / reduction operand (64x64) is loaded "gather"-style: its reduction dim
 // (dim 0) is the slowest-varying dim (order = [1, 0]). Its warpsPerCTA = [2, 2]
@@ -68,27 +64,22 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// Real-pipeline case: by the time the pass runs (after ConvertToBufferOps /
-// ConvertWarpPipeline) the global gather load is an amdgpu.buffer_load, not a
-// tt.load, and it is consumed through amdgpu.in_thread_transpose. Layouts and
-// the transpose's paired #linear are taken from a real conv kernel
-// (i8, N1 C128 28x28 K128 3x3). The gather operand (64x64, #blocked, order
-// [1, 0]) has warpsPerCTA = [2, 2] collapsed onto K -> [4, 1]; the change is
-// propagated to the buffer_load's offsets/mask and to the in_thread_transpose
-// #linear. The A / free operand (128x64, #blocked1) already owns K per warp and
-// is left untouched.
+// The other global-load op form. The pass keys on the load's blocked encoding
+// rather than on the op, so an amdgpu.buffer_load is redistributed exactly like
+// a tt.load. Layouts are from a real conv kernel (i8, N1 C128 28x28 K128 3x3):
+// the gather operand (64x64, #blocked, order [1, 0]) has warpsPerCTA = [2, 2]
+// collapsed onto K -> [4, 1], propagated to the load's offsets and mask. The
+// A / free operand (128x64, #blocked1) already owns K per warp and is left
+// untouched.
 
 #blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
-#linear = #ttg.linear<{register = [[1, 0], [2, 0], [4, 0], [16, 0], [32, 0]], lane = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = [[0, 32], [8, 0]], block = []}>
 #mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @reduction_redistributed_buffer_load
   // Gather buffer_load + its offsets/mask are moved onto K (warpsPerCTA = [4, 1]).
   // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // The in_thread_transpose #linear is remapped to the redistributed layout.
-  // CHECK-DAG:     amdg.in_thread_transpose {{.*}} -> tensor<64x64xi8, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [4, 0], [0, 32], [32, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[8, 0], [16, 0]], block = []}>>
   // The A / free operand keeps its layout (already one warp-strip per K).
   // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<128x64xi8, #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
   tt.func @reduction_redistributed_buffer_load(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8>) -> tensor<128x64xi32, #mma> {
@@ -98,56 +89,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %cstOut = arith.constant dense<0> : tensor<128x64xi32, #mma>
     %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blocked1>
     %b = amdg.buffer_load %argB[%offB], %maskB : tensor<64x64xi8, #blocked>
-    %bt = amdg.in_thread_transpose %b : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #linear>
     %adot = ttg.convert_layout %a : tensor<128x64xi8, #blocked1> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
-    %bdot = ttg.convert_layout %bt : tensor<64x64xi8, #linear> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
+    %bdot = ttg.convert_layout %b : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
     %out = tt.dot %adot, %bdot, %cstOut : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
-    tt.return %out : tensor<128x64xi32, #mma>
-  }
-}
-
-// -----
-
-// Real-pipeline case with shared-memory staging: by the time the pass runs the
-// dot operands are produced by ttg.local_load, and the global gather
-// buffer_load only reaches the dot through in_thread_transpose ->
-// ttg.local_alloc -> ttg.local_load (the free operand is staged buffer_load ->
-// ttg.local_alloc -> ttg.local_load). The pass must walk the dot operand back
-// through the local_alloc/local_load staging to reach the feeding load;
-// otherwise it fails to find any feeding load, no-ops, and leaves the gather
-// operand on the slow layout. Layouts match a real conv kernel (i8, N1 C256
-// 200x200 K256 3x3). The gather operand (64x64, #blocked, order [1, 0]) has
-// warpsPerCTA = [2, 2] collapsed onto K -> [4, 1]; the change is propagated to
-// the buffer_load's offsets/mask and to the in_thread_transpose #linear. The
-// A / free operand (128x64, #blocked1) already owns K per warp and is left
-// untouched.
-
-#blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
-#blocked1 = #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
-#linear = #ttg.linear<{register = [[1, 0], [2, 0], [4, 0], [16, 0], [32, 0]], lane = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = [[0, 32], [8, 0]], block = []}>
-#mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
-#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 8, order = [1, 0]}>
-#shared1 = #ttg.amd_rotating_shared<{vec = 8, perPhase = 2, maxPhase = 8, order = [0, 1]}>
-#smem = #ttg.shared_memory
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // CHECK-LABEL: tt.func @reduction_redistributed_through_shared
-  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // CHECK-DAG:     amdg.in_thread_transpose {{.*}} -> tensor<64x64xi8, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [4, 0], [0, 32], [32, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[8, 0], [16, 0]], block = []}>>
-  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<128x64xi8, #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  tt.func @reduction_redistributed_through_shared(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8>) -> tensor<128x64xi32, #mma> {
-    %offA = arith.constant dense<0> : tensor<128x64xi32, #blocked1>
-    %offB = arith.constant dense<0> : tensor<64x64xi32, #blocked>
-    %maskB = arith.constant dense<true> : tensor<64x64xi1, #blocked>
-    %cstOut = arith.constant dense<0> : tensor<128x64xi32, #mma>
-    %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blocked1>
-    %b = amdg.buffer_load %argB[%offB], %maskB : tensor<64x64xi8, #blocked>
-    %bt = amdg.in_thread_transpose %b : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #linear>
-    %aAlloc = ttg.local_alloc %a : (tensor<128x64xi8, #blocked1>) -> !ttg.memdesc<128x64xi8, #shared, #smem>
-    %aLoad = ttg.local_load %aAlloc : !ttg.memdesc<128x64xi8, #shared, #smem> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
-    %bAlloc = ttg.local_alloc %bt : (tensor<64x64xi8, #linear>) -> !ttg.memdesc<64x64xi8, #shared1, #smem>
-    %bLoad = ttg.local_load %bAlloc : !ttg.memdesc<64x64xi8, #shared1, #smem> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
-    %out = tt.dot %aLoad, %bLoad, %cstOut : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
     tt.return %out : tensor<128x64xi32, #mma>
   }
 }
@@ -251,7 +195,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
-#linear = #ttg.linear<{register = [[1, 0], [2, 0], [4, 0], [16, 0], [32, 0]], lane = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = [[0, 32], [8, 0]], block = []}>
 #mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @gather_load_through_loop_iter_arg
@@ -280,9 +223,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
       %5 = arith.cmpi ult, %4, %cst_0 : tensor<64x64xi32, #blocked1>
       %6 = amdg.buffer_load %arg0[%cst] : tensor<128x64xi8, #blocked>
       %7 = amdg.buffer_load %arg1[%4], %5 : tensor<64x64xi8, #blocked1>
-      %8 = amdg.in_thread_transpose %7 : tensor<64x64xi8, #blocked1> -> tensor<64x64xi8, #linear>
       %9 = ttg.convert_layout %6 : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
-      %10 = ttg.convert_layout %8 : tensor<64x64xi8, #linear> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
+      %10 = ttg.convert_layout %7 : tensor<64x64xi8, #blocked1> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
       %11 = tt.dot %9, %10, %arg3 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
       %12 = arith.addi %arg4, %cst_1 : tensor<64x1xi32, #blocked1>
       scf.yield %11, %12 : tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked1>
@@ -334,18 +276,21 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// Conflict: one load feeds both dot operands, so it is the A operand (reduction
-// dim 1, contiguous) and the B operand (reduction dim 0, strided) of the same
-// dot at once. The two roles want opposite reduction dims, so the pass cannot
-// pick one and bails, emitting a diagnostic.
+// One load feeds both operands of the same dot, so it is that dot's A operand
+// (reduction dim 1) and its B operand (reduction dim 0) at once. Only one of the
+// two roles can see it as a gather: `order = [1, 0]` makes dim 0 the
+// slowest-varying axis, so the B role is a gather and the A role is not. The A
+// role therefore has no opinion on this layout, and the pass redistributes for
+// B. Both operand conversions then read the redistributed load, while the dot's
+// own accumulator layout is untouched.
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // CHECK-LABEL: tt.func @conflicting_operand_roles
-  // CHECK:         tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
-  // CHECK-NOT:     warpsPerCTA = [4, 1]
-  // CONFLICT: load feeds dot operands with conflicting reduction dims
-  tt.func @conflicting_operand_roles(%ptr: !tt.ptr<i8>) -> tensor<64x64xi32, #blocked> {
+  // CHECK-LABEL: tt.func @load_feeds_both_operand_roles
+  // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     ttg.convert_layout {{.*}}warpsPerCTA = [4, 1], order = [1, 0]}>> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 0, parent = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>}>>
+  // CHECK-DAG:     ttg.convert_layout {{.*}}warpsPerCTA = [4, 1], order = [1, 0]}>> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>}>>
+  tt.func @load_feeds_both_operand_roles(%ptr: !tt.ptr<i8>) -> tensor<64x64xi32, #blocked> {
     %cst = arith.constant dense<0> : tensor<64x64xi32, #blocked>
     %s = tt.splat %ptr : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked>
     %l = tt.load %s : tensor<64x64x!tt.ptr<i8>, #blocked>
@@ -358,18 +303,21 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// Shared producer escaping the scope. In a square (64x64) dot the free A load
-// and the gather B load carry the same encoding, and CSE has merged their
-// `dense<true>` masks into one constant feeding both. Redistributing B rewrites
-// that constant in place, which would also retype the free A load's mask and
-// leave A inconsistent. We should bail and leave B unchanged rather than corrupting A.
+// Producer shared with an op outside the scope. In a square (64x64) dot the
+// free A load and the gather B load carry the same encoding, and CSE has merged
+// their `dense<true>` masks into one constant feeding both. Retyping that
+// constant in place would drag the free A load's mask along with it, so the
+// shared constant is duplicated instead: the original keeps the old layout for
+// A, and the copy carries the redistributed layout into B.
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // CHECK-LABEL: tt.func @shared_mask_escapes_scope
-  // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
-  // CHECK:         warpsPerCTA = [2, 2]
-  tt.func @shared_mask_escapes_scope(%pa: !tt.ptr<i8>, %pb: !tt.ptr<i8>) -> tensor<64x64xi32, #blocked> {
+  // CHECK-LABEL: tt.func @shared_mask_duplicated
+  // CHECK-DAG:     %[[MASKA:.*]] = arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // CHECK-DAG:     %[[MASKB:.*]] = arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     tt.load %{{.*}}, %[[MASKA]] : tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // CHECK-DAG:     tt.load %{{.*}}, %[[MASKB]] : tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @shared_mask_duplicated(%pa: !tt.ptr<i8>, %pb: !tt.ptr<i8>) -> tensor<64x64xi32, #blocked> {
     %cst = arith.constant dense<0> : tensor<64x64xi32, #blocked>
     %mask = arith.constant dense<true> : tensor<64x64xi1, #blocked>
     %sa = tt.splat %pa : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked>

@@ -53,31 +53,19 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
-// Walk from a dot operand back to the global load that produces it, through the
-// ops the pipeline interposes between a gather load and tt.dot: the layout-only
-// convert_layout / in_thread_transpose, and the local_alloc / local_load pair
-// that stages an operand through shared memory. Returns null if the def chain
-// does not find a tt.load / amdgpu.buffer_load.
+// Walk from a dot operand back to the global load that produces it. This pass
+// runs before the operand is staged through shared memory, so the only thing
+// standing between the two is the layout-only convert_layout that feeds the
+// accelerator dot. Returns null if the def chain does not find a
+// tt.load / amdgpu.buffer_load.
 Operation *findFeedingLoad(Value operand) {
   Operation *def = operand.getDefiningOp();
   while (def) {
     if (isa<triton::LoadOp, triton::amdgpu::BufferLoadOp>(def))
       return def;
-    if (isa<triton::gpu::ConvertLayoutOp, triton::amdgpu::InThreadTransposeOp>(
-            def)) {
-      def = def->getOperand(0).getDefiningOp();
-      continue;
-    }
-
-    if (auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(def)) {
-      auto alloc =
-          localLoad.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
-      if (!alloc || !alloc.getSrc())
-        return nullptr;
-      def = alloc.getSrc().getDefiningOp();
-      continue;
-    }
-    return nullptr;
+    if (!isa<triton::gpu::ConvertLayoutOp>(def))
+      return nullptr;
+    def = def->getOperand(0).getDefiningOp();
   }
   return nullptr;
 }
@@ -128,24 +116,23 @@ std::optional<unsigned> getReductionDim(Value operand, OperandRole role) {
 // onto M would shrink the same scalar address chain. A sweep of the tier1 conv
 // configs found such a load in 24 of 1363 kernels. Worth supporting, but gated
 // and measured on its own rather than folded into the K case.
-// True when `user` keeps working if an operand it reads changes distributed
-// layout, so a scoped value it consumes needs no old-layout copy.
-// convert_layout and local_alloc sink the tensor into a differently-typed
-// result (a dot-operand layout or a shared-memory memdesc) that is decoupled
-// from the source's distributed encoding, so only its element type and shape --
-// which this rewrite leaves alone -- must still match. scf.for and scf.yield
-// carry the value across a loop edge whose type is fixed up explicitly.
-bool toleratesRelayout(Operation *user) {
-  return isa<triton::gpu::ConvertLayoutOp, triton::gpu::LocalAllocOp,
-             scf::ForOp, scf::YieldOp>(user);
-}
-
 bool isGatherLoad(Operation *load, unsigned kDim) {
   auto blocked = getLoadBlockedEncoding(load);
   if (!blocked)
     return false;
   auto order = blocked.getOrder();
   return !order.empty() && order.back() == kDim;
+}
+
+// True when `user` keeps working if an operand it reads changes distributed
+// layout, so a scoped value it consumes needs no old-layout copy.
+// convert_layout sinks the tensor into a differently-typed result (a
+// dot-operand layout) that is decoupled from the source's distributed encoding,
+// so only its element type and shape -- which this rewrite leaves alone -- must
+// still match. scf.for and scf.yield carry the value across a loop edge whose
+// type is fixed up explicitly.
+bool toleratesRelayout(Operation *user) {
+  return isa<triton::gpu::ConvertLayoutOp, scf::ForOp, scf::YieldOp>(user);
 }
 
 // Redistribute a gather-style blocked global load's warps onto its reduction
@@ -207,32 +194,15 @@ bool rewriteGatherLoad(Operation *load, unsigned kDim) {
     return false;
   }
 
-  // in_thread_transpose pairs this blocked encoding with a #linear derived via
-  // deduceOutputLayout. Remap that pair too; when no in_thread_transpose
-  // consumes the load, no value carries this #linear and the remap is inert.
-  triton::LinearLayout oldLL =
-      triton::amdgpu::InThreadTransposeOp::deduceOutputLayout(shape,
-                                                              oldBlocked);
-  triton::LinearLayout newLL =
-      triton::amdgpu::InThreadTransposeOp::deduceOutputLayout(shape,
-                                                              newBlocked);
-  Attribute oldLinear =
-      triton::gpu::LinearEncodingAttr::get(ctx, std::move(oldLL));
-  Attribute newLinear =
-      triton::gpu::LinearEncodingAttr::get(ctx, std::move(newLL));
-
   // Collect exactly the ops whose types must move to the redistributed layout:
-  // the load itself, the backward slice feeding its pointer/mask/other operands
-  // (splat/addptr/make_range/broadcast/offset constants that share the load
-  // encoding), and any in_thread_transpose consuming it.
+  // the load itself and the backward slice feeding its pointer/mask/other
+  // operands (splat/addptr/make_range/broadcast/offset constants that share the
+  // load encoding).
   llvm::SetVector<Operation *> scope;
   BackwardSliceOptions sliceOpts;
   sliceOpts.omitBlockArguments = true;
   (void)getBackwardSlice(load, &scope, sliceOpts);
   scope.insert(load);
-  for (Operation *user : load->getResult(0).getUsers())
-    if (isa<triton::amdgpu::InThreadTransposeOp>(user))
-      scope.insert(user);
 
   // Close the scope over scf.for loop-carried edges. The load's pointer/mask
   // operands may be computed inside an scf.for from a value carried across
@@ -275,14 +245,12 @@ bool rewriteGatherLoad(Operation *load, unsigned kDim) {
   }
 
   AttrTypeReplacer replacer;
-  replacer.addReplacement([oldBlocked, newBlocked, oldLinear, newLinear](
-                              Attribute attr) -> std::optional<Attribute> {
-    if (attr == oldBlocked)
-      return Attribute(newBlocked);
-    if (attr == oldLinear)
-      return newLinear;
-    return std::nullopt;
-  });
+  replacer.addReplacement(
+      [oldBlocked, newBlocked](Attribute attr) -> std::optional<Attribute> {
+        if (attr == oldBlocked)
+          return Attribute(newBlocked);
+        return std::nullopt;
+      });
 
   auto changesType = [&replacer](Value v) {
     return replacer.replace(v.getType()) != v.getType();

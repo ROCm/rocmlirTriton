@@ -194,6 +194,25 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
                                                     options.useBlockPingpong);
 
   pm->addPass(mlir::createTritonAMDGPUOptimizeDescriptorEncoding());
+
+  // --- rocmlirTriton pass ----
+  // Redistribute the reduction-operand load layout to reduce register pressure.
+  // Always scheduled; the `useReductionLayout` knob controls whether it runs.
+  //
+  // Must run before schedule-loops / pipeline, which stage operands through
+  // shared memory and carry the staging buffers across loop iterations. Once
+  // that has happened the global load is several hops away from the dot and its
+  // blocked encoding is paired with layouts derived from it, so the rewrite
+  // would have to be threaded through the staging rather than applied to the
+  // load. Running here also lets the pipeliner size its shared-memory
+  // allocations against the layout the load actually ends up with.
+  {
+    rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+    reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
+    pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
+  }
+  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
   pm->addPass(
       mlir::createTritonAMDGPUPipeline({useAsyncCopy, useBlockPingpong}));
@@ -252,16 +271,9 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
-static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout) {
+static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the layout of the reduction dimension to reduce register
-  // pressure. Always scheduled, but the `useReductionLayout`
-  // actually controls whether it runs.
-  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
-  reductionLayoutOpts.useReductionLayout = useReductionLayout;
-  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -532,7 +544,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.useReductionLayout);
+  makeLLIR(&pm, arch);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
