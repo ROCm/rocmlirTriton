@@ -320,10 +320,10 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
           newUpper - newParams[subIdx * 2] - newParams[subIdx * 2 + 1];
       newLowerBounds[lowerDim] = newLower;
       halvedLowerDim = lowerDim;
-      newOps.push_back(
-          TransformAttr::get(ctx, trAttr.getType(), newParams,
-                             trAttr.getUpperNames(), trAttr.getUpperDims(),
-                             trAttr.getLowerNames(), trAttr.getLowerDims()));
+      newOps.push_back(TransformAttr::get(
+          ctx, trAttr.getType(), newParams, trAttr.getUpperNames(),
+          trAttr.getUpperDims(), trAttr.getLowerNames(), trAttr.getLowerDims(),
+          trAttr.getIsTileAlignment()));
       break;
     }
     case TransformType::Slice: {

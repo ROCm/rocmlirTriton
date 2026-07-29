@@ -20,6 +20,30 @@
 
 #tmap_broadcast_scalar = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0)> by [<PassThrough ["scalar"] at [0] -> ["scalar"] at [0]>, <AddDim{16} ["m"] at [1] -> [] at []>, <AddDim{16} ["n"] at [2] -> [] at []>] bounds = [1, 16, 16] -> [1]>
 
+#tmap_broadcast_n_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d1)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <PassThrough ["m"] at [1] -> ["m"] at [0]>, <AddDim{16} ["n"] at [2] -> [] at []>] bounds = [1, 16, 16] -> [16]>
+
+// An A operand tile view as built by getLoadRegsAsTileViews: the tile is
+// m_iter x k_iter, k_loop is the reduction loop coordinate, and n_block is
+// ignored.
+#tmap_a_tile = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 16 + d4, d0 * 16 + d5)> by [<Unmerge{2, 16} ["k_loop", "k_iter"] at [0, 5] -> ["gemmK"] at [2]>, <PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{1, 16} ["m_block", "m_iter"] at [2, 4] -> ["gemmM"] at [1]>, <AddDim{1} ["n_block"] at [3] -> [] at []>] bounds = [2, 1, 1, 1, 16, 16] -> [1, 16, 32]>
+
+// Padding as padMatrix emits it, marked as tile alignment, on gemmK and on
+// gemmM, plus program pads on gemmM and gemmK that differ only in that
+// marking.
+#tmap_align_pad_k_30_to_32 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["m"] at [1]>, <Pad{0, 2} tileAlignment ["k_pad"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 16, 30]>
+
+#tmap_align_pad_m_14_to_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} tileAlignment ["m_pad"] at [1] -> ["m"] at [1]>, <PassThrough ["k"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 14, 32]>
+
+#tmap_program_pad_m_14_to_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["m_pad"] at [1] -> ["m"] at [1]>, <PassThrough ["k"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 14, 32]>
+
+#tmap_program_pad_k_30_to_32 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["m"] at [1]>, <Pad{0, 2} ["k_pad"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 16, 30]>
+
+#tmap_broadcast_k_30 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d1)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <PassThrough ["m"] at [1] -> ["m"] at [0]>, <AddDim{30} ["k"] at [2] -> [] at []>] bounds = [1, 16, 30] -> [16]>
+
+#tmap_broadcast_m_14 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d2)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <AddDim{14} ["m"] at [1] -> [] at []>, <PassThrough ["k"] at [2] -> ["k"] at [0]>] bounds = [1, 14, 32] -> [32]>
+
+#tmap_broadcast_m_30 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d2)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <AddDim{16} ["m"] at [1] -> [] at []>, <PassThrough ["k"] at [2] -> ["k"] at [0]>] bounds = [1, 16, 30] -> [30]>
+
 #tmap_6d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <PassThrough ["b"] at [1] -> ["b"] at [1]>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [2, 3]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [4, 5]>] bounds = [1, 1, 16, 16] -> [1, 1, 4, 4, 4, 4]>
 
 #tmap_5d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <AddDim{1} ["b"] at [1] -> [] at []>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [1, 2]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [3, 4]>] bounds = [1, 1, 16, 16] -> [1, 4, 4, 4, 4]>
@@ -105,17 +129,21 @@ module {
   }
 
   // ============================================================
-  // Transform chain source: load_marker(transform(blockarg)).
-  // Transform is accumulated and applied at the block arg leaf.
+  // Transform chain source: load_marker(transform(blockarg)). The bias is the
+  // marker's only input and is broadcast along M with nothing masking along
+  // that axis, so the load narrows to N even without a sibling input to
+  // compare against.
   // ============================================================
 
   // CHECK-LABEL: func.func @test_transform_chain
   // CHECK: %[[SM:.*]] = rock.store_marker
-  // CHECK: %[[T:.*]] = rock.transform %{{.*}} by
-  // CHECK-SAME: tensor<16xf32> to tensor<1x16x16xf32>
-  // CHECK: %[[LM:.*]] = rock.load_marker %[[T]] views
-  // CHECK-SAME: tensor<1x16x16xf32> -> tensor<16x16xf32>
-  // CHECK: %[[UT:.*]] = rock.untile %[[LM]]
+  // CHECK: %[[LM:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xf32> -> tensor<16xf32>
+  // CHECK: %[[EXPANDED:.*]] = tt.expand_dims %[[LM]] {axis = 0 : i32}
+  // CHECK-SAME: tensor<16xf32> -> tensor<1x16xf32>
+  // CHECK: %[[BROADCAST:.*]] = tt.broadcast %[[EXPANDED]]
+  // CHECK-SAME: tensor<1x16xf32> -> tensor<16x16xf32>
+  // CHECK: %[[UT:.*]] = rock.untile %[[BROADCAST]]
   // CHECK: %[[FUSED:.*]] = arith.addf %[[SM]], %[[UT]]
   // CHECK: rock.store %[[FUSED]]
   func.func @test_transform_chain(%tile: tensor<16x16xf32>, %bias_raw: tensor<16xf32>, %dest: tensor<1x16x16xf32>, %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
@@ -387,12 +415,59 @@ module {
   }
 
   // ============================================================
-  // Broadcast path with a path-specific pad. Even though the address is
-  // independent of N, the pad validity mask depends on N, so the load must
-  // remain full-rank instead of being narrowed and broadcast.
+  // The fusion converts the broadcast input's element type on the way to the
+  // tile the marker asks for. Each narrowed load is typed from the tile its own
+  // leaf must produce, not from the marker's result, so it keeps loading i8 and
+  // f16 and the conversions happen after the broadcast.
   // ============================================================
 
-  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_path_specific_pad
+  // CHECK-LABEL: func.func @test_input_fusion_narrow_broadcast_converted_element_types
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x32xf32> -> tensor<16x16xf32>
+  // CHECK: %[[SCALE:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xi8> -> tensor<16xi8>
+  // CHECK: %[[SCALE_EXPANDED:.*]] = tt.expand_dims %[[SCALE]] {axis = 1 : i32}
+  // CHECK-SAME: tensor<16xi8> -> tensor<16x1xi8>
+  // CHECK: %[[SCALE_BROADCAST:.*]] = tt.broadcast %[[SCALE_EXPANDED]]
+  // CHECK-SAME: tensor<16x1xi8> -> tensor<16x16xi8>
+  // CHECK: %[[SCALE_F32:.*]] = arith.sitofp %[[SCALE_BROADCAST]]
+  // CHECK-SAME: tensor<16x16xi8> to tensor<16x16xf32>
+  // CHECK: %[[SCALED:.*]] = arith.mulf %[[ACTIVATION]], %[[SCALE_F32]]
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xf16> -> tensor<16xf16>
+  // CHECK: %[[BIAS_EXPANDED:.*]] = tt.expand_dims %[[BIAS]] {axis = 1 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<16x1xf16>
+  // CHECK: %[[BIAS_BROADCAST:.*]] = tt.broadcast %[[BIAS_EXPANDED]]
+  // CHECK-SAME: tensor<16x1xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BIAS_F32:.*]] = arith.extf %[[BIAS_BROADCAST]]
+  // CHECK-SAME: tensor<16x16xf16> to tensor<16x16xf32>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[SCALED]], %[[BIAS_F32]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_narrow_broadcast_converted_element_types(
+      %activation: tensor<1x16x32xf32>,
+      %scaleRaw: tensor<16xi8>,
+      %biasRaw: tensor<16xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %scale = rock.transform %scaleRaw by #tmap_broadcast_n : tensor<16xi8> to tensor<1x16x32xi8>
+    %scaleF32 = arith.sitofp %scale : tensor<1x16x32xi8> to tensor<1x16x32xf32>
+    %scaled = arith.mulf %activation, %scaleF32 : tensor<1x16x32xf32>
+    %bias = rock.transform %biasRaw by #tmap_broadcast_n : tensor<16xf16> to tensor<1x16x32xf16>
+    %biasF32 = arith.extf %bias : tensor<1x16x32xf16> to tensor<1x16x32xf32>
+    %fused = arith.addf %scaled, %biasF32 : tensor<1x16x32xf32>
+    %lm = rock.load_marker %fused views [#tmap_two_n_blocks] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x32xf32> -> tensor<16x16xf32>
+    return %lm : tensor<16x16xf32>
+  }
+
+  // ============================================================
+  // Broadcast path with a pad that the program asked for, so the pad is not
+  // marked as tile alignment. Even though the address is independent of N, the
+  // pad's validity mask depends on N and there is no store masking off the
+  // lanes it zeroes, so the load must remain full-rank instead of being
+  // narrowed and broadcast.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_program_pad
   // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %{{.*}} views
   // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
   // CHECK: %[[BROADCAST:.*]] = rock.transform %{{.*}} by
@@ -405,7 +480,7 @@ module {
   // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[SCALE]]
   // CHECK: return %[[FUSED]]
   //
-  // LOWER-LABEL: func.func @test_input_fusion_does_not_narrow_path_specific_pad
+  // LOWER-LABEL: func.func @test_input_fusion_does_not_narrow_program_pad
   // LOWER: %[[ACTIVATION:.*]] = rock.blockwise_load
   // LOWER-SAME: tensor<1x1x1x16x16xf16> -> tensor<16x16xf16>
   // LOWER: %[[SCALE:.*]] = rock.blockwise_load
@@ -413,7 +488,7 @@ module {
   // LOWER-NOT: tt.expand_dims
   // LOWER: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[SCALE]]
   // LOWER: return %[[FUSED]]
-  func.func @test_input_fusion_does_not_narrow_path_specific_pad(
+  func.func @test_input_fusion_does_not_narrow_program_pad(
       %activation: tensor<1x16x16xf16>,
       %scaleRaw: tensor<16xf16>,
       %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
@@ -448,6 +523,232 @@ module {
     %scalar = rock.transform %scalarRaw by #tmap_broadcast_scalar : tensor<1xf16> to tensor<1x16x16xf16>
     %fused = arith.addf %activation, %scalar : tensor<1x16x16xf16>
     %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // Every input is broadcast along N, so no load keeps that axis. No pad masks
+  // along it either, so each narrow load broadcast back over N still
+  // reproduces the full tile.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_narrow_broadcast_every_input
+  // CHECK: %[[SCALE:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xf16> -> tensor<16xf16>
+  // CHECK: %[[SCALE_EXPANDED:.*]] = tt.expand_dims %[[SCALE]] {axis = 1 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<16x1xf16>
+  // CHECK: %[[SCALE_BROADCAST:.*]] = tt.broadcast %[[SCALE_EXPANDED]]
+  // CHECK-SAME: tensor<16x1xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xf16> -> tensor<16xf16>
+  // CHECK: %[[BIAS_EXPANDED:.*]] = tt.expand_dims %[[BIAS]] {axis = 1 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<16x1xf16>
+  // CHECK: %[[BIAS_BROADCAST:.*]] = tt.broadcast %[[BIAS_EXPANDED]]
+  // CHECK-SAME: tensor<16x1xf16> -> tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[SCALE_BROADCAST]], %[[BIAS_BROADCAST]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_narrow_broadcast_every_input(
+      %scaleRaw: tensor<16xf16>,
+      %biasRaw: tensor<16xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %scale = rock.transform %scaleRaw by #tmap_broadcast_n_16 : tensor<16xf16> to tensor<1x16x16xf16>
+    %bias = rock.transform %biasRaw by #tmap_broadcast_n_16 : tensor<16xf16> to tensor<1x16x16xf16>
+    %fused = arith.addf %scale, %bias : tensor<1x16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // Tile-alignment padding on gemmM sits above the fusion. The tile reduces
+  // over its second axis, so the lanes this padding invalidates only feed
+  // results the masked store discards and the M broadcast still narrows to the
+  // K tile.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_narrows_across_alignment_pad
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x14x32xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<32xf16> -> tensor<16xf16>
+  // CHECK: %[[BIAS_EXPANDED:.*]] = tt.expand_dims %[[BIAS]] {axis = 0 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<1x16xf16>
+  // CHECK: %[[BIAS_BROADCAST:.*]] = tt.broadcast %[[BIAS_EXPANDED]]
+  // CHECK-SAME: tensor<1x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS_BROADCAST]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_narrows_across_alignment_pad(
+      %activation: tensor<1x14x32xf16>,
+      %biasRaw: tensor<32xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_m_14 : tensor<32xf16> to tensor<1x14x32xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x14x32xf16>
+    %padded = rock.transform %fused by #tmap_align_pad_m_14_to_16 : tensor<1x14x32xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // The same padding, but coming from the program rather than from tile
+  // alignment, as convolution input padding does. Nothing masks the output
+  // lanes it invalidates, so a narrowed load would have no coordinate along M
+  // to rebuild its zeros from and the broadcast stays full width.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_across_program_pad
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x14x32xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<32xf16> to tensor<1x14x32xf16>
+  // CHECK: %[[BIAS_PAD:.*]] = rock.transform %[[BROADCAST]] by
+  // CHECK-SAME: tensor<1x14x32xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %[[BIAS_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_does_not_narrow_across_program_pad(
+      %activation: tensor<1x14x32xf16>,
+      %biasRaw: tensor<32xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_m_14 : tensor<32xf16> to tensor<1x14x32xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x14x32xf16>
+    %padded = rock.transform %fused by #tmap_program_pad_m_14_to_16 : tensor<1x14x32xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // Tile-alignment padding on gemmK, which is the axis this tile is reduced
+  // over. Those zeros are summed into valid results, so the broadcast input
+  // must keep loading at full width.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_alignment_pad_on_reduction_axis
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf16> to tensor<1x16x30xf16>
+  // CHECK: %[[BIAS_PAD:.*]] = rock.transform %[[BROADCAST]] by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %[[BIAS_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_does_not_narrow_alignment_pad_on_reduction_axis(
+      %activation: tensor<1x16x30xf16>,
+      %biasRaw: tensor<16xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_k_30 : tensor<16xf16> to tensor<1x16x30xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x16x30xf16>
+    %padded = rock.transform %fused by #tmap_align_pad_k_30_to_32 : tensor<1x16x30xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // The same padded broadcast, now on a tile that reduces over nothing, as the
+  // markers InsertOutputFusionLoads creates for epilogue inputs do. There is
+  // no sum for the padding's zeros to reach, so the load narrows.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_narrows_alignment_pad_with_no_reduction
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<16xf16> -> tensor<16xf16>
+  // CHECK: %[[BIAS_EXPANDED:.*]] = tt.expand_dims %[[BIAS]] {axis = 1 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<16x1xf16>
+  // CHECK: %[[BIAS_BROADCAST:.*]] = tt.broadcast %[[BIAS_EXPANDED]]
+  // CHECK-SAME: tensor<16x1xf16> -> tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS_BROADCAST]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_narrows_alignment_pad_with_no_reduction(
+      %activation: tensor<1x16x30xf16>,
+      %biasRaw: tensor<16xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_k_30 : tensor<16xf16> to tensor<1x16x30xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x16x30xf16>
+    %padded = rock.transform %fused by #tmap_align_pad_k_30_to_32 : tensor<1x16x30xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // The same padded broadcast on a tile whose producer did not record what it
+  // reduces over, as the attention markers do. The padding could be summed
+  // along any axis, so the load stays full width.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_alignment_pad_with_unknown_reduction
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf16> to tensor<1x16x30xf16>
+  // CHECK: %[[BIAS_PAD:.*]] = rock.transform %[[BROADCAST]] by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %[[BIAS_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_does_not_narrow_alignment_pad_with_unknown_reduction(
+      %activation: tensor<1x16x30xf16>,
+      %biasRaw: tensor<16xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_k_30 : tensor<16xf16> to tensor<1x16x30xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x16x30xf16>
+    %padded = rock.transform %fused by #tmap_align_pad_k_30_to_32 : tensor<1x16x30xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // A program pad above the fusion, so it applies to every path, but on gemmK
+  // while the broadcast is along gemmM. Narrowing removes M, and the pad
+  // travels into the rank-1 view, so the narrowed load still masks the padded
+  // K lanes to zero instead of feeding the broadcast value into them.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_narrowing_keeps_program_pad
+  // CHECK: %[[ACT_PAD:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1x16x30xf16> to tensor<1x16x32xf16>
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %[[ACT_PAD]] views
+  // CHECK-SAME: tensor<1x16x32xf16> -> tensor<16x16xf16>
+  // CHECK: %[[BIAS:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: Pad{0, 2} ["k_pad"]
+  // CHECK-SAME: tensor<30xf16> -> tensor<16xf16>
+  // CHECK: %[[BIAS_EXPANDED:.*]] = tt.expand_dims %[[BIAS]] {axis = 0 : i32}
+  // CHECK-SAME: tensor<16xf16> -> tensor<1x16xf16>
+  // CHECK: %[[BIAS_BROADCAST:.*]] = tt.broadcast %[[BIAS_EXPANDED]]
+  // CHECK-SAME: tensor<1x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.addf %[[ACTIVATION]], %[[BIAS_BROADCAST]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_narrowing_keeps_program_pad(
+      %activation: tensor<1x16x30xf16>,
+      %biasRaw: tensor<30xf16>,
+      %k: i32, %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %bias = rock.transform %biasRaw by #tmap_broadcast_m_30 : tensor<30xf16> to tensor<1x16x30xf16>
+    %fused = arith.addf %activation, %bias : tensor<1x16x30xf16>
+    %padded = rock.transform %fused by #tmap_program_pad_k_30_to_32 : tensor<1x16x30xf16> to tensor<1x16x32xf16>
+    %lm = rock.load_marker %padded views [#tmap_a_tile] [%k, %g, %m, %n] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x16x32xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
   }
 

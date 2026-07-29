@@ -574,7 +574,8 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, tensorAddDim, emptyViews,
-          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE,
+          /*reductionTileAxes=*/nullptr);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
@@ -917,11 +918,14 @@ struct GridwiseAttentionRewritePattern
         allViews.append(globalInputMaps.begin(), globalInputMaps.end());
       ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
 
+      // These tiles are fused into the first gemm's output and then flow
+      // through the softmax into the second gemm, so which axis they end up
+      // reduced over is not known here.
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
-          rock::CacheModifier::NONE);
+          rock::CacheModifier::NONE, /*reductionTileAxes=*/nullptr);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }

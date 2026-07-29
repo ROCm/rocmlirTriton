@@ -1037,9 +1037,10 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       default:
         break;
       }
-      newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
-                                          t.getUpperNames(), t.getUpperDims(),
-                                          t.getLowerNames(), t.getLowerDims()));
+      newOps.push_back(TransformAttr::get(
+          t.getContext(), t.getType(), params, t.getUpperNames(),
+          t.getUpperDims(), t.getLowerNames(), t.getLowerDims(),
+          t.getIsTileAlignment()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1066,11 +1067,14 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 }
 
 SmallVector<unsigned>
-mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
+                                      bool ignoreTileAlignmentPads) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
     if (type == TransformType::Pad) {
+      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
+        continue;
       ArrayRef<int64_t> params = op.getParams();
       ArrayRef<uint32_t> upper = op.getUpperDims();
       for (size_t i = 0, e = upper.size(); i < e; ++i)
@@ -1124,7 +1128,8 @@ bool mlir::rock::transformChainDependsOnAnyDim(
 
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
                                          ArrayRef<unsigned> dims,
-                                         std::size_t firstTransform) {
+                                         std::size_t firstTransform,
+                                         bool ignoreTileAlignmentPads) {
   assert(firstTransform <= transforms.size() &&
          "first transform must be within the transform chain");
   // An empty chain generates no validity checks, and has no upper coordinate
@@ -1143,7 +1148,8 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
 
   for (std::size_t index = firstTransform; index < transforms.size(); ++index) {
     TransformMapAttr transform = transforms[index];
-    SmallVector<unsigned> upperDims = validityImpactingUpperDims(transform);
+    SmallVector<unsigned> upperDims =
+        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
     if (upperDims.empty())
       continue;
 
@@ -1605,9 +1611,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
-                                          t.getUpperNames(), upperDims,
-                                          t.getLowerNames(), lowerDims));
+      newOps.push_back(TransformAttr::get(
+          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
+          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
     }
 
     // Add the passthrough transforms
@@ -1661,6 +1667,7 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
+  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1806,6 +1813,7 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
+    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -2131,7 +2139,8 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
                            std::get<DimType::Upper>(args.preservedNames),
                            std::get<DimType::Upper>(args.preservedDims),
                            std::get<DimType::Lower>(args.preservedNames),
-                           std::get<DimType::Lower>(args.preservedDims));
+                           std::get<DimType::Lower>(args.preservedDims),
+                           args.isTileAlignment);
     newOps.push_back(newTr);
   }
 
@@ -2499,25 +2508,35 @@ static bool hasReloadTransform(TransformMapAttr map) {
 }
 
 static LogicalResult
-collectInputFusionPathsImpl(Value value, ArrayRef<TransformMapAttr> transforms,
-                            SmallVectorImpl<InputFusionPath> &paths) {
+collectInputFusionPathsImpl(Value value, ArrayAttr transforms,
+                            SmallVectorImpl<InputFusionPath> &paths,
+                            DenseSet<std::pair<Value, ArrayAttr>> &visited) {
+  // A value the walk reaches again under the same transforms would contribute
+  // the paths its first visit already appended. Fusion DAGs where a value feeds
+  // several ops that later merge have a number of such routes exponential in
+  // the number of merges.
+  if (!visited.insert({value, transforms}).second)
+    return success();
+
   if (isa<BlockArgument>(value) || value.getDefiningOp<arith::ConstantOp>()) {
-    paths.push_back({value, SmallVector<TransformMapAttr>(transforms.begin(),
-                                                          transforms.end())});
+    paths.push_back(
+        {value, llvm::to_vector(transforms.getAsRange<TransformMapAttr>())});
     return success();
   }
 
   Operation *defOp = value.getDefiningOp();
   if (auto transformOp = dyn_cast_or_null<TransformOp>(defOp)) {
-    SmallVector<TransformMapAttr> nextTransforms(transforms);
+    SmallVector<Attribute> nextTransforms(transforms.begin(), transforms.end());
     nextTransforms.push_back(transformOp.getTransform());
-    return collectInputFusionPathsImpl(transformOp.getInput(), nextTransforms,
-                                       paths);
+    return collectInputFusionPathsImpl(
+        transformOp.getInput(),
+        ArrayAttr::get(value.getContext(), nextTransforms), paths, visited);
   }
 
   if (isFusionOp(defOp)) {
     for (Value operand : defOp->getOperands())
-      if (failed(collectInputFusionPathsImpl(operand, transforms, paths)))
+      if (failed(
+              collectInputFusionPathsImpl(operand, transforms, paths, visited)))
         return failure();
     return success();
   }
@@ -2530,7 +2549,10 @@ collectInputFusionPathsImpl(Value value, ArrayRef<TransformMapAttr> transforms,
 FailureOr<SmallVector<InputFusionPath>>
 mlir::rock::collectInputFusionPaths(Value value) {
   SmallVector<InputFusionPath> paths;
-  if (failed(collectInputFusionPathsImpl(value, /*transforms=*/{}, paths)))
+  DenseSet<std::pair<Value, ArrayAttr>> visited;
+  if (failed(collectInputFusionPathsImpl(
+          value, ArrayAttr::get(value.getContext(), ArrayRef<Attribute>{}),
+          paths, visited)))
     return failure();
   return paths;
 }

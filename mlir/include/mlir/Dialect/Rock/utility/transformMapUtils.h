@@ -127,7 +127,14 @@ void collapseContiguousMerges(Value transformed);
 /// and the upper dims of every invalidatable `Embed`. These are the
 /// coordinates whose values a runtime validity mask would be computed from. The
 /// result is empty iff `mapImpactsValidity(map)` is false.
-SmallVector<unsigned> validityImpactingUpperDims(TransformMapAttr map);
+///
+/// `ignoreTileAlignmentPads` skips the pads the gemm lowering added to align a
+/// gemm dimension to the tile size. Use it to ask which validity checks come
+/// from the program, since the lowering masks off the output lanes its own
+/// padding invalidates.
+SmallVector<unsigned>
+validityImpactingUpperDims(TransformMapAttr map,
+                           bool ignoreTileAlignmentPads = false);
 
 /// Returns true if the given `TransformMapAttr` has impacts on the validity
 /// of the underlying coordinates. If this returns true, the code generating
@@ -152,9 +159,11 @@ bool transformChainDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
 /// `firstTransform` depends on any of `dims` in the upper coordinate space of
 /// the transform chain. Transforms before `firstTransform` are still composed
 /// to express the checked coordinates in that upper space.
+/// `ignoreTileAlignmentPads` is passed on to `validityImpactingUpperDims`.
 bool validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
                              ArrayRef<unsigned> dims,
-                             std::size_t firstTransform = 0);
+                             std::size_t firstTransform = 0,
+                             bool ignoreTileAlignmentPads = false);
 
 /// Returns true if `map` acts as the identity on a coordinate system whose
 /// i-th input dim has bound `shape[i]`. A constant-zero result expression
@@ -291,8 +300,9 @@ struct InputFusionPath {
 };
 
 /// Walk backward through rock.transform and input-fusion ops and collect every
-/// path ending at a block argument or constant. Returns failure if a path
-/// reaches any other operation.
+/// path ending at a block argument or constant. A leaf reached by several
+/// routes that agree on the transforms along the way is collected once.
+/// Returns failure if a path reaches any other operation.
 FailureOr<SmallVector<InputFusionPath>> collectInputFusionPaths(Value value);
 
 // Given a mlir::Value as input (representing the operand of a kernel,

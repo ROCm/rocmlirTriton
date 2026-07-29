@@ -275,7 +275,7 @@ Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
   padder.passThrough("gemmG");
   SmallString<8> paddedName;
   (firstDim + Twine("Pad")).toVector(paddedName);
-  padder.pad(paddedName, firstDim, 0, firstDimPad);
+  padder.padForTileAlignment(paddedName, firstDim, firstDimPad);
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, vector, padAttr);
 }
@@ -296,14 +296,14 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
   } else {
     SmallString<8> paddedName;
     (firstDim + Twine("Pad")).toVector(paddedName);
-    padder.pad(paddedName, firstDim, 0, firstDimPad);
+    padder.padForTileAlignment(paddedName, firstDim, firstDimPad);
   }
   if (secondDimPad == 0) {
     padder.passThrough(secondDim);
   } else {
     SmallString<8> paddedName;
     (secondDim + Twine("Pad")).toVector(paddedName);
-    padder.pad(paddedName, secondDim, 0, secondDimPad);
+    padder.padForTileAlignment(paddedName, secondDim, secondDimPad);
   }
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, matrix, padAttr);
@@ -531,11 +531,15 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   // into an actual BlockwiseLoadOp by tracing back through the source chain.
   // We pass the original (un-transformed) input as source and carry the
   // tiling transforms as metadata in extraViews.
-  auto markerOp =
-      LoadMarkerOp::create(rewriter, loc, resultType, in, bufferViews,
-                           ValueRange{kIter, gridCoords.g_block,
-                                      gridCoords.m_block, gridCoords.n_block},
-                           cache);
+  //
+  // The tile's dimensions are ordered by `isKFirst`, which puts the k axis
+  // that the gemm reduces over first for matrix B and second for matrix A.
+  int64_t reductionTileAxis = isKFirst ? 0 : 1;
+  auto markerOp = LoadMarkerOp::create(
+      rewriter, loc, resultType, in, bufferViews,
+      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
+                 gridCoords.n_block},
+      cache, rewriter.getDenseI64ArrayAttr({reductionTileAxis}));
   return markerOp.getResult();
 }
 

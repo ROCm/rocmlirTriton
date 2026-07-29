@@ -485,6 +485,53 @@ TEST(CollectInputFusionPathsTest, PreservesTransformsPerLeaf) {
   EXPECT_TRUE((*paths)[1].transforms.empty());
 }
 
+// A value feeding two fusion ops whose results merge again is reachable by two
+// routes. Both reach its leaves under the same transforms, so each leaf is
+// collected once.
+TEST(CollectInputFusionPathsTest, CollectsSharedOperandOnce) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value baseA = makeConstant(b, loc, {16}, b.getF32Type());
+  Value baseB = makeConstant(b, loc, {16}, b.getF32Type());
+  Value shared = arith::AddFOp::create(b, loc, baseA, baseB).getResult();
+  Value left = arith::MulFOp::create(b, loc, shared, baseA).getResult();
+  Value right = arith::SubFOp::create(b, loc, shared, baseB).getResult();
+  Value merged = arith::AddFOp::create(b, loc, left, right).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(merged);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, baseA);
+  EXPECT_EQ((*paths)[1].leaf, baseB);
+}
+
+// The same leaf reached under different transforms describes different loads,
+// so both routes are kept.
+TEST(CollectInputFusionPathsTest, KeepsSharedLeafUnderDifferentTransforms) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {16}, b.getF32Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.passThrough("a");
+  TransformMapAttr transform = tm.get();
+  Value transformed = applyTransform(b, loc, base, transform);
+  Value fused = arith::AddFOp::create(b, loc, transformed, base).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths = collectInputFusionPaths(fused);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, base);
+  ASSERT_EQ((*paths)[0].transforms.size(), 1U);
+  EXPECT_EQ((*paths)[0].transforms[0], transform);
+  EXPECT_EQ((*paths)[1].leaf, base);
+  EXPECT_TRUE((*paths)[1].transforms.empty());
+}
+
 //===----------------------------------------------------------------------===//
 // isInputNonInjective Tests
 //===----------------------------------------------------------------------===//

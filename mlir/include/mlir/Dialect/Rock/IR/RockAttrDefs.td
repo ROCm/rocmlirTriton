@@ -182,6 +182,16 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
         ```
         where the params block may be omitted for transforms that don't take parameters.
 
+        A Pad may carry the additional marker `tileAlignment`, as in
+        ```
+          #rock.transform<Pad{0, 15} tileAlignment ["gemmNPad"] at [2] -> ["gemmN"] at [2]>
+        ```
+        recording that the gemm lowering added this padding to align a gemm
+        dimension to the tile size instead of the padding coming from the
+        kernel. The lowering masks the matching output lanes off, so this
+        padding may be discarded when a load is narrowed to the dimensions it
+        actually depends on. Regular padding may not.
+
         The available transform types are
         - PassThrough, which maps N lower dimensions to N upper dimensions
             without changing the coordinates in those dimensions
@@ -221,8 +231,20 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
     ArrayRefOfStringRefParameter<
         "The names of the lower dimensions (outputs) of this transformation">:$lowerNames,
     ArrayRefParameter<"uint32_t",
-        "The indices of the lower dimensions (outputs) of this transformation">:$lowerDims
+        "The indices of the lower dimensions (outputs) of this transformation">:$lowerDims,
+    DefaultValuedParameter<"bool", "false",
+        "Whether this Pad aligns a gemm dimension to the tile size">:$isTileAlignment
     );
+
+    let builders = [
+      // Convenience builder for the transforms that are never tile alignment.
+      AttrBuilder<(ins "::mlir::rock::TransformType":$type,
+          "::llvm::ArrayRef<int64_t>":$params,
+          "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
+          "::llvm::ArrayRef<uint32_t>":$upperDims,
+          "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
+          "::llvm::ArrayRef<uint32_t>":$lowerDims)>,
+    ];
 
     let genVerifyDecl = 1;
     let hasCustomAssemblyFormat = 1;

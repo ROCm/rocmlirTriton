@@ -74,7 +74,7 @@ struct AnalyzedInputPath {
 
 struct NarrowLoadPlan {
   ArrayAttr combinedViews;
-  RankedTensorType resultType;
+  SmallVector<int64_t> narrowShape;
   SmallVector<Value> extraIndices;
   unsigned removedTileAxis;
 };
@@ -91,30 +91,6 @@ static Value applyTransforms(OpBuilder &builder, Value source,
   SmallVector<Attribute> attrs(transforms.begin(), transforms.end());
   ArrayAttr transformsAttr = builder.getArrayAttr(attrs);
   return rock::transform(builder, source, transformsAttr);
-}
-
-/// Return the number of leading transform maps shared by every input path.
-/// Each path is ordered from the load marker's upper coordinate space toward
-/// its underlying input, so maps after this prefix are specific to that input.
-/// Requires at least one path.
-static size_t getCommonViewPrefix(ArrayRef<AnalyzedInputPath> paths) {
-  assert(!paths.empty() && "a common view prefix needs at least one path");
-
-  // A common prefix cannot be longer than the shortest transform chain.
-  size_t commonSize = paths.front().transforms.size();
-  for (const AnalyzedInputPath &path : paths)
-    commonSize = std::min(commonSize, path.transforms.size());
-
-  // Stop at the first position whose transform differs on any input path.
-  size_t prefixSize = 0;
-  for (; prefixSize < commonSize; ++prefixSize) {
-    TransformMapAttr expected = paths.front().transforms[prefixSize];
-    if (llvm::any_of(paths.drop_front(), [&](const AnalyzedInputPath &path) {
-          return path.transforms[prefixSize] != expected;
-        }))
-      break;
-  }
-  return prefixSize;
 }
 
 /// Return all top-level dimensions that form the same logical partition as
@@ -177,31 +153,38 @@ analyzeInputPaths(OpBuilder &builder, Value markerSource, ArrayAttr extraViews,
 }
 
 /// Return true if every dimension in `partition` can be removed from `path`.
-/// A removable dimension must satisfy three conditions:
-/// 1. This path's address is independent of it, proving the input is broadcast.
-/// 2. Another input retains it, providing the full-width fused result.
-/// 3. No path-specific validity check uses it, since such a mask could not be
-///    reconstructed from that full-width sibling.
+/// A removable dimension must satisfy the three numbered conditions below.
 static bool canRemoveTilePartition(const AnalyzedInputPath &path,
-                                   ArrayRef<AnalyzedInputPath> paths,
                                    ArrayRef<unsigned> partition,
-                                   size_t commonPrefixSize) {
+                                   unsigned tileAxis,
+                                   DenseI64ArrayAttr reductionTileAxes) {
+  // The zeros of a tile-alignment pad along an axis the consumer reduces over
+  // are summed into valid results, and an unknown consumer may reduce over any
+  // axis.
+  bool alignmentPadIsDroppable =
+      reductionTileAxes && !llvm::is_contained(reductionTileAxes.asArrayRef(),
+                                               static_cast<int64_t>(tileAxis));
   return llvm::all_of(partition, [&](unsigned partitionDim) {
     ArrayRef<unsigned> partitionDims(&partitionDim, 1);
+    // 1. This path's address is independent of `partitionDim`, proving the
+    //    input is broadcast along that dimension, so broadcasting a narrow
+    //    load back over it reproduces the same values.
     if (transformChainDependsOnAnyDim(path.transforms, partitionDims))
       return false;
 
-    bool hasFullSibling =
-        llvm::any_of(paths, [&](const AnalyzedInputPath &sibling) {
-          return sibling.key != path.key &&
-                 transformChainDependsOnAnyDim(sibling.transforms,
-                                               partitionDims);
-        });
-    if (!hasFullSibling)
+    // 2. No validity check belonging to the program reads `partitionDim`. The
+    //    narrowed load has no coordinate along that dimension to rebuild the
+    //    zeros such a check stands for.
+    if (validityDependsOnAnyDim(path.transforms, partitionDims,
+                                /*firstTransform=*/0,
+                                /*ignoreTileAlignmentPads=*/true))
       return false;
 
-    return !validityDependsOnAnyDim(path.transforms, partitionDims,
-                                    commonPrefixSize);
+    // 3. Tile-alignment padding may be dropped, because the gemm lowering
+    //    masks off the output lanes it invalidates, but only away from a
+    //    reduction.
+    return !validityDependsOnAnyDim(path.transforms, partitionDims) ||
+           alignmentPadIsDroppable;
   });
 }
 
@@ -209,10 +192,9 @@ static bool canRemoveTilePartition(const AnalyzedInputPath &path,
 /// Unit axes are already narrow, and incomplete Unmerge partitions are rejected
 /// by `getCompleteTilePartition`.
 static SmallVector<RemovableTileAxis>
-findRemovableTileAxes(const AnalyzedInputPath &path,
-                      ArrayRef<AnalyzedInputPath> paths,
-                      ArrayRef<int64_t> fullShape, unsigned numExtraDims,
-                      size_t commonPrefixSize) {
+findRemovableTileAxes(const AnalyzedInputPath &path, ArrayRef<int64_t> fullShape,
+                      unsigned numExtraDims,
+                      DenseI64ArrayAttr reductionTileAxes) {
   SmallVector<RemovableTileAxis> removableAxes;
   for (unsigned tileAxis = 0; tileAxis < fullShape.size(); ++tileAxis) {
     if (fullShape[tileAxis] <= 1)
@@ -222,7 +204,7 @@ findRemovableTileAxes(const AnalyzedInputPath &path,
     SmallVector<unsigned> partition =
         getCompleteTilePartition(path.transforms, topDim, numExtraDims);
     if (partition.empty() ||
-        !canRemoveTilePartition(path, paths, partition, commonPrefixSize))
+        !canRemoveTilePartition(path, partition, tileAxis, reductionTileAxes))
       continue;
 
     removableAxes.push_back({tileAxis, std::move(partition)});
@@ -238,7 +220,7 @@ static FailureOr<NarrowLoadPlan>
 createPlanForRemovableAxis(OpBuilder &builder, const AnalyzedInputPath &path,
                            const RemovableTileAxis &removableAxis,
                            ValueRange extraIndices,
-                           RankedTensorType fullTileType) {
+                           ArrayRef<int64_t> fullTileShape) {
   unsigned removedTileAxis = removableAxis.tileAxis;
   llvm::SetVector<int64_t> removeDims;
   for (unsigned dim : removableAxis.partition)
@@ -260,7 +242,7 @@ createPlanForRemovableAxis(OpBuilder &builder, const AnalyzedInputPath &path,
   if (upperBounds.size() != narrowExtraIndices.size() + narrowTileRank)
     return failure();
 
-  SmallVector<int64_t> expectedShape(fullTileType.getShape());
+  SmallVector<int64_t> expectedShape(fullTileShape);
   expectedShape.erase(expectedShape.begin() + removedTileAxis);
   ArrayRef<int64_t> narrowShape = upperBounds.take_back(narrowTileRank);
   if (narrowShape != ArrayRef<int64_t>(expectedShape))
@@ -270,9 +252,7 @@ createPlanForRemovableAxis(OpBuilder &builder, const AnalyzedInputPath &path,
   if (getLowerShape(*narrowedViews) != inputType.getShape())
     return failure();
 
-  auto resultType = RankedTensorType::get(
-      narrowShape, fullTileType.getElementType(), fullTileType.getEncoding());
-  return NarrowLoadPlan{*narrowedViews, resultType,
+  return NarrowLoadPlan{*narrowedViews, llvm::to_vector(narrowShape),
                         std::move(narrowExtraIndices), removedTileAxis};
 }
 
@@ -283,31 +263,32 @@ createPlanForRemovableAxis(OpBuilder &builder, const AnalyzedInputPath &path,
 /// left unchanged. The result is keyed by the input leaf and its path-specific
 /// transform sequence for use while distributing the load marker.
 static DenseMap<LeafKey, NarrowLoadPlan>
-analyzeNarrowBroadcastLoads(OpBuilder &builder, Value markerSource,
-                            ArrayAttr extraViews, ValueRange extraIndices,
-                            RankedTensorType fullTileType,
+analyzeNarrowBroadcastLoads(OpBuilder &builder, LoadMarkerOp markerOp,
                             func::FuncOp funcOp) {
   DenseMap<LeafKey, NarrowLoadPlan> plans;
+  auto fullTileType = cast<RankedTensorType>(markerOp.getResult().getType());
+  ArrayAttr extraViews = markerOp.getExtraViews();
   if (fullTileType.getRank() != 2 || extraViews.empty())
     return plans;
 
   FailureOr<SmallVector<AnalyzedInputPath>> analyzedPaths =
-      analyzeInputPaths(builder, markerSource, extraViews, funcOp);
-  if (failed(analyzedPaths) || analyzedPaths->size() < 2)
+      analyzeInputPaths(builder, markerOp.getSource(), extraViews, funcOp);
+  if (failed(analyzedPaths))
     return plans;
 
-  size_t commonPrefixSize = getCommonViewPrefix(*analyzedPaths);
   ArrayRef<int64_t> fullShape = fullTileType.getShape();
+  ValueRange extraIndices = markerOp.getExtraIndices();
   unsigned numExtraDims = extraIndices.size();
+  DenseI64ArrayAttr reductionTileAxes = markerOp.getReductionTileAxesAttr();
 
   for (const AnalyzedInputPath &path : *analyzedPaths) {
-    SmallVector<RemovableTileAxis> removableAxes = findRemovableTileAxes(
-        path, *analyzedPaths, fullShape, numExtraDims, commonPrefixSize);
+    SmallVector<RemovableTileAxis> removableAxes =
+        findRemovableTileAxes(path, fullShape, numExtraDims, reductionTileAxes);
     if (removableAxes.size() != 1)
       continue;
 
     FailureOr<NarrowLoadPlan> plan = createPlanForRemovableAxis(
-        builder, path, removableAxes.front(), extraIndices, fullTileType);
+        builder, path, removableAxes.front(), extraIndices, fullShape);
     if (succeeded(plan))
       plans.insert({path.key, std::move(*plan)});
   }
@@ -323,6 +304,7 @@ static FailureOr<Value> distributeLoadMarker(
     OpBuilder &builder, Location loc, Value originalVal,
     ArrayRef<TransformMapAttr> postTransforms, ArrayAttr extraViews,
     ValueRange extraIndices, Type tileType, CacheModifier cache,
+    DenseI64ArrayAttr reductionTileAxes,
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> &valueMapping,
     const DenseMap<LeafKey, NarrowLoadPlan> &narrowLoadPlans,
     func::FuncOp funcOp) {
@@ -344,19 +326,26 @@ static FailureOr<Value> distributeLoadMarker(
     auto narrowPlan = narrowLoadPlans.find(cacheKey);
     if (narrowPlan != narrowLoadPlans.end()) {
       const NarrowLoadPlan &plan = narrowPlan->second;
-      auto newMarker =
-          LoadMarkerOp::create(builder, loc, plan.resultType, originalVal,
-                               plan.combinedViews, plan.extraIndices, cache);
-      Value fullTile = expandDimAndBroadcast(
-          builder, loc, newMarker.getResult(), plan.removedTileAxis,
-          cast<RankedTensorType>(tileType));
+      auto fullTileType = cast<RankedTensorType>(tileType);
+      auto narrowTileType =
+          RankedTensorType::get(plan.narrowShape, fullTileType.getElementType(),
+                                fullTileType.getEncoding());
+      // The narrowed tile has lost an axis, so the original axis numbering no
+      // longer describes it and this marker reduces over an unknown axis.
+      auto newMarker = LoadMarkerOp::create(
+          builder, loc, narrowTileType, originalVal, plan.combinedViews,
+          plan.extraIndices, cache, /*reductionTileAxes=*/nullptr);
+      Value fullTile =
+          expandDimAndBroadcast(builder, loc, newMarker.getResult(),
+                                plan.removedTileAxis, fullTileType);
       valueMapping.insert({cacheKey, fullTile});
       return fullTile;
     }
 
     Value source = applyTransforms(builder, originalVal, postTransforms);
-    auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
-                                          extraViews, extraIndices, cache);
+    auto newMarker =
+        LoadMarkerOp::create(builder, loc, tileType, source, extraViews,
+                             extraIndices, cache, reductionTileAxes);
     valueMapping.insert({cacheKey, newMarker.getResult()});
     return newMarker.getResult();
   }
@@ -369,7 +358,8 @@ static FailureOr<Value> distributeLoadMarker(
 
     FailureOr<Value> result = distributeLoadMarker(
         builder, loc, transformOp.getInput(), newPostTransforms, extraViews,
-        extraIndices, tileType, cache, valueMapping, narrowLoadPlans, funcOp);
+        extraIndices, tileType, cache, reductionTileAxes, valueMapping,
+        narrowLoadPlans, funcOp);
     if (succeeded(result))
       valueMapping.insert({cacheKey, result.value()});
     return result;
@@ -385,7 +375,8 @@ static FailureOr<Value> distributeLoadMarker(
       auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
       FailureOr<Value> resolved = distributeLoadMarker(
           builder, loc, operand, postTransforms, extraViews, extraIndices,
-          operandTileType, cache, valueMapping, narrowLoadPlans, funcOp);
+          operandTileType, cache, reductionTileAxes, valueMapping,
+          narrowLoadPlans, funcOp);
       if (failed(resolved))
         return failure();
       fusionMapping.map(operand, resolved.value());
@@ -446,13 +437,12 @@ void RockRegularizeInputPass::runOnOperation() {
 
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> valueMapping;
     DenseMap<LeafKey, NarrowLoadPlan> narrowLoadPlans =
-        analyzeNarrowBroadcastLoads(
-            builder, markerOp.getSource(), markerOp.getExtraViews(),
-            markerOp.getExtraIndices(), tileType, funcOp);
+        analyzeNarrowBroadcastLoads(builder, markerOp, funcOp);
     FailureOr<Value> replacement = distributeLoadMarker(
         builder, loc, markerOp.getSource(), /*postTransforms=*/{},
         markerOp.getExtraViews(), markerOp.getExtraIndices(), tileType,
-        markerOp.getCacheModifier(), valueMapping, narrowLoadPlans, funcOp);
+        markerOp.getCacheModifier(), markerOp.getReductionTileAxesAttr(),
+        valueMapping, narrowLoadPlans, funcOp);
 
     if (failed(replacement)) {
       markerOp->emitError("Failed to distribute load_marker past fusions");
