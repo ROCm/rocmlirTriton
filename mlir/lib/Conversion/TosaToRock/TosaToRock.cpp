@@ -2609,8 +2609,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       op->moveAfter(expandedOutLse);
   }
 
-  // Broadcast a currentSeqLen block argument shaped [B] or [B, 1] across the
-  // query heads.
+  // Broadcast a shared or per-batch currentSeqLen block argument shaped [1],
+  // [1, 1], [B], or [B, 1] across the query heads.
   FailureOr<Value> addBroadcastForBlockArg(PatternRewriter &rewriter,
                                            Value currentSeqLen,
                                            Value matrixQ) const {
@@ -2652,14 +2652,15 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     int64_t batch = srcShape[0];
     int64_t numHeads = srcShape[1];
-    if (currentSeqLenShape[0] != batch)
+    if (currentSeqLenShape[0] != 1 && currentSeqLenShape[0] != batch)
       return failure();
 
     auto loc = currentSeqLen.getLoc();
     Type elemTy = currentSeqLenType.getElementType();
     Value expanded = currentSeqLen;
     if (currentSeqLenShape.size() == 1) {
-      auto expandedType = RankedTensorType::get({batch, 1}, elemTy);
+      auto expandedType =
+          RankedTensorType::get({currentSeqLenShape[0], 1}, elemTy);
       SmallVector<ReassociationIndices, 1> reassoc{{0, 1}};
       expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
                                                currentSeqLen, reassoc);
