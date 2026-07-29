@@ -522,7 +522,8 @@ TEST(CollectInputFusionPathsTest, KeepsSharedLeafUnderDifferentTransforms) {
   Value transformed = applyTransform(b, loc, base, transform);
   Value fused = arith::AddFOp::create(b, loc, transformed, base).getResult();
 
-  FailureOr<SmallVector<InputFusionPath>> paths = collectInputFusionPaths(fused);
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(fused);
   ASSERT_TRUE(succeeded(paths));
   ASSERT_EQ(paths->size(), 2U);
   EXPECT_EQ((*paths)[0].leaf, base);

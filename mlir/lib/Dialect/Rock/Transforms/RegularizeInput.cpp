@@ -192,8 +192,8 @@ static bool canRemoveTilePartition(const AnalyzedInputPath &path,
 /// Unit axes are already narrow, and incomplete Unmerge partitions are rejected
 /// by `getCompleteTilePartition`.
 static SmallVector<RemovableTileAxis>
-findRemovableTileAxes(const AnalyzedInputPath &path, ArrayRef<int64_t> fullShape,
-                      unsigned numExtraDims,
+findRemovableTileAxes(const AnalyzedInputPath &path,
+                      ArrayRef<int64_t> fullShape, unsigned numExtraDims,
                       DenseI64ArrayAttr reductionTileAxes) {
   SmallVector<RemovableTileAxis> removableAxes;
   for (unsigned tileAxis = 0; tileAxis < fullShape.size(); ++tileAxis) {

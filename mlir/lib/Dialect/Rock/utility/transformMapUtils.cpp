@@ -1037,10 +1037,10 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       default:
         break;
       }
-      newOps.push_back(TransformAttr::get(
-          t.getContext(), t.getType(), params, t.getUpperNames(),
-          t.getUpperDims(), t.getLowerNames(), t.getLowerDims(),
-          t.getIsTileAlignment()));
+      newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
+                                          t.getUpperNames(), t.getUpperDims(),
+                                          t.getLowerNames(), t.getLowerDims(),
+                                          t.getIsTileAlignment()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1068,7 +1068,7 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 
 SmallVector<unsigned>
 mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
-                                      bool ignoreTileAlignmentPads) {
+                                       bool ignoreTileAlignmentPads) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
@@ -1118,8 +1118,7 @@ bool mlir::rock::transformChainDependsOnAnyDim(
     return true;
 
   assert(llvm::all_of(
-             dims,
-             [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
+             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
          "queried dim is not an upper coordinate of the transform chain");
 
   return llvm::any_of(
@@ -1137,13 +1136,12 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
   if (dims.empty() || transforms.empty())
     return false;
 
-  assert(llvm::all_of(dims,
-                      [&](unsigned dim) {
-                        return dim < transforms.front()
-                                         .getMap()
-                                         .getAffineMap()
-                                         .getNumDims();
-                      }) &&
+  assert(llvm::all_of(
+             dims,
+             [&](unsigned dim) {
+               return dim <
+                      transforms.front().getMap().getAffineMap().getNumDims();
+             }) &&
          "queried dim is not an upper coordinate of the transform chain");
 
   for (std::size_t index = firstTransform; index < transforms.size(); ++index) {
@@ -2134,13 +2132,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr =
-        TransformAttr::get(b.getContext(), args.type, args.params,
-                           std::get<DimType::Upper>(args.preservedNames),
-                           std::get<DimType::Upper>(args.preservedDims),
-                           std::get<DimType::Lower>(args.preservedNames),
-                           std::get<DimType::Lower>(args.preservedDims),
-                           args.isTileAlignment);
+    auto newTr = TransformAttr::get(
+        b.getContext(), args.type, args.params,
+        std::get<DimType::Upper>(args.preservedNames),
+        std::get<DimType::Upper>(args.preservedDims),
+        std::get<DimType::Lower>(args.preservedNames),
+        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
     newOps.push_back(newTr);
   }
 

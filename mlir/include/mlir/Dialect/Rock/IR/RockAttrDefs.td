@@ -219,31 +219,36 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
           input arguments.
     }];
 
-    let parameters = (ins
-    AttrParameter<"::mlir::rock::TransformType",
-        "The type of transformation to perform">:$type,
-    ArrayRefParameter<"int64_t",
-        "The parameters to the transformation, if any">:$params,
-    ArrayRefOfStringRefParameter<
-        "The names of the upper dimensions (input arguments) of this transform">:$upperNames,
-    ArrayRefParameter<"uint32_t",
-        "The indices of the upper dimensions (input arguments) of this transform">:$upperDims,
-    ArrayRefOfStringRefParameter<
-        "The names of the lower dimensions (outputs) of this transformation">:$lowerNames,
-    ArrayRefParameter<"uint32_t",
-        "The indices of the lower dimensions (outputs) of this transformation">:$lowerDims,
-    DefaultValuedParameter<"bool", "false",
-        "Whether this Pad aligns a gemm dimension to the tile size">:$isTileAlignment
-    );
+    let parameters =
+        (ins AttrParameter<"::mlir::rock::TransformType",
+                           "The type of transformation to perform">:$type,
+            ArrayRefParameter<
+                "int64_t",
+                "The parameters to the transformation, if any">:$params,
+            ArrayRefOfStringRefParameter<
+                "The names of the upper dimensions (input arguments) of this "
+                "transform">:$upperNames,
+            ArrayRefParameter<"uint32_t",
+                              "The indices of the upper dimensions (input "
+                              "arguments) of this transform">:$upperDims,
+            ArrayRefOfStringRefParameter<
+                "The names of the lower dimensions (outputs) of this "
+                "transformation">:$lowerNames,
+            ArrayRefParameter<"uint32_t",
+                              "The indices of the lower dimensions (outputs) "
+                              "of this transformation">:$lowerDims,
+            DefaultValuedParameter<"bool", "false",
+                                   "Whether this Pad aligns a gemm dimension "
+                                   "to the tile size">:$isTileAlignment);
 
     let builders = [
-      // Convenience builder for the transforms that are never tile alignment.
-      AttrBuilder<(ins "::mlir::rock::TransformType":$type,
-          "::llvm::ArrayRef<int64_t>":$params,
-          "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
-          "::llvm::ArrayRef<uint32_t>":$upperDims,
-          "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
-          "::llvm::ArrayRef<uint32_t>":$lowerDims)>,
+        // Convenience builder for the transforms that are never tile alignment.
+        AttrBuilder<(ins "::mlir::rock::TransformType":$type,
+            "::llvm::ArrayRef<int64_t>":$params,
+            "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
+            "::llvm::ArrayRef<uint32_t>":$upperDims,
+            "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
+            "::llvm::ArrayRef<uint32_t>":$lowerDims)>,
     ];
 
     let genVerifyDecl = 1;
