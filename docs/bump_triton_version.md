@@ -510,8 +510,13 @@ layout instead of rocmlirTriton's in-tree build.
 ## Step 11: Run Tests
 
 ```bash
-cd build && ninja check-rocmlir
+cd build && ninja check-mlir check-rocmlir
 ```
+
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project`. It is the
+main signal that a fresh upstream import plus our re-applied `llvm-patches/` did
+not regress MLIR itself, so run it before `check-rocmlir` -- it is host-only and
+finishes in seconds.
 ## Checklist Summary
 
 Use this checklist to track progress:
@@ -540,7 +545,7 @@ Use this checklist to track progress:
 - [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
-- [ ] Run tests with `cd build && ninja check-rocmlir`
+- [ ] Run tests with `cd build && ninja check-mlir check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 

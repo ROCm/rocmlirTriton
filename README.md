@@ -32,6 +32,10 @@ cd rocmlirTriton
 bash cmake.sh
 ```
 
+`cmake.sh` wipes `build/` before configuring. Pass `--no-clean` to reconfigure an
+existing build directory instead, which avoids a full LLVM rebuild when you only
+want to change a few `-D` flags. Any extra arguments are forwarded to `cmake`.
+
 To install `librockCompiler` so MIGraphX can find it:
 
 ```sh
