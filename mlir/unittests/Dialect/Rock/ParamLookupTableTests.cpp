@@ -100,14 +100,26 @@ TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
                 "gfx1152_attention_i8"));
 }
 
-TEST(FindFallbackTest, Fp8FallsBackToI8) {
-  // fp8 has no tuning entries; fall back to the closest datatype, i8.
-  EXPECT_EQ("gfx942_gemm_i8",
+TEST(FindFallbackTest, Fp8FallsBackToArchRelative) {
+  // gfx942 has no fp8 tuning entries, but gfx950 ships a gemm_fp8 list. A
+  // same-datatype architecture relative is preferred over a datatype
+  // substitution, so gfx942_gemm_fp8 falls back to gfx950_gemm_fp8 rather than
+  // to gfx942_gemm_i8.
+  EXPECT_EQ("gfx950_gemm_fp8",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_fp8"));
 }
 
+TEST(FindFallbackTest, Fp8FallsBackToRdna4) {
+  // gfx1100 (RDNA3) has no fp8 tuning entries, but gfx1201 (RDNA4) ships a
+  // gemm_fp8 list and is the only same-datatype relative in the gfx11/gfx12
+  // family, so gfx1100_gemm_fp8 falls back to gfx1201_gemm_fp8.
+  EXPECT_EQ("gfx1201_gemm_fp8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1100_gemm_fp8"));
+}
+
 TEST(FindFallbackTest, F4FallsBackToI8) {
-  // f4 has no 4-bit neighbour, so it also falls back to i8.
+  // f4 has neither its own tuning entries nor a same-datatype architecture
+  // relative, so it falls back to the closest datatype, i8.
   EXPECT_EQ("gfx942_gemm_i8",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_f4"));
 }
