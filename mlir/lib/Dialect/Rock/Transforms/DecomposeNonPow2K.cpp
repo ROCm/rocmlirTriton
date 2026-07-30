@@ -158,17 +158,6 @@ static FailureOr<LoadRecipe> getLoadRecipe(LoadMarkerOp marker, bool isKFirst) {
   return recipe;
 }
 
-/// A builder that inserts immediately after `v`'s definition, or at the top of
-/// its block when `v` is a block argument. Successive insertions keep their
-/// relative order, so one such builder per operand emits the segment views in
-/// segment order.
-static OpBuilder builderAfter(Value v) {
-  if (Operation *def = v.getDefiningOp())
-    return OpBuilder(def->getBlock(), std::next(def->getIterator()));
-  Block *owner = cast<BlockArgument>(v).getOwner();
-  return OpBuilder(owner, owner->begin());
-}
-
 /// View of `recipe`'s operand keeping only the `seg` slice of every K tile.
 static Value sliceKSegment(OpBuilder &b, Location loc, const LoadRecipe &recipe,
                            Pow2Segment seg, bool isKFirst) {
@@ -249,9 +238,12 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
 
   // Materialize every segment's operand view up front, anchored at its source
   // so the views end up where the un-sliced view already sat, i.e. outside the
-  // K loop.
-  OpBuilder sliceA = builderAfter(recipeA.source);
-  OpBuilder sliceB = builderAfter(recipeB.source);
+  // K loop. Successive insertions on one builder keep their relative order, so
+  // one builder per operand emits that operand's views in segment order.
+  OpBuilder sliceA(gemm.getContext());
+  OpBuilder sliceB(gemm.getContext());
+  sliceA.setInsertionPointAfterValue(recipeA.source);
+  sliceB.setInsertionPointAfterValue(recipeB.source);
   SmallVector<Value> aViews, bViews;
   for (Pow2Segment seg : kSegs) {
     aViews.push_back(sliceKSegment(sliceA, loc, recipeA, seg,
@@ -306,12 +298,12 @@ void RockDecomposeNonPow2KPass::runOnOperation() {
   // tile the Triton layouts cannot represent when it is not a power of two.
   SmallVector<BlockwiseGemmOp> targets;
   func.walk([&](BlockwiseGemmOp gemm) {
-    if (!llvm::isPowerOf2_64(gemm.getKPerBlock()))
+    if (!llvm::isPowerOf2_64(gemm.getKDim()))
       targets.push_back(gemm);
   });
 
   for (BlockwiseGemmOp gemm : targets) {
-    SmallVector<Pow2Segment> kSegs = decomposePow2(gemm.getKPerBlock());
+    SmallVector<Pow2Segment> kSegs = decomposePow2(gemm.getKDim());
     if (failed(decomposeBlockwiseGemm(gemm, kSegs)))
       return signalPassFailure();
   }

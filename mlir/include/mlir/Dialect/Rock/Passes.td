@@ -252,7 +252,7 @@ def RockDecomposeNonPow2KPass
     Not supported: scaled GEMMs, sub-byte operands, and integer operands whose
     K tile decomposes into a segment narrower than 4.
   }];
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+  let dependentDialects = ["rock::RockDialect"];
 }
 
 def RockFuseSiblingLoopsPass

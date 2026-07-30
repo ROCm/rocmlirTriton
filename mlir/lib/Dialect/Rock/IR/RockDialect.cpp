@@ -1728,9 +1728,7 @@ LogicalResult BlockwiseGemmOp::verify() {
           return emitOpError(
               "unexpected error: currLen is not divisible by origLen");
 
-        // matrixA is MxK: K is dim 1, M is dim 0.
-        // matrixB is KxN: K is dim 0, N is dim 1.
-        int64_t packedDim = (isA == kPack) ? 1 : 0;
+        int64_t packedDim = kPack ? getKDimIdx(isA) : getDDimIdx(isA);
         SmallVector<int64_t> expectedShape(matrixShape);
         expectedShape[packedDim] *= currLen / origLen;
         if (expectedShape != scaleShape) {
