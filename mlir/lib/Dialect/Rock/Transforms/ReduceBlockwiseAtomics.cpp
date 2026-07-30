@@ -59,15 +59,6 @@ struct RockReduceBlockwiseAtomicsPass
 
 /// Returns true if every coordinate of the buffer underlying `transforms` is
 /// unchanged when upper dimension `dim` varies over its whole extent.
-///
-/// `getLowerSubDimensions` tracks `dim` down the chain as a set of
-/// {size, stride} sub-dimensions per lower dimension, using the sizes recorded
-/// in Merge and Unmerge to reason about which lower coordinates the dimension
-/// can actually reach. A sub-dimension of size 1 spans a single value and so
-/// contributes no address variation; `Broadcast{1}` collapses whatever reaches
-/// it to exactly that, which is how the broadcast introduced by LowerReduce is
-/// recognized here. Unsupported transforms (Pad, Embed) make the utility fail,
-/// which we treat as "cannot prove invariant".
 static bool addressIsInvariantAlongDim(OpBuilder &b, ArrayAttr transforms,
                                        int64_t dim) {
   FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>> subDims =
@@ -139,6 +130,7 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   auto destType = cast<RankedTensorType>(store.getDest().getType());
   if (!srcType.hasStaticShape() || !destType.hasStaticShape())
     return;
+
   // A rank-1 source would reduce to a rank-0 tensor, which
   // rock.blockwise_reduce can express but the tt.reduce it lowers to cannot:
   // reducing a rank-1 input yields a bare scalar.
@@ -154,15 +146,14 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   if (transforms.empty())
     return;
 
-  // Mask invariance is what keeps this rewrite honest. Today a lane whose store
-  // mask is false contributes nothing, so whatever it holds is irrelevant; once
-  // its value is folded into a sum that other lanes do store, it would corrupt
-  // the result. Instead of asking which axis a mask depends on, reject any
-  // chain that can produce a mask at all: then every lane stores and no
-  // masked-off value can reach memory. This gives up nothing in practice,
-  // because the only transforms that produce a mask are non-trivial Pad and
-  // invalidatable Embed, and the sub-dimension analysis below already refuses
-  // to look at a chain containing either.
+  // A lane whose store mask is false contributes nothing, so whatever it holds
+  // is irrelevant; once its value is folded into a sum that other lanes do
+  // store, it would corrupt the result. Instead of asking which axis a mask
+  // depends on, reject any chain that can produce a mask at all: then every
+  // lane stores and no masked-off value can reach memory. This gives up nothing
+  // in practice, because the only transforms that produce a mask are
+  // non-trivial Pad and invalidatable Embed, and the sub-dimension analysis
+  // below already refuses to look at a chain containing either.
   if (llvm::any_of(transforms, mapImpactsValidity))
     return;
 
