@@ -190,9 +190,6 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   Type elemTypeB =
       cast<RankedTensorType>(gemm.getMatrixB().getType()).getElementType();
 
-  // Scaled GEMMs keep a power-of-two K tile, and affix already refuses a
-  // non-power-of-two kPerBlock for them, so getting here means a perf config
-  // slipped past that check rather than an unsupported-but-valid tuning choice.
   if (gemm.getMatrixScaleA() || gemm.getMatrixScaleB())
     return gemm.emitOpError("non-power-of-two K tile is not supported for "
                             "scaled gemm (should have been rejected by affix)");
@@ -207,11 +204,11 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
 
   FailureOr<LoadRecipe> maybeA = getLoadRecipe(markerA, /*isKFirst=*/false);
   FailureOr<LoadRecipe> maybeB = getLoadRecipe(markerB, /*isKFirst=*/true);
-  if (failed(maybeA) || failed(maybeB)) {
-    rock::markAsNotApplicable(gemm);
+  if (failed(maybeA) || failed(maybeB))
     return gemm.emitOpError(
-        "could not recover the operand tiling of a non-power-of-two K tile");
-  }
+        "could not recover the operand tiling of a non-power-of-two K tile "
+        "(rock.load_marker does not have the shape rock::loadTile produces)");
+
   LoadRecipe recipeA = std::move(*maybeA);
   LoadRecipe recipeB = std::move(*maybeB);
   assert(recipeA.kPerBlock == recipeB.kPerBlock &&
@@ -223,11 +220,9 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   // kernel argument, in which case the same packing runs.
   FailureOr<Type> loadTypeA = getInputFusionElementType(recipeA.source);
   FailureOr<Type> loadTypeB = getInputFusionElementType(recipeB.source);
-  if (failed(loadTypeA) || failed(loadTypeB)) {
-    rock::markAsNotApplicable(gemm);
+  if (failed(loadTypeA) || failed(loadTypeB))
     return gemm.emitOpError("could not determine the underlying operand data "
                             "types of a non-power-of-two K tile");
-  }
   if (isSubByte(elemTypeA) || isSubByte(elemTypeB) || isSubByte(*loadTypeA) ||
       isSubByte(*loadTypeB)) {
     rock::markAsNotApplicable(gemm);
@@ -235,13 +230,8 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
         "non-power-of-two K tile is not supported for sub-byte operands");
   }
 
-  // An integer GEMM accumulates in i32 (rock::getAccType). A segment narrower
-  // than `minIntKSegment` matches neither an MFMA k-dimension nor v_dot4's
-  // `k % 4 == 0`, so Triton legalizes that dot as f32 and routes the i32
-  // accumulator through sitofp/fptosi once per K iteration. That round trip is
-  // lossy past f32's exact-integer range (2^24), silently returning wrong sums,
-  // so refuse the tile instead. Float operands are unaffected: they accumulate
-  // in f32 to begin with.
+  // This is due to a bug in Triton, reported here:
+  // https://github.com/ROCm/triton/issues/958
   constexpr int64_t minIntKSegment = 4;
   if (isa<IntegerType>(elemTypeA) && isa<IntegerType>(elemTypeB) &&
       llvm::any_of(kSegs, [](const Pow2Segment &seg) {
@@ -301,40 +291,28 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
 
   gemm.getResult().replaceAllUsesWith(acc);
   gemm.erase();
-  // The original markers are pure and now dead. Erasing them here rather than
-  // leaving it to DCE keeps the undecomposed loads out of any dump taken
-  // between this pass and the next.
-  if (markerA->use_empty())
-    markerA->erase();
-  if (markerB->use_empty())
-    markerB->erase();
   return success();
 }
 
-//===----------------------------------------------------------------------===//
-// Pass driver
-//===----------------------------------------------------------------------===//
-
 void RockDecomposeNonPow2KPass::runOnOperation() {
   func::FuncOp func = getOperation();
-  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "skipping " << func.getSymName() << ": not a rock.kernel\n");
     return;
+  }
 
-  // Anchor on the K tile of the blockwise gemm itself: matrixA is
-  // [dPerBlock, K] and matrixB is [K, dPerBlock], so a non-power-of-two K here
-  // is exactly the tile the Triton layouts cannot represent.
+  // Anchor on the K tile of the blockwise gemm itself, which is exactly the
+  // tile the Triton layouts cannot represent when it is not a power of two.
   SmallVector<BlockwiseGemmOp> targets;
   func.walk([&](BlockwiseGemmOp gemm) {
-    auto aType = dyn_cast<RankedTensorType>(gemm.getMatrixA().getType());
-    if (aType && aType.getRank() == 2 &&
-        !llvm::isPowerOf2_64(aType.getShape()[1]))
+    if (!llvm::isPowerOf2_64(gemm.getKPerBlock()))
       targets.push_back(gemm);
   });
 
   for (BlockwiseGemmOp gemm : targets) {
-    int64_t kPerBlock =
-        cast<RankedTensorType>(gemm.getMatrixA().getType()).getShape()[1];
-    if (failed(decomposeBlockwiseGemm(gemm, decomposePow2(kPerBlock))))
+    SmallVector<Pow2Segment> kSegs = decomposePow2(gemm.getKPerBlock());
+    if (failed(decomposeBlockwiseGemm(gemm, kSegs)))
       return signalPassFailure();
   }
 }
