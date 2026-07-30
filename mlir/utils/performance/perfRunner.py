@@ -2146,8 +2146,8 @@ def run_config_with_mlir(config: PerfConfiguration,
                 "Warning: --flush-last-level-cache is ignored when using rocprof for benchmarking")
         rocmlir_driver_cmd = [paths.mlir_paths.rocmlir_driver_path, '-c']
         profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(arch) + [
-            '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME, '--',
-            paths.mlir_paths.rocm_run_path
+            '--kernel-trace', '--stats', '--output-format=csv', '-o', BENCHMARKING_RESULT_FILE_NAME,
+            '--', paths.mlir_paths.rocm_run_path
         ]
 
         outs, noerr = run_pipeline([rocmlir_gen_cmd.split(), rocmlir_driver_cmd, profiler_cmd])
@@ -2517,7 +2517,7 @@ def run_fusion_kernel(filename, rocmlir_gen_args, paths: Paths):
     ]
     commands.append(kernel_pipeline_cmd)
     profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(chip) + [
-        '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME
+        '--kernel-trace', '--stats', '--output-format=csv', '-o', BENCHMARKING_RESULT_FILE_NAME
     ] + ['--', paths.mlir_paths.rocm_run_path]
     commands.append(profiler_cmd)
     outs, noerr = run_pipeline(commands)
