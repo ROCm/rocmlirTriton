@@ -1215,6 +1215,11 @@ class TuningArgumentParser(argparse.ArgumentParser):
             self.error(
                 "argument --debug-quick-tune-data: not allowed with --two-stage/--two-stage-topk")
 
+        # The tuning driver takes this as an unsigned option, so a negative value would
+        # wrap into a huge timeout instead of being rejected.
+        if parsed.gpu_run_timeout < 0:
+            self.error("argument --gpu-run-timeout: must be non-negative")
+
         # The coarse warmup is capped at what --warmup affords, so a larger
         # floor would be silently inert. The driver rejects this too.
         if (parsed.two_stage or (parsed.two_stage_topk or 0) > 0) \
@@ -1277,6 +1282,12 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.benchmark_artifacts and len(parsed.gpus) != 1:
             self.error("argument --benchmark-artifacts: requires exactly one GPU; "
                        "select it with --gpus GPU_ID")
+
+        gpu_topology = get_gpu_topology()
+        if not gpu_topology.validate_homogeneity(parsed.gpus):
+            details = ", ".join(f"GPU {g}: {gpu_topology.gpus[g].sku}" for g in parsed.gpus)
+            self.error(f"argument --gpus: mixed GPU models not supported. Found: {details}")
+
 
         return parsed
 
