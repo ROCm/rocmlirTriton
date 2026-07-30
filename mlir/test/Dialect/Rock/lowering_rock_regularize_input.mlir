@@ -846,6 +846,41 @@ module {
   }
 
   // ============================================================
+  // f8E8M0FNU is not a Triton TT_Float, so tt.expand_dims/tt.broadcast
+  // cannot reconstruct a narrowed load of this scale type. Keep the load
+  // rank-2 and let LegalizeFloatTypes convert it to i8 later.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_fusion_does_not_narrow_non_tt_float
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[ACTIVATION:.*]] = rock.load_marker %{{.*}} views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK: %[[SCALE_VIEW:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<16xf8E8M0FNU> to tensor<1x16x16xf8E8M0FNU>
+  // CHECK: %[[SCALE:.*]] = rock.load_marker %[[SCALE_VIEW]] views
+  // CHECK-SAME: tensor<1x16x16xf8E8M0FNU> -> tensor<16x16xf8E8M0FNU>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: %[[CONVERTED:.*]] = arith.extf %[[SCALE]]
+  // CHECK-SAME: tensor<16x16xf8E8M0FNU> to tensor<16x16xf16>
+  // CHECK: %[[FUSED:.*]] = arith.mulf %[[ACTIVATION]], %[[CONVERTED]]
+  // CHECK: return %[[FUSED]]
+  func.func @test_input_fusion_does_not_narrow_non_tt_float(
+      %activation: tensor<1x16x16xf16>,
+      %scaleRaw: tensor<16xf8E8M0FNU>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %scale = rock.transform %scaleRaw by #tmap_broadcast_n_16
+      : tensor<16xf8E8M0FNU> to tensor<1x16x16xf8E8M0FNU>
+    %converted = arith.extf %scale
+      : tensor<1x16x16xf8E8M0FNU> to tensor<1x16x16xf16>
+    %fused = arith.mulf %activation, %converted : tensor<1x16x16xf16>
+    %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n]
+      {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>}
+      : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
   // No load_marker at all: only store_marker → store.
   // Pass has nothing to process.
   // ============================================================

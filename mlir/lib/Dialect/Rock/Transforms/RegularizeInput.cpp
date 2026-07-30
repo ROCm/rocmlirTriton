@@ -281,15 +281,21 @@ analyzeNarrowBroadcastLoads(OpBuilder &builder, LoadMarkerOp markerOp,
   DenseI64ArrayAttr reductionTileAxes = markerOp.getReductionTileAxesAttr();
 
   for (const AnalyzedInputPath &path : *analyzedPaths) {
+    Type leafElementType =
+        cast<ShapedType>(path.key.first.getType()).getElementType();
+
     // Four-bit load packing traces directly from fusion ops to blockwise loads.
     // Narrowing would insert Triton expand/broadcast ops along that path and
     // hide the load from LegalizeFloatTypes.
-    if (auto leafType = dyn_cast<ShapedType>(path.key.first.getType())) {
-      Type leafElementType = leafType.getElementType();
-      if (leafElementType.isIntOrFloat() &&
-          leafElementType.getIntOrFloatBitWidth() == 4)
-        continue;
-    }
+    if (leafElementType.isIntOrFloat() &&
+        leafElementType.getIntOrFloatBitWidth() == 4)
+      continue;
+
+    // Narrowing reconstructs the full tile with Triton expand/broadcast ops.
+    // Skip types outside TT_Tensor, which those ops reject.
+    if (!isTTFloat(leafElementType) &&
+        !isa<IntegerType, triton::PointerType>(leafElementType))
+      continue;
 
     SmallVector<RemovableTileAxis> removableAxes =
         findRemovableTileAxes(path, fullShape, numExtraDims, reductionTileAxes);
