@@ -516,7 +516,7 @@ Type mlir::rock::getAccType(Type elemA, Type elemB) {
 
 // This function will process a tile of gemm input into LDS (or register)
 // buffer in a way it could be fed to blockwise_gemm op
-Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
+Value mlir::rock::loadTile(OpBuilder &rewriter, Location loc, Value in,
                            Value kIter, StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
                            int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
