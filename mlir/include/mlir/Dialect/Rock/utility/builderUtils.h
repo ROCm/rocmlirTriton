@@ -30,11 +30,6 @@ Value createZeroConstantOp(OpBuilder &b, Location loc, Type type);
 Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
                              Type destType);
 
-/// Insert a unit dimension at `axis` with tt.expand_dims, then broadcast the
-/// expanded tensor to `resultType`.
-Value expandDimAndBroadcast(OpBuilder &b, Location loc, Value source,
-                            int64_t axis, RankedTensorType resultType);
-
 /// Saturating + truncating float-to-int conversion implementing MIGraphX's
 /// reference `convert` op semantics. Used by both the CPU lowering path
 /// (RocmlirCustomTosaToLinalg) and the GPU/kernel path

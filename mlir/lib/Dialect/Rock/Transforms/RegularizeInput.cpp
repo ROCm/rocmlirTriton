@@ -35,9 +35,9 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
-#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -176,7 +176,6 @@ static bool canRemoveTilePartition(const AnalyzedInputPath &path,
     //    narrowed load has no coordinate along that dimension to rebuild the
     //    zeros such a check stands for.
     if (validityDependsOnAnyDim(path.transforms, partitionDims,
-                                /*firstTransform=*/0,
                                 /*ignoreTileAlignmentPads=*/true))
       return false;
 

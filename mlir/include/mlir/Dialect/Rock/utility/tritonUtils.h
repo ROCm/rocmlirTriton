@@ -3,9 +3,10 @@
 
 //===- tritonUtils.h - Triton-dependent utilities for Rock ----------------===//
 //
-// Centralizes C++ replicas of Triton-internal functions that must be kept in
-// sync on every Triton version bump.  Having them in one place makes the
-// bump_triton_version.md checklist easier to follow.
+// Centralizes Triton-dependent helpers and C++ replicas of Triton-internal
+// functions that must be kept in sync on every Triton version bump. Having
+// them in one place makes the bump_triton_version.md checklist easier to
+// follow.
 //
 // Upstream sources:
 //   getMfmaVersion / getWmmaVersion
@@ -17,7 +18,11 @@
 //        (mlirTypeToScaledElemType, extended with BF16/FP16)
 //===----------------------------------------------------------------------===//
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 
@@ -52,6 +57,11 @@ bool isTTFloat(Type t);
 /// Adapted from mlirTypeToScaledElemType in AccelerateAMDMatmul.cpp with
 /// additional BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type);
+
+/// Insert a unit dimension at `axis` with tt.expand_dims, then broadcast the
+/// expanded tensor to `resultType`.
+Value expandDimAndBroadcast(OpBuilder &builder, Location loc, Value source,
+                            int64_t axis, RankedTensorType resultType);
 
 } // namespace rock
 } // namespace mlir

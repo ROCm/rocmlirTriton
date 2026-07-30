@@ -17,8 +17,6 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
-
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -124,25 +122,6 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
     }
   }
   return result;
-}
-
-Value expandDimAndBroadcast(OpBuilder &b, Location loc, Value source,
-                            int64_t axis, RankedTensorType resultType) {
-  auto sourceType = cast<RankedTensorType>(source.getType());
-  assert(axis >= 0 && axis <= sourceType.getRank() &&
-         "expanded axis must be within the source rank");
-  assert(resultType.getRank() == sourceType.getRank() + 1 &&
-         "broadcast result must have one more dimension than the source");
-  assert(resultType.getElementType() == sourceType.getElementType() &&
-         "broadcast cannot change the element type");
-
-  SmallVector<int64_t> expandedShape(sourceType.getShape());
-  expandedShape.insert(expandedShape.begin() + axis, 1);
-  auto expandedType = RankedTensorType::get(
-      expandedShape, sourceType.getElementType(), sourceType.getEncoding());
-  Value expanded =
-      triton::ExpandDimsOp::create(b, loc, expandedType, source, axis);
-  return triton::BroadcastOp::create(b, loc, resultType, expanded);
 }
 
 // All the complexity here is driven by MIGraphX. MIGraphX's reference

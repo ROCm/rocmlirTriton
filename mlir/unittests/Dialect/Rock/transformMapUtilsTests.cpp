@@ -415,7 +415,7 @@ TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
 // validityDependsOnAnyDim Tests
 //===----------------------------------------------------------------------===//
 
-TEST(ValidityDependsOnAnyDimTest, RespectsFirstTransform) {
+TEST(ValidityDependsOnAnyDimTest, FindsDependenciesInTransformRange) {
   TestEnv env;
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
@@ -437,8 +437,10 @@ TEST(ValidityDependsOnAnyDimTest, RespectsFirstTransform) {
   SmallVector<unsigned> noDims;
   EXPECT_TRUE(validityDependsOnAnyDim(transforms, bothDims));
   EXPECT_FALSE(validityDependsOnAnyDim(transforms, noDims));
-  EXPECT_FALSE(validityDependsOnAnyDim(transforms, mDim, /*firstTransform=*/1));
-  EXPECT_TRUE(validityDependsOnAnyDim(transforms, kDim, /*firstTransform=*/1));
+  ArrayRef<TransformMapAttr> lowerTransforms =
+      ArrayRef<TransformMapAttr>(transforms).drop_front();
+  EXPECT_FALSE(validityDependsOnAnyDim(lowerTransforms, mDim));
+  EXPECT_TRUE(validityDependsOnAnyDim(lowerTransforms, kDim));
 }
 
 // Create a zero constant tensor of the given shape/element type.

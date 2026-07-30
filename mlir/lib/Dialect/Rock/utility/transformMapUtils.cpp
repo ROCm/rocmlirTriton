@@ -1127,10 +1127,7 @@ bool mlir::rock::transformChainDependsOnAnyDim(
 
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
                                          ArrayRef<unsigned> dims,
-                                         std::size_t firstTransform,
                                          bool ignoreTileAlignmentPads) {
-  assert(firstTransform <= transforms.size() &&
-         "first transform must be within the transform chain");
   // An empty chain generates no validity checks, and has no upper coordinate
   // space to check `dims` against.
   if (dims.empty() || transforms.empty())
@@ -1144,8 +1141,7 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
              }) &&
          "queried dim is not an upper coordinate of the transform chain");
 
-  for (std::size_t index = firstTransform; index < transforms.size(); ++index) {
-    TransformMapAttr transform = transforms[index];
+  for (auto [index, transform] : llvm::enumerate(transforms)) {
     SmallVector<unsigned> upperDims =
         validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
     if (upperDims.empty())
