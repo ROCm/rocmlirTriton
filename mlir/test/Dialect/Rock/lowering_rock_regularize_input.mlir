@@ -20,6 +20,10 @@
 
 #tmap_broadcast_scalar = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0)> by [<PassThrough ["scalar"] at [0] -> ["scalar"] at [0]>, <AddDim{16} ["m"] at [1] -> [] at []>, <AddDim{16} ["n"] at [2] -> [] at []>] bounds = [1, 16, 16] -> [1]>
 
+#tmap_broadcast_scalar_m14_n16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0)> by [<PassThrough ["scalar"] at [0] -> ["scalar"] at [0]>, <AddDim{14} ["m"] at [1] -> [] at []>, <AddDim{16} ["n"] at [2] -> [] at []>] bounds = [1, 14, 16] -> [1]>
+
+#tmap_grouped_pad_m_14_to_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2, 0, 0} ["m_pad", "n_pad"] at [1, 2] -> ["m", "n"] at [1, 2]>] bounds = [1, 16, 16] -> [1, 14, 16]>
+
 #tmap_broadcast_n_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d1)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <PassThrough ["m"] at [1] -> ["m"] at [0]>, <AddDim{16} ["n"] at [2] -> [] at []>] bounds = [1, 16, 16] -> [16]>
 
 // An A operand tile view as built by getLoadRegsAsTileViews: the tile is
@@ -497,6 +501,38 @@ module {
     %scale = rock.transform %scaleBase by #tmap_pad_n_14_to_16 : tensor<1x16x14xf16> to tensor<1x16x16xf16>
     %fused = arith.addf %activation, %scale : tensor<1x16x16xf16>
     %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
+    return %lm : tensor<16x16xf16>
+  }
+
+  // ============================================================
+  // A grouped Pad covers M and N, but only M is actually padded. Removing N
+  // would require partially removing that transform, which removeUpperDims
+  // does not support. The failed narrowing plan must leave the load full-rank
+  // instead of asserting.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_input_narrowing_skips_partial_grouped_pad
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %{{.*}} by
+  // CHECK-SAME: tensor<1xf16> to tensor<1x14x16xf16>
+  // CHECK: %[[PAD:.*]] = rock.transform %[[BROADCAST]] by
+  // CHECK-SAME: tensor<1x14x16xf16> to tensor<1x16x16xf16>
+  // CHECK: %[[LOAD:.*]] = rock.load_marker %[[PAD]] views
+  // CHECK-SAME: tensor<1x16x16xf16> -> tensor<16x16xf16>
+  // CHECK-NOT: tt.expand_dims
+  // CHECK: return %[[LOAD]]
+  //
+  // LOWER-LABEL: func.func @test_input_narrowing_skips_partial_grouped_pad
+  // LOWER: %[[LOAD:.*]] = rock.blockwise_load
+  // LOWER-SAME: tensor<1x1x1x16x16xf16> -> tensor<16x16xf16>
+  // LOWER-NOT: tt.expand_dims
+  // LOWER: return %[[LOAD]]
+  func.func @test_input_narrowing_skips_partial_grouped_pad(
+      %scalarRaw: tensor<1xf16>,
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf16>
+      attributes {rock.kernel} {
+    %scalar = rock.transform %scalarRaw by #tmap_broadcast_scalar_m14_n16 : tensor<1xf16> to tensor<1x14x16xf16>
+    %padded = rock.transform %scalar by #tmap_grouped_pad_m_14_to_16 : tensor<1x14x16xf16> to tensor<1x16x16xf16>
+    %lm = rock.load_marker %padded views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
   }
 

@@ -1828,7 +1828,8 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     case TransformType::Broadcast:
     case TransformType::Pad:
     case TransformType::Merge: {
-      assert(!mustBeModified && "must be preserved or removed completely");
+      if (mustBeModified)
+        return failure();
       [[fallthrough]];
     }
     case TransformType::Unmerge: {
