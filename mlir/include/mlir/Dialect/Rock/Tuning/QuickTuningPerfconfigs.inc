@@ -1347,6 +1347,26 @@ const StringRef PopulateParamsGemm::initParametersFp8GemmGfx1201[] = {
 };
 // END_GEMM_Gemm_fp8_gfx1201_DEFS
 
+// BEGIN_GEMM_Gemm_fp8_gfx950_DEFS
+const StringRef PopulateParamsGemm::initParametersFp8GemmGfx950[] = {
+    "gemm:v4:64,128,128,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:128,128,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:32,128,128,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:1,16,256,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:64,256,128,1,1,8,32,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:32,64,256,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:8,32,128,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:64,32,256,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:256,16,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:1,16,1,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:1,4,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:1,1,256,1,1,1,32,1,3,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:16,16,512,1,1,2,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:2,64,2,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:4,256,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1"
+};
+// END_GEMM_Gemm_fp8_gfx950_DEFS
+
 #endif // Gemm_DEFINITIONS_GEN
 
 #ifdef Gemm_DECLARATIONS_GEN
@@ -1565,6 +1585,11 @@ static const StringRef initParametersI8ConvGfx908[nInitParametersI8ConvGfx908];
 static constexpr size_t nInitParametersFp8GemmGfx1201 = 17;
 static const StringRef initParametersFp8GemmGfx1201[nInitParametersFp8GemmGfx1201];
 // END_GEMM_Gemm_fp8_gfx1201_DECS
+
+// BEGIN_GEMM_Gemm_fp8_gfx950_DECS
+static constexpr size_t nInitParametersFp8GemmGfx950 = 15;
+static const StringRef initParametersFp8GemmGfx950[nInitParametersFp8GemmGfx950];
+// END_GEMM_Gemm_fp8_gfx950_DECS
 
 #endif // Gemm_DECLARATIONS_GEN
 
@@ -2204,6 +2229,8 @@ static const StringRef initParametersI8AttentionGfx908[nInitParametersI8Attentio
 {"gfx908_conv_i8", {PopulateParamsGemm::initParametersI8ConvGfx908, PopulateParamsGemm::nInitParametersI8ConvGfx908}},
 
 {"gfx1201_gemm_fp8", {PopulateParamsGemm::initParametersFp8GemmGfx1201, PopulateParamsGemm::nInitParametersFp8GemmGfx1201}},
+
+{"gfx950_gemm_fp8", {PopulateParamsGemm::initParametersFp8GemmGfx950, PopulateParamsGemm::nInitParametersFp8GemmGfx950}},
 
 #endif // Gemm_LOOKUP_TABLE_GEN
 
