@@ -139,6 +139,13 @@ inline bool isGemmParamsConservativelyApplicable(
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
     return false;
+  // Scaled GEMMs require power-of-two tiles
+  if (aScaleType || bScaleType) {
+    if (!llvm::isPowerOf2_64(p.getMPerBlock()) ||
+        !llvm::isPowerOf2_64(p.getNPerBlock()) ||
+        !llvm::isPowerOf2_64(p.getKPerBlock()))
+      return false;
+  }
   // The element-type args may have been threaded from interface methods that
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);

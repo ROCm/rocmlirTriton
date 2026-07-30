@@ -62,7 +62,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
-#include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -74,7 +73,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
@@ -93,12 +91,6 @@ using namespace mlir::rock;
 
 namespace {
 
-/// A power-of-two segment of a tile dimension: [offset, offset + length).
-struct Segment {
-  int64_t offset;
-  int64_t length;
-};
-
 struct RockDecomposeNonPow2TilesPass
     : public rock::impl::RockDecomposeNonPow2TilesPassBase<
           RockDecomposeNonPow2TilesPass> {
@@ -106,128 +98,6 @@ struct RockDecomposeNonPow2TilesPass
 };
 
 } // end anonymous namespace
-
-//===----------------------------------------------------------------------===//
-// Partition helpers
-//===----------------------------------------------------------------------===//
-
-/// Decompose `n` into a minimal sequence of power-of-two segments (largest
-/// first) that exactly cover [0, n). A power-of-two `n` yields a single
-/// segment, so the split is a no-op for that dimension.
-static SmallVector<Segment> decomposePow2(int64_t n) {
-  SmallVector<Segment> segs;
-  int64_t off = 0;
-  for (int64_t rem = n; rem > 0;) {
-    int64_t seg = static_cast<int64_t>(llvm::bit_floor<uint64_t>(rem));
-    segs.push_back({off, seg});
-    off += seg;
-    rem -= seg;
-  }
-  return segs;
-}
-
-/// Build a view of the rank-3 gridwise operand `view` in which each dimension
-/// listed in `sliceDims` (which has size `blocks[k] * tiles[k]`) is
-/// restructured into (block, iter) = (blocks[k], tiles[k]), the iter sub-dim is
-/// sliced to `segs[k]`, and the two are re-merged. The resulting dimension has
-/// size `blocks[k] * segs[k].length`, and block `bk` of it maps onto original
-/// indices `bk*tiles[k] + segs[k].offset + i`. Dimensions not in `sliceDims`
-/// pass through unchanged.
-static Value sliceBlockedDims(OpBuilder &b, Location loc, Value view,
-                              ArrayRef<unsigned> sliceDims,
-                              ArrayRef<int64_t> blocks, ArrayRef<int64_t> tiles,
-                              ArrayRef<Segment> segs) {
-  auto type = cast<RankedTensorType>(view.getType());
-  ArrayRef<int64_t> shape = type.getShape();
-  unsigned rank = shape.size();
-
-  auto sliceIdx = [&](unsigned d) -> int {
-    for (auto [k, dd] : llvm::enumerate(sliceDims))
-      if (dd == d)
-        return static_cast<int>(k);
-    return -1;
-  };
-
-  SmallVector<std::string> baseStore, blkStore, itStore;
-  for (unsigned i = 0; i < rank; ++i) {
-    baseStore.push_back(("d" + Twine(i)).str());
-    blkStore.push_back(("d" + Twine(i) + "b").str());
-    itStore.push_back(("d" + Twine(i) + "i").str());
-  }
-  SmallVector<StringRef> baseNames(baseStore.begin(), baseStore.end());
-
-  // Layer 1: restructure each sliced dim into (block, iter).
-  BottomUpTMBuilder l1(b, baseNames, shape, loc);
-  {
-    unsigned up = 0;
-    for (unsigned i = 0; i < rank; ++i) {
-      int k = sliceIdx(i);
-      if (k >= 0) {
-        l1.unmerge({StringRef(blkStore[i]), StringRef(itStore[i])},
-                   {up, up + 1}, StringRef(baseStore[i]),
-                   {blocks[k], tiles[k]});
-        up += 2;
-      } else {
-        l1.passThrough({StringRef(baseStore[i])}, {up},
-                       {StringRef(baseStore[i])});
-        up += 1;
-      }
-    }
-  }
-  TransformMapAttr a1 = l1.get();
-
-  // Layer 2: slice only the iter sub-dims that are actually narrowed; every
-  // other dim (including iter sub-dims whose segment already covers the whole
-  // tile) passes through unchanged, so the Slice transform lists just the dims
-  // it really shrinks instead of all of them.
-  BottomUpTMBuilder l2 = BottomUpTMBuilder::above(l1, a1);
-  SmallVector<StringRef> names2;
-  l2.getStartNames(names2);
-
-  llvm::SmallDenseSet<StringRef> slicedNames;
-  SmallVector<StringRef> sliceNames;
-  SmallVector<int64_t> begins, ends;
-  for (unsigned i = 0; i < rank; ++i) {
-    int k = sliceIdx(i);
-    if (k < 0 || (segs[k].offset == 0 && segs[k].length == tiles[k]))
-      continue;
-    StringRef nm(itStore[i]);
-    slicedNames.insert(nm);
-    sliceNames.push_back(nm);
-    begins.push_back(segs[k].offset);
-    ends.push_back(segs[k].offset + segs[k].length);
-  }
-
-  SmallVector<StringRef> passNames;
-  for (StringRef nm : names2)
-    if (!slicedNames.contains(nm))
-      passNames.push_back(nm);
-  if (!passNames.empty())
-    l2.passThrough(passNames);
-  if (!sliceNames.empty())
-    l2.slice(sliceNames, sliceNames, begins, ends);
-  TransformMapAttr a2 = l2.get();
-
-  // Layer 3: re-merge (block, iter) back into the original dimension.
-  BottomUpTMBuilder l3 = BottomUpTMBuilder::above(l2, a2);
-  {
-    unsigned up = 0;
-    for (unsigned i = 0; i < rank; ++i) {
-      int k = sliceIdx(i);
-      if (k >= 0) {
-        l3.merge(StringRef(baseStore[i]), up,
-                 {StringRef(blkStore[i]), StringRef(itStore[i])});
-      } else {
-        l3.passThrough({StringRef(baseStore[i])}, {up},
-                       {StringRef(baseStore[i])});
-      }
-      up += 1;
-    }
-  }
-  TransformMapAttr a3 = l3.get();
-
-  return rock::transform(b, view, b.getArrayAttr({a3, a2, a1}));
-}
 
 //===----------------------------------------------------------------------===//
 // OutputSplitter: per-cell replication of the output-fusion DAG
@@ -245,7 +115,7 @@ class OutputSplitter {
 public:
   OutputSplitter(OpBuilder &b, Location loc, int64_t g, int64_t mBlocks,
                  int64_t nBlocks, int64_t mPerBlock, int64_t nPerBlock,
-                 ArrayRef<Segment> mSegs, ArrayRef<Segment> nSegs)
+                 ArrayRef<Pow2Segment> mSegs, ArrayRef<Pow2Segment> nSegs)
       : b(b), loc(loc), g(g), mBlocks(mBlocks), nBlocks(nBlocks),
         mPerBlock(mPerBlock), nPerBlock(nPerBlock), mSegs(mSegs), nSegs(nSegs) {
   }
@@ -269,7 +139,7 @@ public:
     int64_t j = cell % static_cast<int64_t>(nSegs.size());
     SmallVector<unsigned> dims;
     SmallVector<int64_t> blocks, tiles;
-    SmallVector<Segment> segs;
+    SmallVector<Pow2Segment> segs;
     if (mSegs[i].length != mPerBlock) {
       dims.push_back(1);
       blocks.push_back(mBlocks);
@@ -362,7 +232,7 @@ private:
   OpBuilder &b;
   Location loc;
   int64_t g, mBlocks, nBlocks, mPerBlock, nPerBlock;
-  ArrayRef<Segment> mSegs, nSegs;
+  ArrayRef<Pow2Segment> mSegs, nSegs;
   DenseMap<Value, SmallVector<Value>> memo;
 };
 
@@ -385,16 +255,12 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
   int64_t mPerBlock = params.getMPerBlock();
   int64_t nPerBlock = params.getNPerBlock();
 
-  // This pass only peels the M and N tiles; it cannot split the contraction
-  // dimension. A non-power-of-two kPerBlock would therefore still yield a
-  // non-power-of-two K tile downstream, which the Triton layouts cannot
-  // represent, so reject it explicitly rather than failing later.
-  if (!llvm::isPowerOf2_64(params.getKPerBlock()))
-    return gemm.emitError("rock-decompose-nonpow2-tiles: non-power-of-two "
-                          "kPerBlock is not supported");
-
-  SmallVector<Segment> mSegs = decomposePow2(mPerBlock);
-  SmallVector<Segment> nSegs = decomposePow2(nPerBlock);
+  // This pass only peels the M and N tiles; the contraction (K) dimension is
+  // left untouched here. A non-power-of-two kPerBlock rides along on the
+  // sub-gemms unchanged and is peeled into power-of-two K segments downstream
+  // by rock-gridwise-gemm-to-blockwise, so it needs no special handling here.
+  SmallVector<Pow2Segment> mSegs = decomposePow2(mPerBlock);
+  SmallVector<Pow2Segment> nSegs = decomposePow2(nPerBlock);
 
   Value a = gemm.getA();                                      // [G, M, K]
   Value bMat = gemm.getB();                                   // [G, K, N]
@@ -431,14 +297,11 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
 
   SmallVector<Value> resultGrid;
   for (auto [i, mSeg] : llvm::enumerate(mSegs)) {
-    Value aCell = a;
-    if (mSeg.length != mPerBlock)
-      aCell = sliceBlockedDims(b, loc, a, {1}, {mBlocks}, {mPerBlock}, {mSeg});
+    Value aCell =
+        sliceBlockedDims(b, loc, a, {1}, {mBlocks}, {mPerBlock}, {mSeg});
     for (auto [j, nSeg] : llvm::enumerate(nSegs)) {
-      Value bCell = bMat;
-      if (nSeg.length != nPerBlock)
-        bCell =
-            sliceBlockedDims(b, loc, bMat, {2}, {nBlocks}, {nPerBlock}, {nSeg});
+      Value bCell =
+          sliceBlockedDims(b, loc, bMat, {2}, {nBlocks}, {nPerBlock}, {nSeg});
       auto cCellType = RankedTensorType::get(
           {G, mBlocks * mSeg.length, nBlocks * nSeg.length}, cElemType);
       auto sub = GridwiseGemmOp::create(
