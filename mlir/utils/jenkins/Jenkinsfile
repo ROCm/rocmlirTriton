@@ -1,6 +1,9 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
 // used for private CI
+import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
+import hudson.plugins.git.extensions.impl.CheckoutOption
+import hudson.plugins.git.extensions.impl.CloneOption
 import java.util.concurrent.ConcurrentHashMap
 import org.jenkinsci.plugins.workflow.support.steps.AgentOfflineException
 
@@ -11,7 +14,8 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
-// Give SCM checkouts up to 2h while preserving the revision-pinned multibranch SCM.
+// Jenkins Git plugin defaults to 10 minutes per command. Use 2h for the plugin
+// command timeouts and as an outer wall-clock guard around each checkout.
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
@@ -67,6 +71,62 @@ void gitHealthCheck() {
     echo "[healthcheck] Git OK"
 }
 
+@NonCPS
+Map scmWithGitTimeout(Object baseScm) {
+    List extensions = []
+    boolean hasCloneOption = false
+    boolean hasCheckoutOption = false
+
+    (baseScm.extensions ?: []).each { ext ->
+        if (ext instanceof CloneOption) {
+            extensions << [
+                $class: 'CloneOption',
+                depth: ext.depth ?: 0,
+                shallow: ext.shallow ?: false,
+                noTags: ext.noTags ?: false,
+                reference: ext.reference ?: '',
+                honorRefspec: ext.honorRefspec ?: false,
+                timeout: gitTimeoutAtLeast(ext.timeout)
+            ]
+            hasCloneOption = true
+        } else if (ext instanceof CheckoutOption) {
+            extensions << [$class: 'CheckoutOption', timeout: gitTimeoutAtLeast(ext.timeout)]
+            hasCheckoutOption = true
+        } else {
+            extensions << ext
+        }
+    }
+
+    if (!hasCloneOption) {
+        extensions << [$class: 'CloneOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+    if (!hasCheckoutOption) {
+        extensions << [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+
+    Map checkoutScm = [
+        $class: 'GitSCM',
+        branches: baseScm.branches,
+        doGenerateSubmoduleConfigurations: baseScm.doGenerateSubmoduleConfigurations ?: false,
+        extensions: extensions,
+        submoduleCfg: baseScm.submoduleCfg ?: [],
+        userRemoteConfigs: baseScm.userRemoteConfigs
+    ]
+    if (baseScm.gitTool) {
+        checkoutScm.gitTool = baseScm.gitTool
+    }
+    if (baseScm.browser) {
+        checkoutScm.browser = baseScm.browser
+    }
+    return checkoutScm
+}
+
+@NonCPS
+int gitTimeoutAtLeast(Integer timeout) {
+    int currentTimeout = timeout ?: 0
+    return Math.max(currentTimeout, GIT_SCM_TIMEOUT_MINUTES)
+}
+
 String scmCheckoutRetryContext(Object err) {
     String msg = "${err}".toLowerCase()
     try {
@@ -101,7 +161,7 @@ void robustScmCheckout() {
             try {
                 echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
                 timeout(time: GIT_SCM_TIMEOUT_MINUTES, unit: 'MINUTES') {
-                    checkout scm
+                    checkout(scmWithGitTimeout(scm))
                 }
                 echo "[SCM] Checkout successful"
                 // If checkout succeeds, exit the function immediately
