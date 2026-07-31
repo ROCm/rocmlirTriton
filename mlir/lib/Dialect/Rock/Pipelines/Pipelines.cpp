@@ -540,12 +540,6 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
-  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
-  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
-  // arith.extf/truncf on fp8 element types crash bufferization with
-  // unsupported builtin.unrealized_conversion_cast.
-  pm.addPass(createEmulateFp8ExtTruncPass());
-
   // CPU optimization phase.
 
   // Rewrite linalg.generic convolutions in CPU-verifier funcs into a
@@ -573,6 +567,16 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   bufOpts.functionBoundaryTypeConversion =
       bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run after the
+  // CPU optimization phase above: its VectorizationSchedule vectorizes the
+  // verifier matmul into a named contraction, which it cannot do once the fp8
+  // extf has been rewritten into a memref.
+  // This pass emits memref IR (memref.get_global / memref.load), and we expect
+  // this should only happen when the IR is bufferized. Otherwise, this pass
+  // introduces memref ops while the surrounding IR is still tensor-based.
+  // Thus, it makes more sense to run this pass after bufferization.
+  pm.addPass(createEmulateFp8ExtTruncPass());
 
   // Lower to LLVM phase (after bufferization)
   cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;

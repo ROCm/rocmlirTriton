@@ -102,4 +102,11 @@ PYBIND11_MODULE(amd_arch_db, m) {
       "get_max_kpack",
       [](const std::string &arch) { return mlir::rock::getMaxKpack(arch); },
       py::arg("arch"));
+
+  m.def(
+      "supports_non_pow2_k_per_block",
+      [](const std::string &arch) {
+        return mlir::rock::supportsNonPow2KPerBlock(arch);
+      },
+      py::arg("arch"));
 }
