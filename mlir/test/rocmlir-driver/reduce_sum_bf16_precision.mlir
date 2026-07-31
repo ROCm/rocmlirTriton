@@ -3,7 +3,7 @@
 // mlir/test/fusion/pr-e2e/reductions/atomic_add_bf16/tosa-gemm-reduce-sum-case1-bf16.e2e.mlir).
 //
 // On the GPU (gfx950, the only target with native bf16 atomic-add hardware
-// support), the reduce_sum lowers to `buffer_atomic_pk_add_bf16`, so the
+// support), the reduce_sum lowers to `*_atomic_pk_add_bf16`, so the
 // reduction accumulates in bf16 precision.
 //
 // On the CPU (host reference produced by --clone-harness), the matmul
@@ -15,7 +15,7 @@
 //
 // gfx942 is intentionally excluded: it does not have hardware support for
 // bf16 atomic add, so the GPU lowering does not use
-// `buffer_atomic_pk_add_bf16` there.
+// `*_atomic_pk_add_bf16` there.
 
 // --- GPU assembly: gfx950 ---
 // RUN: rocmlir-gen -fut dot_add --arch gfx950 --clone-harness %s \
