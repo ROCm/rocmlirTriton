@@ -31,6 +31,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -2316,37 +2317,68 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                    trAttr.getLowerDims(), subDimStrides, trAttr.getParams())) {
             if (currSubDimInfo.contains(upperDim)) {
               for (const SubDimInfo &sdInfo : currSubDimInfo.at(upperDim)) {
-                if (sdInfo.stride > subDimStride * param) {
+                int64_t annotatedExtent = sdInfo.stride * sdInfo.size;
+                int64_t lowerDimExtent = subDimStride * param;
+                auto addConservativeSubDim = [&](int64_t dim, int64_t size) {
+                  if (size > 1)
+                    nextSubDimInfo[dim].push_back({size, 1});
                   LLVM_DEBUG(llvm::dbgs()
-                             << "No overlap: stride of analyzed dim is larger "
-                                "than new subdim stride.\n");
-                } else if (sdInfo.stride * sdInfo.size < subDimStride) {
-                  LLVM_DEBUG(llvm::dbgs()
-                             << "No overlap: stride of new subdim stride is "
-                                "larger than the analyzed dim.\n");
+                             << "non-aligned merge boundaries; conservatively "
+                                "creating subDim of <size="
+                             << size << ",stride=1> @ " << dim << "\n");
+                };
+
+                if (sdInfo.stride >= lowerDimExtent) {
+                  if (sdInfo.stride % lowerDimExtent != 0) {
+                    addConservativeSubDim(lowDim, param);
+                  } else {
+                    LLVM_DEBUG(
+                        llvm::dbgs()
+                        << "No overlap: stride of analyzed dim is larger "
+                           "than new subdim stride.\n");
+                  }
+                } else if (annotatedExtent <= subDimStride) {
+                  if (subDimStride % annotatedExtent != 0) {
+                    addConservativeSubDim(lowDim, param);
+                  } else {
+                    LLVM_DEBUG(
+                        llvm::dbgs()
+                        << "No overlap: stride of new subdim stride is "
+                           "larger than the analyzed dim.\n");
+                  }
                 } else {
                   // New sizes and strides for newly annotated subdims
                   int64_t newSize;
                   int64_t newStride;
-                  int64_t maxStrideSubDim = subDimStride * param;
+                  int64_t maxStrideSubDim = lowerDimExtent;
                   // Overlap on the right side of annotated subdim
-                  if (sdInfo.stride * sdInfo.size >= maxStrideSubDim) {
+                  if (annotatedExtent >= maxStrideSubDim) {
                     int64_t rhsBoundForAnnotate =
                         std::max(sdInfo.stride, subDimStride);
+                    if (maxStrideSubDim % rhsBoundForAnnotate != 0 ||
+                        rhsBoundForAnnotate % subDimStride != 0) {
+                      addConservativeSubDim(lowDim, param);
+                      continue;
+                    }
                     newSize = maxStrideSubDim / rhsBoundForAnnotate;
                     newStride = rhsBoundForAnnotate / subDimStride;
                   }
                   // The whole of annotatedSubDim is within the newly created
                   // lowDim
                   else if (sdInfo.stride >= subDimStride) {
+                    if (sdInfo.stride % subDimStride != 0) {
+                      addConservativeSubDim(lowDim, param);
+                      continue;
+                    }
                     newSize = sdInfo.size;
                     newStride = sdInfo.stride / subDimStride;
                   }
                   // Overlap on the left side of annotated subdim
                   else {
-                    int64_t maxStrideRemovedSubDim =
-                        sdInfo.stride * sdInfo.size;
-                    newSize = maxStrideRemovedSubDim / subDimStride;
+                    // Round up so that a partial crossing of a lower-dimension
+                    // boundary is retained as an address dependency.
+                    newSize =
+                        llvm::divideCeil(annotatedExtent, subDimStride);
                     newStride = 1;
                   }
                   LLVM_DEBUG(llvm::dbgs() << "creating subDim of <size="

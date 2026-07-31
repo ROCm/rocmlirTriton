@@ -493,6 +493,33 @@ TEST(GetLowerSubDimensionsTest, MultiDimBroadcastTracksEveryDimension) {
   EXPECT_TRUE(movesTheAddress(*n));
 }
 
+// Repartitioning a contiguous 16-element tile axis into groups of 10 crosses a
+// group boundary. Broadcasting away the within-group coordinate must not also
+// erase that group dependency.
+TEST(GetLowerSubDimensionsTest, MisalignedMergeKeepsAddressDependency) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder bcast(b, {"group", "channel"}, {32, 1}, loc);
+  bcast.passThrough("group");
+  bcast.broadcast({1}, {10});
+  TransformMapAttr bcastAttr = bcast.get();
+
+  BottomUpTMBuilder merge = BottomUpTMBuilder::above(bcast, bcastAttr);
+  merge.merge("flat", 0, {"group", "channel"});
+  TransformMapAttr mergeAttr = merge.get();
+
+  BottomUpTMBuilder tile = BottomUpTMBuilder::above(merge, mergeAttr);
+  tile.unmerge({"row", "column"}, {0, 1}, "flat", {20, 16});
+  TransformMapAttr tileAttr = tile.get();
+
+  ArrayAttr transforms = b.getArrayAttr({tileAttr, mergeAttr, bcastAttr});
+  auto column = getLowerSubDimensions(b, transforms, /*dim=*/1);
+  ASSERT_TRUE(succeeded(column));
+  EXPECT_TRUE(movesTheAddress(*column));
+}
+
 // Pad is not modelled, so the analysis reports failure instead of a wrong
 // answer, and callers proving invariance must read that as "cannot prove".
 TEST(GetLowerSubDimensionsTest, PadIsUnsupported) {
