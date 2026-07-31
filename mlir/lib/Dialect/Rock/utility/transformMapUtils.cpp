@@ -2341,10 +2341,9 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                   if (subDimStride % annotatedExtent != 0) {
                     addConservativeSubDim(lowDim, param);
                   } else {
-                    LLVM_DEBUG(
-                        llvm::dbgs()
-                        << "No overlap: stride of new subdim stride is "
-                           "larger than the analyzed dim.\n");
+                    LLVM_DEBUG(llvm::dbgs()
+                               << "No overlap: stride of new subdim stride is "
+                                  "larger than the analyzed dim.\n");
                   }
                 } else {
                   // New sizes and strides for newly annotated subdims
@@ -2377,8 +2376,7 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                   else {
                     // Round up so that a partial crossing of a lower-dimension
                     // boundary is retained as an address dependency.
-                    newSize =
-                        llvm::divideCeil(annotatedExtent, subDimStride);
+                    newSize = llvm::divideCeil(annotatedExtent, subDimStride);
                     newStride = 1;
                   }
                   LLVM_DEBUG(llvm::dbgs() << "creating subDim of <size="
