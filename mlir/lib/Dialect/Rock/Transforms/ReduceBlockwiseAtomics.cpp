@@ -88,6 +88,8 @@ static bool addressIsInvariantAlongDim(OpBuilder &b, ArrayAttr transforms,
 static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
                           int64_t destDim) {
   ArrayRef<int64_t> destShape = cast<ShapedType>(dest.getType()).getShape();
+  assert(destDim >= 0 && destDim < static_cast<int64_t>(destShape.size()) &&
+         "destDim must index the destination shape");
 
   // Fill the name storage before taking any StringRef into it, so that growing
   // the vector cannot invalidate the names handed to the builder.

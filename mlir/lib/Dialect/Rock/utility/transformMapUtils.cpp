@@ -2320,12 +2320,14 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                 int64_t annotatedExtent = sdInfo.stride * sdInfo.size;
                 int64_t lowerDimExtent = subDimStride * param;
                 auto addConservativeSubDim = [&](int64_t dim, int64_t size) {
-                  if (size > 1)
+                  if (size > 1) {
                     nextSubDimInfo[dim].push_back({size, 1});
-                  LLVM_DEBUG(llvm::dbgs()
-                             << "non-aligned merge boundaries; conservatively "
-                                "creating subDim of <size="
-                             << size << ",stride=1> @ " << dim << "\n");
+                    LLVM_DEBUG(
+                        llvm::dbgs()
+                        << "non-aligned merge boundaries; conservatively "
+                           "creating subDim of <size="
+                        << size << ",stride=1> @ " << dim << "\n");
+                  }
                 };
 
                 if (sdInfo.stride >= lowerDimExtent) {
