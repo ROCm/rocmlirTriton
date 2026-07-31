@@ -843,15 +843,8 @@ bool RAGreedy::addThroughConstraints(InterferenceCache::Cursor Intf,
         SlotIndex::isEarlierInstr(LIS->getInstructionIndex(*FirstNonDebugInstr),
                                   SA->getFirstSplitPoint(Number)))
       return false;
-
     // Interference for the live-in value.
-    Register Reg = SA->getParent().reg();
-    auto InsertPt = MBB->SkipPHIsLabelsAndDebug(MBB->begin(), Reg);
-    SlotIndex InsertIdx = InsertPt == MBB->end()
-                              ? Indexes->getMBBEndIdx(Number)
-                              : LIS->getInstructionIndex(*InsertPt);
-    if (Intf.first() <= Indexes->getMBBStartIdx(Number) ||
-        SlotIndex::isEarlierInstr(Intf.first(), InsertIdx))
+    if (Intf.first() <= Indexes->getMBBStartIdx(Number))
       BCS[B].Entry = SpillPlacement::MustSpill;
     else
       BCS[B].Entry = SpillPlacement::PrefSpill;
