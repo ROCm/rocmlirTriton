@@ -2,7 +2,7 @@
 // CHECK: [1 1 1]
 
 module {
-  func.func @mlir_test(%arg0: !migraphx.shaped<2x640x128x128xf32, 10485760x16384x128x1>, %arg1: !migraphx.shaped<320x640x1x1xf32, 640x1x1x1>, %arg2: !migraphx.shaped<2x320x128x128xf32, 5242880x16384x128x1>, %arg3: !migraphx.shaped<320xf32, 1>) -> (!migraphx.shaped<2x32x1x1x1xf32, 32x1x1x1x1>, !migraphx.shaped<2x32x1x1x1xf32, 32x1x1x1x1>, !migraphx.shaped<2x32x10x128x128xf32, 5242880x163840x16384x128x1>) attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch="gfx1100"} {
+  func.func @mlir_test(%arg0: !migraphx.shaped<2x640x128x128xf32, 10485760x16384x128x1>, %arg1: !migraphx.shaped<320x640x1x1xf32, 640x1x1x1>, %arg2: !migraphx.shaped<2x320x128x128xf32, 5242880x16384x128x1>, %arg3: !migraphx.shaped<320xf32, 1>) -> (!migraphx.shaped<2x32x1x1x1xf32, 32x1x1x1x1>, !migraphx.shaped<2x32x1x1x1xf32, 32x1x1x1x1>, !migraphx.shaped<2x32x10x128x128xf32, 5242880x163840x16384x128x1>) attributes {rock.enable_splitk_for_tuning, rock.kernel} {
     %0 = migraphx.literal(dense<6.10351572E-6> : tensor<1xf32>) : <1xf32, 0>
     %1 = migraphx.literal(dense<6.10351572E-6> : tensor<1xf32>) : <1xf32, 0>
     %2 = migraphx.convolution %arg0, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [0, 0, 0, 0], padding_mode = 0 : i64, stride = [1, 1]} : <2x640x128x128xf32, 10485760x16384x128x1>, <320x640x1x1xf32, 640x1x1x1> -> <2x320x128x128xf32, 5242880x16384x128x1>
