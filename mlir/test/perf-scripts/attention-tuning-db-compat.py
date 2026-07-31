@@ -206,11 +206,10 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         that row would silently disappear unless the NaN is backfilled to the
         disabled default.
         """
-        legacy_header = (
-            "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
-            "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
-            "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\t"
-            "TransBias\n")
+        legacy_header = ("DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
+                         "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
+                         "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\t"
+                         "TransBias\n")
         legacy_path = Path(f"{self.tmp_prefix}.legacy.debug")
         legacy_path.write_text(
             legacy_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
