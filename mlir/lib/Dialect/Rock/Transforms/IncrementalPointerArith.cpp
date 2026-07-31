@@ -1,4 +1,4 @@
-//===- TransformsInvariantCodeMotion.cpp - Hoist in-loop pointer arith ----===//
+//===- IncrementalPointerArith.cpp - Incrementalize in-loop ptr arith -----===//
 //
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -40,20 +40,20 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKTRANSFORMSINVARIANTCODEMOTIONPASS
+#define GEN_PASS_DEF_ROCKINCREMENTALPOINTERARITHPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-transforms-invariant-code-motion"
+#define DEBUG_TYPE "rock-incremental-pointer-arith"
 
 using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-struct RockTransformsInvariantCodeMotionPass
-    : public rock::impl::RockTransformsInvariantCodeMotionPassBase<
-          RockTransformsInvariantCodeMotionPass> {
+struct RockIncrementalPointerArithPass
+    : public rock::impl::RockIncrementalPointerArithPassBase<
+          RockIncrementalPointerArithPass> {
   void runOnOperation() override;
 };
 } // end anonymous namespace
@@ -449,8 +449,8 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
   return true;
 }
 
-/// Decide whether the passed transforms_to_ptr op can be LICM'ed, and how
-/// (affine accumulator vs. carried coordinates).
+/// Decide whether the passed transforms_to_ptr op can be incrementalized, and
+/// how (affine accumulator vs. carried coordinates).
 static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
                              Candidate &cand) {
   auto bail = [&](const char *reason) {
@@ -1094,7 +1094,7 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
 
 } // end anonymous namespace
 
-void RockTransformsInvariantCodeMotionPass::runOnOperation() {
+void RockIncrementalPointerArithPass::runOnOperation() {
   func::FuncOp func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;

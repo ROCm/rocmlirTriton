@@ -18,7 +18,7 @@
 //
 // Small shared helpers for building arith/triton coordinate arithmetic out of
 // rock transform maps. These are the primitives shared by
-// TransformsToPointerArith and TransformsInvariantCodeMotion passes.
+// TransformsToPointerArith and IncrementalPointerArith passes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -81,8 +81,8 @@ struct OffsetAndMask {
 ///
 /// When `computeOffset` is false, only the validity mask is produced: the
 /// trailing offset-only maps are skipped and `offset` is left null. The
-/// carry-based LICM path uses this because it maintains the offset via an
-/// incremental pointer recurrence, so re-linearizing it would be wasted
+/// carry path in rock-incremental-pointer-arith uses this because it maintains
+/// the offset via a pointer recurrence, so re-linearizing it would be wasted
 /// arithmetic. An all-true mask is returned when no map impacts validity.
 ///
 /// `indexType` (i32 or i64) is the integer width of the coordinate arithmetic

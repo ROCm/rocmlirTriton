@@ -23,7 +23,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   PreserveMaskedLoadSemantics.cpp
   CollapseContiguousMerges.cpp
   PointerArithExpand.cpp
-  TransformsInvariantCodeMotion.cpp
+  IncrementalPointerArith.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
