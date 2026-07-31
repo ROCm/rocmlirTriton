@@ -14,8 +14,8 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
-// Jenkins Git plugin defaults to 10 minutes per command. Use 2h for the plugin
-// command timeouts and as an outer wall-clock guard around each checkout.
+// Jenkins Git plugin defaults to 10 minutes per command. Use 2h for fetches and
+// checkouts that can exceed that on a slow network.
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
@@ -160,9 +160,7 @@ void robustScmCheckout() {
             // This inner 'try' handles the "reference is not a tree" fallback
             try {
                 echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
-                timeout(time: GIT_SCM_TIMEOUT_MINUTES, unit: 'MINUTES') {
-                    checkout(scmWithGitTimeout(scm))
-                }
+                checkout(scmWithGitTimeout(scm))
                 echo "[SCM] Checkout successful"
                 // If checkout succeeds, exit the function immediately
                 return
@@ -191,9 +189,7 @@ void robustScmCheckout() {
                         [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
                     ]
                 ]
-                timeout(time: GIT_SCM_TIMEOUT_MINUTES, unit: 'MINUTES') {
-                    checkout(deepScm)
-                }
+                checkout(deepScm)
                 echo "[SCM] Deep clone checkout successful."
                 // If the deep clone succeeds, exit the function
                 return
