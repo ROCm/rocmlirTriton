@@ -58,6 +58,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1685,6 +1686,38 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     {
       std::atomic<size_t> nextIdx{0};
 
+      // Live progress bar for the parallel compile phase. Only rendered when
+      // stderr is a terminal (e.g. tuningRunner's --compile-only path lets the
+      // driver's stderr inherit the console); when stderr is a pipe/file this
+      // is a no-op so captured logs stay clean. Updates are throttled and
+      // serialized by progressMutex so the \r-redraw from many worker threads
+      // doesn't interleave.
+      const bool showProgress = llvm::sys::Process::StandardErrIsDisplayed();
+      const size_t totalConfigs = configs.size();
+      std::atomic<size_t> completedCount{0};
+      std::mutex progressMutex;
+      auto lastRender = std::chrono::steady_clock::now();
+      auto renderProgress = [&](bool force) {
+        if (!showProgress)
+          return;
+        size_t done = completedCount.load(std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(progressMutex);
+        auto now = std::chrono::steady_clock::now();
+        if (!force && now - lastRender < std::chrono::milliseconds(100))
+          return;
+        lastRender = now;
+        int pct =
+            totalConfigs ? static_cast<int>(done * 100 / totalConfigs) : 100;
+        constexpr int kBarWidth = 30;
+        int filled = totalConfigs
+                         ? static_cast<int>(done * kBarWidth / totalConfigs)
+                         : kBarWidth;
+        llvm::errs() << "\rCompiling configs: " << pct << "% |";
+        for (int i = 0; i < kBarWidth; ++i)
+          llvm::errs() << (i < filled ? '=' : ' ');
+        llvm::errs() << "| " << done << "/" << totalConfigs;
+      };
+
       auto worker = [&]() {
         while (true) {
           if (compilationFailed.load(std::memory_order_relaxed))
@@ -1730,6 +1763,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           }
 
           compilationResults[idx] = std::move(result);
+
+          completedCount.fetch_add(1, std::memory_order_relaxed);
+          renderProgress(/*force=*/false);
         }
       };
 
@@ -1742,6 +1778,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       for (auto &t : threads) {
         t.join();
       }
+
+      // Final redraw at 100% followed by a newline so subsequent output starts
+      // on a fresh line.
+      renderProgress(/*force=*/true);
+      if (showProgress)
+        llvm::errs() << "\n";
     }
 
     // Check if any compilation failed and terminate early

@@ -1565,15 +1565,22 @@ def _problem_hash(test_vector: str, options: Options) -> str:
 def _run_pipeline(commands: List[List[str]],
                   env: Optional[Dict[str, str]] = None,
                   timeout: Optional[int] = None,
-                  cwd: Optional[str] = None) -> Tuple[int, str, str]:
+                  cwd: Optional[str] = None,
+                  capture_stderr: bool = True) -> Tuple[int, str, str]:
     """Run a shell-style pipeline and return (returncode, stdout, stderr) as
     decoded strings.
 
     Thin adapter over perfRunner.run_command_pipeline (the single shared pipeline
     implementation); see that function for the spawning/teardown/deadlock
-    semantics. Raises subprocess.TimeoutExpired on timeout.
+    semantics. Raises subprocess.TimeoutExpired on timeout. When capture_stderr
+    is False the last stage's stderr streams live to the terminal and the
+    returned stderr string is empty.
     """
-    rc, out, err = perfRunner.run_command_pipeline(commands, env=env, cwd=cwd, timeout=timeout)
+    rc, out, err = perfRunner.run_command_pipeline(commands,
+                                                   env=env,
+                                                   cwd=cwd,
+                                                   timeout=timeout,
+                                                   capture_stderr=capture_stderr)
     return rc, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
@@ -1755,7 +1762,8 @@ def run_compile_only(ctx: TuningContext) -> bool:
                        "(verification happens on the benchmark host)")
 
     all_ok = True
-    for test_vector in ctx.configs:
+    total_problems = len(ctx.configs)
+    for problem_idx, test_vector in enumerate(ctx.configs, start=1):
         if test_vector.endswith(".mlir"):
             logger.error(f"--compile-only does not support .mlir test vectors: {test_vector}")
             all_ok = False
@@ -1801,10 +1809,17 @@ def run_compile_only(ctx: TuningContext) -> bool:
         if options.num_cpus:
             td_cmd.append(f"--num-compile-threads={options.num_cpus}")
         pipeline = " | ".join(" ".join(cmd) for cmd in [gen_cmd, td_cmd])
+
+        logger.info(f"Compiling problem {problem_idx}/{total_problems}: {problem_hash}")
+        # On an interactive terminal, let the tuning driver's stderr inherit the
+        # console so its live compile progress bar is visible; otherwise capture
+        # it so logs stay clean and the error text is available on failure.
+        live_progress = sys.stderr.isatty() and not options.quiet
         try:
             rc, _out, err = _run_pipeline([gen_cmd, td_cmd],
                                           env=os.environ.copy(),
-                                          timeout=options.timeout)
+                                          timeout=options.timeout,
+                                          capture_stderr=not live_progress)
         except subprocess.TimeoutExpired:
             logger.error(
                 format_error(
@@ -1823,8 +1838,10 @@ def run_compile_only(ctx: TuningContext) -> bool:
         if rc != 0:
             _discard_problem(root, problem_dir, problem_hash)
             raise_if_terminated(rc)
+            # With live_progress the driver's stderr already went to the console.
+            detail = f":\n{err}" if err else ""
             logger.error(f"compile-only kernel bundle failed for problem {problem_hash} "
-                         f"(exit {rc}):\n{err}")
+                         f"(exit {rc}){detail}")
             all_ok = False
             if options.abort_on_error:
                 return False
