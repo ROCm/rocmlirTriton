@@ -138,11 +138,11 @@ bool toleratesRelayout(Operation *user) {
 // Redistribute a gather-style blocked global load's warps onto its reduction
 // (K) dim, given by kDim. The caller supplies kDim from the dot operand this
 // load feeds, and must have established `isGatherLoad(load, kDim)`.
-// The rewrite is scoped to the load's own use-def slice
-// (the load, the backward slice feeding its pointer/mask/other operands, and
-// any in_thread_transpose consuming it) rather than applied module-wide: TTG
-// encodings are uniqued by content, so a module-wide substitution keyed on the
-// encoding would also rewrite unrelated values that merely happen to share it.
+// The rewrite is scoped to the load's own use-def slice (the load, the backward
+// slice feeding its pointer/mask/other operands, and the loop-carried edges that
+// slice crosses) rather than applied module-wide: TTG encodings are uniqued by
+// content, so a module-wide substitution keyed on the encoding would also
+// rewrite unrelated values that merely happen to share it.
 // Where that slice overlaps a chain another op still needs at the old layout,
 // the overlap is duplicated rather than the rewrite declined.
 // Returns true when the load's layout was changed.
@@ -292,15 +292,77 @@ bool rewriteGatherLoad(Operation *load, unsigned kDim) {
                   "the old layout outside the rewrite scope; skipping\n");
     return false;
   }
-  // A loop-carried slot is retyped in place below, so an old-layout copy on
-  // either side of that edge would read or feed the wrong layout. Expressing
-  // this needs a second iter_arg on the scf.for; until then, decline.
-  if (!keepOldCopy.empty() && !forFixups.empty()) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "rock-set-reduction-layout: shared producer sits on a "
-                  "loop-carried chain; skipping\n");
+  // Retyping a loop-carried slot moves the layout of the whole slot at once:
+  // its init operand, its iter_arg, its yielded value and its loop result. The
+  // cases below are the ones where some part of the slot cannot follow, which
+  // would leave the loop signature inconsistent and fail the verifier. Since
+  // this pass is an optimization behind a knob, it declines instead: it must
+  // never turn a kernel that compiles into one that does not. All of these are
+  // therefore settled before the first mutation, so that declining leaves the
+  // IR exactly as it was found.
+  for (auto &[forOp, indices] : forFixups)
+    for (unsigned i : indices) {
+      // A reader of the iter_arg that stays at the old layout -- an outside
+      // consumer that does not tolerate a relayout, or a scoped op kept at the
+      // old layout to serve one -- would need the slot to hold both layouts at
+      // once, that is, a second iter_arg.
+      if (llvm::any_of(forOp.getRegionIterArg(i).getUsers(),
+                       [&scope, &keepOldCopy](Operation *user) {
+                         return keepOldCopy.contains(user) ||
+                                (!scope.contains(user) &&
+                                 !toleratesRelayout(user));
+                       })) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "rock-set-reduction-layout: a loop-carried iter_arg is "
+                      "also read at the old layout; skipping\n");
+        return false;
+      }
+      // The loop result is retyped along with the slot, so a post-loop reader
+      // would need a convert_layout on the way out.
+      if (!forOp.getResult(i).use_empty()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "rock-set-reduction-layout: a retyped loop-carried slot "
+                      "has post-loop uses; skipping\n");
+        return false;
+      }
+      // The init and yielded values move with the slot only if some op the
+      // rewrite reaches produces them. One arriving as a block argument -- an
+      // enclosing loop's iter_arg, say -- has no producer to retype here.
+      auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+      for (Value edge : {forOp.getInitArgs()[i], yieldOp.getOperand(i)})
+        if (!edge.getDefiningOp() && changesType(edge)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "rock-set-reduction-layout: a loop-carried edge is "
+                        "itself a block argument; skipping\n");
+          return false;
+        }
+    }
+
+  // An scf.for init operand and the matching scf.yield operand sit on ops that
+  // are not in the scope themselves -- the loop encloses the load rather than
+  // feeding it -- yet they carry the slots retyped above. Name them here so
+  // that a duplicated producer rewires them along with the in-scope uses,
+  // instead of leaving the loop reading its init at the old layout.
+  auto isRetypedLoopOperand = [&forFixups](OpOperand &use) {
+    Operation *owner = use.getOwner();
+    if (auto forOp = dyn_cast<scf::ForOp>(owner)) {
+      auto it = forFixups.find(forOp);
+      if (it == forFixups.end())
+        return false;
+      unsigned firstInit = forOp.getNumControlOperands();
+      unsigned idx = use.getOperandNumber();
+      return idx >= firstInit && it->second.contains(idx - firstInit);
+    }
+    if (auto yieldOp = dyn_cast<scf::YieldOp>(owner)) {
+      auto forOp = dyn_cast<scf::ForOp>(yieldOp->getParentOp());
+      if (!forOp)
+        return false;
+      auto it = forFixups.find(forOp);
+      return it != forFixups.end() &&
+             it->second.contains(use.getOperandNumber());
+    }
     return false;
-  }
+  };
 
   // Duplicate the shared part of the chain instead of declining the rewrite.
   // The original keeps the old layout for its outside consumers; the copy takes
@@ -320,7 +382,8 @@ bool rewriteGatherLoad(Operation *load, unsigned kDim) {
          llvm::zip_equal(op->getResults(), copy->getResults()))
       oldResult.replaceUsesWithIf(newResult, [&](OpOperand &use) {
         Operation *owner = use.getOwner();
-        return scope.contains(owner) && !keepOldCopy.contains(owner);
+        return isRetypedLoopOperand(use) ||
+               (scope.contains(owner) && !keepOldCopy.contains(owner));
       });
     rewrite.remove(op);
     rewrite.insert(copy);
@@ -351,20 +414,16 @@ bool rewriteGatherLoad(Operation *load, unsigned kDim) {
   }
 
   // Retype the loop-carried slots discovered above. The init and yield
-  // producers were rewritten as scoped ops (so the ForOp operand and yield
-  // operand types already moved); the block-argument and result types are held
-  // on the ForOp itself and are updated here to keep the loop signature
-  // consistent.
+  // producers were rewritten as scoped ops, or rewired onto their duplicates,
+  // so the ForOp operand and yield operand types have already moved; the
+  // block-argument and result types are held on the ForOp itself and are
+  // updated here to keep the loop signature consistent. Both are known safe to
+  // move by the checks made before the rewrite began.
   for (auto &[forOp, indices] : forFixups) {
     for (unsigned i : indices) {
       BlockArgument arg = forOp.getRegionIterArg(i);
       arg.setType(replacer.replace(arg.getType()));
       Value res = forOp.getResult(i);
-      // Make sure that the results of the loop are not used before updating the
-      // type.
-      assert(res.use_empty() &&
-             "loop-carried reduction-layout slot has post-loop uses; retyping "
-             "its result would corrupt them");
       res.setType(replacer.replace(res.getType()));
     }
   }

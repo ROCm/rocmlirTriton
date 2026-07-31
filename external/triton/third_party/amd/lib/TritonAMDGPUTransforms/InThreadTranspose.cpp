@@ -738,14 +738,27 @@ ttg::BlockedEncodingAttr getTransposableBlockedEnc(int dotOperandIdx,
   SmallVector<unsigned> newSizePerThread{blockedEnc.getSizePerThread()};
   newSizePerThread[kDimNum] = newKDimSize;
 
-  // return the new blocked encoding
-  auto order = blockedEnc.getOrder();
   auto ctx = blockedEnc.getContext();
-  auto numWarps = product(blockedEnc.getWarpsPerCTA());
-  auto threadsPerWarp = product(blockedEnc.getThreadsPerWarp());
-  auto numCTAs = product(blockedEnc.getCGALayout().getCTAsPerCGA());
-  return ttg::BlockedEncodingAttr::get(ctx, shape, newSizePerThread, order,
-                                       numWarps, threadsPerWarp, numCTAs);
+  auto order = blockedEnc.getOrder();
+  auto threadsPerWarp = blockedEnc.getThreadsPerWarp();
+  auto warpsPerCTA = blockedEnc.getWarpsPerCTA();
+  auto cgaLayout = blockedEnc.getCGALayout();
+  auto numWarps = product(warpsPerCTA);
+
+  auto shapeDerivedEnc = ttg::BlockedEncodingAttr::get(
+      ctx, shape, newSizePerThread, order, numWarps, product(threadsPerWarp),
+      product(cgaLayout.getCTAsPerCGA()));
+
+  // Deriving the distribution from the tensor shape hands warpsPerCTA back to
+  // the default heuristic, which may pull warps off the K dimension. Warps
+  // sitting on K were put there on purpose -- rock-set-reduction-layout gathers
+  // all of them there to keep the load offsets lane-invariant -- so when the
+  // derived layout would leave K with fewer warps, keep the incoming
+  // distribution and widen sizePerThread only.
+  if (shapeDerivedEnc.getWarpsPerCTA()[kDimNum] < warpsPerCTA[kDimNum])
+    return ttg::BlockedEncodingAttr::get(ctx, newSizePerThread, threadsPerWarp,
+                                         warpsPerCTA, order, cgaLayout);
+  return shapeDerivedEnc;
 }
 
 class InThreadTransposePattern : public OpRewritePattern<ttg::LocalLoadOp> {
