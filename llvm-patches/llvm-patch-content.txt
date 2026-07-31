@@ -358,3 +358,37 @@ an already-assigned register.
 
 As of this bump #211809 is still open upstream (unmerged). Drop or reconcile
 this patch once it lands in the pinned LLVM.
+
+----------------------------------------------------------------------
+patch211884.patch
+----------------------------------------------------------------------
+- Upstream commit : 9e43e04108dddff6476152d0fff672fb4c577925
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/211884
+- Upstream title  : [mlir][arith] Gate min/max expansion in arith-expand
+                    behind include-min-max
+- File Fixed      : mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
+                    mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
+                    mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
+                    mlir/test/Dialect/Arith/expand-ops-min-max.mlir (new)
+                    mlir/test/Dialect/Arith/expand-ops.mlir
+                    mlir/test/Dialect/EmitC/arith/ops.mlir
+- Contents        : Splits the min/max converters out of
+                    populateArithExpandOpsPatterns into the new
+                    populateExpandMinMaxFPatterns (maximumf/minimumf/maxnumf/
+                    minnumf), populateExpandMinMaxIPatterns (maxsi/maxui/minsi/
+                    minui) and an umbrella populateExpandMinMaxPatterns, and
+                    gates them in the arith-expand pass behind two new options,
+                    include-min-max-f and include-min-max-i (both default
+                    false). The ceil/floor-div and scaling ext/trunc expansions,
+                    which have no arith-to-llvm lowering, always run. The
+                    matching addIllegalOp sets move under the same conditions so
+                    the ops stay legal when not expanded.
+
+Reason for the patch
+--------------------
+Passing arith.minimumf/arith.maximumf unchanged to rock-to-ttir and through
+LLVM is more efficient than expanding them early into compare/select
+sequences.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 9e43e04108dddff6476152d0fff672fb4c577925.

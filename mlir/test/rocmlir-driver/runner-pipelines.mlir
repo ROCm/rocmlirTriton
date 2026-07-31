@@ -8,7 +8,7 @@
 // RUNNER-SAME: emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=false},
 // RUNNER-SAME: cpu-lower-verifier{dump-schedules-path= phase=2},
 // RUNNER-SAME: convert-linalg-to-loops,
-// RUNNER-SAME: arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false},
+// RUNNER-SAME: arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false include-min-max-f=true include-min-max-i=true},
 // RUNNER-SAME: func.func(rock-convert-narrow-type-signatures),
 // RUNNER-SAME: func.func(rock-emulate-narrow-types),
 // RUNNER-SAME: expand-strided-metadata,

@@ -490,6 +490,12 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     arith::ArithExpandOpsPassOptions expandOpts;
     expandOpts.includeF8E8M0 = true;
     expandOpts.includeF4E2M1 = true;
+    // Anything this pass expands is gone before RockToTTIR runs, so Triton's
+    // elementwise lowering never sees it. Keep floating-point and integer
+    // min/max ops intact unconditionally so Triton can lower them through the
+    // LLVM min/max intrinsics instead of inheriting compare/select chains.
+    expandOpts.includeMinMaxF = false;
+    expandOpts.includeMinMaxI = false;
     pm.addPass(arith::createArithExpandOpsPass(expandOpts));
   }
 
@@ -593,6 +599,10 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // includeFlushDenormals stays default (false): it only legalizes the
   // `arith.flush_denormals` op (which this pipeline never produces) and is
   // unrelated to BackendOptions::allowFlushDenorm.
+  // This is the CPU reference used to verify GPU results, so keep min/max on
+  // the compare/select expansion.
+  expandOpts.includeMinMaxF = true;
+  expandOpts.includeMinMaxI = true;
   pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
   // Emulate sub-byte types (f4E2M1FN -> i4 -> packed i8) after ArithExpandOps

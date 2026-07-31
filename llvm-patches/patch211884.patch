@@ -1,0 +1,282 @@
+diff --git a/mlir/include/mlir/Dialect/Arith/Transforms/Passes.h b/mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
+index 5a07a01d0..938c77c9d 100644
+--- a/mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
++++ b/mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
+@@ -68,6 +68,20 @@ void populateExpandF8E8M0Patterns(RewritePatternSet &patterns);
+ /// Add patterns to expand scaling ExtF/TruncF ops to equivalent arith ops
+ void populateExpandScalingExtTruncPatterns(RewritePatternSet &patterns);
+ 
++/// Add patterns to expand the floating-point min/max ops (`arith.maximumf`/
++/// `minimumf`/`maxnumf`/`minnumf`) into `cmpf` + `select` sequences.
++void populateExpandMinMaxFPatterns(RewritePatternSet &patterns);
++
++/// Add patterns to expand the signed/unsigned integer min/max ops
++/// (`arith.maxsi`/`maxui`/`minsi`/`minui`) into `cmpi` + `select` sequences.
++void populateExpandMinMaxIPatterns(RewritePatternSet &patterns);
++
++/// Add patterns to expand both the floating-point and integer min/max ops into
++/// `cmpf`/`cmpi` + `select` sequences. These ops also have a direct
++/// arith-to-llvm lowering, so pipelines that run arith-to-llvm may prefer to
++/// skip this expansion.
++void populateExpandMinMaxPatterns(RewritePatternSet &patterns);
++
+ /// Add patterns to expand `arith.flush_denormals` into integer arithmetic
+ /// (bitcast + bit masks + compare + select). Only matches IEEE-like
+ /// floating-point types.
+diff --git a/mlir/include/mlir/Dialect/Arith/Transforms/Passes.td b/mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
+index 27e9146ec..34c28db9c 100644
+--- a/mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
++++ b/mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
+@@ -25,6 +25,21 @@ def ArithExpandOpsPass : Pass<"arith-expand"> {
+               /*default=*/"false",
+               "Enable expansion of `arith.flush_denormals` on IEEE-like "
+               "floating-point types">,
++       Option<"includeMinMaxF", "include-min-max-f", "bool", /*default=*/"false",
++              "Enable expansion of the floating-point min/max ops "
++              "(maximumf/minimumf/maxnumf/minnumf). These ops also have a "
++              "direct arith-to-llvm lowering to the "
++              "`llvm.intr.maximum/minimum/maxnum/minnum` intrinsics; disable "
++              "this so pipelines that run arith-to-llvm can use those "
++              "single-instruction lowerings instead of the cmpf/select "
++              "expansion">,
++       Option<"includeMinMaxI", "include-min-max-i", "bool", /*default=*/"false",
++              "Enable expansion of the signed/unsigned integer min/max ops "
++              "(maxsi/maxui/minsi/minui). These ops also have a direct "
++              "arith-to-llvm lowering to the `llvm.intr.smax/umax/smin/umin` "
++              "intrinsics; disable this so pipelines that run arith-to-llvm "
++              "can use those single-instruction lowerings instead of the "
++              "cmpi/select expansion">,
+   ];
+ }
+ 
+diff --git a/mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp b/mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
+index c9217c57a..02ed6ccd8 100644
+--- a/mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
++++ b/mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
+@@ -823,7 +823,8 @@ struct ArithExpandOpsPass
+     RewritePatternSet patterns(&getContext());
+     ConversionTarget target(getContext());
+ 
+-    arith::populateArithExpandOpsPatterns(patterns);
++    arith::populateCeilFloorDivExpandOpsPatterns(patterns);
++    arith::populateExpandScalingExtTruncPatterns(patterns);
+ 
+     target.addLegalDialect<arith::ArithDialect>();
+     target.addLegalDialect<vector::VectorDialect>();
+@@ -833,17 +834,39 @@ struct ArithExpandOpsPass
+       arith::CeilDivSIOp,
+       arith::CeilDivUIOp,
+       arith::FloorDivSIOp,
+-      arith::MaxSIOp,
+-      arith::MaxUIOp,
+-      arith::MinSIOp,
+-      arith::MinUIOp,
+-      arith::MaximumFOp,
+-      arith::MinimumFOp,
+-      arith::MaxNumFOp,
+-      arith::MinNumFOp,
+       arith::ScalingExtFOp,
+       arith::ScalingTruncFOp
+     >();
++    // clang-format on
++
++    // The min/max ops also have a direct arith-to-llvm lowering to the
++    // `llvm.intr.maximum`/`minimum`/... (and smax/umax/...) intrinsics, which
++    // are a single hardware instruction on many targets. Only expand them into
++    // cmpf/cmpi + select when requested, so pipelines that run arith-to-llvm
++    // can keep the intrinsic lowering. The float and integer ops are gated
++    // separately.
++    if (includeMinMaxF) {
++      arith::populateExpandMinMaxFPatterns(patterns);
++      // clang-format off
++      target.addIllegalOp<
++        arith::MaximumFOp,
++        arith::MinimumFOp,
++        arith::MaxNumFOp,
++        arith::MinNumFOp
++      >();
++      // clang-format on
++    }
++    if (includeMinMaxI) {
++      arith::populateExpandMinMaxIPatterns(patterns);
++      // clang-format off
++      target.addIllegalOp<
++        arith::MaxSIOp,
++        arith::MaxUIOp,
++        arith::MinSIOp,
++        arith::MinUIOp
++      >();
++      // clang-format on
++    }
+ 
+     if (includeBf16)
+       arith::populateExpandBFloat16Patterns(patterns);
+@@ -936,15 +959,9 @@ void mlir::arith::populateExpandFlushDenormalsPatterns(
+   patterns.add<FlushDenormalsOpConverter>(patterns.getContext());
+ }
+ 
+-void mlir::arith::populateArithExpandOpsPatterns(RewritePatternSet &patterns) {
+-  populateCeilFloorDivExpandOpsPatterns(patterns);
+-  populateExpandScalingExtTruncPatterns(patterns);
++void mlir::arith::populateExpandMinMaxFPatterns(RewritePatternSet &patterns) {
+   // clang-format off
+   patterns.add<
+-    MaxMinIOpConverter<MaxSIOp, arith::CmpIPredicate::sgt>,
+-    MaxMinIOpConverter<MaxUIOp, arith::CmpIPredicate::ugt>,
+-    MaxMinIOpConverter<MinSIOp, arith::CmpIPredicate::slt>,
+-    MaxMinIOpConverter<MinUIOp, arith::CmpIPredicate::ult>,
+     MaximumMinimumFOpConverter<MaximumFOp, arith::CmpFPredicate::UGT>,
+     MaximumMinimumFOpConverter<MinimumFOp, arith::CmpFPredicate::ULT>,
+     MaxNumMinNumFOpConverter<MaxNumFOp, arith::CmpFPredicate::UGT>,
+@@ -952,3 +969,25 @@ void mlir::arith::populateArithExpandOpsPatterns(RewritePatternSet &patterns) {
+    >(patterns.getContext());
+   // clang-format on
+ }
++
++void mlir::arith::populateExpandMinMaxIPatterns(RewritePatternSet &patterns) {
++  // clang-format off
++  patterns.add<
++    MaxMinIOpConverter<MaxSIOp, arith::CmpIPredicate::sgt>,
++    MaxMinIOpConverter<MaxUIOp, arith::CmpIPredicate::ugt>,
++    MaxMinIOpConverter<MinSIOp, arith::CmpIPredicate::slt>,
++    MaxMinIOpConverter<MinUIOp, arith::CmpIPredicate::ult>
++   >(patterns.getContext());
++  // clang-format on
++}
++
++void mlir::arith::populateExpandMinMaxPatterns(RewritePatternSet &patterns) {
++  populateExpandMinMaxFPatterns(patterns);
++  populateExpandMinMaxIPatterns(patterns);
++}
++
++void mlir::arith::populateArithExpandOpsPatterns(RewritePatternSet &patterns) {
++  populateCeilFloorDivExpandOpsPatterns(patterns);
++  populateExpandScalingExtTruncPatterns(patterns);
++  populateExpandMinMaxPatterns(patterns);
++}
+diff --git a/mlir/test/Dialect/Arith/expand-ops-min-max.mlir b/mlir/test/Dialect/Arith/expand-ops-min-max.mlir
+new file mode 100644
+index 000000000..08d374a35
+--- /dev/null
++++ b/mlir/test/Dialect/Arith/expand-ops-min-max.mlir
+@@ -0,0 +1,100 @@
++// Default (min/max expansion disabled): the ops are kept as-is so a later
++// arith-to-llvm lowering can map them to the min/max intrinsics.
++// RUN: mlir-opt %s -arith-expand -split-input-file | FileCheck %s --check-prefix=DEFAULT
++
++// include-min-max-f=true: only the float ops expand into cmpf + select; the
++// integer ops are kept (integer expansion still off by default).
++// RUN: mlir-opt %s -arith-expand="include-min-max-f=true" -split-input-file | FileCheck %s --check-prefix=EXPANDF
++
++// include-min-max-i=true: only the integer ops expand into cmpi + select; the
++// float ops are kept (float expansion still off by default).
++// RUN: mlir-opt %s -arith-expand="include-min-max-i=true" -split-input-file | FileCheck %s --check-prefix=EXPANDI
++
++// Both enabled: all min/max ops are expanded.
++// RUN: mlir-opt %s -arith-expand="include-min-max-f=true include-min-max-i=true" -split-input-file | FileCheck %s --check-prefix=EXPANDALL
++
++// DEFAULT-LABEL:   func @maximumf
++// EXPANDF-LABEL:   func @maximumf
++// EXPANDI-LABEL:   func @maximumf
++// EXPANDALL-LABEL: func @maximumf
++func.func @maximumf(%a: f32, %b: f32) -> f32 {
++  // DEFAULT: arith.maximumf
++  // DEFAULT-NOT: arith.select
++  // EXPANDF: arith.cmpf ugt
++  // EXPANDF: arith.select
++  // EXPANDF-NOT: arith.maximumf
++  // EXPANDI: arith.maximumf
++  // EXPANDI-NOT: arith.select
++  // EXPANDALL: arith.cmpf ugt
++  // EXPANDALL: arith.select
++  // EXPANDALL-NOT: arith.maximumf
++  %result = arith.maximumf %a, %b : f32
++  return %result : f32
++}
++
++// -----
++
++// DEFAULT-LABEL:   func @minnumf
++// EXPANDF-LABEL:   func @minnumf
++// EXPANDI-LABEL:   func @minnumf
++// EXPANDALL-LABEL: func @minnumf
++func.func @minnumf(%a: f32, %b: f32) -> f32 {
++  // DEFAULT: arith.minnumf
++  // EXPANDF: arith.cmpf ult
++  // EXPANDF-NOT: arith.minnumf
++  // EXPANDI: arith.minnumf
++  // EXPANDALL: arith.cmpf ult
++  // EXPANDALL-NOT: arith.minnumf
++  %result = arith.minnumf %a, %b : f32
++  return %result : f32
++}
++
++// -----
++
++// DEFAULT-LABEL:   func @maxsi
++// EXPANDF-LABEL:   func @maxsi
++// EXPANDI-LABEL:   func @maxsi
++// EXPANDALL-LABEL: func @maxsi
++func.func @maxsi(%a: i32, %b: i32) -> i32 {
++  // DEFAULT: arith.maxsi
++  // DEFAULT-NOT: arith.select
++  // EXPANDF: arith.maxsi
++  // EXPANDF-NOT: arith.select
++  // EXPANDI: arith.cmpi sgt
++  // EXPANDI-NOT: arith.maxsi
++  // EXPANDALL: arith.cmpi sgt
++  // EXPANDALL-NOT: arith.maxsi
++  %result = arith.maxsi %a, %b : i32
++  return %result : i32
++}
++
++// -----
++
++// DEFAULT-LABEL:   func @minui
++// EXPANDF-LABEL:   func @minui
++// EXPANDI-LABEL:   func @minui
++// EXPANDALL-LABEL: func @minui
++func.func @minui(%a: i32, %b: i32) -> i32 {
++  // DEFAULT: arith.minui
++  // EXPANDF: arith.minui
++  // EXPANDI: arith.cmpi ult
++  // EXPANDI-NOT: arith.minui
++  // EXPANDALL: arith.cmpi ult
++  // EXPANDALL-NOT: arith.minui
++  %result = arith.minui %a, %b : i32
++  return %result : i32
++}
++
++// -----
++
++// Regardless of the min/max gating, the other expansions (here ceildivsi)
++// always run.
++
++// DEFAULT-LABEL:   func @ceildivi_still_expands
++// EXPANDALL-LABEL: func @ceildivi_still_expands
++func.func @ceildivi_still_expands(%a: i32, %b: i32) -> i32 {
++  // DEFAULT-NOT: arith.ceildivsi
++  // EXPANDALL-NOT: arith.ceildivsi
++  %result = arith.ceildivsi %a, %b : i32
++  return %result : i32
++}
+diff --git a/mlir/test/Dialect/Arith/expand-ops.mlir b/mlir/test/Dialect/Arith/expand-ops.mlir
+index 75c4de216..20f00b825 100644
+--- a/mlir/test/Dialect/Arith/expand-ops.mlir
++++ b/mlir/test/Dialect/Arith/expand-ops.mlir
+@@ -1,4 +1,4 @@
+-// RUN: mlir-opt %s -arith-expand="include-bf16=true include-f8e8m0=true include-f4e2m1=true" -verify-diagnostics -split-input-file | FileCheck %s
++// RUN: mlir-opt %s -arith-expand="include-bf16=true include-f8e8m0=true include-f4e2m1=true include-min-max-f=true include-min-max-i=true" -verify-diagnostics -split-input-file | FileCheck %s
+ // RUN: mlir-opt %s -arith-expand -split-input-file -verify-diagnostics | FileCheck %s --check-prefix=SCHECK
+ 
+ // Test ceil divide with signed integer
+diff --git a/mlir/test/Dialect/EmitC/arith/ops.mlir b/mlir/test/Dialect/EmitC/arith/ops.mlir
+index a7838a8ae..16e6508bb 100644
+--- a/mlir/test/Dialect/EmitC/arith/ops.mlir
++++ b/mlir/test/Dialect/EmitC/arith/ops.mlir
+@@ -1,4 +1,4 @@
+-// RUN: mlir-opt -arith-expand -convert-arith-to-emitc %s | FileCheck %s
++// RUN: mlir-opt -arith-expand="include-min-max-f=true include-min-max-i=true" -convert-arith-to-emitc %s | FileCheck %s
+ 
+ /// This file checks the combined `-arith-expand | -convert-arith-to-emitc`
+ /// pipeline with intentionally minimal FileCheck coverage.
