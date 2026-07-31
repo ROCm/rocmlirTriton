@@ -32,7 +32,7 @@
 // RUN:   | FileCheck %s --check-prefix=CPU
 
 // GPU performs the reduce_sum in bf16 via the packed bf16 atomic-add.
-// GFX950: buffer_atomic_pk_add_bf16
+// GFX950: atomic_pk_add_bf16
 
 // CPU host reference promotes the reduce_sum to f32: each bf16 input is
 // extended to f32, the accumulation is performed in f32, and the result is

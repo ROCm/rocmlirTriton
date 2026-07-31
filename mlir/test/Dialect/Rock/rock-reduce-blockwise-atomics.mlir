@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-reduce-blockwise-atomics | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-reduce-blockwise-atomics -mlir-print-local-scope | FileCheck %s
 
 // A tile axis that the destination broadcasts away is summed in registers and
 // pinned to zero in the destination view.
