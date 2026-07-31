@@ -15,36 +15,21 @@
 // limitations under the License.
 // =============================================================================
 //
-// The K tile size kPerBlock may legally be non-power-of-two, which
-// lets the tuner pick a tile that divides K evenly (48 divides a K of 576,
-// where the next power of two down, 32, does not). The Triton layouts produced
-// later by RockToTTIR need power-of-two shapes, so such a tile has to be
-// decomposed before then.
+// See the rock-decompose-nonpow2-k description in Passes.td for what this pass
+// does and why it sits where it does in the pipeline. The notes below cover
+// only what that description leaves out.
 //
-// DecomposeNonPow2Tiles does the equivalent job for the M and N tiles, but it
-// cannot do K at the same layer. M and N segments are independent output cells,
-// so they can become separate gridwise_gemms; K segments all reduce into one
-// accumulator, and expressing that on gridwise ops would mean two
-// gridwise_gemms combined by an elementwise op, which the output-fusion passes
-// cannot represent (they assume a single fusion root per store chain).
-//
-// So this pass runs one step later, after Gridwise{Gemm,Attn}ToBlockwise, where
-// both the K loop and the accumulator exist. For a rock.blockwise_gemm whose
-// K tile is not a power of two it splits that tile into power-of-two segments
-// (48 -> {32, 16}) and emits one blockwise_gemm per segment, threading the
-// accumulator through them so every segment of a K iteration reduces into the
-// same tile:
-//
-//   %acc1 = rock.blockwise_gemm(%aSeg0, %bSeg0, %acc)   // K = 32
-//   %acc2 = rock.blockwise_gemm(%aSeg1, %bSeg1, %acc1)  // K = 16
+// The decomposition has to happen at the blockwise layer, not alongside the M
+// and N tiles in DecomposeNonPow2Tiles, because K segments cannot be expressed
+// on gridwise ops at all: doing so would mean two gridwise_gemms joined by an
+// elementwise op, which the output-fusion passes cannot represent since they
+// assume a single fusion root per store chain.
 //
 // The per-segment operands are rebuilt rather than analysed. rock.load_marker
-// retains the original un-tiled source along with the tiling views, the loop
-// and grid indices and the cache modifier, so the pass slices the source to the
+// retains everything the rock::loadTile call that made it was given, so the
+// pass reads that back (getLoadTileRecipe), slices the source down to the
 // segment (sliceBlockedDims, shared with DecomposeNonPow2Tiles) and calls
-// rock::loadTile again with the segment's K. Everything else loadTile needs, in
-// particular the K iteration count and the M/N block count, it re-derives from
-// the sliced source shape.
+// loadTile again on the slice with the segment's K.
 //
 // Matching on rock.blockwise_gemm rather than on a gemm-specific op means the
 // same rewrite covers attention's first GEMM, whose K loop is built with the
@@ -86,10 +71,10 @@ struct RockDecomposeNonPow2KPass
   void runOnOperation() override;
 };
 
-/// Everything rock::loadTile needs in order to re-issue an operand load,
-/// recovered from the rock.load_marker that Gridwise{Gemm,Attn}ToBlockwise left
-/// behind.
-struct LoadRecipe {
+/// The arguments a rock::loadTile call was made with, plus the K iteration
+/// count that loadTile derived from them, as recovered from the
+/// rock.load_marker it left behind.
+struct LoadTileRecipe {
   Value source;
   Value kIter;
   layout::GridCoordinates gridCoords;
@@ -106,61 +91,46 @@ static bool isSubByte(Type t) {
   return t.isIntOrFloat() && t.getIntOrFloatBitWidth() < 8;
 }
 
-//===----------------------------------------------------------------------===//
-// Recovering the load parameters
-//===----------------------------------------------------------------------===//
-
-/// Recover the arguments of the rock::loadTile call that produced `marker`.
-/// `isKFirst` tells whether the source is laid out [G, K, D] (the B operand) or
-/// [G, D, K] (the A operand), which decides how the tile and source shapes are
-/// read. Fails if `marker` does not have the shape loadTile produces.
-static FailureOr<LoadRecipe> getLoadRecipe(LoadMarkerOp marker, bool isKFirst) {
-  // getLoadRegsAsTileViews emits exactly one map, whose upper bounds are
-  // [k_loop, g_block, m_block, n_block, <the two tile dims>], and loadTile
-  // indexes it with [kIter, g_block, m_block, n_block].
+/// Recover the arguments of the rock::loadTile call that produced `marker`, so
+/// that the load can be re-issued over a view of the same source.
+static FailureOr<LoadTileRecipe> getLoadTileRecipe(LoadMarkerOp marker,
+                                                   bool isKFirst) {
+  // loadTile leaves behind exactly one view, the one getLoadRegsAsTileViews
+  // builds over ["k_loop", "g_block", "m_block", "n_block", <the two tile
+  // dims>], and indexes it with [kIter, g_block, m_block, n_block].
   ArrayAttr views = marker.getExtraViews();
   ValueRange indices = marker.getExtraIndices();
   if (views.size() != 1 || indices.size() != 4)
     return failure();
-  auto map = dyn_cast<TransformMapAttr>(views[0]);
-  if (!map)
+  auto tiling = dyn_cast<TransformMapAttr>(views[0]);
+  if (!tiling)
     return failure();
-  ArrayRef<int64_t> upper = map.getUpperBounds();
-  if (upper.size() != 6)
+  // The verifier already ties the view's bounds to the marker: the upper ones
+  // to the tile shape and the index count, the lower ones to the source. So the
+  // bounds are the only thing left to read, and requiring six upper and three
+  // lower ones is what pins the view down to the tiling of a [G, K, D] /
+  // [G, D, K] matrix above.
+  ArrayRef<int64_t> upper = tiling.getUpperBounds();
+  if (upper.size() != 6 || tiling.getLowerBounds().size() != 3)
     return failure();
 
-  auto tileType = dyn_cast<RankedTensorType>(marker.getResult().getType());
-  auto sourceType = dyn_cast<RankedTensorType>(marker.getSource().getType());
-  if (!tileType || tileType.getRank() != 2 || !sourceType ||
-      sourceType.getRank() != 3)
-    return failure();
-  ArrayRef<int64_t> tile = tileType.getShape();
-  ArrayRef<int64_t> source = sourceType.getShape();
-
-  LoadRecipe recipe;
+  LoadTileRecipe recipe;
   recipe.source = marker.getSource();
   recipe.kIter = indices[0];
   recipe.gridCoords =
       layout::GridCoordinates{indices[1], indices[2], indices[3]};
+  recipe.kIterations = upper[0];
   recipe.bidGridLengths.assign(upper.begin() + 1, upper.begin() + 4);
-  recipe.kPerBlock = isKFirst ? tile[0] : tile[1];
-  recipe.dPerBlock = isKFirst ? tile[1] : tile[0];
+  recipe.kPerBlock = isKFirst ? upper[4] : upper[5];
+  recipe.dPerBlock = isKFirst ? upper[5] : upper[4];
   recipe.cache = marker.getCacheModifier();
-
-  int64_t kGlobal = isKFirst ? source[1] : source[2];
-  if (recipe.kPerBlock <= 0 || kGlobal % recipe.kPerBlock != 0)
-    return failure();
-  recipe.kIterations = kGlobal / recipe.kPerBlock;
-  // The recovered iteration count must agree with the one baked into the view,
-  // otherwise the marker was not built by loadTile the way we assume.
-  if (recipe.kIterations != upper[0])
-    return failure();
   return recipe;
 }
 
 /// View of `recipe`'s operand keeping only the `seg` slice of every K tile.
-static Value sliceKSegment(OpBuilder &b, Location loc, const LoadRecipe &recipe,
-                           Pow2Segment seg, bool isKFirst) {
+static Value sliceKSegment(OpBuilder &b, Location loc,
+                           const LoadTileRecipe &recipe, Pow2Segment seg,
+                           bool isKFirst) {
   return sliceBlockedDims(b, loc, recipe.source,
                           /*sliceDims=*/{isKFirst ? 1u : 2u},
                           /*blocks=*/{recipe.kIterations},
@@ -191,17 +161,22 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
                             "be loaded by rock.load_marker");
   }
 
-  FailureOr<LoadRecipe> maybeA = getLoadRecipe(markerA, /*isKFirst=*/false);
-  FailureOr<LoadRecipe> maybeB = getLoadRecipe(markerB, /*isKFirst=*/true);
+  FailureOr<LoadTileRecipe> maybeA =
+      getLoadTileRecipe(markerA, /*isKFirst=*/false);
+  FailureOr<LoadTileRecipe> maybeB =
+      getLoadTileRecipe(markerB, /*isKFirst=*/true);
   if (failed(maybeA) || failed(maybeB))
     return gemm.emitOpError(
         "could not recover the operand tiling of a non-power-of-two K tile "
         "(rock.load_marker does not have the shape rock::loadTile produces)");
 
-  LoadRecipe recipeA = std::move(*maybeA);
-  LoadRecipe recipeB = std::move(*maybeB);
-  assert(recipeA.kPerBlock == recipeB.kPerBlock &&
-         "blockwise_gemm operands must share their K tile");
+  LoadTileRecipe recipeA = std::move(*maybeA);
+  LoadTileRecipe recipeB = std::move(*maybeB);
+
+  if (recipeA.kPerBlock != recipeB.kPerBlock)
+    return gemm.emitOpError("operands of a non-power-of-two K tile must share "
+                            "their K tile, but got ")
+           << recipeA.kPerBlock << " and " << recipeB.kPerBlock;
 
   // Decomposing packs each segment on its own, which LegalizeFloatTypes
   // cannot do for sub-byte operands. The fused load types matter as much as
