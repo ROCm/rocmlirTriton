@@ -6,23 +6,6 @@
 // The max has to come after the clip: fed into it instead, the two adjacent
 // maxima fuse into one three-operand instruction and the fused max/min pair
 // never appears.
-//
-// The same kernel appears at f32 and at f16 because the two select different
-// instructions: the f16 elementwise tail vectorizes, so it reaches the packed
-// v_pk_* forms, and there is no packed fused form for a mixed max/min pair to
-// collapse into. Both kernels stay in the module no matter which one `-fut`
-// names -- that only picks the harness entry point -- so one compile per arch
-// covers both.
-//
-// buildKernelPipeline leaves the min/max ops unexpanded, so Triton's
-// MinMaxFOpConversion is what chooses between the hardware instruction and its
-// NaN-check emulation. The assembly comes from the `binary` stage's own
-// AMDGCN_ENABLE_DUMP, so these are the instructions the shipped kernel holds
-// rather than a reconstruction of the backend's flags.
-//
-// Which way round the fused pair comes out (a minimum of the maximum or the
-// other way about) follows from the tuning config rather than the target, so
-// the checks below accept either spelling.
 
 // CDNA3 has no IEEE-2019 min/max in any form, packed or not: Triton emits the
 // NaN-check emulation and the clamp collapses into the legacy non-propagating
