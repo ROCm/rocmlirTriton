@@ -39,7 +39,7 @@ param(
 
     # GPU arch(s), semicolon-separated. Defaults to the full RDNA3/RDNA4 set;
     # override for a faster single-arch dev build (e.g. -GpuTargets gfx1201).
-    [string]$GpuTargets = "gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1200;gfx1201",
+    [string]$GpuTargets = "gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1170;gfx1171;gfx1172;gfx1200;gfx1201",
 
     # Integration-test chipset; auto-detected, with single GpuTargets as fallback.
     [string]$RocmTestChipset = "",
@@ -89,11 +89,11 @@ if ($Jobs -le 0) {
 if (-not $RocmTestChipset) {
     $RocmTestChipset = Find-RocmTestChipset $RocmPath
     if (-not $RocmTestChipset) {
-        $targets = @($GpuTargets -split ';' | Where-Object { $_ })
-        if ($targets.Count -ne 1) {
+        $gpuTargetList = @($GpuTargets -split ';' | Where-Object { $_ })
+        if ($gpuTargetList.Count -ne 1) {
             throw "Could not detect the test chipset; pass -RocmTestChipset when building multiple GPU targets."
         }
-        $RocmTestChipset = $targets[0]
+        $RocmTestChipset = $gpuTargetList[0]
     }
 }
 

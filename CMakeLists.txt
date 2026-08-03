@@ -3,35 +3,38 @@ cmake_minimum_required(VERSION 3.20)
 # Allow VERSION for projects, as expected in CMake 3.0+
 cmake_policy(SET CMP0048 NEW)
 
+# Resolve the ROCm/HIP root once before project(). The Windows toolchain setup
+# below needs it this early, and cmake/triton.cmake reuses the same value for
+# package discovery. Precedence is:
+#   -DROCM_PATH -> ENV{ROCM_PATH} -> ENV{HIP_PATH} -> platform default
+if(NOT DEFINED ROCM_PATH)
+  if(DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH "$ENV{ROCM_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
+  elseif(CMAKE_HOST_WIN32 AND DEFINED ENV{HIP_PATH})
+    set(ROCM_PATH "$ENV{HIP_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
+  elseif(CMAKE_HOST_WIN32)
+    set(ROCM_PATH "C:/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
+  else()
+    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
+  endif()
+endif()
+file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
+
 #===----------------------------------------------------------------------===//
 # Windows toolchain auto-detection
 # NOTE: This MUST happen before project() so CMake doesn't detect MSVC first.
 #===----------------------------------------------------------------------===//
 
 if(CMAKE_HOST_WIN32)
-  # Resolve the ROCm/HIP root. Precedence matches cmake/triton.cmake so a single
-  # -DROCM_PATH drives both the toolchain here and the HIP package discovery
-  # there:  -DROCM_PATH (cache) -> ENV{ROCM_PATH} -> ENV{HIP_PATH} -> C:/opt/rocm
-  if(DEFINED ROCM_PATH)
-    set(_rocmlir_rocm_root "${ROCM_PATH}")
-  elseif(DEFINED ENV{ROCM_PATH})
-    set(_rocmlir_rocm_root "$ENV{ROCM_PATH}")
-  elseif(DEFINED ENV{HIP_PATH})
-    set(_rocmlir_rocm_root "$ENV{HIP_PATH}")
-  else()
-    set(_rocmlir_rocm_root "C:/opt/rocm")
-  endif()
-  file(TO_CMAKE_PATH "${_rocmlir_rocm_root}" _rocmlir_rocm_root)
-
   if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     # clang-cl lives under lib/llvm/bin in TheRock and under bin in the HIP SDK.
-    if(EXISTS "${_rocmlir_rocm_root}/lib/llvm/bin/clang-cl.exe")
-      set(_rocmlir_compiler_dir "${_rocmlir_rocm_root}/lib/llvm/bin")
-    elseif(EXISTS "${_rocmlir_rocm_root}/bin/clang-cl.exe")
-      set(_rocmlir_compiler_dir "${_rocmlir_rocm_root}/bin")
+    if(EXISTS "${ROCM_PATH}/lib/llvm/bin/clang-cl.exe")
+      set(_rocmlir_compiler_dir "${ROCM_PATH}/lib/llvm/bin")
+    elseif(EXISTS "${ROCM_PATH}/bin/clang-cl.exe")
+      set(_rocmlir_compiler_dir "${ROCM_PATH}/bin")
     else()
       message(FATAL_ERROR
-        "clang-cl not found under ${_rocmlir_rocm_root} "
+        "clang-cl not found under ${ROCM_PATH} "
         "(checked lib/llvm/bin and bin). Set ROCM_PATH/HIP_PATH or -DROCM_PATH to "
         "your ROCm/HIPSDK install (or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER).")
     endif()
@@ -63,10 +66,8 @@ if(CMAKE_HOST_WIN32)
   message(STATUS "Using lld-link at ${CMAKE_LINKER}")
 endif()
 
-# Default to RelWithDebInfo on Windows. This must happen before project() so
-# that LLVM's add_unittest() / gtest discovery (which snapshots CMAKE_BUILD_TYPE
-# eagerly and maps its per-object variables) does not latch onto CMake's
-# implicit default (which Ninja picks up as Debug on MSVC-flavored toolchains).
+# clang-cl with Ninja defaults an unset build type to Debug during project().
+# Select the Windows default before that initialization occurs.
 if(CMAKE_HOST_WIN32 AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
@@ -186,14 +187,7 @@ if(BUILD_MIXR_TARGET)
 endif()
 
 if(NOT DEFINED BUILD_FAT_LIBROCKCOMPILER)
-  # LLVM shared-library linkage is not viable on Windows (no DLL export
-  # annotations for LLVM/MLIR classes), so the static fat-lib build is the
-  # only viable default on WIN32.
-  if(WIN32)
-    set(BUILD_FAT_LIBROCKCOMPILER ON CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
-  else()
-    set(BUILD_FAT_LIBROCKCOMPILER OFF CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
-  endif()
+  set(BUILD_FAT_LIBROCKCOMPILER OFF CACHE BOOL "Build fat rockCompiler library to link into Rock driver")
 endif()
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "")

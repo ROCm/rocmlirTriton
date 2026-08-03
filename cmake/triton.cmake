@@ -90,9 +90,7 @@ add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
 # can discover ROCm SDK LLVM through CMAKE_PREFIX_PATH and mix incompatible LLVM
 # headers with the in-tree MLIR headers.
 set(MLIR_CMAKE_DIR "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
-# Cache MLIR_DIR so Triton's find_package(MLIR) uses the in-tree package on a
-# clean configure. Mirrors the LLVM_DIR caching below.
-set(MLIR_DIR "${MLIR_CMAKE_DIR}" CACHE PATH "Path to in-tree MLIR CMake package")
+set(MLIR_DIR "${MLIR_CMAKE_DIR}")
 
 set(LLVM_LIBRARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib${LLVM_LIBDIR_SUFFIX}")
 set(LLVM_CMAKE_DIR "${LLVM_LIBRARY_DIR}/cmake/llvm")
@@ -134,28 +132,12 @@ message(STATUS "LLVM_INCLUDE_DIRS: ${LLVM_INCLUDE_DIRS}")
 #===----------------------------------------------------------------------===//
 # ROCm Configuration
 #
-# Accepted inputs (first hit wins):
-#   -DROCM_PATH=<dir>         (cache/command-line)
-#   ENV{ROCM_PATH}=<dir>
-#   ENV{HIP_PATH}=<dir>       (the HIP SDK installer sets this on Windows)
-#   platform default          ("C:/opt/rocm" on Windows, "/opt/rocm" elsewhere)
-#
+# ROCM_PATH is resolved once in the top-level CMakeLists.txt before project()
+# so both the Windows toolchain and package discovery use the same root.
 # HIP package files may use the legacy hip/cmake module path or the standard
 # lib/cmake/hip package-prefix layout used by the HIP SDK and TheRock.
 #===----------------------------------------------------------------------===//
 
-if(NOT DEFINED ROCM_PATH)
-  if(DEFINED ENV{ROCM_PATH})
-    set(ROCM_PATH "$ENV{ROCM_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
-  elseif(WIN32 AND DEFINED ENV{HIP_PATH})
-    set(ROCM_PATH "$ENV{HIP_PATH}" CACHE PATH "Path to ROCm / HIP SDK installation")
-  elseif(WIN32)
-    set(ROCM_PATH "C:/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
-  else()
-    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to ROCm / HIP SDK installation")
-  endif()
-endif()
-file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 message(STATUS "ROCM_PATH: ${ROCM_PATH}")
 
 # Preserve the legacy module path where it is supported.
