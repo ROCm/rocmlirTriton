@@ -97,7 +97,7 @@ static FailureOr<LoadTileRecipe> getLoadTileRecipe(LoadMarkerOp marker,
                                                    bool isKFirst) {
   // loadTile leaves behind exactly one view, the one getLoadRegsAsTileViews
   // builds over ["k_loop", "g_block", "m_block", "n_block", <the two tile
-  // dims>], and indexes it with [kIter, g_block, m_block, n_block].
+  // iter dims>], and indexes it with [kIter, g_block, m_block, n_block].
   ArrayAttr views = marker.getExtraViews();
   ValueRange indices = marker.getExtraIndices();
   if (views.size() != 1 || indices.size() != 4)
