@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -263,19 +264,6 @@ static bool isInductionVar(Value v, Value iv) {
     v = def->getOperand(0);
   }
   return true;
-}
-
-/// Cast integer/index scalar `v` to the integer/index type `toTy`, inserting
-/// the appropriate `arith` cast.
-static Value castScalar(OpBuilder &b, Location loc, Value v, Type toTy) {
-  Type fromTy = v.getType();
-  if (fromTy == toTy)
-    return v;
-  if (isa<IndexType>(fromTy) || isa<IndexType>(toTy))
-    return arith::IndexCastOp::create(b, loc, toTy, v);
-  if (fromTy.getIntOrFloatBitWidth() > toTy.getIntOrFloatBitWidth())
-    return arith::TruncIOp::create(b, loc, toTy, v);
-  return arith::ExtSIOp::create(b, loc, toTy, v);
 }
 
 /// How an in-loop `transforms_to_ptr` is incrementalized across iterations.
@@ -698,9 +686,11 @@ static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
   // Pin the iv to lb: an index that is the iv (or a cast of it) is re-expressed
   // at lb, while loop-invariant indices are referenced directly.
   SmallVector<Value> baseIdx;
-  for (Value idx : op.getExtraIndices())
-    baseIdx.push_back(
-        isInductionVar(idx, iv) ? castScalar(b, loc, lb, idx.getType()) : idx);
+  for (Value idx : op.getExtraIndices()) {
+    if (isInductionVar(idx, iv))
+      idx = getValueOrCreateCastToIndexLike(b, loc, idx.getType(), lb);
+    baseIdx.push_back(idx);
+  }
 
   auto ptrType = cast<RankedTensorType>(op.getPointers().getType());
   Type maskType = op.getMask().getType();
@@ -713,7 +703,8 @@ static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
   Value stride = arith::ConstantOp::create(
       b, loc, b.getIntegerAttr(offsetTy, cand.unitStride));
   Value delta = arith::MulIOp::create(
-      b, loc, castScalar(b, loc, ivMinusLb, offsetTy), stride);
+      b, loc, getValueOrCreateCastToIndexLike(b, loc, offsetTy, ivMinusLb),
+      stride);
   Value deltaSplat = triton::SplatOp::create(b, loc, ptrType, delta);
   Value ptr = arith::AddIOp::create(b, loc, base.getPointers(), deltaSplat);
 
@@ -882,11 +873,8 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     // coordinates (baseIdx itself stays i32: it still feeds a TransformsToPtrOp
     // whose extraIndices are i32).
     SmallVector<Value> initValues;
-    for (Value idx : baseIdx) {
-      if (idx.getType() != idxTy)
-        idx = arith::ExtSIOp::create(b, loc, idxTy, idx);
-      initValues.push_back(idx);
-    }
+    for (Value idx : baseIdx)
+      initValues.push_back(getValueOrCreateCastToIndexLike(b, loc, idxTy, idx));
     for (size_t d = 0; d < outShape.size(); ++d)
       initValues.push_back(
           makeRange(b, loc, 0, outShape[d], outShape.size(), d, idxTy));
