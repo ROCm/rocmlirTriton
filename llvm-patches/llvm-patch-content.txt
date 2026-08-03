@@ -84,7 +84,8 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 ----------------------------------------------------------------------
 patch-rocm-runtime-dllexport.patch
 ----------------------------------------------------------------------
-- Origin          : Downstream Windows portability edit (no upstream PR)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/213046
+- Upstream title  : [MLIR][ROCm] Export runtime wrappers on Windows
 - File Fixed      : mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
 - Contents        : Adds an MLIR_ROCM_RUNTIME_EXPORT macro
                     (__declspec(dllexport) on _WIN32, empty elsewhere) and
@@ -100,7 +101,8 @@ because default visibility already exports the symbols.
 
 This is an independent Windows concern from patch205651 (STANDALONE linkage);
 it touches the same file but has a different lifecycle. Keep it even after
-patch205651 is dropped, until MLIR exports these symbols for Windows upstream.
+patch205651 is dropped, until the vendored LLVM revision contains the upstream
+fix.
 
 ----------------------------------------------------------------------
 patch205637.patch
