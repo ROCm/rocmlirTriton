@@ -254,15 +254,6 @@ static bool variantImpactsValidity(ArrayRef<TransformMapAttr> belowMaps,
   return false;
 }
 
-/// True if `v` is defined inside `loop` (its induction var, an iter_arg, or any
-/// value produced by an op nested in the loop body).
-static bool isDefinedInLoop(Value v, scf::ForOp loop) {
-  Operation *owner = v.getDefiningOp();
-  if (!owner)
-    owner = cast<BlockArgument>(v).getOwner()->getParentOp();
-  return owner == loop.getOperation() || loop->isProperAncestor(owner);
-}
-
 /// True if `v` is `iv`, possibly reached through a chain of integer casts.
 static bool isInductionVar(Value v, Value iv) {
   while (v != iv) {
@@ -482,7 +473,7 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
       ivPositions.push_back(pos);
       continue;
     }
-    if (isDefinedInLoop(idx, loop))
+    if (!loop.isDefinedOutsideOfLoop(idx))
       hasLoopVariantNonIvIdx = true;
   }
   if (ivPositions.empty())
@@ -535,7 +526,7 @@ static Value cloneSliceBeforeLoop(OpBuilder &b, Value v, scf::ForOp loop,
                                   IRMapping &map) {
   if (Value cached = map.lookupOrNull(v))
     return cached;
-  if (!isDefinedInLoop(v, loop))
+  if (loop.isDefinedOutsideOfLoop(v))
     return v;
   Operation *def = v.getDefiningOp();
   assert(def && "loop-defined value without a defining op should be the iv, "
