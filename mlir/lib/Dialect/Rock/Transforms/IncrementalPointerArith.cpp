@@ -31,11 +31,11 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -987,14 +987,10 @@ static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
 
 /// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
 /// new loop that carries the merge's decomposed coordinate state via the
-/// full-tile pointer recurrence. Returns true if `loop` was replaced, false if
-/// no candidate qualified and the IR was left unchanged.
+/// full-tile pointer recurrence. Returns true if the candidates were rewritten.
 static bool simplifyCarryCandidates(scf::ForOp loop,
                                     MutableArrayRef<Candidate> carryCands) {
   Location loc = loop.getLoc();
-  Value iv = loop.getInductionVar();
-  Value lb = loop.getLowerBound();
-  Value step = loop.getStep();
   OpBuilder b(loop);
 
   SmallVector<Reduced, 0> reduced = buildReducedCarries(b, loop, carryCands);
@@ -1006,62 +1002,40 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   // New iter_args: the original ones followed by each candidate's carried
   // coordinates.
   unsigned numOrig = loop.getInitArgs().size();
-  SmallVector<Value> newInits(loop.getInitArgs().begin(),
-                              loop.getInitArgs().end());
+  SmallVector<Value> extraInits;
   for (Reduced &r : reduced) {
-    r.iterArgStart = newInits.size();
-    for (Value v : r.carriedInits)
-      newInits.push_back(v);
+    r.iterArgStart = numOrig + extraInits.size();
+    llvm::append_range(extraInits, r.carriedInits);
     // The full-tile offset accumulator is carried last.
-    newInits.push_back(r.offsetAccInit);
+    extraInits.push_back(r.offsetAccInit);
   }
 
-  auto newLoop =
-      scf::ForOp::create(b, loc, lb, loop.getUpperBound(), step, newInits);
-
-  // Map old body values into the new body.
-  IRMapping bodyMap;
-  bodyMap.map(iv, newLoop.getInductionVar());
-  for (unsigned i = 0; i < numOrig; ++i)
-    bodyMap.map(loop.getRegionIterArg(i), newLoop.getRegionIterArg(i));
-
-  b.setInsertionPointToStart(newLoop.getBody());
+  scf::ForOp newLoop = addIterArgsToLoop(b, loop, extraInits);
 
   // Reconstruct each candidate's pointer/mask inside the body: rebuild the base
   // pointer/mask at iv == lb, splice the carried full-tile validity (suffix)
   // coordinates into the coord vector, rebuild only the mask, and form the
   // pointer as the base plus the carried full-tile offset accumulator (no
   // offset re-expansion).
-  llvm::SmallPtrSet<Operation *, 4> candidateOps;
+  SmallVector<std::pair<Value, Value>> ptrsAndMasks;
   for (Reduced &r : reduced) {
-    candidateOps.insert(r.op.getOperation());
-
+    b.setInsertionPoint(r.op);
     Value basePtr = buildCarryBasePtr(b, loc, r);
     FailureOr<Value> mask = buildCarryMask(b, loc, r, newLoop);
     if (failed(mask)) {
-      newLoop.erase();
+      SmallVector<Value> unchanged(
+          newLoop.getRegionIterArgs().drop_front(numOrig));
+      appendToForOpYield(newLoop, unchanged);
       return false;
     }
-    Value ptr = buildCarryPtr(b, loc, basePtr, r, newLoop);
-    bodyMap.map(r.op.getPointers(), ptr);
-    bodyMap.map(r.op.getMask(), *mask);
+    ptrsAndMasks.emplace_back(buildCarryPtr(b, loc, basePtr, r, newLoop),
+                              *mask);
   }
-
-  // Now just clone the other ops into the new body.
-  for (Operation &o : loop.getBody()->without_terminator()) {
-    if (candidateOps.contains(&o))
-      continue;
-    b.clone(o, bodyMap);
-  }
-
-  // Build the new yield
-  auto oldYield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
-  SmallVector<Value> newYields;
-  for (Value y : oldYield.getResults())
-    newYields.push_back(bodyMap.lookupOrDefault(y));
 
   // Emit IR for the the advanced carried coordinates (coordinate carry) for
   // each candidate.
+  b.setInsertionPoint(newLoop.getBody()->getTerminator());
+  SmallVector<Value> carried;
   for (Reduced &r : reduced) {
     // Advance the full-tile validity (suffix) coordinates and the
     // full-tile offset accumulator by the per-step delta.
@@ -1076,19 +1050,19 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
         ArrayRef<int64_t>(r.offsetStrides).take_back(r.suffixCount),
         r.hasPrefix, r.prefixStep, r.prefixStride);
 
-    for (Value v : stepCarry.nextSuffix)
-      newYields.push_back(v);
+    llvm::append_range(carried, stepCarry.nextSuffix);
 
     Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
-    newYields.push_back(
+    carried.push_back(
         arith::AddIOp::create(b, loc, offset, stepCarry.offsetDelta));
   }
-  scf::YieldOp::create(b, loc, newYields);
+  appendToForOpYield(newLoop, carried);
 
-  // Re-wire the original results and drop the old loop.
-  for (unsigned i = 0; i < numOrig; ++i)
-    loop.getResult(i).replaceAllUsesWith(newLoop.getResult(i));
-  loop.erase();
+  for (auto [r, ptrAndMask] : llvm::zip_equal(reduced, ptrsAndMasks)) {
+    r.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
+    r.op.getMask().replaceAllUsesWith(ptrAndMask.second);
+    r.op.erase();
+  }
   return true;
 }
 
