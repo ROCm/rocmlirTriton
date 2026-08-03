@@ -37,10 +37,10 @@ func.func @test_m_and_n_nonpow2(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf1
 
 // ============================================================
 // Both M and N (80, 80) and the contraction tile kPerBlock (48)
-// are non-power-of-two. This pass only decomposes M/N into a 2x2 grid
+// are non-power-of-two. This pass only peels M/N into a 2x2 grid
 // {64,16} x {64,16}; the non-pow2 kPerBlock rides along unchanged
-// on every sub-gemm (K decomposition happens later in
-// rock-decompose-nonpow2-k), so K stays 96 on each sub-view.
+// on every sub-gemm (K peeling happens later in
+// gridwise-gemm-to-blockwise), so K stays 96 on each sub-view.
 // ============================================================
 
 // CHECK-LABEL: func.func @test_m_and_n_nonpow2_with_nonpow2_k

@@ -1,10 +1,3 @@
-// Tests for the rock-decompose-nonpow2-k pass.
-//
-// The pass runs at the blockwise layer, so each case is a rock.blockwise_gemm
-// whose operands are loaded through rock.load_marker. A non-power-of-two K tile
-// is split into one rock.blockwise_gemm per K segment, chained through the
-// accumulator, with each segment re-loading a K slice of the original source.
-
 // RUN: rocmlir-opt -split-input-file -rock-decompose-nonpow2-k -canonicalize %s | FileCheck %s
 
 // A K tile of 48 decomposes into {32, 16}.
