@@ -1,0 +1,865 @@
+{
+  "causal_count": 2,
+  "input_count": 52,
+  "kv_cache_count": 120,
+  "mode": "performance",
+  "selected": [
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -causal true -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128",
+      "kind": "causal",
+      "source_lines": [
+        25
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -causal true -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128",
+      "kind": "causal",
+      "source_lines": [
+        27
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 12 -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 383,383,383,383,383,383,383,383,383,383,383,383",
+      "kind": "kv-cache",
+      "source_lines": [
+        1
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 16 -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 383,383,383,383,383,383,383,383,383,383,383,383,383,383,383,383",
+      "kind": "kv-cache",
+      "source_lines": [
+        2
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -g 12 -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 383,383,383,383,383,383,383,383,383,383,383,383",
+      "kind": "kv-cache",
+      "source_lines": [
+        3
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 10 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        4
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 10 -seq_len_q 4096 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 63,63,63,63,63,63,63,63,63,63",
+      "kind": "kv-cache",
+      "source_lines": [
+        5
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 20 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023,1023",
+      "kind": "kv-cache",
+      "source_lines": [
+        6
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 20 -seq_len_q 1024 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63",
+      "kind": "kv-cache",
+      "source_lines": [
+        7
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 40 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255",
+      "kind": "kv-cache",
+      "source_lines": [
+        8
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 40 -seq_len_q 256 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63",
+      "kind": "kv-cache",
+      "source_lines": [
+        9
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 40 -seq_len_q 64 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63,63",
+      "kind": "kv-cache",
+      "source_lines": [
+        10
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK false -transV false -transO false -g 1 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 512 -head_dim_v 512 -causal false -current_seq_len 4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        11
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 1 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 512 -head_dim_v 512 -causal false -current_seq_len 4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        12
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK false -transV false -transO false -g 32 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 128 -head_dim_v 128 -causal false -current_seq_len 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255",
+      "kind": "kv-cache",
+      "source_lines": [
+        13
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 32 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 128 -head_dim_v 128 -causal false -current_seq_len 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255",
+      "kind": "kv-cache",
+      "source_lines": [
+        14
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK false -transV false -transO false -g 32 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 96 -head_dim_v 96 -causal false -current_seq_len 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255",
+      "kind": "kv-cache",
+      "source_lines": [
+        15
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 32 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 96 -head_dim_v 96 -causal false -current_seq_len 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255",
+      "kind": "kv-cache",
+      "source_lines": [
+        16
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -g 20 -seq_len_q 1500 -seq_len_k 1500 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499,1499",
+      "kind": "kv-cache",
+      "source_lines": [
+        17
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK false -transV false -transO false -g 12 -seq_len_q 77 -seq_len_k 77 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 76,76,76,76,76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        18
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 12 -seq_len_q 77 -seq_len_k 77 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 76,76,76,76,76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        19
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 64 -seq_len_q 77 -seq_len_k 77 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        20
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK false -transV false -transO false -g 20 -seq_len_q 77 -seq_len_k 77 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        21
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -g 20 -seq_len_q 77 -seq_len_k 77 -head_dim_qk 64 -head_dim_v 64 -causal false -current_seq_len 76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        22
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK false -transV false -transO false -g 2 -seq_len_q 64 -seq_len_k 64 -head_dim_qk 512 -head_dim_v 512 -causal false -current_seq_len 63,63",
+      "kind": "kv-cache",
+      "source_lines": [
+        23
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -g 1 -seq_len_q 64 -seq_len_k 64 -head_dim_qk 512 -head_dim_v 512 -causal false -current_seq_len 63",
+      "kind": "kv-cache",
+      "source_lines": [
+        24
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        25
+      ]
+    },
+    {
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -g 32 -seq_len_q 1 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        26
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -causal false -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        27,
+        29
+      ]
+    },
+    {
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -g 32 -seq_len_q 1 -seq_len_k 4097 -head_dim_qk 128 -head_dim_v 128 -causal false -current_seq_len 4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096,4096",
+      "kind": "kv-cache",
+      "source_lines": [
+        28
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 4096 -head_dim_qk 16 -head_dim_v 16 -t f16 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        30
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 4096 -head_dim_qk 16 -head_dim_v 16 -t f32 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        30
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 4096 -head_dim_qk 16 -head_dim_v 16 -t i8 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        30
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 4096 -head_dim_qk 16 -head_dim_v 16 -t bf16 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        30
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 4096 -seq_len_k 7 -head_dim_qk 16 -head_dim_v 16 -t f16 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        31
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 4096 -seq_len_k 7 -head_dim_qk 16 -head_dim_v 16 -t f32 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        31
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 4096 -seq_len_k 7 -head_dim_qk 16 -head_dim_v 16 -t i8 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        31
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 4096 -seq_len_k 7 -head_dim_qk 16 -head_dim_v 16 -t bf16 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        31
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 32 -head_dim_v 32 -t f16 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        32
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 32 -head_dim_v 32 -t f32 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        32
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 32 -head_dim_v 32 -t i8 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        32
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 32 -head_dim_v 32 -t bf16 -current_seq_len 6,6,6,6,6,6,6,6",
+      "kind": "kv-cache",
+      "source_lines": [
+        32
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 300 -seq_len_q 196 -seq_len_k 196 -head_dim_qk 64 -head_dim_v 64 -t f16 -current_seq_len 195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195",
+      "kind": "kv-cache",
+      "source_lines": [
+        33
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 300 -seq_len_q 196 -seq_len_k 196 -head_dim_qk 64 -head_dim_v 64 -t f32 -current_seq_len 195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195",
+      "kind": "kv-cache",
+      "source_lines": [
+        33
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 300 -seq_len_q 196 -seq_len_k 196 -head_dim_qk 64 -head_dim_v 64 -t i8 -current_seq_len 195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195",
+      "kind": "kv-cache",
+      "source_lines": [
+        33
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 300 -seq_len_q 196 -seq_len_k 196 -head_dim_qk 64 -head_dim_v 64 -t bf16 -current_seq_len 195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195,195",
+      "kind": "kv-cache",
+      "source_lines": [
+        33
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 12 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64 -t f16 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        34
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 12 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64 -t f32 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        34
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 12 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64 -t i8 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        34
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 12 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 64 -head_dim_v 64 -t bf16 -current_seq_len 4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095,4095",
+      "kind": "kv-cache",
+      "source_lines": [
+        34
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 512 -head_dim_v 512 -t f16 -current_seq_len 9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        35
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 512 -head_dim_v 512 -t f32 -current_seq_len 9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        35
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 512 -head_dim_v 512 -t i8 -current_seq_len 9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        35
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 512 -head_dim_v 512 -t bf16 -current_seq_len 9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        35
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 512 -head_dim_v 512 -t f16 -current_seq_len 14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        36
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 512 -head_dim_v 512 -t f32 -current_seq_len 14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        36
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 512 -head_dim_v 512 -t i8 -current_seq_len 14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        36
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 512 -head_dim_v 512 -t bf16 -current_seq_len 14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        36
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 576 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 575,575,575,575,575,575,575,575",
+      "kind": "kv-cache",
+      "source_lines": [
+        37
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 576 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 575,575,575,575,575,575,575,575",
+      "kind": "kv-cache",
+      "source_lines": [
+        37
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 576 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 575,575,575,575,575,575,575,575",
+      "kind": "kv-cache",
+      "source_lines": [
+        37
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 576 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 575,575,575,575,575,575,575,575",
+      "kind": "kv-cache",
+      "source_lines": [
+        37
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 2304 -head_dim_qk 80 -head_dim_v 80 -t f16 -current_seq_len 2303,2303,2303,2303,2303,2303,2303,2303",
+      "kind": "kv-cache",
+      "source_lines": [
+        38
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 2304 -head_dim_qk 80 -head_dim_v 80 -t f32 -current_seq_len 2303,2303,2303,2303,2303,2303,2303,2303",
+      "kind": "kv-cache",
+      "source_lines": [
+        38
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 2304 -head_dim_qk 80 -head_dim_v 80 -t i8 -current_seq_len 2303,2303,2303,2303,2303,2303,2303,2303",
+      "kind": "kv-cache",
+      "source_lines": [
+        38
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 2304 -head_dim_qk 80 -head_dim_v 80 -t bf16 -current_seq_len 2303,2303,2303,2303,2303,2303,2303,2303",
+      "kind": "kv-cache",
+      "source_lines": [
+        38
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 40 -head_dim_v 40 -t f16 -current_seq_len 9215,9215,9215,9215,9215,9215,9215,9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        39
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 40 -head_dim_v 40 -t f32 -current_seq_len 9215,9215,9215,9215,9215,9215,9215,9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        39
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 40 -head_dim_v 40 -t i8 -current_seq_len 9215,9215,9215,9215,9215,9215,9215,9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        39
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 9216 -head_dim_qk 40 -head_dim_v 40 -t bf16 -current_seq_len 9215,9215,9215,9215,9215,9215,9215,9215",
+      "kind": "kv-cache",
+      "source_lines": [
+        39
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        40
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        40
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        40
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 576 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        40
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        41
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        41
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        41
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 2304 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        41
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 144 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 143,143,143,143,143,143,143,143",
+      "kind": "kv-cache",
+      "source_lines": [
+        42
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 144 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 143,143,143,143,143,143,143,143",
+      "kind": "kv-cache",
+      "source_lines": [
+        42
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 144 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 143,143,143,143,143,143,143,143",
+      "kind": "kv-cache",
+      "source_lines": [
+        42
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 144 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 143,143,143,143,143,143,143,143",
+      "kind": "kv-cache",
+      "source_lines": [
+        42
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        43
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        43
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        43
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 9216 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        43
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        44
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        44
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        44
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 144 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        44
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 900 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 899,899,899,899,899,899,899,899",
+      "kind": "kv-cache",
+      "source_lines": [
+        45
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 900 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 899,899,899,899,899,899,899,899",
+      "kind": "kv-cache",
+      "source_lines": [
+        45
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 900 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 899,899,899,899,899,899,899,899",
+      "kind": "kv-cache",
+      "source_lines": [
+        45
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 900 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 899,899,899,899,899,899,899,899",
+      "kind": "kv-cache",
+      "source_lines": [
+        45
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 40 -head_dim_v 40 -t f16 -current_seq_len 14399,14399,14399,14399,14399,14399,14399,14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        46
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 40 -head_dim_v 40 -t f32 -current_seq_len 14399,14399,14399,14399,14399,14399,14399,14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        46
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 40 -head_dim_v 40 -t i8 -current_seq_len 14399,14399,14399,14399,14399,14399,14399,14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        46
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 14400 -head_dim_qk 40 -head_dim_v 40 -t bf16 -current_seq_len 14399,14399,14399,14399,14399,14399,14399,14399",
+      "kind": "kv-cache",
+      "source_lines": [
+        46
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        47
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        47
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        47
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 77 -head_dim_qk 80 -head_dim_v 80 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        47
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        48
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        48
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        48
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 900 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        48
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        49
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        49
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        49
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 14400 -seq_len_k 77 -head_dim_qk 40 -head_dim_v 40 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        49
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 3600 -head_dim_qk 80 -head_dim_v 80 -t f16 -current_seq_len 3599,3599,3599,3599,3599,3599,3599,3599",
+      "kind": "kv-cache",
+      "source_lines": [
+        50
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 3600 -head_dim_qk 80 -head_dim_v 80 -t f32 -current_seq_len 3599,3599,3599,3599,3599,3599,3599,3599",
+      "kind": "kv-cache",
+      "source_lines": [
+        50
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 3600 -head_dim_qk 80 -head_dim_v 80 -t i8 -current_seq_len 3599,3599,3599,3599,3599,3599,3599,3599",
+      "kind": "kv-cache",
+      "source_lines": [
+        50
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 3600 -seq_len_k 3600 -head_dim_qk 80 -head_dim_v 80 -t bf16 -current_seq_len 3599,3599,3599,3599,3599,3599,3599,3599",
+      "kind": "kv-cache",
+      "source_lines": [
+        50
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 225 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 224,224,224,224,224,224,224,224",
+      "kind": "kv-cache",
+      "source_lines": [
+        51
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 225 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 224,224,224,224,224,224,224,224",
+      "kind": "kv-cache",
+      "source_lines": [
+        51
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 225 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 224,224,224,224,224,224,224,224",
+      "kind": "kv-cache",
+      "source_lines": [
+        51
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 225 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 224,224,224,224,224,224,224,224",
+      "kind": "kv-cache",
+      "source_lines": [
+        51
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        52
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t f32 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        52
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t i8 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        52
+      ]
+    },
+    {
+      "config": "-transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 8 -seq_len_q 225 -seq_len_k 77 -head_dim_qk 160 -head_dim_v 160 -t bf16 -current_seq_len 76,76,76,76,76,76,76,76",
+      "kind": "kv-cache",
+      "source_lines": [
+        52
+      ]
+    }
+  ],
+  "selected_count": 122,
+  "source": "mlir/utils/performance/configs/tier1-attention-configs"
+}

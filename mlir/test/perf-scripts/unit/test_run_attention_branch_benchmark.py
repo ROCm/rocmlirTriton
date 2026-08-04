@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import perfRunner
 import runAttentionBranchBenchmark
 
 runner = runAttentionBranchBenchmark
@@ -281,6 +282,21 @@ class CommandAndResultTest(unittest.TestCase):
         benchmark = runner.benchmark_command(branch, "-t f16", "", Path("/tmp.csv"))
         self.assertFalse(any(value.startswith("--rocmlir-gen-flags") for value in tune))
         self.assertFalse(any(value.startswith("--rocmlir_gen_flags") for value in benchmark))
+
+    def test_tuned_perf_runner_preserves_runtime_flags(self):
+        config = mock.Mock(perfconfig="attn:v4:test")
+        config.generate_mlir_driver_commandline.return_value = "-operation attention"
+        paths = types.SimpleNamespace(mlir_paths=types.SimpleNamespace(
+            rocmlir_gen_path="rocmlir-gen", rocmlir_tuning_driver_path="rocmlir-tuning-driver"))
+        with mock.patch.object(perfRunner.os.path, "exists", return_value=False), \
+                mock.patch.object(perfRunner, "run_pipeline", return_value=("time 10", True)):
+            result = perfRunner.run_config_with_mlir(config,
+                                                     paths,
+                                                     "gfx90a",
+                                                     "-current_seq_len=7",
+                                                     debug=False)
+        self.assertEqual(result, 10)
+        config.generate_mlir_driver_commandline.assert_called_once_with("-current_seq_len=7", None)
 
     def test_prepare_config(self):
         config, flags = runner.prepare_config("-g 2 -seq_len_q 1 -seq_len_k 8")

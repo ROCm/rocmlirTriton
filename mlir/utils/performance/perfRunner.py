@@ -1940,7 +1940,8 @@ def run_config_with_mlir(config: PerfConfiguration,
     use_tuning_driver = (not use_rocprof) and bool(config.perfconfig)
     use_host_harness = not use_tuning_driver
 
-    rocmlir_gen_flags = rocmlir_gen_flags + ' -ph' if use_host_harness else ''
+    if use_host_harness:
+        rocmlir_gen_flags += ' -ph'
     # We want to use kernel_repeats only if we are passing ' -ph' to rocmlir-gen, otherwise we use None.
     # This is because the kernel-repeats flag is only supported with host harness or CPU validation.
     kernel_repeats = MLIR_N_REPEATS if use_host_harness else None

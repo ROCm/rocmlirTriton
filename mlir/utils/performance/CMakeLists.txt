@@ -31,6 +31,8 @@ set(PERFORMANCE_RESOURCES
 )
 
 set(PERFORMANCE_CONFIGS
+  configs/pr347-causal-kvcache-attention-configs
+  configs/pr347-causal-kvcache-attention-configs.json
   configs/pr347-impacted-tier1-attention-configs
   configs/pr347-impacted-tier1-attention-configs.json
   configs/tier1-attention-configs

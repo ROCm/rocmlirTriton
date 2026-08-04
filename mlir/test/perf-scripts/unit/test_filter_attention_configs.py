@@ -129,6 +129,51 @@ class FilterAttentionConfigsTest(unittest.TestCase):
             filtering.main(["--input", str(source), "--output", str(output)])
             self.assertTrue(default_manifest.exists())
 
+    def test_performance_config_generation(self):
+        self.assertEqual(filtering.set_config_option("-g 2", "g", "3"), "-g 3")
+        self.assertEqual(filtering.set_config_option("--g=2", "g", "3"), "--g=3")
+        self.assertEqual(filtering.set_config_option("-g 2", "causal", "false"),
+                         "-g 2 -causal false")
+        self.assertEqual(filtering.remove_config_option("-g 2 --causal=true", "causal"), "-g 2")
+        self.assertEqual(filtering.remove_config_option("-g 2 -causal true", "missing"),
+                         "-g 2 -causal true")
+        self.assertEqual(filtering.expand_data_types("-t f16 -g 1"), ["-t f16 -g 1"])
+        expanded = filtering.expand_data_types("-g 1")
+        self.assertEqual(len(expanded), 4)
+        self.assertTrue(all(" -t " in f" {config} " for config in expanded))
+
+        configs = [
+            (1, "-t f16 -g 2 -seq_len_q 4 -seq_len_k 8 -causal true"),
+            (2, "-t f16 -g 2 -seq_len_q 4 -seq_len_k 8 -causal false"),
+        ]
+        selected, records = filtering.create_performance_configs(configs)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(records[0]["kind"], "causal")
+        self.assertEqual(records[1]["kind"], "kv-cache")
+        self.assertEqual(records[1]["source_lines"], [1, 2])
+        self.assertIn("-current_seq_len 7,7", selected[1])
+        self.assertIn("-causal false", selected[1])
+        with self.assertRaisesRegex(ValueError, "SeqLenK"):
+            filtering.create_performance_configs([(1, "-t f16 -g 1 -seq_len_q 1 -seq_len_k 1")])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            output = root / "output"
+            source.write_text(configs[0][1] + "\n", encoding="utf-8")
+            self.assertEqual(
+                filtering.main([
+                    "--input",
+                    str(source),
+                    "--output",
+                    str(output),
+                    "--mode",
+                    "performance",
+                ]), 0)
+            manifest = json.loads(Path(f"{output}.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["causal_count"], 1)
+            self.assertEqual(manifest["kv_cache_count"], 1)
+
     def test_committed_filter_artifact_is_current(self):
         repository = Path(__file__).resolve().parents[4]
         source = repository / "mlir" / "utils" / "performance" / "configs" / \
@@ -148,6 +193,27 @@ class FilterAttentionConfigsTest(unittest.TestCase):
                 "definite_count": 2,
                 "potential_count": 2,
                 "selected": records,
+            })
+
+        performance_artifact = source.parent / "pr347-causal-kvcache-attention-configs"
+        performance_configs, performance_records = filtering.create_performance_configs(
+            utils.read_config_lines(source))
+        self.assertEqual(performance_artifact.read_text(encoding="utf-8"),
+                         "\n".join(performance_configs) + "\n")
+        self.assertEqual(len(performance_configs), 122)
+        self.assertEqual(len({utils.canonical_config(config) for config in performance_configs}),
+                         122)
+        performance_manifest = json.loads(
+            Path(f"{performance_artifact}.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            performance_manifest, {
+                "source": "mlir/utils/performance/configs/tier1-attention-configs",
+                "mode": "performance",
+                "input_count": len(utils.read_config_lines(source)),
+                "selected_count": len(performance_configs),
+                "causal_count": 2,
+                "kv_cache_count": 120,
+                "selected": performance_records,
             })
 
 

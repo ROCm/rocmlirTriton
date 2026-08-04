@@ -33,7 +33,7 @@ build paths, and consumed-artifact fingerprints in its manifest. The
 preceding build succeeds. Python 3.9 or newer is required because the existing
 tuning runner uses `argparse.BooleanOptionalAction`.
 
-## 2. Filter PR #347-sensitive configs
+## 2. Generate causal and KV-cache performance configs
 
 ```bash
 OUT=/tmp/rocmlir-pr347-perf
@@ -41,17 +41,19 @@ mkdir -p "$OUT"
 
 python3 "$CANDIDATE/mlir/utils/performance/filterAttentionConfigs.py" \
   --input "$CANDIDATE/mlir/utils/performance/configs/tier1-attention-configs" \
-  --output "$OUT/impacted-attention-configs"
+  --output "$OUT/causal-kvcache-attention-configs" \
+  --mode performance
 ```
 
-Conservative mode is the default. It selects the two explicitly causal
-problems plus two `SeqLenQ=1` decode-shaped problems. During tuning and
-benchmarking, the runner supplies a valid per-group `current_seq_len` runtime
-input for those decode-shaped problems, so they exercise PR #347's actual
-KV-cache loop-bound path while retaining the existing tuning identity. The
-adjacent JSON manifest records each selected source line as `definite` or
-`potential`. Use `--mode exact` to retain only configs that explicitly select a
-changed code path.
+Performance mode emits 122 unique problems: the two causal-only tier-1 cases
+and 120 pure KV-cache variants. It expands omitted datatypes, preserves every
+original query shape, forces the KV-cache variants to non-causal, and supplies
+`current_seq_len=SeqLenK-1` for every group. This exercises both PR #347 paths
+without changing the valid K/V tile count. The adjacent JSON manifest records
+the source line or lines for every generated problem.
+
+Conservative mode remains available for the smaller four-config smoke
+population, while `--mode exact` selects only the two existing causal cases.
 
 ## 3. Quick-tune and benchmark both branches
 
@@ -65,7 +67,7 @@ python3 "$CANDIDATE/mlir/utils/performance/runAttentionBranchBenchmark.py" \
   --base-build "$BASE/build" \
   --candidate-source "$CANDIDATE" \
   --candidate-build "$CANDIDATE/build" \
-  --configs "$OUT/impacted-attention-configs" \
+  --configs "$OUT/causal-kvcache-attention-configs" \
   --output-dir "$OUT/results" \
   --samples 3 \
   --detach
