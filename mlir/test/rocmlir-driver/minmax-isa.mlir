@@ -7,9 +7,9 @@
 // maxima fuse into one three-operand instruction and the fused max/min pair
 // never appears.
 
-// CDNA3 has no IEEE-2019 min/max in any form, packed or not: Triton emits the
-// NaN-check emulation and the clamp collapses into the legacy non-propagating
-// instructions.
+// CDNA3 has no IEEE-2019 min/max in any form, packed or not. LLVM lowers each
+// operation to a legacy non-propagating min/max followed by compare/select
+// fixups that preserve the required NaN behavior.
 // Keep absence checks in a separate FileCheck invocation: implicit negative
 // checks do not cover the interior of a single CHECK-DAG group.
 // RUN: rocmlir-gen --clone-harness -arch gfx942 -fut mlir_minmax_f32 %s \
@@ -22,9 +22,12 @@
 // RUN:   < %t.gfx942
 
 // GFX942-DAG: v_max_f32
-// GFX942-DAG: v_med3_f32
-// GFX942-DAG: v_pk_max_f16
-// GFX942-DAG: v_pk_min_f16
+// GFX942-DAG: v_min_f32
+// GFX942-DAG: v_max_f16
+// GFX942-DAG: v_min_f16
+// GFX942-DAG: v_cmp_o_f32
+// GFX942-DAG: v_cmp_o_f16
+// GFX942-DAG: v_cndmask_b32
 
 // On CDNA4 the family exists only in its three-operand minimum3/maximum3 form,
 // packed included, so there is no two-operand pair for the backend to fuse and
