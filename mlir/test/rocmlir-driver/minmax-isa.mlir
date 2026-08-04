@@ -10,12 +10,16 @@
 // CDNA3 has no IEEE-2019 min/max in any form, packed or not: Triton emits the
 // NaN-check emulation and the clamp collapses into the legacy non-propagating
 // instructions.
+// Keep absence checks in a separate FileCheck invocation: implicit negative
+// checks do not cover the interior of a single CHECK-DAG group.
 // RUN: rocmlir-gen --clone-harness -arch gfx942 -fut mlir_minmax_f32 %s \
 // RUN: | rocmlir-driver -arch=gfx942 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -kernel-pipeline=gpu,triton,binary -o /dev/null 2>&1 \
-// RUN: | FileCheck %s --check-prefix=GFX942 \
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx942 2>&1
+// RUN: FileCheck %s --check-prefix=GFX942 < %t.gfx942
+// RUN: FileCheck /dev/null \
 // RUN:   --implicit-check-not=v_maximum --implicit-check-not=v_pk_maximum \
-// RUN:   --implicit-check-not=v_minimum --implicit-check-not=v_pk_minimum
+// RUN:   --implicit-check-not=v_minimum --implicit-check-not=v_pk_minimum \
+// RUN:   < %t.gfx942
 
 // GFX942-DAG: v_max_f32
 // GFX942-DAG: v_med3_f32
@@ -27,9 +31,10 @@
 // each op selects its own instruction with a duplicated operand.
 // RUN: rocmlir-gen --clone-harness -arch gfx950 -fut mlir_minmax_f32 %s \
 // RUN: | rocmlir-driver -arch=gfx950 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx950 -kernel-pipeline=gpu,triton,binary -o /dev/null 2>&1 \
-// RUN: | FileCheck %s --check-prefix=GFX950 \
-// RUN:   --implicit-check-not=v_maximumminimum --implicit-check-not=v_minimummaximum
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx950 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx950 2>&1
+// RUN: FileCheck %s --check-prefix=GFX950 < %t.gfx950
+// RUN: FileCheck /dev/null --implicit-check-not=v_maximumminimum \
+// RUN:   --implicit-check-not=v_minimummaximum < %t.gfx950
 
 // GFX950-DAG: v_maximum3_f32
 // GFX950-DAG: v_minimum3_f32
@@ -41,8 +46,9 @@
 // takes the packed two-operand form. Nothing falls back to a compare/select.
 // RUN: rocmlir-gen --clone-harness -arch gfx1170 -fut mlir_minmax_f32 %s \
 // RUN: | rocmlir-driver -arch=gfx1170 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null 2>&1 \
-// RUN: | FileCheck %s --check-prefix=GFX1170 --implicit-check-not=v_cndmask
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1170 2>&1
+// RUN: FileCheck %s --check-prefix=GFX1170 < %t.gfx1170
+// RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1170
 
 // GFX1170-DAG: v_maximum_f32
 // GFX1170-DAG: v_{{maximumminimum|minimummaximum}}_f32
@@ -53,8 +59,9 @@
 // three-operand form.
 // RUN: rocmlir-gen --clone-harness -arch gfx1250 -fut mlir_minmax_f32 %s \
 // RUN: | rocmlir-driver -arch=gfx1250 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1250 -kernel-pipeline=gpu,triton,binary -o /dev/null 2>&1 \
-// RUN: | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cndmask
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1250 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1250 2>&1
+// RUN: FileCheck %s --check-prefix=GFX1250 < %t.gfx1250
+// RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1250
 
 // GFX1250-DAG: v_maximum_f32
 // GFX1250-DAG: v_{{maximumminimum|minimummaximum}}_f32
