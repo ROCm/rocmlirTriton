@@ -245,6 +245,26 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
     }
   }
 
+  // Guard for the case where we would retype a value that is read after the
+  // loop. Its readers sit outside the scope and are not rewritten, so they
+  // would be left expecting the old layout; bail out to avoid corrupting them.
+  for (auto &[forOp, indices] : forFixups) {
+    for (unsigned i : indices) {
+      Value res = forOp.getResult(i);
+      // Does `res` carry a layout that will be rewritten?
+      // If not, it's safe, we don't need to bail out.
+      if (replacer.replace(res.getType()) == res.getType())
+        continue;
+      if (!res.use_empty()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "rock-set-reduction-layout: loop-carried slot has a "
+                      "post-loop use that would keep the old layout; "
+                      "skipping\n");
+        return;
+      }
+    }
+  }
+
   // The replacer recurses into nested encodings, so slice<{parent = #blocked}>
   // and the like are rewritten too. Applying it per scoped op rewrites
   // attribute dictionaries and result types locally.
@@ -279,11 +299,6 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
       BlockArgument arg = forOp.getRegionIterArg(i);
       arg.setType(replacer.replace(arg.getType()));
       Value res = forOp.getResult(i);
-      // Make sure that the results of the loop are not used before updating the
-      // type.
-      assert(res.use_empty() &&
-             "loop-carried reduction-layout slot has post-loop uses; retyping "
-             "its result would corrupt them");
       res.setType(replacer.replace(res.getType()));
     }
   }
