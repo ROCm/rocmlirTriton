@@ -16,6 +16,7 @@ patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+patch11118.patch
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -153,3 +154,14 @@ patch10928.patch
 
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
+
+patch11118.patch
+  Removes the AMD backend's second arith.minimumf/arith.maximumf conversion
+  registration, which shadowed its direct LLVM minimum/maximum lowering at the
+  same pattern benefit. LLVM now selects native IEEE min/max instructions where
+  available and legalizes the intrinsics otherwise.
+
+  Imports https://github.com/triton-lang/triton/pull/11118.
+
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
