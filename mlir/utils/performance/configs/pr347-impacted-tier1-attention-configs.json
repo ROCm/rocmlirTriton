@@ -1,0 +1,42 @@
+{
+  "definite_count": 2,
+  "input_count": 52,
+  "mode": "conservative",
+  "potential_count": 2,
+  "selected": [
+    {
+      "confidence": "definite",
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -causal true -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128",
+      "line": 25,
+      "reasons": [
+        "causal"
+      ]
+    },
+    {
+      "confidence": "potential",
+      "config": "-t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -g 32 -seq_len_q 1 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128",
+      "line": 26,
+      "reasons": [
+        "decode-shaped SeqLenQ=1 KV-cache proxy"
+      ]
+    },
+    {
+      "confidence": "definite",
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -causal true -return_lse false -g 32 -seq_len_q 4096 -seq_len_k 4096 -head_dim_qk 128 -head_dim_v 128",
+      "line": 27,
+      "reasons": [
+        "causal"
+      ]
+    },
+    {
+      "confidence": "potential",
+      "config": "-t f32 -transQ false -transK true -transV false -transO false -g 32 -seq_len_q 1 -seq_len_k 4097 -head_dim_qk 128 -head_dim_v 128",
+      "line": 28,
+      "reasons": [
+        "decode-shaped SeqLenQ=1 KV-cache proxy"
+      ]
+    }
+  ],
+  "selected_count": 4,
+  "source": "mlir/utils/performance/configs/tier1-attention-configs"
+}
