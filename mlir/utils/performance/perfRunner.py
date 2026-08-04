@@ -25,6 +25,11 @@ from hip import hip
 import reportUtils
 from perfCommonUtils import Operation, GEMMLibrary
 
+# Rock treats a WGP as the effective compute unit on architectures that support
+# WGP mode. Set this before the first HIP API call so multiProcessorCount always
+# reports WGPs there, even if the caller requested CU mode in its environment.
+os.environ["GPU_ENABLE_WGP_MODE"] = "1"
+
 # Split-K parameter index in perfconfig
 SPLITK_IDX = 7
 
@@ -90,8 +95,6 @@ OUTPUT_LAYOUT_MAP = {'N': 'n', 'C': 'k', 'H': 'h', 'W': 'w', 'G': 'g', '0': '0',
 ELAPSED_TIME_RE = re.compile(r"Elapsed: ([0-9\.]*) ms")
 # Compiled regexp object used for extracting target chip from arch
 GFX_CHIP_RE = re.compile(r"gfx[0-9a-z]+")
-INFO_ARCH_NAME = re.compile(r"Name:\s*(.*)")
-INFO_ARCH_CU = re.compile(r"Compute Unit:\s*(.*)")
 
 
 def input_layouts(input_layout):
@@ -2500,26 +2503,14 @@ def get_num_chiplets(chip, num_cu):
 
 
 def get_num_cu(chip):
-    try:
-        rocminfo = subprocess.check_output(f"{ROCM_PATH}/bin/rocminfo", stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(e.stderr.decode('utf-8'))
-        raise
-    except Exception as e:
-        print(f"Exception: {e}")
-        raise
-    rocminfo_lines = rocminfo.decode("utf-8").split("\n")
-    found_chip = False
-    for line in rocminfo_lines:
-        if not found_chip:
-            m = INFO_ARCH_NAME.search(line)
-            if m and chip in m.group(1).strip():
-                found_chip = True
-        if found_chip:
-            compute_unit = INFO_ARCH_CU.search(line)
-            if compute_unit:
-                return int(compute_unit.group(1))
-    assert False, f"Cannot find number of CUs for {chip}"
+    device_count = hip_check(hip.hipGetDeviceCount())
+    for device in range(device_count):
+        props = hip.hipDeviceProp_t()
+        hip_check(hip.hipGetDeviceProperties(props, device))
+        agent = props.gcnArchName.decode('utf-8')
+        if chip in agent:
+            return int(props.multiProcessorCount)
+    raise RuntimeError(f"Cannot find number of CUs for {chip}")
 
 
 def found_external_tool(paths: Paths,
