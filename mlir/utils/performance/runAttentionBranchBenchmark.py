@@ -31,6 +31,7 @@ RESULT_FIELDS = [
 ]
 PROCESS_GPU_INDEX = 1
 MANIFEST_VERSION = 1
+BENCHMARK_TOOLS_DIR = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
@@ -332,7 +333,7 @@ def prepare_config(config: str) -> Tuple[str, str]:
 
 
 def tuning_command(branch: BranchRun, config: str, runtime_flags: str, gpu: int, args) -> List[str]:
-    runner = branch.source / "mlir" / "utils" / "performance" / "tuningRunner.py"
+    runner = BENCHMARK_TOOLS_DIR / "tuningRunner.py"
     command = [
         sys.executable,
         str(runner),
@@ -366,7 +367,7 @@ def tuning_command(branch: BranchRun, config: str, runtime_flags: str, gpu: int,
 
 def benchmark_command(branch: BranchRun, config: str, runtime_flags: str,
                       temporary_csv: Path) -> List[str]:
-    runner = branch.source / "mlir" / "utils" / "performance" / "perfRunner.py"
+    runner = BENCHMARK_TOOLS_DIR / "perfRunner.py"
     command = [
         sys.executable,
         str(runner),

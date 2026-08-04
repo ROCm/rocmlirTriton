@@ -28,6 +28,7 @@ set(PERFORMANCE_SCRIPTS
 
 set(PERFORMANCE_RESOURCES
   README-attention-perf-comparison.md
+  runPR347AttentionBenchmark.sh
 )
 
 set(PERFORMANCE_CONFIGS

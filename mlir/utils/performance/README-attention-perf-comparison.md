@@ -4,6 +4,46 @@ These scripts compare quick-tuned attention performance between two pinned
 rocmlirTriton revisions. They are intended to run unchanged on any supported
 AMD GPU server.
 
+## One-command launch
+
+From any existing rocmlirTriton clone, replace the repository path and GPU
+index, then run this single command:
+
+```bash
+REPO=/path/to/rocmlirTriton bash -c '
+  set -euo pipefail
+  git -C "$REPO" fetch --no-tags origin \
+    refs/heads/users/umayadav/pr347-attention-perf:refs/remotes/origin/users/umayadav/pr347-attention-perf
+  CANDIDATE=$(git -C "$REPO" rev-parse origin/users/umayadav/pr347-attention-perf)
+  git -C "$REPO" show "$CANDIDATE":mlir/utils/performance/runPR347AttentionBenchmark.sh |
+    bash -s -- --repo "$REPO" --candidate-sha "$CANDIDATE" --gpu 0
+'
+```
+
+The command resolves the fetched branch once, then uses that exact revision for
+both the bootstrap script and candidate benchmark. The script creates detached
+baseline and candidate worktrees, builds each revision, generates all 122
+configs, and launches the resumable benchmark detached from the SSH session. It
+does not switch or modify the caller's checkout. Omit `--gpu 0` to select the
+first GPU that the runner can prove is idle.
+
+By default, persistent state and results are under
+`/tmp/rocmlir-pr347-attention-$USER`. Initial setup remains attached while the
+two revisions build; only the tuning and benchmark phase is detached. Monitor
+it with:
+
+```bash
+tail -f "/tmp/rocmlir-pr347-attention-$USER/results/detached.log"
+```
+
+Rerun the same command after an interruption. Matching builds, tuning state,
+and completed samples are reused. The script fails rather than replacing a
+dirty or mismatched worktree. Pass `--workspace PATH`, `--samples N`, or
+`--foreground` after `bash -s --` to override the defaults.
+
+The following sections describe the equivalent manual workflow and result
+post-processing.
+
 ## 1. Prepare isolated source and build trees
 
 Use separate worktrees and build directories. Never reuse a build after
@@ -20,7 +60,9 @@ git -C "$REPO" worktree add --detach "$BASE" \
 (cd "$BASE" && \
   bash ./cmake.sh && \
   cmake --build build --target check-rocmlir-build-only && \
-  cmake --build build --target ci-performance-scripts)
+  cmake --build build --target ci-performance-scripts && \
+  printf '%s\n' 0409d83a7f151269baad29592a4deac79bd39ae7 \
+    > build/rocmlir-source-sha)
 (cd "$CANDIDATE" && \
   bash ./cmake.sh && \
   cmake --build build --target check-rocmlir-build-only && \
@@ -28,10 +70,11 @@ git -C "$REPO" worktree add --detach "$BASE" \
 ```
 
 The runner rejects dirty trees and records both exact revisions, source paths,
-build paths, and consumed-artifact fingerprints in its manifest. The
-`ci-performance-scripts` target writes a source-revision stamp only after the
-preceding build succeeds. Python 3.9 or newer is required because the existing
-tuning runner uses `argparse.BooleanOptionalAction`.
+build paths, and consumed-artifact fingerprints in its manifest. The pinned
+baseline predates the CMake-generated source stamp, so the manual workflow
+writes it only after both baseline build targets succeed. Python 3.9 or newer
+is required because the existing tuning runner uses
+`argparse.BooleanOptionalAction`.
 
 ## 2. Generate causal and KV-cache performance configs
 
