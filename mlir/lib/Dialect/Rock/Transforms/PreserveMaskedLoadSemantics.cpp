@@ -90,7 +90,7 @@ static bool isNarrowLoadShapeOp(Operation *op) {
   return isa<triton::ExpandDimsOp, triton::BroadcastOp>(op);
 }
 
-static bool isFusionChainOp(Operation *op) {
+static bool isFusionOrNarrowLoadShapeOp(Operation *op) {
   return rock::isFusionOp(op) || isNarrowLoadShapeOp(op);
 }
 
@@ -113,7 +113,7 @@ collectFusionChainLeaves(Value loadResult) {
       // Each shape op has one input, so its identity uniquely identifies the
       // shape path. Keep converging paths distinct when their masks differ.
       Operation *lastShapeOp = shapeOps.empty() ? nullptr : shapeOps.back();
-      if (!isFusionChainOp(owner) ||
+      if (!isFusionOrNarrowLoadShapeOp(owner) ||
           !visited.insert({owner, lastShapeOp}).second)
         continue;
 
@@ -124,7 +124,7 @@ collectFusionChainLeaves(Value loadResult) {
       bool hasNonFusionUse = false;
       bool hasFusionUse = false;
       for (OpOperand &resultUse : result.getUses()) {
-        if (isFusionChainOp(resultUse.getOwner()))
+        if (isFusionOrNarrowLoadShapeOp(resultUse.getOwner()))
           hasFusionUse = true;
         else
           hasNonFusionUse = true;
