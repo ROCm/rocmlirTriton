@@ -8,7 +8,9 @@
 # RUN: %python %s
 """
 
+import contextlib
 from enum import IntEnum
+import io
 import os
 from pathlib import Path
 import sys
@@ -53,14 +55,20 @@ sys.modules["hip"] = hip_package
 MLIR_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MLIR_DIR / "utils" / "performance"))
 
-os.environ.pop("GPU_ENABLE_WGP_MODE", None)
-from perfRunner import get_num_cu  # noqa: E402
+# Start in CU mode so importing perfRunner must warn and force WGP mode.
+os.environ["GPU_ENABLE_WGP_MODE"] = "0"
+IMPORT_STDERR = io.StringIO()
+with contextlib.redirect_stderr(IMPORT_STDERR):
+    from perfRunner import get_num_cu  # noqa: E402
 
 
 class GetNumCuTest(unittest.TestCase):
 
     def test_forces_wgp_mode(self):
         self.assertEqual(os.environ["GPU_ENABLE_WGP_MODE"], "1")
+
+    def test_warns_before_overriding_cu_mode(self):
+        self.assertIn("GPU_ENABLE_WGP_MODE=0 is overridden to 1", IMPORT_STDERR.getvalue())
 
     def test_returns_matching_device_multiprocessor_count(self):
         self.assertEqual(get_num_cu("gfx1170"), 4)
