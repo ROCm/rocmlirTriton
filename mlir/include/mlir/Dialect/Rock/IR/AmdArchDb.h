@@ -146,6 +146,10 @@ int64_t getMaxNumCTAs(StringRef arch);
 /// Get the maximum supported `kpack` perf-config value for this arch.
 int64_t getMaxKpack(StringRef arch);
 
+/// Whether a non-power-of-two `kPerBlock` perf-config value may be used on this
+/// arch, i.e. whether the K loop may be peeled into power-of-two segments.
+bool supportsNonPow2KPerBlock(StringRef arch);
+
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 

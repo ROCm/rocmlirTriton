@@ -795,6 +795,12 @@ def RockSetReductionLayoutPass
   let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
                            "triton::amdgpu::TritonAMDGPUDialect",
                            "arith::ArithDialect"];
+  let options = [Option<
+      "useReductionLayout", "use-reduction-layout", "int64_t", /*default=*/"-1",
+      "Tri-state gate: -1 (default / heuristic) rewrites only convolution "
+      "kernels (those carrying the `rock.conv_kernel` attribute); 0 disables "
+      "the rewrite entirely (no kernel is touched); 1 forces the rewrite on "
+      "every kernel.">];
 }
 
 def RockAnalyzeMemoryUsePass

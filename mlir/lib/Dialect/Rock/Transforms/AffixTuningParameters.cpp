@@ -163,17 +163,21 @@ static LogicalResult validateGridGroupSize(Operation *op,
 // `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
 // must be powers of two: gemm+gemm requires it, plain gemm only requires them
 // to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
+// `requirePow2K` likewise controls kPerBlock: plain gemm allows non-pow2 K
+// (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments),
+// while gemm+gemm and scaled gemm still require a power-of-two K tile.
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
-                                        bool requirePow2MN) {
+                                        bool requirePow2MN, bool requirePow2K) {
   auto validateMN =
       requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
   if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
     return failure();
   if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
     return failure();
-  if (failed(
-          validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
+  auto validateK =
+      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
     return failure();
   if (failed(validateKpack(op, params.getKpack())))
     return failure();
@@ -217,6 +221,7 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       EnableSplitKForTuningAttr::getMnemonic(),
       ArchAttr::getMnemonic(),
       KernelAttr::getMnemonic(),
+      ConvKernelAttr::getMnemonic(),
       NumCUAttr::getMnemonic(),
       NumChipletsAttr::getMnemonic(),
       BlockSizeAttr::getMnemonic(),
@@ -305,11 +310,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfigAttr << "\n");
 
-  // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles, so keep
-  // the power-of-two M/N requirement for them; plain GEMMs allow non-pow2 M/N.
+  // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles (M/N) nor
+  // by the K decomposition in rock-gridwise-gemm-to-blockwise, so keep the
+  // power-of-two M/N and K requirements for them; plain GEMMs allow both to be
+  // non-pow2. Arches where the peeled K loop miscompiles keep the power-of-two
+  // K requirement as well (see rock::supportsNonPow2KPerBlock).
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
-  if (failed(
-          validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm)))
+  bool requirePow2K =
+      isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
+  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
+                                /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();
@@ -385,7 +395,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true)))
+  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
+                                /*requirePow2K=*/true)))
     return signalPassFailure();
 
   auto params =

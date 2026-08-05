@@ -479,15 +479,8 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
-  // gfx1170 ("RDNA 4m") is an APU/iGPU with no Infinity Cache/MALL; its
-  // last-level cache is the GPU L2 (~1-2 MiB observed on hardware), not the
-  // 96 MiB RDNA3 desktop Infinity Cache. A too-large value skews the
-  // cache-streaming heuristic (chooseGemmLoadCacheModifiers) and the
-  // tuning-driver cache flush.
-  // TODO(gfx1170, AIROCMLIR-1092): confirm the exact L2 size against hardware
-  // (rocminfo / hipDeviceProp_t::l2CacheSize) and update if needed.
   case ISAFamily::GFX1170:
-    return 2 * kMiB;
+    return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
@@ -592,6 +585,16 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
     return 2;
 
   return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
+}
+
+// A non-power-of-two kPerBlock makes rock-gridwise-gemm-to-blockwise peel the
+// K loop into several power-of-two segments. That peeled form currently
+// miscompiles on gfx950 because of an unfixed LLVM backend bug, so we neither
+// tune nor accept such a kPerBlock there.
+// TODO: Enable this on gfx950 too once the LLVM bug is fixed.
+bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
+  auto [chip, _] = parseArchString(arch);
+  return chip != "gfx950";
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {
