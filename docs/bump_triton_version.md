@@ -277,6 +277,19 @@ attributes, cooperative launch handling, and `hipDrvLaunchKernelEx` usage. The
 helper intentionally lives in the tuning driver, not `tritonUtils.cpp`, so the
 shared Rock libraries do not pick up a HIP runtime dependency.
 
+### 5.3.2 KV-cache attention LLVM workaround
+
+`GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
+static K/V block count to work around an LLVM AMDGPU buffer-bounds bug that can
+make an out-of-contract `currentSeqLen` read past the K/V allocation.
+
+On every Triton bump, check whether the Triton-pinned LLVM revision contains
+the LLVM fix and whether the workaround is still necessary. Do not remove the
+clamp based only on the pinned revision: also verify the out-of-contract
+semantics with
+`gridwise-attention-kvcache-clamp.mlir` and
+`mixr-attention-kvcache-oob.mlir`.
+
 **Example mapping:**
 
 Python call in `compiler.py`:
@@ -520,6 +533,7 @@ Use this checklist to track progress:
 - [ ] Import new Triton / LLVM upstream revisions and record `NEW_REPO`
 - [ ] Build with `cmake.sh`
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
+- [ ] Check whether the Triton-pinned LLVM revision fixes the KV-cache buffer-bounds bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
