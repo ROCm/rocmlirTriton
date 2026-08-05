@@ -20,15 +20,16 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 import pandas as pd
-from hip import hip
 
 import reportUtils
 from perfCommonUtils import Operation, GEMMLibrary
 
 # Rock treats a WGP as the effective compute unit on architectures that support
-# WGP mode. Set this before the first HIP API call so multiProcessorCount always
-# reports WGPs there, even if the caller requested CU mode in its environment.
+# WGP mode. Set this before importing HIP so multiProcessorCount always reports
+# WGPs there, even if the caller requested CU mode in its environment.
 os.environ["GPU_ENABLE_WGP_MODE"] = "1"
+
+from hip import hip  # noqa: E402
 
 # Split-K parameter index in perfconfig
 SPLITK_IDX = 7

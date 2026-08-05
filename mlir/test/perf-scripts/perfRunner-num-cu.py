@@ -53,6 +53,7 @@ sys.modules["hip"] = hip_package
 MLIR_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MLIR_DIR / "utils" / "performance"))
 
+os.environ.pop("GPU_ENABLE_WGP_MODE", None)
 from perfRunner import get_num_cu  # noqa: E402
 
 
