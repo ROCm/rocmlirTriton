@@ -109,9 +109,19 @@ public:
     HiprtcProgramHandle program(rawProgram);
 
     std::string archOption = std::string("--gpu-architecture=") + gcnArchName;
-    const char *options[] = {archOption.c_str()};
+    // Work around a bug in the ROCm SDK's RTC runtime header
+    // (hiprtc_runtime.h): for target archs it does not list in its fp8
+    // fast-path / OCP-FNUZ tables (e.g. gfx1170, and older RDNA like gfx1100),
+    // the fp8 conversion helpers get declared `__host__` under `__HIPCC_RTC__`
+    // while their bodies call `__device__`-only casts, so *any* hiprtc compile
+    // fails with "call to __device__ function from __host__ function". This
+    // kernel is pure inline asm and uses no fp8/bf16, so pre-defining the fp8
+    // header's include guard skips that broken (and unused) block entirely.
+    // This is a no-op on archs the SDK already handles (gfx942/gfx1200/...).
+    const char *skipFp8 = "-D_HIP_INCLUDE_HIP_AMD_DETAIL_HIP_FP8_H_=1";
+    const char *options[] = {archOption.c_str(), skipFp8};
     hiprtcResult compileStatus =
-        hiprtcCompileProgram(program.get(), /*numOptions=*/1, options);
+        hiprtcCompileProgram(program.get(), /*numOptions=*/2, options);
 
     if (compileStatus != HIPRTC_SUCCESS) {
       size_t logSize = 0;

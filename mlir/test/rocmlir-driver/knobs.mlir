@@ -112,10 +112,25 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX950_ON
 
+// gfx1170 default: in-thread-transpose pass is scheduled. gfx11.7 is in the
+// per-arch default set (gfx942 / gfx110 / gfx115 / gfx117 / gfx120), matching
+// compiler.py's is_in_thread_transpose_enabled.
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_DEFAULT
+
+// gfx1170 with useInThreadTranspose=0: override beats the per-arch default, so
+// the pass is absent.
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,0,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_OFF
+
 // ITT_GFX942_DEFAULT: tritonamdgpu-in-thread-transpose
 // ITT_GFX942_OFF-NOT: tritonamdgpu-in-thread-transpose
 // ITT_GFX950_DEFAULT-NOT: tritonamdgpu-in-thread-transpose
 // ITT_GFX950_ON: tritonamdgpu-in-thread-transpose
+// ITT_GFX1170_DEFAULT: tritonamdgpu-in-thread-transpose
+// ITT_GFX1170_OFF-NOT: tritonamdgpu-in-thread-transpose
 
 //===----------------------------------------------------------------------===//
 // useBufferOps / useBufferAtomics
@@ -170,36 +185,32 @@
 // useReductionLayout
 //===----------------------------------------------------------------------===//
 //
-// `useReductionLayout` is the v4 perfConfig knob and a tri-state gate like the
-// other knobs: -1 (the knob default / heuristic, currently off), 0 (off), or
-// 1 (on). Both the default (-1, elided in the backward-compatible v3
-// serialization) and an explicit 0 keep the `rock-set-reduction-layout` pass
-// out of the pipeline. Only an explicit `gemm:v4:...,1` schedules it.
+// `useReductionLayout` is the v4 perfConfig knob and a tri-state like the other
+// knobs: -1 (the default / heuristic), 0 (off), or 1 (on). The
+// `rock-set-reduction-layout` pass is always scheduled and the knob is threaded
+// to it as `use-reduction-layout`, which controls what the pass rewrites:
+// -1 rewrites only convolution kernels (`rock.conv_kernel`), 0 disables the
+// rewrite entirely, and 1 forces the rewrite on every kernel. So the knob
+// controls the pass option, not whether the pass is present.
 
-// Default (v3 string, knob absent -> defaults to -1): pass is not scheduled.
+// Default (v3 string, knob absent -> defaults to -1): rewrite conv kernels only.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
 
-// v4 with useReductionLayout=-1 (heuristic default, currently off): absent.
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
-// RUN:   | FileCheck %s --check-prefix=RL_HEURISTIC
-
-// v4 with useReductionLayout=0 (explicit off): still absent.
+// v4 with useReductionLayout=0 (explicit off): disable the rewrite entirely.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_OFF
 
-// v4 with useReductionLayout=1 (force on): the pass is scheduled.
+// v4 with useReductionLayout=1 (force on): force option on.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
-// RL_DEFAULT-NOT: rock-set-reduction-layout
-// RL_HEURISTIC-NOT: rock-set-reduction-layout
-// RL_OFF-NOT: rock-set-reduction-layout
-// RL_ON: rock-set-reduction-layout
+// RL_DEFAULT: rock-set-reduction-layout{use-reduction-layout=-1}
+// RL_OFF: rock-set-reduction-layout{use-reduction-layout=0}
+// RL_ON: rock-set-reduction-layout{use-reduction-layout=1}
 
 //===----------------------------------------------------------------------===//
 // `--pass-pipeline=...` validation

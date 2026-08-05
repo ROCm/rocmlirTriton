@@ -322,6 +322,18 @@ func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x11520
   return %out : tensor<1x128x115200xf32>
 }
 
+// CHECK-LABEL: func.func @rock_gemm_nonpow2_k
+// GRID-LABEL: rock_gemm_nonpow2_k
+func.func @rock_gemm_nonpow2_k(%a : tensor<1x128x96xf16>, %b : tensor<1x96x128xf16>, %c : tensor<1x128x128xf16>) -> tensor<1x128x128xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 48, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm{{.*}}kPerBlock = 48
+  %result = rock.gemm %a * %b {perf_config = "gemm:v1:64,64,48,1,1,4,16,1,2,0,0"}
+  : tensor<1x128x96xf16> * tensor<1x96x128xf16> -> tensor<1x128x128xf16>
+  %out = rock.store %result to %c by set : tensor<1x128x128xf16> -> tensor<1x128x128xf16> to tensor<1x128x128xf16>
+  return %out : tensor<1x128x128xf16>
+}
+
 // CHECK-LABEL: func.func @rock_gemm_from_i8_conv
 // GRID-LABEL: rock_gemm_from_i8_conv
 func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
@@ -392,15 +404,15 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
   return %out : tensor<1x128x115200xf32>
 }
 
-// fp8 has no quick-tuning list of its own, so with no perf_config the lookup
-// falls back to the closest datatype that does (i8) and picks its first
-// applicable config.
+// gfx942 has no quick-tuning list for fp8 of its own, so with no perf_config
+// the lookup falls back to the closest architecture relative that does for the
+// same datatype (gfx950's gemm_fp8 list) and picks its first applicable config.
 // CHECK-LABEL: func.func @rock_gemm_fp8_datatype_fallback
 // GRID-LABEL: rock_gemm_fp8_datatype_fallback
 func.func @rock_gemm_fp8_datatype_fallback(%a : tensor<1x72x128xf8E4M3FNUZ>, %b : tensor<1x72x115200xf8E5M2FNUZ>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 28800
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 8, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 900
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf8E4M3FNUZ> * tensor<1x72x115200xf8E5M2FNUZ> -> tensor<1x128x115200xf32>

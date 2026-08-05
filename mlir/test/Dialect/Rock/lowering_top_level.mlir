@@ -14,7 +14,7 @@
 
 // CHECK-LABEL: func.func @rock_conv
 // CHECK-SAME: (%[[arg0:.*]]: tensor<1x128x8x3x3xf32>, %[[arg1:.*]]: tensor<128x1x8x32x32xf32>, %[[arg2:.*]]: tensor<128x1x128x30x30xf32>)
-// CHECK-NOT:   rock.conv
+// CHECK-NOT:   rock.conv(
 // CHECK:       %[[FILTER:.*]] = rock.transform %[[arg0]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}PassThrough ["gemmM"]
 // CHECK:       %[[IN1:.*]] = rock.transform %[[arg1]] by {{.*}}Pad{0, 0, 0, 0}
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}
@@ -36,7 +36,7 @@ func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x
 
 // CHECK-LABEL: func.func @rock_conv_f16
 // CHECK-SAME: (%[[arg0:.*]]: tensor<1x128x8x3x3xf16>, %[[arg1:.*]]: tensor<128x1x8x32x32xf16>, %[[arg2:.*]]: tensor<128x1x128x30x30xf16>)
-// CHECK-NOT:   rock.conv
+// CHECK-NOT:   rock.conv(
 // CHECK:       %[[FILTER:.*]] = rock.transform %[[arg0]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}PassThrough ["gemmM"]
 // CHECK:       %[[IN1:.*]] = rock.transform %[[arg1]] by {{.*}}Pad{0, 0, 0, 0}
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}
@@ -58,7 +58,7 @@ func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x
 
 // CHECK-LABEL: func.func @rock_conv_i8
 // CHECK-SAME: (%[[arg0:.*]]: tensor<1x128x8x3x3xi8>, %[[arg1:.*]]: tensor<128x1x8x32x32xi8>, %[[arg2:.*]]: tensor<128x1x128x30x30xi32>)
-// CHECK-NOT:   rock.conv
+// CHECK-NOT:   rock.conv(
 // CHECK:       %[[FILTER:.*]] = rock.transform %[[arg0]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}PassThrough ["gemmM"]
 // CHECK:       %[[IN1:.*]] = rock.transform %[[arg1]] by {{.*}}Pad{0, 0, 0, 0}
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}

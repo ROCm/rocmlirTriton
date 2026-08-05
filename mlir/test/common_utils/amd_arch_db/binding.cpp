@@ -42,6 +42,7 @@ PYBIND11_MODULE(amd_arch_db, m) {
       .value("RDNA1", ISAFamily::RDNA1)
       .value("RDNA2", ISAFamily::RDNA2)
       .value("RDNA3", ISAFamily::RDNA3)
+      .value("GFX1170", ISAFamily::GFX1170)
       .value("RDNA4", ISAFamily::RDNA4)
       .value("GFX1250", ISAFamily::GFX1250);
 
@@ -100,5 +101,12 @@ PYBIND11_MODULE(amd_arch_db, m) {
   m.def(
       "get_max_kpack",
       [](const std::string &arch) { return mlir::rock::getMaxKpack(arch); },
+      py::arg("arch"));
+
+  m.def(
+      "supports_non_pow2_k_per_block",
+      [](const std::string &arch) {
+        return mlir::rock::supportsNonPow2KPerBlock(arch);
+      },
       py::arg("arch"));
 }

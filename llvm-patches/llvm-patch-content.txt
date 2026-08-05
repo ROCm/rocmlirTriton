@@ -315,3 +315,128 @@ regression in normal CI instead of only during tuning.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream merge
 commit 237fbfd.
+
+----------------------------------------------------------------------
+patch211809.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/211809
+- Upstream title  : [InlineSpiller] Avoid spill hoisting interference
+- File Fixed      : llvm/lib/CodeGen/InlineSpiller.cpp
+- Contents        : In InlineSpiller::hoistSpillInsideBB, moves the
+                    computation of the store insertion point (MBB/MII) ahead
+                    of the stack-slot merge and redundant-spill elimination,
+                    and adds an interference guard for PHI-defined sources.
+                    When the def is a PHI and the source has an assigned
+                    physical register, the segment ending at the copy may need
+                    to be extended forward to the store insertion point (which
+                    SkipPHIsLabelsAndDebug can push past the prologue). Before
+                    hoisting, check the LiveRegMatrix for interference on that
+                    physical register between the segment end and the insertion
+                    index; if extending the source's live range would overlap an
+                    interval already assigned to the same register, bail out of
+                    the hoist and spill at the original copy instead. The
+                    upstream AMDGPU lit test
+                    (llvm/test/CodeGen/AMDGPU/regalloc-hoist-spill-live-range-interference.mir)
+                    is omitted from this downstream record.
+
+Symptom without the patch
+-------------------------
+InlineSpiller hoists the spill of a value by storing its PHI-defined sibling
+after the basic block prologue. Extending that PHI-defined source's live
+interval to the insertion point can overlap an interval already assigned to
+the same physical register, producing an inconsistent live interval that trips
+register-allocation verification (-verify-regalloc) or yields malformed live
+ranges feeding downstream register allocation.
+
+Root cause
+----------
+hoistSpillInsideBB unconditionally hoisted and later extended the source's
+segment up to the store, without checking whether the physical register
+assigned to the source is free between the segment end and the (post-prologue)
+insertion point. When it is not free, the extension introduces interference on
+an already-assigned register.
+
+As of this bump #211809 is still open upstream (unmerged). Drop or reconcile
+this patch once it lands in the pinned LLVM.
+
+----------------------------------------------------------------------
+patch211884.patch
+----------------------------------------------------------------------
+- Upstream commit : 9e43e04108dddff6476152d0fff672fb4c577925
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/211884
+- Upstream title  : [mlir][arith] Gate min/max expansion in arith-expand
+                    behind include-min-max
+- File Fixed      : mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
+                    mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
+                    mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
+                    mlir/test/Dialect/Arith/expand-ops-min-max.mlir (new)
+                    mlir/test/Dialect/Arith/expand-ops.mlir
+                    mlir/test/Dialect/EmitC/arith/ops.mlir
+- Contents        : Splits the min/max converters out of
+                    populateArithExpandOpsPatterns into the new
+                    populateExpandMinMaxFPatterns (maximumf/minimumf/maxnumf/
+                    minnumf), populateExpandMinMaxIPatterns (maxsi/maxui/minsi/
+                    minui) and an umbrella populateExpandMinMaxPatterns, and
+                    gates them in the arith-expand pass behind two new options,
+                    include-min-max-f and include-min-max-i (both default
+                    false). The ceil/floor-div and scaling ext/trunc expansions,
+                    which have no arith-to-llvm lowering, always run. The
+                    matching addIllegalOp sets move under the same conditions so
+                    the ops stay legal when not expanded.
+
+Reason for the patch
+--------------------
+Passing arith.minimumf/arith.maximumf unchanged to rock-to-ttir and through
+LLVM is more efficient than expanding them early into compare/select
+sequences.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 9e43e04108dddff6476152d0fff672fb4c577925.
+
+----------------------------------------------------------------------
+patch209704.patch
+----------------------------------------------------------------------
+- Upstream commit : 9d10180
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/209704
+- Upstream title  : [RegAlloc] Avoid split past block-prologue interference
+- File Fixed      : llvm/lib/CodeGen/RegAllocGreedy.cpp
+- Contents        : In RAGreedy::addThroughConstraints, computes the real
+                    live-in insertion point for the split candidate by
+                    skipping PHIs, labels and debug instructions
+                    (MBB->SkipPHIsLabelsAndDebug) for the interval's parent
+                    register, and derives its SlotIndex (falling back to the
+                    MBB end index when the block is otherwise empty). The
+                    live-in interference test now marks the block entry as
+                    MustSpill not only when interference starts at/before the
+                    MBB start, but also when it starts before that
+                    post-prologue insertion point. The upstream AMDGPU lit
+                    test (llvm/test/CodeGen/AMDGPU/greedy-wwm-copy-prologue-assert.mir)
+                    is omitted because it depends on features newer than the
+                    pinned LLVM (the 'amdgpu9.00-amd-amdhsa' canonical triple
+                    spelling and the 'lr-split' MIR opcode)
+
+Symptom without the patch
+-------------------------
+When a greedy split candidate has its first interference inside a block's
+target-specific prologue (e.g. a pre-existing WWM_COPY occupying the same
+physical register), the allocator can still choose to split into that block.
+SplitKit's leaveIntvAtTop skips the prologue when picking the insertion point,
+so the interval is left after the interfering prologue instruction. On an
+asserts build this trips the SplitKit interference assertion in
+'leaveIntvAtTop' / splitLiveThroughBlock; without asserts it yields malformed
+live ranges feeding register allocation.
+
+Root cause
+----------
+addThroughConstraints only checked whether interference began at or before the
+MBB start index when deciding MustSpill vs PrefSpill for the block entry. It
+did not account for the fact that the actual live-in insertion point is placed
+after the block prologue (via SkipPHIsLabelsAndDebug). Interference located
+within the prologue -- after the MBB start but before that insertion point --
+was therefore treated as only PrefSpill, allowing a split that cannot legally
+be realized. Extending the check to also require MustSpill when interference
+precedes the post-prologue insertion point forces spilling instead of an
+illegal split.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+9d10180.

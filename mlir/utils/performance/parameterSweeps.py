@@ -183,13 +183,9 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
     ``_repro_command`` (to print the failure-summary repro line) so the two
     cannot drift."""
+    # Each configuration owns its complete rocmlir-gen argument list, including
+    # runtime-only options such as attention's current_seq_len.
     opts = config.generate_mlir_driver_commandline('', kernel_repeats=None).split()
-    # current_seqlen is only set on AttentionConfiguration in KV-cache
-    # mode (seq_len_q == 1); generate_mlir_driver_commandline doesn't
-    # know about it.
-    if (isinstance(config, perfRunner.AttentionConfiguration) and
-            getattr(config, "current_seqlen", None) is not None):
-        opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
     # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64)
     # attached by callers such as attentionSweeps.to_attn_test to combat
@@ -516,12 +512,13 @@ async def sweep_parameters(
 # The non-power-of-two m/n_per_block entries (48, 80, 96, 160, 192) are
 # deliberately included to exercise the rock-decompose-nonpow2-tiles pass,
 # which splits a blockwise GEMM tile with non-pow2 M and/or N into a grid of
-# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32). k_per_block is
-# kept power-of-two: the contraction dim is not decomposed by that pass.
+# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32).
+# The non-power-of-two k_per_block entries (48, 80, 96, 112, 160, 192) are
+# likewise included to exercise the non-pow2 k_per_block.
 PERF_CONFIG_OPTIONS = {
     'm_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
     'n_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
-    'k_per_block': [16, 32, 64, 128, 256, 512],
+    'k_per_block': [16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 256, 512],
     # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
     # deprecated on gfx950 and gfx1250 (and newer); older archs still take
     # {1, 2}.
@@ -779,21 +776,26 @@ def sample_perf_config(rng: random.Random,
     and ``[1]`` for attention (whose K-split is exposed via the separate
     ``-split_kv`` kernel arg, not via the perf-config splitK).
 
-    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock`` to powers of two.
-    PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles to exercise the
-    rock-decompose-nonpow2-tiles pass (gemm/conv only); callers whose
-    pipeline doesn't run that pass (attention / gemm+gemm, which use
-    GemmGemmParamsAttr) pass ``pow2_only=True`` to stay on the pow2 grid."""
+    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock``/``kPerBlock`` to
+    powers of two. PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles (to
+    exercise the rock-decompose-nonpow2-tiles pass) and non-pow2 k tiles (to
+    exercise the non-pow2 K peeling in rock-gridwise-gemm-to-blockwise), both
+    gemm/conv only; callers whose pipeline doesn't run those passes
+    (attention / gemm+gemm, which use GemmGemmParamsAttr) pass
+    ``pow2_only=True`` to stay on the pow2 grid."""
     opts = PERF_CONFIG_OPTIONS
     m_choices = opts['m_per_block']
     n_choices = opts['n_per_block']
+    k_choices = opts['k_per_block']
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
+    if pow2_only or not amd_arch_db.supports_non_pow2_k_per_block(arch):
+        k_choices = [v for v in k_choices if _is_pow2(v)]
     return (
         rng.choice(m_choices),
         rng.choice(n_choices),
-        rng.choice(opts['k_per_block']),
+        rng.choice(k_choices),
         rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),
         rng.choice(opts['num_waves']),

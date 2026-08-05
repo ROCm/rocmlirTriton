@@ -78,6 +78,16 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         write_tuning_db(path, legacy_key)
         return lookup_tuning_db(read_tuning_db(str(path)), ARCH, config, config.to_command_line())
 
+    def test_current_seq_len_is_runtime_only(self):
+        """current_seq_len reaches rocmlir-gen without changing tuning identity."""
+        config = make_config("-with-attn-scale false -with-attn-bias false -transBias false")
+        config.current_seqlen = [4]
+
+        self.assertNotIn("-current_seq_len", config.to_command_line())
+
+        gen_args = config.generate_mlir_driver_commandline("", kernel_repeats=None).split()
+        self.assertEqual(gen_args.count("-current_seq_len=4"), 1)
+
     def test_perf_runner_matches_legacy_all_false_attention_flags(self):
         """Old DB rows may omit all false-valued attention flags."""
         current_config = make_config(

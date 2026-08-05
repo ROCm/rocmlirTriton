@@ -34,7 +34,7 @@ using namespace mlir;
 using namespace mlir::rock;
 using namespace mlir::triton::amdgpu;
 
-static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
+std::tuple<StringRef, unsigned> mlir::rock::parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
 
   StringRef firstPart, remainingParts;
@@ -261,6 +261,7 @@ bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
       return true;
@@ -301,6 +302,7 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
     case ISAFamily::RDNA1:
     case ISAFamily::RDNA2:
     case ISAFamily::RDNA3:
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
     case ISAFamily::GFX1250:
       return true;
@@ -432,6 +434,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 30;
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
     return 2;
   case ISAFamily::RDNA4:
     return 12;
@@ -476,6 +479,8 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
+  case ISAFamily::GFX1170:
+    return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
@@ -497,6 +502,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
     return 16;
@@ -528,6 +534,8 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
     // llvm/lib/Target/AMDGPU/AMDGPU.td.
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
+    return 1024;
+  case ISAFamily::GFX1170:
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
@@ -577,6 +585,16 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
     return 2;
 
   return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
+}
+
+// A non-power-of-two kPerBlock makes rock-gridwise-gemm-to-blockwise peel the
+// K loop into several power-of-two segments. That peeled form currently
+// miscompiles on gfx950 because of an unfixed LLVM backend bug, so we neither
+// tune nor accept such a kPerBlock there.
+// TODO: Enable this on gfx950 too once the LLVM bug is fixed.
+bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
+  auto [chip, _] = parseArchString(arch);
+  return chip != "gfx950";
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {

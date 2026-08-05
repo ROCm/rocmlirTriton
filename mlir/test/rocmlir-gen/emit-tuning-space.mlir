@@ -29,6 +29,47 @@
 // RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
 // CHECK-MFMA-GFX950-KPACK: gemm:v4:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
+// A large-K GEMM must cap kPerBlock at the largest tuning-space candidate
+// (512 for MFMA). We should cap kPerBlock down only (never above the
+// candidate max), so neither the 16384 capping tile nor any kPerBlock > 512
+// may be emitted; 512 must still appear.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 256 -k 16384 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-MFMA \
+// RUN:       --implicit-check-not=",16384,"
+// CHECK-TENSOR-CAP-MFMA: gemm:v4:{{[0-9]+,[0-9]+,512,}}
+
+// The same kPerBlock cap applies to attention (gemm+gemm): gemm0's K tile is
+// capped at the largest candidate (2048), not raised to
+// PowerOf2Ceil(head_dim_qk). For head_dim_qk=8192 the old code appended an 8192
+// capping tile (a multi-GB compile); the fix caps gemm0 kPerBlock at 2048, so
+// no 8192 tile is emitted while 2048 still appears.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 8192 -head_dim_v 128 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN \
+// RUN:       --implicit-check-not=",8192,"
+// CHECK-TENSOR-CAP-ATTN: attn:v4:{{[0-9]+,[0-9]+,2048,}}
+
+// gemm1's N tile is not tuned: gemm1NPerBlock = PowerOf2Ceil(head_dim_v) and
+// its contraction tile is gemm0NPerBlock, so gemm1 lowers a gemm0NPerBlock x
+// max(gemm0MPerBlock, gemm1NPerBlock) index/mask tensor. A large head_dim_v can
+// therefore blow the same 2^20 cap on a config gemm0's own check would pass.
+// For head_dim_v=8192 (gemm1NPerBlock=8192), gemm0NPerBlock must stay <= 128
+// (128*8192 == 1048576, the exact cap); every gemm0NPerBlock=256 combo drops,
+// regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0 in-cap).
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V: attn:v4:16,128,
+
+// Same gemm1 guard with a transposed output (-transO): head_dim_v then lives at
+// a different position in C's shape, so the derivation must follow
+// getTransposedC() (matching PopulateParamsGemmGemm::getGemm1Params). The cap
+// behaviour must be identical -- every gemm0NPerBlock=256 combo still drops for
+// head_dim_v=8192.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
+// RUN:       --implicit-check-not="attn:v4:{{[0-9]+}},256,"
+// CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v4:16,128,
+
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
 //===----------------------------------------------------------------------===//
@@ -67,3 +108,43 @@
 // RUN:       --implicit-check-not="attn:v4:{{(16|256),}}" \
 // RUN:       --implicit-check-not="attn:v4:{{[0-9]+,(16|256),}}"
 // CHECK-NAVI-ATTN: attn:v4:{{(32|64|128),(32|64|128),[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1}}
+
+//===----------------------------------------------------------------------===//
+// Non-power-of-two kPerBlock candidates that evenly divide K
+//===----------------------------------------------------------------------===//
+
+// When K has non-power-of-two divisors (here K = 576 = 64*3*3, i.e. a conv's
+// C*fil_h*fil_w), the accelerated paths offer, per (m,n) tile, the divisors of K
+// that peel into two pow2 segments and fall under the window
+// [min(m,n)/2, min(m,n)). On WMMA (gfx1201) a min(m,n)=64 tile
+// gains 36 and 48 on top of the pow2 base {32,64}.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-DIVK
+// CHECK-WMMA-DIVK: gemm:v4:{{[0-9]+,[0-9]+,48,1,}}
+
+// The MFMA path grows the same way; 48 (= 576/12) is offered on gfx942.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-DIVK
+// CHECK-MFMA-DIVK: gemm:v4:{{[0-9]+,[0-9]+,48,1,}}
+
+// An integer GEMM accumulates in i32 and keeps that accumulator exact only
+// while every K decomposed segment is at least 4 wide (enforced in
+// rock-gridwise-gemm-to-blockwise), so tiles that would peel into a 1- or
+// 2-wide segment are not offered. K = 576 makes 18 (= 16 + 2) a divisor in the
+// min(m,n)=32 window: it is offered for f16 but not for i8, while the
+// multiple-of-4 tiles stay for both.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-NARROW-SEG-F16
+// CHECK-MFMA-NARROW-SEG-F16: gemm:v4:{{[0-9]+,[0-9]+,18,1,}}
+
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t i8 -g 1 -m 256 -k 576 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-NARROW-SEG-I8 \
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,18,}}"
+// CHECK-MFMA-NARROW-SEG-I8: gemm:v4:{{[0-9]+,[0-9]+,24,1,}}
+
+// A K that is a pure power of two (K = 128) must not introduce any non-pow2
+// kPerBlock: only 32/64/128 appear on WMMA (256 is capped out by K = 128).
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 128 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-POW2K \
+// RUN:       --implicit-check-not="gemm:v4:{{[0-9]+,[0-9]+,(36|48|72|96|144|192),}}"
+// CHECK-WMMA-POW2K: gemm:v4:{{[0-9]+,[0-9]+,(32|64|128),1,}}
