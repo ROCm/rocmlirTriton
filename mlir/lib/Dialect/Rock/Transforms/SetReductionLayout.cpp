@@ -299,7 +299,13 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
       BlockArgument arg = forOp.getRegionIterArg(i);
       arg.setType(replacer.replace(arg.getType()));
       Value res = forOp.getResult(i);
-      res.setType(replacer.replace(res.getType()));
+      Type newResTy = replacer.replace(res.getType());
+      // Re-check what the guard above established, so that a later change to
+      // it fails here rather than somewhere downstream of this pass.
+      assert((newResTy == res.getType() || res.use_empty()) &&
+             "retyping a loop result that is still read would corrupt its "
+             "readers");
+      res.setType(newResTy);
     }
   }
 }
