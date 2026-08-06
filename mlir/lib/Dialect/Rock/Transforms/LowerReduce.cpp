@@ -82,10 +82,16 @@ static bool isBlockwiseReductionCandidate(ReduceOp reduceOp,
       dyn_cast<RankedTensorType>(path.storeOp.getSource().getType());
   if (!storeType || storeType.getRank() != 1)
     return false;
-  if (!invertTransformChain(builder, reduceOp.getLoc(),
-                            path.preReduceTransforms) ||
-      !invertTransformChain(builder, reduceOp.getLoc(),
-                            path.postReduceTransforms))
+  auto toTransformStack = [&](ArrayRef<TransformOp> transforms) {
+    return builder.getArrayAttr(
+        llvm::map_to_vector(transforms, [](TransformOp transformOp) {
+          return static_cast<Attribute>(transformOp.getTransform());
+        }));
+  };
+  if (!invertTransforms(builder, reduceOp.getLoc(),
+                        toTransformStack(path.preReduceTransforms)) ||
+      !invertTransforms(builder, reduceOp.getLoc(),
+                        toTransformStack(path.postReduceTransforms)))
     return false;
 
   // Ambiguous multi-root fusions and direct rank-two GEMM consumers need a
@@ -143,8 +149,11 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // Undo intermediate transforms on the store destination so its shape
     // matches the reduce output (e.g. Unmerge a prior Merge).
     if (!path.postReduceTransforms.empty()) {
-      ArrayAttr inverted =
-          invertTransformChain(rewriter, loc, path.postReduceTransforms);
+      ArrayAttr stack = rewriter.getArrayAttr(llvm::map_to_vector(
+          path.postReduceTransforms, [](TransformOp transformOp) {
+            return static_cast<Attribute>(transformOp.getTransform());
+          }));
+      ArrayAttr inverted = invertTransforms(rewriter, loc, stack);
       if (!inverted)
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
@@ -169,7 +178,7 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // otherwise the framework inserts unrealized_conversion_casts for
     // the still-live intermediate references.
     rewriter.replaceOp(storeOp, newStore);
-    for (TransformOp tOp : llvm::reverse(path.postReduceTransforms))
+    for (TransformOp tOp : path.postReduceTransforms)
       rewriter.eraseOp(tOp);
     rewriter.eraseOp(reduceOp);
     return success();
@@ -190,11 +199,11 @@ void RockLowerReduce::runOnOperation() {
   // Selection is performed exactly once. Downstream passes consume the marker
   // instead of independently guessing why a ReduceOp survived this pass.
   getOperation().walk([&](ReduceOp reduceOp) {
-    reduceOp->removeAttr("blockwise");
+    reduceOp.removeBlockwiseAttr();
     FailureOr<ReductionStorePath> path = getReductionStorePath(reduceOp);
     if (succeeded(path) &&
         isBlockwiseReductionCandidate(reduceOp, *path, builder))
-      reduceOp->setAttr("blockwise", builder.getUnitAttr());
+      reduceOp.setBlockwiseAttr(builder.getUnitAttr());
   });
 
   ConversionTarget target(*ctx);

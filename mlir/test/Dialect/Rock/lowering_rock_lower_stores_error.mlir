@@ -20,6 +20,46 @@ module {
 // -----
 
 // ============================================================
+// Error: a fused store cannot combine distinct StoreMarker roots.
+// ============================================================
+
+#tmap_ambiguous = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 16 + d3, d2 * 16 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 16} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 16} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 1, 16, 16] -> [1, 16, 16]>
+
+module {
+  func.func @test_conflicting_store_markers(
+      %tile0: tensor<16x16xf32>,
+      %tile1: tensor<16x16xf32>,
+      %dest: tensor<1x16x16xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<1x16x16xf32> attributes {rock.kernel} {
+    %sm0 = rock.store_marker %tile0 views [#tmap_ambiguous] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
+    %sm1 = rock.store_marker %tile1 views [#tmap_ambiguous] [%g, %m, %n] : tensor<16x16xf32> -> tensor<1x16x16xf32>
+    %sum = arith.addf %sm0, %sm1 : tensor<1x16x16xf32>
+    // expected-error @+1 {{conflicting StoreMarkerOp roots in store source}}
+    %result = rock.store %sum to %dest by set : tensor<1x16x16xf32> -> tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    return %result : tensor<1x16x16xf32>
+  }
+}
+
+// -----
+
+// ============================================================
+// Error: marked blockwise reductions must use sum semantics.
+// ============================================================
+
+module {
+  func.func @test_blockwise_max(
+      %src: tensor<1x16x16xf32>,
+      %dest: tensor<1x16x1xf32>) -> tensor<1x16x1xf32> attributes {rock.kernel} {
+    // expected-error @+1 {{blockwise reduction lowering only supports sum}}
+    %reduced = rock.reduce max %src {axis = 2 : index, blockwise} : tensor<1x16x16xf32> -> tensor<1x16x1xf32>
+    %result = rock.store %reduced to %dest by set : tensor<1x16x1xf32> -> tensor<1x16x1xf32> to tensor<1x16x1xf32>
+    return %result : tensor<1x16x1xf32>
+  }
+}
+
+// -----
+
+// ============================================================
 // Error: fusion op has a raw block arg operand (not from
 // UntileOp or StoreMarkerOp), so convertToTile fails.
 // ============================================================

@@ -80,7 +80,7 @@ func.func @test_blockwise_candidate(%a: tensor<16x16xf32>, %b: tensor<16x16xf32>
   %gemm = rock.gemm %a * %b {params = #supported} : tensor<16x16xf32> * tensor<16x16xf32> -> tensor<16x16xf32>
   %fused = arith.addf %gemm, %gemm : tensor<16x16xf32>
   %view = rock.transform %fused by #to_1x16x16 : tensor<16x16xf32> to tensor<1x16x16xf32>
-  %reduced = rock.reduce sum %view {axis = 2 : index} : tensor<1x16x16xf32> -> tensor<1x16x1xf32>
+  %reduced = rock.reduce sum %view {axis = 2 : index, blockwise} : tensor<1x16x16xf32> -> tensor<1x16x1xf32>
   %flat = rock.transform %reduced by #flatten_1x16x1 : tensor<1x16x1xf32> to tensor<16xf32>
   %result = rock.store %flat to %out by set : tensor<16xf32> -> tensor<16xf32> to tensor<16xf32>
   return %result : tensor<16xf32>
@@ -92,7 +92,7 @@ func.func @test_blockwise_candidate(%a: tensor<16x16xf32>, %b: tensor<16x16xf32>
 func.func @test_direct_gemm_fallback(%a: tensor<16x16xf32>, %b: tensor<16x16xf32>, %out: tensor<16xf32>) -> tensor<16xf32> {
   %gemm = rock.gemm %a * %b {params = #supported} : tensor<16x16xf32> * tensor<16x16xf32> -> tensor<16x16xf32>
   %view = rock.transform %gemm by #to_1x16x16 : tensor<16x16xf32> to tensor<1x16x16xf32>
-  %reduced = rock.reduce sum %view {axis = 2 : index} : tensor<1x16x16xf32> -> tensor<1x16x1xf32>
+  %reduced = rock.reduce sum %view {axis = 2 : index, blockwise} : tensor<1x16x16xf32> -> tensor<1x16x1xf32>
   %flat = rock.transform %reduced by #flatten_1x16x1 : tensor<1x16x1xf32> to tensor<16xf32>
   %result = rock.store %flat to %out by set : tensor<16xf32> -> tensor<16xf32> to tensor<16xf32>
   return %result : tensor<16xf32>

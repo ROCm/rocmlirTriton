@@ -69,16 +69,13 @@ using namespace mlir::rock;
 namespace {
 /// Reconcile the unit group dimension introduced by GEMM normalization with
 /// the original rank-two GEMM-space value feeding a reduction transform chain.
-static LogicalResult bridgeNormalizedReductionInput(PatternRewriter &rewriter,
-                                                    ReduceOp reduceOp) {
-  Value value = reduceOp.getIn();
-  TransformOp firstTransform;
-  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
-    firstTransform = transformOp;
-    value = transformOp.getInput();
-  }
-  if (!firstTransform)
+static LogicalResult
+bridgeNormalizedReductionInput(PatternRewriter &rewriter,
+                               const ReductionStorePath &path) {
+  ReduceOp reduceOp = path.reduceOp;
+  if (path.preReduceTransforms.empty())
     return success();
+  TransformOp firstTransform = path.preReduceTransforms.back();
 
   auto actualType = cast<RankedTensorType>(firstTransform.getInput().getType());
   ArrayRef<int64_t> expectedShape =
@@ -93,11 +90,10 @@ static LogicalResult bridgeNormalizedReductionInput(PatternRewriter &rewriter,
         "unsupported GEMM normalization for explicit fused reduction");
 
   rewriter.setInsertionPoint(firstTransform);
-  TopDownTMBuilder removeGroup(rewriter, {"gemmM", "gemmN"}, expectedShape,
-                               reduceOp.getLoc());
-  removeGroup.constDim("gemmG", 0, /*constantVal=*/0,
-                       /*lowerSize=*/actualShape[0]);
-  removeGroup.passThrough({"gemmM", "gemmN"}, {1, 2}, {"gemmM", "gemmN"});
+  BottomUpTMBuilder removeGroup(rewriter, {"gemmG", "gemmM", "gemmN"},
+                                actualShape, reduceOp.getLoc());
+  removeGroup.dropDimAtIndex("gemmG", /*constantVal=*/0);
+  removeGroup.passThrough({"gemmM", "gemmN"}, {0, 1}, {"gemmM", "gemmN"});
   Value bridged =
       TransformOp::create(rewriter, reduceOp.getLoc(),
                           firstTransform.getInput(), removeGroup.get());
@@ -158,7 +154,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   SetVector<StoreOp> &allStores = views.stores;
   SmallVector<Value> outputViews;
   SmallVector<StoreOp> stores;
-  SmallVector<ReduceOp> reductions;
+  SmallVector<ReductionStorePath> reductions;
   for (auto [store, outputView] :
        llvm::zip_equal(allStores, views.outputViews)) {
     FailureOr<std::optional<ReductionStorePath>> maybePath =
@@ -166,7 +162,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     if (failed(maybePath))
       return op.emitOpError("malformed blockwise reduction store path");
     if (*maybePath && (**maybePath).reduceOp.getBlockwise()) {
-      reductions.push_back((**maybePath).reduceOp);
+      reductions.push_back(std::move(**maybePath));
     } else {
       stores.push_back(store);
       outputViews.push_back(outputView);
@@ -304,8 +300,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // gemm result inside fusion ops with the gridwise result and updates their
   // result types to match the new shape.
   rock::propagateOutputType(op.getResult(), result);
-  for (ReduceOp reduceOp : reductions)
-    if (failed(bridgeNormalizedReductionInput(rw, reduceOp)))
+  for (const ReductionStorePath &path : reductions)
+    if (failed(bridgeNormalizedReductionInput(rw, path)))
       return failure();
 
   // Replace extra fusion input operands with their padded versions.

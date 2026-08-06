@@ -72,6 +72,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 
+#include <numeric>
 #include <optional>
 
 namespace mlir {
@@ -88,104 +89,47 @@ using namespace mlir::rock;
 
 namespace {
 
-/// Recursively search for a StoreMarkerOp through fusion ops.
-/// Returns the StoreMarkerOp if found, or nullptr otherwise.
-/// Note: UntileOp is only used for extra fusion inputs (from
-/// InsertOutputFusionLoads) and is never on the path to StoreMarkerOp.
-static FailureOr<StoreMarkerOp> findStoreMarkerOp(Value val) {
-  Operation *defOp = val.getDefiningOp();
-  if (!defOp)
-    return failure();
-
-  // Check if this is a StoreMarkerOp
-  if (auto storeMarkerOp = dyn_cast<StoreMarkerOp>(defOp))
-    return storeMarkerOp;
-
-  if (auto transformOp = dyn_cast<TransformOp>(defOp))
-    return findStoreMarkerOp(transformOp.getInput());
-
-  if (auto reduceOp = dyn_cast<ReduceOp>(defOp))
-    return findStoreMarkerOp(reduceOp.getIn());
-
-  // Fusion op: recursively search operands.
-  if (rock::isFusionOp(defOp)) {
-    for (Value operand : defOp->getOperands()) {
-      if (StoreMarkerOp found = findStoreMarkerOp(operand).value_or(nullptr))
-        return found;
-    }
-  }
-
-  return failure();
-}
-
 /// Returns true when every root-buffer coordinate is unchanged while the
 /// selected upper dimension varies over its complete statically-known extent.
 static bool addressIsInvariantAlongDim(OpBuilder &builder, Value dest,
                                        int64_t dim) {
   SmallVector<TransformMapAttr> transforms;
   std::tie(std::ignore, std::ignore) = untransform(dest, transforms);
-  if (transforms.empty())
-    return false;
-
-  ArrayRef<int64_t> upperShape = transforms.front().getUpperBounds();
-  if (dim < 0 || static_cast<size_t>(dim) >= upperShape.size())
-    return false;
-  unsigned upperDim = static_cast<unsigned>(dim);
-  ArrayRef<unsigned> dims(&upperDim, 1);
-  if (validityDependsOnAnyDim(transforms, dims))
-    return false;
-  if (!transformChainDependsOnAnyDim(transforms, dims))
-    return true;
-
-  // Affine dependency is intentionally conservative for aligned floor-div
-  // expressions. Prove those cases with static sub-dimension ranges.
-  FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>> subDims =
-      getLowerSubDimensions(
-          builder,
-          builder.getArrayAttr(llvm::to_vector_of<Attribute>(transforms)), dim);
-  if (failed(subDims))
-    return false;
-  return llvm::all_of(*subDims, [](const auto &entry) {
-    return llvm::all_of(entry.second,
-                        [](const SubDimInfo &info) { return info.size <= 1; });
-  });
+  return transformChainIsInvariantAlongDim(builder, transforms, dim);
 }
 
 static Value pinDimToZero(OpBuilder &builder, Location loc, Value dest,
                           int64_t removedDim) {
   ArrayRef<int64_t> destShape = cast<ShapedType>(dest.getType()).getShape();
   SmallVector<SmallString<8>> nameStorage;
-  SmallVector<StringRef> keptNames;
-  SmallVector<uint32_t> keptDims;
-  SmallVector<int64_t> keptShape;
   nameStorage.reserve(destShape.size());
   for (size_t i = 0; i < destShape.size(); ++i) {
     SmallString<8> name;
     ("dim" + Twine(i)).toVector(name);
     nameStorage.push_back(name);
   }
-  for (auto [i, size] : llvm::enumerate(destShape)) {
-    if (static_cast<int64_t>(i) == removedDim)
-      continue;
-    keptNames.push_back(nameStorage[i]);
-    keptDims.push_back(static_cast<uint32_t>(i));
-    keptShape.push_back(size);
-  }
-
-  TopDownTMBuilder view(builder, keptNames, keptShape, loc);
-  if (!keptNames.empty())
-    view.passThrough(keptNames, keptDims, keptNames);
-  view.constDim(nameStorage[removedDim], static_cast<uint32_t>(removedDim),
-                /*constantVal=*/0, /*lowerSize=*/destShape[removedDim]);
+  SmallVector<StringRef> dimNames = llvm::map_to_vector(
+      nameStorage, [](const SmallString<8> &name) { return StringRef(name); });
+  BottomUpTMBuilder view(builder, dimNames, destShape, loc);
+  SmallVector<StringRef> keptNames;
+  for (auto [index, name] : llvm::enumerate(dimNames))
+    if (static_cast<int64_t>(index) != removedDim)
+      keptNames.push_back(name);
+  view.dropDimAtIndex(dimNames[removedDim], /*constantVal=*/0);
+  SmallVector<uint32_t> keptDims(keptNames.size());
+  std::iota(keptDims.begin(), keptDims.end(), 0);
+  view.passThrough(keptNames, keptDims, keptNames);
   return TransformOp::create(builder, loc, dest, view.get());
 }
 
 /// Recursively convert a full-tensor value to its tile equivalent.
 /// Handles UntileOp, StoreMarkerOp and fusion ops.
-/// Also collects StoreMarkerOp info if found.
+/// Records the unique StoreMarkerOp root while traversing the source graph.
 static FailureOr<Value> convertToTile(OpBuilder &builder, Location loc,
-                                      Value fullVal, Type tileType,
-                                      IRMapping &fullToTileMapping) {
+                                      Value fullVal,
+                                      IRMapping &fullToTileMapping,
+                                      StoreMarkerOp &storeMarkerOp,
+                                      bool &conflictingMarkers) {
   // Check if already converted
   if (fullToTileMapping.contains(fullVal))
     return fullToTileMapping.lookup(fullVal);
@@ -204,9 +148,14 @@ static FailureOr<Value> convertToTile(OpBuilder &builder, Location loc,
     return tile;
   }
 
-  // StoreMarkerOp: extract info and return the tile source
-  if (auto storeMarkerOp = dyn_cast<StoreMarkerOp>(defOp)) {
-    Value tile = storeMarkerOp.getSource();
+  // StoreMarkerOp: record the unique root and return its tile source.
+  if (auto marker = dyn_cast<StoreMarkerOp>(defOp)) {
+    if (storeMarkerOp && storeMarkerOp != marker) {
+      conflictingMarkers = true;
+      return failure();
+    }
+    storeMarkerOp = marker;
+    Value tile = marker.getSource();
     fullToTileMapping.map(fullVal, tile);
     return tile;
   }
@@ -215,22 +164,29 @@ static FailureOr<Value> convertToTile(OpBuilder &builder, Location loc,
   // For type-changing ops like arith.extf (f16->f32), each operand's tile type
   // must use the operand's element type, not the result's.
   if (rock::isFusionOp(defOp)) {
-    auto tileShape = cast<RankedTensorType>(tileType).getShape();
     IRMapping fusionMapping;
+    ArrayRef<int64_t> tileShape;
     for (Value operand : defOp->getOperands()) {
-      auto operandElemType =
-          cast<RankedTensorType>(operand.getType()).getElementType();
-      auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
-      FailureOr<Value> maybeTileOperand = convertToTile(
-          builder, loc, operand, operandTileType, fullToTileMapping);
+      FailureOr<Value> maybeTileOperand =
+          convertToTile(builder, loc, operand, fullToTileMapping, storeMarkerOp,
+                        conflictingMarkers);
       if (failed(maybeTileOperand))
         return failure();
+      auto operandTileType =
+          dyn_cast<RankedTensorType>(maybeTileOperand->getType());
+      if (!operandTileType ||
+          (!tileShape.empty() && operandTileType.getShape() != tileShape))
+        return failure();
+      tileShape = operandTileType.getShape();
       fusionMapping.map(operand, maybeTileOperand.value());
     }
 
     // Clone the fusion op with tile operands
     Operation *clonedOp = builder.clone(*defOp, fusionMapping);
-    clonedOp->getResult(0).setType(tileType);
+    Type resultElementType =
+        cast<RankedTensorType>(fullVal.getType()).getElementType();
+    clonedOp->getResult(0).setType(
+        RankedTensorType::get(tileShape, resultElementType));
 
     fullToTileMapping.map(fullVal, clonedOp->getResult(0));
     return clonedOp->getResult(0);
@@ -244,30 +200,37 @@ static LogicalResult lowerStoreImpl(StoreOp storeOp,
                                     ReductionStorePath *reduction) {
   OpBuilder builder(storeOp);
   Location loc = storeOp.getLoc();
+  if (reduction && reduction->reduceOp.getReduceMethod() != ReduceMethod::Sum)
+    return reduction->reduceOp.emitError(
+        "blockwise reduction lowering only supports sum");
+
   Value storeSource = reduction ? reduction->tileSource : storeOp.getSource();
   Value storeDest = storeOp.getDest();
 
-  FailureOr<StoreMarkerOp> maybeStoreMarkerOp = findStoreMarkerOp(storeSource);
-  if (failed(maybeStoreMarkerOp))
-    return storeOp.emitError("No StoreMarkerOp found for store");
-  StoreMarkerOp storeMarkerOp = *maybeStoreMarkerOp;
-
-  auto markerType = cast<RankedTensorType>(storeMarkerOp.getSource().getType());
-  auto outputType = cast<RankedTensorType>(storeSource.getType());
-  auto tileType =
-      RankedTensorType::get(markerType.getShape(), outputType.getElementType());
-
   IRMapping fullToTileMapping;
+  StoreMarkerOp storeMarkerOp;
+  bool conflictingMarkers = false;
   FailureOr<Value> maybeFusedTile =
-      convertToTile(builder, loc, storeSource, tileType, fullToTileMapping);
+      convertToTile(builder, loc, storeSource, fullToTileMapping, storeMarkerOp,
+                    conflictingMarkers);
+  if (conflictingMarkers)
+    return storeOp.emitError("conflicting StoreMarkerOp roots in store source");
+  if (failed(maybeFusedTile) && !storeMarkerOp)
+    return storeOp.emitError("No StoreMarkerOp found for store");
   if (failed(maybeFusedTile))
     return storeOp.emitError("Failed to convert to tile");
   Value fusedTile = *maybeFusedTile;
 
   if (reduction) {
+    auto invertTransformOps = [&](ArrayRef<TransformOp> transforms) {
+      ArrayAttr stack = builder.getArrayAttr(
+          llvm::map_to_vector(transforms, [](TransformOp transformOp) {
+            return static_cast<Attribute>(transformOp.getTransform());
+          }));
+      return invertTransforms(builder, loc, stack);
+    };
     if (!reduction->postReduceTransforms.empty()) {
-      ArrayAttr inverse =
-          invertTransformChain(builder, loc, reduction->postReduceTransforms);
+      ArrayAttr inverse = invertTransformOps(reduction->postReduceTransforms);
       if (!inverse)
         return reduction->reduceOp.emitError(
             "cannot invert post-reduction destination transforms");
@@ -280,8 +243,7 @@ static LogicalResult lowerStoreImpl(StoreOp storeOp,
         insertBroadcast(builder, loc, storeDest, reduceInputType.getShape());
 
     if (!reduction->preReduceTransforms.empty()) {
-      ArrayAttr inverse =
-          invertTransformChain(builder, loc, reduction->preReduceTransforms);
+      ArrayAttr inverse = invertTransformOps(reduction->preReduceTransforms);
       if (!inverse)
         return reduction->reduceOp.emitError(
             "cannot invert pre-reduction input transforms");
@@ -293,19 +255,14 @@ static LogicalResult lowerStoreImpl(StoreOp storeOp,
       return failure();
   }
 
-  SmallVector<TransformMapAttr> destTransforms;
   Value destRoot;
-  std::tie(destRoot, std::ignore) =
-      rock::untransform(storeDest, destTransforms);
-
-  SmallVector<Attribute> combinedTransforms;
-  llvm::append_range(combinedTransforms, storeMarkerOp.getExtraViews());
-  llvm::append_range(combinedTransforms, destTransforms);
+  ArrayAttr combinedTransforms;
+  std::tie(destRoot, combinedTransforms, std::ignore) =
+      rock::untransform(builder, storeDest, storeMarkerOp.getExtraViews());
 
   Value combinedDest = destRoot;
   if (!combinedTransforms.empty())
-    combinedDest = rock::transform(builder, destRoot,
-                                   builder.getArrayAttr(combinedTransforms));
+    combinedDest = rock::transform(builder, destRoot, combinedTransforms);
 
   if (reduction) {
     ArrayRef<int64_t> tileShape =

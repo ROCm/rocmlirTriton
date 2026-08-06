@@ -286,6 +286,12 @@ inline raw_ostream &operator<<(raw_ostream &os, const SubDimInfo &sdInfo) {
 // each provided upper dim would map to.
 FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>>
 getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs, int64_t dim);
+
+/// Return true if varying one upper dimension over its full static extent
+/// cannot change any lower coordinate or transform validity condition.
+bool transformChainIsInvariantAlongDim(OpBuilder &b,
+                                       ArrayRef<TransformMapAttr> transforms,
+                                       int64_t dim);
 FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>>
 getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                       ArrayRef<int64_t> dims);

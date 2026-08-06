@@ -611,30 +611,25 @@ static void collectFusionRoots(Value value, DenseSet<Value> &visited,
 
 FailureOr<std::optional<ReductionStorePath>>
 mlir::rock::getReductionStorePath(StoreOp storeOp) {
-  Value value = storeOp.getSource();
   SmallVector<TransformOp> postTransforms;
-  bool hasSingleUseChain = true;
-  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
-    hasSingleUseChain &= value.hasOneUse();
-    postTransforms.push_back(transformOp);
-    value = transformOp.getInput();
-  }
+  Value value;
+  std::tie(value, std::ignore) =
+      untransform(storeOp.getSource(), postTransforms);
 
   auto reduceOp = value.getDefiningOp<ReduceOp>();
   if (!reduceOp)
     return std::optional<ReductionStorePath>{};
-  if (!hasSingleUseChain || !reduceOp.getResult().hasOneUse())
+  if (!llvm::all_of(postTransforms,
+                    [](TransformOp transformOp) {
+                      return transformOp.getResult().hasOneUse();
+                    }) ||
+      !reduceOp.getResult().hasOneUse())
     return failure();
 
-  Value tileSource = reduceOp.getIn();
   SmallVector<TransformOp> preTransforms;
-  while (auto transformOp = tileSource.getDefiningOp<TransformOp>()) {
-    preTransforms.push_back(transformOp);
-    tileSource = transformOp.getInput();
-  }
-
-  std::reverse(preTransforms.begin(), preTransforms.end());
-  std::reverse(postTransforms.begin(), postTransforms.end());
+  Value tileSource;
+  std::tie(tileSource, std::ignore) =
+      untransform(reduceOp.getIn(), preTransforms);
 
   DenseSet<Value> visited;
   SetVector<Operation *> roots;
@@ -663,16 +658,6 @@ mlir::rock::getReductionStorePath(ReduceOp reduceOp) {
     return std::move(**path);
   }
   return failure();
-}
-
-ArrayAttr
-mlir::rock::invertTransformChain(OpBuilder &builder, Location loc,
-                                 ArrayRef<TransformOp> transforms) {
-  ArrayAttr stack = builder.getArrayAttr(llvm::map_to_vector(
-      llvm::reverse(transforms), [](TransformOp transformOp) -> Attribute {
-        return transformOp.getTransform();
-      }));
-  return invertTransforms(builder, loc, stack);
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {

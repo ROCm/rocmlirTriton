@@ -197,18 +197,13 @@ floodFillFromRoot(Value root, DenseSet<Value> &rootReachable,
 /// Move the elementwise producer of each reduction input to GEMM space while
 /// preserving the explicit ReduceOp and its logical input shape. The original
 /// transform stack is reapplied immediately before the reduction.
-static LogicalResult regularizeReductionInputs(ArrayRef<StoreOp> stores,
-                                               RegularizeContext &ctx) {
+static LogicalResult
+regularizeReductionInputs(ArrayRef<ReductionStorePath> reductionPaths,
+                          RegularizeContext &ctx) {
   DenseSet<Operation *> visited;
-  for (StoreOp storeOp : stores) {
-    FailureOr<std::optional<ReductionStorePath>> maybePath =
-        getReductionStorePath(storeOp);
-    if (failed(maybePath))
-      return storeOp.emitError("malformed blockwise reduction store path");
-    if (!*maybePath)
-      continue;
-    ReduceOp reduceOp = (**maybePath).reduceOp;
-    if (!reduceOp.getBlockwise() || !visited.insert(reduceOp).second)
+  for (const ReductionStorePath &path : reductionPaths) {
+    ReduceOp reduceOp = path.reduceOp;
+    if (!visited.insert(reduceOp).second)
       continue;
 
     Value oldInput = reduceOp.getIn();
@@ -242,16 +237,6 @@ static LogicalResult regularizeReductionInputs(ArrayRef<StoreOp> stores,
 static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
                                              RegularizeContext &ctx) {
   for (StoreOp storeOp : stores) {
-    // Reduction stores retain their rank-reduced source and destination. Their
-    // input producer was regularized separately above, and LowerStores will
-    // lower the explicit reduction after the block-local tile is available.
-    FailureOr<std::optional<ReductionStorePath>> maybePath =
-        getReductionStorePath(storeOp);
-    if (failed(maybePath))
-      return storeOp.emitError("malformed blockwise reduction store path");
-    if (*maybePath && (**maybePath).reduceOp.getBlockwise())
-      continue;
-
     Value storeSource = storeOp.getSource();
     FailureOr<Value> newSource = getGemmSpaceEquiv(storeSource, ctx);
     if (failed(newSource))
@@ -369,6 +354,21 @@ void RockRegularizeOutput::runOnOperation() {
       if (!anyTransforms)
         continue;
 
+      SmallVector<ReductionStorePath> reductionPaths;
+      SmallVector<StoreOp> ordinaryStores;
+      for (StoreOp storeOp : stores) {
+        FailureOr<std::optional<ReductionStorePath>> maybePath =
+            getReductionStorePath(storeOp);
+        if (failed(maybePath)) {
+          storeOp.emitError("malformed blockwise reduction store path");
+          return signalPassFailure();
+        }
+        if (*maybePath && (**maybePath).reduceOp.getBlockwise())
+          reductionPaths.push_back(std::move(**maybePath));
+        else
+          ordinaryStores.push_back(storeOp);
+      }
+
       // Phase 2: Resolve gemm-space equivalents and rewire stores.
       DenseMap<Value, Value> gemmEquiv;
       gemmEquiv[root] = root;
@@ -377,10 +377,10 @@ void RockRegularizeOutput::runOnOperation() {
                             rootType, rootReachable, transformsFromRoot,
                             gemmEquiv};
 
-      if (failed(regularizeReductionInputs(stores, ctx)))
+      if (failed(regularizeReductionInputs(reductionPaths, ctx)))
         return signalPassFailure();
 
-      if (failed(rewireStoresToGemmSpace(stores, ctx)))
+      if (failed(rewireStoresToGemmSpace(ordinaryStores, ctx)))
         return signalPassFailure();
 
       // Phase 3: Erase dead original ops left behind by cloning.

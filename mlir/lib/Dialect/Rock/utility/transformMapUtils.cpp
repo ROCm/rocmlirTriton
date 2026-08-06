@@ -1217,10 +1217,10 @@ TransformMapAttr mlir::rock::invertTransformMap(
         begins.push_back(leftPad);
         fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
       }
-      transform.slice(
-          SmallVector<StringRef>(tattr.getUpperNames()),
-          SmallVector<uint32_t>(tattr.getUpperDims()),
-          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      transform.slice(SmallVector<StringRef>(tattr.getUpperNames()),
+                      SmallVector<uint32_t>(tattr.getUpperDims()),
+                      SmallVector<StringRef>(tattr.getLowerNames()), begins,
+                      fullLowerSizes);
       break;
     }
     case rock::TransformType::Slice: {
@@ -2382,14 +2382,20 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
           }
         } break;
         case TransformType::Broadcast: {
+          int64_t modulus = trAttr.getParams()[0];
+          int64_t lowDim = trAttr.getLowerDims()[0];
           int64_t upperDim = trAttr.getUpperDims()[0];
           if (currSubDimInfo.contains(upperDim)) {
-            // Every coordinate of the expanded upper dimension maps to the
-            // same unit lower coordinate, so this dimension contributes no
-            // address variation below the broadcast.
-            LLVM_DEBUG(llvm::dbgs()
-                       << "dropping broadcast upper dimension " << upperDim
-                       << " from sub-dimension dependence\n");
+            // Broadcast maps upper coordinates modulo the lower bound. Only a
+            // unit modulus is address-invariant.
+            if (modulus == 1) {
+              LLVM_DEBUG(llvm::dbgs()
+                         << "dropping unit broadcast upper dimension "
+                         << upperDim << " from sub-dimension dependence\n");
+              break;
+            }
+            for (const SubDimInfo &sdInfo : currSubDimInfo.at(upperDim))
+              nextSubDimInfo[lowDim].push_back({modulus, sdInfo.stride});
           }
         } break;
         case TransformType::AddDim: {
@@ -2414,6 +2420,32 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
     subDimInfo = nextSubDimInfo.value();
   }
   return subDimInfo;
+}
+
+bool mlir::rock::transformChainIsInvariantAlongDim(
+    OpBuilder &b, ArrayRef<TransformMapAttr> transforms, int64_t dim) {
+  if (transforms.empty())
+    return false;
+
+  ArrayRef<int64_t> upperShape = transforms.front().getUpperBounds();
+  if (dim < 0 || static_cast<size_t>(dim) >= upperShape.size())
+    return false;
+  unsigned upperDim = static_cast<unsigned>(dim);
+  ArrayRef<unsigned> dims(&upperDim, 1);
+  if (validityDependsOnAnyDim(transforms, dims))
+    return false;
+  if (!transformChainDependsOnAnyDim(transforms, dims))
+    return true;
+
+  FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>> subDims =
+      getLowerSubDimensions(
+          b, b.getArrayAttr(llvm::to_vector_of<Attribute>(transforms)), dim);
+  if (failed(subDims))
+    return false;
+  return llvm::all_of(*subDims, [](const auto &entry) {
+    return llvm::all_of(entry.second,
+                        [](const SubDimInfo &info) { return info.size <= 1; });
+  });
 }
 
 static FailureOr<Type>
