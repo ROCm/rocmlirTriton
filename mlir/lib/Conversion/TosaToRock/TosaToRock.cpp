@@ -49,6 +49,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 #include <tuple>
 #include <utility>
 
@@ -2226,8 +2227,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       int32_t offset = constAttr.getSplatValue<int32_t>();
       if (offset >= 0)
         return failure();
+      int64_t windowSize = -static_cast<int64_t>(offset);
+      if (windowSize > std::numeric_limits<int32_t>::max())
+        return failure();
       seqLenOperand = other;
-      return -static_cast<int64_t>(offset);
+      return windowSize;
     };
 
     auto maybeWindowSize =
