@@ -31,9 +31,9 @@
 // ignored.
 #tmap_a_tile = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 16 + d4, d0 * 16 + d5)> by [<Unmerge{2, 16} ["k_loop", "k_iter"] at [0, 5] -> ["gemmK"] at [2]>, <PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{1, 16} ["m_block", "m_iter"] at [2, 4] -> ["gemmM"] at [1]>, <AddDim{1} ["n_block"] at [3] -> [] at []>] bounds = [2, 1, 1, 1, 16, 16] -> [1, 16, 32]>
 
-// Padding as padMatrix emits it, marked as tile alignment, on gemmK and on
-// gemmM, plus program pads on gemmM and gemmK that differ only in that
-// marking.
+// Padding as padMatrixForTileAlignment emits it, marked as tile alignment, on
+// gemmK and on gemmM, plus program pads on gemmM and gemmK that differ only in
+// that marking.
 #tmap_align_pad_k_30_to_32 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <PassThrough ["m"] at [1] -> ["m"] at [1]>, <Pad{0, 2} tileAlignment ["k_pad"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 16, 30]>
 
 #tmap_align_pad_m_14_to_16 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} tileAlignment ["m_pad"] at [1] -> ["m"] at [1]>, <PassThrough ["k"] at [2] -> ["k"] at [2]>] bounds = [1, 16, 32] -> [1, 14, 32]>

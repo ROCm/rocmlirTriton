@@ -2,7 +2,6 @@
 #define MLIR_DIALECT_ROCK_UTILITY_BUILDERUTILS_H
 
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"

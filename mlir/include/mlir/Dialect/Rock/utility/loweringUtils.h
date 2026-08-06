@@ -105,9 +105,14 @@ SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                            ArrayRef<int64_t> dilationDims,
                                            ArrayRef<int64_t> filterDims);
 
-/// Apply padding to a matrix in its `firstDim` and `secondDim` if applicable.
-Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
-                int64_t firstDimPad, StringRef secondDim, int64_t secondDimPad);
+/// Apply tile-alignment padding to a matrix in its `firstDim` and `secondDim`
+/// if applicable. Use this only for padding introduced to satisfy tile
+/// alignment constraints; it marks the padding as tile alignment and must not
+/// be used for semantic/user-requested padding, such as rocmlir-gen
+/// `--padding_h N`.
+Value padMatrixForTileAlignment(Value matrix, OpBuilder &b, Location loc,
+                                StringRef firstDim, int64_t firstDimPad,
+                                StringRef secondDim, int64_t secondDimPad);
 
 // Apply padding to a vector in its `firstDim` if applicable.
 Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,

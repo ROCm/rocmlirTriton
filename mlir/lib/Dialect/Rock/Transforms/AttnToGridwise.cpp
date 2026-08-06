@@ -331,8 +331,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   const int64_t origN = cast<RankedTensorType>(b.getType()).getShape()[2];
   const int64_t nPad = llvm::alignTo(origN, splitNFactor) - origN;
 
-  b = padMatrix(b, builder, loc, "gemmK", 0, "gemmN", nPad);
-  c = padMatrix(c, builder, loc, "gemmK", nPad, "gemmO", 0);
+  b = padMatrixForTileAlignment(b, builder, loc, "gemmK", 0, "gemmN", nPad);
+  c = padMatrixForTileAlignment(c, builder, loc, "gemmK", nPad, "gemmO", 0);
 
   // perform coordinate transformations
   Value aNew{nullptr}, bNew{nullptr}, cNew{nullptr};
@@ -573,15 +573,15 @@ static LogicalResult commonAttentionGemmElmtGemm(
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
 
-  a = padMatrix(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
-                gemm0ExtraPad.k);
-  b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
-                gemm0ExtraPad.n);
-  c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
-                gemm1ExtraPad.n);
+  a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m,
+                                "gemm0K", gemm0ExtraPad.k);
+  b = padMatrixForTileAlignment(b, rw, loc, "gemm0K", gemm0ExtraPad.k,
+                                "gemm0N", gemm0ExtraPad.n);
+  c = padMatrixForTileAlignment(c, rw, loc, "gemm1K", gemm1ExtraPad.k,
+                                "gemm1N", gemm1ExtraPad.n);
   transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
-    return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
-                     gemm1ExtraPad.n);
+    return padMatrixForTileAlignment(v, rw, loc, "gemm1M", gemm1ExtraPad.m,
+                                     "gemm1N", gemm1ExtraPad.n);
   });
   if (hasLse) {
     transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
