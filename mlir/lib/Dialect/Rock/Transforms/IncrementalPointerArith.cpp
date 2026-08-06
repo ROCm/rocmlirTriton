@@ -549,14 +549,14 @@ static Value splatConst(OpBuilder &b, Location loc, RankedTensorType tt,
   return triton::SplatOp::create(b, loc, tt, s);
 }
 
-/// Result of advancing the full-tile distributed carry by one loop step: the
-/// advanced validity (suffix) coordinates and the per-element offset increment.
-struct FullTileCarry {
+/// Result of advancing the carry by one loop step: the advanced validity
+/// (suffix) coordinates and the per-element offset increment.
+struct CarryStep {
   SmallVector<Value> nextSuffix;
   Value offsetDelta;
 };
 
-/// Advance the full-tile distributed carry by one loop step. `suffix` holds the
+/// Advance the carry by one loop step. `suffix` holds the
 /// validity-impacting merge coordinates as full `tensor<kIter x nPerBlock>`
 /// tiles (highest place first); each advances by its constant `step`, wrapping
 /// at its `size` with the carry rippling into the next-higher place. *Every*
@@ -567,16 +567,16 @@ struct FullTileCarry {
 /// `offsetDelta` is `sum_j (delta coord_j) * strides[j]` over the suffix plus
 /// the prefix term - a full tile, so the offset recurrence stays vector-
 /// resident.
-static FullTileCarry
-emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
-                  ArrayRef<int64_t> sizes, ArrayRef<int64_t> steps,
-                  ArrayRef<int64_t> strides, bool hasPrefix, int64_t prefixStep,
-                  int64_t prefixStride) {
+static CarryStep emitCarryStep(OpBuilder &b, Location loc,
+                               ArrayRef<Value> suffix, ArrayRef<int64_t> sizes,
+                               ArrayRef<int64_t> steps,
+                               ArrayRef<int64_t> strides, bool hasPrefix,
+                               int64_t prefixStep, int64_t prefixStride) {
   auto tt = cast<RankedTensorType>(suffix[0].getType());
-  FullTileCarry out;
+  CarryStep out;
   out.nextSuffix.resize(suffix.size());
-  Value carry; // full-tile; null == no incoming carry
-  Value delta; // full-tile; null == 0
+  Value carry; // tile-shaped; null == no incoming carry
+  Value delta; // tile-shaped; null == 0
   for (int j = static_cast<int>(suffix.size()) - 1; j >= 0; --j) {
     Value v = arith::AddIOp::create(b, loc, suffix[j],
                                     splatConst(b, loc, tt, steps[j]));
@@ -780,8 +780,8 @@ static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
   return changed;
 }
 
-/// Analyze each carry candidate and, for those eligible for the full-tile
-/// pointer recurrence, emit their preheader init values (base coordinates,
+/// Analyze each carry candidate and, for those eligible for the pointer
+/// recurrence, emit their preheader init values (base coordinates,
 /// carried suffix coordinates, zero offset accumulator) and return the
 /// per-candidate `CarryPlan` state. Ineligible candidates are skipped (their op
 /// is left in the loop, to be lowered in place by
@@ -824,13 +824,12 @@ buildCarryPlans(OpBuilder &b, scf::ForOp loop,
     assert(!cand.coordPositions.empty() &&
            "carry candidate must have a decomposed merge");
 
-    // Full-tile distributed carry. Classify each carried coordinate as
-    // validity-impacting or not. When it's not, we compute the value
-    // of the decomposition and we carry the suffix and a full-tile offset
-    // accumulator and *drop* the high non-validity coordinate (at most one; the
-    // loop bound keeps the merge's top place from wrapping), recovering its
-    // offset contribution from the suffix carry-out.
-    bool fullTileOk = false;
+    // Classify each carried coordinate as validity-impacting or not. When it's
+    // not, we compute the value of the decomposition and we carry the suffix
+    // and a full-tile offset accumulator and *drop* the high non-validity
+    // coordinate (at most one; the loop bound keeps the merge's top place from
+    // wrapping), recovering its offset contribution from the suffix carry-out.
+    bool coordLayoutOk = false;
     unsigned suffixCount = 0;
     unsigned prefixSize = 0;
 
@@ -844,7 +843,7 @@ buildCarryPlans(OpBuilder &b, scf::ForOp loop,
     // non-impacting prefix is dropped, so it may be at most one coord.
     //
     // We support only one prefix mainly because the implementation currently
-    // assumes so. For instance, `emitFullTileCarry` assumes this: it models the
+    // assumes so. For instance, `emitCarryStep` assumes this: it models the
     // dropped prefix as a single scalar step/stride pair fed by one carry.
     //
     // TODO: Support cases with more than one prefix coord.
@@ -852,15 +851,15 @@ buildCarryPlans(OpBuilder &b, scf::ForOp loop,
     if (firstImpact != impacts.end()) {
       prefixSize = std::distance(impacts.begin(), firstImpact);
       suffixCount = impacts.size() - prefixSize;
-      fullTileOk = prefixSize <= 1 &&
-                   llvm::all_of(llvm::make_range(firstImpact, impacts.end()),
-                                [](bool v) { return v; });
+      coordLayoutOk = prefixSize <= 1 &&
+                      llvm::all_of(llvm::make_range(firstImpact, impacts.end()),
+                                   [](bool v) { return v; });
     }
 
     // Not eligible for the pointer-recurrence carry (the validity coordinates
     // are not a suffix, or more than one prefix coord would be dropped): bail
     // out.
-    if (!fullTileOk)
+    if (!coordLayoutOk)
       continue;
 
     // Pin the iv to lb: an index that is the iv (or a cast of it, e.g.
@@ -978,7 +977,7 @@ static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
 
 /// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
 /// new loop that carries the merge's decomposed coordinate state via the
-/// full-tile pointer recurrence. Returns true if the candidates were rewritten.
+/// pointer recurrence. Returns true if the candidates were rewritten.
 static bool simplifyCarryCandidates(scf::ForOp loop,
                                     ArrayRef<CarryCandidate> carryCands) {
   Location loc = loop.getLoc();
@@ -1034,19 +1033,19 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
     for (unsigned k = 0; k < plan.suffixCount; ++k)
       suffix.push_back(newLoop.getRegionIterArg(plan.iterArgStart + k));
 
-    FullTileCarry stepCarry = emitFullTileCarry(
+    CarryStep carryStep = emitCarryStep(
         b, loc, suffix,
         ArrayRef<int64_t>(plan.cand.coordSizes).take_back(plan.suffixCount),
         ArrayRef<int64_t>(plan.cand.coordSteps).take_back(plan.suffixCount),
         ArrayRef<int64_t>(plan.offsetStrides).take_back(plan.suffixCount),
         plan.hasPrefix, plan.prefixStep, plan.prefixStride);
 
-    llvm::append_range(carried, stepCarry.nextSuffix);
+    llvm::append_range(carried, carryStep.nextSuffix);
 
     Value offset =
         newLoop.getRegionIterArg(plan.iterArgStart + plan.suffixCount);
     carried.push_back(
-        arith::AddIOp::create(b, loc, offset, stepCarry.offsetDelta));
+        arith::AddIOp::create(b, loc, offset, carryStep.offsetDelta));
   }
   appendToForOpYield(newLoop, carried);
 
