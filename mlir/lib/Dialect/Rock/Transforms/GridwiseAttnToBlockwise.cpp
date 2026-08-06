@@ -31,6 +31,7 @@
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -150,16 +151,10 @@ struct GridwiseAttentionRewritePattern
                          Value rowVector, int64_t numCols) const {
     auto rowType = cast<RankedTensorType>(rowVector.getType());
     int64_t numRows = rowType.getShape()[0];
-    Type elemType = rowType.getElementType();
-    
-    // Step 1: Expand dims [M] -> [M, 1]
-    auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    rowVector, 1);
-    
-    // Step 2: Broadcast [M, 1] -> [M, N]
-    auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
-    return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
+    auto resultType =
+        RankedTensorType::get({numRows, numCols}, rowType.getElementType());
+    return expandDimAndBroadcast(rewriter, loc, rowVector, /*axis=*/1,
+                                 resultType);
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -580,7 +575,8 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, tensorAddDim, emptyViews,
-          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE,
+          /*reductionTileAxes=*/nullptr);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
@@ -923,11 +919,14 @@ struct GridwiseAttentionRewritePattern
         allViews.append(globalInputMaps.begin(), globalInputMaps.end());
       ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
 
+      // These tiles are fused into the first gemm's output and then flow
+      // through the softmax into the second gemm, so which axis they end up
+      // reduced over is not known here.
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
-          rock::CacheModifier::NONE);
+          rock::CacheModifier::NONE, /*reductionTileAxes=*/nullptr);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }

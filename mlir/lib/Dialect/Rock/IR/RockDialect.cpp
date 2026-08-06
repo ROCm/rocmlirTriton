@@ -216,6 +216,9 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     }
   }
 
+  bool isTileAlignment =
+      parser.parseOptionalKeyword("tileAlignment").succeeded();
+
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
   if (parseAndGather<std::string>(parser, AsmParser::Delimiter::Square,
@@ -265,7 +268,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims);
+      upperDims, lowerNames, lowerDims, isTileAlignment);
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -278,6 +281,8 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
     llvm::interleaveComma(params, printer);
     printer << "}";
   }
+  if (getIsTileAlignment())
+    printer << " tileAlignment";
   printer << " [";
   llvm::interleaveComma(getUpperNames(), printer,
                         [&](StringRef s) { printer << "\"" << s << "\""; });
@@ -291,13 +296,41 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "]>";
 }
 
+TransformAttr TransformAttr::get(mlir::MLIRContext *context, TransformType type,
+                                 llvm::ArrayRef<int64_t> params,
+                                 llvm::ArrayRef<llvm::StringRef> upperNames,
+                                 llvm::ArrayRef<uint32_t> upperDims,
+                                 llvm::ArrayRef<llvm::StringRef> lowerNames,
+                                 llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::get(context, type, params, upperNames, upperDims,
+                            lowerNames, lowerDims,
+                            /*isTileAlignment=*/false);
+}
+
+TransformAttr TransformAttr::getChecked(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::MLIRContext *context, TransformType type,
+    llvm::ArrayRef<int64_t> params, llvm::ArrayRef<llvm::StringRef> upperNames,
+    llvm::ArrayRef<uint32_t> upperDims,
+    llvm::ArrayRef<llvm::StringRef> lowerNames,
+    llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
+                                   upperDims, lowerNames, lowerDims,
+                                   /*isTileAlignment=*/false);
+}
+
 LogicalResult
 TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       TransformType type, llvm::ArrayRef<int64_t> params,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims) {
+                      llvm::ArrayRef<unsigned> lowerDims,
+                      bool isTileAlignment) {
+  if (isTileAlignment && type != TransformType::Pad) {
+    return emitError() << "Only a Pad can align a gemm dimension to the tile "
+                          "size";
+  }
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -453,9 +486,11 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
+    bool isTileAlignment) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims);
+                                   upperDims, lowerNames, lowerDims,
+                                   isTileAlignment);
 }
 
 //===---------------------------------------------------------
@@ -1338,6 +1373,12 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
+  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
+  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
+    for (int64_t axis : *axes)
+      if (axis < 0 || axis >= resultRank)
+        return emitOpError() << "reduction tile axis " << axis
+                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),

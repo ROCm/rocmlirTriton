@@ -417,6 +417,18 @@ void TransformMapBuilder::pad(ArrayRef<StringRef> outNames,
   addTransform(TransformType::Pad, params, inNames, inDims, outNames, outDims);
 }
 
+void TransformMapBuilder::padForTileAlignment(StringRef outName,
+                                              StringRef inName, int64_t right) {
+  pad(outName, inName, /*left=*/0, right);
+  // `pad` appends exactly one transform, so re-create it with the provenance
+  // recorded. Going through `pad` keeps the dimension bookkeeping in one place.
+  TransformAttr padAttr = result.back();
+  result.back() = TransformAttr::get(
+      padAttr.getContext(), padAttr.getType(), padAttr.getParams(),
+      padAttr.getUpperNames(), padAttr.getUpperDims(), padAttr.getLowerNames(),
+      padAttr.getLowerDims(), /*isTileAlignment=*/true);
+}
+
 TransformMapBuilder &
 TransformMapBuilder::operator=(const TransformMapBuilder &other) {
   if (this != &other) {

@@ -23,6 +23,67 @@ func.func @test_addf_constant(
 }
 
 // ============================================================
+// A narrowed load is expanded and broadcast before a non-zero-preserving
+// fusion. This is the shape produced by input broadcast narrowing. The
+// validity mask must follow the same shape operations so padded reduction
+// lanes are restored to zero after the fusion.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_narrowed_broadcast_exp
+// CHECK-SAME: (%[[PTRS:.*]]: tensor<64xi32>, %[[MASK:.*]]: tensor<64xi1>,
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
+// CHECK: %[[EXPANDED:.*]] = tt.expand_dims %[[LOAD]] {axis = 1 : i32}
+// CHECK: %[[MASK_EXPANDED:.*]] = tt.expand_dims %[[MASK]] {axis = 1 : i32}
+// CHECK-SAME: tensor<64xi1> -> tensor<64x1xi1>
+// CHECK: %[[BROADCAST:.*]] = tt.broadcast %[[EXPANDED]]
+// CHECK: %[[MASK_BROADCAST:.*]] = tt.broadcast %[[MASK_EXPANDED]]
+// CHECK-SAME: tensor<64x1xi1> -> tensor<64x64xi1>
+// CHECK: %[[FUSED:.*]] = math.exp %[[BROADCAST]] : tensor<64x64xf16>
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
+// CHECK: %[[SAFE:.*]] = arith.select %[[MASK_BROADCAST]], %[[FUSED]], %[[ZERO]]
+// CHECK-SAME: tensor<64x64xi1>, tensor<64x64xf16>
+// CHECK: rock.blockwise_store_ptr %[[SAFE]]
+func.func @test_narrowed_broadcast_exp(
+    %ptrs: tensor<64xi32>, %mask: tensor<64xi1>,
+    %dest_ptrs: tensor<64x64xi32>,
+    %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64xi32>, tensor<64xi1> -> tensor<64xf16>
+  %expanded = tt.expand_dims %tile {axis = 1 : i32} : tensor<64xf16> -> tensor<64x1xf16>
+  %broadcast = tt.broadcast %expanded : tensor<64x1xf16> -> tensor<64x64xf16>
+  %fused = math.exp %broadcast : tensor<64x64xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
+}
+
+// ============================================================
+// A zero-preserving fusion after a narrowed broadcast needs no re-masking.
+// Analysis must not leave dead i1 expand/broadcast clones behind.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_narrowed_broadcast_mulf
+// CHECK-SAME: (%[[PTRS:.*]]: tensor<64xi32>, %[[MASK:.*]]: tensor<64xi1>,
+// CHECK: %[[LOAD:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]]
+// CHECK: %[[EXPANDED:.*]] = tt.expand_dims %[[LOAD]] {axis = 1 : i32}
+// CHECK-NOT: tt.expand_dims %[[MASK]]
+// CHECK: %[[BROADCAST:.*]] = tt.broadcast %[[EXPANDED]]
+// CHECK-NOT: tt.broadcast {{.*}} : tensor<64x1xi1> -> tensor<64x64xi1>
+// CHECK: %[[FUSED:.*]] = arith.mulf %[[BROADCAST]], %{{.*}}
+// CHECK-NOT: arith.select
+// CHECK: rock.blockwise_store_ptr %[[FUSED]]
+func.func @test_narrowed_broadcast_mulf(
+    %ptrs: tensor<64xi32>, %mask: tensor<64xi1>,
+    %dest_ptrs: tensor<64x64xi32>,
+    %dest_mask: tensor<64x64xi1>) attributes {rock.kernel} {
+  %tile = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64xi32>, tensor<64xi1> -> tensor<64xf16>
+  %expanded = tt.expand_dims %tile {axis = 1 : i32} : tensor<64xf16> -> tensor<64x1xf16>
+  %broadcast = tt.broadcast %expanded : tensor<64x1xf16> -> tensor<64x64xf16>
+  %cst = arith.constant dense<2.0> : tensor<64x64xf16>
+  %fused = arith.mulf %broadcast, %cst : tensor<64x64xf16>
+  rock.blockwise_store_ptr %fused -> %dest_ptrs(%dest_mask) by set : tensor<64x64xf16> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
+}
+
+// ============================================================
 // mulf with constant: zero-preserving (0 * 2 = 0).
 // No arith.select should be inserted.
 // ============================================================

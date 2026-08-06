@@ -1,13 +1,15 @@
 //===- tritonUtils.cpp - Triton-dependent utilities for Rock --------------===//
 //
-// Centralizes C++ replicas of Triton-internal functions that must be kept in
-// sync on every Triton version bump.  See tritonUtils.h for upstream sources.
+// Centralizes Triton-dependent helpers and C++ replicas of Triton-internal
+// functions that must be kept in sync on every Triton version bump. See
+// tritonUtils.h for upstream sources.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
@@ -61,6 +63,24 @@ bool isTTFloat(Type t) {
              Float64Type>(t);
 }
 
+// Keep in sync with TT_Int in TritonTypes.td.
+bool isTTInt(Type t) {
+  auto intType = dyn_cast<IntegerType>(t);
+  if (!intType || !intType.isSignless())
+    return false;
+  switch (intType.getWidth()) {
+  case 1:
+  case 4:
+  case 8:
+  case 16:
+  case 32:
+  case 64:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Keep in sync with AccelerateAMDMatmul.cpp::mlirTypeToScaledElemType()
 // Extended with BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
@@ -77,6 +97,25 @@ FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
       .Case<BFloat16Type>([](Type) { return triton::ScaleDotElemType::BF16; })
       .Case<Float16Type>([](Type) { return triton::ScaleDotElemType::FP16; })
       .Default([](Type) { return failure(); });
+}
+
+Value expandDimAndBroadcast(OpBuilder &builder, Location loc, Value source,
+                            int64_t axis, RankedTensorType resultType) {
+  auto sourceType = cast<RankedTensorType>(source.getType());
+  assert(axis >= 0 && axis <= sourceType.getRank() &&
+         "expanded axis must be within the source rank");
+  assert(resultType.getRank() == sourceType.getRank() + 1 &&
+         "broadcast result must have one more dimension than the source");
+  assert(resultType.getElementType() == sourceType.getElementType() &&
+         "broadcast cannot change the element type");
+
+  SmallVector<int64_t> expandedShape(sourceType.getShape());
+  expandedShape.insert(expandedShape.begin() + axis, 1);
+  auto expandedType = RankedTensorType::get(
+      expandedShape, sourceType.getElementType(), sourceType.getEncoding());
+  Value expanded =
+      triton::ExpandDimsOp::create(builder, loc, expandedType, source, axis);
+  return triton::BroadcastOp::create(builder, loc, resultType, expanded);
 }
 
 } // namespace rock

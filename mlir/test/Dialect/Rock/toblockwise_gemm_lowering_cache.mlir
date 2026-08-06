@@ -16,9 +16,12 @@
 // M is skinny (mBlocks = 128/128 = 1) and N is not (nBlocks = 256/128 = 2).
 // A (4 MiB) + B (8 MiB) = 12 MiB > 8 MiB LLC -> cache pressure. B has no reuse
 // (read once), so B is streamed; A keeps its reuse across N and stays cached.
+// The tiling orders each tile with gemmK first for B, a KxN matrix, and second
+// for A, so this case also pins the reduction axis each marker records. The
+// remaining cases only check the cache modifier.
 // CHECK-LABEL: @m_skinny_pressure_streams_b
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>, reductionTileAxes = array<i64: 0>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 func.func @m_skinny_pressure_streams_b(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x8192x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %result = rock.gridwise_gemm(%arg0, %arg1) {params = #gemm_params} : tensor<1x128x8192xf32>, tensor<1x8192x256xf32> -> tensor<1x128x256xf32>
   %out = rock.store %result to %arg2 by set : tensor<1x128x256xf32> -> tensor<1x128x256xf32> to tensor<1x128x256xf32>
@@ -33,8 +36,8 @@ func.func @m_skinny_pressure_streams_b(%arg0: tensor<1x128x8192xf32>, %arg1: ten
 // Under cache pressure A has no reuse (read once) and is streamed; B stays
 // cached for its reuse across M.
 // CHECK-LABEL: @n_skinny_pressure_streams_a
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x256x8192xf32> -> tensor<128x64xf32>
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x8192x128xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x256x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x8192x128xf32> -> tensor<64x128xf32>
 func.func @n_skinny_pressure_streams_a(%arg0: tensor<1x256x8192xf32>, %arg1: tensor<1x8192x128xf32>, %arg2: tensor<1x256x128xf32>) -> tensor<1x256x128xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %result = rock.gridwise_gemm(%arg0, %arg1) {params = #gemm_params} : tensor<1x256x8192xf32>, tensor<1x8192x128xf32> -> tensor<1x256x128xf32>
   %out = rock.store %result to %arg2 by set : tensor<1x256x128xf32> -> tensor<1x256x128xf32> to tensor<1x256x128xf32>
@@ -48,8 +51,8 @@ func.func @n_skinny_pressure_streams_a(%arg0: tensor<1x256x8192xf32>, %arg1: ten
 // M is skinny but A (64 KiB) + B (128 KiB) fits easily in the 8 MiB LLC, so
 // there is no cache pressure and nothing is streamed: both stay cached.
 // CHECK-LABEL: @m_skinny_no_pressure
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x128xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x128xf32> -> tensor<128x64xf32>
 func.func @m_skinny_no_pressure(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %result = rock.gridwise_gemm(%arg0, %arg1) {params = #gemm_params} : tensor<1x128x128xf32>, tensor<1x128x256xf32> -> tensor<1x128x256xf32>
   %out = rock.store %result to %arg2 by set : tensor<1x128x256xf32> -> tensor<1x128x256xf32> to tensor<1x128x256xf32>
@@ -66,8 +69,8 @@ func.func @m_skinny_no_pressure(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x12
 // repeated reads and is NOT streamed. A (injective, no reuse along N's single
 // extra block) stays cached too.
 // CHECK-LABEL: @m_skinny_pressure_noninjective_b
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 #bcastK = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["k"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 8192, 256] -> [1, 1, 256]>
 func.func @m_skinny_pressure_noninjective_b(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x1x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %b = rock.transform %arg1 by #bcastK : tensor<1x1x256xf32> to tensor<1x8192x256xf32>
@@ -84,8 +87,8 @@ func.func @m_skinny_pressure_noninjective_b(%arg0: tensor<1x128x8192xf32>, %arg1
 // small but each spans 2 blocks (mBlocks = nBlocks = 256/128 = 2), so neither
 // operand is read once. Even under cache pressure nothing is streamed.
 // CHECK-LABEL: @small_but_multiblock_no_stream
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x256x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x256x8192xf32> -> tensor<128x64xf32>
 func.func @small_but_multiblock_no_stream(%arg0: tensor<1x256x8192xf32>, %arg1: tensor<1x8192x256xf32>, %arg2: tensor<1x256x256xf32>) -> tensor<1x256x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 4 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %result = rock.gridwise_gemm(%arg0, %arg1) {params = #gemm_params} : tensor<1x256x8192xf32>, tensor<1x8192x256xf32> -> tensor<1x256x256xf32>
   %out = rock.store %result to %arg2 by set : tensor<1x256x256xf32> -> tensor<1x256x256xf32> to tensor<1x256x256xf32>
@@ -100,8 +103,8 @@ func.func @small_but_multiblock_no_stream(%arg0: tensor<1x256x8192xf32>, %arg1: 
 // lower correspondent, so every K step re-reads the same element (a reload).
 // Even with M skinny and under pressure, B is NOT streamed.
 // CHECK-LABEL: @m_skinny_pressure_adddim_b
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 #adddimK = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <AddDim{8192} ["k"] at [1] -> [] at []>, <PassThrough ["n"] at [2] -> ["n"] at [1]>] bounds = [1, 8192, 256] -> [1, 256]>
 func.func @m_skinny_pressure_adddim_b(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %b = rock.transform %arg1 by #adddimK : tensor<1x256xf32> to tensor<1x8192x256xf32>
@@ -118,8 +121,8 @@ func.func @m_skinny_pressure_adddim_b(%arg0: tensor<1x128x8192xf32>, %arg1: tens
 // rock.transform on B, all views injective. The walk traverses the fusion ops
 // and finds no reload, so with M skinny and under pressure B is still streamed.
 // CHECK-LABEL: @m_skinny_pressure_fusion_chain_injective
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 #id = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g", "k", "n"] at [0, 1, 2] -> ["g", "k", "n"] at [0, 1, 2]>] bounds = [1, 8192, 256] -> [1, 8192, 256]>
 func.func @m_skinny_pressure_fusion_chain_injective(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x8192x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %t1 = rock.transform %arg1 by #id : tensor<1x8192x256xf32> to tensor<1x8192x256xf32>
@@ -139,8 +142,8 @@ func.func @m_skinny_pressure_fusion_chain_injective(%arg0: tensor<1x128x8192xf32
 // Same shape of chain, but a Broadcast (reload) sits behind the fusion ops. The
 // walk must see through the fusions to the broadcast: B is NOT streamed.
 // CHECK-LABEL: @m_skinny_pressure_fusion_chain_reload
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 #id2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g", "k", "n"] at [0, 1, 2] -> ["g", "k", "n"] at [0, 1, 2]>] bounds = [1, 8192, 256] -> [1, 8192, 256]>
 #bcastK2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["k"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 8192, 256] -> [1, 1, 256]>
 func.func @m_skinny_pressure_fusion_chain_reload(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x1x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
@@ -165,8 +168,8 @@ func.func @m_skinny_pressure_fusion_chain_reload(%arg0: tensor<1x128x8192xf32>, 
 // would be streamed; because it reloads, it stays cached. The filter is also
 // cached (nBlocks is large).
 // CHECK-LABEL: @rock_conv_gkc01_ngc01_ngk01
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x1152x6272xf32> -> tensor<32x32xf32>
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x1152xf32> -> tensor<64x32xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x1152x6272xf32> -> tensor<32x32xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x1152xf32> -> tensor<64x32xf32>
 func.func @rock_conv_gkc01_ngc01_ngk01(%arg0: tensor<73728xf32>, %arg1: tensor<1048576xf32>, %arg2: tensor<401408xf32>) -> tensor<401408xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.block_size = 256 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 196 : i32, rock.kernel, rock.num_chiplets = 1 : i64, rock.num_cu = 104 : i32} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 128 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{64, 128, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 128, 3, 3] -> [73728]> : tensor<73728xf32> to tensor<1x64x128x3x3xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 128 + d2) * 16 + d3) * 16 + d4)> by [<Unmerge{32, 128, 16, 16} ["ni", "ci", "0i", "1i"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [32, 1, 128, 16, 16] -> [1048576]> : tensor<1048576xf32> to tensor<32x1x128x16x16xf32>
