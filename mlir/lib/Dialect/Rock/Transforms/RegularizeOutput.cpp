@@ -180,6 +180,12 @@ floodFillFromRoot(Value root, DenseSet<Value> &rootReachable,
       } else if (isFusionOp(owner)) {
         for (Value res : owner->getResults())
           work.push_back({res, tfAttrs});
+      } else if (auto reduceOp = dyn_cast<ReduceOp>(owner)) {
+        // Keep reductions as semantic boundaries, but continue the trace so
+        // stores after the reduction are visible to this pass. The transform
+        // stack is only meaningful for the reduction input; reduced results
+        // are never converted to GEMM space.
+        work.push_back({reduceOp.getResult(), tfAttrs});
       } else if (auto storeOp = dyn_cast<StoreOp>(owner);
                  storeOp && use.getOperandNumber() == 0) {
         stores.push_back(storeOp);
@@ -188,12 +194,62 @@ floodFillFromRoot(Value root, DenseSet<Value> &rootReachable,
   }
 }
 
+/// Return the reduction feeding `value` through a post-reduction transform
+/// chain, or null when this is an ordinary elementwise store source.
+static ReduceOp findUpstreamReduce(Value value) {
+  while (auto transformOp = value.getDefiningOp<TransformOp>())
+    value = transformOp.getInput();
+  return value.getDefiningOp<ReduceOp>();
+}
+
+/// Move the elementwise producer of each reduction input to GEMM space while
+/// preserving the explicit ReduceOp and its logical input shape. The original
+/// transform stack is reapplied immediately before the reduction.
+static LogicalResult regularizeReductionInputs(ArrayRef<StoreOp> stores,
+                                               RegularizeContext &ctx) {
+  DenseSet<Operation *> visited;
+  for (StoreOp storeOp : stores) {
+    ReduceOp reduceOp = findUpstreamReduce(storeOp.getSource());
+    if (!reduceOp || !visited.insert(reduceOp).second)
+      continue;
+
+    Value oldInput = reduceOp.getIn();
+    auto tfIt = ctx.transformsFromRoot.find(oldInput);
+    if (tfIt == ctx.transformsFromRoot.end())
+      return reduceOp.emitError(
+          "reduction input is not reachable from the fusion root");
+
+    FailureOr<Value> gemmInput = getGemmSpaceEquiv(oldInput, ctx);
+    if (failed(gemmInput))
+      return failure();
+
+    Value newInput = *gemmInput;
+    if (!tfIt->second.empty()) {
+      ctx.builder.setInsertionPoint(reduceOp);
+      // transform() consumes maps in upper-view-to-root order and applies
+      // them in reverse. transformsFromRoot records the opposite order.
+      SmallVector<Attribute> transforms(tfIt->second.rbegin(),
+                                        tfIt->second.rend());
+      newInput = rock::transform(ctx.builder, newInput,
+                                 ctx.builder.getArrayAttr(transforms));
+    }
+    reduceOp.getInMutable().assign(newInput);
+  }
+  return success();
+}
+
 /// Phase 2: Rewire stores to use gemm-space fused values.
 /// Lazily resolves fusion ops to gemm space via getGemmSpaceEquiv, then
 /// updates each store's source and (if needed) destination.
 static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
                                              RegularizeContext &ctx) {
   for (StoreOp storeOp : stores) {
+    // Reduction stores retain their rank-reduced source and destination. Their
+    // input producer was regularized separately above, and LowerStores will
+    // lower the explicit reduction after the block-local tile is available.
+    if (findUpstreamReduce(storeOp.getSource()))
+      continue;
+
     Value storeSource = storeOp.getSource();
     FailureOr<Value> newSource = getGemmSpaceEquiv(storeSource, ctx);
     if (failed(newSource))
@@ -318,6 +374,9 @@ void RockRegularizeOutput::runOnOperation() {
       RegularizeContext ctx{builder,  loc,           rootOp,
                             rootType, rootReachable, transformsFromRoot,
                             gemmEquiv};
+
+      if (failed(regularizeReductionInputs(stores, ctx)))
+        return signalPassFailure();
 
       if (failed(rewireStoresToGemmSpace(stores, ctx)))
         return signalPassFailure();

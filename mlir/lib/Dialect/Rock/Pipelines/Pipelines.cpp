@@ -416,6 +416,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.addPass(createCSEPass());
   };
   addWithDCE(rock::createRockAffixTuningParametersPass());
+  // Preserve only reductions proven eligible for blockwise lowering; the pass
+  // lowers all other reductions through the legacy global-atomic path.
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());

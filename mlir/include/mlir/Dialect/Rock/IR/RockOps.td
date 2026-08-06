@@ -821,8 +821,8 @@ def Rock_BlockwiseReduceOp
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Blockwise reduce operation";
   let description = [{
-    The `rock.blockwise_reduce` op does reduce at a blockwise level and
-    to fill all elements of the input tensor with reduced values. 
+    The `rock.blockwise_reduce` op reduces one axis of a block-local tensor.
+    The selected axis is removed from the result shape.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{

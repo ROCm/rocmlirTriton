@@ -67,6 +67,53 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
+/// Return the explicit reduction feeding a store through a post-reduction
+/// transform chain, or null for an ordinary output store.
+static ReduceOp findStoreReduction(StoreOp storeOp) {
+  Value source = storeOp.getSource();
+  while (auto transformOp = source.getDefiningOp<TransformOp>())
+    source = transformOp.getInput();
+  return source.getDefiningOp<ReduceOp>();
+}
+
+/// Reconcile the unit group dimension introduced by GEMM normalization with
+/// the original rank-two GEMM-space value feeding a reduction transform chain.
+static LogicalResult bridgeNormalizedReductionInput(PatternRewriter &rewriter,
+                                                    ReduceOp reduceOp) {
+  Value value = reduceOp.getIn();
+  TransformOp firstTransform;
+  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
+    firstTransform = transformOp;
+    value = transformOp.getInput();
+  }
+  if (!firstTransform)
+    return success();
+
+  auto actualType = cast<RankedTensorType>(firstTransform.getInput().getType());
+  ArrayRef<int64_t> expectedShape =
+      firstTransform.getTransform().getLowerBounds();
+  if (actualType.getShape() == expectedShape)
+    return success();
+
+  ArrayRef<int64_t> actualShape = actualType.getShape();
+  if (actualShape.size() != 3 || expectedShape.size() != 2 ||
+      actualShape[0] != 1 || actualShape.drop_front() != expectedShape)
+    return reduceOp.emitError(
+        "unsupported GEMM normalization for explicit fused reduction");
+
+  rewriter.setInsertionPoint(firstTransform);
+  TopDownTMBuilder removeGroup(rewriter, {"gemmM", "gemmN"}, expectedShape,
+                               reduceOp.getLoc());
+  removeGroup.constDim("gemmG", 0, /*constantVal=*/0,
+                       /*lowerSize=*/actualShape[0]);
+  removeGroup.passThrough({"gemmM", "gemmN"}, {1, 2}, {"gemmM", "gemmN"});
+  Value bridged =
+      TransformOp::create(rewriter, reduceOp.getLoc(),
+                          firstTransform.getInput(), removeGroup.get());
+  firstTransform.getInputMutable().assign(bridged);
+  return success();
+}
+
 class RockGemmToGridwisePass
     : public rock::impl::RockGemmToGridwisePassBase<RockGemmToGridwisePass> {
   void runOnOperation() override;
@@ -117,8 +164,19 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // Use plain references rather than structured bindings so the lambda below
   // can capture them without requiring -Wc++20-extensions.
   auto &views = maybeViews.value();
-  SetVector<StoreOp> &stores = views.stores;
-  SmallVector<Value> &outputViews = views.outputViews;
+  SetVector<StoreOp> &allStores = views.stores;
+  SmallVector<Value> outputViews;
+  SmallVector<StoreOp> stores;
+  SmallVector<StoreOp> reductionStores;
+  for (auto [store, outputView] :
+       llvm::zip_equal(allStores, views.outputViews)) {
+    if (findStoreReduction(store))
+      reductionStores.push_back(store);
+    else {
+      stores.push_back(store);
+      outputViews.push_back(outputView);
+    }
+  }
   DenseMap<Value, Value> &fusionInputMap = views.fusionInputMap;
   SmallVector<Type> storeResultTypes;
   storeResultTypes.reserve(stores.size());
@@ -176,6 +234,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   }
 
   const int64_t splitKFactor = op.getParams()->getSplitKFactor();
+  if (splitKFactor > 1 && !reductionStores.empty())
+    return op.emitOpError(
+        "split-K is not yet supported with an explicit fused reduction");
   if (splitKFactor > 1) {
     auto maybeSplitk =
         arrangeSplitKTransform(rw, op, loc, splitKFactor, a, b, outputViews,
@@ -200,6 +261,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
+  if (!reductionStores.empty() &&
+      (extraPad.g != 0 || extraPad.m != 0 || extraPad.n != 0))
+    return op.emitOpError(
+        "output padding is not yet supported with an explicit fused reduction");
 
   a = padMatrixForTileAlignment(a, rw, loc, "gemmM", extraPad.m, "gemmK",
                                 extraPad.k);
@@ -229,11 +294,13 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     return op.emitError("failed to compute the grid size of `GemmOp`");
   }
 
+  auto paddedAShape = cast<ShapedType>(a.getType()).getShape();
+  auto paddedBShape = cast<ShapedType>(b.getType()).getShape();
   auto newOutputType = RankedTensorType::get(
-      cast<ShapedType>(outputViews[0].getType()).getShape(), op.getCType());
-  auto gridwiseOp =
-      GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA, scaleB, op.getQuantBlockSizeAttr(), 
-                             cast<GemmParamsAttr>(params));
+      {paddedAShape[0], paddedAShape[1], paddedBShape[2]}, op.getCType());
+  auto gridwiseOp = GridwiseGemmOp::create(rw, loc, newOutputType, a, b, scaleA,
+                                           scaleB, op.getQuantBlockSizeAttr(),
+                                           cast<GemmParamsAttr>(params));
   Value result = gridwiseOp.getResult();
 
   // Propagate the new (potentially padded) output type through any fusion ops
@@ -241,6 +308,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // gemm result inside fusion ops with the gridwise result and updates their
   // result types to match the new shape.
   rock::propagateOutputType(op.getResult(), result);
+  for (StoreOp reductionStore : reductionStores)
+    if (failed(bridgeNormalizedReductionInput(
+            rw, findStoreReduction(reductionStore))))
+      return failure();
 
   // Replace extra fusion input operands with their padded versions.
   rock::replaceFusionExtraInputs(result, fusionInputMap);

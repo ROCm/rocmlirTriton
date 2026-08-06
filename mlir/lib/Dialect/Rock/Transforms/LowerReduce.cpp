@@ -42,6 +42,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -57,6 +58,78 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
+
+static GemmOp findUpstreamGemm(Value value, DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return nullptr;
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return nullptr;
+  if (auto gemmOp = dyn_cast<GemmOp>(defOp))
+    return gemmOp;
+  if (auto transformOp = dyn_cast<TransformOp>(defOp))
+    return findUpstreamGemm(transformOp.getInput(), visited);
+  if (!rock::isFusionOp(defOp))
+    return nullptr;
+  for (Value operand : defOp->getOperands())
+    if (GemmOp gemmOp = findUpstreamGemm(operand, visited))
+      return gemmOp;
+  return nullptr;
+}
+
+/// Return true only for the initially supported blockwise-reduction form.
+/// Everything else continues through the legacy broadcast + atomic lowering.
+static bool isBlockwiseReductionCandidate(ReduceOp reduceOp) {
+  if (reduceOp.getReduceMethod() != ReduceMethod::Sum)
+    return false;
+
+  auto inputType = dyn_cast<RankedTensorType>(reduceOp.getIn().getType());
+  auto resultType = dyn_cast<RankedTensorType>(reduceOp.getResult().getType());
+  if (!inputType || !resultType || !inputType.hasStaticShape() ||
+      inputType.getRank() != 3 || resultType.getRank() != 3 ||
+      reduceOp.getAxis().getSExtValue() != 2)
+    return false;
+
+  // The supported global result is a single transform from the keep-dims
+  // reduction result to a rank-one store.
+  if (!reduceOp.getResult().hasOneUse())
+    return false;
+  auto postTransform =
+      dyn_cast<TransformOp>(*reduceOp.getResult().user_begin());
+  if (!postTransform || !postTransform.getResult().hasOneUse())
+    return false;
+  auto storeOp = dyn_cast<StoreOp>(*postTransform.getResult().user_begin());
+  if (!storeOp ||
+      cast<RankedTensorType>(storeOp.getSource().getType()).getRank() != 1)
+    return false;
+
+  // Require an explicit view from GEMM space to the logical reduction input.
+  // This is the form LowerStores knows how to map back onto a local tile.
+  Value producer = reduceOp.getIn();
+  bool hasPreTransform = false;
+  while (auto transformOp = producer.getDefiningOp<TransformOp>()) {
+    hasPreTransform = true;
+    producer = transformOp.getInput();
+  }
+  if (!hasPreTransform)
+    return false;
+
+  DenseSet<Value> visited;
+  GemmOp gemmOp = findUpstreamGemm(producer, visited);
+  if (!gemmOp || !gemmOp.getParams())
+    return false;
+  auto params = *gemmOp.getParams();
+  if (params.getSplitKFactor() != 1)
+    return false;
+
+  ArrayRef<int64_t> gemmShape =
+      cast<RankedTensorType>(gemmOp.getResult().getType()).getShape();
+  if (gemmShape.size() < 2)
+    return false;
+  int64_t m = gemmShape[gemmShape.size() - 2];
+  int64_t n = gemmShape[gemmShape.size() - 1];
+  return m % params.getMPerBlock() == 0 && n % params.getNPerBlock() == 0;
+}
 
 /// Walk a single-use chain of TransformOps from `start` to a StoreOp,
 /// collecting intermediate TransformOps into `chain`.  Returns the StoreOp,
@@ -78,7 +151,8 @@ collectTransformChain(Value start, SmallVectorImpl<TransformOp> &chain) {
     }
   }
 
-  return emitError(cur.getLoc(), "expected single-use chain from reduce to store");
+  return emitError(cur.getLoc(),
+                   "expected single-use chain from reduce to store");
 }
 
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
@@ -86,6 +160,9 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
 
   LogicalResult matchAndRewrite(rock::ReduceOp reduceOp,
                                 PatternRewriter &rewriter) const override {
+    if (isBlockwiseReductionCandidate(reduceOp))
+      return failure();
+
     Location loc = reduceOp.getLoc();
     Value reduceInput = reduceOp.getIn();
 
@@ -126,8 +203,9 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
       ArrayAttr inverted = rock::invertTransforms(
           rewriter, loc,
           rewriter.getArrayAttr(llvm::map_to_vector(
-              intermediateOps,
-              [](TransformOp tOp) -> Attribute { return tOp.getTransform(); })));
+              intermediateOps, [](TransformOp tOp) -> Attribute {
+                return tOp.getTransform();
+              })));
       if (!inverted)
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
@@ -172,7 +250,8 @@ void RockLowerReduce::runOnOperation() {
   MLIRContext *ctx = &getContext();
 
   ConversionTarget target(*ctx);
-  target.addIllegalOp<rock::ReduceOp>();
+  target.addDynamicallyLegalOp<rock::ReduceOp>(
+      [](rock::ReduceOp op) { return isBlockwiseReductionCandidate(op); });
   target.addLegalDialect<rock::RockDialect>();
   target.addLegalDialect<arith::ArithDialect>();
   target.addLegalDialect<math::MathDialect>();
