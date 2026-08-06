@@ -1983,11 +1983,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     std::optional<int32_t> seqLenClipMin;
     std::optional<int32_t> seqLenClipMax;
     // The currentSeqLen block argument referenced by the sliding-window mask.
-    // Used to adopt a currentSeqLen when no separate KV-cache mask supplied
-    // one.
+    // Used to verify that the sliding-window and KV-cache masks have the same
+    // position operand.
     Value slidingWindowSeqLen;
-    // Clip bounds detected on the sliding-window seq-len operand, re-emitted
-    // when that operand is adopted as currentSeqLen.
+    // Clip bounds detected on the sliding-window seq-len operand.
     //
     // In valid IR the seq-len is clamped once and that single clip (the same
     // min/max ops) feeds every mask, so when both a KV-cache and a
@@ -2178,11 +2177,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     int64_t windowSize;
     // The currentSeqLen operand feeding (currentSeqLen - windowSize), resolved
     // through reshape/clip ops so it can be matched against the KV-cache
-    // seq-len and reused as the attention op's currentSeqLen.
+    // seq-len.
     Value seqLen;
     // Clip bounds (min(max(x, lo), hi)) detected on the seq-len operand.
-    // Carried so they can be re-emitted when a sliding-window-only mask adopts
-    // this operand as currentSeqLen.
+    // Carried so they can be compared with the KV-cache clip bounds.
     std::optional<int32_t> clipMin;
     std::optional<int32_t> clipMax;
   };
@@ -2242,9 +2240,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     // The seq-len operand may be wrapped in a clip (min(max(x, lo), hi)) just
     // like the KV-cache path. Detect it before skipping through the min/max so
-    // the bounds can be re-emitted if this operand is later adopted as the
-    // attention op's currentSeqLen (otherwise a clipped sliding-only mask would
-    // silently drop its clip).
+    // its bounds can be checked against the KV-cache mask.
     std::optional<int32_t> clipMin;
     std::optional<int32_t> clipMax;
     Value seqLenCandidate = seqLenOperand;
@@ -2475,11 +2471,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       Value input1 = greater.getInput1();
 
       // Try sliding window pattern if not already found. Record the operand and
-      // any clip bounds; the consistency check against a KV-cache seq-len (and
-      // adoption of this operand as currentSeqLen when no KV-cache mask exists)
-      // is done once, centrally, after all masks have been peeled. Doing it
-      // here would miss the case where the sliding-window mask is seen before
-      // the KV-cache mask.
+      // any clip bounds; the consistency check against a KV-cache seq-len is
+      // done once, centrally, after all masks have been peeled. Doing it here
+      // would miss the case where the sliding-window mask is seen before the
+      // KV-cache mask.
       if (!result.slidingWindowSize) {
         auto maybeSlidingWindow = trySlidingWindowPattern(input1, seqLenSkip);
         if (succeeded(maybeSlidingWindow)) {
@@ -2550,34 +2545,25 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // sliding-window seq-len with any KV-cache seq-len here, independent of the
     // order in which the two masks were peeled.
     if (currentResult.slidingWindowSize) {
-      if (currentResult.seqLen) {
-        // A KV-cache mask already fixed currentSeqLen. The sliding-window mask
-        // must reference the same seq-len block argument; otherwise the two
-        // masks disagree on the sequence length and cannot be folded into a
-        // single op with one currentSeqLen. Reject the fusion rather than emit
-        // an op that silently applies the sliding window relative to the wrong
-        // seq-len.
-        if (!sameSeqLenBlockArg(currentResult.seqLen,
-                                currentResult.slidingWindowSeqLen, seqLenSkip))
-          return failure();
-        // Both masks must clamp currentSeqLen identically. sameSeqLenBlockArg
-        // only matches the underlying block argument (it skips through the
-        // clip min/max), so a divergent clip would otherwise be silently
-        // dropped: the folded op carries a single currentSeqLen with one clip
-        // and cannot reproduce two different clamp ranges. Reject the fusion
-        // instead. In well-formed IR the seq-len is clamped once and reused, so
-        // the two clips agree.
-        if (currentResult.seqLenClipMin != currentResult.slidingWindowClipMin ||
-            currentResult.seqLenClipMax != currentResult.slidingWindowClipMax)
-          return failure();
-      } else {
-        // Sliding-window-only mask: adopt its (validated) seq-len operand as
-        // currentSeqLen so the resulting op verifies, preserving any clip
-        // bounds detected on that operand so a clipped seq-len is re-emitted.
-        currentResult.seqLen = currentResult.slidingWindowSeqLen;
-        currentResult.seqLenClipMin = currentResult.slidingWindowClipMin;
-        currentResult.seqLenClipMax = currentResult.slidingWindowClipMax;
-      }
+      // A sliding-window lower bound alone does not prove that keys after its
+      // position operand are invalid. Require an independently detected
+      // KV-cache upper mask rather than introducing one by setting
+      // currentSeqLen on the folded attention op.
+      if (!currentResult.seqLen)
+        return failure();
+
+      // The sliding-window mask must reference the same seq-len block argument
+      // as the KV-cache mask; otherwise the two masks disagree on the sequence
+      // length and cannot be folded into an op with one currentSeqLen.
+      if (!sameSeqLenBlockArg(currentResult.seqLen,
+                              currentResult.slidingWindowSeqLen, seqLenSkip))
+        return failure();
+      // Both masks must clamp currentSeqLen identically. sameSeqLenBlockArg
+      // only matches the underlying block argument (it skips through the clip
+      // min/max), so a divergent clip would otherwise be silently dropped.
+      if (currentResult.seqLenClipMin != currentResult.slidingWindowClipMin ||
+          currentResult.seqLenClipMax != currentResult.slidingWindowClipMax)
+        return failure();
     }
 
     // We need at least one pattern to be detected
