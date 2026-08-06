@@ -301,6 +301,16 @@ struct CarryCandidate {
   SmallVector<unsigned> coordPositions; // which decomposed coords are carried
   SmallVector<int64_t> coordSizes;      // each coord's wrap limit (merge size)
   SmallVector<int64_t> coordSteps;      // per-iteration increment of each coord
+
+  /// The sub-chain above and including the iv-traversed merge.
+  ArrayRef<TransformMapAttr> aboveMaps() const {
+    return ArrayRef<TransformMapAttr>(transforms).take_front(mergeIdx + 1);
+  }
+  /// The sub-chain below the iv-traversed merge, i.e. from the merge's
+  /// decomposed coordinates down to the raw buffer.
+  ArrayRef<TransformMapAttr> belowMaps() const {
+    return ArrayRef<TransformMapAttr>(transforms).drop_front(mergeIdx + 1);
+  }
 };
 
 /// Carry fallback, tried when `analyzeAffineCandidate` bails.
@@ -605,20 +615,22 @@ emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
 
 /// Per-candidate carried state + iter_arg layout for the rewritten loop.
 struct Reduced {
-  TransformsToPtrOp op;      // original op (to be removed)
+  // The analysis this state was built from. It owns the op to be replaced, the
+  // transform chain (and thus `aboveMaps()` / `belowMaps()`) and the merge's
+  // decomposed coordinates: their positions, wrap limits and per-step
+  // increments.
+  CarryCandidate cand;
+
   unsigned iterArgStart = 0; // first new iter_arg index for this candidate
 
   RankedTensorType ptrType;
   Type maskType;
 
   // Coordinate vector at iv == lb. Invariant entries are used verbatim in the
-  // loop body; the entries at `coordPositions` are replaced by the carried
+  // loop body; the entries at `cand.coordPositions` are replaced by the carried
   // iter_args and seed their initial values.
   SmallVector<Value> iter0Coords;
-  SmallVector<Value> carriedInits;      // init for the carried coord iter_args
-  SmallVector<unsigned> coordPositions; // carried positions in coord vector
-  SmallVector<int64_t> coordSizes;      // each coord's wrap limit (merge size)
-  SmallVector<int64_t> coordSteps;      // per-iteration increment of each coord
+  SmallVector<Value> carriedInits; // init for the carried coord iter_args
 
   // Coordinate decomposition: prefix vs. suffix.
   //
@@ -652,9 +664,8 @@ struct Reduced {
   // ---------------------------------
   // 2. Mask rebuild.
   // ---------------------------------
-  // Transform chain below the merge: used to rebuild the mask on each
-  // iteration.
-  SmallVector<TransformMapAttr> belowMaps;
+  // Uses `cand.belowMaps()`, the transform chain below the merge, to rebuild
+  // the mask on each iteration.
 
   // ---------------------------------
   // 3. Offset recurrence computation.
@@ -787,16 +798,7 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
   SmallVector<Reduced, 0> reduced;
   for (const CarryCandidate &cand : carryCands) {
     TransformsToPtrOp op = cand.op;
-
-    // Builds the transform chain below (after) the merge.
-    // Note that cand.transforms is the full chain and cand.mergeIdx is the
-    // index of the map containing the merge the IV flows through, so
-    // drop_front(mergeIdx + 1) discards the merge and everything above it,
-    // keeping only the sub-chain from the merge's decomposed coordinates down
-    // to the raw buffer
-    SmallVector<TransformMapAttr> belowMaps =
-        llvm::to_vector(ArrayRef<TransformMapAttr>(cand.transforms)
-                            .drop_front(cand.mergeIdx + 1));
+    ArrayRef<TransformMapAttr> belowMaps = cand.belowMaps();
 
     // Each carried coordinate contributes a constant
     // stride through the sub-chain below the merge.
@@ -892,25 +894,19 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     for (size_t d = 0; d < outShape.size(); ++d)
       initValues.push_back(
           makeRange(b, loc, 0, outShape[d], outShape.size(), d, idxTy));
-    AffineMap aboveMap =
-        composeTransforms(ArrayRef<TransformMapAttr>(cand.transforms)
-                              .take_front(cand.mergeIdx + 1));
+    AffineMap aboveMap = composeTransforms(cand.aboveMaps());
     FailureOr<SmallVector<Value>> iter0 =
         expandAffineMap(b, loc, aboveMap, initValues, idxTy);
     if (failed(iter0))
       continue;
 
     Reduced r;
-    r.op = op;
+    r.cand = cand;
     r.ptrType = ptrType;
     r.maskType = op.getMask().getType();
     r.iter0Coords = *iter0;
-    r.coordPositions = cand.coordPositions;
-    r.coordSizes = cand.coordSizes;
-    r.coordSteps = cand.coordSteps;
     r.srcPre = srcPre;
     r.baseIdx = baseIdx;
-    r.belowMaps = std::move(belowMaps);
     r.offsetStrides = strides;
     r.suffixCount = suffixCount;
     r.hasPrefix = (prefixSize == 1);
@@ -958,11 +954,11 @@ static FailureOr<Value> buildCarryMask(OpBuilder &b, Location loc,
                                        const Reduced &r, scf::ForOp newLoop) {
   SmallVector<Value> coords(r.iter0Coords);
   ArrayRef<unsigned> suffixPos =
-      ArrayRef<unsigned>(r.coordPositions).take_back(r.suffixCount);
+      ArrayRef<unsigned>(r.cand.coordPositions).take_back(r.suffixCount);
   for (auto [k, pos] : llvm::enumerate(suffixPos))
     coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
   FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
-      b, loc, r.belowMaps, coords, r.ptrType.getShape(),
+      b, loc, r.cand.belowMaps(), coords, r.ptrType.getShape(),
       r.ptrType.getElementType(),
       /*computeOffset=*/false);
   if (failed(om))
@@ -1012,7 +1008,7 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   // offset re-expansion).
   SmallVector<std::pair<Value, Value>> ptrsAndMasks;
   for (Reduced &r : reduced) {
-    b.setInsertionPoint(r.op);
+    b.setInsertionPoint(r.cand.op);
     Value basePtr = buildCarryBasePtr(b, loc, r);
     FailureOr<Value> mask = buildCarryMask(b, loc, r, newLoop);
     if (failed(mask)) {
@@ -1038,8 +1034,8 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
 
     FullTileCarry stepCarry = emitFullTileCarry(
         b, loc, suffix,
-        ArrayRef<int64_t>(r.coordSizes).take_back(r.suffixCount),
-        ArrayRef<int64_t>(r.coordSteps).take_back(r.suffixCount),
+        ArrayRef<int64_t>(r.cand.coordSizes).take_back(r.suffixCount),
+        ArrayRef<int64_t>(r.cand.coordSteps).take_back(r.suffixCount),
         ArrayRef<int64_t>(r.offsetStrides).take_back(r.suffixCount),
         r.hasPrefix, r.prefixStep, r.prefixStride);
 
@@ -1052,9 +1048,9 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   appendToForOpYield(newLoop, carried);
 
   for (auto [r, ptrAndMask] : llvm::zip_equal(reduced, ptrsAndMasks)) {
-    r.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
-    r.op.getMask().replaceAllUsesWith(ptrAndMask.second);
-    r.op.erase();
+    r.cand.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
+    r.cand.op.getMask().replaceAllUsesWith(ptrAndMask.second);
+    r.cand.op.erase();
   }
   return true;
 }
