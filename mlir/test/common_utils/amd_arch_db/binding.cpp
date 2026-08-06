@@ -17,6 +17,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
 #include <string>
 #include <tuple>
 
@@ -109,4 +110,11 @@ PYBIND11_MODULE(amd_arch_db, m) {
         return mlir::rock::supportsNonPow2KPerBlock(arch);
       },
       py::arg("arch"));
+
+  m.def(
+      "infer_num_chiplets",
+      [](const std::string &arch, int64_t numCUs) {
+        return mlir::rock::inferNumChiplets(arch, numCUs);
+      },
+      py::arg("arch"), py::arg("num_cus"));
 }

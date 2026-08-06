@@ -8,6 +8,7 @@ import subprocess
 import signal
 import tempfile
 import sys
+import time
 import math
 import itertools
 from datetime import date
@@ -20,13 +21,24 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 import pandas as pd
-from hip import hip
 
 import reportUtils
-from perfCommonUtils import Operation, GEMMLibrary
+from perfCommonUtils import GEMMLibrary, Operation, SPLITK_IDX
 
-# Split-K parameter index in perfconfig
-SPLITK_IDX = 7
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
+
+# Rock treats a WGP as the effective compute unit on architectures that support
+# WGP mode. Set this before importing HIP so multiProcessorCount always reports
+# WGPs there, even if the caller requested CU mode in its environment.
+if os.environ.get("GPU_ENABLE_WGP_MODE") == "0":
+    print(
+        "WARNING: GPU_ENABLE_WGP_MODE=0 is overridden to 1 because perfRunner "
+        "requires WGP mode.",
+        file=sys.stderr)
+os.environ["GPU_ENABLE_WGP_MODE"] = "1"
+
+from hip import hip  # noqa: E402
 
 # global variables.
 # Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
@@ -90,8 +102,6 @@ OUTPUT_LAYOUT_MAP = {'N': 'n', 'C': 'k', 'H': 'h', 'W': 'w', 'G': 'g', '0': '0',
 ELAPSED_TIME_RE = re.compile(r"Elapsed: ([0-9\.]*) ms")
 # Compiled regexp object used for extracting target chip from arch
 GFX_CHIP_RE = re.compile(r"gfx[0-9a-z]+")
-INFO_ARCH_NAME = re.compile(r"Name:\s*(.*)")
-INFO_ARCH_CU = re.compile(r"Compute Unit:\s*(.*)")
 
 
 def input_layouts(input_layout):
@@ -185,12 +195,16 @@ def hip_check(call_result):
     return result
 
 
-def get_arch() -> str:
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
+def iter_device_props():
+    for device in range(hip_check(hip.hipGetDeviceCount())):
         props = hip.hipDeviceProp_t()
         hip_check(hip.hipGetDeviceProperties(props, device))
+        yield props
+
+
+def get_arch() -> str:
+    agents = set()
+    for props in iter_device_props():
         agent = props.gcnArchName.decode('utf-8')
         agents.add(agent)
     if (len(agents) > 1):
@@ -365,10 +379,27 @@ def get_miliseconds(output):
     return float(result.group(1))
 
 
-def run_pipeline(proc_specs):
-    """Run a shell-style pipeline (stage[i] stdout -> stage[i+1] stdin).
+def _kill_proc(proc):
+    """Best-effort terminate a subprocess and reap it."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+    except Exception:
+        pass
 
-    Returns ``(stdout_of_last_stage, ok)``.
+
+def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
+    """Run a shell-style pipeline: commands[0] | commands[1] | ... | commands[-1].
+
+    This is the single implementation of pipeline spawning shared across the
+    perf tooling; callers that want a different return shape (e.g. run_pipeline's
+    (stdout, ok) tuple, or decoded strings) wrap this.
+
+    ``timeout`` is one shared budget for spawning and waiting for the complete
+    pipeline, not a fresh allowance for each stage.
 
     All pipes are drained so no stage can deadlock on a full OS pipe buffer:
       * Each stage's stderr goes to its own temp file, so a chatty stage can
@@ -382,74 +413,94 @@ def run_pipeline(proc_specs):
         the whole chain make progress before any stage is reaped.
       * Because each intermediate read-end is closed in the parent, upstream
         stages observe EOF/SIGPIPE and exit.
-
-    Never raises: any failure to spawn or drive the pipeline is reported and
-    returned as ``(b"", False)`` so callers can rely solely on the boolean.
     """
+    if not commands:
+        raise ValueError("Pipeline must contain at least one command")
+
     procs = []
+    prev_stdout = None
     stderr_files = []
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
+    def remaining_timeout():
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(commands, timeout)
+        return remaining
+
     try:
-        for proc in proc_specs:
-            prev_stdout = procs[-1].stdout if procs else subprocess.DEVNULL
+        for cmd in commands:
             errf = tempfile.TemporaryFile()
             stderr_files.append(errf)
-            po = subprocess.Popen(proc, stdin=prev_stdout, stdout=subprocess.PIPE, stderr=errf)
-            if procs:
-                # Parent no longer needs the upstream read-end.
-                procs[-1].stdout.close()
-            procs.append(po)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=prev_stdout if prev_stdout is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=errf,
+                env=env,
+                cwd=cwd)
+            if prev_stdout is not None:
+                prev_stdout.close()
+            procs.append(proc)
+            prev_stdout = proc.stdout
 
-        # Drain the last stage's stdout concurrently; this cascades demand
-        # back through the pipeline so intermediate stages can finish writing.
-        outs, _ = procs[-1].communicate()
+        out, _ = procs[-1].communicate(timeout=remaining_timeout())
+        for proc in procs[:-1]:
+            try:
+                proc.wait(timeout=remaining_timeout())
+            except subprocess.TimeoutExpired:
+                _kill_proc(proc)
+                raise
 
-        ok = True
+        rc = 0
         failing_idx = None
-        for idx, p in enumerate(procs):
-            p.wait()
+        for idx, proc in enumerate(procs):
             # A non-final stage killed by SIGPIPE (-13) just means a downstream
             # stage exited first; the real failure (if any) is reported
             # downstream. The final stage has no downstream reader (its stdout
             # is drained here via communicate()), so a SIGPIPE there is a real
             # failure and must not be swallowed.
-            allow_sigpipe = idx < len(procs) - 1 and p.returncode == -signal.SIGPIPE
-            if p.returncode != 0 and not allow_sigpipe:
-                ok = False
-                if failing_idx is None:
-                    failing_idx = idx
+            allow_sigpipe = idx < len(procs) - 1 and proc.returncode == -signal.SIGPIPE
+            if proc.returncode != 0 and not allow_sigpipe:
+                rc = proc.returncode
+                failing_idx = idx
+                break
 
-        if not ok:
-            errf = stderr_files[failing_idx]
-            errf.seek(0)
-            err_text = errf.read().decode("utf-8", errors="replace")
-            failing = procs[failing_idx]
-            print(f"Error:  {err_text}")
-            print(f"Failing command:  {' '.join(failing.args)}")
-            print(f"Failing pipeline:  {' | '.join(' '.join(proc) for proc in proc_specs)}")
-        return outs, ok
+        err_idx = failing_idx if failing_idx is not None else len(stderr_files) - 1
+        stderr_files[err_idx].seek(0)
+        err = stderr_files[err_idx].read()
+        return rc, out, err
+    finally:
+        for proc in procs:
+            _kill_proc(proc)
+        for errf in stderr_files:
+            errf.close()
+
+
+def run_pipeline(proc_specs):
+    """Run a pipeline and return (final_stdout_bytes, ok).
+
+    Thin back-compat wrapper over run_command_pipeline for callers that only
+    need the final stdout and a success flag.
+    """
+    pipeline_str = " | ".join(" ".join(spec) for spec in proc_specs)
+    try:
+        rc, outs, errs = run_command_pipeline(proc_specs)
     except Exception as err:
         # Spawning or driving the pipeline failed (e.g. a missing executable,
         # or an error while draining). Callers key off the returned bool rather
         # than catching exceptions, so report context and fail gracefully
         # instead of crashing the whole runner.
         print(f"Error:  {err}")
-        print(f"Failing pipeline:  {' | '.join(' '.join(proc) for proc in proc_specs)}")
+        print(f"Failing pipeline:  {pipeline_str}")
         return b"", False
-    finally:
-        # Terminate any still-running stages and reap them so a partial
-        # pipeline can't leak processes or zombies, then release every stderr
-        # temp file. wait() is a cheap no-op for stages already reaped above;
-        # the timeout keeps teardown from ever hanging.
-        for p in procs:
-            if p.poll() is None:
-                p.kill()
-        for p in procs:
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        for errf in stderr_files:
-            errf.close()
+    if rc != 0:
+        print(f"Error:  {errs.decode('utf-8', 'replace')}")
+        print(f"Failing pipeline:  {pipeline_str}")
+        return outs, False
+    return outs, True
 
 
 class PerfConfiguration:
@@ -486,8 +537,9 @@ class PerfConfiguration:
 
 
 # convolution configurations.
-def get_conv_configurations(filename):
+def get_conv_configurations(filename, target_chip: Optional[str] = None):
     configs = []
+    chip = target_chip
     if filename:
         with open(filename, 'r') as config_file:
             lines = config_file.readlines()
@@ -503,7 +555,9 @@ def get_conv_configurations(filename):
                 # Skip unsupported datatypes
                 if datatype == 'convfp8':
                     unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
-                    if get_chip() in unsupported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip in unsupported_chips:
                         continue
 
                 # Skip int8 non-fwd convolutions
@@ -832,8 +886,10 @@ class ConvConfiguration(PerfConfiguration):
 def get_gemm_configurations(filename,
                             datatypes=DATA_TYPES_GEMM,
                             out_dtype_map=OUTPUT_DATA_TYPES_MAP,
-                            scale_types=DATA_TYPES_GEMM_SCALES):
+                            scale_types=DATA_TYPES_GEMM_SCALES,
+                            target_chip: Optional[str] = None):
     configs = []
+    chip = target_chip
 
     if filename:
         with open(filename, 'r') as config_file:
@@ -854,12 +910,16 @@ def get_gemm_configurations(filename,
                 if datatype == 'f4E2M1FN':
                     # TODO: use information from AMDArchDB when it becomes available to determine supported chips
                     supported_chips = {'gfx950'}
-                    if get_chip() not in supported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip not in supported_chips:
                         continue
 
                 if datatype == 'fp8':
                     unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
-                    if get_chip() in unsupported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip in unsupported_chips:
                         continue
 
                 # We need trailing spaces here to account for the concat below
@@ -2213,8 +2273,8 @@ def find_run_command(filename):
 
 
 # Extract test_vector and test function name from the test file
-def get_fusion_test_info(filename, paths: Paths):
-    chip = get_chip()
+def get_fusion_test_info(filename, paths: Paths, target_chip: Optional[str] = None):
+    chip = target_chip if target_chip is not None else get_chip()
     test_entry = {}
     rocmlir_cmd, fut_name = find_run_command(filename)
     if not rocmlir_cmd:
@@ -2487,39 +2547,12 @@ def parse_data_types(data_types):
     return datatypes, out_map
 
 
-def get_num_chiplets(chip, num_cu):
-    # TODO: use AmdArchDb python bindings
-    if "gfx942" in chip and num_cu == 304:
-        return 8
-    if "gfx942" in chip and num_cu == 80:
-        return 4
-    if "gfx950" in chip:
-        return 8
-
-    return 1
-
-
 def get_num_cu(chip):
-    try:
-        rocminfo = subprocess.check_output(f"{ROCM_PATH}/bin/rocminfo", stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(e.stderr.decode('utf-8'))
-        raise
-    except Exception as e:
-        print(f"Exception: {e}")
-        raise
-    rocminfo_lines = rocminfo.decode("utf-8").split("\n")
-    found_chip = False
-    for line in rocminfo_lines:
-        if not found_chip:
-            m = INFO_ARCH_NAME.search(line)
-            if m and chip in m.group(1).strip():
-                found_chip = True
-        if found_chip:
-            compute_unit = INFO_ARCH_CU.search(line)
-            if compute_unit:
-                return int(compute_unit.group(1))
-    assert False, f"Cannot find number of CUs for {chip}"
+    for props in iter_device_props():
+        agent = props.gcnArchName.decode('utf-8')
+        if chip in agent:
+            return int(props.multiProcessorCount)
+    raise RuntimeError(f"Cannot find number of CUs for {chip}")
 
 
 def found_external_tool(paths: Paths,
@@ -2558,7 +2591,7 @@ def main(args=None):
     arch = get_arch()
     chip = get_chip()
     num_cu = get_num_cu(chip)
-    num_chiplets = get_num_chiplets(chip, num_cu)
+    num_chiplets = amd_arch_db.infer_num_chiplets(chip, num_cu)
 
     root_dir = str(
         subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())

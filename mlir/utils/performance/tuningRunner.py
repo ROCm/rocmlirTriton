@@ -27,9 +27,11 @@ import argparse
 import functools
 import glob
 import json
+import hashlib
 import logging
 import os
 import re
+import shutil
 import signal
 import statistics
 import subprocess
@@ -37,10 +39,11 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -65,6 +68,10 @@ from perfRunner import (
     auto_precision_flags_att,
     canonicalize_config,
 )
+from tuningArgumentUtils import add_common_tuning_arguments
+
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
 
 # =============================================================================
 # Constants
@@ -88,7 +95,6 @@ OUTPUT_HEADER_COLUMNS = [
     'arch', 'numCUs', 'numChiplets', 'testVector', 'perfConfig', 'TFlops', 'tuningSpace',
     'commitId', 'timestamp', 'durationSec'
 ]
-
 # =============================================================================
 # Logging Setup
 # =============================================================================
@@ -187,7 +193,7 @@ class Options:
     num_cu: int
     num_chiplets: int
     rocmlir_gen_flags: str
-    disable_verify_winning_config: bool
+    verify_winning_config: bool
     verify_all_perfconfigs: bool
     output: str
     abort_on_error: bool
@@ -200,6 +206,9 @@ class Options:
     timeout: Optional[int]
     perf_config_timeout: int
     gpu_run_timeout: int
+    compile_only_dir: Optional[str] = None
+    benchmark_artifacts_dir: Optional[str] = None
+    allow_commit_mismatch: bool = False
 
 
 @dataclass
@@ -250,13 +259,24 @@ class GpuTopology:
         """Get NUMA node for a GPU."""
         return self.gpus[gpu_id].numa_node
 
-    def validate_homogeneity(self, gpu_ids: List[int]) -> bool:
-        """Validate that all selected GPUs are of the same model."""
-        if len(gpu_ids) <= 1:
-            return True
+    def select(self, gpu_ids: Optional[List[int]]) -> List[int]:
+        """Resolve a user GPU selection, where None means every GPU on the system.
+
+        Raises ValueError if an ID is not present or the selection mixes models.
+        """
+        if gpu_ids is None:
+            gpu_ids = sorted(self.gpus)
+
+        unknown = [gpu_id for gpu_id in gpu_ids if gpu_id not in self.gpus]
+        if unknown:
+            raise ValueError(f"no such GPU(s): {unknown} (available: {sorted(self.gpus)})")
 
         skus = {self.gpus[gpu_id].sku for gpu_id in gpu_ids}
-        return len(skus) == 1
+        if len(skus) > 1:
+            details = ", ".join(f"GPU {g}: {self.gpus[g].sku}" for g in gpu_ids)
+            raise ValueError(f"mixed GPU models not supported. Found: {details}")
+
+        return gpu_ids
 
     @staticmethod
     def discover() -> 'GpuTopology':
@@ -287,6 +307,17 @@ class GpuTopology:
             raise RuntimeError("rocm-smi returned no GPU cards")
 
         return GpuTopology(gpus=gpus)
+
+
+@functools.lru_cache(maxsize=1)
+def get_gpu_topology() -> GpuTopology:
+    """Discover the GPU topology, once per process.
+
+    Discovery shells out to rocm-smi, which is slow on large systems and fails
+    outright on a GPU-less host, so it is deferred until a phase that actually
+    needs a GPU asks for it. --compile-only never does.
+    """
+    return GpuTopology.discover()
 
 
 @dataclass(frozen=True)
@@ -829,7 +860,7 @@ class TuningContext:
     conf_class: type
     paths: Paths
     options: Options
-    gpu_topology: GpuTopology
+    gpu_topology: Optional[GpuTopology]
     numa_topology: NumaTopology
 
     _threads_per_gpu: Dict[int, int] = field(default_factory=dict, init=False)
@@ -840,6 +871,10 @@ class TuningContext:
 
     def _compute_thread_allocation(self) -> Dict[int, int]:
         """Determine how many compile threads each GPU should use based on NUMA topology."""
+        # GPU-less phases size their own thread pool from --num-cpus directly.
+        if not self.options.gpu_ids:
+            return {}
+
         # Group GPUs by their NUMA node
         gpus_by_node: Dict[int, List[int]] = {}
         for gpu_id in self.options.gpu_ids:
@@ -1054,10 +1089,6 @@ def raise_if_terminated(returncode: int) -> None:
 class TuningArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with custom validation for tuning arguments."""
 
-    def __init__(self, *args, gpu_topology: Optional[GpuTopology] = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._gpu_topology = gpu_topology
-
     def parse_args(self, args=None, namespace=None):
         parsed = super().parse_args(args, namespace)
 
@@ -1069,19 +1100,66 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.test_dir and op_type != Operation.FUSION:
             self.error("argument --test-dir: only allowed with --op=fusion")
 
-        if parsed.verify_all_perfconfigs and parsed.disable_verify_winning_config:
-            self.error(
-                "argument --verify-all-perfconfigs: not allowed with --disable-verify-winning-config"
-            )
+        target_overrides = [
+            ("--target-arch", parsed.target_arch),
+            ("--target-num-cu", parsed.target_num_cu),
+            ("--target-num-chiplets", parsed.target_num_chiplets),
+        ]
 
-        if self._gpu_topology and not self._gpu_topology.validate_homogeneity(parsed.gpus):
-            details = ", ".join(f"GPU {g}: {self._gpu_topology.gpus[g].sku}" for g in parsed.gpus)
-            self.error(f"argument --gpus: mixed GPU models not supported. Found: {details}")
+        # An override describes a machine other than this one. Outside the
+        # cross-compile phases nothing checks it against the live GPU: the tuning
+        # driver would benchmark a wrong-grid kernel and the result TSV would be
+        # keyed on the override, so refuse rather than quietly ignore it.
+        if not parsed.compile_only and not parsed.benchmark_artifacts:
+            supplied = [name for name, value in target_overrides if value is not None]
+            if supplied:
+                self.error("argument " + ", ".join(supplied) +
+                           ": only allowed with --compile-only or --benchmark-artifacts")
+
+        # The compile phase runs on GPU-less hosts, so it never asks for the topology.
+        if parsed.compile_only:
+            if parsed.gpus:
+                self.error("argument --gpus: not allowed with --compile-only, "
+                           "which performs no GPU runs")
+            # HIP/rocminfo discovery and the getMinNumCU fallback are unavailable
+            # here, so an unset override would bake a wrong grid into the bundle.
+            missing = [name for name, value in target_overrides if value is None]
+            if missing:
+                self.error("argument --compile-only: requires " + ", ".join(missing) +
+                           " (the compile host is GPU-less; target identity cannot be "
+                           "auto-discovered)")
+            parsed.gpus = []
+            return parsed
+
+        if parsed.benchmark_artifacts:
+            unsupported = []
+            if parsed.retune:
+                unsupported.append("--retune")
+            if parsed.retry:
+                unsupported.append("--retry")
+            if parsed.status:
+                unsupported.append("--status")
+            if unsupported:
+                self.error("argument --benchmark-artifacts: does not support " +
+                           ", ".join(unsupported))
+
+        requested_gpus = parsed.gpus
+        try:
+            parsed.gpus = get_gpu_topology().select(requested_gpus)
+        except ValueError as e:
+            self.error(f"argument --gpus: {e}")
+
+        if parsed.benchmark_artifacts and requested_gpus is None and parsed.gpus:
+            parsed.gpus = [min(parsed.gpus)]
+
+        if parsed.benchmark_artifacts and len(parsed.gpus) != 1:
+            self.error("argument --benchmark-artifacts: requires exactly one GPU; "
+                       "select it with --gpus GPU_ID")
 
         return parsed
 
 
-class UniqueChoicesAction(argparse.Action):
+class UniqueValuesAction(argparse.Action):
     """Argparse action that ensures no duplicate values."""
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -1095,11 +1173,12 @@ class UniqueChoicesAction(argparse.Action):
 @functools.lru_cache(maxsize=1)
 def get_git_commit_hash() -> str:
     """Get the current git commit hash."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+        return subprocess.check_output(['git', '-C', script_dir, 'rev-parse', 'HEAD'],
                                        stderr=subprocess.DEVNULL).decode().strip()
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
-        logger.warning(f"Failed to get git commit hash: {e}")
+        logger.warning(f"Failed to get git commit hash for {script_dir}: {e}")
         return "unknown"
 
 
@@ -1117,19 +1196,6 @@ def make_isolated_gpu_env(gpu_id: int) -> Dict[str, str]:
     env = os.environ.copy()
     set_isolated_gpu_env(env, gpu_id)
     return env
-
-
-def kill_process(proc: Optional[subprocess.Popen]) -> None:
-    """Terminate a subprocess and wait for cleanup."""
-    if proc is None:
-        return
-    try:
-        proc.kill()
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Process {proc.pid} did not terminate in time after kill")
-    except Exception as e:
-        logger.warning(f"Failed to kill process {proc.pid}: {e}")
 
 
 def format_error(context: str,
@@ -1217,73 +1283,30 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     gpu_logger.debug(f"Verifying perfconfig '{perfconfig}'\nCommand: {verification_pipeline}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        p1 = None
-        host_pipeline = None
-        p2 = None
-        p3 = None
         env = make_isolated_gpu_env(gpu_id)
         try:
-            p1 = subprocess.Popen(rocmlir_gen_command,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL,
-                                  env=env,
-                                  cwd=tmpdir)
-            host_pipeline = subprocess.Popen(host_pipeline_command,
-                                             stdin=p1.stdout,
-                                             stdout=subprocess.PIPE,
-                                             stderr=subprocess.DEVNULL,
-                                             env=env,
-                                             cwd=tmpdir)
-            p1.stdout.close()
-            p2 = subprocess.Popen(rocmlir_driver_command,
-                                  stdin=host_pipeline.stdout,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL,
-                                  env=env,
-                                  cwd=tmpdir)
-            host_pipeline.stdout.close()
-            p3 = subprocess.Popen(profiler_command,
-                                  stdin=p2.stdout,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  env=env,
-                                  cwd=tmpdir)
-            p2.stdout.close()
+            rc, outs, errs = _run_pipeline(verification_commands, env=env, cwd=tmpdir, timeout=600)
+        except subprocess.TimeoutExpired:
+            raise TuningError(
+                format_error(f"Verification timed out for perfconfig '{perfconfig}'",
+                             command=verification_pipeline,
+                             gpu_id=gpu_id))
 
-            try:
-                outs, errs = p3.communicate(timeout=600)
-                raise_if_terminated(p3.returncode)
-                outs = outs.decode('utf-8')
-                if p3.returncode != 0 or not CORRECT_RESULT_RE.search(outs):
-                    raise TuningError(
-                        format_error(f"Verification failed for perfconfig '{perfconfig}'",
-                                     command=verification_pipeline,
-                                     stdout=outs,
-                                     stderr=errs.decode('utf-8'),
-                                     exit_code=p3.returncode,
-                                     gpu_id=gpu_id))
+        raise_if_terminated(rc)
+        if rc != 0 or not CORRECT_RESULT_RE.search(outs):
+            raise TuningError(
+                format_error(f"Verification failed for perfconfig '{perfconfig}'",
+                             command=verification_pipeline,
+                             stdout=outs,
+                             stderr=errs,
+                             exit_code=rc,
+                             gpu_id=gpu_id))
 
-            except subprocess.TimeoutExpired:
-                kill_process(p3)
-                outs, errs = p3.communicate()
-                raise TuningError(
-                    format_error(f"Verification timed out for perfconfig '{perfconfig}'",
-                                 command=verification_pipeline,
-                                 stdout=outs.decode('utf-8'),
-                                 stderr=errs.decode('utf-8'),
-                                 gpu_id=gpu_id))
-
-            stats_file = os.path.join(
-                tmpdir,
-                perfRunner.get_profiler_output_path(options.arch,
-                                                    perfRunner.BENCHMARKING_STATS_FILE_NAME))
-            nano_seconds = perfRunner.get_nanoseconds(stats_file)
-
-        finally:
-            kill_process(p1)
-            kill_process(host_pipeline)
-            kill_process(p2)
-            kill_process(p3)
+        stats_file = os.path.join(
+            tmpdir,
+            perfRunner.get_profiler_output_path(options.arch,
+                                                perfRunner.BENCHMARKING_STATS_FILE_NAME))
+        nano_seconds = perfRunner.get_nanoseconds(stats_file)
 
     return nano_seconds
 
@@ -1366,8 +1389,6 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     env = make_isolated_gpu_env(gpu_id)
 
-    rocmlir_gen = None
-    tuning_driver = None
     try:
         rocmlir_gen_command = [paths.mlir_paths.rocmlir_gen_path]
         tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path] + tuning_driver_args
@@ -1382,49 +1403,33 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
             # Because we don't set -ph, kernel_repeats is set to None.
             # This is because the kernel-repeats flag is only supported with host harness or CPU validation.
             rocmlir_gen_command += command_line_options.split()
-            rocmlir_gen = subprocess.Popen(rocmlir_gen_command,
-                                           stdout=subprocess.PIPE,
-                                           stderr=subprocess.DEVNULL,
-                                           env=env)
-            tuning_driver = subprocess.Popen(tuning_driver_command,
-                                             stdin=rocmlir_gen.stdout,
-                                             stdout=subprocess.PIPE,
-                                             stderr=subprocess.PIPE,
-                                             env=env)
-            rocmlir_gen.stdout.close()
-            tuning_pipeline = " | ".join(
-                [' '.join(rocmlir_gen_command), ' '.join(tuning_driver_command)])
+            tuning_commands = [rocmlir_gen_command, tuning_driver_command]
         else:
             rocmlir_gen_command += ['--emit-tuning-key', test_vector]
-            tuning_key = subprocess.Popen(rocmlir_gen_command,
-                                          stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE,
-                                          env=env)
-            output, err = tuning_key.communicate()
-            raise_if_terminated(tuning_key.returncode)
-            if tuning_key.returncode != 0:
+            rc, output, err = _run_pipeline([rocmlir_gen_command], env=env)
+            raise_if_terminated(rc)
+            if rc != 0:
                 gpu_logger.error(
                     format_error("Failed to generate tuning key",
                                  command=' '.join(rocmlir_gen_command),
-                                 stderr=err.decode('utf-8'),
-                                 exit_code=tuning_key.returncode,
+                                 stderr=err,
+                                 exit_code=rc,
                                  gpu_id=gpu_id))
                 return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-            result = output.decode('utf-8').strip().split('\t')
+            result = output.strip().split('\t')
             command_line = result[2].split(sep=' ')
             config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                   options.num_chiplets)
             tuning_driver_command += [test_vector]
-            tuning_driver = subprocess.Popen(tuning_driver_command,
-                                             stdout=subprocess.PIPE,
-                                             stderr=subprocess.PIPE,
-                                             env=env)
-            tuning_pipeline = ' '.join(tuning_driver_command)
+            tuning_commands = [tuning_driver_command]
 
+        tuning_pipeline = " | ".join(' '.join(cmd) for cmd in tuning_commands)
         gpu_logger.debug(f"Tuning '{test_vector}'\nCommand: {tuning_pipeline}")
 
         try:
-            tuning_stdout, tuning_stderr = tuning_driver.communicate(timeout=options.timeout)
+            rc, tuning_output, tuning_errors = _run_pipeline(tuning_commands,
+                                                             env=env,
+                                                             timeout=options.timeout)
         except subprocess.TimeoutExpired:
             gpu_logger.error(
                 format_error(f"Tuning timed out after {options.timeout}s",
@@ -1435,12 +1440,9 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                                 timed_out=True,
                                 gpu_id=gpu_id)
 
-        raise_if_terminated(tuning_driver.returncode)
+        raise_if_terminated(rc)
 
-        tuning_output = tuning_stdout.decode('utf-8')
-        tuning_errors = tuning_stderr.decode('utf-8')
-
-        if tuning_driver.returncode == GPU_TIMEOUT_EXIT_CODE:
+        if rc == GPU_TIMEOUT_EXIT_CODE:
             # A perf-config's GPU run hung and the driver's run-timeout logic
             # tore the process down (see rock::kExitGpuTimeout). Treat the
             # whole test vector as gpu-timed-out and advance to the next
@@ -1450,20 +1452,20 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                     f"GPU run hung (exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
                     command=tuning_pipeline,
                     stderr=tuning_errors,
-                    exit_code=tuning_driver.returncode,
+                    exit_code=rc,
                     gpu_id=gpu_id))
             return TuningResult(test_vector=test_vector,
                                 success=False,
                                 gpu_timed_out=True,
                                 gpu_id=gpu_id)
 
-        if tuning_driver.returncode != 0:
+        if rc != 0:
             gpu_logger.error(
                 format_error("Tuning pipeline failed",
                              command=tuning_pipeline,
                              stdout=tuning_output,
                              stderr=tuning_errors,
-                             exit_code=tuning_driver.returncode,
+                             exit_code=rc,
                              gpu_id=gpu_id))
             return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
         elif options.verbose and tuning_errors.strip():
@@ -1475,16 +1477,13 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     except TuningError as e:
         gpu_logger.error(str(e))
         return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-    finally:
-        kill_process(rocmlir_gen)
-        kill_process(tuning_driver)
 
     if winning_config is None:
         gpu_logger.error("No valid perf config found")
         return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
 
     verify_tflops = None
-    if not options.disable_verify_winning_config:
+    if options.verify_winning_config or options.verify_all_perfconfigs:
         try:
             verify_ns = verify_perfconfig(winning_config, config, paths, options, gpu_id)
         except TuningError as e:
@@ -1504,6 +1503,477 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                         max_tflops=max_tflops,
                         entries=entries,
                         verify_tflops=verify_tflops)
+
+
+def _problem_hash(test_vector: str, options: Options) -> str:
+    """Stable directory key for a problem.
+
+    Includes every input that affects the compiled artifact so resume cannot
+    reuse a bundle produced with different compile settings. Test vectors
+    contain filesystem-unsafe characters, hence the hash.
+    """
+    key = "|".join([
+        options.arch,
+        str(options.num_cu),
+        str(options.num_chiplets), options.tuning_space_kind, options.rocmlir_gen_flags,
+        test_vector.strip()
+    ])
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _run_pipeline(commands: List[List[str]],
+                  env: Optional[Dict[str, str]] = None,
+                  timeout: Optional[int] = None,
+                  cwd: Optional[str] = None) -> Tuple[int, str, str]:
+    """Run a shell-style pipeline and return (returncode, stdout, stderr) as
+    decoded strings.
+
+    Thin adapter over perfRunner.run_command_pipeline (the single shared pipeline
+    implementation); see that function for the spawning/teardown/deadlock
+    semantics. Raises subprocess.TimeoutExpired on timeout.
+    """
+    rc, out, err = perfRunner.run_command_pipeline(commands, env=env, cwd=cwd, timeout=timeout)
+    return rc, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+def _load_index_json(root: str) -> Optional[Dict]:
+    """Load index.json, returning None when it does not exist."""
+    index_path = os.path.join(root, "index.json")
+    if not os.path.exists(index_path):
+        return None
+    try:
+        with open(index_path) as f:
+            index = json.load(f)
+    except (json.JSONDecodeError, OSError) as error:
+        raise TuningError(f"cannot read artifact index {index_path}: {error}") from error
+    if not isinstance(index, dict):
+        raise TuningError(f"artifact index {index_path} must contain a JSON object")
+    return index
+
+
+def _validate_artifact_options(root: str, options: Options) -> None:
+    """Require benchmark options to match the artifact bundle metadata."""
+    index_path = os.path.join(root, "index.json")
+    index = _load_index_json(root)
+    if index is None:
+        raise TuningError(f"cannot validate artifact options: {index_path} does not exist")
+
+    fields = [
+        ("arch", options.arch, "--target-arch"),
+        ("numCUs", options.num_cu, "--target-num-cu"),
+        ("numChiplets", options.num_chiplets, "--target-num-chiplets"),
+        ("tuningSpace", options.tuning_space_kind, "--tuning-space"),
+    ]
+    missing = [field for field, _local_value, _option in fields if field not in index]
+    if missing:
+        raise TuningError(f"artifact index {index_path} is missing required "
+                          f"field{'s' if len(missing) != 1 else ''}: {', '.join(missing)}")
+
+    differences = []
+    for f, local_value, option in fields:
+        artifact_value = index[f]
+        if artifact_value != local_value:
+            differences.append(
+                f"artifacts compiled for {f} {artifact_value!r} but this host resolved "
+                f"{local_value!r}; pass {option}={artifact_value}")
+    if differences:
+        raise TuningError("\n".join(differences))
+
+
+def _write_index_json(root: str, index: Dict) -> None:
+    """Atomically replace index.json without exposing a partial write."""
+    index_path = os.path.join(root, "index.json")
+    temp_path = f"{index_path}.tmp"
+    try:
+        with open(temp_path, "w") as f:
+            json.dump(index, f, indent=2)
+            f.write("\n")
+        os.replace(temp_path, index_path)
+    except OSError as error:
+        raise TuningError(f"cannot write artifact index {index_path}: {error}") from error
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _merge_index_json(root: str, options: Options, problem_hash: str, test_vector: str,
+                      run_id: str) -> None:
+    """Atomically update index.json, preserving entries for other problems."""
+    index = _load_index_json(root) or {}
+    index["arch"] = options.arch
+    index["numCUs"] = options.num_cu
+    index["numChiplets"] = options.num_chiplets
+    index["tuningSpace"] = options.tuning_space_kind
+    index["lastRunId"] = run_id
+    problems = index.setdefault("problems", {})
+    if not isinstance(problems, dict):
+        raise TuningError(f"artifact index {os.path.join(root, 'index.json')} has invalid problems")
+    problems[problem_hash] = {
+        "testVector": test_vector,
+        "commitId": get_git_commit_hash(),
+        "runId": run_id,
+    }
+    _write_index_json(root, index)
+
+
+def _remove_problem_from_index(root: str, problem_hash: str) -> None:
+    """Remove one problem's metadata from index.json if present."""
+    index = _load_index_json(root)
+    if index is None:
+        return
+
+    problems = index.get("problems")
+    if not isinstance(problems, dict):
+        raise TuningError(f"artifact index {os.path.join(root, 'index.json')} has invalid problems")
+    if problem_hash not in problems:
+        return
+
+    del problems[problem_hash]
+    _write_index_json(root, index)
+
+
+def _discard_problem(root: str, problem_dir: str, problem_hash: str) -> None:
+    """
+    Drop every trace of a problem whose compile did not finish.
+    """
+    for path in (problem_dir, f"{problem_dir}.tmp", f"{problem_dir}.old"):
+        shutil.rmtree(path, ignore_errors=True)
+    _remove_problem_from_index(root, problem_hash)
+
+
+def _read_problem_commit(root: str, problem_hash: str) -> Optional[str]:
+    """Compile-time commit recorded for a problem in index.json, or None if
+    index.json is missing or has no entry for the problem."""
+    index = _load_index_json(root)
+    if index is None:
+        return None
+    problems = index.get("problems", {})
+    if not isinstance(problems, dict):
+        raise TuningError(f"artifact index {os.path.join(root, 'index.json')} has invalid problems")
+    problem = problems.get(problem_hash, {})
+    if not isinstance(problem, dict):
+        raise TuningError(f"artifact index entry for problem {problem_hash} is invalid")
+    return problem.get("commitId")
+
+
+def _check_artifact_commit(root: str, problem_hash: str, options: Options) -> bool:
+    """Compare the artifact's compile-time commit (index.json) to this checkout.
+
+    Returns True if the benchmark may proceed (commits match, or mismatch was
+    explicitly allowed). The compile and benchmark hosts build the tools
+    separately, so a commit drift can mean an incompatible bundle format or
+    grid logic; fail closed unless --allow-commit-mismatch.
+    """
+    artifact_commit = _read_problem_commit(root, problem_hash)
+    if artifact_commit is None:
+        logger.error(f"cannot read commit for problem {problem_hash} from "
+                     f"{os.path.join(root, 'index.json')}")
+        return options.allow_commit_mismatch
+
+    current_commit = get_git_commit_hash()
+    if artifact_commit == "unknown" or current_commit == "unknown":
+        msg = (f"cannot validate build commit for problem {problem_hash}: "
+               f"artifacts compiled at '{artifact_commit}' but benchmarking from "
+               f"'{current_commit}'")
+        if options.allow_commit_mismatch:
+            logger.warning(f"{msg} (continuing due to --allow-commit-mismatch)")
+            return True
+        logger.error(f"{msg}; pass --allow-commit-mismatch to override")
+        return False
+
+    if artifact_commit == current_commit:
+        return True
+
+    msg = (f"build-commit mismatch for problem {problem_hash}: artifacts compiled at "
+           f"'{artifact_commit}' but benchmarking from '{current_commit}'")
+    if options.allow_commit_mismatch:
+        logger.warning(f"{msg} (continuing due to --allow-commit-mismatch)")
+        return True
+    logger.error(f"{msg}; pass --allow-commit-mismatch to override")
+    return False
+
+
+def run_compile_only(ctx: TuningContext) -> bool:
+    """--compile-only: produce the kernel bundle for each problem.
+
+    For each problem: compile every perf config into a HSACO bundle and record
+    the problem information in index.json. Verification (if requested) happens
+    later on the benchmark host, so no golden reference is produced here.
+    """
+    options = ctx.options
+    paths = ctx.paths.mlir_paths
+    root = options.compile_only_dir
+    problems_root = os.path.join(root, "problems")
+    os.makedirs(problems_root, exist_ok=True)
+    run_id = uuid.uuid4().hex
+
+    if options.verify_winning_config or options.verify_all_perfconfigs:
+        logger.warning("--compile-only performs no GPU runs; verify flags are ignored "
+                       "(verification happens on the benchmark host)")
+
+    all_ok = True
+    for test_vector in ctx.configs:
+        if test_vector.endswith(".mlir"):
+            logger.error(f"--compile-only does not support .mlir test vectors: {test_vector}")
+            all_ok = False
+            if options.abort_on_error:
+                return False
+            continue
+
+        problem_hash = _problem_hash(test_vector, options)
+        problem_dir = os.path.join(problems_root, problem_hash)
+
+        # Resume by default: a problem is already done when index.json records
+        # the current build commit and the bundle it describes is still on
+        # disk.
+        artifact_commit = _read_problem_commit(root, problem_hash)
+        current_commit = get_git_commit_hash()
+        if not options.retune and current_commit != "unknown" and \
+                artifact_commit == current_commit:
+            if os.path.isfile(os.path.join(problem_dir, "manifest.json.z")):
+                logger.info(f"Skipping already-compiled problem {problem_hash} "
+                            "(use --retune to recompile)")
+                _merge_index_json(root, options, problem_hash, test_vector, run_id)
+                continue
+            logger.warning(f"Recompiling problem {problem_hash}: index.json claims it was "
+                           f"compiled at {current_commit} but {problem_dir} has no bundle")
+
+        os.makedirs(problem_dir, exist_ok=True)
+
+        command_line = test_vector.split(sep=" ")
+        config = ctx.conf_class.from_command_line(command_line, options.arch, options.num_cu,
+                                                  options.num_chiplets)
+        gen_opts = config.generate_mlir_driver_commandline(options.rocmlir_gen_flags,
+                                                           kernel_repeats=None).split()
+
+        # 1) Kernel bundle. rocmlir-gen emits the raw kernel module (no -ph); the
+        #    tuning driver reads arch/num_cu/num_chiplets off the module.
+        gen_cmd = [paths.rocmlir_gen_path] + gen_opts
+        td_cmd = [
+            paths.rocmlir_tuning_driver_path,
+            f"--compile-only={problem_dir}",
+            f"--tuning-space={options.tuning_space_kind}",
+            f"--perf-config-timeout={options.perf_config_timeout}",
+        ]
+        if options.num_cpus:
+            td_cmd.append(f"--num-compile-threads={options.num_cpus}")
+        pipeline = " | ".join(" ".join(cmd) for cmd in [gen_cmd, td_cmd])
+        try:
+            rc, _out, err = _run_pipeline([gen_cmd, td_cmd],
+                                          env=os.environ.copy(),
+                                          timeout=options.timeout)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                format_error(
+                    f"compile-only kernel bundle timed out after {options.timeout}s "
+                    f"for problem {problem_hash}",
+                    command=pipeline))
+            _discard_problem(root, problem_dir, problem_hash)
+            all_ok = False
+            if options.abort_on_error:
+                return False
+            continue
+        except KeyboardInterrupt:
+            _discard_problem(root, problem_dir, problem_hash)
+            raise
+
+        if rc != 0:
+            _discard_problem(root, problem_dir, problem_hash)
+            raise_if_terminated(rc)
+            logger.error(f"compile-only kernel bundle failed for problem {problem_hash} "
+                         f"(exit {rc}):\n{err}")
+            all_ok = False
+            if options.abort_on_error:
+                return False
+            continue
+
+        # 2) Orchestration metadata (records this problem's compile commit).
+        _merge_index_json(root, options, problem_hash, test_vector, run_id)
+        logger.info(f"Compiled problem {problem_hash}")
+
+    return all_ok
+
+
+def run_benchmark_artifacts(ctx: TuningContext) -> bool:
+    """--benchmark-artifacts: time shipped configs on the GPU, verify, write TSV."""
+    options = ctx.options
+    paths = ctx.paths
+    root = options.benchmark_artifacts_dir
+    gpu_id = options.gpu_ids[0]
+
+    # These fields are inputs to _problem_hash. Check them once up front so
+    # target-option mismatches do not masquerade as missing problem directories.
+    _validate_artifact_options(root, options)
+
+    # This mode intentionally starts a fresh benchmark run. Resume/state flags
+    # are rejected by TuningArgumentParser rather than being silently ignored.
+    if options.output != '-':
+        for output_path in (options.output, f"{options.output}.debug"):
+            try:
+                os.remove(output_path)
+            except FileNotFoundError:
+                pass
+
+    timing_args = [
+        f"--rep={TUNE_REP_MS}",
+        f"--warmup={TUNE_WARMUP_MS}",
+        "--use-median",
+        f"--sleep-us={SLEEP_US}",
+        f"--show-all-measurements={options.debug}",
+        f"--gpu-run-timeout={options.gpu_run_timeout}",
+    ]
+    if options.flush_last_level_cache:
+        timing_args.append("--flush-last-level-cache")
+
+    debug_requested = options.debug or options.debug_quick_tune_data
+    debug_enabled = debug_requested and options.output != '-'
+    if debug_requested and not debug_enabled:
+        logger.warning("Debug output disabled when writing to stdout")
+
+    debug_cm = (DebugFileWriter(f"{options.output}.debug") if debug_enabled else nullcontext())
+    all_ok = True
+    with OutputFileWriter(options.output, options) as results_writer, \
+            debug_cm as debug_writer:
+        for test_vector in ctx.configs:
+            if test_vector.endswith(".mlir"):
+                logger.error(f"--benchmark-artifacts does not support .mlir test vectors: "
+                             f"{test_vector}")
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+
+            problem_hash = _problem_hash(test_vector, options)
+            problem_dir = os.path.join(root, "problems", problem_hash)
+            if not os.path.isdir(problem_dir):
+                logger.error(f"no artifacts for problem {problem_hash} in {problem_dir}")
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+
+            # Build-commit guardrail (orchestrator-owned): the artifacts were
+            # compiled by tools built from index.json's per-problem commit; refuse
+            # to benchmark them with a binary built from a different commit, since
+            # the bundle format and grid logic can drift across commits.
+            if not _check_artifact_commit(root, problem_hash, options):
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+
+            command_line = test_vector.split(sep=" ")
+            config = ctx.conf_class.from_command_line(command_line, options.arch, options.num_cu,
+                                                      options.num_chiplets)
+
+            # Benchmark. The C++ tool runs the target-identity guardrail
+            # internally and emits perfConfig\t<ns|N/A>.
+            td_cmd = [
+                paths.mlir_paths.rocmlir_tuning_driver_path, f"--benchmark-artifacts={problem_dir}"
+            ] + timing_args
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            start_time = time.time()
+            try:
+                rc, out, err = _run_pipeline([td_cmd],
+                                             env=make_isolated_gpu_env(gpu_id),
+                                             timeout=options.timeout)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    format_error(
+                        f"benchmark timed out after {options.timeout}s for problem "
+                        f"{problem_hash}",
+                        command=" ".join(td_cmd),
+                        gpu_id=gpu_id))
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+            duration = time.time() - start_time
+            raise_if_terminated(rc)
+            if rc == GPU_TIMEOUT_EXIT_CODE:
+                logger.error(
+                    format_error(
+                        f"GPU run hung for problem {problem_hash} "
+                        f"(exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
+                        command=" ".join(td_cmd),
+                        stderr=err,
+                        exit_code=rc,
+                        gpu_id=gpu_id))
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+            if rc != 0:
+                logger.error(f"benchmark failed for problem {problem_hash} (exit {rc}):\n{err}")
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+
+            # Winner selection. Suppress find_best_perfconfig's in-process verify
+            # via a copy (Options is frozen); verification is run separately
+            # below when requested.
+            winning_config, max_tflops, entries = find_best_perfconfig(
+                out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False),
+                gpu_id)
+
+            if winning_config is None:
+                logger.error(f"no valid perf config for problem {problem_hash}")
+                all_ok = False
+                if options.abort_on_error:
+                    return False
+                continue
+
+            # Verification (opt-in). The CPU reference is recomputed on this host
+            # via the standard verifier path; only the winning config is checked
+            # unless --verify-all-perfconfigs is set.
+            if options.verify_winning_config or options.verify_all_perfconfigs:
+                to_verify = [winning_config]
+                if options.verify_all_perfconfigs:
+                    to_verify = _successful_perfconfigs(out.splitlines())
+                try:
+                    for pc in to_verify:
+                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id)
+                        if np.isnan(verify_ns):
+                            raise TuningError(f"Verification returned NaN for perfconfig '{pc}'")
+                except TuningError as e:
+                    logger.error(f"verification failed for problem {problem_hash}: {e}")
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+
+            result = TuningResult(test_vector=test_vector,
+                                  success=True,
+                                  winning_config=winning_config,
+                                  max_tflops=max_tflops,
+                                  entries=entries,
+                                  timestamp=timestamp,
+                                  duration_seconds=max(duration, 0.1))
+            results_writer.write_result(result)
+            if debug_writer:
+                debug_writer.write_result(result)
+            logger.info(f"Benchmarked problem {problem_hash}: winner '{winning_config}' "
+                        f"({max_tflops:.1f} TFlops)")
+
+    return all_ok
+
+
+def _successful_perfconfigs(tuning_output_lines: List[str]) -> List[str]:
+    """Perf configs from a benchmark stream that produced a real time."""
+    result = []
+    for line in tuning_output_lines:
+        parts = line.strip().split("\t")
+        if len(parts) < 2:
+            continue
+        try:
+            float(parts[-1])
+        except ValueError:
+            continue
+        result.append(parts[0])
+    return result
 
 
 def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
@@ -1705,7 +2175,9 @@ def resolve_paths(op_type: Operation, parsed_args: argparse.Namespace) -> Paths:
     return perfRunner.create_paths(configs_path, parsed_args.mlir_build_dir)
 
 
-def extract_fusion_configs(test_dir: str, paths: Paths) -> Operation:
+def extract_fusion_configs(test_dir: str,
+                           paths: Paths,
+                           target_chip: Optional[str] = None) -> Operation:
     """Extract tuning configurations from fusion E2E test files.
 
     Writes extracted configs to paths.configuration_file_path and returns the detected operation type.
@@ -1715,7 +2187,7 @@ def extract_fusion_configs(test_dir: str, paths: Paths) -> Operation:
 
     for filename in glob.glob(test_dir + '/*mlir'):
         logger.info(f"Extracting fusion configs from: {filename}")
-        test_entry = perfRunner.get_fusion_test_info(filename, paths)
+        test_entry = perfRunner.get_fusion_test_info(filename, paths, target_chip=target_chip)
         if not test_entry:
             continue
 
@@ -1774,18 +2246,24 @@ def load_configs_from_stdin() -> str:
     return path
 
 
-def load_configs(op_type: Operation, parsed_args: argparse.Namespace, paths: Paths) -> List[str]:
+def load_configs(op_type: Operation,
+                 parsed_args: argparse.Namespace,
+                 paths: Paths,
+                 target_chip: Optional[str] = None) -> List[str]:
     """Load configurations based on operation type and arguments."""
     if parsed_args.config:
         return [parsed_args.config]
 
     loaders = {
         Operation.CONV:
-            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path,
+                                                       target_chip=target_chip),
         Operation.GEMM:
-            lambda: perfRunner.get_gemm_configurations(
-                paths.configuration_file_path, *perfRunner.parse_data_types(parsed_args.data_type),
-                parsed_args.scale_type),
+            lambda: perfRunner.get_gemm_configurations(paths.configuration_file_path,
+                                                       *perfRunner.parse_data_types(parsed_args.
+                                                                                    data_type),
+                                                       parsed_args.scale_type,
+                                                       target_chip=target_chip),
         Operation.ATTENTION:
             lambda: perfRunner.get_attn_configurations(paths.configuration_file_path),
         Operation.GEMM_GEMM:
@@ -1838,15 +2316,13 @@ def canonicalize_configs(configs: List[str], conf_class: type, arch: str, num_cu
 # =============================================================================
 
 
-def parse_arguments(gpu_topology: GpuTopology,
-                    available_gpus: List[int],
-                    args=None) -> argparse.Namespace:
+def parse_arguments(args=None) -> argparse.Namespace:
     """Parse and validate command-line arguments."""
     parser = TuningArgumentParser(
         prog="rocmlirTriton tuning runner",
         description="Automated performance tuning for rocMLIR generated kernels",
-        allow_abbrev=False,
-        gpu_topology=gpu_topology)
+        allow_abbrev=False)
+    add_common_tuning_arguments(parser)
 
     config_group = parser.add_mutually_exclusive_group(required=True)
 
@@ -1873,12 +2349,6 @@ def parse_arguments(gpu_topology: GpuTopology,
         "Directory containing fusion E2E tests to extract configs from. Only used when --op=fusion."
     )
 
-    parser.add_argument("--op",
-                        "--operation",
-                        choices=['conv', 'gemm', 'fusion', 'attention', 'gemm_gemm', 'conv_gemm'],
-                        required=True,
-                        help="Operation to tune")
-
     parser.add_argument(
         "-o",
         "--output",
@@ -1898,31 +2368,27 @@ def parse_arguments(gpu_topology: GpuTopology,
         "Path to rocMLIR build directory containing rocmlir-gen, rocmlir-driver, rocmlir-tuning-driver, and other build artifacts",
     )
 
-    parser.add_argument(
-        "--rocmlir-gen-flags",
-        "--rocmlir_gen_flags",  # for backward compatibility
-        type=str,
-        default="",
-        metavar='FLAGS',
-        help="Additional flags to pass to rocmlir-gen")
-
-    parser.add_argument("-d",
-                        "--debug",
-                        action='store_true',
-                        default=False,
-                        help="Enable debug output including detailed per-iteration measurements")
-
-    parser.add_argument("--debug-quick-tune-data",
-                        action='store_true',
-                        default=False,
-                        help="Enable debug output for quick tuning data generation without the "
-                        "detailed per-iteration measurement arrays")
-
-    parser.add_argument("--tuning-space",
-                        default="full",
-                        choices=["quick", "full", "greedy", "exhaustive"],
-                        help="Tuning space kind to use")
-
+    # Cross-compilation: split tuning into a CPU-only compile phase and a
+    # GPU-only benchmark phase, exchanging a compressed artifact bundle.
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--compile-only",
+        default=None,
+        metavar='DIR',
+        help="Cross-compile phase (no GPU): for each problem compile every perf "
+        "config into <DIR>/problems/<hash>/, plus <DIR>/index.json. Requires "
+        "--target-arch/--target-num-cu/--target-num-chiplets and a build configured "
+        "with -DLLVM_ENABLE_ZSTD=FORCE_ON.")
+    mode_group.add_argument(
+        "--benchmark-artifacts",
+        default=None,
+        metavar='DIR',
+        help="Benchmark phase (GPU): time the configs compiled into <DIR> by a "
+        "prior --compile-only run, optionally verify (see --verify-winning-config), "
+        "and write a fresh TSV, replacing any existing output. Does not support "
+        "--retune, --retry, or --status. Uses the lowest detected GPU by default; "
+        "--gpus must select exactly one GPU when specified. Requires a build configured with "
+        "-DLLVM_ENABLE_ZSTD=FORCE_ON.")
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -1936,40 +2402,6 @@ def parse_arguments(gpu_topology: GpuTopology,
                                action='store_true',
                                default=False,
                                help="Enable verbose output, including commands being executed")
-
-    parser.add_argument(
-        "--disable-verify-winning-config",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Disable verifying the winning perf config against the CPU reference (rocmlir-gen -pv). "
-        "Use --disable-verify-winning-config to skip verification.",
-    )
-
-    parser.add_argument(
-        "--verify-all-perfconfigs",
-        action='store_true',
-        default=False,
-        help="Verify each perf config during tuning, not just the winning config. "
-        "Not compatible with --disable-verify-winning-config.",
-    )
-
-    parser.add_argument('--data-type',
-                        nargs='+',
-                        choices=[
-                            "f32", "f16", "bf16", "i8", "i8_i32", "i8_i8", "fp8", "fp8_f32",
-                            "fp8_fp8", "f4E2M1FN"
-                        ],
-                        default=["f32", "f16", "i8"],
-                        metavar='TYPE',
-                        help="Force a set of data types for gemm tuning. Only used when --op=gemm.")
-
-    parser.add_argument(
-        '--scale-type',
-        nargs='+',
-        choices=["f32", "f8E8M0FNU"],
-        default=None,
-        metavar='TYPE',
-        help="Force a set of scale types for gemm tuning. Only used when --op=gemm.")
 
     parser.add_argument(
         "--tflops",
@@ -1995,27 +2427,14 @@ def parse_arguments(gpu_topology: GpuTopology,
                         metavar='STATE',
                         help="Retry configs in specified states")
 
-    parser.add_argument("--timeout",
-                        type=int,
-                        default=None,
-                        metavar='SECONDS',
-                        help="Timeout in seconds for tuning each config")
-
     parser.add_argument("--gpus",
                         type=int,
                         nargs='+',
-                        choices=available_gpus,
-                        action=UniqueChoicesAction,
-                        default=available_gpus,
+                        action=UniqueValuesAction,
+                        default=None,
                         metavar='GPU_ID',
-                        help=f"GPUs to use for tuning (available: {available_gpus}, default: all)")
-
-    parser.add_argument(
-        "--num-cpus",
-        type=int,
-        default=None,
-        metavar='N',
-        help="Maximum CPU threads for compilation (default: auto-detect based on NUMA topology)")
+                        help="GPUs to use for tuning (default: all GPUs on the system). "
+                        "Not applicable to --compile-only.")
 
     parser.add_argument(
         "--wait-for-compiles",
@@ -2024,24 +2443,6 @@ def parse_arguments(gpu_topology: GpuTopology,
         help=
         "Wait for all compilation tasks to complete before starting tuning. Useful for systems with shared CPU/GPU memory (e.g., APUs)."
     )
-
-    parser.add_argument(
-        "--flush-last-level-cache",
-        action='store_true',
-        default=False,
-        help=
-        "Size the cache-flush buffer to the architecture's last-level cache (e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size reported by the HIP runtime. Defaults to the L2 cache size."
-    )
-
-    parser.add_argument(
-        "--perf-config-timeout",
-        type=int,
-        default=0,
-        metavar='SECONDS',
-        help="Per-perf-config compilation timeout in seconds (default: 0 = no timeout, "
-        "compile in-process). When > 0, each config is compiled in a separate "
-        "rocmlir-driver process that is killed if it exceeds this budget; the "
-        "timed-out config is skipped (reported as N/A) and tuning continues.")
 
     parser.add_argument(
         "--gpu-run-timeout",
@@ -2065,32 +2466,51 @@ def parse_arguments(gpu_topology: GpuTopology,
 
 
 def main(args=None):
-    gpu_topology = GpuTopology.discover()
-    available_gpus = sorted(gpu_topology.gpus.keys())
-
     # Capture these before set_isolated_gpu_env overwrites them
     user_rocr_visible = os.environ.get("ROCR_VISIBLE_DEVICES")
     user_hip_visible = os.environ.get("HIP_VISIBLE_DEVICES")
 
-    # We call into perfRunner which also queries GPU info using HIP and rocminfo.
-    # To ensure consistency, we isolate the process to the first available GPU.
-    set_isolated_gpu_env(os.environ, available_gpus[0])
-
-    parsed_args = parse_arguments(gpu_topology, available_gpus, args)
+    parsed_args = parse_arguments(args)
 
     setup_logger(quiet=parsed_args.quiet, verbose=parsed_args.verbose)
 
-    if user_rocr_visible or user_hip_visible:
-        vars_set = []
-        if user_rocr_visible:
-            vars_set.append(f"ROCR_VISIBLE_DEVICES={user_rocr_visible}")
-        if user_hip_visible:
-            vars_set.append(f"HIP_VISIBLE_DEVICES={user_hip_visible}")
-        logger.warning(
-            f"Ignoring {' and '.join(vars_set)}. "
-            f"This script manages GPU visibility internally. Use '--gpus' to select specific GPUs.")
-
     op_type = Operation.from_name(parsed_args.op)
+    compile_only_dir = parsed_args.compile_only
+    benchmark_artifacts_dir = parsed_args.benchmark_artifacts
+
+    if not compile_only_dir:
+        # We call into perfRunner which also queries GPU info using HIP and rocminfo.
+        # To ensure consistency, we isolate the process to the first selected GPU.
+        gpu_id = parsed_args.gpus[0] if parsed_args.gpus else min(get_gpu_topology().gpus)
+        set_isolated_gpu_env(os.environ, gpu_id)
+
+        if user_rocr_visible or user_hip_visible:
+            vars_set = []
+            if user_rocr_visible:
+                vars_set.append(f"ROCR_VISIBLE_DEVICES={user_rocr_visible}")
+            if user_hip_visible:
+                vars_set.append(f"HIP_VISIBLE_DEVICES={user_hip_visible}")
+            logger.warning(f"Ignoring {' and '.join(vars_set)}. This script manages GPU "
+                           "visibility internally. Use '--gpus' to select specific GPUs.")
+
+    # Target identity. TuningArgumentParser has already restricted the overrides
+    # to the cross-compile phases and required all three under --compile-only, so
+    # anything still unset here falls back to live discovery. Resolve it before
+    # loading configs so GPU-less compile-only expansion can avoid HIP queries.
+    if parsed_args.target_arch is not None:
+        arch = parsed_args.target_arch
+        chip_match = perfRunner.GFX_CHIP_RE.search(arch)
+        if not chip_match:
+            logger.error(f"--target-arch '{arch}' does not contain a gfx chip name")
+            return 1
+        chip = chip_match.group(0)
+    else:
+        arch = perfRunner.get_arch()
+        chip = perfRunner.get_chip()
+    num_cu = (parsed_args.target_num_cu
+              if parsed_args.target_num_cu is not None else perfRunner.get_num_cu(chip))
+    num_chiplets = (parsed_args.target_num_chiplets if parsed_args.target_num_chiplets is not None
+                    else amd_arch_db.infer_num_chiplets(chip, num_cu))
 
     # Handle stdin for configs file
     stdin_temp_file = None
@@ -2105,17 +2525,12 @@ def main(args=None):
             return 1
 
         if op_type == Operation.FUSION:
-            op_type = extract_fusion_configs(parsed_args.test_dir, paths)
+            op_type = extract_fusion_configs(parsed_args.test_dir, paths, target_chip=chip)
 
-        configs = load_configs(op_type, parsed_args, paths)
+        configs = load_configs(op_type, parsed_args, paths, target_chip=chip)
     finally:
         if stdin_temp_file:
             os.unlink(stdin_temp_file)
-
-    arch = perfRunner.get_arch()
-    chip = perfRunner.get_chip()
-    num_cu = perfRunner.get_num_cu(chip)
-    num_chiplets = perfRunner.get_num_chiplets(chip, num_cu)
 
     conf_class = get_config_class(op_type)
     # Canonicalize configs so the persisted DB key, the dedup/state-file keys,
@@ -2132,7 +2547,7 @@ def main(args=None):
                       verbose=parsed_args.verbose,
                       tuning_space_kind=parsed_args.tuning_space,
                       rocmlir_gen_flags=parsed_args.rocmlir_gen_flags,
-                      disable_verify_winning_config=parsed_args.disable_verify_winning_config,
+                      verify_winning_config=parsed_args.verify_winning_config,
                       verify_all_perfconfigs=parsed_args.verify_all_perfconfigs,
                       output=parsed_args.output,
                       abort_on_error=parsed_args.abort_on_error,
@@ -2144,21 +2559,32 @@ def main(args=None):
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
                       timeout=parsed_args.timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
-                      gpu_run_timeout=parsed_args.gpu_run_timeout)
+                      gpu_run_timeout=parsed_args.gpu_run_timeout,
+                      compile_only_dir=compile_only_dir,
+                      benchmark_artifacts_dir=benchmark_artifacts_dir,
+                      allow_commit_mismatch=parsed_args.allow_commit_mismatch)
 
     ctx = TuningContext(configs=configs,
                         conf_class=conf_class,
                         paths=paths,
                         options=options,
-                        gpu_topology=gpu_topology,
+                        gpu_topology=get_gpu_topology() if parsed_args.gpus else None,
                         numa_topology=NumaTopology.discover())
 
     try:
-        tuning_succeeded = tune_configs(ctx, status_only=parsed_args.status)
+        if compile_only_dir:
+            succeeded = run_compile_only(ctx)
+        elif benchmark_artifacts_dir:
+            succeeded = run_benchmark_artifacts(ctx)
+        else:
+            succeeded = tune_configs(ctx, status_only=parsed_args.status)
     except KeyboardInterrupt:
         return 128 + signal.SIGINT
+    except TuningError as error:
+        logger.error(str(error))
+        return 1
 
-    return 0 if tuning_succeeded else 1
+    return 0 if succeeded else 1
 
 
 if __name__ == '__main__':

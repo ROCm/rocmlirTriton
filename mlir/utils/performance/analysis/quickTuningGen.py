@@ -15,7 +15,7 @@ import pandas as pd
 import pulp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from perfRunner import SPLITK_IDX  # noqa: E402
+from perfCommonUtils import SPLITK_IDX  # noqa: E402
 
 # Column definitions for grouping problems
 GEMM_COLUMNS = ['TransA', 'TransB', 'TransO', 'G', 'M', 'K', 'N']

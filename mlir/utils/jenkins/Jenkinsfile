@@ -683,6 +683,7 @@ void build_fixedE2ETests() {
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCMLIR_ENABLE_BENCHMARKS=${params.nightly ? 'hipblaslt' : ''}
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
              """)
@@ -700,6 +701,7 @@ void check_randomE2ETests() {
                 -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
                 -DROCK_E2E_TEST_ENABLED=1 \
                 -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1 \
+                -DLLVM_ENABLE_ZSTD=FORCE_ON \
                 -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}' \
                 -DCMAKE_EXPORT_COMPILE_COMMANDS=1"""
             sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
@@ -1287,23 +1289,23 @@ pipeline {
                                                             dir('build') {
                                                                 timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                     // Tune gemms, fail if the DB is not created
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
                                                                             -o tuning_gemm.tsv
                                                                         [ -f tuning_gemm.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
                                                                             -o tuning_conv.tsv
                                                                         [ -f tuning_conv.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op attention \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-attention-configs \
                                                                             -o tuning_attention.tsv
                                                                         [ -f tuning_attention.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm --tuning-space quick \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
                                                                             -o quick_tuning_gemm.tsv
                                                                         [ -f quick_tuning_gemm.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv --tuning-space quick \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
                                                                             -o quick_tuning_conv.tsv
                                                                         [ -f quick_tuning_conv.tsv ]"""
@@ -1506,12 +1508,12 @@ pipeline {
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
@@ -1552,17 +1554,17 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op attention \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                     -c ${attnConfigToUse} \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm --tuning-space quick \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv --tuning-space quick \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
@@ -1584,10 +1586,10 @@ PY
                                                     stage("Tune Fusion") {
                                                         dir('build') {
                                                             // Tune resnet50
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
 
                                                             // Tune bert
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                         sh 'rm -f build/CMakeCache.txt'
                                                     }
