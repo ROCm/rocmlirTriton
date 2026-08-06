@@ -122,6 +122,51 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c.
 
 ----------------------------------------------------------------------
+patch208045.patch
+----------------------------------------------------------------------
+- Upstream commit : 0a015cc516abb7f54bcdd94763f44219b6298bd9
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208045
+- Upstream title  : [AMDGPU] Replace zext pattern from reg_sequence to
+                    cvt_u32_u16
+- File Fixed      : llvm/lib/Target/AMDGPU/SIInstructions.td
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/*
+                    llvm/test/CodeGen/AMDGPU/* (46 generated-check files)
+- Contents        : Replaces the real-true16 i16-to-i32 zero-extension
+                    REG_SEQUENCE patterns with V_CVT_U32_U16. The i16-to-i64
+                    pattern now builds its low half from the conversion and
+                    its high half from S_MOV_B32 zero. Imports every upstream
+                    generated CodeGen expectation update whose check block
+                    exists in the pinned LLVM tree, with the waterfall atomic
+                    checks refreshed for the pinned scheduler output. The five
+                    llvm.amdgcn.reduce.* i16 functions and the four GFX13
+                    atomic check blocks changed upstream were introduced after
+                    the pinned revision, so there is no corresponding local
+                    test content to update. The downstream gfx1201 convolution
+                    regression is also covered by rocmlirTriton's nightly E2E
+                    suite (rock-conv-i8-true16-zext.mlir).
+
+Symptom without the patch
+-------------------------
+Compilation of the pinned gfx1201 i8 convolution succeeds, but executing the
+generated binary with rocm-run causes a memory-related runtime crash. The
+nightly regression uses the original 64x1536x7x7 input and 2048x1536x1x1 filter
+with its pinned v4 perf config, then executes the binary and validates its
+output.
+
+Root cause
+----------
+The true16 zero-extension patterns assembled a 32-bit value from the i16 source
+and a separately materialized zero in the high half. Register coalescing could
+join the repeated copies of that shared zero into the same virtual register,
+turning subsequent low-half writes into a long chain of WAR dependencies. This
+caused pathological machine-scheduler behavior and increased register pressure.
+Using V_CVT_U32_U16 produces the zero-extended value directly and avoids the
+problematic REG_SEQUENCE/copy structure.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 0a015cc516abb7f54bcdd94763f44219b6298bd9.
+
+----------------------------------------------------------------------
 patch208280.patch
 ----------------------------------------------------------------------
 - Upstream commit : 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d
