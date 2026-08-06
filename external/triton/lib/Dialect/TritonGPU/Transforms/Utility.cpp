@@ -175,6 +175,29 @@ static unsigned getMaxElementsPerThread(Operation *op) {
   return maxElementsPerThread;
 }
 
+// PROTOTYPE (env-gated by ROCMLIR_RELAX_LOAD_ALIGN, not for merge).
+//
+// getNumElementsPerThread feeds two different decisions at once: how wide a
+// single memory instruction may be, and how many elements of the tile each
+// thread owns (sizePerThread in the coalesced layout). Address divisibility
+// genuinely constrains the first, but it has no bearing on the second -- a
+// thread can own two adjacent elements and still load them with two separate
+// dword instructions.
+//
+// Folding divisibility into the layout is expensive on AMD. A 64 x K f32
+// filter with odd K starts every other row on an odd element, so divisibility
+// is 1 and each thread ends up owning a single element. That distribution
+// allocates worse and collapses VOPD dual-issue packing of the surrounding
+// FMAs (measured: 94% -> 60% on a 7x7 convolution), which costs far more than
+// the narrow loads themselves.
+//
+// When this returns true the divisibility cap is dropped here; the emitted
+// instruction width is still capped by ModuleAxisInfoAnalysis::getAlignment.
+static bool relaxCoalescedLayoutByDivisibility() {
+  static const bool relax = ::getenv("ROCMLIR_RELAX_LOAD_ALIGN") != nullptr;
+  return relax;
+}
+
 unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                  ArrayRef<int64_t> shapePerCTA) {
@@ -187,7 +210,9 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
   unsigned maxMultiple = std::max(maxMultipleBytes / elemNumBytes, 1u);
   unsigned maxContig =
       std::min(valInfo.getContiguity(order[0]), shapePerCTA[order[0]]);
-  unsigned alignment = std::min(maxMultiple, maxContig);
+  unsigned alignment = relaxCoalescedLayoutByDivisibility()
+                           ? maxContig
+                           : std::min(maxMultiple, maxContig);
   unsigned maxElementsPerThread = getMaxElementsPerThread(op);
   unsigned currPerThread = std::min(alignment, maxElementsPerThread);
   LDBG("elemNumBytes: " << elemNumBytes

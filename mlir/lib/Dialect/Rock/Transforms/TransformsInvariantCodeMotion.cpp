@@ -391,7 +391,8 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
     // We reconstruct the variant mask only from the sub-chain *below* the
     // merge, so no validity-impacting map may sit at or above it.
-    if (mapImpactsValidity(map) &&
+    if (!validityImpactingUpperDims(map, /*ignoreTileAlignmentPads=*/true)
+             .empty() &&
         (mergeIdx == -1 || static_cast<int>(mapIdx) <= mergeIdx))
       return bail("validity-impacting map at or above the iv-traversed merge");
 
