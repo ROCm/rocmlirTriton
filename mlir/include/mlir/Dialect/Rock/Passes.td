@@ -72,17 +72,20 @@ def RockFoldBroadcastPass
 
 def RockLowerReducePass : Pass<"rock-lower-reduce", "::mlir::func::FuncOp"> {
   let summary =
-      "Lower rock.reduce into a Broadcast transform on the store destination";
+      "Select blockwise reductions and lower all other rock.reduce ops";
   let description = [{
-    This pass converts rock.reduce ops into an equivalent representation using
-    a Broadcast transform on the rock.store destination. For sum reductions,
-    this means:
+    This pass marks reductions that satisfy the conservative fused-GEMM
+    blockwise contract. Those semantic rock.reduce ops remain explicit for
+    lowering after tiling. Every unselected reduction is converted into the
+    legacy representation using a Broadcast transform on the rock.store
+    destination. For sum reductions, legacy lowering means:
     1. Bypassing the rock.reduce (passing its input directly to rock.store)
     2. Adding a Broadcast transform on the reduced axis of the store destination
     3. Changing the store method from `set` to `atomic_add`
 
-    This allows the existing blockwise store pipeline to handle reductions
-    without a dedicated reduction lowering.
+    The legacy path guarantees correctness for unsupported shapes and tuning
+    configurations, while selected reductions can reduce block-local values
+    before atomic accumulation.
 
     Example (reduce sum on axis=1):
       Before:
@@ -705,6 +708,12 @@ def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
        - Cloning fusion ops to operate on tiles
        - Creating blockwise_load for other fusion operands
        - Creating new blockwise_store with fused result
+
+    For a selected rock.reduce feeding a store, the pass reconstructs the
+    compact atomic destination, proves which local tile axis does not affect
+    its address or validity, and emits blockwise_reduce for the largest such
+    axis. If no local axis can be reduced, it retains per-element atomic stores
+    as a correctness fallback.
 
     Example (output fusion):
       Before:

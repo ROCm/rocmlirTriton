@@ -65,7 +65,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -73,7 +72,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 
-#include <algorithm>
 #include <optional>
 
 namespace mlir {
@@ -120,75 +118,31 @@ static FailureOr<StoreMarkerOp> findStoreMarkerOp(Value val) {
   return failure();
 }
 
-struct ReductionStoreInfo {
-  ReduceOp reduceOp;
-  SmallVector<TransformOp> preReduceTransforms;
-  SmallVector<TransformOp> postReduceTransforms;
-  Value tileSource;
-};
-
-/// Identify an explicit reduction feeding a store. The supported form is a
-/// single ReduceOp surrounded by view-only TransformOps.
-static FailureOr<std::optional<ReductionStoreInfo>>
-getReductionStoreInfo(StoreOp storeOp) {
-  Value value = storeOp.getSource();
-  SmallVector<TransformOp> postTransforms;
-  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
-    postTransforms.push_back(transformOp);
-    value = transformOp.getInput();
-  }
-
-  auto reduceOp = value.getDefiningOp<ReduceOp>();
-  if (!reduceOp)
-    return std::optional<ReductionStoreInfo>{};
-  if (!reduceOp.getResult().hasOneUse())
-    return reduceOp.emitError("expected a single-use reduction result");
-
-  Value tileSource = reduceOp.getIn();
-  SmallVector<TransformOp> preTransforms;
-  while (auto transformOp = tileSource.getDefiningOp<TransformOp>()) {
-    preTransforms.push_back(transformOp);
-    tileSource = transformOp.getInput();
-  }
-
-  // Both walks above start at the consumer and move toward the producer.
-  std::reverse(preTransforms.begin(), preTransforms.end());
-  std::reverse(postTransforms.begin(), postTransforms.end());
-  return std::optional<ReductionStoreInfo>{
-      ReductionStoreInfo{reduceOp, std::move(preTransforms),
-                         std::move(postTransforms), tileSource}};
-}
-
-static ArrayAttr getTransformAttrs(OpBuilder &builder,
-                                   ArrayRef<TransformOp> transforms) {
-  return builder.getArrayAttr(
-      llvm::map_to_vector(transforms, [](TransformOp transformOp) -> Attribute {
-        return transformOp.getTransform();
-      }));
-}
-
-static ArrayAttr invertTransformChain(OpBuilder &builder, Location loc,
-                                      ArrayRef<TransformOp> transforms) {
-  ArrayAttr attrs = getTransformAttrs(builder, transforms);
-  SmallVector<Attribute> reversed;
-  llvm::append_range(reversed, llvm::reverse(attrs));
-  return invertTransforms(builder, loc, builder.getArrayAttr(reversed));
-}
-
 /// Returns true when every root-buffer coordinate is unchanged while the
 /// selected upper dimension varies over its complete statically-known extent.
 static bool addressIsInvariantAlongDim(OpBuilder &builder, Value dest,
                                        int64_t dim) {
-  ArrayAttr transformAttrs;
-  std::tie(std::ignore, transformAttrs, std::ignore) =
-      untransform(builder, dest);
-  if (!transformAttrs ||
-      llvm::any_of(transformAttrs.getAsRange<TransformMapAttr>(),
-                   mapImpactsValidity))
+  SmallVector<TransformMapAttr> transforms;
+  std::tie(std::ignore, std::ignore) = untransform(dest, transforms);
+  if (transforms.empty())
     return false;
 
+  ArrayRef<int64_t> upperShape = transforms.front().getUpperBounds();
+  if (dim < 0 || static_cast<size_t>(dim) >= upperShape.size())
+    return false;
+  unsigned upperDim = static_cast<unsigned>(dim);
+  ArrayRef<unsigned> dims(&upperDim, 1);
+  if (validityDependsOnAnyDim(transforms, dims))
+    return false;
+  if (!transformChainDependsOnAnyDim(transforms, dims))
+    return true;
+
+  // Affine dependency is intentionally conservative for aligned floor-div
+  // expressions. Prove those cases with static sub-dimension ranges.
   FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>> subDims =
-      getLowerSubDimensions(builder, transformAttrs, dim);
+      getLowerSubDimensions(
+          builder,
+          builder.getArrayAttr(llvm::to_vector_of<Attribute>(transforms)), dim);
   if (failed(subDims))
     return false;
   return llvm::all_of(*subDims, [](const auto &entry) {
@@ -197,25 +151,21 @@ static bool addressIsInvariantAlongDim(OpBuilder &builder, Value dest,
   });
 }
 
-/// Drop a destination-view dimension after proving that every coordinate along
-/// it aliases coordinate zero in the underlying buffer.
 static Value pinDimToZero(OpBuilder &builder, Location loc, Value dest,
-                          int64_t destDim) {
+                          int64_t removedDim) {
   ArrayRef<int64_t> destShape = cast<ShapedType>(dest.getType()).getShape();
-
   SmallVector<SmallString<8>> nameStorage;
+  SmallVector<StringRef> keptNames;
+  SmallVector<uint32_t> keptDims;
+  SmallVector<int64_t> keptShape;
   nameStorage.reserve(destShape.size());
-  for (size_t i = 0, e = destShape.size(); i < e; ++i) {
+  for (size_t i = 0; i < destShape.size(); ++i) {
     SmallString<8> name;
     ("dim" + Twine(i)).toVector(name);
     nameStorage.push_back(name);
   }
-
-  SmallVector<StringRef> keptNames;
-  SmallVector<uint32_t> keptDims;
-  SmallVector<int64_t> keptShape;
   for (auto [i, size] : llvm::enumerate(destShape)) {
-    if (static_cast<int64_t>(i) == destDim)
+    if (static_cast<int64_t>(i) == removedDim)
       continue;
     keptNames.push_back(nameStorage[i]);
     keptDims.push_back(static_cast<uint32_t>(i));
@@ -225,8 +175,8 @@ static Value pinDimToZero(OpBuilder &builder, Location loc, Value dest,
   TopDownTMBuilder view(builder, keptNames, keptShape, loc);
   if (!keptNames.empty())
     view.passThrough(keptNames, keptDims, keptNames);
-  view.constDim(nameStorage[destDim], static_cast<uint32_t>(destDim),
-                /*constantVal=*/0, /*lowerSize=*/destShape[destDim]);
+  view.constDim(nameStorage[removedDim], static_cast<uint32_t>(removedDim),
+                /*constantVal=*/0, /*lowerSize=*/destShape[removedDim]);
   return TransformOp::create(builder, loc, dest, view.get());
 }
 
@@ -290,6 +240,120 @@ static FailureOr<Value> convertToTile(OpBuilder &builder, Location loc,
   return failure();
 }
 
+static LogicalResult lowerStoreImpl(StoreOp storeOp,
+                                    ReductionStorePath *reduction) {
+  OpBuilder builder(storeOp);
+  Location loc = storeOp.getLoc();
+  Value storeSource = reduction ? reduction->tileSource : storeOp.getSource();
+  Value storeDest = storeOp.getDest();
+
+  FailureOr<StoreMarkerOp> maybeStoreMarkerOp = findStoreMarkerOp(storeSource);
+  if (failed(maybeStoreMarkerOp))
+    return storeOp.emitError("No StoreMarkerOp found for store");
+  StoreMarkerOp storeMarkerOp = *maybeStoreMarkerOp;
+
+  auto markerType = cast<RankedTensorType>(storeMarkerOp.getSource().getType());
+  auto outputType = cast<RankedTensorType>(storeSource.getType());
+  auto tileType =
+      RankedTensorType::get(markerType.getShape(), outputType.getElementType());
+
+  IRMapping fullToTileMapping;
+  FailureOr<Value> maybeFusedTile =
+      convertToTile(builder, loc, storeSource, tileType, fullToTileMapping);
+  if (failed(maybeFusedTile))
+    return storeOp.emitError("Failed to convert to tile");
+  Value fusedTile = *maybeFusedTile;
+
+  if (reduction) {
+    if (!reduction->postReduceTransforms.empty()) {
+      ArrayAttr inverse =
+          invertTransformChain(builder, loc, reduction->postReduceTransforms);
+      if (!inverse)
+        return reduction->reduceOp.emitError(
+            "cannot invert post-reduction destination transforms");
+      storeDest = rock::transform(builder, storeDest, inverse);
+    }
+
+    auto reduceInputType =
+        cast<RankedTensorType>(reduction->reduceOp.getIn().getType());
+    storeDest =
+        insertBroadcast(builder, loc, storeDest, reduceInputType.getShape());
+
+    if (!reduction->preReduceTransforms.empty()) {
+      ArrayAttr inverse =
+          invertTransformChain(builder, loc, reduction->preReduceTransforms);
+      if (!inverse)
+        return reduction->reduceOp.emitError(
+            "cannot invert pre-reduction input transforms");
+      storeDest = rock::transform(builder, storeDest, inverse);
+    }
+
+    if (failed(
+            setStoreMethodAndPrefill(builder, storeOp, StoreMethod::AtomicAdd)))
+      return failure();
+  }
+
+  SmallVector<TransformMapAttr> destTransforms;
+  Value destRoot;
+  std::tie(destRoot, std::ignore) =
+      rock::untransform(storeDest, destTransforms);
+
+  SmallVector<Attribute> combinedTransforms;
+  llvm::append_range(combinedTransforms, storeMarkerOp.getExtraViews());
+  llvm::append_range(combinedTransforms, destTransforms);
+
+  Value combinedDest = destRoot;
+  if (!combinedTransforms.empty())
+    combinedDest = rock::transform(builder, destRoot,
+                                   builder.getArrayAttr(combinedTransforms));
+
+  if (reduction) {
+    ArrayRef<int64_t> tileShape =
+        cast<RankedTensorType>(fusedTile.getType()).getShape();
+    int64_t numExtra = storeMarkerOp.getExtraIndices().size();
+    int64_t reductionAxis = -1;
+    int64_t reductionExtent = 1;
+    for (auto [axis, extent] : llvm::enumerate(tileShape)) {
+      if (extent <= reductionExtent)
+        continue;
+      int64_t destDim = numExtra + static_cast<int64_t>(axis);
+      if (!addressIsInvariantAlongDim(builder, combinedDest, destDim))
+        continue;
+      reductionAxis = static_cast<int64_t>(axis);
+      reductionExtent = extent;
+    }
+
+    if (reductionAxis >= 0) {
+      fusedTile = BlockwiseReduceOp::create(
+          builder, loc, fusedTile, builder.getIndexAttr(reductionAxis),
+          builder.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
+      combinedDest =
+          pinDimToZero(builder, loc, combinedDest, numExtra + reductionAxis);
+    }
+    // No invariant axis is still valid: retain the atomic store for every
+    // tile element, which is the legacy reduction behavior.
+  }
+
+  auto blockwiseStore = BlockwiseStoreOp::create(
+      builder, loc, storeOp.getResult().getType(), fusedTile, combinedDest,
+      storeOp.getResultAlias(), storeMarkerOp.getExtraIndices(),
+      storeOp.getStoreMethod());
+  LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreOp: " << blockwiseStore
+                          << "\n");
+  storeOp.getResult().replaceAllUsesWith(blockwiseStore.getResult());
+  storeOp.erase();
+  return success();
+}
+
+static LogicalResult lowerOrdinaryStore(StoreOp storeOp) {
+  return lowerStoreImpl(storeOp, nullptr);
+}
+
+static LogicalResult lowerReductionStore(StoreOp storeOp,
+                                         ReductionStorePath &path) {
+  return lowerStoreImpl(storeOp, &path);
+}
+
 struct RockLowerStoresPass
     : public rock::impl::RockLowerStoresPassBase<RockLowerStoresPass> {
   void runOnOperation() override;
@@ -312,152 +376,26 @@ void RockLowerStoresPass::runOnOperation() {
                           << " rock.store ops to process\n");
 
   for (StoreOp storeOp : storeOps) {
-    OpBuilder builder(storeOp);
-    Location loc = storeOp.getLoc();
-
-    Value storeSource = storeOp.getSource(); // The fused result (full tensor)
-    Value storeDest = storeOp.getDest(); // The destination (transformed arg)
-
-    FailureOr<std::optional<ReductionStoreInfo>> maybeReduction =
-        getReductionStoreInfo(storeOp);
-    if (failed(maybeReduction))
-      return signalPassFailure();
-    std::optional<ReductionStoreInfo> reductionInfo = *maybeReduction;
-    if (reductionInfo)
-      storeSource = reductionInfo->tileSource;
-
-    // Find the StoreMarkerOp in the store chain to get transforms and indices
-    FailureOr<StoreMarkerOp> maybeStoreMarkerOp =
-        findStoreMarkerOp(storeSource);
-    if (failed(maybeStoreMarkerOp)) {
-      storeOp->emitError("No StoreMarkerOp found for store");
+    FailureOr<std::optional<ReductionStorePath>> maybePath =
+        getReductionStorePath(storeOp);
+    if (failed(maybePath)) {
+      storeOp.emitError("malformed blockwise reduction store path");
       return signalPassFailure();
     }
-    auto storeMarkerOp = maybeStoreMarkerOp.value();
 
-    auto sourceType =
-        cast<RankedTensorType>(storeMarkerOp.getSource().getType());
-    ArrayRef<int64_t> storeMarkerShape = sourceType.getShape();
-
-    // Get the output type for determining tile type.
-    auto outputType = cast<RankedTensorType>(storeSource.getType());
-
-    // Determine tile type
-    auto tileType =
-        RankedTensorType::get(storeMarkerShape, outputType.getElementType());
-
-    // Convert the store source from full tensor to tile, collecting
-    // StoreMarkerOp info
-    IRMapping fullToTileMapping;
-    FailureOr<Value> maybeFusedTile =
-        convertToTile(builder, loc, storeSource, tileType, fullToTileMapping);
-    if (failed(maybeFusedTile)) {
-      storeOp->emitError("Failed to convert to tile");
-      return signalPassFailure();
-    }
-    Value fusedTile = maybeFusedTile.value();
-
-    LLVM_DEBUG(llvm::dbgs()
-               << "Converted store source to tile: " << fusedTile << "\n");
-
-    if (reductionInfo) {
-      // Undo any transforms after the reduction so the destination has the
-      // reduced logical shape, broadcast the reduced dimension to the input
-      // shape, then invert the pre-reduction view to return to GEMM space.
-      if (!reductionInfo->postReduceTransforms.empty()) {
-        ArrayAttr invertedPost = invertTransformChain(
-            builder, loc, reductionInfo->postReduceTransforms);
-        if (!invertedPost) {
-          reductionInfo->reduceOp.emitError(
-              "cannot invert post-reduction destination transforms");
-          return signalPassFailure();
-        }
-        storeDest = rock::transform(builder, storeDest, invertedPost);
-      }
-
-      auto reduceInputType =
-          cast<RankedTensorType>(reductionInfo->reduceOp.getIn().getType());
-      storeDest =
-          insertBroadcast(builder, loc, storeDest, reduceInputType.getShape());
-
-      if (!reductionInfo->preReduceTransforms.empty()) {
-        ArrayAttr invertedPre = invertTransformChain(
-            builder, loc, reductionInfo->preReduceTransforms);
-        if (!invertedPre) {
-          reductionInfo->reduceOp.emitError(
-              "cannot invert pre-reduction input transforms");
-          return signalPassFailure();
-        }
-        storeDest = rock::transform(builder, storeDest, invertedPre);
-      }
-
-      StoreMethod storeMethod =
-          reductionInfo->reduceOp.getReduceMethod() == ReduceMethod::Sum
-              ? StoreMethod::AtomicAdd
-              : StoreMethod::AtomicMax;
-      if (failed(setStoreMethodAndPrefill(builder, storeOp, storeMethod)))
-        return signalPassFailure();
-    }
-
-    // Combine transforms: StoreMarkerOp's extraViews are applied on top of
-    // any existing transforms on storeDest.
-    // Use untransform to get existing transforms, then combine with
-    // StoreMarkerOp's
-    SmallVector<TransformMapAttr> destTransforms;
-    auto [destRoot, _] = rock::untransform(storeDest, destTransforms);
-
-    // Build combined transforms: extraViews (from StoreMarkerOp) +
-    // destTransforms
-    SmallVector<Attribute> combinedTransforms;
-    combinedTransforms.append(storeMarkerOp.getExtraViews().begin(),
-                              storeMarkerOp.getExtraViews().end());
-    combinedTransforms.append(destTransforms.begin(), destTransforms.end());
-
-    // Apply combined transforms to the root destination
-    Value combinedDest = destRoot;
-    if (!combinedTransforms.empty()) {
-      ArrayAttr transformsAttr = builder.getArrayAttr(combinedTransforms);
-      combinedDest = rock::transform(builder, destRoot, transformsAttr);
-    }
-
-    if (reductionInfo &&
-        reductionInfo->reduceOp.getReduceMethod() == ReduceMethod::Sum) {
-      auto tileSourceType = cast<RankedTensorType>(fusedTile.getType());
-      int64_t numExtra = storeMarkerOp.getExtraIndices().size();
-      int64_t bestAxis = -1;
-      int64_t bestExtent = 1;
-      for (auto [axis, extent] : llvm::enumerate(tileSourceType.getShape())) {
-        if (extent <= bestExtent)
-          continue;
-        int64_t destDim = numExtra + static_cast<int64_t>(axis);
-        if (!addressIsInvariantAlongDim(builder, combinedDest, destDim))
-          continue;
-        bestAxis = static_cast<int64_t>(axis);
-        bestExtent = extent;
-      }
-      if (bestAxis < 0) {
-        reductionInfo->reduceOp.emitError(
-            "no complete block-local axis belongs to the reduction");
+    LogicalResult lowered = success();
+    if (*maybePath) {
+      ReductionStorePath &path = **maybePath;
+      if (!path.reduceOp.getBlockwise()) {
+        path.reduceOp.emitError(
+            "unselected reduction reached rock-lower-stores");
         return signalPassFailure();
       }
-
-      fusedTile = BlockwiseReduceOp::create(
-          builder, loc, fusedTile, builder.getIndexAttr(bestAxis),
-          builder.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
-      combinedDest =
-          pinDimToZero(builder, loc, combinedDest, numExtra + bestAxis);
+      lowered = lowerReductionStore(storeOp, path);
+    } else {
+      lowered = lowerOrdinaryStore(storeOp);
     }
-
-    // Create BlockwiseStoreOp with combined transforms
-    auto bstOp = BlockwiseStoreOp::create(
-        builder, loc, storeOp.getResult().getType(), fusedTile, combinedDest,
-        storeOp.getResultAlias(), storeMarkerOp.getExtraIndices(),
-        storeOp.getStoreMethod());
-
-    LLVM_DEBUG(llvm::dbgs() << "Created BlockwiseStoreOp: " << bstOp << "\n");
-
-    // Replace rock.store with BlockwiseStoreOp result
-    storeOp.getResult().replaceAllUsesWith(bstOp.getResult());
-    storeOp.erase();
+    if (failed(lowered))
+      return signalPassFailure();
   }
 }

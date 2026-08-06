@@ -42,8 +42,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -59,27 +59,11 @@ using namespace mlir::rock;
 
 namespace {
 
-static GemmOp findUpstreamGemm(Value value, DenseSet<Value> &visited) {
-  if (!visited.insert(value).second)
-    return nullptr;
-  Operation *defOp = value.getDefiningOp();
-  if (!defOp)
-    return nullptr;
-  if (auto gemmOp = dyn_cast<GemmOp>(defOp))
-    return gemmOp;
-  if (auto transformOp = dyn_cast<TransformOp>(defOp))
-    return findUpstreamGemm(transformOp.getInput(), visited);
-  if (!rock::isFusionOp(defOp))
-    return nullptr;
-  for (Value operand : defOp->getOperands())
-    if (GemmOp gemmOp = findUpstreamGemm(operand, visited))
-      return gemmOp;
-  return nullptr;
-}
-
-/// Return true only for the initially supported blockwise-reduction form.
-/// Everything else continues through the legacy broadcast + atomic lowering.
-static bool isBlockwiseReductionCandidate(ReduceOp reduceOp) {
+/// Select only reductions fully covered by the initial blockwise lowering.
+/// Every rejected form continues through the legacy atomic-store rewrite.
+static bool isBlockwiseReductionCandidate(ReduceOp reduceOp,
+                                          ReductionStorePath &path,
+                                          OpBuilder &builder) {
   if (reduceOp.getReduceMethod() != ReduceMethod::Sum)
     return false;
 
@@ -90,69 +74,36 @@ static bool isBlockwiseReductionCandidate(ReduceOp reduceOp) {
       reduceOp.getAxis().getSExtValue() != 2)
     return false;
 
-  // The supported global result is a single transform from the keep-dims
-  // reduction result to a rank-one store.
-  if (!reduceOp.getResult().hasOneUse())
+  // Keep the initial contract intentionally narrow: one invertible output view
+  // to a rank-one store and at least one input view from GEMM space.
+  if (path.postReduceTransforms.size() != 1 || path.preReduceTransforms.empty())
     return false;
-  auto postTransform =
-      dyn_cast<TransformOp>(*reduceOp.getResult().user_begin());
-  if (!postTransform || !postTransform.getResult().hasOneUse())
+  auto storeType =
+      dyn_cast<RankedTensorType>(path.storeOp.getSource().getType());
+  if (!storeType || storeType.getRank() != 1)
     return false;
-  auto storeOp = dyn_cast<StoreOp>(*postTransform.getResult().user_begin());
-  if (!storeOp ||
-      cast<RankedTensorType>(storeOp.getSource().getType()).getRank() != 1)
-    return false;
-
-  // Require an explicit view from GEMM space to the logical reduction input.
-  // This is the form LowerStores knows how to map back onto a local tile.
-  Value producer = reduceOp.getIn();
-  bool hasPreTransform = false;
-  while (auto transformOp = producer.getDefiningOp<TransformOp>()) {
-    hasPreTransform = true;
-    producer = transformOp.getInput();
-  }
-  if (!hasPreTransform)
+  if (!invertTransformChain(builder, reduceOp.getLoc(),
+                            path.preReduceTransforms) ||
+      !invertTransformChain(builder, reduceOp.getLoc(),
+                            path.postReduceTransforms))
     return false;
 
-  DenseSet<Value> visited;
-  GemmOp gemmOp = findUpstreamGemm(producer, visited);
+  // Ambiguous multi-root fusions and direct rank-two GEMM consumers need a
+  // richer normalization plan. Route them through the legacy path.
+  if (path.fusionRoots.size() != 1 || path.tileSource.getDefiningOp<GemmOp>())
+    return false;
+  auto gemmOp = dyn_cast<GemmOp>(path.fusionRoots.front());
   if (!gemmOp || !gemmOp.getParams())
     return false;
   auto params = *gemmOp.getParams();
-  if (params.getSplitKFactor() != 1)
+  if (gemmOp.getOTransposed() || params.getSplitKFactor() != 1 ||
+      !llvm::isPowerOf2_64(params.getMPerBlock()) ||
+      !llvm::isPowerOf2_64(params.getNPerBlock()))
     return false;
 
-  ArrayRef<int64_t> gemmShape =
-      cast<RankedTensorType>(gemmOp.getResult().getType()).getShape();
-  if (gemmShape.size() < 2)
-    return false;
-  int64_t m = gemmShape[gemmShape.size() - 2];
-  int64_t n = gemmShape[gemmShape.size() - 1];
-  return m % params.getMPerBlock() == 0 && n % params.getNPerBlock() == 0;
-}
-
-/// Walk a single-use chain of TransformOps from `start` to a StoreOp,
-/// collecting intermediate TransformOps into `chain`.  Returns the StoreOp,
-/// or failure if the chain is broken by a multi-use value or an unexpected op.
-static FailureOr<StoreOp>
-collectTransformChain(Value start, SmallVectorImpl<TransformOp> &chain) {
-  Value cur = start;
-  while (cur.hasOneUse()) {
-    Operation *user = *cur.user_begin();
-    if (auto tOp = dyn_cast<TransformOp>(user)) {
-      chain.push_back(tOp);
-      cur = tOp.getResult();
-    } else if (auto store = dyn_cast<StoreOp>(user)) {
-      return store;
-    } else {
-      user->emitError("unexpected op between rock.reduce and rock.store: ")
-          << user->getName();
-      return failure();
-    }
-  }
-
-  return emitError(cur.getLoc(),
-                   "expected single-use chain from reduce to store");
+  GemmSize size = gemmOp.getGemmSize();
+  return size.m % params.getMPerBlock() == 0 &&
+         size.n % params.getNPerBlock() == 0;
 }
 
 struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
@@ -160,7 +111,7 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
 
   LogicalResult matchAndRewrite(rock::ReduceOp reduceOp,
                                 PatternRewriter &rewriter) const override {
-    if (isBlockwiseReductionCandidate(reduceOp))
+    if (reduceOp.getBlockwise())
       return failure();
 
     Location loc = reduceOp.getLoc();
@@ -179,33 +130,21 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
       break;
     }
 
-    Value reduceResult = reduceOp.getResult();
-    if (reduceResult.getNumUses() != 1)
-      return reduceOp.emitError("Expected exactly one use of the ReduceOp");
-
-    // Walk from the reduce result through any intermediate TransformOps
-    // (e.g. Merge flattening the output to match the function signature)
-    // to the store.
-    SmallVector<TransformOp> intermediateOps;
-    FailureOr<StoreOp> maybeStore =
-        collectTransformChain(reduceResult, intermediateOps);
-    if (failed(maybeStore))
+    FailureOr<ReductionStorePath> maybePath = getReductionStorePath(reduceOp);
+    if (failed(maybePath))
       return reduceOp.emitError(
           "could not find rock.store along single-use chain from reduce");
-    StoreOp storeOp = *maybeStore;
+    ReductionStorePath path = std::move(*maybePath);
+    StoreOp storeOp = path.storeOp;
 
     rewriter.setInsertionPoint(storeOp);
     Value transformedDest = storeOp.getDest();
 
     // Undo intermediate transforms on the store destination so its shape
     // matches the reduce output (e.g. Unmerge a prior Merge).
-    if (!intermediateOps.empty()) {
-      ArrayAttr inverted = rock::invertTransforms(
-          rewriter, loc,
-          rewriter.getArrayAttr(llvm::map_to_vector(
-              intermediateOps, [](TransformOp tOp) -> Attribute {
-                return tOp.getTransform();
-              })));
+    if (!path.postReduceTransforms.empty()) {
+      ArrayAttr inverted =
+          invertTransformChain(rewriter, loc, path.postReduceTransforms);
       if (!inverted)
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
@@ -224,15 +163,13 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 
-    // The intermediate transforms and reduceOp form a single-use chain
-    // (enforced by collectTransformChain and the getNumUses check above)
-    // that is now dead.  All erasures are deferred by the
-    // ConversionPatternRewriter (applyPartialConversion) and committed
-    // together, so we must mark every op in the chain for removal —
+    // The post-reduction transforms and reduceOp form a single-use chain that
+    // is now dead. All erasures are deferred by the ConversionPatternRewriter
+    // and committed together, so mark every op in the chain for removal —
     // otherwise the framework inserts unrealized_conversion_casts for
     // the still-live intermediate references.
     rewriter.replaceOp(storeOp, newStore);
-    for (TransformOp tOp : llvm::reverse(intermediateOps))
+    for (TransformOp tOp : llvm::reverse(path.postReduceTransforms))
       rewriter.eraseOp(tOp);
     rewriter.eraseOp(reduceOp);
     return success();
@@ -248,10 +185,21 @@ struct RockLowerReduce
 
 void RockLowerReduce::runOnOperation() {
   MLIRContext *ctx = &getContext();
+  OpBuilder builder(ctx);
+
+  // Selection is performed exactly once. Downstream passes consume the marker
+  // instead of independently guessing why a ReduceOp survived this pass.
+  getOperation().walk([&](ReduceOp reduceOp) {
+    reduceOp->removeAttr("blockwise");
+    FailureOr<ReductionStorePath> path = getReductionStorePath(reduceOp);
+    if (succeeded(path) &&
+        isBlockwiseReductionCandidate(reduceOp, *path, builder))
+      reduceOp->setAttr("blockwise", builder.getUnitAttr());
+  });
 
   ConversionTarget target(*ctx);
   target.addDynamicallyLegalOp<rock::ReduceOp>(
-      [](rock::ReduceOp op) { return isBlockwiseReductionCandidate(op); });
+      [](rock::ReduceOp op) { return static_cast<bool>(op.getBlockwise()); });
   target.addLegalDialect<rock::RockDialect>();
   target.addLegalDialect<arith::ArithDialect>();
   target.addLegalDialect<math::MathDialect>();

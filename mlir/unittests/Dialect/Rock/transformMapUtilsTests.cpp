@@ -411,6 +411,21 @@ TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
   EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
 }
 
+TEST(GetLowerSubDimensionsTest, BroadcastDropsAddressDependency) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder transform(b, {"unit"}, {1}, loc);
+  transform.broadcast({0}, {8});
+  ArrayAttr transforms = b.getArrayAttr({transform.get()});
+
+  FailureOr<llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>>> subDims =
+      getLowerSubDimensions(b, transforms, /*dim=*/0);
+  ASSERT_TRUE(succeeded(subDims));
+  EXPECT_TRUE(subDims->empty());
+}
+
 //===----------------------------------------------------------------------===//
 // validityDependsOnAnyDim Tests
 //===----------------------------------------------------------------------===//

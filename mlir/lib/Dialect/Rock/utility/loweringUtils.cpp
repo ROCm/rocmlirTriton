@@ -35,6 +35,7 @@
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include <algorithm>
 #include <numeric>
 #include <optional>
 using namespace mlir;
@@ -589,6 +590,89 @@ bool mlir::rock::isFusionOp(Operation *op) {
 
 bool mlir::rock::isForwardTraceOp(Operation *op) {
   return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op);
+}
+
+static void collectFusionRoots(Value value, DenseSet<Value> &visited,
+                               SetVector<Operation *> &roots) {
+  if (!visited.insert(value).second)
+    return;
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return;
+  if (defOp->hasTrait<OpTrait::rock::FusionRoot>()) {
+    roots.insert(defOp);
+    return;
+  }
+  if (!isFusionOp(defOp) && !isa<TransformOp>(defOp))
+    return;
+  for (Value operand : defOp->getOperands())
+    collectFusionRoots(operand, visited, roots);
+}
+
+FailureOr<std::optional<ReductionStorePath>>
+mlir::rock::getReductionStorePath(StoreOp storeOp) {
+  Value value = storeOp.getSource();
+  SmallVector<TransformOp> postTransforms;
+  bool hasSingleUseChain = true;
+  while (auto transformOp = value.getDefiningOp<TransformOp>()) {
+    hasSingleUseChain &= value.hasOneUse();
+    postTransforms.push_back(transformOp);
+    value = transformOp.getInput();
+  }
+
+  auto reduceOp = value.getDefiningOp<ReduceOp>();
+  if (!reduceOp)
+    return std::optional<ReductionStorePath>{};
+  if (!hasSingleUseChain || !reduceOp.getResult().hasOneUse())
+    return failure();
+
+  Value tileSource = reduceOp.getIn();
+  SmallVector<TransformOp> preTransforms;
+  while (auto transformOp = tileSource.getDefiningOp<TransformOp>()) {
+    preTransforms.push_back(transformOp);
+    tileSource = transformOp.getInput();
+  }
+
+  std::reverse(preTransforms.begin(), preTransforms.end());
+  std::reverse(postTransforms.begin(), postTransforms.end());
+
+  DenseSet<Value> visited;
+  SetVector<Operation *> roots;
+  collectFusionRoots(tileSource, visited, roots);
+  return std::optional<ReductionStorePath>{ReductionStorePath{
+      reduceOp, storeOp, std::move(preTransforms), std::move(postTransforms),
+      tileSource, SmallVector<Operation *>(roots.begin(), roots.end())}};
+}
+
+FailureOr<ReductionStorePath>
+mlir::rock::getReductionStorePath(ReduceOp reduceOp) {
+  Value value = reduceOp.getResult();
+  while (value.hasOneUse()) {
+    Operation *user = *value.user_begin();
+    if (auto transformOp = dyn_cast<TransformOp>(user)) {
+      value = transformOp.getResult();
+      continue;
+    }
+    auto storeOp = dyn_cast<StoreOp>(user);
+    if (!storeOp)
+      return failure();
+    FailureOr<std::optional<ReductionStorePath>> path =
+        getReductionStorePath(storeOp);
+    if (failed(path) || !*path || (*path)->reduceOp != reduceOp)
+      return failure();
+    return std::move(**path);
+  }
+  return failure();
+}
+
+ArrayAttr
+mlir::rock::invertTransformChain(OpBuilder &builder, Location loc,
+                                 ArrayRef<TransformOp> transforms) {
+  ArrayAttr stack = builder.getArrayAttr(llvm::map_to_vector(
+      llvm::reverse(transforms), [](TransformOp transformOp) -> Attribute {
+        return transformOp.getTransform();
+      }));
+  return invertTransforms(builder, loc, stack);
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {

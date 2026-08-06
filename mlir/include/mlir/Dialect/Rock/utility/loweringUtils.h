@@ -186,6 +186,31 @@ bool isFusionOp(Operation *op);
 // rock.reduce.
 bool isForwardTraceOp(Operation *op);
 
+/// Canonical description of a ReduceOp connected to a StoreOp through
+/// view-only transform chains. Transform lists are ordered producer to
+/// consumer. `fusionRoots` contains every distinct upstream FusionRoot.
+struct ReductionStorePath {
+  ReduceOp reduceOp;
+  StoreOp storeOp;
+  SmallVector<TransformOp> preReduceTransforms;
+  SmallVector<TransformOp> postReduceTransforms;
+  Value tileSource;
+  SmallVector<Operation *> fusionRoots;
+};
+
+/// Match a single-use ReduceOp -> TransformOp* -> StoreOp path.
+FailureOr<ReductionStorePath> getReductionStorePath(ReduceOp reduceOp);
+
+/// Match a StoreOp fed by a ReduceOp through TransformOps. Returns nullopt for
+/// an ordinary store and failure for a malformed reduction-store path.
+FailureOr<std::optional<ReductionStorePath>>
+getReductionStorePath(StoreOp storeOp);
+
+/// Invert a producer-to-consumer TransformOp chain into the transform-stack
+/// order accepted by rock::transform.
+ArrayAttr invertTransformChain(OpBuilder &builder, Location loc,
+                               ArrayRef<TransformOp> transforms);
+
 /// Walk the fusion chain from `root` (the FusionRoot result) and collect
 /// operands of fusion ops that are NOT in the FusionRoot-result chain. These
 /// are "extra inputs" to output fusions (e.g., the second operand of

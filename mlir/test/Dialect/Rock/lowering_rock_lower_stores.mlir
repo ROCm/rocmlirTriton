@@ -15,6 +15,10 @@
 
 // --- Destination flat-to-3D transform: 32768 -> [1,256,128] ---
 #tmap_dest = #rock.transform_map<affine_map<(d0, d1, d2) -> ((d0 * 256 + d1) * 128 + d2)> by [<Unmerge{1, 256, 128} ["d0", "d1", "d2"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [1, 256, 128] -> [32768]>
+#reduce_tmap = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 4 + d3, d2 * 4 + d4)> by [<PassThrough ["g_block"] at [0] -> ["g"] at [0]>, <Unmerge{2, 4} ["m_block", "m_iter"] at [1, 3] -> ["m"] at [1]>, <Unmerge{2, 4} ["n_block", "n_iter"] at [2, 4] -> ["n"] at [2]>] bounds = [1, 2, 2, 4, 4] -> [1, 8, 8]>
+#reduce_flat = #rock.transform_map<affine_map<(d0) -> (0, d0, 0)> by [<Merge{1, 8, 1} ["flat"] at [0] -> ["g", "m", "n"] at [0, 1, 2]>] bounds = [8] -> [1, 8, 1]>
+#spanning_tmap = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 16 + d1)> by [<Unmerge{4, 16} ["block", "iter"] at [0, 1] -> ["flat"] at [0]>] bounds = [4, 16] -> [64]>
+#unflatten_8x8 = #rock.transform_map<affine_map<(d0, d1, d2) -> ((d0 * 8 + d1) * 8 + d2)> by [<Unmerge{1, 8, 8} ["g", "m", "n"] at [0, 1, 2] -> ["flat"] at [0]>] bounds = [1, 8, 8] -> [64]>
 
 module {
 
@@ -310,6 +314,37 @@ module {
     %add = arith.addf %sm, %ut : tensor<64x64xf32>
     %r = rock.store %add to %dest by set : tensor<64x64xf32> -> tensor<64x64xf32> to tensor<64x64xf32>
     return %r : tensor<64x64xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_blockwise_reduction
+  // CHECK: %[[REDUCED:.*]] = rock.blockwise_reduce sum {{.*}} {axis = 1 : index} : tensor<4x4xf32> -> tensor<4xf32>
+  // CHECK: rock.blockwise_store %[[REDUCED]] -> {{.*}} by atomic_add
+  // CHECK-SAME: tensor<4xf32>
+  func.func @test_blockwise_reduction(
+      %tile: tensor<4x4xf32>, %dest: tensor<8xf32>,
+      %g: i32, %m: i32, %n: i32) -> tensor<8xf32> attributes {rock.kernel} {
+    %sm = rock.store_marker %tile views [#reduce_tmap] [%g, %m, %n] : tensor<4x4xf32> -> tensor<1x8x8xf32>
+    %reduced = rock.reduce sum %sm {axis = 2 : index, blockwise} : tensor<1x8x8xf32> -> tensor<1x8x1xf32>
+    %flat = rock.transform %reduced by #reduce_flat : tensor<1x8x1xf32> to tensor<8xf32>
+    %result = rock.store %flat to %dest by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
+    return %result : tensor<8xf32>
+  }
+
+  // A tile spanning both retained and reduced coordinates has no complete
+  // invariant local axis. Keep the prepared per-element atomic store.
+  // CHECK-LABEL: func.func @test_reduction_no_local_axis
+  // CHECK-NOT: rock.blockwise_reduce
+  // CHECK: rock.blockwise_store {{.*}} by atomic_add
+  // CHECK-SAME: tensor<16xf32>
+  func.func @test_reduction_no_local_axis(
+      %tile: tensor<16xf32>, %dest: tensor<8xf32>,
+      %block: i32) -> tensor<8xf32> attributes {rock.kernel} {
+    %sm = rock.store_marker %tile views [#spanning_tmap] [%block] : tensor<16xf32> -> tensor<64xf32>
+    %logical = rock.transform %sm by #unflatten_8x8 : tensor<64xf32> to tensor<1x8x8xf32>
+    %reduced = rock.reduce sum %logical {axis = 2 : index, blockwise} : tensor<1x8x8xf32> -> tensor<1x8x1xf32>
+    %flat = rock.transform %reduced by #reduce_flat : tensor<1x8x1xf32> to tensor<8xf32>
+    %result = rock.store %flat to %dest by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
+    return %result : tensor<8xf32>
   }
 
   // ============================================================

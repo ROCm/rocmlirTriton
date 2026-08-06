@@ -175,9 +175,16 @@ def Rock_ReduceOp
     : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>,
                          DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
-          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
+          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis,
+          OptionalAttr<UnitAttr>:$blockwise)>,
       Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
   let summary = "Axes-wide reduction operation";
+  let description = [{
+    `rock.reduce` performs a logical reduction while retaining the reduced
+    dimension with extent one. The transient `blockwise` marker is attached by
+    `rock-lower-reduce` when the GPU pipeline will realize a block-local
+    partial reduction before atomic accumulation.
+  }];
   let hasVerifier = 1;
   let assemblyFormat = [{
     $reduceMethod $in attr-dict `:` type($in) `->` type($result)

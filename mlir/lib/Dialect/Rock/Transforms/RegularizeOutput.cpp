@@ -194,14 +194,6 @@ floodFillFromRoot(Value root, DenseSet<Value> &rootReachable,
   }
 }
 
-/// Return the reduction feeding `value` through a post-reduction transform
-/// chain, or null when this is an ordinary elementwise store source.
-static ReduceOp findUpstreamReduce(Value value) {
-  while (auto transformOp = value.getDefiningOp<TransformOp>())
-    value = transformOp.getInput();
-  return value.getDefiningOp<ReduceOp>();
-}
-
 /// Move the elementwise producer of each reduction input to GEMM space while
 /// preserving the explicit ReduceOp and its logical input shape. The original
 /// transform stack is reapplied immediately before the reduction.
@@ -209,8 +201,14 @@ static LogicalResult regularizeReductionInputs(ArrayRef<StoreOp> stores,
                                                RegularizeContext &ctx) {
   DenseSet<Operation *> visited;
   for (StoreOp storeOp : stores) {
-    ReduceOp reduceOp = findUpstreamReduce(storeOp.getSource());
-    if (!reduceOp || !visited.insert(reduceOp).second)
+    FailureOr<std::optional<ReductionStorePath>> maybePath =
+        getReductionStorePath(storeOp);
+    if (failed(maybePath))
+      return storeOp.emitError("malformed blockwise reduction store path");
+    if (!*maybePath)
+      continue;
+    ReduceOp reduceOp = (**maybePath).reduceOp;
+    if (!reduceOp.getBlockwise() || !visited.insert(reduceOp).second)
       continue;
 
     Value oldInput = reduceOp.getIn();
@@ -247,7 +245,11 @@ static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
     // Reduction stores retain their rank-reduced source and destination. Their
     // input producer was regularized separately above, and LowerStores will
     // lower the explicit reduction after the block-local tile is available.
-    if (findUpstreamReduce(storeOp.getSource()))
+    FailureOr<std::optional<ReductionStorePath>> maybePath =
+        getReductionStorePath(storeOp);
+    if (failed(maybePath))
+      return storeOp.emitError("malformed blockwise reduction store path");
+    if (*maybePath && (**maybePath).reduceOp.getBlockwise())
       continue;
 
     Value storeSource = storeOp.getSource();

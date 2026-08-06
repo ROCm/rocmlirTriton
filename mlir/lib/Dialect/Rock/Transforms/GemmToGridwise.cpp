@@ -67,15 +67,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-/// Return the explicit reduction feeding a store through a post-reduction
-/// transform chain, or null for an ordinary output store.
-static ReduceOp findStoreReduction(StoreOp storeOp) {
-  Value source = storeOp.getSource();
-  while (auto transformOp = source.getDefiningOp<TransformOp>())
-    source = transformOp.getInput();
-  return source.getDefiningOp<ReduceOp>();
-}
-
 /// Reconcile the unit group dimension introduced by GEMM normalization with
 /// the original rank-two GEMM-space value feeding a reduction transform chain.
 static LogicalResult bridgeNormalizedReductionInput(PatternRewriter &rewriter,
@@ -167,12 +158,16 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   SetVector<StoreOp> &allStores = views.stores;
   SmallVector<Value> outputViews;
   SmallVector<StoreOp> stores;
-  SmallVector<StoreOp> reductionStores;
+  SmallVector<ReduceOp> reductions;
   for (auto [store, outputView] :
        llvm::zip_equal(allStores, views.outputViews)) {
-    if (findStoreReduction(store))
-      reductionStores.push_back(store);
-    else {
+    FailureOr<std::optional<ReductionStorePath>> maybePath =
+        getReductionStorePath(store);
+    if (failed(maybePath))
+      return op.emitOpError("malformed blockwise reduction store path");
+    if (*maybePath && (**maybePath).reduceOp.getBlockwise()) {
+      reductions.push_back((**maybePath).reduceOp);
+    } else {
       stores.push_back(store);
       outputViews.push_back(outputView);
     }
@@ -195,8 +190,9 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   auto elemAWidth = elemTypeA.getIntOrFloatBitWidth();
   auto elemBWidth = elemTypeB.getIntOrFloatBitWidth();
 
-  // TODO: use AmdArchDb to figure out when we need to convert A and B instead of hardcoding it!
-  // Extend input types to the highest-precision type among the inputs
+  // TODO: use AmdArchDb to figure out when we need to convert A and B instead
+  // of hardcoding it! Extend input types to the highest-precision type among
+  // the inputs
   if (elemTypeA != elemTypeB &&
       (!isa<FloatType>(elemTypeA) || !isa<FloatType>(elemTypeB) ||
        elemAWidth != 8 || elemBWidth != 8)) {
@@ -234,7 +230,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   }
 
   const int64_t splitKFactor = op.getParams()->getSplitKFactor();
-  if (splitKFactor > 1 && !reductionStores.empty())
+  if (splitKFactor > 1 && !reductions.empty())
     return op.emitOpError(
         "split-K is not yet supported with an explicit fused reduction");
   if (splitKFactor > 1) {
@@ -261,7 +257,7 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
-  if (!reductionStores.empty() &&
+  if (!reductions.empty() &&
       (extraPad.g != 0 || extraPad.m != 0 || extraPad.n != 0))
     return op.emitOpError(
         "output padding is not yet supported with an explicit fused reduction");
@@ -308,9 +304,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   // gemm result inside fusion ops with the gridwise result and updates their
   // result types to match the new shape.
   rock::propagateOutputType(op.getResult(), result);
-  for (StoreOp reductionStore : reductionStores)
-    if (failed(bridgeNormalizedReductionInput(
-            rw, findStoreReduction(reductionStore))))
+  for (ReduceOp reduceOp : reductions)
+    if (failed(bridgeNormalizedReductionInput(rw, reduceOp)))
       return failure();
 
   // Replace extra fusion input operands with their padded versions.
