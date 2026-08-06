@@ -732,10 +732,10 @@ static void simplifyAffineCandidate(const AffineCandidate &cand, Value iv,
 static bool simplifyCarryCandidates(scf::ForOp loop,
                                     ArrayRef<CarryCandidate> carryCands);
 
-/// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
-/// rewritten in place, Carry candidates get loop-carried coordinate state.
-/// Returns true if the IR was changed.
-static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
+/// Incrementalize all eligible transforms_to_ptr ops in `loop`: Affine
+/// candidates are rewritten in place, Carry candidates get loop-carried
+/// coordinate state. Returns true if the IR was changed.
+static bool incrementalizeLoop(scf::ForOp loop) {
   // The affine path is always preferred over the carry path: its rewrite is
   // cheaper (one scalar accumulator rather than loop-carried coordinate tiles).
   // The carry path is therefore only tried for the ops whose address and mask
@@ -1069,17 +1069,17 @@ void RockIncrementalPointerArithPass::runOnOperation() {
   if (!func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
     return;
 
-  // Re-walk after each rewrite: trySimplifyTransformsCandidates may replace the
-  // loop op (carry path), so collected handles would dangle. After a rewrite
-  // the base ops are pinned to iv == lb and no longer depend on the iv, so they
-  // are not re-selected as candidates and this terminates.
+  // Re-walk after each rewrite: incrementalizeLoop may replace the loop op
+  // (carry path), so collected handles would dangle. After a rewrite the base
+  // ops are pinned to iv == lb and no longer depend on the iv, so they are not
+  // re-selected as candidates and this terminates.
   bool changed = true;
   while (changed) {
     changed = false;
     SmallVector<scf::ForOp> loops;
     func.walk([&](scf::ForOp f) { loops.push_back(f); });
     for (scf::ForOp f : loops) {
-      if (trySimplifyTransformsCandidates(f)) {
+      if (incrementalizeLoop(f)) {
         changed = true;
         break;
       }
