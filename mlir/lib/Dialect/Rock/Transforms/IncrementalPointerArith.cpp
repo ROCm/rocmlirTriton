@@ -613,8 +613,8 @@ emitFullTileCarry(OpBuilder &b, Location loc, ArrayRef<Value> suffix,
   return out;
 }
 
-/// Per-candidate carried state + iter_arg layout for the rewritten loop.
-struct Reduced {
+/// The plan to rewrite a carry candidate.
+struct CarryPlan {
   // The analysis this state was built from. It owns the op to be replaced, the
   // transform chain (and thus `aboveMaps()` / `belowMaps()`) and the merge's
   // decomposed coordinates: their positions, wrap limits and per-step
@@ -783,19 +783,19 @@ static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
 /// Analyze each carry candidate and, for those eligible for the full-tile
 /// pointer recurrence, emit their preheader init values (base coordinates,
 /// carried suffix coordinates, zero offset accumulator) and return the
-/// per-candidate `Reduced` state. Ineligible candidates are skipped (their op
+/// per-candidate `CarryPlan` state. Ineligible candidates are skipped (their op
 /// is left in the loop, to be lowered in place by
 /// rock-transforms-to-pointer-arith).
-static SmallVector<Reduced, 0>
-buildReducedCarries(OpBuilder &b, scf::ForOp loop,
-                    ArrayRef<CarryCandidate> carryCands) {
+static SmallVector<CarryPlan, 0>
+buildCarryPlans(OpBuilder &b, scf::ForOp loop,
+                ArrayRef<CarryCandidate> carryCands) {
   Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
   Value lb = loop.getLowerBound();
 
   // Build each carry candidate's iter_arg initial values before the loop (as
   // SSA requires): the merge's decomposed coordinates at iv == lb.
-  SmallVector<Reduced, 0> reduced;
+  SmallVector<CarryPlan, 0> plans;
   for (const CarryCandidate &cand : carryCands) {
     TransformsToPtrOp op = cand.op;
     ArrayRef<TransformMapAttr> belowMaps = cand.belowMaps();
@@ -900,19 +900,19 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     if (failed(iter0))
       continue;
 
-    Reduced r;
-    r.cand = cand;
-    r.ptrType = ptrType;
-    r.maskType = op.getMask().getType();
-    r.iter0Coords = *iter0;
-    r.srcPre = srcPre;
-    r.baseIdx = baseIdx;
-    r.offsetStrides = strides;
-    r.suffixCount = suffixCount;
-    r.hasPrefix = (prefixSize == 1);
-    if (r.hasPrefix) {
-      r.prefixStep = cand.coordSteps[0];
-      r.prefixStride = strides[0];
+    CarryPlan plan;
+    plan.cand = cand;
+    plan.ptrType = ptrType;
+    plan.maskType = op.getMask().getType();
+    plan.iter0Coords = *iter0;
+    plan.srcPre = srcPre;
+    plan.baseIdx = baseIdx;
+    plan.offsetStrides = strides;
+    plan.suffixCount = suffixCount;
+    plan.hasPrefix = (prefixSize == 1);
+    if (plan.hasPrefix) {
+      plan.prefixStep = cand.coordSteps[0];
+      plan.prefixStride = strides[0];
     }
     // Carry the validity (suffix) coordinates as full tiles plus a full-tile
     // zero offset accumulator (the base pointer already encodes offset0).
@@ -924,25 +924,26 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
         carriedInitsOk = false;
         break;
       }
-      r.carriedInits.push_back(carried);
+      plan.carriedInits.push_back(carried);
     }
     // A carried coordinate that can't be broadcast to the tile shape means this
     // candidate isn't eligible; skip it and let the op be lowered in place.
     if (!carriedInitsOk)
       continue;
     auto offTy = RankedTensorType::get(outShape, ptrType.getElementType());
-    r.offsetAccInit = splatConst(b, loc, offTy, 0);
-    reduced.push_back(std::move(r));
+    plan.offsetAccInit = splatConst(b, loc, offTy, 0);
+    plans.push_back(std::move(plan));
   }
-  return reduced;
+  return plans;
 }
 
 /// Build the base pointer tile at iv == lb (all extra indices pinned to lb).
 /// The op's mask output is unused (the mask is iv-dependent and rebuilt each
 /// iteration by `buildCarryMask`).
-static Value buildCarryBasePtr(OpBuilder &b, Location loc, const Reduced &r) {
-  auto baseOp = TransformsToPtrOp::create(b, loc, r.ptrType, r.maskType,
-                                          r.srcPre, r.baseIdx);
+static Value buildCarryBasePtr(OpBuilder &b, Location loc,
+                               const CarryPlan &plan) {
+  auto baseOp = TransformsToPtrOp::create(b, loc, plan.ptrType, plan.maskType,
+                                          plan.srcPre, plan.baseIdx);
   return baseOp.getPointers();
 }
 
@@ -951,15 +952,16 @@ static Value buildCarryBasePtr(OpBuilder &b, Location loc, const Reduced &r) {
 /// vector, then re-expand the sub-chain below the merge. Returns failure if the
 /// sub-chain expansion fails.
 static FailureOr<Value> buildCarryMask(OpBuilder &b, Location loc,
-                                       const Reduced &r, scf::ForOp newLoop) {
-  SmallVector<Value> coords(r.iter0Coords);
+                                       const CarryPlan &plan,
+                                       scf::ForOp newLoop) {
+  SmallVector<Value> coords(plan.iter0Coords);
   ArrayRef<unsigned> suffixPos =
-      ArrayRef<unsigned>(r.cand.coordPositions).take_back(r.suffixCount);
+      ArrayRef<unsigned>(plan.cand.coordPositions).take_back(plan.suffixCount);
   for (auto [k, pos] : llvm::enumerate(suffixPos))
-    coords[pos] = newLoop.getRegionIterArg(r.iterArgStart + k);
+    coords[pos] = newLoop.getRegionIterArg(plan.iterArgStart + k);
   FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
-      b, loc, r.cand.belowMaps(), coords, r.ptrType.getShape(),
-      r.ptrType.getElementType(),
+      b, loc, plan.cand.belowMaps(), coords, plan.ptrType.getShape(),
+      plan.ptrType.getElementType(),
       /*computeOffset=*/false);
   if (failed(om))
     return failure();
@@ -969,8 +971,8 @@ static FailureOr<Value> buildCarryMask(OpBuilder &b, Location loc,
 /// Form the current pointer as the base tile plus the carried full-tile offset
 /// accumulator (the last iter_arg for this candidate). No offset re-expansion.
 static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
-                           const Reduced &r, scf::ForOp newLoop) {
-  Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+                           const CarryPlan &plan, scf::ForOp newLoop) {
+  Value offset = newLoop.getRegionIterArg(plan.iterArgStart + plan.suffixCount);
   return arith::AddIOp::create(b, loc, basePtr, offset);
 }
 
@@ -982,21 +984,21 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   Location loc = loop.getLoc();
   OpBuilder b(loop);
 
-  SmallVector<Reduced, 0> reduced = buildReducedCarries(b, loop, carryCands);
+  SmallVector<CarryPlan, 0> plans = buildCarryPlans(b, loop, carryCands);
 
   // No carry candidate qualified for the pointer-recurrence rewrite: bail out.
-  if (reduced.empty())
+  if (plans.empty())
     return false;
 
   // New iter_args: the original ones followed by each candidate's carried
   // coordinates.
   unsigned numOrig = loop.getInitArgs().size();
   SmallVector<Value> extraInits;
-  for (Reduced &r : reduced) {
-    r.iterArgStart = numOrig + extraInits.size();
-    llvm::append_range(extraInits, r.carriedInits);
+  for (CarryPlan &plan : plans) {
+    plan.iterArgStart = numOrig + extraInits.size();
+    llvm::append_range(extraInits, plan.carriedInits);
     // The full-tile offset accumulator is carried last.
-    extraInits.push_back(r.offsetAccInit);
+    extraInits.push_back(plan.offsetAccInit);
   }
 
   scf::ForOp newLoop = addIterArgsToLoop(b, loop, extraInits);
@@ -1007,17 +1009,17 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   // pointer as the base plus the carried full-tile offset accumulator (no
   // offset re-expansion).
   SmallVector<std::pair<Value, Value>> ptrsAndMasks;
-  for (Reduced &r : reduced) {
-    b.setInsertionPoint(r.cand.op);
-    Value basePtr = buildCarryBasePtr(b, loc, r);
-    FailureOr<Value> mask = buildCarryMask(b, loc, r, newLoop);
+  for (CarryPlan &plan : plans) {
+    b.setInsertionPoint(plan.cand.op);
+    Value basePtr = buildCarryBasePtr(b, loc, plan);
+    FailureOr<Value> mask = buildCarryMask(b, loc, plan, newLoop);
     if (failed(mask)) {
       SmallVector<Value> unchanged(
           newLoop.getRegionIterArgs().drop_front(numOrig));
       appendToForOpYield(newLoop, unchanged);
       return false;
     }
-    ptrsAndMasks.emplace_back(buildCarryPtr(b, loc, basePtr, r, newLoop),
+    ptrsAndMasks.emplace_back(buildCarryPtr(b, loc, basePtr, plan, newLoop),
                               *mask);
   }
 
@@ -1025,32 +1027,33 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   // each candidate.
   b.setInsertionPoint(newLoop.getBody()->getTerminator());
   SmallVector<Value> carried;
-  for (Reduced &r : reduced) {
+  for (CarryPlan &plan : plans) {
     // Advance the full-tile validity (suffix) coordinates and the
     // full-tile offset accumulator by the per-step delta.
     SmallVector<Value> suffix;
-    for (unsigned k = 0; k < r.suffixCount; ++k)
-      suffix.push_back(newLoop.getRegionIterArg(r.iterArgStart + k));
+    for (unsigned k = 0; k < plan.suffixCount; ++k)
+      suffix.push_back(newLoop.getRegionIterArg(plan.iterArgStart + k));
 
     FullTileCarry stepCarry = emitFullTileCarry(
         b, loc, suffix,
-        ArrayRef<int64_t>(r.cand.coordSizes).take_back(r.suffixCount),
-        ArrayRef<int64_t>(r.cand.coordSteps).take_back(r.suffixCount),
-        ArrayRef<int64_t>(r.offsetStrides).take_back(r.suffixCount),
-        r.hasPrefix, r.prefixStep, r.prefixStride);
+        ArrayRef<int64_t>(plan.cand.coordSizes).take_back(plan.suffixCount),
+        ArrayRef<int64_t>(plan.cand.coordSteps).take_back(plan.suffixCount),
+        ArrayRef<int64_t>(plan.offsetStrides).take_back(plan.suffixCount),
+        plan.hasPrefix, plan.prefixStep, plan.prefixStride);
 
     llvm::append_range(carried, stepCarry.nextSuffix);
 
-    Value offset = newLoop.getRegionIterArg(r.iterArgStart + r.suffixCount);
+    Value offset =
+        newLoop.getRegionIterArg(plan.iterArgStart + plan.suffixCount);
     carried.push_back(
         arith::AddIOp::create(b, loc, offset, stepCarry.offsetDelta));
   }
   appendToForOpYield(newLoop, carried);
 
-  for (auto [r, ptrAndMask] : llvm::zip_equal(reduced, ptrsAndMasks)) {
-    r.cand.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
-    r.cand.op.getMask().replaceAllUsesWith(ptrAndMask.second);
-    r.cand.op.erase();
+  for (auto [plan, ptrAndMask] : llvm::zip_equal(plans, ptrsAndMasks)) {
+    plan.cand.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
+    plan.cand.op.getMask().replaceAllUsesWith(ptrAndMask.second);
+    plan.cand.op.erase();
   }
   return true;
 }
