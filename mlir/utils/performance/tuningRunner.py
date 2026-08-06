@@ -2072,7 +2072,7 @@ def main(args=None):
     user_rocr_visible = os.environ.get("ROCR_VISIBLE_DEVICES")
     user_hip_visible = os.environ.get("HIP_VISIBLE_DEVICES")
 
-    # We call into perfRunner which also queries GPU info using HIP and rocminfo.
+    # We call into perfRunner which also queries GPU info using HIP.
     # To ensure consistency, we isolate the process to the first available GPU.
     set_isolated_gpu_env(os.environ, available_gpus[0])
 
