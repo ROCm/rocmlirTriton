@@ -2545,10 +2545,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // sliding-window seq-len with any KV-cache seq-len here, independent of the
     // order in which the two masks were peeled.
     if (currentResult.slidingWindowSize) {
-      // A sliding-window lower bound alone does not prove that keys after its
-      // position operand are invalid. Require an independently detected
-      // KV-cache upper mask rather than introducing one by setting
-      // currentSeqLen on the folded attention op.
+      // Sliding-window folding requires both the lower window bound and the
+      // KV-cache upper bound represented by the attention op.
       if (!currentResult.seqLen)
         return failure();
 
