@@ -506,12 +506,12 @@ static llvm::cl::opt<int64_t>
                llvm::cl::desc("number of heads of K,V in attention()"),
                llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
 
-static llvm::cl::list<int64_t>
-    currentSeqLen("current_seq_len",
-                  llvm::cl::desc("List of sequence lengths of K and V (related "
-                                 "to KV-cache) in attention()"),
-                  llvm::cl::value_desc("list of positive integers"),
-                  llvm::cl::CommaSeparated);
+static llvm::cl::list<int64_t> currentSeqLen(
+    "current_seq_len",
+    llvm::cl::desc("List of zero-based, inclusive current KV-cache positions "
+                   "(last valid K/V indices) in attention()"),
+    llvm::cl::value_desc("list of non-negative integers"),
+    llvm::cl::CommaSeparated);
 
 static llvm::cl::opt<int64_t> sequenceLengthQ(
     "seq_len_q", llvm::cl::desc("sequence length of Q in attention()"),
@@ -594,10 +594,12 @@ static llvm::cl::opt<int64_t> splitKV(
 
 static llvm::cl::opt<int64_t> slidingWindowSize(
     "sliding_window_size",
-    llvm::cl::desc("Sliding window attention size. Only the last "
-                   "slidingWindowSize key positions (relative to "
-                   "currentSeqLen) are attended to. Requires current_seq_len."),
-    llvm::cl::value_desc("positive integer"), llvm::cl::init(0));
+    llvm::cl::desc(
+        "Maximum look-back distance from current_seq_len. Includes the current "
+        "KV-cache position, so up to sliding_window_size + 1 key positions are "
+        "attended to. Requires current_seq_len."),
+    llvm::cl::value_desc("non-negative integer (0 disables)"),
+    llvm::cl::init(0));
 
 static llvm::cl::opt<bool> returnLSE(
     "return_lse",
