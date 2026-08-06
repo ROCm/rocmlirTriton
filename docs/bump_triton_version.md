@@ -298,6 +298,19 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
+### 5.3.2 KV-cache attention LLVM workaround
+
+`GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
+static K/V block count. This is a workaround for an LLVM AMDGPU raw-buffer
+bounds-checking bug that can make an out-of-contract `currentSeqLen` read past
+the K/V allocation. The LLVM issue is tracked by ROCM-28757.
+
+On every LLVM bump, check whether the new pinned LLVM revision contains the
+upstream fix and whether the workaround is still necessary. Do not remove the
+clamp based only on the revision change: also verify the behavior with
+`gridwise-attention-kvcache-clamp.mlir` and
+`mixr-attention-kvcache.mlir`.
+
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 
 Some Triton enums are hand-replicated in the Rock dialect so we can carry the
@@ -527,6 +540,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
+- [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
