@@ -1,4 +1,5 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -split-input-file -verify-diagnostics -o -| FileCheck %s
+// RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-2147483648>/dense<3>/' %s | rocmlir-opt --tosa-to-rock -split-input-file -verify-diagnostics -o -| FileCheck %s --check-prefix=NEGATIVE
 
 // Edge case 1: a sliding-window-shaped lower mask WITHOUT a separate KV-cache
 // upper mask. Folding this as sliding-window attention would set currentSeqLen
@@ -311,6 +312,15 @@ func.func @sliding_window_kvcache_mismatched_seqlen(%arg0: tensor<1xi32>, %arg1:
 // CHECK: qk = elementwise
 // CHECK: tosa.add
 // CHECK: tosa.select
+// A positive offset represents a negative window size. It must also remain
+// explicit rather than becoming an invalid slidingWindowSize attribute.
+// NEGATIVE-LABEL: func @sliding_window_offset_overflow
+// NEGATIVE: rock.attention
+// NEGATIVE: currentSeqLen =
+// NEGATIVE-NOT: slidingWindowSize
+// NEGATIVE: qk = elementwise
+// NEGATIVE: tosa.add
+// NEGATIVE: tosa.select
 func.func @sliding_window_offset_overflow(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %4 = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x1x8xf32>}> : () -> tensor<1x2x1x8xf32>

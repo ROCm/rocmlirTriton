@@ -2225,10 +2225,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         return failure();
 
       int32_t offset = constAttr.getSplatValue<int32_t>();
-      if (offset >= 0)
-        return failure();
       int64_t windowSize = -static_cast<int64_t>(offset);
-      if (windowSize > std::numeric_limits<int32_t>::max())
+      if (windowSize <= 0 || windowSize > std::numeric_limits<int32_t>::max())
         return failure();
       seqLenOperand = other;
       return windowSize;
