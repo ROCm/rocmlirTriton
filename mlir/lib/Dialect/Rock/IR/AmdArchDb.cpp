@@ -416,6 +416,41 @@ int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   return 1;
 }
 
+int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
+  auto [isaFamily, _] = getArch(arch);
+  switch (isaFamily) {
+  case ISAFamily::CDNA3:
+    if (numCUs == 304)
+      return 8;
+    if (numCUs == 80)
+      return 4;
+    return 1;
+  case ISAFamily::CDNA4:
+    if (numCUs == 256)
+      return 8;
+    if (numCUs == 128)
+      return 4;
+    if (numCUs == 64)
+      return 2;
+    return 1;
+  case ISAFamily::GFX1250:
+    if (numCUs == 256)
+      return 8;
+    return 1;
+  case ISAFamily::Unknown:
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4:
+    return 1;
+  }
+  llvm_unreachable("unhandled ISAFamily in inferNumChiplets");
+}
+
 int64_t mlir::rock::getMinNumCU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 

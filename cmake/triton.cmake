@@ -40,8 +40,8 @@ message(STATUS "Adding Triton-pinned LLVM/MLIR (external/llvm-project) src depen
 # LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
 # effect when LLVM processes its own CMakeLists.txt.
 set(LLVM_ENABLE_PROJECTS "mlir;lld" CACHE STRING "List of LLVM sub-projects")
-set(LLVM_ENABLE_ZSTD OFF CACHE BOOL "")
-set(LLVM_ENABLE_ZLIB OFF CACHE BOOL "")
+set(LLVM_ENABLE_ZSTD OFF CACHE STRING "")
+set(LLVM_ENABLE_ZLIB OFF CACHE STRING "")
 set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
 set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
 set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
