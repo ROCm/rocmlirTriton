@@ -77,6 +77,7 @@ struct RockDecomposeNonPow2KPass
 struct LoadTileRecipe {
   Value source;
   Value kIter;
+  StringRef dName;
   layout::GridCoordinates gridCoords;
   SmallVector<int64_t, 3> bidGridLengths;
   int64_t kPerBlock;
@@ -89,6 +90,16 @@ struct LoadTileRecipe {
 
 static bool isSubByte(Type t) {
   return t.isIntOrFloat() && t.getIntOrFloatBitWidth() < 8;
+}
+
+/// The names `map` gives its upper dimensions, in dimension order.
+static SmallVector<StringRef> getUpperNames(TransformMapAttr map) {
+  SmallVector<StringRef> names(map.getUpperBounds().size());
+  for (TransformAttr tr : map.getOps())
+    for (auto [name, dim] :
+         llvm::zip_equal(tr.getUpperNames(), tr.getUpperDims()))
+      names[dim] = name;
+  return names;
 }
 
 /// Recover the arguments of the rock::loadTile call that produced `marker`, so
@@ -106,17 +117,29 @@ static FailureOr<LoadTileRecipe> getLoadTileRecipe(LoadMarkerOp marker,
   if (!tiling)
     return failure();
   // The verifier already ties the view's bounds to the marker: the upper ones
-  // to the tile shape and the index count, the lower ones to the source. So the
-  // bounds are the only thing left to read, and requiring six upper and three
-  // lower ones is what pins the view down to the tiling of a [G, K, D] /
-  // [G, D, K] matrix above.
+  // to the tile shape and the index count, the lower ones to the source. So
+  // requiring six upper and three lower bounds pins the view down to a tiling
+  // of a rank-3 matrix indexed by a loop and three grid coordinates.
   ArrayRef<int64_t> upper = tiling.getUpperBounds();
   if (upper.size() != 6 || tiling.getLowerBounds().size() != 3)
+    return failure();
+  // Shape alone does not make a view a tiling, so match the dimension names
+  // too. They also carry what the shape cannot: which of the two tile
+  // dimensions is K, and whether the non-contraction one is M or N.
+  SmallVector<StringRef> names = getUpperNames(tiling);
+  if (names[0] != "k_loop" || names[1] != "g_block" || names[2] != "m_block" ||
+      names[3] != "n_block")
+    return failure();
+  StringRef kIterName = isKFirst ? names[4] : names[5];
+  StringRef dIterName = isKFirst ? names[5] : names[4];
+  if (kIterName != "k_iter" || !dIterName.consume_back("_iter") ||
+      (dIterName != "m" && dIterName != "n"))
     return failure();
 
   LoadTileRecipe recipe;
   recipe.source = marker.getSource();
   recipe.kIter = indices[0];
+  recipe.dName = dIterName;
   recipe.gridCoords =
       layout::GridCoordinates{indices[1], indices[2], indices[3]};
   recipe.kIterations = upper[0];
@@ -241,14 +264,14 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
 
   Value acc = gemm.getMatrixC();
   for (auto [segIdx, seg] : llvm::enumerate(kSegs)) {
-    Value loadedB = rock::loadTile(bB, loc, bViews[segIdx], recipeB.kIter, "n",
-                                   recipeB.gridCoords, seg.length,
-                                   recipeB.dPerBlock, /*isKFirst=*/true,
-                                   recipeB.bidGridLengths, recipeB.cache);
-    Value loadedA = rock::loadTile(bA, loc, aViews[segIdx], recipeA.kIter, "m",
-                                   recipeA.gridCoords, seg.length,
-                                   recipeA.dPerBlock, /*isKFirst=*/false,
-                                   recipeA.bidGridLengths, recipeA.cache);
+    Value loadedB = rock::loadTile(
+        bB, loc, bViews[segIdx], recipeB.kIter, recipeB.dName,
+        recipeB.gridCoords, seg.length, recipeB.dPerBlock,
+        /*isKFirst=*/true, recipeB.bidGridLengths, recipeB.cache);
+    Value loadedA = rock::loadTile(
+        bA, loc, aViews[segIdx], recipeA.kIter, recipeA.dName,
+        recipeA.gridCoords, seg.length, recipeA.dPerBlock, /*isKFirst=*/false,
+        recipeA.bidGridLengths, recipeA.cache);
     acc = BlockwiseGemmOp::create(
         bGemm, loc, loadedA, loadedB, acc, /*matrixScaleA=*/nullptr,
         /*matrixScaleB=*/nullptr, gemm.getQuantBlockSizeAttr(),
