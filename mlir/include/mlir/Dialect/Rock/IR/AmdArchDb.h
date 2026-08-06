@@ -86,6 +86,9 @@ int64_t getMinNumCU(StringRef arch);
 /// Get maximum number of chiplets per arch
 int64_t getMaxNumChiplets(StringRef arch);
 
+/// Infer the active chiplet count from the architecture and live CU count.
+int64_t inferNumChiplets(StringRef arch, int64_t numCUs);
+
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
