@@ -266,50 +266,47 @@ static bool isInductionVar(Value v, Value iv) {
   return true;
 }
 
-/// How an in-loop `transforms_to_ptr` is incrementalized across iterations.
-/// In theory, Affine candidates are always preferred over Carry candidates,
-/// since the lowering is simpler for Affine candidates. However, the Affine
-/// lowering is too simple to support all cases, so for the case where we bail
-/// out, we fall back to Carry.
-enum class CandKind {
-  /// The linearized offset is affine in the IV and the mask is loop-invariant:
-  /// carry a single integer accumulator (`base + IV*stride`).
-  Affine,
-  /// The IV flows through a non-contiguous `Merge` and/or the mask depends on
-  /// the IV: carry the merge's decomposed lower coordinates (one
-  /// `tensor<tile x i32>` each) and rebuild the offset + mask every iteration.
-  Carry,
+/// The part of the analysis both the affine and carry paths share.
+struct LoopPtrInfo {
+  TransformsToPtrOp op; // The op to be simplified
+  scf::ForOp loop;      // The loop `op` lives in
+  /// The transform chain of `op`'s source, ordered from the upper view (index
+  /// 0) down to the root buffer.
+  SmallVector<TransformMapAttr> transforms;
+  /// The positions in `op.getExtraIndices()` that hold the induction variable.
+  SmallVector<unsigned> ivPositions;
+  /// Set when some extra index is loop-variant but is not the induction
+  /// variable. The affine path tolerates this (it rewrites the base op in place
+  /// and references the index directly); the carry path cannot rebuild such an
+  /// index in the preheader.
+  bool hasLoopVariantNonIvIdx = false;
 };
 
-/// A simplification candidate: an `transforms_to_ptr` op together with the
-/// information needed to incrementalize it.
-struct Candidate {
-  CandKind kind;        // Affine or Carry
+/// An op whose linearized offset is affine in the induction variable while its
+/// mask is loop-invariant: a single integer accumulator (`base + IV*stride`)
+/// is enough to advance it.
+struct AffineCandidate {
   TransformsToPtrOp op; // The op to be simplified
-  Value rootBase;       // The block argument of the op.
-
-  // Used for Affine candidates.
   int64_t unitStride = 0;
+};
 
-  // Used for Carry candidates.
-  //
-  // The carry path decomposes the IV's merged dimension into several
-  // coordinates. For example, consider a 2D coordinate case with values (3, 2).
-  // Each coord has its own size (`coordSizes`). Every iteration, each
-  // coordinate is incremented by a constant step (`coordSteps`); when a
-  // coordinate reaches its size it wraps to 0 and carries +1 into the
-  // next-higher coordinate — done with add/cmp/select, no div/mod.
+/// An op whose induction variable flows through a `Merge` the affine path
+/// cannot linearize, and/or whose mask moves with the induction variable.
+struct CarryCandidate {
+  TransformsToPtrOp op; // The op to be simplified
+  /// The full transform chain, as in `LoopPtrInfo`.
   SmallVector<TransformMapAttr> transforms;
+  /// Index into `transforms` of the map holding the iv-traversed merge.
   unsigned mergeIdx = 0;
   SmallVector<unsigned> coordPositions; // which decomposed coords are carried
   SmallVector<int64_t> coordSizes;      // each coord's wrap limit (merge size)
   SmallVector<int64_t> coordSteps;      // per-iteration increment of each coord
 };
 
-/// Carry fallback for `analyzeCandidate`
+/// Carry fallback, tried when `analyzeAffineCandidate` bails.
 ///
 /// If the transforms_to_ptr we are analyzing is supported by our current
-/// implemetation, fill in the candidate struct and return true.
+/// implemetation, return the candidate.
 ///
 /// If we bail, it can be for 2 main reasons:
 /// 1. Fundamentally we cannot handle this case: For example, if
@@ -319,17 +316,25 @@ struct Candidate {
 /// supporting more cases would actually improve performance, since the carry
 /// path on complex IRs can potentially make things worse due to register
 /// pressure.
-static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
-                                  ArrayRef<unsigned> ivPositions,
-                                  ArrayRef<TransformMapAttr> transforms,
-                                  Value root, Candidate &cand) {
+static FailureOr<CarryCandidate>
+analyzeCarryCandidate(const LoopPtrInfo &info) {
+  TransformsToPtrOp op = info.op;
+  ArrayRef<unsigned> ivPositions = info.ivPositions;
+  ArrayRef<TransformMapAttr> transforms = info.transforms;
   auto bail = [&](const char *reason) {
     LLVM_DEBUG(llvm::dbgs() << "[analyzeCarryCandidate] skip " << op.getLoc()
                             << ": " << reason << "\n");
-    return false;
+    return failure();
   };
 
-  // analyzeCandidate allows multiple extraIndices positions to be classified
+  // Unlike the affine path, the carry path cannot reference a loop-variant
+  // non-iv index directly: `cloneSliceBeforeLoop` would have to rebuild it in
+  // the preheader, where it does not exist yet.
+  if (info.hasLoopVariantNonIvIdx)
+    return bail("an extra index is loop-variant but is not the IV (carry path "
+                "cannot rebuild it in the preheader)");
+
+  // analyzeLoopPointer allows multiple extraIndices positions to be classified
   // as the loop IV, whereas analyzeCarryCandidate only records one merge.
   // If the same IV affects another coordinate path outside that merge,
   // the carry rewrite pins all IV indices to lb and then only carries
@@ -403,6 +408,7 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
 
   // The per-iteration merged diff must be a compile-time constant, so the loop
   // step must be constant.
+  scf::ForOp loop = info.loop;
   std::optional<APInt> stepAP = loop.getConstantStep();
   if (!stepAP)
     return bail("loop step is not a compile time constant");
@@ -416,26 +422,54 @@ static bool analyzeCarryCandidate(TransformsToPtrOp op, scf::ForOp loop,
   if (D <= 0)
     return bail("non-positive merged per-iteration diff");
 
-  cand.kind = CandKind::Carry;
+  CarryCandidate cand;
   cand.op = op;
-  cand.rootBase = root;
   cand.transforms.assign(transforms.begin(), transforms.end());
   cand.mergeIdx = static_cast<unsigned>(mergeIdx);
   cand.coordPositions.assign(mergeOp.getLowerDims().begin(),
                              mergeOp.getLowerDims().end());
   cand.coordSizes.assign(mergeParams.begin(), mergeParams.end());
   cand.coordSteps = delinearize(D, computeSuffixProduct(mergeParams));
-  return true;
+  return cand;
 }
 
-/// Decide whether the passed transforms_to_ptr op can be incrementalized, and
-/// how (affine accumulator vs. carried coordinates).
-static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
-                             Candidate &cand) {
+/// Affine path: the mask does not depend on the IV and the offset can be
+/// incremented by a single constant per iteration.
+static FailureOr<AffineCandidate>
+analyzeAffineCandidate(const LoopPtrInfo &info) {
+  TransformsToPtrOp op = info.op;
   auto bail = [&](const char *reason) {
-    LLVM_DEBUG(llvm::dbgs() << "[analyzeCandidate] skip " << op.getLoc() << ": "
-                            << reason << "\n");
-    return false;
+    LLVM_DEBUG(llvm::dbgs() << "[analyzeAffineCandidate] skip " << op.getLoc()
+                            << ": " << reason << "\n");
+    return failure();
+  };
+
+  if (validityDependsOnAnyDim(info.transforms, info.ivPositions))
+    return bail("the validity mask depends on the iv");
+
+  DenseMap<unsigned, int64_t> ivDiff;
+  for (unsigned p : info.ivPositions)
+    ivDiff[p] = 1;
+  FailureOr<int64_t> stride = linearizedDiffStride(info.transforms, ivDiff);
+  if (failed(stride))
+    return bail("the offset has no single constant per-iteration stride");
+  if (*stride == 0)
+    return bail("the offset does not change with the iv");
+
+  AffineCandidate cand;
+  cand.op = op;
+  cand.unitStride = *stride;
+  return cand;
+}
+
+/// Collect what both incrementalization paths need from an in-loop
+/// transforms_to_ptr op, or fail if the op is no candidate at all.
+static FailureOr<LoopPtrInfo> analyzeLoopPointer(TransformsToPtrOp op,
+                                                 scf::ForOp loop) {
+  auto bail = [&](const char *reason) {
+    LLVM_DEBUG(llvm::dbgs() << "[analyzeLoopPointer] skip " << op.getLoc()
+                            << ": " << reason << "\n");
+    return failure();
   };
 
   if (op->getBlock() != loop.getBody())
@@ -447,64 +481,34 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
     return bail("loop does not have exactly one induction variable");
   Value iv = *maybeIv;
 
+  LoopPtrInfo info;
+  info.op = op;
+  info.loop = loop;
+
   // Classify each transforms_to_ptr index as the loop iv (which we
   // incrementalize), loop-invariant (referenced directly), or loop-variant but
   // not the iv. The last kind is only tracked here, not rejected: the affine
-  // path handles it (it rewrites the base op in place and references the index
-  // directly), while the carry path cannot and bails on it below. If no index
-  // is the iv the pointer is already loop-invariant and there is nothing to do.
+  // path handles it, while the carry path bails on it. If no index is the iv
+  // the pointer is already loop-invariant and there is nothing to do.
   ValueRange extra = op.getExtraIndices();
-  SmallVector<unsigned> ivPositions;
-  bool hasLoopVariantNonIvIdx = false;
   for (auto [pos, idx] : llvm::enumerate(extra)) {
     if (isInductionVar(idx, iv)) {
-      ivPositions.push_back(pos);
+      info.ivPositions.push_back(pos);
       continue;
     }
     if (!loop.isDefinedOutsideOfLoop(idx))
-      hasLoopVariantNonIvIdx = true;
+      info.hasLoopVariantNonIvIdx = true;
   }
-  if (ivPositions.empty())
+  if (info.ivPositions.empty())
     return bail("pointer does not depend on the iv (there is nothing to do)");
 
   // Walk the transform chain down to its root.
-  SmallVector<TransformMapAttr> transforms;
   Value root;
-  std::tie(root, std::ignore) = untransform(op.getSource(), transforms);
+  std::tie(root, std::ignore) = untransform(op.getSource(), info.transforms);
   if (!isa<BlockArgument>(root))
     return bail("transform chain root is not a block argument");
-  cand.rootBase = root;
 
-  // Affine path: the mask does not depend on the IV and the offset can be
-  // incremented by a single constant per iteration. An IV-independent mask is
-  // loop-invariant, so it can be computed once before the loop and reused.
-  if (!validityDependsOnAnyDim(transforms, ivPositions)) {
-    DenseMap<unsigned, int64_t> ivDiff;
-    for (unsigned p : ivPositions)
-      ivDiff[p] = 1;
-    FailureOr<int64_t> stride = linearizedDiffStride(transforms, ivDiff);
-    if (succeeded(stride) && *stride != 0) {
-      cand.kind = CandKind::Affine;
-      cand.op = op;
-      cand.unitStride = *stride;
-      return true;
-    }
-  }
-
-  // Carry fallback: the IV flows through a non-contiguous Merge and/or the mask
-  // depends on the IV. Carry the merge's decomposed coordinates instead.
-  //
-  // Unlike the affine path (which rewrites the base op in place and can
-  // reference a loop-variant non-iv index directly), the carry path
-  // cannot handle this case via cloneSliceBeforeLoop implementation, so we
-  // bail.
-  if (hasLoopVariantNonIvIdx)
-    return bail("an extra index is loop-variant but is not the IV (carry path "
-                "cannot rebuild it in the preheader)");
-  if (analyzeCarryCandidate(op, loop, ivPositions, transforms, root, cand))
-    return true;
-
-  return bail("offset is not affine and no carry decomposition applies");
+  return info;
 }
 
 /// Clone, just before `loop`, the in-loop ops that define `v`, so that `v`
@@ -518,7 +522,7 @@ static Value cloneSliceBeforeLoop(OpBuilder &b, Value v, scf::ForOp loop,
     return v;
   Operation *def = v.getDefiningOp();
   assert(def && "loop-defined value without a defining op should be the iv, "
-                "which is excluded by analyzeCandidate");
+                "which is excluded by analyzeLoopPointer");
   for (Value operand : def->getOperands())
     cloneSliceBeforeLoop(b, operand, loop, map);
   // clone() remaps operands via `map` and records result mappings into `map`.
@@ -678,7 +682,8 @@ struct Reduced {
 /// op's per-element tile; the tail is a uniform scalar splat onto it. The
 /// resulting `addi(basePtr, splat)` is the "base pointer + integer offset"
 /// shape RockToTTIR/TensorToTritonPtr lower to a tt.addptr.
-static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
+static void simplifyAffineCandidate(const AffineCandidate &cand, Value iv,
+                                    Value lb) {
   TransformsToPtrOp op = cand.op;
   OpBuilder b(op);
   Location loc = op.getLoc();
@@ -714,43 +719,50 @@ static void simplifyAffineCandidate(Candidate &cand, Value iv, Value lb) {
 }
 
 static bool simplifyCarryCandidates(scf::ForOp loop,
-                                    MutableArrayRef<Candidate> carryCands);
+                                    ArrayRef<CarryCandidate> carryCands);
 
 /// Simplify all eligible transforms_to_ptr ops in `loop`: Affine candidates are
 /// rewritten in place, Carry candidates get loop-carried coordinate state.
 /// Returns true if the IR was changed.
 static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
-  SmallVector<Candidate, 0> candidates;
+  // The affine path is always preferred over the carry path: its rewrite is
+  // cheaper (one scalar accumulator rather than loop-carried coordinate tiles).
+  // The carry path is therefore only tried for the ops whose address and mask
+  // arithmetic the affine path cannot express.
+  SmallVector<AffineCandidate, 0> affineCands;
+  SmallVector<CarryCandidate, 0> carryCands;
   for (Operation &o : loop.getBody()->without_terminator()) {
-    if (auto tp = dyn_cast<TransformsToPtrOp>(&o)) {
-      Candidate cand;
-      if (analyzeCandidate(tp, loop, cand))
-        candidates.push_back(cand);
+    auto tp = dyn_cast<TransformsToPtrOp>(&o);
+    if (!tp)
+      continue;
+    FailureOr<LoopPtrInfo> info = analyzeLoopPointer(tp, loop);
+    if (failed(info))
+      continue;
+    if (FailureOr<AffineCandidate> affine = analyzeAffineCandidate(*info);
+        succeeded(affine)) {
+      affineCands.push_back(std::move(*affine));
+      continue;
     }
+    if (FailureOr<CarryCandidate> carry = analyzeCarryCandidate(*info);
+        succeeded(carry))
+      carryCands.push_back(std::move(*carry));
   }
-  if (candidates.empty()) {
+
+  if (affineCands.empty() && carryCands.empty()) {
     LLVM_DEBUG(llvm::dbgs()
                << "No candidates to simplify, skip " << loop.getLoc() << "\n");
     return false;
   }
 
+  // Affine candidates are rewritten in place; Carry candidates need
+  // loop-carried coordinate state, so they are handled together by
+  // simplifyCarryCandidates (they share one rewrite of the loop).
   Value iv = loop.getInductionVar();
   Value lb = loop.getLowerBound();
+  for (const AffineCandidate &cand : affineCands)
+    simplifyAffineCandidate(cand, iv, lb);
 
-  // Affine candidates are rewritten in place; Carry candidates need
-  // loop-carried coordinate state, so they are collected here and handled by
-  // simplifyCarryCandidates.
-  SmallVector<Candidate, 0> carryCands;
-  bool changed = false;
-  for (Candidate &cand : candidates) {
-    if (cand.kind == CandKind::Affine) {
-      simplifyAffineCandidate(cand, iv, lb);
-      changed = true;
-    } else {
-      carryCands.push_back(cand);
-    }
-  }
-
+  bool changed = !affineCands.empty();
   if (!carryCands.empty() && simplifyCarryCandidates(loop, carryCands))
     changed = true;
 
@@ -765,7 +777,7 @@ static bool trySimplifyTransformsCandidates(scf::ForOp loop) {
 /// rock-transforms-to-pointer-arith).
 static SmallVector<Reduced, 0>
 buildReducedCarries(OpBuilder &b, scf::ForOp loop,
-                    MutableArrayRef<Candidate> carryCands) {
+                    ArrayRef<CarryCandidate> carryCands) {
   Location loc = loop.getLoc();
   Value iv = loop.getInductionVar();
   Value lb = loop.getLowerBound();
@@ -773,7 +785,9 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
   // Build each carry candidate's iter_arg initial values before the loop (as
   // SSA requires): the merge's decomposed coordinates at iv == lb.
   SmallVector<Reduced, 0> reduced;
-  for (Candidate &cand : carryCands) {
+  for (const CarryCandidate &cand : carryCands) {
+    TransformsToPtrOp op = cand.op;
+
     // Builds the transform chain below (after) the merge.
     // Note that cand.transforms is the full chain and cand.mergeIdx is the
     // index of the map containing the merge the IV flows through, so
@@ -850,16 +864,16 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
     // Pin the iv to lb: an index that is the iv (or a cast of it, e.g.
     // index_cast(iv) for an index-typed loop) is re-expressed at lb, while
     // loop-invariant indices are referenced directly. Loop-variant non-iv
-    // indices were already rejected by analyzeCandidate, so this only clones
-    // iv casts into the preheader.
+    // indices were already rejected by analyzeCarryCandidate, so this only
+    // clones iv casts into the preheader.
     IRMapping cloneMap;
     cloneMap.map(iv, lb);
-    Value srcPre = cloneSliceBeforeLoop(b, cand.op.getSource(), loop, cloneMap);
+    Value srcPre = cloneSliceBeforeLoop(b, op.getSource(), loop, cloneMap);
     SmallVector<Value> baseIdx;
-    for (Value idx : cand.op.getExtraIndices())
+    for (Value idx : op.getExtraIndices())
       baseIdx.push_back(cloneSliceBeforeLoop(b, idx, loop, cloneMap));
 
-    auto ptrType = cast<RankedTensorType>(cand.op.getPointers().getType());
+    auto ptrType = cast<RankedTensorType>(op.getPointers().getType());
     ArrayRef<int64_t> outShape = ptrType.getShape();
     // Offset element width (i32 or i64), matching the op's inferred pointer
     // result type. All coordinate arithmetic below is produced in this width.
@@ -887,9 +901,9 @@ buildReducedCarries(OpBuilder &b, scf::ForOp loop,
       continue;
 
     Reduced r;
-    r.op = cand.op;
+    r.op = op;
     r.ptrType = ptrType;
-    r.maskType = cand.op.getMask().getType();
+    r.maskType = op.getMask().getType();
     r.iter0Coords = *iter0;
     r.coordPositions = cand.coordPositions;
     r.coordSizes = cand.coordSizes;
@@ -968,7 +982,7 @@ static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
 /// new loop that carries the merge's decomposed coordinate state via the
 /// full-tile pointer recurrence. Returns true if the candidates were rewritten.
 static bool simplifyCarryCandidates(scf::ForOp loop,
-                                    MutableArrayRef<Candidate> carryCands) {
+                                    ArrayRef<CarryCandidate> carryCands) {
   Location loc = loop.getLoc();
   OpBuilder b(loop);
 
