@@ -573,20 +573,19 @@ static LogicalResult commonAttentionGemmElmtGemm(
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
 
-  a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m,
-                                "gemm0K", gemm0ExtraPad.k);
-  b = padMatrixForTileAlignment(b, rw, loc, "gemm0K", gemm0ExtraPad.k,
-                                "gemm0N", gemm0ExtraPad.n);
-  c = padMatrixForTileAlignment(c, rw, loc, "gemm1K", gemm1ExtraPad.k,
-                                "gemm1N", gemm1ExtraPad.n);
+  a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
+                                gemm0ExtraPad.k);
+  b = padMatrixForTileAlignment(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
+                                gemm0ExtraPad.n);
+  c = padMatrixForTileAlignment(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
+                                gemm1ExtraPad.n);
   transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
     return padMatrixForTileAlignment(v, rw, loc, "gemm1M", gemm1ExtraPad.m,
                                      "gemm1N", gemm1ExtraPad.n);
   });
   if (hasLse) {
     transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
-      return padVectorForTileAlignment(v, rw, loc, "gemm1M",
-                                       gemm1ExtraPad.m);
+      return padVectorForTileAlignment(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
     });
   }
 
