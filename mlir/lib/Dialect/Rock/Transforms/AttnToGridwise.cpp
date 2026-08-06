@@ -585,7 +585,8 @@ static LogicalResult commonAttentionGemmElmtGemm(
   });
   if (hasLse) {
     transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
-      return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
+      return padVectorForTileAlignment(v, rw, loc, "gemm1M",
+                                       gemm1ExtraPad.m);
     });
   }
 

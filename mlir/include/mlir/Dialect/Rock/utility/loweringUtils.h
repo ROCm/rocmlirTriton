@@ -114,9 +114,12 @@ Value padMatrixForTileAlignment(Value matrix, OpBuilder &b, Location loc,
                                 StringRef firstDim, int64_t firstDimPad,
                                 StringRef secondDim, int64_t secondDimPad);
 
-// Apply padding to a vector in its `firstDim` if applicable.
-Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,
-                int64_t firstDimPad);
+/// Apply tile-alignment padding to a vector in its `firstDim` if applicable.
+/// Use this only for padding introduced to satisfy tile alignment constraints;
+/// it marks the padding as tile alignment and must not be used for
+/// semantic/user-requested padding, such as rocmlir-gen `--padding_h N`.
+Value padVectorForTileAlignment(Value vector, OpBuilder &b, Location loc,
+                                StringRef firstDim, int64_t firstDimPad);
 
 /// Normalize the argument into the form requested.
 /// If a group dimension is not present, add one.

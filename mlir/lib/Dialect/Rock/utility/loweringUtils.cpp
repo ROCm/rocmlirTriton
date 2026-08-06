@@ -262,8 +262,13 @@ Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
   return TransformOp::create(b, loc, matrix, normalizeAttr);
 }
 
-Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
-                            StringRef firstDim, int64_t firstDimPad) {
+/// Apply tile-alignment padding to a vector in its `firstDim` if applicable.
+/// Use this only for padding introduced to satisfy tile alignment constraints;
+/// it marks the padding as tile alignment and must not be used for
+/// semantic/user-requested padding, such as rocmlir-gen `--padding_h N`.
+Value mlir::rock::padVectorForTileAlignment(Value vector, OpBuilder &b,
+                                            Location loc, StringRef firstDim,
+                                            int64_t firstDimPad) {
   if (firstDimPad == 0)
     return vector;
   OpBuilder::InsertionGuard guard(b);
