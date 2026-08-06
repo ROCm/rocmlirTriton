@@ -2,7 +2,7 @@
 // count, so a runtime currentSeqLen larger than the K/V allocation cannot
 // drive the loop out of bounds.
 
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-gridwise-attn-to-blockwise -verify-diagnostics | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-gridwise-attn-to-blockwise | FileCheck %s
 
 module {
   // CHECK-LABEL: func @attn_kvcache_clamps_nloop

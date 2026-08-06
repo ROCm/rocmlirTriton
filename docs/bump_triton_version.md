@@ -303,13 +303,13 @@ pm->addNestedPass<mlir::triton::FuncOp>(
 `GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
 static K/V block count. This is a workaround for an LLVM AMDGPU raw-buffer
 bounds-checking bug that can make an out-of-contract `currentSeqLen` read past
-the K/V allocation.
+the K/V allocation. The LLVM issue is tracked by ROCM-28757.
 
 On every LLVM bump, check whether the new pinned LLVM revision contains the
 upstream fix and whether the workaround is still necessary. Do not remove the
 clamp based only on the revision change: also verify the behavior with
 `gridwise-attention-kvcache-clamp.mlir` and
-`mixr-attention-kvcache-oob.mlir`.
+`mixr-attention-kvcache.mlir`.
 
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 

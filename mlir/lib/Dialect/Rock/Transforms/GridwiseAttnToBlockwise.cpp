@@ -585,10 +585,7 @@ struct GridwiseAttentionRewritePattern
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
 
-    bool hasCausalBound = isCausal || isPrefixCausal;
-    if (hasCausalBound || isKVCache) {
-      assert((!isPrefixCausal || isCausal) &&
-             "isPrefixCausal requires isCausal");
+    if (isCausal || isKVCache) {
 
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
@@ -601,7 +598,7 @@ struct GridwiseAttentionRewritePattern
       if (isKVCache)
         currentSeqLen = loadTensorValue(currentSeqLenTensor);
 
-      if (hasCausalBound) {
+      if (isCausal) {
         // Compute the last Q position in the block.
         // (mIndex + 1) * MPerBlock - 1.
         Value mIndex = gridCoordsGemm0.m_block;
