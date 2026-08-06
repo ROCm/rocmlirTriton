@@ -40,9 +40,6 @@ os.environ["GPU_ENABLE_WGP_MODE"] = "1"
 
 from hip import hip  # noqa: E402
 
-# Split-K parameter index in perfconfig
-SPLITK_IDX = 7
-
 # global variables.
 # Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
 # instead of assuming the system path at /opt/rocm.
