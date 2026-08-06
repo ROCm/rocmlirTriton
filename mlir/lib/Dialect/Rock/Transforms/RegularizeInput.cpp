@@ -293,7 +293,7 @@ analyzeNarrowBroadcastLoads(OpBuilder &builder, LoadMarkerOp markerOp,
 
     // Narrowing reconstructs the full tile with Triton expand/broadcast ops.
     // Skip types outside TT_Tensor, which those ops reject.
-    if (!isTTFloat(leafElementType) && !isa<IntegerType>(leafElementType))
+    if (!isTTFloat(leafElementType) && !isTTInt(leafElementType))
       continue;
 
     SmallVector<RemovableTileAxis> removableAxes =

@@ -63,6 +63,24 @@ bool isTTFloat(Type t) {
              Float64Type>(t);
 }
 
+// Keep in sync with TT_Int in TritonTypes.td.
+bool isTTInt(Type t) {
+  auto intType = dyn_cast<IntegerType>(t);
+  if (!intType || !intType.isSignless())
+    return false;
+  switch (intType.getWidth()) {
+  case 1:
+  case 4:
+  case 8:
+  case 16:
+  case 32:
+  case 64:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Keep in sync with AccelerateAMDMatmul.cpp::mlirTypeToScaledElemType()
 // Extended with BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
