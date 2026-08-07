@@ -502,10 +502,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   auto &funcPm2 = pm.nest<func::FuncOp>();
   funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
-  // ReduceBlockwiseAtomics must run before LowerBlockwiseToPtr, which replaces
-  // the destination transform chain this pass analyzes with a pointer and mask
-  // tensor.
-  funcPm2.addPass(rock::createRockReduceBlockwiseAtomicsPass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform

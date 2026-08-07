@@ -69,7 +69,6 @@
 // GPU-NEXT:f8E8M0FNU} target-type=f32},
 // GPU-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false include-min-max-f=false include-min-max-i=false},
 // GPU-NEXT:func.func(rock-analyze-memory-use,
-// GPU-NEXT:rock-reduce-blockwise-atomics,
 // GPU-NEXT:rock-lower-blockwise-to-ptr,
 // GPU-NEXT:rock-preserve-masked-load-semantics,
 // GPU-NEXT:rock-collapse-contiguous-merges,
