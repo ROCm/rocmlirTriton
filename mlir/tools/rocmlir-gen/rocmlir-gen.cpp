@@ -597,7 +597,8 @@ static llvm::cl::opt<int64_t> slidingWindowSize(
     llvm::cl::desc(
         "Maximum look-back distance from current_seq_len. Includes the current "
         "KV-cache position, so up to sliding_window_size + 1 key positions are "
-        "attended to. Requires current_seq_len."),
+        "attended to. If current_seq_len is omitted, it defaults to "
+        "seq_len_k - 1."),
     llvm::cl::value_desc("non-negative integer (0 disables)"),
     llvm::cl::init(0));
 
@@ -1276,8 +1277,7 @@ static LogicalResult detectMissingArguments() {
       return failure();
     }
     // Sliding-window masking is defined relative to the KV-cache position, so
-    // the Rock verifier requires currentSeqLen. Reject the combination here
-    // instead of emitting IR that fails verification downstream.
+    // the Rock verifier requires currentSeqLen.
     // The flag's contract is "positive integer, 0 disables". A negative value
     // is a user error that would otherwise slip through silently, since every
     // downstream use is gated on `slidingWindowSize > 0`.
@@ -1292,11 +1292,6 @@ static LogicalResult detectMissingArguments() {
         llvm::errs() << "sliding_window_size must fit in a 32-bit integer\n";
         return failure();
       }
-      if (currentSeqLen.empty()) {
-        llvm::errs()
-            << "sliding_window_size requires current_seq_len to be set\n";
-        return failure();
-      }
       // The Rock verifier rejects a window larger than the key sequence length
       // ("slidingWindowSize must not exceed max sequence length"). Reject it
       // here too so the driver reports a clear error instead of emitting IR
@@ -1305,6 +1300,13 @@ static LogicalResult detectMissingArguments() {
         llvm::errs() << "sliding_window_size must not exceed seq_len_k\n";
         return failure();
       }
+      // currentSeqLen is runtime data and therefore is not part of the tuning
+      // problem key. When a serialized tuning problem is reconstructed by
+      // tuningRunner, use the full-cache position, matching the existing
+      // split-KV default in computeValidSplitKV().
+      if (currentSeqLen.empty())
+        for (int64_t i = 0; i < groupSize; ++i)
+          currentSeqLen.push_back(sequenceLengthK - 1);
     }
   }
 

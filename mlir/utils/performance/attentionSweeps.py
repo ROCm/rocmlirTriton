@@ -202,11 +202,12 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     # the ``seqlen_k_lo`` block above guarantees this range is non-empty.
     current_seqlen = ([rng.randint(1, seqlen_k - 1) for _ in range(g)] if use_kvcache else None)
 
-    # Runtime sliding-window masking requires ``current_seqlen`` (KV-cache mode)
-    # and, per the rock.attention verifier, must be positive and must not exceed
-    # the max sequence length (``seqlen_k``). Leave it disabled (0) otherwise, and
-    # disable it half the time even in KV-cache mode so the sweep still covers the
-    # plain KV-cache path.
+    # Sweeps use an explicit ``current_seqlen`` for runtime sliding-window
+    # masking. Reconstructed tuning keys may instead use rocmlir-gen's
+    # full-cache default. The window must be positive and must not exceed the
+    # max sequence length (``seqlen_k``). Leave it disabled (0) otherwise, and
+    # disable it half the time even in KV-cache mode so the sweep still covers
+    # the plain KV-cache path.
     sliding_window_size = (rng.randint(1, seqlen_k)
                            if use_kvcache and rng.choice([True, False]) else 0)
 

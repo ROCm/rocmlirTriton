@@ -1719,9 +1719,9 @@ class AttentionConfiguration(PerfConfiguration):
         self.causal = causal
         self.return_lse = return_lse
         self.split_kv = split_kv
-        # Runtime sliding-window key span; 0 means disabled. Only meaningful in
-        # KV-cache mode (requires ``current_seqlen``), matching the rock.attention
-        # ``slidingWindowSize`` verifier.
+        # Runtime sliding-window key span; 0 means disabled. rocmlir-gen uses
+        # seq_len_k - 1 for every group when current_seqlen is absent, allowing
+        # serialized tuning problems to use the full-cache position.
         self.sliding_window_size = sliding_window_size
         # Only set in KV-cache mode (seq_len_q == 1). Emitted as
         # ``-current_seq_len=...`` by generate_mlir_driver_commandline(), which
