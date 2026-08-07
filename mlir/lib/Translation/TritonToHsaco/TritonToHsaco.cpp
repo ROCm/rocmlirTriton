@@ -41,6 +41,7 @@
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
 #include "llvm/IR/Attributes.h"
@@ -113,6 +114,16 @@ void runScalarizePackedFOpsPass(llvm::Function &F);
 using namespace mlir;
 
 namespace {
+
+#include "TritonAmdDeviceLibs.cpp.inc"
+
+struct EmbeddedDeviceLibrary {
+  StringRef filename;
+  StringRef symbolPrefix;
+};
+
+constexpr std::array<EmbeddedDeviceLibrary, 2> embeddedDeviceLibraries = {
+    {{"ocml.bc", "__ocml_"}, {"ockl.bc", "__ockl_"}}};
 
 //===----------------------------------------------------------------------===//
 // Helper functions
@@ -386,45 +397,93 @@ bool hasArchitectedSGPRs(llvm::Triple &triple, StringRef archStr) {
   return sti && sti->checkFeatures("+architected-sgprs");
 }
 
-/// Link external device libraries (ocml, ockl, etc.)
-bool linkExternLibs(llvm::Module &module,
-                    const std::vector<std::string> &paths) {
-  if (paths.empty())
-    return true;
-
-  llvm::LLVMContext &ctx = module.getContext();
+bool linkDeviceLibraryModule(llvm::Module &module,
+                             std::unique_ptr<llvm::Module> libMod,
+                             StringRef identifier) {
   llvm::Linker linker(module);
 
+  libMod->setTargetTriple(llvm::Triple(module.getTargetTriple()));
+  libMod->setDataLayout(module.getDataLayout());
+
+  std::unordered_set<std::string> externalFns;
+  for (llvm::Function &fn : libMod->functions()) {
+    if (!fn.isDeclaration())
+      externalFns.insert(fn.getName().str());
+  }
+
+  if (linker.linkInModule(std::move(libMod),
+                          llvm::Linker::Flags::LinkOnlyNeeded)) {
+    llvm::errs() << "Failed to link library " << identifier << "\n";
+    return false;
+  }
+
+  // Mark linked-in functions as internal
+  for (llvm::Function &fn : module.functions()) {
+    if (externalFns.count(fn.getName().str())) {
+      fn.setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
+  }
+  return true;
+}
+
+/// Link external device libraries supplied explicitly by a caller.
+bool linkExternalDeviceLibraries(llvm::Module &module,
+                                 const std::vector<std::string> &paths) {
   for (const std::string &path : paths) {
     llvm::SMDiagnostic err;
-    std::unique_ptr<llvm::Module> libMod = llvm::parseIRFile(path, err, ctx);
+    std::unique_ptr<llvm::Module> libMod =
+        llvm::parseIRFile(path, err, module.getContext());
     if (!libMod) {
       llvm::errs() << "Failed to parse library at " << path << "\n";
       return false;
     }
-    libMod->setTargetTriple(llvm::Triple(module.getTargetTriple()));
-    libMod->setDataLayout(module.getDataLayout());
-
-    std::unordered_set<std::string> externalFns;
-    for (llvm::Function &fn : libMod->functions()) {
-      if (!fn.isDeclaration())
-        externalFns.insert(fn.getName().str());
-    }
-
-    if (linker.linkInModule(std::move(libMod),
-                            llvm::Linker::Flags::LinkOnlyNeeded)) {
-      llvm::errs() << "Failed to link library at " << path << "\n";
+    if (!linkDeviceLibraryModule(module, std::move(libMod), path))
       return false;
-    }
-
-    // Mark linked-in functions as internal
-    for (llvm::Function &fn : module.functions()) {
-      if (externalFns.count(fn.getName().str())) {
-        fn.setLinkage(llvm::GlobalValue::InternalLinkage);
-      }
-    }
   }
   return true;
+}
+
+/// Link an embedded Triton device library directly from the host binary.
+bool linkEmbeddedDeviceLibrary(llvm::Module &module, StringRef filename) {
+  const llvm::StringMap<StringRef> &libraries = getDeviceLibraries();
+  auto library = libraries.find(filename);
+  if (library == libraries.end()) {
+    llvm::errs() << "Packaged AMD device library is missing: " << filename
+                 << "\n";
+    return false;
+  }
+
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(
+      library->getValue(), filename, /*RequiresNullTerminator=*/false);
+  llvm::SMDiagnostic err;
+  std::unique_ptr<llvm::Module> libMod =
+      llvm::getLazyIRModule(std::move(buffer), err, module.getContext());
+  if (!libMod) {
+    llvm::errs() << "Failed to parse packaged AMD device library " << filename
+                 << ": " << err.getMessage() << "\n";
+    return false;
+  }
+  return linkDeviceLibraryModule(module, std::move(libMod), filename);
+}
+
+bool validateDeviceLibSymbols(llvm::Module &module) {
+  bool valid = true;
+  for (llvm::GlobalValue &value : module.global_values()) {
+    if (!value.isDeclaration() || value.use_empty())
+      continue;
+    StringRef name = value.getName();
+    bool isDeviceLibSymbol =
+        name.starts_with("__oclc_") ||
+        llvm::any_of(embeddedDeviceLibraries, [&](const auto &library) {
+          return name.starts_with(library.symbolPrefix);
+        });
+    if (isDeviceLibSymbol) {
+      llvm::errs() << "Unresolved AMD device library symbol after linking: "
+                   << name << "\n";
+      valid = false;
+    }
+  }
+  return valid;
 }
 
 static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
@@ -850,47 +909,29 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                       numCTAs, options.allowFlushDenorm, enableAsan,
                       enableExpertScheduling, options.llvmFnAttrs);
 
-  // Link external device libraries (ocml.bc, ockl.bc, asanrtl.bc, etc.)
-  // compiler.py lines 412-423
-  // Auto-detect needed libraries by scanning for unresolved __ocml_/__ockl_
-  // references (same logic as need_extern_lib in triton_amd.cc).
-  std::vector<std::string> libPaths = options.externLibPaths;
-  {
-    auto needsLib = [&](StringRef libName) -> bool {
-      for (llvm::Function &f : *llvmModule) {
-        if (f.hasExternalLinkage() && f.hasName() && !f.hasExactDefinition()) {
-          if (f.getName().contains(libName))
-            return true;
-        }
-      }
-      return false;
-    };
-    // Triton bundles device libraries alongside its backend Python code.
-    // Use that path first, fall back to the ROCm system path.
-    std::array<std::string, 2> searchDirs = {
-        TRITON_AMD_BACKEND_LIB_DIR, // from CMake:
-                                    // triton/third_party/amd/backend/lib
-        "/opt/rocm/amdgcn/bitcode"  // system fallback
-    };
-    for (const char *lib : {"ocml", "ockl"}) {
-      if (!needsLib(lib))
-        continue;
-      std::string filename = std::string(lib) + ".bc";
-      for (const std::string &dir : searchDirs) {
-        std::string path = dir + "/" + filename;
-        if (llvm::sys::fs::exists(path)) {
-          libPaths.push_back(path);
-          break;
-        }
-      }
-    }
-  }
-  if (!libPaths.empty()) {
-    if (!linkExternLibs(*llvmModule, libPaths)) {
-      llvm::errs() << "Failed to link external libraries\n";
+  // Preserve explicit caller-provided libraries, then satisfy any remaining
+  // OCML/OCKL references from the copies packaged into rockCompiler.
+  if (!options.externLibPaths.empty()) {
+    if (!linkExternalDeviceLibraries(*llvmModule, options.externLibPaths)) {
+      llvm::errs() << "Failed to link caller-provided external libraries\n";
       return failure();
     }
   }
+
+  auto needsLib = [&](StringRef prefix) -> bool {
+    return llvm::any_of(llvmModule->functions(), [&](llvm::Function &fn) {
+      return fn.hasExternalLinkage() && !fn.hasExactDefinition() &&
+             !fn.use_empty() && fn.getName().starts_with(prefix);
+    });
+  };
+  for (const EmbeddedDeviceLibrary &library : embeddedDeviceLibraries) {
+    if (needsLib(library.symbolPrefix) &&
+        !linkEmbeddedDeviceLibrary(*llvmModule, library.filename))
+      return failure();
+  }
+
+  if (!validateDeviceLibSymbols(*llvmModule))
+    return failure();
 
   std::optional<llvm::OptimizationLevel> optLevel =
       mapToLevel(options.optLevel);
