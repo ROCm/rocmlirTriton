@@ -24,7 +24,7 @@ final int GIT_SCM_TIMEOUT_MINUTES = 120
 // Run `script` under bash with pipefail, so a failing command is not masked by
 // the exit code of a later pipe stage such as `tee`. Plain `sh` has no pipefail.
 def shStrict(String script) {
-    sh "#!/bin/bash\nset -eo pipefail\n${script}"
+    sh "#!/bin/bash\nset -exo pipefail\n${script}"
 }
 
 void buildProject(String target, String cmakeOpts) {
@@ -1411,13 +1411,7 @@ pipeline {
                                                         echo "Container environment:"
                                                         showEnv()
                                                         setHeartbeat()
-                                                        timeout(time: 120, activity: true, unit: 'MINUTES') {
-                                                            sh '''
-                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh
-                                                            '''
-                                                        }
+                                                        buildProject('check-rocmlir-build-only ci-performance-scripts', '')
                                                     }
 
                                                     stage("Parameter Sweep") {
@@ -1511,13 +1505,7 @@ pipeline {
                                                     }
 
                                                     stage("Tune rocMLIR") {
-                                                        timeout(time: 120, activity: true, unit: 'MINUTES') {
-                                                            sh '''
-                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh
-                                                            '''
-                                                        }
+                                                        buildProject('check-rocmlir-build-only ci-performance-scripts', '')
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
                                                             shStrict """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
