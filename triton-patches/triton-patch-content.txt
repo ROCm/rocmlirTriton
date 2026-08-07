@@ -92,7 +92,8 @@ patch-gfx1170.patch
   is_in_thread_transpose_enabled and adds RDNA3/gfx1170 lit coverage. Carries
   TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, fp8 dot4 in
   DotOpToLLVM/FMA, i4 WMMA) documenting latent perf gaps that are correct via
-  the software/upcast fallback today.
+  the software/upcast fallback today. The WMMA v2 conversion regression covers
+  all four OCP fp8/bf8 operand combinations and their exact LLVM intrinsics.
 
   Drop this patch on the next Triton bump that pulls gfx1170 support upstream
   into external/triton.

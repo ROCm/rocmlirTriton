@@ -29,6 +29,8 @@ set(GEN_MODE "-s")
 if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
     PrGemm
+    PrGemmFp8
+    PrConvFp8
     PrGemmNonPowerOfTwoTileSize
     PrConvNonPowerOfTwoTileSize
     PrGemmScaled
