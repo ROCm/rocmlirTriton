@@ -22,6 +22,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
@@ -255,11 +257,17 @@ struct RockBlockwiseGemmOpRewritePattern
                                            bElemTy.value(), /*fastMath=*/false,
                                            matrixAKPack, matrixBKPack);
     } else {
+      // On arches where the 3xBF16 decomposition pays off, route f32 dots
+      // through bf16 MFMA rather than IEEE MFMA.
+      auto inputPrecision = triton::InputPrecision::IEEE;
+      if (aTensorType.getElementType().isF32() &&
+          bTensorType.getElementType().isF32() &&
+          rock::preferBf16x3ForF32Dot(rock::getArchValue(op)))
+        inputPrecision = triton::InputPrecision::BF16x3;
       // Create tt.dot operation
-      result =
-          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
-                                /*inputPrecision=*/triton::InputPrecision::IEEE,
-                                /*maxNumImpreciseAcc=*/0);
+      result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                     inputPrecision,
+                                     /*maxNumImpreciseAcc=*/0);
     }
 
     // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it

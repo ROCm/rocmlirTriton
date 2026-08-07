@@ -515,3 +515,23 @@ TEST(AmdArchDbTest, Gfx906ArchStringForms) {
   EXPECT_EQ(getMaxWavesPerEU("amdgcn-amd-amdhsa:gfx906"), 8);
   EXPECT_EQ(getWaveSize("amdgcn-amd-amdhsa:gfx906"), 64);
 }
+
+// --- preferBf16x3ForF32Dot ---
+
+TEST(AmdArchDbTest, PreferBf16x3ForF32Dot) {
+  // Only CDNA4 has been measured to win from the 3xBF16 decomposition.
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx906"));  // GCN5_1
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx908"));  // CDNA1
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx90a"));  // CDNA2
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx942"));  // CDNA3
+  EXPECT_TRUE(preferBf16x3ForF32Dot("gfx950"));   // CDNA4
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1100")); // RDNA3
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1170")); // GFX1170
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1200")); // RDNA4
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1250")); // GFX1250
+
+  // Full target triples resolve the same way as bare chip names.
+  EXPECT_TRUE(
+      preferBf16x3ForF32Dot("amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"));
+  EXPECT_FALSE(preferBf16x3ForF32Dot("amdgcn-amd-amdhsa:gfx942"));
+}

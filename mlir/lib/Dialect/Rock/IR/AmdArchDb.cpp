@@ -532,6 +532,14 @@ bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
   return chip != "gfx950";
 }
 
+// Decomposing an f32 dot into three bf16 products trades the f32 MFMA
+// for the higher throughput bf16 ops. On CDNA4 that is a large net win on
+// the f32 conv suite, no other arch has been measured to benefit.
+bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

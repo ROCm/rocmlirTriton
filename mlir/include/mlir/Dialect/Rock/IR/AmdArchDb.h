@@ -134,6 +134,10 @@ int64_t getMaxKpack(StringRef arch);
 /// arch, i.e. whether the K loop may be peeled into power-of-two segments.
 bool supportsNonPow2KPerBlock(StringRef arch);
 
+/// Whether an f32 `tt.dot` should be emulated with the 3xBF16 trick
+/// (`InputPrecision::BF16x3`) instead of being issued as an IEEE f32 dot.
+bool preferBf16x3ForF32Dot(StringRef arch);
+
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 

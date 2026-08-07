@@ -359,7 +359,8 @@ func.func @test_unscaled_gemm_f8(
 
 // -----
 
-// Test: f32 GEMM lowers to tt.dot.
+// Test: f32 GEMM lowers to tt.dot with the default IEEE input precision on an
+// arch that does not prefer the 3xBF16 decomposition.
 
 // CHECK-LABEL: @test_gemm_f32
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
@@ -369,9 +370,48 @@ func.func @test_unscaled_gemm_f8(
 func.func @test_gemm_f32(
     %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
     %c: tensor<64x64xf32>) -> tensor<64x64xf32>
-    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel} {
   %result = rock.blockwise_gemm(%a, %b, %c)
     : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: on gfx950 an f32 GEMM asks for the 3xBF16 decomposition, which
+// TritonGPUF32DotTC later expands into dense bf16 MFMAs.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]], inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx950(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: the 3xBF16 decomposition is f32-only -- an f16 GEMM on gfx950 keeps the
+// default IEEE input precision (which tt.dot ignores for non-f32 operands).
+
+// CHECK-LABEL: @test_gemm_f16_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf16>, %[[B:.*]]: tensor<64x64xf16>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f16_gfx950(
+    %a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
