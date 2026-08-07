@@ -21,6 +21,12 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
+// Run `script` under bash with pipefail, so a failing command is not masked by
+// the exit code of a later pipe stage such as `tee`. Plain `sh` has no pipefail.
+def shStrict(String script) {
+    sh "#!/bin/bash\nset -eo pipefail\n${script}"
+}
+
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
         // Collapse multi-line Groovy strings into a single line for cmake.sh
@@ -1514,15 +1520,15 @@ pipeline {
                                                         }
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
-                                                            sh """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
+                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
@@ -1563,20 +1569,20 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                     -c ${attnConfigToUse} \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
-                                                            sh """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
+                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
                                                             // Check for errors in the tuning log
                                                             script {
                                                                 def tuneLog = readFile(tuningLog).split('\n')
@@ -1598,10 +1604,10 @@ PY
                                                     stage("Tune Fusion") {
                                                         dir('build') {
                                                             // Tune resnet50
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test-dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
 
                                                             // Tune bert
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test-dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                         sh 'rm -f build/CMakeCache.txt'
                                                     }
