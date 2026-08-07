@@ -49,26 +49,6 @@
 //     tile_transforms> %out = rock.blockwise_store %fused_tile ->
 //     %combined_dest[%g, %m, %n] by set
 //
-// Step 6 exists because a reduction fused into a GEMM reaches this pass as a
-// Broadcast on the store destination plus an atomic_add store, which is what
-// rock-lower-reduce turns `reduce sum` into. Every tile element would then
-// contribute its own atomic to an address many of its neighbours share, and
-// those atomics serialize on the memory system. The Broadcast is still in the
-// destination chain here, composed under whatever conv-to-gemm, padding and
-// tiling stacked on top, so we can prove which tile axis collapses and sum
-// those contributions in registers first:
-//
-//   Before:
-//     rock.blockwise_store %tile -> %dest[...] by atomic_add
-//       : tensor<64x256xf32> -> tensor<1x5x128x64x256xf32> -> tensor<64xf32>
-//
-//   After:
-//     %red = rock.blockwise_reduce sum %tile {axis = 1}
-//       : tensor<64x256xf32> -> tensor<64xf32>
-//     %pinned = rock.transform %dest by <ConstDim{0, 256} on dim 4>
-//       : tensor<1x5x128x64x256xf32> to tensor<1x5x128x64xf32>
-//     rock.blockwise_store %red -> %pinned[...] by atomic_add
-//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -286,15 +266,7 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
     return;
 
   // A lane whose store mask is false contributes nothing, so whatever it holds
-  // is irrelevant; once its value is folded into a sum that other lanes do
-  // store, it would corrupt the result. Instead of asking which axis a mask
-  // depends on, reject any chain that can produce a mask at all: then every
-  // lane stores and no masked-off value can reach memory. This gives up nothing
-  // in practice, because the only transforms that produce a mask are
-  // non-trivial Pad and invalidatable Embed, and the sub-dimension analysis
-  // below already refuses to look at a chain containing either. It is also what
-  // keeps a GEMM whose M or N is not a multiple of the tile out of this
-  // rewrite, since gemm-to-gridwise pads the output views in that case.
+  // is irrelevant.
   if (llvm::any_of(transforms, mapImpactsValidity))
     return;
 
