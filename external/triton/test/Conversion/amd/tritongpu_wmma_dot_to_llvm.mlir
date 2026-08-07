@@ -220,6 +220,39 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     tt.return
   }
 
+  // CHECK-LABEL: wmma2_dot_fp8_bf8
+  tt.func @wmma2_dot_fp8_bf8(%arg0: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: wmma.f32.16x16x16.fp8.bf8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
+    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
+    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.return
+  }
+
+  // CHECK-LABEL: wmma2_dot_bf8_fp8
+  tt.func @wmma2_dot_bf8_fp8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: wmma.f32.16x16x16.bf8.fp8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
+    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
+    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.return
+  }
+
+  // CHECK-LABEL: wmma2_dot_bf8
+  tt.func @wmma2_dot_bf8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
+    // CHECK: wmma.f32.16x16x16.bf8.bf8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
+    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
+    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
+    tt.return
+  }
+
   //  CHECK-LABEL: wmma2_dot
   tt.func @wmma2_dot(%arg0: tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf16, #mma2>, %arg3: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
     // CHECK-COUNT-8: llvm.extractvalue %{{.*}} : !llvm.struct<(f16, f16, f16, f16, f16, f16, f16, f16)>
