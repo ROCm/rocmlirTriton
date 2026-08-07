@@ -17,11 +17,40 @@ if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
   endif()
 endif()
 
+set(TRITON_AMD_DEVICE_LIB_DIR
+  "${TRITON_PROJECT_DIR}/third_party/amd/backend/lib")
+set(TRITON_AMD_DEVICE_LIB_NAMES ocml ockl)
+set(TRITON_AMD_DEVICE_LIB_FILES "")
+foreach(_lib IN LISTS TRITON_AMD_DEVICE_LIB_NAMES)
+  list(APPEND TRITON_AMD_DEVICE_LIB_FILES
+    "${TRITON_AMD_DEVICE_LIB_DIR}/${_lib}.bc")
+endforeach()
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(TRITON_AMD_DEVICE_LIBS_INC
+  "${CMAKE_CURRENT_BINARY_DIR}/TritonAmdDeviceLibs.cpp.inc")
+add_custom_command(
+  OUTPUT "${TRITON_AMD_DEVICE_LIBS_INC}"
+  COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/TritonAmdDeviceLibsIncGen.py"
+    "${TRITON_AMD_DEVICE_LIBS_INC}"
+    "${TRITON_AMD_DEVICE_LIB_DIR}"
+    ${TRITON_AMD_DEVICE_LIB_NAMES}
+  DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/TritonAmdDeviceLibsIncGen.py"
+    ${TRITON_AMD_DEVICE_LIB_FILES}
+  COMMENT "Embedding Triton AMD device libraries"
+  VERBATIM
+)
+add_custom_target(TritonAmdDeviceLibsIncGen
+  DEPENDS "${TRITON_AMD_DEVICE_LIBS_INC}")
+
 add_mlir_translation_library(TritonToHsacoTranslation
   TritonToHsaco.cpp
 
   DEPENDS
   MLIRRockPassIncGen
+  TritonAmdDeviceLibsIncGen
 
   LINK_COMPONENTS
   Core
@@ -75,10 +104,8 @@ endif()
 
 rocmlir_add_triton_includes(TritonToHsacoTranslation)
 
-# Define path to Triton's bundled device libraries (ocml.bc, ockl.bc)
-target_compile_definitions(obj.TritonToHsacoTranslation PRIVATE
-  TRITON_AMD_BACKEND_LIB_DIR="${TRITON_PROJECT_DIR}/third_party/amd/backend/lib"
-)
+target_include_directories(obj.TritonToHsacoTranslation PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}")
 
 # Add LLD include directory for compilation (header access). Look in both the
 # source-tree layout (llvm-project/lld/include, used when LLVM is built in-tree)
