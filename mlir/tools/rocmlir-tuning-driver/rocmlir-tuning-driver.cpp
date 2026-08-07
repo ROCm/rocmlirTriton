@@ -53,6 +53,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -62,6 +63,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/xxhash.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -279,6 +281,73 @@ static llvm::cl::opt<std::string> benchmarkArtifactsDir(
         "is also given."),
     llvm::cl::value_desc("dir"), llvm::cl::init(""));
 
+// ------------------------------------------------------------
+// Two-stage topK tuning options
+// ------------------------------------------------------------
+// See docs/adaptive_tuning_budget.md for more details.
+static llvm::cl::opt<unsigned> twoStageTopK(
+    "two-stage-topk",
+    llvm::cl::desc(
+        "Enable two-stage tuning (enabled when > 0): every config is "
+        "benchmarked at a \"cheap\" budget, then we re-benchmark the top K "
+        "configs "
+        "at the full budget (--rep/--warmup) from their "
+        "already-compiled binaries (no recompilation) to pick the winner. "
+        "The cheap budget uses an adaptive measurement budget, which runs a "
+        "dynamic number of iterations (instead of a fixed amount of time, like "
+        "the full budget)."),
+    llvm::cl::value_desc("topK size"), llvm::cl::init(0));
+
+static llvm::cl::opt<unsigned> coarseRepIters(
+    "coarse-rep-iters",
+    llvm::cl::desc("Max number of iterations to measure in the coarse pass."),
+    llvm::cl::value_desc("coarse benchmark iterations"), llvm::cl::init(200));
+
+static llvm::cl::opt<unsigned> coarseMinRepIters(
+    "coarse-min-rep-iters",
+    llvm::cl::desc("Min number of iterations to measure in the coarse pass."),
+    llvm::cl::value_desc("minimum coarse measurement iterations"),
+    llvm::cl::init(32));
+
+static llvm::cl::opt<double> coarseRelSemTarget(
+    "coarse-rel-sem-target",
+    llvm::cl::desc("The relative standard error of the mean (SEM) target. "
+                   "The coarse pass will stop measuring when the SEM is less "
+                   "than this target."),
+    llvm::cl::value_desc("relative SEM fraction"), llvm::cl::init(0.005));
+
+static llvm::cl::opt<unsigned> coarseChunkIters(
+    "coarse-chunk-iters",
+    llvm::cl::desc(
+        "Coarse-pass measurement chunk size. "
+        "The relative SEM is recomputed after each "
+        "chunk of this many measured iterations, i.e. AdaTune-style "
+        "micro-batching (AdaTune uses batches of ~50). Smaller chunks check "
+        "more often (finer granularity) at the cost of more synchronizations."),
+    llvm::cl::value_desc("iterations per SEM check"), llvm::cl::init(32));
+
+static llvm::cl::opt<unsigned> coarseWarmupIters(
+    "coarse-warmup-iters",
+    llvm::cl::desc(
+        "Coarse-pass warmup iteration count. "
+        "The actual warmup is "
+        "max(this, --coarse-warmup-floor-ms worth of iterations), capped at "
+        "the number of warmup iterations --warmup affords for the kernel being "
+        "measured, so the coarse pass never warms up longer than the precise "
+        "pass it feeds."),
+    llvm::cl::value_desc("coarse warmup iterations"), llvm::cl::init(50));
+
+static llvm::cl::opt<unsigned> coarseWarmupFloorMs(
+    "coarse-warmup-floor-ms",
+    llvm::cl::desc("Minimum coarse-pass warmup time in milliseconds. Must not "
+                   "exceed --warmup, which caps the coarse warmup."),
+    llvm::cl::value_desc("coarse warmup floor milliseconds"),
+    llvm::cl::init(5));
+
+// ------------------------------------------------------------
+// end of two-stage topK tuning options
+// ------------------------------------------------------------
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
@@ -427,6 +496,39 @@ static double computeStdDev(const std::vector<double> &values, double mean) {
   return std::sqrt(sumSquares / values.size());
 }
 
+// Compute relative standard error of the mean (SEM):
+//
+//   SEM = s / (sqrt(N) * mean),
+//
+// where s is the standard deviation (divides by N-1, as the benchmarking
+// literature does; cf. Georges et al. OOPSLA'07 and Hoefler & Belli SC'15).
+//
+// This measures how precise our current mean estimate is, and it shrinks
+// ~1/sqrt(N) as we take more samples: so we use this as the quantity to
+// threshold when deciding we have measured a config enough to rank it.
+//
+// It differs from the coefficient of variation (s/mean), which measures a
+// kernel's intrinsic jitter and does NOT shrink with N. Returns +infinity when
+// it cannot be computed yet (fewer than two samples, or a non-positive mean) so
+// callers keep measuring.
+static double computeRelSem(const std::vector<double> &values) {
+  size_t n = values.size();
+  if (n < 2)
+    return std::numeric_limits<double>::infinity();
+
+  double mean = computeMean(values);
+  if (!(mean > 0.0))
+    return std::numeric_limits<double>::infinity();
+
+  double sumSquares = 0.0;
+  for (double val : values) {
+    double diff = val - mean;
+    sumSquares += diff * diff;
+  }
+  double sampleStdDev = std::sqrt(sumSquares / (n - 1));
+  return sampleStdDev / (std::sqrt(static_cast<double>(n)) * mean);
+}
+
 static std::vector<double> trimValues(const std::vector<double> &values,
                                       unsigned trimPct) {
   if (values.empty() || trimPct == 0)
@@ -461,6 +563,41 @@ struct BenchmarkParams {
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
   std::string compileOnlyDir;
+
+  // Two-stage tuning. twoStageTopK == 0 disables it.
+  unsigned twoStageTopK;
+
+  // Active per-call iteration overrides. When non-zero they take precedence
+  // over the *Ms budgets above: warmupIters/repIters fix the iteration counts
+  // directly instead of deriving them from time. 0 (default) => derive from ms,
+  // i.e. the original time-budget behavior. Used to make the coarse pass
+  // hardware-independent.
+  unsigned warmupIters = 0;
+  unsigned repIters = 0;
+  // Wall-clock floor under warmupIters, so a fast GPU still gets enough warmup
+  // time for DVFS/clock ramp to complete. Only consulted when warmupIters > 0;
+  // warmupMs stays the precise warmup budget, which caps the warmup the coarse
+  // pass is allowed to spend.
+  unsigned warmupFloorMs = 0;
+  // Active adaptive-stop overrides. When relSemTarget > 0 the measurement loop
+  // runs in chunks of chunkIters and stops once the relative SEM falls below
+  // relSemTarget, floored at minRepIters and capped at repIters. relSemTarget
+  // == 0 => fixed-iteration measurement (the precise pass leaves it 0). These
+  // mirror the warmupIters/repIters override pattern: runBenchmarkPhase sets
+  // them from the CoarseConfig for the coarse pass.
+  double relSemTarget = 0.0;
+  unsigned chunkIters = 0;
+  unsigned minRepIters = 0;
+};
+
+// Coarse-pass configuration (two-stage tuning only).
+struct CoarseConfig {
+  unsigned repIters;
+  unsigned minRepIters;
+  double relSemTarget;
+  unsigned chunkIters;
+  unsigned warmupIters;
+  unsigned warmupFloorMs;
 };
 
 // Create a fresh MLIRContext with all rocMLIR dialects registered.
@@ -908,11 +1045,32 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
       estimateMs = minMeasurableMs;
   }
 
-  // Derive iteration counts from the time budgets, like Triton's do_bench.
-  unsigned nWarmup = std::max<unsigned>(
-      1, static_cast<unsigned>(params.warmupMs / estimateMs));
-  unsigned iterations =
-      std::max<unsigned>(1, static_cast<unsigned>(params.repMs / estimateMs));
+  // Derive iteration counts from the time budgets, like Triton's do_bench,
+  // UNLESS explicit iteration overrides are given (params.repIters /
+  // params.warmupIters > 0). The coarse pass of two-stage tuning uses the
+  // iteration overrides so its ranking power is independent of GPU speed. When
+  // adaptive stopping is on (params.relSemTarget > 0), `iterations` is
+  // interpreted as the cap (maximum) rather than an exact count.
+  //
+  // An overridden budget is clamped to params.warmupMs so a coarse pass never
+  // costs more than the precise pass it feeds.
+  unsigned nWarmupFromMs = static_cast<unsigned>(params.warmupMs / estimateMs);
+  unsigned nWarmup;
+  if (params.warmupIters > 0) {
+    unsigned floorIters =
+        static_cast<unsigned>(params.warmupFloorMs / estimateMs);
+    nWarmup = std::max<unsigned>(
+        1, std::min(std::max(params.warmupIters, floorIters), nWarmupFromMs));
+  } else {
+    nWarmup = std::max<unsigned>(1, nWarmupFromMs);
+  }
+  // Same clamp for the measurement budget, against params.repMs. It applies to
+  // both measurement modes below, since adaptive stopping can be off
+  // (relSemTarget == 0) while the iteration override is on.
+  unsigned nItersFromMs = static_cast<unsigned>(params.repMs / estimateMs);
+  unsigned iterations = std::max<unsigned>(
+      1, params.repIters > 0 ? std::min(params.repIters, nItersFromMs)
+                             : nItersFromMs);
 
   // Warm-up (untimed): just run the kernel chain nWarmup times.
   for (unsigned iter = 0; iter < nWarmup; ++iter) {
@@ -929,14 +1087,42 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
                                           result.perfConfig, "warmup")))
     return failure();
 
-  // Measure runs
+  // Measure runs. Two modes:
+  //  * Adaptive (coarse pass, params.relSemTarget > 0): measure in chunks and
+  //    stop as soon as the relative standard error of the mean is small enough
+  //    to rank this config, floored at params.minRepIters (so the variance
+  //    estimate is trustworthy) and capped at `iterations`. Noise, not a fixed
+  //    count, decides when to stop, which makes the coarse budget hardware- and
+  //    kernel-independent. This follows AdaTune's adaptive evaluator and the
+  //    measure-until-precise rule of Georges et al. / Hoefler & Belli.
+  //  * Fixed (precise pass, params.relSemTarget == 0): measure exactly
+  //    `iterations` runs (the original do_bench-style behavior).
   std::vector<double> measurements;
-
-  if (failed(measureKernel(iterations, stream, functions, blockSizes, gridSizes,
-                           numCTAsList, argPointers, measurements,
-                           params.flushLastLevelCache, gpuRunDeadline,
-                           params.gpuRunTimeoutSec, result.perfConfig)))
-    return failure();
+  if (params.relSemTarget > 0.0) {
+    // `iterations` is the cap here. It only binds for noisy, low-intensity
+    // kernels whose configs never reach the SEM target.
+    const unsigned chunk = std::max<unsigned>(1, params.chunkIters);
+    const unsigned minIters = std::min(params.minRepIters, iterations);
+    while (measurements.size() < iterations) {
+      unsigned remaining =
+          iterations - static_cast<unsigned>(measurements.size());
+      unsigned thisChunk = std::min(chunk, remaining);
+      if (failed(measureKernel(
+              thisChunk, stream, functions, blockSizes, gridSizes, numCTAsList,
+              argPointers, measurements, params.flushLastLevelCache,
+              gpuRunDeadline, params.gpuRunTimeoutSec, result.perfConfig)))
+        return failure();
+      if (measurements.size() >= minIters &&
+          computeRelSem(measurements) < params.relSemTarget)
+        break;
+    }
+  } else {
+    if (failed(measureKernel(iterations, stream, functions, blockSizes,
+                             gridSizes, numCTAsList, argPointers, measurements,
+                             params.flushLastLevelCache, gpuRunDeadline,
+                             params.gpuRunTimeoutSec, result.perfConfig)))
+      return failure();
+  }
 
   if (params.showAllMeasurements) {
     llvm::outs() << "[";
@@ -1014,14 +1200,18 @@ static bool doesModuleHaveFusions(ModuleOp module) {
 
 // Shared timing path used by both the in-process run and --benchmark-artifacts,
 // guaranteeing identical measurement semantics. Allocates host/device buffers
-// from `layout`, then sequentially benchmarks each Success config, printing
-// `perfConfig\t<ns|N/A>`. Timed-out configs are reported as N/A, like
-// not-applicable configs. For artifact results (empty hsacoBinary + nonempty
+// from `layout`, then sequentially benchmarks each config that is due a precise
+// measurement, printing `perfConfig\t<ns|Discarded|N/A>`. Timed-out configs are
+// reported as N/A, like not-applicable configs. When two-stage tuning is on
+// (params.twoStageTopK > 0) a coarse pass parameterized by `coarseConfig` runs
+// first and narrows the precise pass to the K fastest configs; the rest are
+// reported as Discarded. For artifact results (empty hsacoBinary + nonempty
 // blobPath) each HSACO is decompressed just before launch and freed right
 // after. A decompression, launch, or timing failure aborts the run.
 static LogicalResult
 runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
-                  const BufferLayout &layout, const BenchmarkParams &params) {
+                  const BufferLayout &layout, const BenchmarkParams &params,
+                  const CoarseConfig &coarseConfig) {
   std::vector<void *> hostBuffers;
   std::vector<void *> gpuBuffers;
   llvm::scope_exit bufferCleanup([&]() {
@@ -1055,24 +1245,11 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
     gpuBuffers.push_back(gpuBuffer);
   }
 
-  int64_t validResults = 0;
-  for (CompilationResult &result : results) {
-    llvm::outs() << result.perfConfig << "\t";
-
-    // Only Success carries a code object. Everything else is reported as N/A,
-    // which tuningRunner.py parses as "this config produced no timing"; the
-    // sweep keeps going so one bad config cannot sink the whole run.
-    switch (result.status) {
-    case CompilationStatus::NotApplicable:
-    case CompilationStatus::CompilationFailed:
-    case CompilationStatus::TimedOut:
-      llvm::outs() << "N/A\n";
-      continue;
-    case CompilationStatus::Success:
-      break;
-    }
-
-    // Lazy just-in-time decompress for artifact results.
+  // Time one already-compiled config. For artifact results the HSACO is
+  // decompressed just before launch and freed right after.
+  auto timeConfig =
+      [&](CompilationResult &result,
+          const BenchmarkParams &timingParams) -> FailureOr<double> {
     bool lazyLoaded = result.hsacoBinary.empty() && !result.blobPath.empty();
     if (lazyLoaded) {
       FailureOr<std::string> framed = readFileContents(result.blobPath);
@@ -1084,14 +1261,103 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
       result.hsacoBinary = std::move(*raw);
     }
 
-    FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
-                                                layout.byteLengths, params);
+    FailureOr<double> timing = benchmarkKernels(
+        result, hostBuffers, gpuBuffers, layout.byteLengths, timingParams);
 
     if (lazyLoaded) {
       result.hsacoBinary.clear();
       result.hsacoBinary.shrink_to_fit();
     }
+    return timing;
+  };
 
+  // Which configs get a precise (reported) benchmark. Only Success carries a
+  // code object, so in single-pass mode that is every Success config; in
+  // two-stage mode it is narrowed to the coarse-pass shortlist below.
+  // Everything else gets a status token instead of a timing: "Discarded" for a
+  // config dropped by top-K, "N/A" for one that never became measurable
+  // (NotApplicable, CompilationFailed or TimedOut).
+  std::vector<bool> reportPrecise(results.size(), false);
+  for (size_t i = 0; i < results.size(); ++i)
+    reportPrecise[i] = results[i].status == CompilationStatus::Success;
+
+  // Two-stage tuning is only meaningful when we are searching a space; in
+  // single-config benchmark mode there is nothing to shortlist.
+  if (params.twoStageTopK > 0 && params.benchmarkConfig.empty()) {
+    // COARSE PASS: benchmark every applicable config once at the cheap budget.
+    // Stats/measurement printing is suppressed so this pass emits no stdout;
+    // only the shortlist is reported (with precise timings) below.
+    BenchmarkParams coarseParams = params;
+    // Adaptive, iteration-based coarse ranking (hardware-independent): stop
+    // once the relative SEM is below target, floored at minRepIters and capped
+    // at repIters. warmupFloorMs is the DVFS floor layered under warmupIters;
+    // warmupMs is deliberately left at the precise budget, which
+    // benchmarkKernels uses to cap the coarse warmup. A relSemTarget of 0
+    // degrades to a fixed repIters-iteration measurement.
+    coarseParams.repIters = coarseConfig.repIters;
+    coarseParams.warmupIters = coarseConfig.warmupIters;
+    coarseParams.warmupFloorMs = coarseConfig.warmupFloorMs;
+    coarseParams.relSemTarget = coarseConfig.relSemTarget;
+    coarseParams.chunkIters = coarseConfig.chunkIters;
+    coarseParams.minRepIters = coarseConfig.minRepIters;
+    coarseParams.showStats = false;
+    coarseParams.showAllMeasurements = false;
+
+    llvm::errs() << "Two-stage tuning budget: rep-iters="
+                 << coarseParams.repIters
+                 << " min-rep-iters=" << coarseParams.minRepIters
+                 << " rel-sem-target="
+                 << llvm::format("%g", coarseParams.relSemTarget)
+                 << " chunk-iters=" << coarseParams.chunkIters
+                 << " warmup-iters=" << coarseParams.warmupIters
+                 << " warmup-floor-ms=" << coarseParams.warmupFloorMs << "\n";
+
+    SmallVector<std::pair<size_t, double>> coarseTimes; // (index, ns)
+    for (size_t i = 0; i < results.size(); ++i) {
+      if (!reportPrecise[i])
+        continue;
+      FailureOr<double> timing = timeConfig(results[i], coarseParams);
+      if (failed(timing)) {
+        llvm::errs() << "Kernel execution failed (coarse pass) for config: "
+                     << results[i].perfConfig << "\n";
+        return failure();
+      }
+      coarseTimes.emplace_back(i, timing.value());
+    }
+
+    // Shortlist the K fastest (smallest ns). Everything not shortlisted is
+    // demoted to "Discarded" so the downstream winner selection (min time) can
+    // only pick a config that was re-benchmarked at the precise budget.
+    std::fill(reportPrecise.begin(), reportPrecise.end(), false);
+    unsigned k = std::min<unsigned>(params.twoStageTopK, coarseTimes.size());
+    std::partial_sort(
+        coarseTimes.begin(), coarseTimes.begin() + k, coarseTimes.end(),
+        [](const std::pair<size_t, double> &a,
+           const std::pair<size_t, double> &b) { return a.second < b.second; });
+    for (unsigned j = 0; j < k; ++j)
+      reportPrecise[coarseTimes[j].first] = true;
+  }
+
+  // PRECISE (reporting) PASS. Sequential for accurate timing. A config that
+  // compiled and ran but lost the coarse-pass shortlist is reported as
+  // "Discarded", which keeps a deliberate two-stage demotion distinguishable
+  // from a config that never produced a measurement at all ("N/A"); the sweep
+  // keeps going either way, so one bad config cannot sink the whole run.
+  // Re-benchmarking the shortlist reuses the binaries already in `results`, so
+  // there is no recompilation.
+  int64_t validResults = 0;
+  for (size_t i = 0; i < results.size(); ++i) {
+    CompilationResult &result = results[i];
+    llvm::outs() << result.perfConfig << "\t";
+
+    if (!reportPrecise[i]) {
+      llvm::outs() << (result.status == CompilationStatus::Success ? "Discarded"
+                                                                   : "N/A")
+                   << "\n";
+      continue;
+    }
+
+    FailureOr<double> timing = timeConfig(result, params);
     if (failed(timing)) {
       llvm::errs() << "Kernel execution failed\n";
       return failure();
@@ -1170,7 +1436,12 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            flushLastLevelCache,
                                            perfConfigTimeout,
                                            gpuRunTimeout,
-                                           compileOnlyDir};
+                                           compileOnlyDir,
+                                           twoStageTopK};
+
+  const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
+                                     coarseRelSemTarget, coarseChunkIters,
+                                     coarseWarmupIters,  coarseWarmupFloorMs};
 
   // Main tuning pass: collect perf configs, compile, and benchmark.
   {
@@ -1486,7 +1757,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     }
 
     // Sequential benchmarking phase via the shared timing path.
-    if (failed(runBenchmarkPhase(compilationResults, layout, benchmarkParams)))
+    if (failed(runBenchmarkPhase(compilationResults, layout, benchmarkParams,
+                                 coarseConfig)))
       return failure();
   } // End tuning pass
 
@@ -1572,7 +1844,11 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   benchmarkParams.perfConfigTimeoutSec = 0;
   benchmarkParams.gpuRunTimeoutSec = gpuRunTimeout;
   benchmarkParams.compileOnlyDir = "";
-  return runBenchmarkPhase(results, layout, benchmarkParams);
+  benchmarkParams.twoStageTopK = twoStageTopK;
+  const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
+                                     coarseRelSemTarget, coarseChunkIters,
+                                     coarseWarmupIters,  coarseWarmupFloorMs};
+  return runBenchmarkPhase(results, layout, benchmarkParams, coarseConfig);
 }
 #undef HIPCHECK
 
@@ -1585,6 +1861,11 @@ int main(int argc, char **argv) {
   if (trimPercent >= 50) {
     llvm::errs() << "trim-percent must be less than 50 to avoid trimming all "
                     "measurements\n";
+    return EXIT_FAILURE;
+  }
+
+  if (twoStageTopK > 0 && coarseWarmupFloorMs > warmup) {
+    llvm::errs() << "coarse-warmup-floor-ms must not exceed warmup\n";
     return EXIT_FAILURE;
   }
 

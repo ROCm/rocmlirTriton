@@ -91,10 +91,27 @@ VERIFY_REPEATS = 1
 # mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
 GPU_TIMEOUT_EXIT_CODE = 3
 
+# Status tokens that rocmlir-tuning-driver can return.
+# - "N/A" means the config never ran;
+# - "Discarded" means it ran but it was not inside the topK list.
+NOT_APPLICABLE_STATUS = "N/A"
+DISCARDED_STATUS = "Discarded"
+UNMEASURED_STATUSES = frozenset({NOT_APPLICABLE_STATUS, DISCARDED_STATUS})
+
 OUTPUT_HEADER_COLUMNS = [
     'arch', 'numCUs', 'numChiplets', 'testVector', 'perfConfig', 'TFlops', 'tuningSpace',
     'commitId', 'timestamp', 'durationSec'
 ]
+
+# Coarse-budget presets selected by --two-stage from the GPU count. Tuning
+# benchmarks configs in parallel across the visible GPUs, so a busier (>2 GPU)
+# node has noisier per-config measurements that a slightly larger shortlist +
+# more coarse iterations rank more robustly -- and, being compile-bound there,
+# that costs ~nothing. On few GPUs the run is GPU-bound and measurements are
+# clean, so a leaner budget is both cheaper and just as accurate.
+LEAN_PRESET = {"topk": 10, "rep_iters": 200, "min_rep_iters": 32}
+ROBUST_PRESET = {"topk": 16, "rep_iters": 500, "min_rep_iters": 64}
+
 # =============================================================================
 # Logging Setup
 # =============================================================================
@@ -206,6 +223,15 @@ class Options:
     timeout: Optional[int]
     perf_config_timeout: int
     gpu_run_timeout: int
+    rep_ms: int
+    warmup_ms: int
+    two_stage_topk: int
+    coarse_rep_iters: int
+    coarse_warmup_iters: int
+    coarse_warmup_floor_ms: int
+    coarse_rel_sem_target: float
+    coarse_chunk_iters: int
+    coarse_min_rep_iters: int
     compile_only_dir: Optional[str] = None
     benchmark_artifacts_dir: Optional[str] = None
     allow_commit_mismatch: bool = False
@@ -1100,6 +1126,17 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.test_dir and op_type != Operation.FUSION:
             self.error("argument --test-dir: only allowed with --op=fusion")
 
+        if parsed.debug_quick_tune_data and (parsed.two_stage or (parsed.two_stage_topk or 0) > 0):
+            self.error(
+                "argument --debug-quick-tune-data: not allowed with --two-stage/--two-stage-topk")
+
+        # The coarse warmup is capped at what --warmup affords, so a larger
+        # floor would be silently inert. The driver rejects this too.
+        if (parsed.two_stage or (parsed.two_stage_topk or 0) > 0) \
+                and parsed.coarse_warmup_floor_ms > parsed.warmup:
+            self.error(f"argument --coarse-warmup-floor-ms: must not exceed --warmup "
+                       f"({parsed.coarse_warmup_floor_ms} > {parsed.warmup})")
+
         target_overrides = [
             ("--target-arch", parsed.target_arch),
             ("--target-num-cu", parsed.target_num_cu),
@@ -1337,7 +1374,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         perfconfig = parts[0]
         time = parts[-1]
         try:
-            if time == "N/A":
+            if time in UNMEASURED_STATUSES:
                 nano_seconds = np.nan
                 measurements = None
             else:
@@ -1351,9 +1388,12 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         entry = config.table_entry(nano_seconds)
         if options.debug:
             entry["MeasurementsMs"] = measurements
+            entry["Status"] = time if np.isnan(nano_seconds) else "Measured"
         entries.append(entry)
 
-        if options.verify_all_perfconfigs and not np.isnan(nano_seconds):
+        # Verify Discarded configs too: gating this on the timing
+        # instead would silently skip verification of non topK configs.
+        if options.verify_all_perfconfigs and time != NOT_APPLICABLE_STATUS:
             verify_ns = verify_perfconfig(perfconfig, config, paths, options, gpu_id)
             if np.isnan(verify_ns):
                 raise TuningError(f"Verification returned NaN for perfconfig '{perfconfig}'")
@@ -1373,15 +1413,25 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     tuning_driver_args = [
         f"--tuning-space={options.tuning_space_kind}",
-        f"--rep={TUNE_REP_MS}",
-        f"--warmup={TUNE_WARMUP_MS}",
+        f"--rep={options.rep_ms}",
+        f"--warmup={options.warmup_ms}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
         f"--num-compile-threads={num_compile_threads}",
         f"--perf-config-timeout={options.perf_config_timeout}",
         f"--gpu-run-timeout={options.gpu_run_timeout}",
+        f"--two-stage-topk={options.two_stage_topk}",
     ]
+    if options.two_stage_topk > 0:
+        tuning_driver_args += [
+            f"--coarse-rep-iters={options.coarse_rep_iters}",
+            f"--coarse-warmup-iters={options.coarse_warmup_iters}",
+            f"--coarse-warmup-floor-ms={options.coarse_warmup_floor_ms}",
+            f"--coarse-rel-sem-target={options.coarse_rel_sem_target}",
+            f"--coarse-chunk-iters={options.coarse_chunk_iters}",
+            f"--coarse-min-rep-iters={options.coarse_min_rep_iters}",
+        ]
     if options.wait_for_compiles:
         tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
@@ -1817,8 +1867,8 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
                 pass
 
     timing_args = [
-        f"--rep={TUNE_REP_MS}",
-        f"--warmup={TUNE_WARMUP_MS}",
+        f"--rep={options.rep_ms}",
+        f"--warmup={options.warmup_ms}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
         f"--show-all-measurements={options.debug}",
@@ -2456,6 +2506,110 @@ def parse_arguments(args=None) -> argparse.Namespace:
         "marked 'gpu_timed_out' and tuning advances to the next problem config "
         "(retry with '--retry gpu_timed_out').")
 
+    parser.add_argument("--rep",
+                        type=int,
+                        default=TUNE_REP_MS,
+                        metavar='MS',
+                        help=f"Per-config measurement time budget in milliseconds "
+                        f"(default: {TUNE_REP_MS}).")
+
+    parser.add_argument("--warmup",
+                        type=int,
+                        default=TUNE_WARMUP_MS,
+                        metavar='MS',
+                        help=f"Per-config warmup time budget in milliseconds "
+                        f"(default: {TUNE_WARMUP_MS}).")
+
+    parser.add_argument(
+        "--two-stage",
+        action='store_true',
+        default=False,
+        help="Enable two-stage tuning with top-K and coarse budgets chosen automatically "
+        "for this machine."
+        " The "
+        "preset is selected from the GPU count: >2 GPUs uses a larger "
+        "shortlist and more coarse iterations (more robust to the extra "
+        "measurement noise of a busy multi-GPU node, still cheap since tuning "
+        "is compile-bound); <=2 GPUs uses a cheaper budget."
+        " Any of --two-stage-topk / "
+        "--coarse-* passed explicitly overrides the preset.")
+
+    parser.add_argument("--two-stage-topk",
+                        type=int,
+                        default=None,
+                        metavar='K',
+                        help="Enable two-stage tuning, allowing to select the top-K (overrides the "
+                        "--two-stage preset). "
+                        "Every applicable config is first benchmarked at "
+                        "the cheap coarse budget (by default an adaptive, iteration-based "
+                        "measurement that stops once each config's estimate is precise enough to "
+                        "rank it, see --coarse-rel-sem-target; capped by --coarse-rep-iters) to "
+                        "shortlist the K fastest, then re-benchmarked at the precise budget to "
+                        "pick the winner. Unset by default.")
+
+    parser.add_argument("--coarse-rep-iters",
+                        type=int,
+                        default=None,
+                        metavar='N',
+                        help="Coarse-pass measurement iteration count, used only in two-stage "
+                        "mode (overrides the --two-stage preset; default when unset: 200). When "
+                        "adaptive stopping is enabled "
+                        "(--coarse-rel-sem-target > 0, the default) this is the maximum/cap; a "
+                        "config stops earlier once its estimate is precise enough. An "
+                        "iteration-based budget (rather than a millisecond budget) keeps the "
+                        "coarse ranking's quality independent of GPU speed, so a value validated "
+                        "on one machine transfers to others.")
+
+    parser.add_argument(
+        "--coarse-rel-sem-target",
+        type=float,
+        default=0.005,
+        metavar='FRAC',
+        help="Coarse-pass adaptive stopping target, used only when --two-stage-topk "
+        "> 0 (default: 0.005 = 0.50%%). A config's coarse measurement stops once "
+        "the relative standard error of the mean (s / (sqrt(N) * mean)) drops "
+        "below this fraction, so quiet configs stop early and noisy ones measure "
+        "longer (up to --coarse-rep-iters), automatically and independent of the "
+        "GPU. Set to 0 to measure a fixed --coarse-rep-iters iterations instead.")
+
+    parser.add_argument("--coarse-chunk-iters",
+                        type=int,
+                        default=32,
+                        metavar='N',
+                        help="Coarse-pass measurement chunk size (default: 32), used only when "
+                        "--two-stage-topk > 0 and adaptive stopping is on. The relative SEM is "
+                        "recomputed after each chunk of this many iterations (AdaTune-style "
+                        "micro-batching).")
+
+    parser.add_argument("--coarse-min-rep-iters",
+                        type=int,
+                        default=None,
+                        metavar='N',
+                        help="Coarse-pass minimum measured iterations before adaptive stopping "
+                        "may fire, used only in two-stage mode (overrides the --two-stage preset; "
+                        "default when unset: 32). Floors the sample count so the variance/SEM "
+                        "estimate is trustworthy. Clamped to at most --coarse-rep-iters.")
+
+    parser.add_argument(
+        "--coarse-warmup-iters",
+        type=int,
+        default=50,
+        metavar='N',
+        help="Coarse-pass warmup iteration count, used only when --two-stage-topk > 0 "
+        "(default: 50). Actual warmup is max(this, --coarse-warmup-floor-ms), capped at "
+        "the warmup --warmup affords for the kernel being measured so the coarse pass "
+        "never warms up longer than the precise pass it feeds.")
+
+    parser.add_argument(
+        "--coarse-warmup-floor-ms",
+        type=int,
+        default=5,
+        metavar='MS',
+        help="Minimum coarse-pass warmup time in milliseconds, used only when "
+        "--two-stage-topk > 0 (default: 5). Floor layered under --coarse-warmup-iters "
+        "so DVFS/clock ramp still completes on fast GPUs. Must not exceed --warmup, "
+        "which caps the coarse warmup.")
+
     parser.add_argument("-s",
                         "--status",
                         action='store_true',
@@ -2537,6 +2691,33 @@ def main(args=None):
     # and the perfRunner ``to_command_line()`` lookup key all match.
     configs = canonicalize_configs(configs, conf_class, arch, num_cu, num_chiplets)
 
+    # --- Resolve the two-stage coarse budget ------------------------------
+    # --two-stage is the friendly toggle: the user opts in and we pick a coarse
+    # budget preset from the GPU count (see LEAN_PRESET / ROBUST_PRESET).
+    # Anything passed explicitly wins.
+    preset = None
+    if parsed_args.two_stage:
+        preset = ROBUST_PRESET if len(parsed_args.gpus) > 2 else LEAN_PRESET
+
+    def _resolve_two_stage(explicit, preset_key, hard_default):
+        if explicit is not None:
+            return explicit  # user passed it explicitly -> wins
+        if preset is not None:
+            return preset[preset_key]  # --two-stage on -> machine-picked preset
+        return hard_default  # neither -> single-pass default
+
+    resolved_two_stage_topk = _resolve_two_stage(parsed_args.two_stage_topk, "topk", 0)
+    resolved_coarse_rep_iters = _resolve_two_stage(parsed_args.coarse_rep_iters, "rep_iters", 200)
+    resolved_coarse_min_rep_iters = _resolve_two_stage(parsed_args.coarse_min_rep_iters,
+                                                       "min_rep_iters", 32)
+    if resolved_two_stage_topk > 0:
+        logger.info(
+            f"Two-stage tuning: top-{resolved_two_stage_topk} shortlist, coarse "
+            f"budget up to {resolved_coarse_rep_iters} iters (min "
+            f"{resolved_coarse_min_rep_iters}), "
+            f"{'robust' if preset is ROBUST_PRESET else 'lean' if preset is LEAN_PRESET else 'custom'} "
+            f"preset for {len(parsed_args.gpus)} GPU(s).")
+
     options = Options(chip=chip,
                       arch=arch,
                       num_cu=num_cu,
@@ -2560,6 +2741,15 @@ def main(args=None):
                       timeout=parsed_args.timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
                       gpu_run_timeout=parsed_args.gpu_run_timeout,
+                      rep_ms=parsed_args.rep,
+                      warmup_ms=parsed_args.warmup,
+                      two_stage_topk=resolved_two_stage_topk,
+                      coarse_rep_iters=resolved_coarse_rep_iters,
+                      coarse_warmup_iters=parsed_args.coarse_warmup_iters,
+                      coarse_warmup_floor_ms=parsed_args.coarse_warmup_floor_ms,
+                      coarse_rel_sem_target=parsed_args.coarse_rel_sem_target,
+                      coarse_chunk_iters=parsed_args.coarse_chunk_iters,
+                      coarse_min_rep_iters=resolved_coarse_min_rep_iters,
                       compile_only_dir=compile_only_dir,
                       benchmark_artifacts_dir=benchmark_artifacts_dir,
                       allow_commit_mismatch=parsed_args.allow_commit_mismatch)
