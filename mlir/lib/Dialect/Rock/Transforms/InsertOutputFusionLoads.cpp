@@ -168,9 +168,12 @@ void RockInsertOutputFusionLoadsPass::runOnOperation() {
       // once per output tile with no temporal reuse across the kernel, so hint
       // the hardware to stream them (evict-first) and avoid polluting the cache
       // for the reused GEMM operands.
-      auto markerOp =
-          LoadMarkerOp::create(builder, loc, tileType, originalVal, outputViews,
-                               gridCoords, rock::CacheModifier::CS);
+      //
+      // These inputs feed a fusion chain rooted at a store marker, so they
+      // reach a store rather than a dot and reduce over nothing.
+      auto markerOp = LoadMarkerOp::create(
+          builder, loc, tileType, originalVal, outputViews, gridCoords,
+          rock::CacheModifier::CS, builder.getDenseI64ArrayAttr({}));
 
       // Create UntileOp to map tile back to the original full tensor type.
       // LowerStores will strip these when converting back to tile operations.

@@ -73,7 +73,7 @@ TEST(PerfConfigParsingTest, GemmParamsValidV1BackCompat) {
   EXPECT_EQ(attr.getNumStages(), 2);
   EXPECT_EQ(attr.getWavesPerEU(), 0);
   EXPECT_EQ(attr.getGridGroupSize(), 1);
-  // v1 strings predate the knob fields; the parser must default all 5
+  // v1 strings predate the knob fields; the parser must default all
   // knobs to `kKnobDefault` so older tuning DBs continue to work.
   EXPECT_EQ(attr.getUseAsyncCopy(), kKnobDefault);
   EXPECT_EQ(attr.getUseBlockPingpong(), kKnobDefault);
@@ -83,6 +83,7 @@ TEST(PerfConfigParsingTest, GemmParamsValidV1BackCompat) {
   // v1 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
 // --- GemmParamsAttr: v2 read-only back-compat ---
@@ -90,7 +91,7 @@ TEST(PerfConfigParsingTest, GemmParamsValidV1BackCompat) {
 // v2 carried a trailing `scheduleHint` bitfield (the 6th knob field). That
 // knob was removed in v3; v2 strings are still accepted read-only, with the
 // trailing token parsed and discarded. Re-serialization always emits the
-// canonical v4 form.
+// canonical v5 form.
 
 TEST(PerfConfigParsingTest, GemmParamsV2BackCompatDiscardsScheduleHint) {
   PerfConfigTestEnv e;
@@ -108,10 +109,11 @@ TEST(PerfConfigParsingTest, GemmParamsV2BackCompatDiscardsScheduleHint) {
   // v2 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_TRUE(capture.warnings.empty());
 }
 
-TEST(PerfConfigParsingTest, GemmParamsV2MixedKnobsReserializeAsV4) {
+TEST(PerfConfigParsingTest, GemmParamsV2MixedKnobsReserializeAsV5) {
   PerfConfigTestEnv e;
   WarningCapture capture(e.ctx);
   // Knob block: useAsyncCopy=1, useBlockPingpong=0, useInThreadTranspose=-1,
@@ -126,10 +128,10 @@ TEST(PerfConfigParsingTest, GemmParamsV2MixedKnobsReserializeAsV4) {
   EXPECT_EQ(attr.getUseInThreadTranspose(), kKnobDefault);
   EXPECT_EQ(attr.getUseBufferOps(), 1);
   EXPECT_EQ(attr.getUseBufferAtomics(), 0);
-  // Re-serialization drops the trailing scheduleHint and emits v4 with the
-  // default useReductionLayout=-1.
+  // Re-serialization drops the trailing scheduleHint and emits v5 with the
+  // newer knobs defaulted to -1.
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,-1");
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV2IgnoresArbitraryScheduleHintValue) {
@@ -142,7 +144,7 @@ TEST(PerfConfigParsingTest, GemmParamsV2IgnoresArbitraryScheduleHintValue) {
   ASSERT_TRUE(attr);
   expectScheduleHintWarning(capture, 4);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1");
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV2RejectsBoolKnobAboveOne) {
@@ -186,17 +188,18 @@ TEST(PerfConfigParsingTest, GemmParamsValidV3AllDefaults) {
   // v3 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
-TEST(PerfConfigParsingTest, GemmParamsV3ReserializesAsV4) {
+TEST(PerfConfigParsingTest, GemmParamsV3ReserializesAsV5) {
   PerfConfigTestEnv e;
   // A v3 string is accepted on input; serialization always emits the canonical
-  // v4 form with the default useReductionLayout=-1 appended.
+  // v5 form with the newer knobs defaulted to -1.
   auto attr = GemmParamsAttr::get(
       e.str("gemm:v3:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0"));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,-1");
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV3RejectsBoolKnobAboveOne) {
@@ -233,26 +236,28 @@ TEST(PerfConfigParsingTest, GemmParamsV4ReadsReductionLayout) {
   EXPECT_EQ(attr.getUseAsyncCopy(), 1);
   EXPECT_EQ(attr.getUseBufferAtomics(), 0);
   EXPECT_EQ(attr.getUseReductionLayout(), 1);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
-TEST(PerfConfigParsingTest, GemmParamsV4RoundTrip) {
+TEST(PerfConfigParsingTest, GemmParamsV4ReserializesAsV5) {
   PerfConfigTestEnv e;
-  // useReductionLayout=1 -> serializes back in the longer v4 form.
   StringRef original = "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,1";
   auto attr = GemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,1,-1");
 }
 
-TEST(PerfConfigParsingTest, GemmParamsV4ExplicitOffReductionLayoutRoundTrip) {
+TEST(PerfConfigParsingTest,
+     GemmParamsV4ExplicitOffReductionLayoutReserializesAsV5) {
   PerfConfigTestEnv e;
-  // A v4 string with an explicit useReductionLayout=0 (off) round-trips
-  // unchanged; v4 is always the serialized form.
   StringRef original = "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,0";
   auto attr = GemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseReductionLayout(), 0);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,0,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV4RejectsBadReductionLayout) {
@@ -267,12 +272,14 @@ TEST(PerfConfigParsingTest, GemmParamsV4ReadsReductionLayoutSentinel) {
   PerfConfigTestEnv e;
   // useReductionLayout is a tri-state gate like the other knobs: the
   // `kKnobDefault` (-1 = heuristic / currently off) sentinel is accepted and
-  // round-trips unchanged.
+  // defaults the v5 OptimizeEpilogue knob.
   StringRef original = "gemm:v4:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1";
   auto attr = GemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV4TooFewParams) {
@@ -290,9 +297,51 @@ TEST(PerfConfigParsingTest, GemmParamsV4TooManyParams) {
   EXPECT_FALSE(attr);
 }
 
-TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV5) {
+// --- GemmParamsAttr: v5 (adds the trailing `useOptimizeEpilogue` knob) ---
+
+TEST(PerfConfigParsingTest, GemmParamsV5ReadsOptimizeEpilogue) {
   PerfConfigTestEnv e;
-  auto attr = GemmParamsAttr::get(e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1"));
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1,1,0,-1,1,0,1,0"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseReductionLayout(), 1);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 0);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV5RoundTrip) {
+  PerfConfigTestEnv e;
+  StringRef original =
+      "gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,1";
+  auto attr = GemmParamsAttr::get(e.str(original));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV5RejectsBadOptimizeEpilogue) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,2"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV5TooFewParams) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsV5TooManyParams) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,1,99"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV6) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(e.str("gemm:v6:128,128,16,1,1,4,32,1,2,0,1"));
   EXPECT_FALSE(attr);
 }
 
@@ -361,6 +410,7 @@ TEST(PerfConfigParsingTest, GemmGemmParamsValidV1BackCompat) {
   // v1 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
 // --- GemmGemmParamsAttr: v2 read-only back-compat ---
@@ -376,10 +426,11 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2BackCompatDiscardsScheduleHint) {
   // v2 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_TRUE(capture.warnings.empty());
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsV2MixedKnobsReserializeAsV4) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV2MixedKnobsReserializeAsV5) {
   PerfConfigTestEnv e;
   WarningCapture capture(e.ctx);
   auto attr = GemmGemmParamsAttr::get(
@@ -392,7 +443,7 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2MixedKnobsReserializeAsV4) {
   EXPECT_EQ(attr.getUseBufferOps(), 1);
   EXPECT_EQ(attr.getUseBufferAtomics(), 0);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "attn:v4:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,-1");
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV2IgnoresArbitraryScheduleHintValue) {
@@ -404,7 +455,7 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2IgnoresArbitraryScheduleHintValue) {
   ASSERT_TRUE(attr);
   expectScheduleHintWarning(capture, 4);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "attn:v4:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1");
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV2RejectsBoolKnobAboveOne) {
@@ -434,17 +485,18 @@ TEST(PerfConfigParsingTest, GemmGemmParamsValidV3AllDefaults) {
   // v3 predates the v4 `useReductionLayout` knob; it defaults to the knob
   // default (-1 = heuristic / currently off).
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsV3ReserializesAsV4) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV3ReserializesAsV5) {
   PerfConfigTestEnv e;
   // A v3 string is accepted on input; serialization always emits the canonical
-  // v4 form with the default useReductionLayout=-1 appended.
+  // v5 form with the newer knobs defaulted to -1.
   auto attr = GemmGemmParamsAttr::get(
       e.str("attn:v3:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0"));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            "attn:v4:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,-1");
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV3TooManyParams) {
@@ -463,26 +515,28 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV4ReadsReductionLayout) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseAsyncCopy(), 1);
   EXPECT_EQ(attr.getUseReductionLayout(), 1);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsV4RoundTrip) {
+TEST(PerfConfigParsingTest, GemmGemmParamsV4ReserializesAsV5) {
   PerfConfigTestEnv e;
   StringRef original = "attn:v4:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,1";
   auto attr = GemmGemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,1,-1");
 }
 
 TEST(PerfConfigParsingTest,
-     GemmGemmParamsV4ExplicitOffReductionLayoutRoundTrip) {
+     GemmGemmParamsV4ExplicitOffReductionLayoutReserializesAsV5) {
   PerfConfigTestEnv e;
-  // A v4 string with an explicit useReductionLayout=0 (off) round-trips
-  // unchanged; v4 is always the serialized form.
   StringRef original = "attn:v4:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,0";
   auto attr = GemmGemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseReductionLayout(), 0);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,0,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV4RejectsBadReductionLayout) {
@@ -496,12 +550,14 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV4ReadsReductionLayoutSentinel) {
   PerfConfigTestEnv e;
   // useReductionLayout is a tri-state gate like the other knobs: the
   // `kKnobDefault` (-1 = heuristic / currently off) sentinel is accepted and
-  // round-trips unchanged.
+  // defaults the v5 OptimizeEpilogue knob.
   StringRef original = "attn:v4:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1";
   auto attr = GemmGemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
-  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(),
+            "attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV4TooFewParams) {
@@ -511,10 +567,51 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV4TooFewParams) {
   EXPECT_FALSE(attr);
 }
 
-TEST(PerfConfigParsingTest, GemmGemmParamsUnknownVersionV5) {
+// --- GemmGemmParamsAttr: v5 (adds `useOptimizeEpilogue`) ---
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV5ReadsOptimizeEpilogue) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v5:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0,1,0"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseReductionLayout(), 1);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 0);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV5RoundTrip) {
+  PerfConfigTestEnv e;
+  StringRef original = "attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,1";
+  auto attr = GemmGemmParamsAttr::get(e.str(original));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
+  EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV5RejectsBadOptimizeEpilogue) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,2"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV5TooFewParams) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsV5TooManyParams) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v5:64,64,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,1,99"));
+  EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsUnknownVersionV6) {
   PerfConfigTestEnv e;
   auto attr =
-      GemmGemmParamsAttr::get(e.str("attn:v5:64,64,32,2,1,2,16,1,1,0,1"));
+      GemmGemmParamsAttr::get(e.str("attn:v6:64,64,32,2,1,2,16,1,1,0,1"));
   EXPECT_FALSE(attr);
 }
 

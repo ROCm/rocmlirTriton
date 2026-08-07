@@ -488,6 +488,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
+// - `useOptimizeEpilogue`              (set to kKnobDefault)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -538,7 +539,8 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*useReductionLayout=*/kKnobDefault);
+                            /*useReductionLayout=*/kKnobDefault,
+                            /*useOptimizeEpilogue=*/kKnobDefault);
                         newSpace->tuningRange.push_back(
                             cast<RockTuningParamAttrInterface>(gemmGemmParams));
                       }
@@ -655,6 +657,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
+// - `useOptimizeEpilogue`              (set to kKnobDefault)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -697,7 +700,8 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*useReductionLayout=*/kKnobDefault);
+                            /*useReductionLayout=*/kKnobDefault,
+                            /*useOptimizeEpilogue=*/kKnobDefault);
                         if (kind != TuningParamSetKind::Full ||
                             succeeded(tuningInfo->couldBePerformant(
                                 info, gemmParams)))
@@ -743,29 +747,7 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   }
 }
 
-bool needToUpdateBest(rock::TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return false;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-unsigned getNumberOfIterations(TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return 1;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-TuningParamSet *
-createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind,
-                        rock::TuningParamSpaceSettings &settings) {
+TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
 

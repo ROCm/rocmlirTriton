@@ -12,7 +12,7 @@ import contextlib
 from enum import IntEnum
 import io
 import os
-from pathlib import Path
+import shutil
 import sys
 import types
 import unittest
@@ -52,8 +52,14 @@ hip_package = types.ModuleType("hip")
 hip_package.hip = mock_hip
 sys.modules["hip"] = hip_package
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(MLIR_DIR / "utils" / "performance"))
+# perfRunner.py depends on the compiled amd_arch_db binding. Both are deployed
+# together by ci-performance-scripts, so import that copy rather than the source
+# file, where the binding is unavailable.
+_script = shutil.which("perfRunner.py")
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 # Start in CU mode so importing perfRunner must warn and force WGP mode.
 os.environ["GPU_ENABLE_WGP_MODE"] = "0"

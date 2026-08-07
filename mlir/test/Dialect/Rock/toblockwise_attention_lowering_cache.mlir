@@ -14,9 +14,9 @@
 // + V (8 MiB) + Q exceed the 8 MiB LLC -> cache pressure. K and V are read once,
 // so both are streamed; Q stays cached.
 // CHECK-LABEL: @attn_skinny_pressure_streams_kv
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 func.func @attn_skinny_pressure_streams_kv(
     %q: tensor<1x16x64xf32>, %k: tensor<1x64x32768xf32>, %v: tensor<1x32768x64xf32>) -> tensor<1x16x64xf32>
     attributes {rock.block_size = 64 : i32, rock.grid_size = 1 : i32, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
@@ -37,9 +37,9 @@ func.func @attn_skinny_pressure_streams_kv(
 // seqQ is skinny, but Q + K + V fit easily in the 8 MiB LLC, so there is no
 // cache pressure and nothing is streamed: Q, K and V all stay cached.
 // CHECK-LABEL: @attn_skinny_no_pressure
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x128xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x128xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x128x64xf32> -> tensor<32x64xf32>
 func.func @attn_skinny_no_pressure(
     %q: tensor<1x16x64xf32>, %k: tensor<1x64x128xf32>, %v: tensor<1x128x64xf32>) -> tensor<1x16x64xf32>
     attributes {rock.block_size = 64 : i32, rock.grid_size = 1 : i32, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
@@ -60,9 +60,9 @@ func.func @attn_skinny_no_pressure(
 // seqQ = 64 = 4 * gemm0 mPerBlock -> gemm0 mBlocks = 4 (not skinny): K and V are
 // reused across the 4 seqQ tiles, so even under cache pressure they stay cached.
 // CHECK-LABEL: @attn_seqq_not_skinny
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 func.func @attn_seqq_not_skinny(
     %q: tensor<1x64x64xf32>, %k: tensor<1x64x32768xf32>, %v: tensor<1x32768x64xf32>) -> tensor<1x64x64xf32>
     attributes {rock.block_size = 64 : i32, rock.grid_size = 4 : i32, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
@@ -86,9 +86,9 @@ func.func @attn_seqq_not_skinny(
 // pressure, K relies on caching and is NOT streamed, while V (injective, read
 // once) is still streamed. Q stays cached.
 // CHECK-LABEL: @attn_skinny_pressure_noninjective_k
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 #bcastH = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["h"] at [1] -> ["h"] at [1]>, <PassThrough ["s"] at [2] -> ["s"] at [2]>] bounds = [1, 64, 32768] -> [1, 1, 32768]>
 func.func @attn_skinny_pressure_noninjective_k(
     %q: tensor<1x16x64xf32>, %k: tensor<1x1x32768xf32>, %v: tensor<1x32768x64xf32>) -> tensor<1x16x64xf32>
@@ -113,9 +113,9 @@ func.func @attn_skinny_pressure_noninjective_k(
 // and under pressure, K is NOT streamed, while V (injective, read once) is. Q
 // stays cached.
 // CHECK-LABEL: @attn_skinny_pressure_adddim_k
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 #adddimH = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <AddDim{64} ["h"] at [1] -> [] at []>, <PassThrough ["s"] at [2] -> ["s"] at [1]>] bounds = [1, 64, 32768] -> [1, 32768]>
 func.func @attn_skinny_pressure_adddim_k(
     %q: tensor<1x16x64xf32>, %k: tensor<1x32768xf32>, %v: tensor<1x32768x64xf32>) -> tensor<1x16x64xf32>
@@ -140,9 +140,9 @@ func.func @attn_skinny_pressure_adddim_k(
 // and finds no reload, so with seqQ skinny and under pressure K is still
 // streamed (as is V).
 // CHECK-LABEL: @attn_skinny_pressure_fusion_chain_injective
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 #idK = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g", "h", "s"] at [0, 1, 2] -> ["g", "h", "s"] at [0, 1, 2]>] bounds = [1, 64, 32768] -> [1, 64, 32768]>
 func.func @attn_skinny_pressure_fusion_chain_injective(
     %q: tensor<1x16x64xf32>, %k: tensor<1x64x32768xf32>, %v: tensor<1x32768x64xf32>) -> tensor<1x16x64xf32>
@@ -170,9 +170,9 @@ func.func @attn_skinny_pressure_fusion_chain_injective(
 // walk must see through the fusions to the broadcast: K is NOT streamed, while V
 // still is.
 // CHECK-LABEL: @attn_skinny_pressure_fusion_chain_reload
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x16x64xf32> -> tensor<16x16xf32>
-// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
-// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x16x64xf32> -> tensor<16x16xf32>
+// CHECK-DAG: rock.load_marker %{{.*}} {{.*}}{cacheModifier = #rock<CacheModifier none>{{.*}}} : tensor<1x64x32768xf32> -> tensor<16x32xf32>
+// CHECK-DAG: rock.load_marker %arg2 {{.*}}{cacheModifier = #rock<CacheModifier cs>{{.*}}} : tensor<1x32768x64xf32> -> tensor<32x64xf32>
 #idK2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g", "h", "s"] at [0, 1, 2] -> ["g", "h", "s"] at [0, 1, 2]>] bounds = [1, 64, 32768] -> [1, 64, 32768]>
 #bcastH2 = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, 0, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Broadcast{1} ["h"] at [1] -> ["h"] at [1]>, <PassThrough ["s"] at [2] -> ["s"] at [2]>] bounds = [1, 64, 32768] -> [1, 1, 32768]>
 func.func @attn_skinny_pressure_fusion_chain_reload(

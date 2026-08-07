@@ -1063,6 +1063,13 @@ func.func @load_marker_cache_modifier_wt(%src: tensor<256x128xf16>, %i0: i32) ->
   return %0 : tensor<64x128xf16>
 }
 
+// Reduction tile axis must refer to an axis of the rank-2 loaded tile
+func.func @load_marker_reduction_tile_axis_out_of_bounds(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{reduction tile axis 2 is not an axis of the loaded tile}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 2>} : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
 // =============================================================================
 // rock.store_marker tests
 // =============================================================================

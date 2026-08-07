@@ -196,7 +196,7 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 
 // ============================================================
 // Knob propagation: the input params opt into the reduction-layout gate
-// (useReductionLayout = 1, the v4 perfConfig knob). Every power-of-two sub-tile
+// (useReductionLayout = 1, introduced in perfConfig v4). Every power-of-two sub-tile
 // produced by the 2x2 split must carry the same knob so a tuned config is not
 // silently dropped during decomposition.
 // ============================================================

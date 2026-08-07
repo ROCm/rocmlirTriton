@@ -14,13 +14,26 @@ kernels and must not be silently matched against an old all-false row.
 """
 
 from pathlib import Path
+import os
+import shutil
 import sys
 import types
 import unittest
 
+# perfRunner.py is on PATH (lit's mlir_rock_tools_dir, populated by
+# ci-performance-scripts). Import it from there rather than from the source
+# tree: it depends on the compiled amd_arch_db binding, which only exists
+# alongside the deployed scripts.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
+
+# quickTuningGen.py is an analysis helper that is not deployed, so it still
+# comes from the source tree.
 MLIR_DIR = Path(__file__).resolve().parents[2]
 PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
 sys.path.insert(0, str(PERF_DIR / "analysis"))
 
 

@@ -1,0 +1,23 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp
+index 7a2e2760c691..54b7d8817ac2 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/OptimizeEpilogue.cpp
+@@ -26,6 +26,7 @@
+ #include "mlir/Pass/PassManager.h"
+ #include "mlir/Support/LogicalResult.h"
+ #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
++#include "triton/Dialect/Triton/IR/Dialect.h"
+ #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+ #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+ 
+@@ -157,6 +158,10 @@ public:
+     if (!cvtOp.getResult().hasOneUse())
+       return mlir::failure();
+ 
++    triton::FuncOp funcOp = stOp->getParentOfType<triton::FuncOp>();
++    if (funcOp && funcOp->getDiscardableAttr("rock.prefer_lds_epilogue"))
++      return mlir::failure();
++
+     auto newEncoding =
+         cast<RankedTensorType>(cvtOp.getSrc().getType()).getEncoding();
+ 

@@ -10,7 +10,10 @@
 // still a rock.blockwise_store writing a transformed view of the kernel output.
 // For each rock.blockwise_gemm consumed by such a store, it records whether the
 // output tile is laid out row-major (N fast) or transposed/column-major (M
-// fast) in global memory, as a discardable `rock.o_transposed` attribute.
+// fast) in global memory, as a discardable `rock.o_transposed` attribute. It
+// also evaluates the OptimizeEpilogue store-tail heuristic and marks the kernel
+// with `rock.prefer_lds_epilogue` when the automatic policy should retain the
+// paced LDS epilogue.
 //
 // The attribute is later copied onto the lowered tt.dot / tt.dot_scaled by
 // RockToTTIR, survives Triton's accelerate-matmul rewrite, and is finally
@@ -23,6 +26,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -30,6 +34,8 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
+
+#include <optional>
 
 namespace mlir {
 namespace rock {
@@ -99,7 +105,10 @@ findConsumerStores(Value root) {
 }
 
 // Number of statically-known elements written by `storeOp` (0 if dynamic), used
-// to pick the largest store when a gemm result is written by several of them.
+// to pick the layout representative when a gemm result is written by several
+// stores. Note this measures the whole destination buffer, not the tile being
+// stored, so it ranks outputs by how much of memory they cover rather than by
+// per-store cost.
 static int64_t storeDestNumElements(rock::BlockwiseStoreOp storeOp) {
   // The dest is a stack of rock.transform views; trace it back to the kernel
   // argument it writes to and measure that underlying buffer.
@@ -143,6 +152,62 @@ static FailureOr<bool> computeOTransposed(rock::BlockwiseStoreOp storeOp) {
   return mVec.max > nVec.max;
 }
 
+// Return the number of reduction-loop iterations feeding `gemmOp`. At this
+// point in the Rock pipeline blockwise GEMMs have not been unrolled, so the
+// enclosing constant scf.for is the source of truth for K depth.
+static std::optional<int64_t> getReductionDepth(rock::BlockwiseGemmOp gemmOp) {
+  scf::ForOp forOp = gemmOp->getParentOfType<scf::ForOp>();
+  if (!forOp)
+    return std::nullopt;
+
+  std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount();
+  if (!tripCount || tripCount->isZero() || tripCount->getActiveBits() > 63)
+    return std::nullopt;
+  return static_cast<int64_t>(tripCount->getZExtValue());
+}
+
+// True when OptimizeEpilogue's register bypass would expose a store burst at
+// least twice as deep as the matrix-core work available to hide it.
+static bool preferLdsEpilogue(rock::BlockwiseGemmOp gemmOp,
+                              rock::BlockwiseStoreOp storeOp,
+                              int64_t blockSize) {
+  auto storeType = dyn_cast<ShapedType>(storeOp.getSource().getType());
+  if (!storeType || !storeType.hasStaticShape())
+    return false;
+
+  Type elemType = storeType.getElementType();
+  if (!elemType.isIntOrFloat())
+    return false;
+  unsigned elemBits = elemType.getIntOrFloatBitWidth();
+  if (elemBits != 16)
+    return false;
+  if (blockSize <= 0)
+    return false;
+
+  std::optional<int64_t> kDepth = getReductionDepth(gemmOp);
+  if (!kDepth) {
+    LLVM_DEBUG(llvm::dbgs() << "[optimize-epilogue] reduction depth unknown -> "
+                               "keep register bypass\n");
+    return false;
+  }
+
+  int64_t tileElems = storeType.getNumElements();
+  constexpr double dwordx4Bytes = 16.0;
+  double storesPerThread =
+      (static_cast<double>(tileElems) * static_cast<double>(elemBits) / 8.0) /
+      (dwordx4Bytes * static_cast<double>(blockSize));
+  double exposure = storesPerThread / static_cast<double>(*kDepth);
+  bool preferLds = exposure >= 2.0;
+
+  LLVM_DEBUG(llvm::dbgs() << "[optimize-epilogue] tileElems=" << tileElems
+                          << " elemBits=" << elemBits << " blockSize="
+                          << blockSize << " storesPerThread=" << storesPerThread
+                          << " kDepth=" << *kDepth << " E=" << exposure
+                          << " -> " << (preferLds ? "LDS epilogue" : "bypass")
+                          << "\n");
+  return preferLds;
+}
+
 void RockAddTritonMetadataPass::runOnOperation() {
   func::FuncOp func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -152,6 +217,17 @@ void RockAddTritonMetadataPass::runOnOperation() {
   }
 
   MLIRContext *ctx = &getContext();
+  func->removeAttr(rock::PreferLdsEpilogueAttr::getMnemonic());
+  auto policyAttr = func->getAttrOfType<IntegerAttr>(
+      rock::UseOptimizeEpilogueAttr::getMnemonic());
+  int64_t policy = policyAttr ? policyAttr.getInt() : rock::kKnobDefault;
+  func->removeAttr(rock::UseOptimizeEpilogueAttr::getMnemonic());
+  bool useAutomaticPolicy = policy == rock::kKnobDefault;
+
+  auto blockSizeAttr =
+      func->getAttrOfType<IntegerAttr>(rock::BlockSizeAttr::getMnemonic());
+  int64_t blockSize = blockSizeAttr ? blockSizeAttr.getInt() : 0;
+  bool preferLds = false;
 
   func.walk([&](rock::BlockwiseGemmOp gemmOp) {
     llvm::SmallSetVector<rock::BlockwiseStoreOp, 4> stores =
@@ -164,8 +240,10 @@ void RockAddTritonMetadataPass::runOnOperation() {
       return;
     }
 
-    // A gemm result can be written by several stores; use the one writing the
-    // largest tensor to memory as the representative for the output layout.
+    // A gemm result can be written by several stores. The output layout needs a
+    // single answer, so it is read off the store covering the largest tensor in
+    // memory. Burst exposure instead depends on the tile each store writes, so
+    // score them all.
     rock::BlockwiseStoreOp storeOp;
     int64_t bestNumElements = -1;
     for (rock::BlockwiseStoreOp candidate : stores) {
@@ -174,13 +252,17 @@ void RockAddTritonMetadataPass::runOnOperation() {
         bestNumElements = numElements;
         storeOp = candidate;
       }
+      if (useAutomaticPolicy)
+        preferLds |= preferLdsEpilogue(gemmOp, candidate, blockSize);
     }
 
     FailureOr<bool> oTransposed = computeOTransposed(storeOp);
-    if (failed(oTransposed))
-      return;
-
-    gemmOp->setDiscardableAttr(rock::OTransposedAttr::getNameStr(),
-                               rock::OTransposedAttr::get(ctx, *oTransposed));
+    if (succeeded(oTransposed))
+      gemmOp->setDiscardableAttr(rock::OTransposedAttr::getNameStr(),
+                                 rock::OTransposedAttr::get(ctx, *oTransposed));
   });
+
+  if (preferLds)
+    func->setDiscardableAttr(rock::PreferLdsEpilogueAttr::getMnemonic(),
+                             UnitAttr::get(ctx));
 }

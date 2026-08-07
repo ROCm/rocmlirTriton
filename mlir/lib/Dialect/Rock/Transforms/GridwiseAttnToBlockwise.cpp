@@ -31,6 +31,7 @@
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -150,16 +151,10 @@ struct GridwiseAttentionRewritePattern
                          Value rowVector, int64_t numCols) const {
     auto rowType = cast<RankedTensorType>(rowVector.getType());
     int64_t numRows = rowType.getShape()[0];
-    Type elemType = rowType.getElementType();
-    
-    // Step 1: Expand dims [M] -> [M, 1]
-    auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    rowVector, 1);
-    
-    // Step 2: Broadcast [M, 1] -> [M, N]
-    auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
-    return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
+    auto resultType =
+        RankedTensorType::get({numRows, numCols}, rowType.getElementType());
+    return expandDimAndBroadcast(rewriter, loc, rowVector, /*axis=*/1,
+                                 resultType);
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -580,26 +575,31 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, tensorAddDim, emptyViews,
-          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE,
+          /*reductionTileAxes=*/nullptr);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
 
-    // This is needed for KV Cache/Causal/Prefix Causal masking support
-    if (isCausal || isKVCache || isPrefixCausal) {
-      if (isKVCache) {
-        currentSeqLen = loadTensorValue(currentSeqLenTensor);
-        effectiveSeqLen = currentSeqLen;
-      }
+    if (isCausal || isKVCache) {
 
-      if (isCausal || isPrefixCausal) {
+      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), 1);
+      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NPerBlock);
+      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
+      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NBlocks);
+
+      if (isKVCache)
+        currentSeqLen = loadTensorValue(currentSeqLenTensor);
+
+      if (isCausal) {
         // Compute the last Q position in the block.
-        // (nIndex + 1) * NPerBlock - 1.
+        // (mIndex + 1) * MPerBlock - 1.
         Value mIndex = gridCoordsGemm0.m_block;
         Value constGemm0MPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), gemm0MPerBlock);
-        Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-            loc, rewriter.getI32Type(), 1);
         Value mIndexPlusOne = arith::AddIOp::create(rewriter, loc, mIndex, one);
         Value nextBlockStart = arith::MulIOp::create(
             rewriter, loc, mIndexPlusOne, constGemm0MPerBlock);
@@ -614,20 +614,15 @@ struct GridwiseAttentionRewritePattern
         }
 
         if (isPrefixCausal) {
-          assert(isCausal && "isPrefixCausal requires isCausal");
-          // For prefix causal: effective seq len = maxRowOfBlock + offset
-          // This determines how many M-blocks we need to process
           prefixOffset = loadTensorValue(prefixOffsetTensor);
           maxRowOfBlock =
               arith::AddIOp::create(rewriter, loc, maxRowOfBlock, prefixOffset);
         }
 
-        if (effectiveSeqLen) {
-          // if effectiveSeqLen is set, it means KV Cache is enabled,
-          // so we need to take the minimum of currentSeqLen and maxRowOfBlock
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
-                                                 maxRowOfBlock);
-        }
+        effectiveSeqLen = maxRowOfBlock;
+        if (isKVCache)
+          effectiveSeqLen = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
+                                                   effectiveSeqLen);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
@@ -636,22 +631,24 @@ struct GridwiseAttentionRewritePattern
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, maxRowOfBlock,
-                                                 gemm0NMinusOne);
+          effectiveSeqLen = arith::MinUIOp::create(
+              rewriter, loc, effectiveSeqLen, gemm0NMinusOne);
         }
-
-        effectiveSeqLen = maxRowOfBlock;
+      } else {
+        effectiveSeqLen = currentSeqLen;
       }
 
       // compute end index
-      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NPerBlock);
       Value numerator = arith::AddIOp::create(rewriter, loc, effectiveSeqLen,
                                               constGemm0NPerBlock);
       end = rewriter.createOrFold<arith::DivUIOp>(loc, numerator,
                                                   constGemm0NPerBlock);
-      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), 1);
+
+      // Clamp the trip count to the physical K/V allocation. Causal modes are
+      // already bounded by effectiveSeqLen; pure KV cache needs this because
+      // Triton's AMD buffer lowering does not use num_records to bound reads.
+      end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
+
       Value zero = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 0);
 
@@ -923,11 +920,14 @@ struct GridwiseAttentionRewritePattern
         allViews.append(globalInputMaps.begin(), globalInputMaps.end());
       ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
 
+      // These tiles are fused into the first gemm's output and then flow
+      // through the softmax into the second gemm, so which axis they end up
+      // reduced over is not known here.
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
-          rock::CacheModifier::NONE);
+          rock::CacheModifier::NONE, /*reductionTileAxes=*/nullptr);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
