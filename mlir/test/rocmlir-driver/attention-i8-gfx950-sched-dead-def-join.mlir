@@ -17,7 +17,7 @@
 // RUN:   -with-attn-scale=False -with-attn-bias=False \
 // RUN:   -transQ=False -transK=True -transV=False -transO=False \
 // RUN:   -causal=False -return_lse=False -split_kv=1 \
-// RUN:   --perf_config=attn:v5:128,128,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1,-1 \
+// RUN:   --perf_config=attn:v6:128,128,0,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver -c | FileCheck %s
 
 // CHECK: triton.hsaco
