@@ -153,8 +153,8 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
     if (status != hipSuccess) {
       llvm::errs() << "HIP error in hipDrvLaunchKernelEx: "
-                   << hipGetErrorString(status) << " (grid="
-                   << static_cast<uint64_t>(gridX) * num_ctas
+                   << hipGetErrorString(status)
+                   << " (grid=" << static_cast<uint64_t>(gridX) * num_ctas
                    << "x1x1, block=" << blockSize
                    << "x1x1, shared-memory=" << shared_memory
                    << " bytes, num-ctas=" << num_ctas << ")\n";
