@@ -319,15 +319,11 @@ def Rock_GemmParamsAttr
       to be enabled).
     - useReductionLayout: Tri-state gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-<<<<<<< HEAD
       gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
       kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
-=======
-      gather operand to cut SGPR spill.
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
->>>>>>> eaf059ed9c (Add Triton patch for OptimizeEpilogue changes and bump perfConfig to v5)
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
