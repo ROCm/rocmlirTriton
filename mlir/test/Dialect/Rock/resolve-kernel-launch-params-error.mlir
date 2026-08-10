@@ -106,6 +106,49 @@ module attributes {
 
 // -----
 
+// Verifies that collectKernelInfo's missing-grid diagnostic is not followed by
+// a misleading diagnostic about Triton launch metadata.
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 2 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.with_grid" = 4 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @with_grid(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+
+  // expected-error @+1 {{'llvm.func' op missing rock.grid_size.without_grid module attribute}}
+  llvm.func @without_grid(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that collectKernelInfo's malformed-prefill diagnostic is not
+// followed by a misleading diagnostic about Triton launch metadata.
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 2 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.bad_prefill" = 4 : i32,
+    "rock.prefill_args.bad_prefill" = [{value = 0 : i32}]
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{'llvm.func' op malformed rock.prefill_args.bad_prefill: entry missing 'index' IntegerAttr}}
+  llvm.func @bad_prefill(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
 // Verifies that a missing rock.arch on the kernel triggers an error.
 // expected-error @+1 {{rock.arch not found on kernel function or module}}
 module attributes {
