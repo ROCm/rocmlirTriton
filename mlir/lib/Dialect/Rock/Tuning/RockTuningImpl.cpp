@@ -350,8 +350,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  std::vector<uint32_t> kPerBlockNonAccel = {1, 4, 8, 16};
-  capKPerBlockByK(kPerBlockNonAccel, gemmK);
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (the same
+  // {16, 32, 64, 128, 256} space as the accel paths, capped by the actual M/N
+  // dimension).
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
