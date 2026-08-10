@@ -158,6 +158,16 @@ static LogicalResult validateGridGroupSize(Operation *op,
   return success();
 }
 
+// 0 means "untiled": gemm1 keeps a single N tile spanning the whole head
+// dimension. Any other value tiles gemm1's N dimension and must be a positive
+// power of two.
+static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
+  if (nPerBlockG1 != 0 && !isPositivePowerOfTwo(nPerBlockG1))
+    return op->emitError() << "nPerBlockG1=" << nPerBlockG1
+                           << " must be 0 (untiled) or a positive power of two";
+  return success();
+}
+
 // Single entry point: run all per-field checks via
 // `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
 // `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
@@ -175,6 +185,9 @@ static LogicalResult validatePerfConfig(Operation *op,
     return failure();
   if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
     return failure();
+  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+      return failure();
   auto validateK =
       requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
   if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))

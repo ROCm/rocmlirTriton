@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The knobs are serialized into the `gemm:v5:` / `attn:v5:` perfConfig
+// The knobs are serialized into the `gemm:v5:` / `attn:v6:` perfConfig
 // schema and consumed by the Rock/Triton lowering pipelines.
 //
 // Their legal values are `kKnobDefault` (-1, automatic/default behavior),

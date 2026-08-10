@@ -168,6 +168,16 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=GRIDGROUP-NEGATIVE
 
+// ---- validateNPerBlockG1: non-zero & not pow2 (gemm+gemm only) ------------
+// nPerBlockG1 is the third field of the attn:v6 perf_config; 0 means the gemm1
+// N dimension is untiled, otherwise it must be a positive power of two.
+
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v6:64,64,3,32,1,1,1,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=NPERBLOCKG1-NOT-POW2
+
 // MPERBLOCK-NON-POSITIVE: error: mPerBlock=0 must be positive
 // NPERBLOCK-NON-POSITIVE: error: nPerBlock=0 must be positive
 // MPERBLOCK-NOT-POW2:    error: mPerBlock=3 must be a positive power of two
@@ -191,3 +201,4 @@
 // WAVESPEREU-NEGATIVE:   error: wavesPerEU=-1 must be >= 0
 // WAVESPEREU-TOO-LARGE:  error: wavesPerEU=9 exceeds max (8) for amdgcn-amd-amdhsa:gfx90a
 // GRIDGROUP-NEGATIVE:    error: gridGroupSize=-1 must be >= 0
+// NPERBLOCKG1-NOT-POW2:  error: nPerBlockG1=3 must be 0 (untiled) or a positive power of two

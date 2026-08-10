@@ -101,6 +101,7 @@ inline GemmGemmParamsAttr
 getConservativeDefaultGemmGemmParams(MLIRContext *ctx) {
   return GemmGemmParamsAttr::get(ctx,
                                  /*mPerBlockG0=*/32, /*nPerBlockG0=*/32,
+                                 /*nPerBlockG1=*/0,
                                  /*kPerBlock=*/32, /*kpack=*/1, /*numCTAs=*/1,
                                  /*numWaves=*/4, /*matrixInstrNonkdim=*/0,
                                  /*splitKFactor=*/1, /*numStages=*/1,
