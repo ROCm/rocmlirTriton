@@ -1215,10 +1215,14 @@ class TuningArgumentParser(argparse.ArgumentParser):
             self.error(
                 "argument --debug-quick-tune-data: not allowed with --two-stage/--two-stage-topk")
 
-        # The tuning driver takes this as an unsigned option, so a negative value would
+        # The tuning driver takes these as unsigned options, so a negative value would
         # wrap into a huge timeout instead of being rejected.
         if parsed.gpu_run_timeout < 0:
             self.error("argument --gpu-run-timeout: must be non-negative")
+        if parsed.perf_config_timeout < 0:
+            self.error("argument --perf-config-timeout: must be non-negative")
+        if parsed.verify_timeout < 0:
+            self.error("argument --verify-timeout: must be non-negative")
 
         # The coarse warmup is capped at what --warmup affords, so a larger
         # floor would be silently inert. The driver rejects this too.
