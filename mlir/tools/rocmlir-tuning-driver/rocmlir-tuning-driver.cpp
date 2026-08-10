@@ -134,8 +134,7 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     uint64_t gridBlocks = static_cast<uint64_t>(gridX) * num_ctas;
     if (gridBlocks > std::numeric_limits<uint32_t>::max()) {
       llvm::errs() << "Launch grid of " << gridBlocks
-                   << " workgroups (grid=" << gridX
-                   << ", num-ctas=" << num_ctas
+                   << " workgroups (grid=" << gridX << ", num-ctas=" << num_ctas
                    << ") does not fit in the uint32 dispatch grid\n";
       return failure();
     }
