@@ -22,9 +22,14 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
 
   DotIntrinsic chooseIntrinsic(DotOp op) {
     auto aOpTy = cast<RankedTensorType>(op.getA().getType());
+    auto bOpTy = cast<RankedTensorType>(op.getB().getType());
     auto aElemTy = aOpTy.getElementType();
-    auto bElemTy = aOpTy.getElementType();
-    assert(aElemTy == bElemTy);
+    auto bElemTy = bOpTy.getElementType();
+    // The fp8 dot4 forms are the only ones that take differing operand types.
+    assert(((aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2()) ||
+            (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN()) ||
+            aElemTy == bElemTy) &&
+           "expected matching A and B element types");
     auto dOpTy = cast<RankedTensorType>(op.getD().getType());
     auto dElemTy = dOpTy.getElementType();
     DotIntrinsic chosenOp;
@@ -45,22 +50,34 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
       chosenOp.additionalArgs = {b.false_val()};
       return chosenOp;
     }
-    // TODO(gfx1170): emit v_dot4_f32_fp8/bf8 for fp8 blocked
-    // (FMA) dots. gfx1170 and RDNA4 (gfx1200/1201) have the Dot11Insts fp8 dot4
-    // ops (llvm.amdgcn.dot4.f32.{fp8,bf8}.{fp8,bf8}); the assembler accepts
-    // them on those targets only (not RDNA3/gfx1250/CDNA). Wiring them here
-    // would let non-WMMA fp8 dots use a K=4 packed dot instead of scalar
-    // upcast+fmuladd:
-    //   - add a supportsFp8Dot4() capability gated on {GFX1170, RDNA4} and read
-    //     TargetFeatures::fromModuleOp() here to guard the branch;
-    //   - for same-type operands map Float8E4M3FN->"fp8" / Float8E5M2->"bf8",
-    //     vectorSize=4, outElemTy=f32, and extend packOperand() to bitcast the
-    //     4xfp8 vector to i32 (as done for i8);
-    //   - the mixed variants (fp8_bf8 / bf8_fp8) additionally need the shared
-    //     FMADotUtility multiplier to carry separate A/B element types.
-    // Currently unreachable: fp8 GEMM on gfx1170 goes through WMMA v2, and the
-    // blocked/FMA fallback upcasts fp8 before the dot, so this is a latent gap
-    // rather than an active miscompile.
+    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
+      chosenOp.vectorSize = 4;
+      chosenOp.outElemTy = f32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.fp8";
+      chosenOp.additionalArgs = {};
+      return chosenOp;
+    }
+    if (aElemTy.isF8E5M2() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
+      chosenOp.vectorSize = 4;
+      chosenOp.outElemTy = f32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.bf8";
+      chosenOp.additionalArgs = {};
+      return chosenOp;
+    }
+    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
+      chosenOp.vectorSize = 4;
+      chosenOp.outElemTy = f32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.bf8";
+      chosenOp.additionalArgs = {};
+      return chosenOp;
+    }
+    if (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
+      chosenOp.vectorSize = 4;
+      chosenOp.outElemTy = f32_ty;
+      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.fp8";
+      chosenOp.additionalArgs = {};
+      return chosenOp;
+    }
     // choose one of FMA intrinsics
     assert(aElemTy.isIntOrFloat() && !aElemTy.isIntOrIndex());
     assert(aElemTy == dElemTy);
@@ -91,7 +108,7 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
       vec =
           b.insert_element(vecTy, vec, scalarValues[elemPos], b.i32_val(elem));
     }
-    if (elemTy.isInteger(8)) {
+    if (elemTy.isInteger(8) || elemTy.isF8E4M3FN() || elemTy.isF8E5M2()) {
       assert(vectorSize == 4);
       vec = b.bitcast(vec, i32_ty);
     }
