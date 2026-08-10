@@ -28,11 +28,15 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
+
+#include <limits>
 
 namespace mlir {
 namespace rock {
@@ -46,6 +50,44 @@ namespace rock {
 using namespace mlir;
 
 namespace {
+
+/// Reject launches too large for an HSA dispatch packet, whose `grid_size_x`
+/// is a uint32_t counted in work-items
+static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
+  bool hasGridMetadata = llvm::any_of(
+      moduleOp.getOps<LLVM::LLVMFuncOp>(), [&](LLVM::LLVMFuncOp funcOp) {
+        return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+               moduleOp->hasAttr(
+                   rock::GridSizeAttr::getModuleAttrName(funcOp.getName()));
+      });
+  if (!hasGridMetadata)
+    return success();
+
+  SmallVector<rock::KernelInfo> kernels;
+  if (failed(rock::collectKernelInfo(moduleOp, kernels)))
+    return failure();
+
+  // The dispatch packet counts work-items, not workgroups, so it is the whole
+  // grid * block * cluster product that has to fit in a uint32.
+  constexpr int64_t maxGridWorkItems = std::numeric_limits<uint32_t>::max();
+  for (rock::KernelInfo &kernel : kernels) {
+    std::optional<int64_t> workItems =
+        llvm::checkedMul(kernel.gridSize, kernel.blockSize);
+    if (workItems)
+      workItems = llvm::checkedMul(*workItems, kernel.clusterSize);
+    if (workItems && *workItems <= maxGridWorkItems)
+      continue;
+
+    rock::markAsNotApplicable(moduleOp);
+    return kernel.llvmFunc.emitOpError()
+           << "launch dimensions (grid size " << kernel.gridSize
+           << ", block size " << kernel.blockSize << ", cluster size "
+           << kernel.clusterSize << ") exceed the AMDGPU limit of "
+           << maxGridWorkItems << " work-items in the X dimension";
+  }
+
+  return success();
+}
 
 struct ResolveKernelLaunchParamsPass
     : public rock::impl::ResolveKernelLaunchParamsPassBase<
@@ -93,6 +135,11 @@ struct ResolveKernelLaunchParamsPass
           << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
           << archStr;
       return signalPassFailure();
+    }
+
+    if (failed(validateKernelLaunchDimensions(moduleOp))) {
+      signalPassFailure();
+      return;
     }
 
     auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>("global_smem");

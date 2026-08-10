@@ -64,6 +64,27 @@ module attributes {
 
 // -----
 
+// Verifies that a launch whose work-item count does not fit in the AMDGPU
+// dispatch packet is rejected and marked not applicable. The grid contains
+// 33554432 workgroups of 2 * 64 = 128 threads, for 2^32 work-items.
+// NA: module attributes {rock.grid_size.oversized_grid = 33554432 : i32, rock.not_applicable
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 2 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.oversized_grid" = 33554432 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{launch dimensions (grid size 33554432, block size 128, cluster size 1) exceed the AMDGPU limit of 4294967295 work-items in the X dimension}}
+  llvm.func @oversized_grid(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
 // Verifies that a missing rock.arch on the kernel triggers an error.
 // expected-error @+1 {{rock.arch not found on kernel function or module}}
 module attributes {

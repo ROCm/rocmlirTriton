@@ -590,7 +590,15 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
   }];
 }
 
-def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
+def Rock_GridSize : Rock_Attr<"GridSize"> {
+  let mnemonic = "rock.grid_size";
+
+  let extraClassDeclaration = [{
+    static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {
+      return (::llvm::Twine(getMnemonic()) + "." + kernelName).str();
+    }
+  }];
+}
 
 def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
   let mnemonic = "rock.cluster_size";
