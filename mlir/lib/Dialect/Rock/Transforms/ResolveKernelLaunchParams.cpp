@@ -65,7 +65,10 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
 
   SmallVector<rock::KernelInfo> kernels;
   if (failed(rock::collectKernelInfo(moduleOp, kernels)))
-    return failure();
+    return moduleOp.emitError(
+        "could not collect kernel launch metadata: expected ttg.num-warps (or "
+        "ttg.total-num-warps), ttg.threads-per-warp and ttg.num-ctas on the "
+        "module");
 
   // The dispatch packet counts work-items, not workgroups, so it is the whole
   // grid * block * cluster product that has to fit in a uint32.

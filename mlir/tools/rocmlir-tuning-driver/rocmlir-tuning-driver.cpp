@@ -73,6 +73,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -125,6 +126,20 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
   if (gridX == 0)
     return success();
   if (num_ctas > 1) {
+    // The launch config counts workgroups in a uint32, so compute the cluster
+    // expansion in 64 bits and reject an overflow instead of wrapping it into
+    // the config (ResolveKernelLaunchParams already rejects such launches at
+    // compile time). This also keeps the diagnostic below reporting the grid
+    // HIP was actually given.
+    uint64_t gridBlocks = static_cast<uint64_t>(gridX) * num_ctas;
+    if (gridBlocks > std::numeric_limits<uint32_t>::max()) {
+      llvm::errs() << "Launch grid of " << gridBlocks
+                   << " workgroups (grid=" << gridX
+                   << ", num-ctas=" << num_ctas
+                   << ") does not fit in the uint32 dispatch grid\n";
+      return failure();
+    }
+
     // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
     // it loads HIP symbols via dlsym. We link directly, so no check needed.
     // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
@@ -146,15 +161,21 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     attributes[1].val.cooperative = 0;
 
     HIP_LAUNCH_CONFIG config = {
-        gridX * num_ctas, 1,      1,            // Grid size
-        blockSize,        1,      1,            // Block size
-        shared_memory,    stream, attributes, 2 // Number of attributes
+        static_cast<unsigned int>(gridBlocks),
+        1,
+        1, // Grid size
+        blockSize,
+        1,
+        1,             // Block size
+        shared_memory, // Shared memory
+        stream,
+        attributes,
+        2 // Number of attributes
     };
     hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
     if (status != hipSuccess) {
       llvm::errs() << "HIP error in hipDrvLaunchKernelEx: "
-                   << hipGetErrorString(status)
-                   << " (grid=" << static_cast<uint64_t>(gridX) * num_ctas
+                   << hipGetErrorString(status) << " (grid=" << gridBlocks
                    << "x1x1, block=" << blockSize
                    << "x1x1, shared-memory=" << shared_memory
                    << " bytes, num-ctas=" << num_ctas << ")\n";

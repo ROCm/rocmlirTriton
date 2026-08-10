@@ -85,6 +85,27 @@ module attributes {
 
 // -----
 
+// Verifies that a module carrying grid metadata but missing the Triton launch
+// metadata that the grid check needs (here ttg.num-ctas) reports which
+// attributes are expected instead of failing the pass without a diagnostic.
+// The module is not marked not applicable: missing metadata is a pipeline bug,
+// not a configuration a tuning run should silently skip.
+// expected-error @+1 {{could not collect kernel launch metadata: expected ttg.num-warps (or ttg.total-num-warps), ttg.threads-per-warp and ttg.num-ctas on the module}}
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 2 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "rock.grid_size.missing_num_ctas" = 4 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @missing_num_ctas(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
 // Verifies that a missing rock.arch on the kernel triggers an error.
 // expected-error @+1 {{rock.arch not found on kernel function or module}}
 module attributes {
