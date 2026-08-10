@@ -67,6 +67,42 @@ LogicalResult validatePerfConfig(Operation *op,
                                  RockTuningParamAttrInterface params,
                                  bool requirePow2MN, bool requirePow2K);
 
+// Whether a GEMM's M/N and K tiles have to be powers of two. A plain GEMM's
+// M/N tiles are taken apart by `rock-decompose-nonpow2-tiles` and its K tile by
+// `rock-gridwise-gemm-to-blockwise`, neither of which handles a scaled GEMM,
+// and the K decomposition also needs an arch that does not miscompile the
+// peeled loop. `AffixTuningParameters` rejects a perf config that violates
+// this, and the tuning space stays inside it.
+struct Pow2TileRequirement {
+  bool mn;
+  bool k;
+};
+Pow2TileRequirement pow2TilesRequired(RockGemmWrapperInterface gemmOp);
+
+// Whether `name` is how a conv layout spells input spatial dim `dim`. The dims
+// are numbered ("0i", "1i", ...), and the first two carry the legacy spellings
+// "hi" and "wi", which parts of the pipeline still emit.
+bool isInputSpatialDimName(StringRef name, size_t dim);
+
+// The factor a `kPerBlock` should be a multiple of for the GEMM's K index
+// computation to be cheap to advance. Returns 1 when K carries no such
+// structure, i.e. on a plain GEMM or a 1x1 conv.
+//
+// A forward conv merges the input's channel and spatial dims into gemmK, in the
+// order the input layout lists them, and only the merge's outermost dim
+// advances without carrying into the ones below it. Of those carries, only one
+// into a spatial dim costs anything: it moves the padded input window, leaving
+// the validity mask dependent on the K loop's induction variable. A carry into
+// the channel dim is just a uniform address step.
+//
+// So the factor exists only for a channels-first input (Merge(c, y, x)), where
+// pinning the spatial dims takes a multiple of the product of the filter's
+// spatial extents. Any other order puts a spatial dim outermost --
+// channels-last Merge(y, x, c), interleaved Merge(y, c, x) -- and then a
+// spatial dim moves on every step whatever the tile size, so no alignment can
+// buy anything.
+int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp);
+
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
 bool isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,

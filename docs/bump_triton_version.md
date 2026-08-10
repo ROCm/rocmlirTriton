@@ -346,7 +346,7 @@ diff the source on every bump:
 
 | Rock copy | Upstream source | What to check |
 |-----------|-----------------|---------------|
-| `kTritonMaxTensorNumElements` in `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` | `maxTensorNumElements` in `external/triton/include/triton/Dialect/Triton/IR/Traits.h` | Integer value must match exactly (currently `1048576`). It gates the tuning space (`exceedsTritonTensorCap`) against Triton's per-tensor element cap enforced by `verifyTensorSize`; if it drifts high, tuning emits configs that fail Triton verification, and if it drifts low, valid configs get dropped. |
+| `kTritonMaxTensorNumElements` in `mlir/lib/Dialect/Rock/Tuning/TuningRanges.cpp` | `maxTensorNumElements` in `external/triton/include/triton/Dialect/Triton/IR/Traits.h` | Integer value must match exactly (currently `1048576`). It gates the tuning space (`exceedsTritonTensorCap`) against Triton's per-tensor element cap enforced by `verifyTensorSize`; if it drifts high, tuning emits configs that fail Triton verification, and if it drifts low, valid configs get dropped. |
 
 ```bash
 git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/Traits.h
@@ -728,7 +728,7 @@ If new Triton headers are needed:
 | perfConfig field list / schema | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
 | perfConfig parser | `mlir/lib/Dialect/Rock/IR/RockDialect.cpp` |
 | Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
-| Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` |
+| Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/TuningRanges.cpp` |
 | Triton `maxTensorNumElements` source | `external/triton/include/triton/Dialect/Triton/IR/Traits.h` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |

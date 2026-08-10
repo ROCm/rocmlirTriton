@@ -16,6 +16,9 @@ Usage examples:
     # Quick-tune CONV configs from a file
     python3 tuningRunner.py --op conv -c configs/tier1-conv-configs --tuning-space quick
 
+    # Tune GEMM configs with the adaptive search, on a short budget
+    python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --tuning-space lfbo --lfbo-effort quick
+
     # Use a subset of available GPUs
     python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --gpus 2 3
 
@@ -211,6 +214,7 @@ class Options:
     debug: bool
     debug_quick_tune_data: bool
     tuning_space_kind: str
+    lfbo_effort: str
     quiet: bool
     verbose: bool
     chip: str
@@ -1252,6 +1256,12 @@ class TuningArgumentParser(argparse.ArgumentParser):
             if parsed.gpus:
                 self.error("argument --gpus: not allowed with --compile-only, "
                            "which performs no GPU runs")
+            # An adaptive search picks each batch from the previous batch's
+            # timings, which a GPU-less compile phase can never produce.
+            if parsed.tuning_space == "lfbo":
+                self.error("argument --tuning-space=lfbo: not allowed with --compile-only, "
+                           "which performs no GPU runs and so cannot measure the batch "
+                           "that decides what to compile next")
             # HIP/rocminfo discovery and the getMinNumCU fallback are unavailable
             # here, so an unset override would bake a wrong grid into the bundle.
             missing = [name for name, value in target_overrides if value is None]
@@ -1548,6 +1558,19 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
         tuning_driver_args.append("--flush-last-level-cache")
+    # A budget only means something to the search that decides how much of its
+    # space to benchmark; passing it to any other space earns a warning.
+    if options.tuning_space_kind == "lfbo":
+        tuning_driver_args.append(f"--lfbo-effort={options.lfbo_effort}")
+
+    # An adaptive search is the only one whose progress is worth recording: the
+    # fixed spaces hand out everything in one batch. Problems tune concurrently
+    # in a driver process each, so each gets a file of its own, named the way
+    # the artifact directories are.
+    trace_path = lfbo_trace_path(test_vector, options)
+    if trace_path:
+        os.makedirs(os.path.dirname(trace_path), exist_ok=True)
+        tuning_driver_args.append(f"--lfbo-trace={trace_path}")
 
     env = make_isolated_gpu_env(gpu_id)
 
@@ -1677,6 +1700,20 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                         max_tflops=max_tflops,
                         entries=entries,
                         verify_tflops=verify_tflops)
+
+
+def lfbo_trace_path(test_vector: str, options: Options) -> Optional[str]:
+    """Where the search should record this problem's iterations, if anywhere.
+
+    Nothing is traced unless --debug asked for detail, the search is the
+    adaptive one, and there is an output file to hang the trace off of. See
+    analysis/plotLFBOTrace.py for what reads it.
+    """
+    if not options.debug or options.tuning_space_kind != "lfbo":
+        return None
+    if options.output == '-':
+        return None
+    return os.path.join(f"{options.output}.lfbo", f"{_problem_hash(test_vector, options)}.jsonl")
 
 
 def _problem_hash(test_vector: str, options: Options) -> str:
@@ -2513,6 +2550,15 @@ def parse_arguments(args=None) -> argparse.Namespace:
         allow_abbrev=False)
     add_common_tuning_arguments(parser)
 
+    # Only the adaptive search chooses how much of its space to benchmark, so it
+    # is the only one this can make cheaper.
+    parser.add_argument("--lfbo-effort",
+                        default="full",
+                        choices=["quick", "full"],
+                        help="How much benchmarking --tuning-space=lfbo may spend looking for a "
+                        "fast config. 'quick' finishes sooner, at the risk of settling for a "
+                        "slower config than the space holds. Ignored by the other spaces.")
+
     config_group = parser.add_mutually_exclusive_group(required=True)
 
     config_group.add_argument(
@@ -2879,6 +2925,7 @@ def main(args=None):
                       quiet=parsed_args.quiet,
                       verbose=parsed_args.verbose,
                       tuning_space_kind=parsed_args.tuning_space,
+                      lfbo_effort=parsed_args.lfbo_effort,
                       rocmlir_gen_flags=parsed_args.rocmlir_gen_flags,
                       verify_winning_config=parsed_args.verify_winning_config,
                       verify_all_perfconfigs=parsed_args.verify_all_perfconfigs,

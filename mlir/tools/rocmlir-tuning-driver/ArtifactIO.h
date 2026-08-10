@@ -16,7 +16,7 @@
 #ifndef ROCMLIR_TUNING_DRIVER_ARTIFACT_IO_H
 #define ROCMLIR_TUNING_DRIVER_ARTIFACT_IO_H
 
-#include "mlir-c/Dialect/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/TuningSearch.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -40,7 +40,7 @@ enum class CompilationStatus {
 };
 
 struct CompilationResult {
-  llvm::SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
+  mlir::rock::PerfConfigString perfConfig;
   CompilationStatus status = CompilationStatus::NotApplicable;
   std::string hsacoBinary; // Single HSACO binary containing all kernels
   llvm::SmallVector<mlir::rock::KernelInfo>

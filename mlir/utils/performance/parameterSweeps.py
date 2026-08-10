@@ -515,7 +515,7 @@ async def sweep_parameters(
 
 
 # Sweep spaces. We deliberately go wider than the production tuning space in
-# mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp so this script can find bugs
+# mlir/lib/Dialect/Rock/Tuning/TuningRanges.cpp so this script can find bugs
 # in combinations the heuristic would never pick. The driver rejects combos
 # that violate the kernel's applicability constraints (tile-too-large for
 # LDS, etc.) — those are reported as NOT_APPLICABLE, not FAIL. A 0 in

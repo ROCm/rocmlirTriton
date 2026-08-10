@@ -44,7 +44,12 @@ OUTPUT_HEADER = ("# arch\tnumCUs\tnumChiplets\ttestVector\tperfConfig\tTFlops\tt
                  "commitId\ttimestamp\tdurationSec\n")
 
 
-def make_options(output, arch=ARCH, num_cu=NUM_CU, num_chiplets=NUM_CHIPLETS, tuning_space="full"):
+def make_options(output,
+                 arch=ARCH,
+                 num_cu=NUM_CU,
+                 num_chiplets=NUM_CHIPLETS,
+                 tuning_space="full",
+                 lfbo_effort="full"):
     """Build the Options bundle TunedConfigsCache.from_output_file reads."""
     return Options(
         chip=arch,
@@ -56,6 +61,7 @@ def make_options(output, arch=ARCH, num_cu=NUM_CU, num_chiplets=NUM_CHIPLETS, tu
         quiet=False,
         verbose=False,
         tuning_space_kind=tuning_space,
+        lfbo_effort=lfbo_effort,
         rocmlir_gen_flags="",
         verify_winning_config=False,
         verify_all_perfconfigs=False,
