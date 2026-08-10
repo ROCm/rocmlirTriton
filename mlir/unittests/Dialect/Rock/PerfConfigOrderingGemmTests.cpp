@@ -58,7 +58,8 @@ struct GemmOrderingTestEnv {
         /*useInThreadTranspose=*/kKnobDefault,
         /*useBufferOps=*/kKnobDefault,
         /*useBufferAtomics=*/kKnobDefault,
-        /*useReductionLayout=*/kKnobDefault);
+        /*useReductionLayout=*/kKnobDefault,
+        /*useOptimizeEpilogue=*/kKnobDefault);
   }
 };
 
@@ -107,9 +108,8 @@ struct TuningSpaceGemmEnv {
   // kPerBlock candidate obeys the `windowDividingKPerBlock` heuristic. Returns
   // the set of kPerBlock values the space offers.
   std::set<int64_t> collectAndCheckKPerBlocks(int64_t k) {
-    TuningParamSpaceSettings settings;
     std::unique_ptr<TuningParamSet> space(
-        createTunableParamSpace(*module, TuningParamSetKind::Full, settings));
+        createTunableParamSpace(*module, TuningParamSetKind::Full));
     std::set<int64_t> kValues;
     if (!space || space->tuningRange.empty()) {
       ADD_FAILURE() << "empty tuning space";
@@ -252,6 +252,7 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsFields) {
   EXPECT_EQ(p.getNumStages(), 1);
   EXPECT_EQ(p.getWavesPerEU(), 0);
   EXPECT_EQ(p.getGridGroupSize(), 0);
+  EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
 TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {

@@ -1,6 +1,6 @@
 // Verify that Triton knobs encoded in a perfConfig string flow through
 // `fillCompilationConfigs` and gate the relevant pass options in the
-// Triton pipeline. The five knobs
+// Triton pipeline. The original five knobs
 // (`useAsyncCopy`, `useBlockPingpong`, `useInThreadTranspose`,
 //  `useBufferOps`, `useBufferAtomics`) are encoded as the trailing 5
 // fields of the `gemm:v3:` perfConfig string (see
@@ -185,32 +185,73 @@
 // useReductionLayout
 //===----------------------------------------------------------------------===//
 //
-// `useReductionLayout` is the v4 perfConfig knob and a tri-state like the other
-// knobs: -1 (the default / heuristic), 0 (off), or 1 (on). The
+// `useReductionLayout` was introduced in the v4 perfConfig and is a tri-state
+// like the other knobs: -1 (the default / heuristic), 0 (off), or 1 (on). The
 // `rock-set-reduction-layout` pass is always scheduled and the knob is threaded
 // to it as `use-reduction-layout`, which controls what the pass rewrites:
 // -1 rewrites only convolution kernels (`rock.conv_kernel`), 0 disables the
-// rewrite entirely, and 1 forces the rewrite on every kernel. So the knob
-// controls the pass option, not whether the pass is present.
+// rewrite entirely, and 1 forces it on every kernel. So the knob controls the
+// pass option, not whether the pass is present.
 
 // Default (v3 string, knob absent -> defaults to -1): rewrite conv kernels only.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
 
-// v4 with useReductionLayout=0 (explicit off): disable the rewrite entirely.
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0 \
+// v5 with useReductionLayout=-1 (heuristic default): rewrite conv kernels only.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=RL_HEURISTIC
+
+// v5 with useReductionLayout=0 (explicit off): disable the rewrite entirely.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_OFF
 
-// v4 with useReductionLayout=1 (force on): force option on.
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v4:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,1 \
+// v5 with useReductionLayout=1 (force on): force option on.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,1,-1 \
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
 // RL_DEFAULT: rock-set-reduction-layout{use-reduction-layout=-1}
+// RL_HEURISTIC: rock-set-reduction-layout{use-reduction-layout=-1}
 // RL_OFF: rock-set-reduction-layout{use-reduction-layout=0}
 // RL_ON: rock-set-reduction-layout{use-reduction-layout=1}
+
+//===----------------------------------------------------------------------===//
+// useOptimizeEpilogue
+//===----------------------------------------------------------------------===//
+//
+// `useOptimizeEpilogue` gates Triton's `tritonamdgpu-optimize-epilogue` pass.
+// The automatic policy (-1) and explicit on (1) schedule the pass; explicit off
+// (0) omits it from makeTTGIR.
+
+// v5 with useOptimizeEpilogue=-1 (automatic policy): pass is scheduled.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=OE_DEFAULT
+
+// v5 with useOptimizeEpilogue=0 (explicit off): pass is absent.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,0 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=OE_OFF
+
+// v5 with useOptimizeEpilogue=1 (explicit on): pass is scheduled.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | FileCheck %s --check-prefix=OE_ON
+
+// OE_DEFAULT: rock-set-matmul-output-transpose
+// OE_DEFAULT: tritonamdgpu-optimize-epilogue
+// OE_DEFAULT: tritonamdgpu-optimize-dot-operands
+
+// OE_OFF: rock-set-matmul-output-transpose
+// OE_OFF-NOT: tritonamdgpu-optimize-epilogue
+// OE_OFF: tritonamdgpu-optimize-dot-operands
+
+// OE_ON: rock-set-matmul-output-transpose
+// OE_ON: tritonamdgpu-optimize-epilogue
+// OE_ON: tritonamdgpu-optimize-dot-operands
 
 //===----------------------------------------------------------------------===//
 // `--pass-pipeline=...` validation

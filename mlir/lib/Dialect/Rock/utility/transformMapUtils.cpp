@@ -1039,7 +1039,8 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       }
       newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
                                           t.getUpperNames(), t.getUpperDims(),
-                                          t.getLowerNames(), t.getLowerDims()));
+                                          t.getLowerNames(), t.getLowerDims(),
+                                          t.getIsTileAlignment()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1066,11 +1067,14 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 }
 
 SmallVector<unsigned>
-mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
+                                       bool ignoreTileAlignmentPads) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
     if (type == TransformType::Pad) {
+      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
+        continue;
       ArrayRef<int64_t> params = op.getParams();
       ArrayRef<uint32_t> upper = op.getUpperDims();
       for (size_t i = 0, e = upper.size(); i < e; ++i)
@@ -1099,6 +1103,62 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
       result = map;
   }
   return result;
+}
+
+bool mlir::rock::transformChainDependsOnAnyDim(
+    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
+  if (dims.empty())
+    return false;
+
+  // An empty chain passes its coordinates through unchanged, so the lower
+  // coordinates depend on every upper dim. It also has no domain to check
+  // `dims` against.
+  AffineMap composed = composeTransforms(transforms);
+  if (!composed)
+    return true;
+
+  assert(llvm::all_of(
+             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
+         "queried dim is not an upper coordinate of the transform chain");
+
+  return llvm::any_of(
+      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
+}
+
+bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
+                                         ArrayRef<unsigned> dims,
+                                         bool ignoreTileAlignmentPads) {
+  // An empty chain generates no validity checks, and has no upper coordinate
+  // space to check `dims` against.
+  if (dims.empty() || transforms.empty())
+    return false;
+
+  assert(llvm::all_of(
+             dims,
+             [&](unsigned dim) {
+               return dim <
+                      transforms.front().getMap().getAffineMap().getNumDims();
+             }) &&
+         "queried dim is not an upper coordinate of the transform chain");
+
+  for (auto [index, transform] : llvm::enumerate(transforms)) {
+    SmallVector<unsigned> upperDims =
+        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
+    if (upperDims.empty())
+      continue;
+
+    AffineMap above = composeTransforms(transforms.take_front(index));
+    for (unsigned upperDim : upperDims) {
+      AffineExpr coordinate =
+          above ? above.getResult(upperDim)
+                : getAffineDimExpr(upperDim, transform.getContext());
+      if (llvm::any_of(dims, [&](unsigned dim) {
+            return coordinate.isFunctionOfDim(dim);
+          }))
+        return true;
+    }
+  }
+  return false;
 }
 
 bool mlir::rock::isIdentityOnShape(AffineMap map, ArrayRef<int64_t> shape) {
@@ -1545,9 +1605,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
-                                          t.getUpperNames(), upperDims,
-                                          t.getLowerNames(), lowerDims));
+      newOps.push_back(TransformAttr::get(
+          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
+          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
     }
 
     // Add the passthrough transforms
@@ -1601,6 +1661,7 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
+  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1746,6 +1807,7 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
+    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -1766,7 +1828,8 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     case TransformType::Broadcast:
     case TransformType::Pad:
     case TransformType::Merge: {
-      assert(!mustBeModified && "must be preserved or removed completely");
+      if (mustBeModified)
+        return failure();
       [[fallthrough]];
     }
     case TransformType::Unmerge: {
@@ -2066,12 +2129,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr =
-        TransformAttr::get(b.getContext(), args.type, args.params,
-                           std::get<DimType::Upper>(args.preservedNames),
-                           std::get<DimType::Upper>(args.preservedDims),
-                           std::get<DimType::Lower>(args.preservedNames),
-                           std::get<DimType::Lower>(args.preservedDims));
+    auto newTr = TransformAttr::get(
+        b.getContext(), args.type, args.params,
+        std::get<DimType::Upper>(args.preservedNames),
+        std::get<DimType::Upper>(args.preservedDims),
+        std::get<DimType::Lower>(args.preservedNames),
+        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
     newOps.push_back(newTr);
   }
 
@@ -2438,53 +2501,71 @@ static bool hasReloadTransform(TransformMapAttr map) {
   return false;
 }
 
-// Walks the def chain of `value` (a kernel operand) back to the kernel block
-// arguments, traversing view (rock.transform) ops and input-fusion ops.
-// Collects the reached block arguments in `kernelArgs` and sets
-// `hasNonInjective` if any rock.transform in the chain reloads data (see
-// hasReloadTransform). Returns failure if the chain hits an unexpected op.
 static LogicalResult
-walkInputFusionChain(Value value, SmallVectorImpl<BlockArgument> &kernelArgs,
-                     bool &hasNonInjective) {
-  SmallVector<Value> worklist;
-  DenseSet<Value> visited;
-  worklist.push_back(value);
-  visited.insert(value);
-  hasNonInjective = false;
+collectInputFusionPathsImpl(Value value, ArrayAttr transforms,
+                            SmallVectorImpl<InputFusionPath> &paths,
+                            DenseSet<std::pair<Value, ArrayAttr>> &visited) {
+  // A value the walk reaches again under the same transforms would contribute
+  // the paths its first visit already appended. Fusion DAGs where a value feeds
+  // several ops that later merge have a number of such routes exponential in
+  // the number of merges.
+  if (!visited.insert({value, transforms}).second)
+    return success();
 
-  while (!worklist.empty()) {
-    Value currValue = worklist.pop_back_val();
-    if (auto maybeBlockArg = dyn_cast<BlockArgument>(currValue)) {
-      kernelArgs.push_back(maybeBlockArg);
-    } else if (auto viewOp =
-                   dyn_cast<ViewLikeOpInterface>(currValue.getDefiningOp())) {
-      if (auto transformOp = dyn_cast<TransformOp>(currValue.getDefiningOp()))
-        hasNonInjective |= hasReloadTransform(transformOp.getTransform());
-      Value src = viewOp.getViewSource();
-      if (visited.insert(src).second)
-        worklist.push_back(src);
-    } else if (isFusionOp(currValue.getDefiningOp())) {
-      for (auto operand : currValue.getDefiningOp()->getOperands()) {
-        if (visited.insert(operand).second)
-          worklist.push_back(operand);
-      }
-    } else if (isa<arith::ConstantOp>(currValue.getDefiningOp())) {
-      // nothing to do with constants, just skip them
-      continue;
-    } else {
-      LLVM_DEBUG(llvm::dbgs() << "walkInputFusionChain: Found unexpected op = "
-                              << currValue.getDefiningOp() << "\n");
-      return failure();
-    }
+  if (isa<BlockArgument>(value) || value.getDefiningOp<arith::ConstantOp>()) {
+    paths.push_back(
+        {value, llvm::to_vector(transforms.getAsRange<TransformMapAttr>())});
+    return success();
   }
-  return success();
+
+  Operation *defOp = value.getDefiningOp();
+  if (auto transformOp = dyn_cast_or_null<TransformOp>(defOp)) {
+    SmallVector<Attribute> nextTransforms(transforms.begin(), transforms.end());
+    nextTransforms.push_back(transformOp.getTransform());
+    return collectInputFusionPathsImpl(
+        transformOp.getInput(),
+        ArrayAttr::get(value.getContext(), nextTransforms), paths, visited);
+  }
+
+  if (isFusionOp(defOp)) {
+    for (Value operand : defOp->getOperands())
+      if (failed(
+              collectInputFusionPathsImpl(operand, transforms, paths, visited)))
+        return failure();
+    return success();
+  }
+
+  // Give up rather than skip past this op. A view-like op that is not a
+  // rock.transform lands here deliberately: it contributes no TransformMapAttr,
+  // so continuing to its source would drop part of the coordinate mapping the
+  // collected path is meant to describe.
+  LLVM_DEBUG(llvm::dbgs()
+             << "collectInputFusionPaths: no path representation for op = "
+             << *defOp << "\n");
+  return failure();
+}
+
+FailureOr<SmallVector<InputFusionPath>>
+mlir::rock::collectInputFusionPaths(Value value) {
+  SmallVector<InputFusionPath> paths;
+  DenseSet<std::pair<Value, ArrayAttr>> visited;
+  if (failed(collectInputFusionPathsImpl(
+          value, ArrayAttr::get(value.getContext(), ArrayRef<Attribute>{}),
+          paths, visited)))
+    return failure();
+  return paths;
 }
 
 FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
-  bool hasNonInjective = false;
-  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
     return failure();
+
+  SmallVector<BlockArgument> kernelArgs;
+  for (const InputFusionPath &path : *paths)
+    if (auto blockArg = dyn_cast<BlockArgument>(path.leaf))
+      kernelArgs.push_back(blockArg);
 
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
@@ -2495,12 +2576,14 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
 }
 
 FailureOr<bool> mlir::rock::isInputNonInjective(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
-  bool hasNonInjective = false;
-  if (failed(walkInputFusionChain(value, kernelArgs, hasNonInjective)))
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
     return failure();
 
-  return hasNonInjective;
+  return llvm::any_of(*paths, [](const InputFusionPath &path) {
+    return llvm::any_of(path.transforms, hasReloadTransform);
+  });
 }
 
 FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {

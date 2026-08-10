@@ -11,6 +11,7 @@ patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-gfx1170.patch
+patch-optimize-epilogue-rock-metadata.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
@@ -165,3 +166,12 @@ patch11118.patch
 
   Drop this patch on the next Triton bump that includes upstream merge commit
   9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
+
+patch-optimize-epilogue-rock-metadata.patch
+  Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
+  function marker. Marked kernels keep the paced LDS round-trip instead of
+  using BypassEpilogueSMEM's register permlane bypass. The store-tail heuristic
+  and tri-state policy resolution live in rocMLIR's rock-add-triton-metadata
+  pass; no Rock-specific performance model remains in the vendored Triton
+  implementation.
+

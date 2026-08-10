@@ -5,6 +5,7 @@
 // RUN: rocmlir-gen -operation gemm -t f16 -out_datatype f32 \
 // RUN:   --arch gfx950 --num_cu 256 \
 // RUN:   -g 1 -m 64 -k 64 -n 64 -transA=False -transB=False \
+// RUN:   --perf_config="gemm:v4:16,16,16,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1" \
 // RUN:   | rocmlir-driver -c \
 // RUN:   | FileCheck %s --implicit-check-not=hidden_heap_v1 --implicit-check-not=__amd_rocclr_initHeap
 

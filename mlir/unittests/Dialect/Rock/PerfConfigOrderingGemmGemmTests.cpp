@@ -86,19 +86,22 @@ struct GemmGemmOrderingTestEnv {
   // Build a GemmGemmParamsAttr from positional fields. Mirrors the perfconfig
   // string format documented on Rock_GemmGemmParamsAttr.
   GemmGemmParamsAttr params(int64_t mPerBlockG0, int64_t nPerBlockG0,
-                            int64_t kPerBlock, int64_t kpack, int64_t numCTAs,
-                            int64_t numWaves, int64_t matrixInstrNonkdim,
-                            int64_t splitKFactor, int64_t numStages,
-                            int64_t wavesPerEU, int64_t gridGroupSize) {
-    return GemmGemmParamsAttr::get(
-        &ctx, mPerBlockG0, nPerBlockG0, kPerBlock, kpack, numCTAs, numWaves,
-        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize,
-        /*useAsyncCopy=*/kKnobDefault,
-        /*useBlockPingpong=*/kKnobDefault,
-        /*useInThreadTranspose=*/kKnobDefault,
-        /*useBufferOps=*/kKnobDefault,
-        /*useBufferAtomics=*/kKnobDefault,
-        /*useReductionLayout=*/kKnobDefault);
+                            int64_t nPerBlockG1, int64_t kPerBlock,
+                            int64_t kpack, int64_t numCTAs, int64_t numWaves,
+                            int64_t matrixInstrNonkdim, int64_t splitKFactor,
+                            int64_t numStages, int64_t wavesPerEU,
+                            int64_t gridGroupSize) {
+    return GemmGemmParamsAttr::get(&ctx, mPerBlockG0, nPerBlockG0, nPerBlockG1,
+                                   kPerBlock, kpack, numCTAs, numWaves,
+                                   matrixInstrNonkdim, splitKFactor, numStages,
+                                   wavesPerEU, gridGroupSize,
+                                   /*useAsyncCopy=*/kKnobDefault,
+                                   /*useBlockPingpong=*/kKnobDefault,
+                                   /*useInThreadTranspose=*/kKnobDefault,
+                                   /*useBufferOps=*/kKnobDefault,
+                                   /*useBufferAtomics=*/kKnobDefault,
+                                   /*useReductionLayout=*/kKnobDefault,
+                                   /*useOptimizeEpilogue=*/kKnobDefault);
   }
 };
 } // namespace
@@ -107,21 +110,21 @@ struct GemmGemmOrderingTestEnv {
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsKpackNot1) {
   GemmGemmOrderingTestEnv e;
-  auto p = e.params(32, 32, 32, /*kpack=*/2, 1, 4, 0, 1, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, /*kpack=*/2, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsSplitKNot1) {
   GemmGemmOrderingTestEnv e;
-  auto p = e.params(32, 32, 32, 1, 1, 4, 0, /*splitKFactor=*/2, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, 1, 1, 4, 0, /*splitKFactor=*/2, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsNumCTAsNot1) {
   GemmGemmOrderingTestEnv e;
-  auto p = e.params(32, 32, 32, 1, /*numCTAs=*/2, 4, 0, 1, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, 1, /*numCTAs=*/2, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
 }
@@ -129,7 +132,7 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsNumCTAsNot1) {
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm0LDSOverflow) {
   GemmGemmOrderingTestEnv e;
   // Huge gemm0 tile blows the LDS budget by itself, regardless of headV.
-  auto p = e.params(256, 256, 256, 1, 1, 4, 16, 1, 2, 0, 0);
+  auto p = e.params(256, 256, 0, 256, 1, 1, 4, 16, 1, 2, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
 }
@@ -142,7 +145,29 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsGemm1VTileOverflow) {
   // V tile of 32 × headV × 32 bits for headV = 16384 yields 2 MiB, well over
   // gfx942's 64 KiB LDS.
   GemmGemmOrderingTestEnv e(/*headV=*/16384, /*useF32=*/true);
-  auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
+      e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
+}
+
+TEST(PerfConfigOrderingGemmGemmTest, IsApplicableTilingRescuesLargeHeadV) {
+  // Same huge headV that overflows untiled (see above), but tiling the head dim
+  // with a small nPerBlockG1 shrinks the V tile back into LDS: the V tile is
+  // nPerBlockG0 × nPerBlockG1 × bits = 32 × 64 × 32 = 64 Kibit = 8 KiB, so the
+  // total (8 KiB gemm0 + 8 KiB V) fits gfx942's 64 KiB.
+  GemmGemmOrderingTestEnv e(/*headV=*/16384, /*useF32=*/true);
+  auto p = e.params(32, 32, /*nPerBlockG1=*/64, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
+      e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
+}
+
+TEST(PerfConfigOrderingGemmGemmTest, IsApplicableRejectsBigNPerBlockG1) {
+  // A big nPerBlockG1 leaves the V tile huge even for a modest headV: the V
+  // tile is nPerBlockG0 × nPerBlockG1 × bits = 32 × 16384 × 32 = 2 MiB, well
+  // over gfx942's 64 KiB. This mirrors the untiled overflow but is driven by
+  // the tuning knob rather than the head dim.
+  GemmGemmOrderingTestEnv e(/*headV=*/64, /*useF32=*/true);
+  auto p = e.params(32, 32, /*nPerBlockG1=*/16384, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f32, e.f32, e.f32, "gfx942", e.op()));
 }
@@ -152,14 +177,14 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableUsesVElementBitWidth) {
   // widening only V to f32 pushes the footprint over the limit.
   GemmGemmOrderingTestEnv e(/*headV=*/512, /*useF32=*/false,
                             /*useF32V=*/true);
-  auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_FALSE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f16, e.f16, e.f32, "gfx942", e.op()));
 }
 
 TEST(PerfConfigOrderingGemmGemmTest, IsApplicableAcceptsConservativeDefault) {
   GemmGemmOrderingTestEnv e;
-  auto p = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  auto p = e.params(32, 32, 0, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
       e.builder, p, e.f16, e.f16, e.f16, "gfx942", e.op()));
   EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
@@ -172,9 +197,9 @@ TEST(PerfConfigOrderingGemmGemmTest, IsApplicableAcceptsConservativeDefault) {
 
 TEST(PerfConfigOrderingGemmGemmTest, OrderParamsBumpsSecondToFront) {
   GemmGemmOrderingTestEnv e;
-  auto bad = e.params(32, 32, 32, /*kpack=*/2, 1, 4, 0, 1, 1, 0, 0);
-  auto good = e.params(32, 32, 32, 1, 1, 4, 0, 1, 1, 0, 0);
-  auto other = e.params(64, 64, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  auto bad = e.params(32, 32, 0, 32, /*kpack=*/2, 1, 4, 0, 1, 1, 0, 0);
+  auto good = e.params(32, 32, 0, 32, 1, 1, 4, 0, 1, 1, 0, 0);
+  auto other = e.params(64, 64, 0, 32, 1, 1, 4, 0, 1, 1, 0, 0);
   std::vector<GemmGemmParamsAttr> in{bad, good, other};
   auto out = orderParams<GemmGemmParamsAttr>(in, [&](GemmGemmParamsAttr p) {
     return isGemmGemmParamsConservativelyApplicable(e.builder, p, e.f16, e.f16,
@@ -202,6 +227,7 @@ TEST(PerfConfigOrderingGemmGemmTest, ConservativeDefaultGemmGemmParamsFields) {
   EXPECT_EQ(p.getNumStages(), 1);
   EXPECT_EQ(p.getWavesPerEU(), 0);
   EXPECT_EQ(p.getGridGroupSize(), 0);
+  EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
 }
 
 TEST(PerfConfigOrderingGemmGemmTest,

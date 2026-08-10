@@ -3,9 +3,10 @@
 
 //===- tritonUtils.h - Triton-dependent utilities for Rock ----------------===//
 //
-// Centralizes C++ replicas of Triton-internal functions that must be kept in
-// sync on every Triton version bump.  Having them in one place makes the
-// bump_triton_version.md checklist easier to follow.
+// Centralizes Triton-dependent helpers and C++ replicas of Triton-internal
+// functions that must be kept in sync on every Triton version bump. Having
+// them in one place makes the bump_triton_version.md checklist easier to
+// follow.
 //
 // Upstream sources:
 //   getMfmaVersion / getWmmaVersion
@@ -17,7 +18,11 @@
 //        (mlirTypeToScaledElemType, extended with BF16/FP16)
 //===----------------------------------------------------------------------===//
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 
@@ -45,6 +50,11 @@ int getWmmaVersion(triton::amdgpu::ISAFamily isaFamily);
 ///   {F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64}
 bool isTTFloat(Type t);
 
+/// Return true if `t` is one of the types in Triton's TT_Int set.
+/// Mirrors the TT_Int type constraint from TritonTypes.td:
+///   {I1, I4, I8, I16, I32, I64}
+bool isTTInt(Type t);
+
 /// Map an MLIR element type to the corresponding triton::ScaleDotElemType.
 /// Covers F8 (E4M3, E5M2), F6 (E2M3, E3M2), F4 (E2M1), BF16, and FP16.
 /// Returns failure() for unsupported types.
@@ -52,6 +62,11 @@ bool isTTFloat(Type t);
 /// Adapted from mlirTypeToScaledElemType in AccelerateAMDMatmul.cpp with
 /// additional BF16/FP16 coverage.
 FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type);
+
+/// Insert a unit dimension at `axis` with tt.expand_dims, then broadcast the
+/// expanded tensor to `resultType`.
+Value expandDimAndBroadcast(OpBuilder &builder, Location loc, Value source,
+                            int64_t axis, RankedTensorType resultType);
 
 } // namespace rock
 } // namespace mlir

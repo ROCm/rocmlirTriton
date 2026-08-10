@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
 import perfRunner
-from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
+from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
@@ -70,34 +70,53 @@ def _decode_cmd_output(data: bytes) -> str:
 class PerfConfig:
     """Serialized perf-config for the Triton-backed rocMLIR pipeline.
 
-    The new format is a ``<kind>:v1:`` string with 11 comma-separated integer
+    The format is a ``<kind>:<version>:`` string with comma-separated integer
     fields. Two ``kind`` values exist (see RockAttrDefs.td):
 
-    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels):
+    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels), emitted as
+      ``gemm:v1:`` with 11 fields:
         mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
         matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
 
-    * ``attn`` / GemmGemmParamsAttr (used for attention / gemm-gemm kernels):
-        mPerBlockG0, nPerBlockG0, kPerBlock, kpack, numCTAs, numWaves,
-        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
+    * ``attn`` / GemmGemmParamsAttr (used for attention / gemm-gemm kernels),
+      emitted as ``attn:v6:`` with 12 fields plus 7 trailing knob fields (all
+      left at the ``-1`` "use default" sentinel here):
+        mPerBlockG0, nPerBlockG0, nPerBlockG1, kPerBlock, kpack, numCTAs,
+        numWaves, matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
+        gridGroupSize
+      ``nPerBlockG1`` is the second-gemm N/head tile; ``0`` means untiled.
 
     See ``parsePerfConfigStr`` in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
     """
 
-    EXPECTED_FIELDS = 11
+    # Number of tunable fields per kind (before the attn:v6 trailing knobs).
+    # ``attn`` carries the extra ``nPerBlockG1`` field (the 3rd one).
+    _NUM_FIELDS = {'gemm': 11, 'attn': 12}
+    # Number of trailing knob fields in the attn:v6 format; -1 means "use the
+    # backend default" for each (matches kKnobDefault/kNumKnobFieldsV6 in
+    # RockDialect.cpp).
+    _V6_NUM_KNOBS = 7
+    _KNOB_DEFAULT = -1
 
     def __init__(self, config: Sequence[int], kind: str = 'gemm'):
-        if kind not in ('gemm', 'attn'):
+        if kind not in self._NUM_FIELDS:
             raise ValueError(f"Invalid PerfConfig kind: {kind!r}")
-        if len(config) != self.EXPECTED_FIELDS:
-            raise ValueError(
-                f"PerfConfig expects {self.EXPECTED_FIELDS} fields, got {len(config)}: {config!r}")
+        expected = self._NUM_FIELDS[kind]
+        if len(config) != expected:
+            raise ValueError(f"PerfConfig(kind={kind!r}) expects {expected} fields, "
+                             f"got {len(config)}: {config!r}")
         self._config = tuple(config)
         self._kind = kind
 
     def __str__(self):
-        suffix = ','.join(str(v) for v in self._config)
-        return f'{self._kind}:v1:{suffix}'
+        fields = self._config
+        version = 'v1'
+        if self._kind == 'attn':
+            # attn:v6 appends the default-valued knob fields after the tunables.
+            version = 'v6'
+            fields = (*fields, *([self._KNOB_DEFAULT] * self._V6_NUM_KNOBS))
+        suffix = ','.join(str(v) for v in fields)
+        return f'{self._kind}:{version}:{suffix}'
 
 
 def multiline_repr(obj, num_fields=4):
@@ -539,6 +558,13 @@ PERF_CONFIG_OPTIONS = {
     # heuristic path is also exercised.
     'waves_per_eu': [0, 1, 2, 4, 8],
     'grid_group_size': [0, 1, 2, 4, 8],
+    # attn-only second-gemm N/head tile (the attn:v6 nPerBlockG1 field). These
+    # are the non-zero (tiled) options; the untiled case (0) is sampled
+    # separately (see sample_perf_config). All powers of two so the chunk count
+    # (gemm1N / nPerBlockG1, after gemm1N is padded to a power of two in
+    # AttnToGridwise.cpp) stays a power of two -- the invariant
+    # GridwiseAttnToBlockwise.cpp's tree-concat relies on.
+    'n_per_block_g1': [16, 32, 64, 128, 256],
 }
 
 # Conv problem-shape sweep. Sizes are a mix of common CNN shapes (e.g. 224, 56,
@@ -767,8 +793,11 @@ def _is_pow2(n: int) -> bool:
 def sample_perf_config(rng: random.Random,
                        arch: str,
                        split_k_choices: Sequence[int],
-                       pow2_only: bool = False) -> Tuple[int, ...]:
-    """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
+                       pow2_only: bool = False,
+                       is_attention: bool = False) -> Tuple[int, ...]:
+    """Returns one random perf-config tuple: 11 fields for gemm/conv
+    (gemm:v1), or 12 fields for attention / gemm+gemm (attn:v6) with the
+    ``nPerBlockG1`` second-gemm N/head tile spliced in as the 3rd field.
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
@@ -782,7 +811,11 @@ def sample_perf_config(rng: random.Random,
     exercise the non-pow2 K peeling in rock-gridwise-gemm-to-blockwise), both
     gemm/conv only; callers whose pipeline doesn't run those passes
     (attention / gemm+gemm, which use GemmGemmParamsAttr) pass
-    ``pow2_only=True`` to stay on the pow2 grid."""
+    ``pow2_only=True`` to stay on the pow2 grid.
+
+    ``is_attention`` adds the attn-only ``nPerBlockG1`` field: untiled (``0``)
+    half the time, otherwise a power-of-two tile from
+    ``PERF_CONFIG_OPTIONS['n_per_block_g1']``."""
     opts = PERF_CONFIG_OPTIONS
     m_choices = opts['m_per_block']
     n_choices = opts['n_per_block']
@@ -795,6 +828,10 @@ def sample_perf_config(rng: random.Random,
     return (
         rng.choice(m_choices),
         rng.choice(n_choices),
+        # attn:v6 inserts nPerBlockG1 here as the 3rd field; gemm:v1 omits it.
+        # Untiled (0) half the time, otherwise a power-of-two tile.
+        *([0 if rng.choice([True, False]) else rng.choice(opts['n_per_block_g1'])]
+          if is_attention else []),
         rng.choice(k_choices),
         rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),
@@ -1161,7 +1198,7 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
                       arch=arch,
                       concurrent_tests=args.jobs,
                       num_cu=num_cu,
-                      num_chiplets=get_num_chiplets(chip, num_cu),
+                      num_chiplets=amd_arch_db.infer_num_chiplets(chip, num_cu),
                       test_timeout_sec=args.test_timeout_sec,
                       max_timeout_rate=args.max_timeout_rate)
     paths = perfRunner.create_paths(None, mlir_build_dir)

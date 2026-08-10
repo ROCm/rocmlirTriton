@@ -385,8 +385,63 @@ TEST(IsIdentityOnShapeTest, EmptyShape) {
 }
 
 //===----------------------------------------------------------------------===//
-// isInputNonInjective Tests
+// transformChainDependsOnAnyDim Tests
 //===----------------------------------------------------------------------===//
+
+TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder transform(b, {"m"}, {8}, loc);
+  transform.addDim("k", 1, 16);
+  transform.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+
+  SmallVector<TransformMapAttr> transforms{transform.get()};
+  SmallVector<unsigned> mDim{0};
+  SmallVector<unsigned> kDim{1};
+  SmallVector<unsigned> bothDims{0, 1};
+  SmallVector<unsigned> noDims;
+  SmallVector<TransformMapAttr> noTransforms;
+
+  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, mDim));
+  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, kDim));
+  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, bothDims));
+  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, noDims));
+  EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
+}
+
+//===----------------------------------------------------------------------===//
+// validityDependsOnAnyDim Tests
+//===----------------------------------------------------------------------===//
+
+TEST(ValidityDependsOnAnyDimTest, FindsDependenciesInTransformRange) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder lower(b, {"m", "k"}, {8, 16}, loc);
+  lower.passThrough("m");
+  lower.pad("kPad", "k", 1, 1);
+  TransformMapAttr lowerAttr = lower.get();
+
+  BottomUpTMBuilder upper = BottomUpTMBuilder::above(lower, lowerAttr);
+  upper.pad("mPad", "m", 1, 1);
+  upper.passThrough("kPad");
+  TransformMapAttr upperAttr = upper.get();
+
+  SmallVector<TransformMapAttr> transforms{upperAttr, lowerAttr};
+  SmallVector<unsigned> mDim{0};
+  SmallVector<unsigned> kDim{1};
+  SmallVector<unsigned> bothDims{0, 1};
+  SmallVector<unsigned> noDims;
+  EXPECT_TRUE(validityDependsOnAnyDim(transforms, bothDims));
+  EXPECT_FALSE(validityDependsOnAnyDim(transforms, noDims));
+  ArrayRef<TransformMapAttr> lowerTransforms =
+      ArrayRef<TransformMapAttr>(transforms).drop_front();
+  EXPECT_FALSE(validityDependsOnAnyDim(lowerTransforms, mDim));
+  EXPECT_TRUE(validityDependsOnAnyDim(lowerTransforms, kDim));
+}
 
 // Create a zero constant tensor of the given shape/element type.
 static Value makeConstant(OpBuilder &b, Location loc, ArrayRef<int64_t> shape,
@@ -402,6 +457,87 @@ static Value applyTransform(OpBuilder &b, Location loc, Value src,
                             TransformMapAttr transform) {
   return TransformOp::create(b, loc, src, transform);
 }
+
+//===----------------------------------------------------------------------===//
+// collectInputFusionPaths Tests
+//===----------------------------------------------------------------------===//
+
+TEST(CollectInputFusionPathsTest, PreservesTransformsPerLeaf) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value baseA = makeConstant(b, loc, {16}, b.getF32Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.passThrough("a");
+  TransformMapAttr transform = tm.get();
+  Value transformedA = applyTransform(b, loc, baseA, transform);
+
+  Value baseB = makeConstant(b, loc, {16}, b.getF32Type());
+  Value fused = arith::AddFOp::create(b, loc, transformedA, baseB).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(fused);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, baseA);
+  ASSERT_EQ((*paths)[0].transforms.size(), 1U);
+  EXPECT_EQ((*paths)[0].transforms[0], transform);
+  EXPECT_EQ((*paths)[1].leaf, baseB);
+  EXPECT_TRUE((*paths)[1].transforms.empty());
+}
+
+// A value feeding two fusion ops whose results merge again is reachable by two
+// routes. Both reach its leaves under the same transforms, so each leaf is
+// collected once.
+TEST(CollectInputFusionPathsTest, CollectsSharedOperandOnce) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value baseA = makeConstant(b, loc, {16}, b.getF32Type());
+  Value baseB = makeConstant(b, loc, {16}, b.getF32Type());
+  Value shared = arith::AddFOp::create(b, loc, baseA, baseB).getResult();
+  Value left = arith::MulFOp::create(b, loc, shared, baseA).getResult();
+  Value right = arith::SubFOp::create(b, loc, shared, baseB).getResult();
+  Value merged = arith::AddFOp::create(b, loc, left, right).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(merged);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, baseA);
+  EXPECT_EQ((*paths)[1].leaf, baseB);
+}
+
+// The same leaf reached under different transforms describes different loads,
+// so both routes are kept.
+TEST(CollectInputFusionPathsTest, KeepsSharedLeafUnderDifferentTransforms) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  Value base = makeConstant(b, loc, {16}, b.getF32Type());
+  BottomUpTMBuilder tm(b, {"a"}, {16}, loc);
+  tm.passThrough("a");
+  TransformMapAttr transform = tm.get();
+  Value transformed = applyTransform(b, loc, base, transform);
+  Value fused = arith::AddFOp::create(b, loc, transformed, base).getResult();
+
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(fused);
+  ASSERT_TRUE(succeeded(paths));
+  ASSERT_EQ(paths->size(), 2U);
+  EXPECT_EQ((*paths)[0].leaf, base);
+  ASSERT_EQ((*paths)[0].transforms.size(), 1U);
+  EXPECT_EQ((*paths)[0].transforms[0], transform);
+  EXPECT_EQ((*paths)[1].leaf, base);
+  EXPECT_TRUE((*paths)[1].transforms.empty());
+}
+
+//===----------------------------------------------------------------------===//
+// isInputNonInjective Tests
+//===----------------------------------------------------------------------===//
 
 // PassThrough is injective: indexing distinct upper coords reads distinct
 // elements.

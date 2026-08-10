@@ -211,42 +211,6 @@ linearizedDiffStride(ArrayRef<TransformMapAttr> transforms,
   return it == diff.end() ? 0 : it->second;
 }
 
-/// Returns true if the validity mask produced by `transforms` can vary with the
-/// induction variable, i.e. some validity-impacting map (a Pad, or an Embed
-/// that can go out of bounds) constrains a coordinate that is a function of an
-/// iv-carrying input dim. When false, the mask is loop-invariant and may be
-/// computed once before the loop and reused every iteration.
-///
-/// `transforms` is ordered from the upper view (index 0) down to the lower view
-/// at the root, as produced by `untransform`. `ivPositions` are the upper-view
-/// dims that carry the induction variable.
-///
-/// For a validity-impacting map at index `i`, its upper coordinates are
-/// expressed as affine functions of the upper-view dims by composing the
-/// transforms strictly above it (indices `[0, i)`); for the topmost map there
-/// are no transforms above it, so its upper coordinates are the upper-view dims
-/// directly (the identity). A padded `gemmM` while the iv lives in `gemmK`, for
-/// example, leaves the mask invariant and is accepted.
-static bool maskDependsOnIv(ArrayRef<TransformMapAttr> transforms,
-                            ArrayRef<unsigned> ivPositions) {
-  for (auto [i, t] : llvm::enumerate(transforms)) {
-    if (!mapImpactsValidity(t))
-      continue;
-    SmallVector<unsigned> upperDims = validityImpactingUpperDims(t);
-    if (upperDims.empty())
-      continue;
-    AffineMap above = composeTransforms(transforms.take_front(i));
-    for (unsigned u : upperDims) {
-      AffineExpr coord =
-          above ? above.getResult(u) : getAffineDimExpr(u, t.getContext());
-      for (unsigned p : ivPositions)
-        if (coord.isFunctionOfDim(p))
-          return true;
-    }
-  }
-  return false;
-}
-
 /// Returns true if a unit change in the merge-lower coordinate `pos` reaches a
 /// validity-impacting bound check while propagating down `belowMaps` (the
 /// sub-chain below the iv-traversed merge). Mirrors the bound checks emitted by
@@ -532,8 +496,9 @@ static bool analyzeCandidate(TransformsToPtrOp op, scf::ForOp loop,
   cand.rootBase = root;
 
   // Affine path: the mask does not depend on the IV and the offset can be
-  // incremented by a single constant per iteration.
-  if (!maskDependsOnIv(transforms, ivPositions)) {
+  // incremented by a single constant per iteration. An IV-independent mask is
+  // loop-invariant, so it can be computed once before the loop and reused.
+  if (!validityDependsOnAnyDim(transforms, ivPositions)) {
     DenseMap<unsigned, int64_t> ivDiff;
     for (unsigned p : ivPositions)
       ivDiff[p] = 1;
