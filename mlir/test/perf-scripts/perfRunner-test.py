@@ -102,10 +102,7 @@ class ReadTuningDbTest(TempFileTestCase):
             "\n"
             f"gfx900\t{gemm_b}\tperf_2\n")
 
-        db = perfRunner.read_tuning_db(path,
-                                       GemmConfiguration,
-                                       fallback_num_cu=120,
-                                       fallback_num_chiplets=1)
+        db = perfRunner.read_tuning_db(path, GemmConfiguration, num_cu=120, num_chiplets=1)
 
         self.assertEqual(len(db), 2)
         self.assertEqual(db[("gfx900", gemm_a_key)], "perf_1")
@@ -133,10 +130,7 @@ class ReadTuningDbTest(TempFileTestCase):
             f"gfx900\t{malformed_gemm}\tperf_bad\n"
             f"gfx900\t{mlir_path}\tperf_mlir\n")
 
-        db = perfRunner.read_tuning_db(path,
-                                       GemmConfiguration,
-                                       fallback_num_cu=120,
-                                       fallback_num_chiplets=1)
+        db = perfRunner.read_tuning_db(path, GemmConfiguration, num_cu=120, num_chiplets=1)
 
         self.assertEqual(len(db), 1)
         self.assertEqual(db[("gfx900", valid_gemm_key)], "perf_ok")

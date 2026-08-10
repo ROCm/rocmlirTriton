@@ -352,8 +352,15 @@ def parse_tuning_db_line(entries: list) -> Optional[Tuple[str, str, str]]:
 
 def read_tuning_db(path: str,
                    conf_class: type,
-                   fallback_num_cu: int = 0,
-                   fallback_num_chiplets: int = 0) -> MaybeTuningDb:
+                   num_cu: int = 0,
+                   num_chiplets: int = 0) -> MaybeTuningDb:
+    """Read a tuning DB into a {(arch, canonical config): perfconfig} mapping.
+
+    num_cu/num_chiplets are only needed to build the config objects
+    canonicalization goes through: the DB's own numCUs/numChiplets columns are
+    dropped by parse_tuning_db_line, and neither value reaches the canonical
+    key, which is keyed on (arch, config) alone.
+    """
     try:
         ret = {}
         with open(path, 'r') as db_file:
@@ -363,12 +370,7 @@ def read_tuning_db(path: str,
                     continue
                 entries = line.split('\t')
 
-                try:
-                    parsed = parse_tuning_db_line(entries)
-                except ValueError as e:
-                    print(f"Error parsing tuning database entry: {e}")
-                    continue
-
+                parsed = parse_tuning_db_line(entries)
                 if parsed is None:
                     print(f"Warning: Malformed tuning database entry: {line}")
                     continue
@@ -376,8 +378,7 @@ def read_tuning_db(path: str,
                 arch, config, perfconfig = parsed
 
                 try:
-                    config = canonicalize_config(config, conf_class, arch, fallback_num_cu,
-                                                 fallback_num_chiplets)
+                    config = canonicalize_config(config, conf_class, arch, num_cu, num_chiplets)
                 except ValueError:
                     # Silently skip entries that don't parse under conf_class. This is the common
                     # case when a single tuning DB stores rows for several ops. Such rows could
