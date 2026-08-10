@@ -483,6 +483,42 @@ func.func @rock_attention_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x
   return %out : tensor<1x16384x512xf32>
 }
 
+// attn:v6 with nPerBlockG1 = 0 keeps the second gemm untiled: params1.nPerBlock
+// is the full (power-of-two) gemm1N, matching the v1 behaviour.
+// CHECK-LABEL: func.func @rock_attention_nperblockg1_zero
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_nperblockg1_zero
+func.func @rock_attention_nperblockg1_zero(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 512, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:v6:128,128,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
+// attn:v6 with nPerBlockG1 != 0 tiles the second gemm's N dim: params1.nPerBlock
+// is set to nPerBlockG1 (128) rather than the full gemm1N (512).
+// CHECK-LABEL: func.func @rock_attention_nperblockg1_tiled
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_nperblockg1_tiled
+func.func @rock_attention_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:v6:128,128,128,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
 // CHECK-LABEL: func.func @rock_attention_mperblockg1_wmma
 // CHECK-SAME: rock.block_size = 128
 // GRID-LABEL: func.func @rock_attention_mperblockg1_wmma

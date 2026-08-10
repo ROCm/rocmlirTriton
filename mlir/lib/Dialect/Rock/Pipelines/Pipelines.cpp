@@ -107,6 +107,7 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
       {"useReductionLayout", options.useReductionLayout},
+      {"useOptimizeEpilogue", options.useOptimizeEpilogue},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
@@ -175,8 +176,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   // --- rocmlirTriton pass ----
 
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
-  // TODO ROCm Check if we want to compare MI100 and greater
-  pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
+  if (options.useOptimizeEpilogue != 0)
+    pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
   pm->addPass(mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands(
       {options.arch}));
   pm->addNestedPass<mlir::triton::FuncOp>(

@@ -572,6 +572,11 @@ static LogicalResult commonAttentionGemmElmtGemm(
                                .value_or(GemmSize{0, 0, 0, 0});
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
+  // gemm1N is split into nPerBlockG1-wide chunks folded back together with
+  // pairwise tt.join, so the chunk count must be a power of two. Round gemm1N
+  // up to a power of two to guarantee this (no-op for the untiled case).
+  int64_t requiredGemm1N = gemm1Size.n + gemm1ExtraPad.n;
+  gemm1ExtraPad.n += llvm::PowerOf2Ceil(requiredGemm1N) - requiredGemm1N;
 
   a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
                                 gemm0ExtraPad.k);

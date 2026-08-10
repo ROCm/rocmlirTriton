@@ -321,6 +321,9 @@ def Rock_GemmParamsAttr
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
       gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
       kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
+    - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
+      selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
+      enables it unconditionally.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -334,6 +337,7 @@ def Rock_GemmParamsAttr
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
+    - `useOptimizeEpilogue`              (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
@@ -346,14 +350,15 @@ def Rock_GemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout,
+      DefaultValuedParameter<"int64_t", "-1">:$useOptimizeEpilogue);
 
   let extraClassDeclaration = [{
-    // v4 is the single canonical output form (17 fields: the v3 knobs plus
-    // `useReductionLayout`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v4.
+    // v5 is the single canonical output form (18 fields: the v4 fields plus
+    // `useOptimizeEpilogue`). Older versions remain accepted on input by
+    // `get()`; only the serialized form is fixed to v5.
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v4:"
+        ("gemm:v5:"
         + Twine(getMPerBlock()) + ","
         + Twine(getNPerBlock()) + ","
         + Twine(getKPerBlock()) + ","
@@ -370,7 +375,8 @@ def Rock_GemmParamsAttr
         + Twine(getUseInThreadTranspose()) + ","
         + Twine(getUseBufferOps()) + ","
         + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()))
+        + Twine(getUseReductionLayout()) + ","
+        + Twine(getUseOptimizeEpilogue()))
         .toVector(perfStr);
     }
 
@@ -399,6 +405,11 @@ def Rock_GemmGemmParamsAttr
       the first GEMM
     - nPerBlockG0: The number of values of n to process in each workgroup for
       the first GEMM
+    - nPerBlockG1: The number of values of n to process in each workgroup for
+      the second GEMM (i.e. the head-dim tile of the attention output). `0`
+      means "untiled": the second GEMM processes the full `gemm1N` in one shot
+      (the historical behaviour and what pre-v4 configs, which have no
+      `nPerBlockG1` field, decode to).
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
     - numCTAs: The number CTAs
@@ -423,6 +434,9 @@ def Rock_GemmGemmParamsAttr
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
       gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
       kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
+    - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
+      selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
+      enables it unconditionally.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -436,11 +450,12 @@ def Rock_GemmGemmParamsAttr
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
+    - `useOptimizeEpilogue`              (set to -1)
   }];
 
   let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
-      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
-      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
+      "int64_t":$nPerBlockG1, "int64_t":$kPerBlock, "int64_t":$kpack,
+      "int64_t":$numCTAs, "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
       "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
       "int64_t":$gridGroupSize,
       DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
@@ -448,16 +463,19 @@ def Rock_GemmGemmParamsAttr
       DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
       DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
+      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout,
+      DefaultValuedParameter<"int64_t", "-1">:$useOptimizeEpilogue);
 
   let extraClassDeclaration = [{
-    // v4 is the single canonical output form (17 fields: the v3 knobs plus
-    // `useReductionLayout`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v4.
+    // v6 is the single canonical output form (19 fields: the v5 fields plus the
+    // GEMM+GEMM-only `nPerBlockG1` second-GEMM head-dim tile). Older versions
+    // remain accepted on input by `get()`; only the serialized form is fixed to
+    // v6.
     void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("attn:v4:"
+        ("attn:v6:"
         + Twine(getMPerBlockG0()) + ","
         + Twine(getNPerBlockG0()) + ","
+        + Twine(getNPerBlockG1()) + ","
         + Twine(getKPerBlock()) + ","
         + Twine(getKpack()) + ","
         + Twine(getNumCTAs()) + ","
@@ -472,7 +490,8 @@ def Rock_GemmGemmParamsAttr
         + Twine(getUseInThreadTranspose()) + ","
         + Twine(getUseBufferOps()) + ","
         + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()))
+        + Twine(getUseReductionLayout()) + ","
+        + Twine(getUseOptimizeEpilogue()))
         .toVector(perfStr);
     }
 
@@ -549,6 +568,26 @@ def Rock_NumChiplets : Rock_Attr<"NumChiplets"> {
 
 def Rock_BlockSize : Rock_Attr<"BlockSize"> {
   let mnemonic = "rock.block_size";
+}
+
+def Rock_UseOptimizeEpilogue : Rock_Attr<"UseOptimizeEpilogue"> {
+  let mnemonic = "rock.use_optimize_epilogue";
+  let description = [{
+    Temporary function attribute carrying the perfConfig tri-state from
+    `rock-affix-params` to `rock-add-triton-metadata`. The metadata pass removes
+    it after resolving the automatic policy to `rock.prefer_lds_epilogue`, so
+    raw tuning policy does not enter Triton IR.
+  }];
+}
+
+def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
+  let mnemonic = "rock.prefer_lds_epilogue";
+  let description = [{
+    Marker set on a kernel function by `rock-add-triton-metadata` when the
+    store-tail heuristic prefers the paced LDS epilogue. The marker survives
+    TTIR lowering and is consumed by Triton's OptimizeEpilogue pass to retain
+    that epilogue.
+  }];
 }
 
 def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
