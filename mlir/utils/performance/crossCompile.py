@@ -342,6 +342,7 @@ def build_remote_session_script(args: argparse.Namespace) -> str:
         f"files+=({shlex.quote(remote_debug_name)}); fi",
         f"if [ ${{#files[@]}} -gt 0 ]; then "
         f"{shlex.quote(args.tar)} -cf - \"${{files[@]}}\" >&3; fi",
+        "set +e",
         "exit $benchmark_rc",
     ])
     return "; ".join(script_parts)
