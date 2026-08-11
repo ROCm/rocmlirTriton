@@ -623,7 +623,7 @@ class TestRemoteSessionScript(CrossCompileTestCase):
         self.assertIn(f"{benchmark} || benchmark_rc=$?", script)
         self.assertLess(script.index("benchmark_rc=0"), script.index(benchmark))
         # The status is still what the session reports, just after the results.
-        self.assertTrue(script.endswith("; exit $benchmark_rc"), script)
+        self.assertTrue(script.endswith("; set +e; exit $benchmark_rc"), script)
         self.assertLess(script.index('-cf - "${files[@]}" >&3'), script.index("exit $benchmark_rc"))
 
     def test_runs_the_setup_command_before_the_ready_marker(self):
