@@ -162,6 +162,10 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       std::tie(root, std::ignore) = rock::untransform(source, transforms);
       auto blockArg = dyn_cast<BlockArgument>(root);
       if (!blockArg) {
+        // Dense compiler constants are backed by internal GPU globals. They
+        // cannot be packed kernel arguments and need no signature rewrite.
+        if (rock::isDenseNonSplatConstant(root))
+          continue;
         loadOp.emitError("transform chain root is not a block argument");
         return failure();
       }
@@ -1610,6 +1614,26 @@ static LogicalResult fixup4BitFusionOps(
 /// Legalize all non-TT_Float types to integer types of the same bit width
 /// throughout the kernel function (no shape changes).
 static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
+  WalkResult unsupportedConstant =
+      funcOp.walk([&](arith::ConstantOp constant) -> WalkResult {
+        DenseElementsAttr elements =
+            rock::getDenseTensorConstantAttr(constant.getResult());
+        if (!elements || elements.isSplat())
+          return WalkResult::advance();
+        Type elementType =
+            cast<RankedTensorType>(constant.getType()).getElementType();
+        if ((isa<IntegerType, FloatType>(elementType)) &&
+            elementType.getIntOrFloatBitWidth() < 8) {
+          constant.emitOpError(
+              "sub-byte dense non-splat constants are not supported as "
+              "compiler-owned storage");
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+  if (unsupportedConstant.wasInterrupted())
+    return failure();
+
   // Save original types on BlockwiseGemmOp BEFORE converting.
   recordOrigTypesOnGemm(funcOp);
 
@@ -1628,8 +1652,17 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
   funcOp.walk([&](Operation *op) {
     for (OpResult result : op->getResults()) {
       Type newType = convertType(result.getType(), ctx);
-      if (newType != result.getType())
+      if (newType != result.getType()) {
+        if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
+          if (auto elements =
+                  dyn_cast<DenseElementsAttr>(constant.getValue())) {
+            auto newShapedType = cast<ShapedType>(newType);
+            constant.setValueAttr(
+                elements.bitcast(newShapedType.getElementType()));
+          }
+        }
         result.setType(newType);
+      }
     }
   });
 

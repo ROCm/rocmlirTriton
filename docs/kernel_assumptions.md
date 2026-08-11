@@ -89,7 +89,20 @@ backend the full extent of valid memory behind the pointer.
 | `tt.divisibility` | 16 | Pointers are 16-byte aligned (128-bit), enabling maximum-width vector loads/stores. |
 | `tt.pointer_range` | 32 | Set when tensor size < 2 GB; tells Triton's `ConvertToBufferOps` pass that the tensor fits in a 32-bit offset range, enabling buffer instructions. |
 
-### 1.10 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
+### 1.10 Compiler-owned dense constants
+
+Dense non-splat tensor constants are stored in internal, read-only LLVM globals
+in GPU address space 1. Their logical tensor values are flattened in row-major
+order, and each global is aligned to at least 16 bytes. Compatible globals with
+the same type and value are deduplicated.
+
+These constants are compiler-owned storage, not kernel arguments, so they do
+not change the kernel ABI or impose allocation requirements on the caller.
+Splat constants continue to be materialized directly in registers. Sub-byte
+non-splat constants are rejected because packed compiler-owned storage is not
+yet supported.
+
+### 1.11 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
 
 Rock kernels never call device-side `malloc`/`free`/`new` (nor the
 `__ockl_dm_*` allocator family), so they never touch the rocclr device heap.
@@ -112,7 +125,8 @@ this is MIGraphX or the rocmlirTriton test harness.
 
 ### 2.1 Coarse-grained device memory (`no_fine_grained_memory`)
 
-All tensor pointers must point to **coarse-grained device-local memory**
+All caller-provided tensor pointers must point to **coarse-grained
+device-local memory**
 (i.e. `hipMalloc` or equivalent). Fine-grained memory (system memory,
 `hipMallocManaged` with fine-grained coherence, or memory allocated with
 `hipExtMallocWithFlags(..., hipDeviceMallocFinegrained)`) is **not
@@ -154,7 +168,8 @@ pipeline option (currently set to `true`).
 
 ### 2.4 Pointer alignment (16 bytes)
 
-All tensor pointers must be aligned to at least **16 bytes** (128 bits).
+All caller-provided tensor pointers must be aligned to at least **16 bytes**
+(128 bits).
 This is the natural alignment of GPU memory allocations from
 `hipMalloc` and is encoded as `llvm.align = 16` and `tt.divisibility = 16`.
 
@@ -259,6 +274,7 @@ become a single `v_med3`.
 | Relaxed atomics | Internal | `monotonic`, `agent-one-as` |
 | Dereferenceable extent | Internal | `dereferenceable` |
 | Vectorization hints | Internal | `tt.divisibility`, `tt.pointer_range` |
+| Compiler-owned dense constants | Internal | AS1 `llvm.mlir.global`, alignment 16 |
 | No device heap (skips initHeap) | Internal | `amdgpu-no-heap-ptr` |
 | Coarse-grained memory | **External** | `rocdl.no_fine_grained_memory` |
 | Device-local memory | **External** | `rocdl.no_remote_memory` |

@@ -479,14 +479,19 @@ def RockTensorToTritonPtrPass
     Key transformations:
     1. Converts `arith.addi` on pointer tensors to `tt.addptr`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
-    3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
-    4. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
-    5. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
-    6. Stores host functions (wrappers, main) as module attributes for later restoration
-    7. Preserves grid size as module attributes for gpu.launch_func
+    3. Stores dense non-splat tensor constants in deduplicated, internal LLVM
+       globals using row-major flat storage, GPU address space 1, and 16-byte
+       alignment
+    4. Eliminates rock.extract_ptr and adapts its users to use either a kernel
+       argument pointer or a pointer to a compiler-owned global
+    5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    6. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
+    7. Stores host functions (wrappers, main) as module attributes for later restoration
+    8. Preserves grid size as module attributes for gpu.launch_func
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "triton::TritonDialect",
+                           "arith::ArithDialect", "LLVM::LLVMDialect",
+                           "triton::TritonDialect",
   ];
 }
 
@@ -648,8 +653,8 @@ def RockRegularizeInputPass
 
     For each rock.load_marker whose source traces through fusion ops:
     1. Walk backwards collecting transforms between the marker and the fusions
-    2. For each leaf of the fusion DAG (transform chains to block args):
-       apply the collected transforms, isolate the chain, create a new
+    2. For each block-argument or dense non-splat constant leaf of the fusion
+       DAG: apply the collected transforms, isolate the chain, and create a new
        rock.load_marker
     3. For splat constants: create a tile-shaped constant (no load_marker)
     4. Clone the fusion ops after the load_markers, operating on tile types

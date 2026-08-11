@@ -188,6 +188,24 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
                                        ArrayRef<int64_t> offsets,
                                        ArrayRef<int64_t> sizes);
 
+/// Build a row-major map whose upper dimensions are `shape` and whose lower
+/// dimension is the corresponding flat storage. The overload without names
+/// generates stable dimension names for callers that only need coordinates.
+TransformMapAttr
+buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                    ArrayRef<StringRef> dimNames,
+                                    ArrayRef<int64_t> shape);
+TransformMapAttr buildRowMajorFlatteningTransformMap(OpBuilder &b,
+                                                     Location loc,
+                                                     ArrayRef<int64_t> shape);
+
+/// Return the implicit row-major transform from a rank-N dense tensor constant
+/// to its flat pointer storage. Returns a null attribute for non-constants and
+/// rank-one constants.
+TransformMapAttr buildDenseConstantRowMajorTransformMap(OpBuilder &b,
+                                                        Location loc,
+                                                        Value value);
+
 /// Restore the logical shapes of the arguments to `func`, which were flattened
 /// to 1-D tensors to improve indexing performance. The logical types in
 /// question are given in `logicalTypes`. `builder` should be placed at the
@@ -210,9 +228,9 @@ void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  SmallVectorImpl<Value> &expanded);
 
 /// Apply a flattening transform to a value in logical shape, producing
-/// a 1-D tensor. Internally this builds the expand map (Unmerge + AddDim,
-/// flat->logical) via buildFlattenTransformMap and then inverts it, so the
-/// applied TransformOp carries a Merge + RemoveDim map (logical->flat).
+/// a 1-D tensor. Internally this builds the row-major map (Unmerge + AddDim,
+/// flat->logical) via buildRowMajorFlatteningTransformMap and then inverts it,
+/// so the applied TransformOp carries a Merge + RemoveDim map (logical->flat).
 /// This is the inverse direction of what expandFlatFunctionArguments does
 /// per argument.
 Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,

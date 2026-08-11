@@ -1113,9 +1113,12 @@ LogicalResult CastToPtrOp::verify() {
 //===-----------------------------------------------------===//
 
 LogicalResult ExtractPtrOp::verify() {
-  if (!isa<BlockArgument>(getSource()))
-    return emitOpError("source must be a block argument");
-  return success();
+  if (isa<BlockArgument>(getSource()) ||
+      rock::isDenseNonSplatConstant(getSource()))
+    return success();
+
+  return emitOpError(
+      "source must be a block argument or a non-splat dense constant");
 }
 
 //===-----------------------------------------------------===//
@@ -1790,8 +1793,16 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
   // downstream).
   SmallVector<TransformMapAttr> transforms;
   bool needs64Bit;
-  std::tie(std::ignore, needs64Bit) =
+  Value root;
+  std::tie(root, needs64Bit) =
       untransform(adaptor.getSource(), transforms);
+  OpBuilder builder(context);
+  Location loc = location.value_or(UnknownLoc::get(context));
+  if (TransformMapAttr flattening =
+          buildDenseConstantRowMajorTransformMap(builder, loc, root)) {
+    transforms.push_back(flattening);
+    needs64Bit |= needs64BitIndices(flattening);
+  }
   unsigned offsetWidth = needs64Bit ? 64 : 32;
 
   inferredReturnTypes.push_back(

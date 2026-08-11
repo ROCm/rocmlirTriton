@@ -421,3 +421,14 @@ func.func @test_i4_unit_k_tile_not_applicable(
   %result = rock.blockwise_gemm(%a, %dequant, %cst) : tensor<4x1xf16>, tensor<1x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
   return %out : tensor<16xf32>
 }
+
+// -----
+
+// Dense non-splat compiler constants do not yet support packed sub-byte
+// storage. Reject them before type legalization can separate the constant's
+// result type from its elements attribute.
+func.func @test_sub_byte_dense_constant_fails() attributes {rock.kernel} {
+  // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  return
+}

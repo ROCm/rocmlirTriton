@@ -1422,10 +1422,12 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
-                                                 ArrayRef<StringRef> dimNames,
-                                                 ArrayRef<int64_t> shape,
-                                                 int64_t numElements) {
+TransformMapAttr
+mlir::rock::buildRowMajorFlatteningTransformMap(
+    OpBuilder &b, Location loc, ArrayRef<StringRef> dimNames,
+    ArrayRef<int64_t> shape) {
+  assert(!shape.empty() && dimNames.size() == shape.size() &&
+         "expected one name for each shaped dimension");
   int64_t rank = shape.size();
   SmallVector<uint32_t> upperDims(rank);
   std::iota(upperDims.begin(), upperDims.end(), 0);
@@ -1447,6 +1449,9 @@ static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
     nonUnitUpperSize.push_back(shape.back());
   }
 
+  int64_t numElements = 1;
+  for (int64_t size : shape)
+    numElements *= size;
   BottomUpTMBuilder flattener(b, {"raw"}, numElements, loc);
   flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
   for (auto dim : upperDims) {
@@ -1455,6 +1460,31 @@ static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
     }
   }
   return flattener.get();
+}
+
+TransformMapAttr
+mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                                ArrayRef<int64_t> shape) {
+  SmallVector<SmallString<16>> nameStorage;
+  SmallVector<StringRef> dimNames;
+  nameStorage.reserve(shape.size());
+  dimNames.reserve(shape.size());
+  for (size_t dim = 0; dim < shape.size(); ++dim) {
+    nameStorage.emplace_back();
+    (Twine("dim") + Twine(dim)).toVector(nameStorage.back());
+    dimNames.push_back(nameStorage.back());
+  }
+  return buildRowMajorFlatteningTransformMap(b, loc, dimNames, shape);
+}
+
+TransformMapAttr mlir::rock::buildDenseConstantRowMajorTransformMap(
+    OpBuilder &b, Location loc, Value value) {
+  if (!getDenseTensorConstantAttr(value))
+    return {};
+  auto tensorType = cast<RankedTensorType>(value.getType());
+  if (tensorType.getRank() <= 1)
+    return {};
+  return buildRowMajorFlatteningTransformMap(b, loc, tensorType.getShape());
 }
 
 void mlir::rock::expandFlatFunctionArguments(
@@ -1471,23 +1501,22 @@ void mlir::rock::expandFlatFunctionArguments(
       logicalVal = arg;
       continue;
     }
-    TransformMapAttr expandMap =
-        buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
-                                 logicalShapedTy.getNumElements());
-    logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
+    TransformMapAttr rowMajorMap = buildRowMajorFlatteningTransformMap(
+        b, loc, nameList, logicalShapedTy.getShape());
+    logicalVal = rock::TransformOp::create(b, loc, arg, rowMajorMap);
   }
 }
 
 Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
                                 ArrayRef<StringRef> dimNames) {
   auto shapedType = cast<ShapedType>(logicalVal.getType());
-  // buildFlattenTransformMap builds a map with upper=logical, lower=flat
-  // (the "expand" direction). We need to invert it so that the TransformOp
-  // follows the standard convention: input=lower=logical, output=upper=flat.
-  TransformMapAttr expandMap = buildFlattenTransformMap(
-      b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
-  TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
-  assert(flattenMap && "failed to invert expand map into flatten map");
+  // buildRowMajorFlatteningTransformMap builds a map with upper=logical and
+  // lower=flat. We need to invert it so that the TransformOp follows the
+  // standard convention: input=lower=logical, output=upper=flat.
+  TransformMapAttr rowMajorMap = buildRowMajorFlatteningTransformMap(
+      b, loc, dimNames, shapedType.getShape());
+  TransformMapAttr flattenMap = invertTransformMap(b, rowMajorMap, loc);
+  assert(flattenMap && "failed to invert row-major map");
   return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 

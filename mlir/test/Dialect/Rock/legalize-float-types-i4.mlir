@@ -503,3 +503,12 @@ func.func @test_i4_sub_byte_static_shift(
     : tensor<4x8xf16>, tensor<8x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
   return %out : tensor<16xf32>
 }
+
+// -----
+
+// CHECK-LABEL: func.func @test_f8_constant_bitcast
+// CHECK: arith.constant dense<0> : tensor<2xi8>
+func.func @test_f8_constant_bitcast() attributes {rock.kernel} {
+  %cst = arith.constant dense<0x00> : tensor<2xf8E8M0FNU>
+  return
+}

@@ -816,10 +816,10 @@ func.func @cast_to_ptr_shape_mismatch(%src: tensor<32x64xi32>) -> tensor<64x64x!
 // rock.extract_ptr tests
 // =============================================================================
 
-// Source is not a block argument
+// Splat constants are register values and cannot be pointer sources.
 func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes {rock.arch = "##TOKEN_ARCH##"} {
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
-  // expected-error @+1 {{source must be a block argument}}
+  // expected-error @+1 {{source must be a block argument or a non-splat dense constant}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
 }

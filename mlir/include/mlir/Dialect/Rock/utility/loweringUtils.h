@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/Support/LogicalResult.h"
@@ -147,6 +148,15 @@ Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
 /// `inp` to match `outShape`. Returns `inp` unchanged if no broadcast needed.
 Value insertBroadcast(OpBuilder &b, Location loc, Value inp,
                       ArrayRef<int64_t> outShape);
+
+/// Return the dense elements of a tensor arith.constant, or a null attribute
+/// when `value` is not such a constant. Vector constants are not matched.
+DenseElementsAttr getDenseTensorConstantAttr(Value value);
+
+/// Return true when `value` is a dense, non-splat tensor constant. These
+/// constants are lowered through compiler-owned memory rather than materialized
+/// directly in registers.
+bool isDenseNonSplatConstant(Value value);
 
 bool isFusionOp(Operation *op);
 

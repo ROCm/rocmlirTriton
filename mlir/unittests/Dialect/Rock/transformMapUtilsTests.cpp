@@ -38,6 +38,44 @@ struct TestEnv {
   }
 };
 
+TEST(BuildRowMajorFlatteningTransformMapTest, RankOne) {
+  TestEnv env;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      env.builder, env.builder.getUnknownLoc(), {4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::getMultiDimIdentityMap(1, &env.ctx));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, PreservesUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      b, b.getUnknownLoc(), {"batch", "head", "row", "column"}, {1, 1, 4, 4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({1, 1, 4, 4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({16}));
+  AffineExpr row = b.getAffineDimExpr(2);
+  AffineExpr column = b.getAffineDimExpr(3);
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(4, 0, row * 4 + column));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, HandlesAllUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform =
+      buildRowMajorFlatteningTransformMap(b, b.getUnknownLoc(), {1, 1});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1, 1}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(2, 0, b.getAffineDimExpr(1)));
+}
+
 // Helper to create a transformed tensor with a simple identity transformation
 Value createTransformedTensor(OpBuilder &b, Location loc,
                               ArrayRef<int64_t> shape, Type elemType) {

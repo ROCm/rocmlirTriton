@@ -429,8 +429,8 @@ def Rock_LoadMarkerOp
   let description = [{
     The rock.load_marker op is the dual of rock.store_marker. It marks a source
     tensor (which may be the result of transforms and/or fusion ops tracing back
-    to a block argument) with the tiling information needed to create an actual
-    rock.blockwise_load.
+    to a block argument or dense non-splat constant) with the tiling information
+    needed to create an actual rock.blockwise_load.
 
     This op is a placeholder introduced by:
     1. ToBlockwise passes (GridwiseGemmToBlockwise, GridwiseAttnToBlockwise)
@@ -444,8 +444,8 @@ def Rock_LoadMarkerOp
        type is the full tensor type (consumed by fusion ops).
 
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
-    back through the source chain (transforms, fusion ops, block argument)
-    and combining all transforms.
+    back through the source chain (transforms, fusion ops, and a block argument
+    or dense non-splat constant root) and combining all transforms.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
@@ -859,7 +859,8 @@ def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
     returns it as an i32 or i64 placeholder for the real !tt.ptr. Its width is
     chosen to match the offset arithmetic it feeds (i64 when 64-bit indexing is
     required) so the base+offset add type-checks; RockTensorToTritonPtr later
-    replaces it with the actual !tt.ptr kernel argument.
+    replaces it with either the actual !tt.ptr kernel argument or a pointer to
+    an internal GPU global for a dense non-splat constant.
   }];
 
   let arguments = (ins AnyRankedTensor:$source);

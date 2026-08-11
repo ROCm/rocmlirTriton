@@ -5,6 +5,9 @@
 // region instead of specializing the attention as KV-cache.
 // CHECK-LABEL: func @kvcache_nonsplat_clip_bound
 // CHECK: rock.attention
+// Dense non-splat constants are elementwise inputs so downstream Rock lowering
+// can tile-load them from compiler-owned GPU globals.
+// CHECK: qk = elementwise otherIns(%{{.*}}
 // CHECK-NOT: lastValidKVIndex
 // CHECK: tosa.maximum
 // CHECK: tosa.minimum

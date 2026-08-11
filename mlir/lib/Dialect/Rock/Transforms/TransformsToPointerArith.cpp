@@ -30,6 +30,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -77,12 +78,17 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
                                     ValueRange initValues,
                                     ArrayRef<int64_t> shape, Type indexType) {
   // After regularize-input, the root of any transform chain must be either
-  // a block argument (kernel input tensor) or an arith.constant (splat).
+  // a block argument or an arith.constant.
   if (!isa<BlockArgument>(buffer) &&
       !buffer.getDefiningOp<arith::ConstantOp>()) {
     return op->emitOpError("expected transform chain root to be a block "
                            "argument or arith.constant, but got: ")
            << *buffer.getDefiningOp();
+  }
+  auto constantBuffer = buffer.getDefiningOp<arith::ConstantOp>();
+  if (constantBuffer && !isa<DenseElementsAttr>(constantBuffer.getValue())) {
+    return op->emitOpError(
+        "constant transform chain root must contain dense elements");
   }
 
   FailureOr<OffsetAndMask> expanded = expandCoordsToOffsetAndMask(
@@ -92,19 +98,26 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
 
   // Hoist pointer extraction to function entry to avoid redundant extractions
   // when the op is inside loops or other control flow.
-  // For constant buffers (like fakeTensor used for index calculations),
-  // we use a base pointer of 0 since the actual pointer value doesn't matter.
+  // Splat constant buffers (like fakeTensor used for index calculations) use
+  // a base pointer of 0 since the actual pointer value does not matter. Dense
+  // non-splat constants are real memory sources; ExtractPtrOp carries them to
+  // TensorToTritonPtr, which backs them with internal GPU globals.
   Value baseAddr;
   {
     OpBuilder::InsertionGuard guard(b);
-    bool isConstantBuffer =
-        buffer.getDefiningOp<arith::ConstantOp>() != nullptr;
-    if (isConstantBuffer) {
+    if (constantBuffer && !rock::isDenseNonSplatConstant(buffer)) {
       baseAddr =
           arith::ConstantOp::create(b, loc, b.getIntegerAttr(indexType, 0));
     } else {
-      auto parentFunc = op->getParentOfType<func::FuncOp>();
-      b.setInsertionPointToStart(&parentFunc.front());
+      if (constantBuffer) {
+        // The pointer must be dominated by the constant SSA value. Dense
+        // constants are normally function-scope values, so this still hoists
+        // the extraction out of the tiled loops.
+        b.setInsertionPointAfter(constantBuffer);
+      } else {
+        auto parentFunc = op->getParentOfType<func::FuncOp>();
+        b.setInsertionPointToStart(&parentFunc.front());
+      }
       // The base pointer placeholder shares the offset width so the base+offset
       // add type-checks. RockTensorToTritonPtr later discards this and
       // re-splats the real !tt.ptr, so the width is irrelevant to the final
@@ -147,6 +160,14 @@ struct TransformsToPtrRewritePattern
     Value source = isolateTransforms(b, op.getSource());
     auto [buffer, transforms, isBig] = untransform(b, source);
 
+    SmallVector<TransformMapAttr> transformVec =
+        llvm::to_vector(transforms.getAsRange<TransformMapAttr>());
+    if (TransformMapAttr flattening =
+            buildDenseConstantRowMajorTransformMap(b, loc, buffer)) {
+      transformVec.push_back(flattening);
+      isBig |= needs64BitIndices(flattening);
+    }
+
     // Defensive check: the op verifier already rejects a result type that
     // disagrees with inferReturnTypes, but guard against that and this pass
     // diverging so we never emit i32 offsets for a chain needing 64-bit
@@ -173,8 +194,6 @@ struct TransformsToPtrRewritePattern
       initValues.push_back(makeRange(b, loc, 0, shape[dimension], shape.size(),
                                      dimension, indexElemType));
 
-    SmallVector<TransformMapAttr> transformVec =
-        llvm::to_vector(transforms.getAsRange<TransformMapAttr>());
     return lowerToPointer(b, op, loc, buffer, transformVec, initValues, shape,
                           indexElemType);
   }

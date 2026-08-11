@@ -30,7 +30,10 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -62,6 +65,64 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
+/// Return an internal GPU global containing `constant`'s flattened elements.
+/// Identical constants share one global.
+static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
+                                                ModuleOp module,
+                                                arith::ConstantOp constant) {
+  auto values = cast<DenseElementsAttr>(constant.getValue());
+  auto tensorType = cast<RankedTensorType>(constant.getType());
+  SmallVector<Attribute> elements =
+      llvm::to_vector(values.getValues<Attribute>());
+  auto globalType =
+      LLVM::LLVMArrayType::get(tensorType.getElementType(), elements.size());
+  auto initializer = builder.getArrayAttr(elements);
+
+  for (LLVM::GlobalOp global : module.getOps<LLVM::GlobalOp>())
+    if (global.getConstant() &&
+        global.getLinkage() == LLVM::Linkage::Internal &&
+        global.getGlobalType() == globalType &&
+        global.getValueAttr() == initializer && global.getAddrSpace() == 1 &&
+        global.getAlignment().value_or(0) >= 16)
+      return global;
+
+  unsigned suffix = 0;
+  SmallString<32> name = SymbolTable::generateSymbolName<32>(
+      "__rock_constant",
+      [&](StringRef candidate) {
+        return module.lookupSymbol(candidate) != nullptr;
+      },
+      suffix);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  return LLVM::GlobalOp::create(builder, constant.getLoc(), globalType,
+                                /*isConstant=*/true, LLVM::Linkage::Internal,
+                                name, initializer, /*alignment=*/16,
+                                /*addrSpace=*/1);
+}
+
+/// Replace pointer-placeholder splats fed by `extractPtrOp` with splats of the
+/// real Triton pointer, then remove the placeholder extraction.
+static void replaceExtractPtrWithPointer(IRRewriter &rewriter,
+                                         rock::ExtractPtrOp extractPtrOp,
+                                         Value pointer) {
+  auto pointerType = cast<triton::PointerType>(pointer.getType());
+  for (Operation *user :
+       llvm::make_early_inc_range(extractPtrOp.getResult().getUsers())) {
+    auto splatOp = dyn_cast<triton::SplatOp>(user);
+    if (!splatOp)
+      continue;
+    auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
+    auto newResultType = RankedTensorType::get(
+        resultType.getShape(), pointerType, resultType.getEncoding());
+    rewriter.setInsertionPoint(splatOp);
+    rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
+                                                 pointer);
+  }
+  rewriter.eraseOp(extractPtrOp);
+}
+
 struct RockTensorToTritonPtrPass
     : public rock::impl::RockTensorToTritonPtrPassBase<
           RockTensorToTritonPtrPass> {
@@ -83,26 +144,25 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   // Pattern: block_arg (tensor) -> rock.extract_ptr -> tt.splat
   struct ArgConversionInfo {
     unsigned argIndex;
-    Type elementType;
-    RankedTensorType tensorType; // Original tensor type for size calculation
-    Value valueToReplace; // extract_ptr result to replace with the block arg
     rock::ExtractPtrOp extractPtrOp;
   };
   SmallVector<ArgConversionInfo> argsToConvert;
+  struct ConstantConversionInfo {
+    arith::ConstantOp constant;
+    rock::ExtractPtrOp extractPtrOp;
+  };
+  SmallVector<ConstantConversionInfo> constantsToConvert;
 
   funcOp.walk([&](rock::ExtractPtrOp extractPtrOp) {
     Value tensorOperand = extractPtrOp.getSource();
 
-    auto blockArg = cast<BlockArgument>(tensorOperand);
-    auto tensorType = cast<RankedTensorType>(tensorOperand.getType());
+    if (auto constant = tensorOperand.getDefiningOp<arith::ConstantOp>()) {
+      constantsToConvert.push_back({constant, extractPtrOp});
+      return;
+    }
 
-    ArgConversionInfo info;
-    info.argIndex = blockArg.getArgNumber();
-    info.elementType = tensorType.getElementType();
-    info.tensorType = tensorType;
-    info.valueToReplace = extractPtrOp.getResult();
-    info.extractPtrOp = extractPtrOp;
-    argsToConvert.push_back(info);
+    auto blockArg = cast<BlockArgument>(tensorOperand);
+    argsToConvert.push_back({blockArg.getArgNumber(), extractPtrOp});
   });
 
   // Step 2: Build new function type with tt.ptr arguments
@@ -113,7 +173,9 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   bool hasTensorArgs = llvm::any_of(
       funcType.getInputs(), [](Type t) { return isa<RankedTensorType>(t); });
 
-  if (!hasTensorArgs)
+  // A kernel with only compiler-owned dense constants still needs conversion:
+  // its extract_ptr operations become addresses of generated GPU globals.
+  if (!hasTensorArgs && constantsToConvert.empty())
     return;
 
   // Build the new pointer-based signature. Every tensor argument becomes a
@@ -142,27 +204,32 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   // block argument, then drop the dead extract_ptr.
   for (auto &info : argsToConvert) {
     BlockArgument blockArg = entryBlock.getArgument(info.argIndex);
-    auto ptrType = cast<triton::PointerType>(blockArg.getType());
+    replaceExtractPtrWithPointer(rewriter, info.extractPtrOp, blockArg);
+  }
 
-    // Replace every tt.splat of the extract_ptr result with a splat (with ptr
-    // type) of the block arg. early_inc lets us erase the splat while
-    // iterating.
-    for (Operation *user :
-         llvm::make_early_inc_range(info.valueToReplace.getUsers())) {
-      auto splatOp = dyn_cast<triton::SplatOp>(user);
-      if (!splatOp)
-        continue;
-      auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
-      auto newResultType = RankedTensorType::get(resultType.getShape(), ptrType,
-                                                 resultType.getEncoding());
-      rewriter.setInsertionPoint(splatOp);
-      rewriter.replaceOpWithNewOp<triton::SplatOp>(splatOp, newResultType,
-                                                   blockArg);
-    }
+  // Compiler-owned dense constants are not kernel arguments. Materialize each
+  // one as an internal GPU global and rebuild the pointer splats from its
+  // address. Convert the LLVM pointer to an integer first so that the standard
+  // tt.int_to_ptr lowering can bridge into Triton's pointer type without
+  // requiring Triton-side conversion support for mixed-dialect pointer casts.
+  ModuleOp module = funcOp->getParentOfType<ModuleOp>();
+  for (auto &info : constantsToConvert) {
+    LLVM::GlobalOp global =
+        getOrCreateConstantGlobal(builder, module, info.constant);
+    auto tensorType = cast<RankedTensorType>(info.constant.getType());
+    auto llvmPtrType = LLVM::LLVMPointerType::get(ctx, global.getAddrSpace());
+    auto tritonPtrType =
+        triton::PointerType::get(tensorType.getElementType(), 1);
 
-    // The extract_ptr is dead once its splat users have been replaced.
-    if (info.extractPtrOp)
-      rewriter.eraseOp(info.extractPtrOp);
+    rewriter.setInsertionPoint(info.extractPtrOp);
+    Value address = LLVM::AddressOfOp::create(
+        rewriter, info.extractPtrOp.getLoc(), llvmPtrType, global.getSymName());
+    Value integerAddress = LLVM::PtrToIntOp::create(
+        rewriter, info.extractPtrOp.getLoc(), rewriter.getI64Type(), address);
+    Value tritonPtr = triton::IntToPtrOp::create(
+        rewriter, info.extractPtrOp.getLoc(), tritonPtrType, integerAddress);
+
+    replaceExtractPtrWithPointer(rewriter, info.extractPtrOp, tritonPtr);
   }
 
   // Step 4: Create tt.func and move body

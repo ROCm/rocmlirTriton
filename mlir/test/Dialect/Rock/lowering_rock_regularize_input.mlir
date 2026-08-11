@@ -7,6 +7,8 @@
 
 #tmap = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 16 + d3, d2 * 16 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 16} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 16} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 1, 16, 16] -> [1, 16, 16]>
 
+#tmap_small = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1 * 2 + d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Unmerge{1, 2} ["m_block", "m_iter"] at [1, 2] -> ["m"] at [1]>] bounds = [1, 1, 2] -> [1, 2]>
+
 #tmap_6d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <PassThrough ["b"] at [1] -> ["b"] at [1]>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [2, 3]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [4, 5]>] bounds = [1, 1, 16, 16] -> [1, 1, 4, 4, 4, 4]>
 
 #tmap_5d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <AddDim{1} ["b"] at [1] -> [] at []>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [1, 2]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [3, 4]>] bounds = [1, 1, 16, 16] -> [1, 4, 4, 4, 4]>
@@ -411,5 +413,23 @@ module {
     %fused = arith.addf %A, %B : tensor<1x16x16xf16>
     %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier cs>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
+  }
+
+  // CHECK-LABEL: func.func @test_non_splat_constant_fusion
+  // CHECK: %[[CST:.*]] = arith.constant dense<{{.*}}> : tensor<1x2xf32>
+  // CHECK: %[[LM:.*]] = rock.load_marker %[[CST]] views
+  // CHECK-SAME: tensor<1x2xf32> -> tensor<2xf32>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM]], %[[LM]] : tensor<2xf32>
+  // CHECK: %[[UNTILE:.*]] = rock.untile %[[TILE_ADD]]
+  // CHECK: arith.addf %{{.*}}, %[[UNTILE]] : tensor<1x2xf32>
+  func.func @test_non_splat_constant_fusion(%tile: tensor<2xf32>, %dest: tensor<1x2xf32>, %g: i32, %m: i32) -> tensor<1x2xf32> attributes {rock.kernel} {
+    %sm = rock.store_marker %tile views [#tmap_small] [%g, %m] : tensor<2xf32> -> tensor<1x2xf32>
+    %cst = arith.constant dense<[[1.0, 2.0]]> : tensor<1x2xf32>
+    %sum = arith.addf %cst, %cst : tensor<1x2xf32>
+    %lm = rock.load_marker %sum views [#tmap_small] [%g, %m] {cacheModifier = #rock<CacheModifier none>} : tensor<1x2xf32> -> tensor<2xf32>
+    %ut = rock.untile %lm : tensor<2xf32> -> tensor<1x2xf32>
+    %fused = arith.addf %sm, %ut : tensor<1x2xf32>
+    %r = rock.store %fused to %dest by set : tensor<1x2xf32> -> tensor<1x2xf32> to tensor<1x2xf32>
+    return %r : tensor<1x2xf32>
   }
 }
