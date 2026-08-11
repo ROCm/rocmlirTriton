@@ -195,16 +195,14 @@ TransformMapAttr
 buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                     ArrayRef<StringRef> dimNames,
                                     ArrayRef<int64_t> shape);
-TransformMapAttr buildRowMajorFlatteningTransformMap(OpBuilder &b,
-                                                     Location loc,
+TransformMapAttr buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                                      ArrayRef<int64_t> shape);
 
 /// Return the implicit row-major transform from a rank-N dense tensor constant
 /// to its flat pointer storage. Returns a null attribute for non-constants and
 /// rank-one constants.
-TransformMapAttr buildDenseConstantRowMajorTransformMap(OpBuilder &b,
-                                                        Location loc,
-                                                        Value value);
+TransformMapAttr
+buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc, Value value);
 
 /// Restore the logical shapes of the arguments to `func`, which were flattened
 /// to 1-D tensors to improve indexing performance. The logical types in

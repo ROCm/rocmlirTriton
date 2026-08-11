@@ -433,3 +433,16 @@ func.func @test_sub_byte_dense_constant_fails() attributes {rock.kernel} {
   %base = rock.extract_ptr %values : tensor<2xi4> -> i32
   return
 }
+
+// -----
+
+// Defensive coverage for unregularized IR: trace through fusion operations so
+// the pass diagnoses the unsupported storage instead of creating an invalid
+// arith.constant whose attribute and result types disagree.
+func.func @test_sub_byte_dense_constant_through_fusion_fails() attributes {rock.kernel} {
+  // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  %sum = arith.addi %values, %values : tensor<2xi4>
+  %loaded = rock.blockwise_load %sum {cacheModifier = #rock<CacheModifier none>} : tensor<2xi4> -> tensor<2xi4>
+  return
+}

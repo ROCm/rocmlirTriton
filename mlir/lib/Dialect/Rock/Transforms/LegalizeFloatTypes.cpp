@@ -46,6 +46,7 @@
 #include "mlir/Support/WalkResult.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
@@ -1611,8 +1612,6 @@ static LogicalResult fixup4BitFusionOps(
   return success();
 }
 
-/// Legalize all non-TT_Float types to integer types of the same bit width
-/// throughout the kernel function (no shape changes).
 static bool requiresCompilerOwnedStorage(Value constant) {
   SmallVector<Value> worklist{constant};
   DenseSet<Value> visited;
@@ -1626,11 +1625,15 @@ static bool requiresCompilerOwnedStorage(Value constant) {
         return true;
       if (auto transform = dyn_cast<TransformOp>(user))
         worklist.push_back(transform.getOutput());
+      else if (rock::isFusionOp(user))
+        worklist.push_back(user->getResult(0));
     }
   }
   return false;
 }
 
+/// Legalize all non-TT_Float types to integer types of the same bit width
+/// throughout the kernel function (no shape changes).
 static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
   WalkResult unsupportedConstant =
       funcOp.walk([&](arith::ConstantOp constant) -> WalkResult {
