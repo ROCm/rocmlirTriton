@@ -19,6 +19,18 @@
 namespace mlir {
 namespace rock {
 
+// Canonicalize an arch string to its leading `gfxNNN...` token, stripping any
+// feature suffix (e.g. "gfx942:sramecc+" -> "gfx942"). Asserts if `arch`
+// contains no gfx token. Shared by every tuning-table lookup so their keys
+// agree (see also LdsBlacklist.cpp).
+StringRef normalizeArch(StringRef arch);
+
+// Canonicalize a data type to its tuning-key spelling: all 4-bit floats -> f4,
+// all 8-bit floats -> fp8, all 16-bit floats (incl. bf16) -> f16; other types
+// print as-is with a leading integer sign char ('s'/'u') dropped. Shared so the
+// keys emitted here match those baked into the generated .inc tables.
+std::string getDataTypeString(Type dataType);
+
 template <typename ParamsType>
 class ParamLookupTable {
 public:
@@ -59,11 +71,7 @@ private:
 
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
 
-  static StringRef normalizeArch(StringRef arch);
-
   static std::string getKernelTypeString(KernelType kernelType);
-
-  static std::string getDataTypeString(Type dataType);
 
   // Get all related entries sorted lexicographically
   static SmallVector<StringRef, 12> getRelatives(StringRef target);
