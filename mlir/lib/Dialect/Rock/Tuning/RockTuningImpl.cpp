@@ -409,7 +409,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   int64_t gemm0K = gemmGemmOp.getGemmGemmSize().k;
   // use the actual K dimension, typically it's 128 for attention
   uint32_t gemm0KPerBlock =
-      std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), 2048);
+      std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), MAX_K_PER_BLOCK);
   std::vector<uint32_t> kPerBlock = {gemm0KPerBlock};
   if (kind == TuningParamSetKind::Exhaustive) {
     for (uint32_t k : {16, 32, 64, 128, 512})
