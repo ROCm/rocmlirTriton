@@ -198,6 +198,20 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
   return inputs;
 }
 
+/// Enum to contain why a halving attempt failed:
+/// - `NotDivisible` means the concrete extents of this (kernel x perf-config)
+/// leave an odd number of 4-bit values along the packing axis, so two of them
+/// cannot share a byte. Another tile shape would succeed, so callers classify
+/// this as `rock.not_applicable` rather than as a compilation bug. A
+/// loop-variant sub-byte extraction fallback could lower this, but it would
+/// issue one load per 4-bit section instead of one per byte, doubling the
+//  amount of load instructions.
+/// - `Unsupported` means the chain cannot be packed whatever the extents are
+/// (Broadcast, AddDim/ConstDim, Embed, or a Slice that does not start at 0):
+/// those are compiler limitations and must stay hard errors. A loop-variant
+/// sub-byte extraction fallback could lower this, but it would issue one load
+/// per 4-bit section instead of one per byte, doubling the amount of load
+/// instructions.
 enum class HalveFailureKind { NotDivisible, Unsupported };
 
 /// Given a TransformMapAttr and a dimension index, halve the size of that
