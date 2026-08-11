@@ -202,8 +202,10 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
     ``_repro_command`` (to print the failure-summary repro line) so the two
     cannot drift."""
-    # Each configuration owns its complete rocmlir-gen argument list, including
-    # runtime-only options such as attention's current_seq_len.
+    # generate_mlir_driver_commandline is the single source of truth for the
+    # driver argv, so it already includes every optional flag a config needs.
+    # Building on top of it keeps the perf-run and tuning paths in sync without
+    # per-flag special-casing here.
     opts = config.generate_mlir_driver_commandline('', kernel_repeats=None).split()
     opts.append('-pv')
     # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64)

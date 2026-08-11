@@ -296,9 +296,9 @@ func.func @explicit_optimize_epilogue_keeps_bypass(%a: tensor<64x64xf16>, %b: te
 // -----
 
 // Chained GEMMs: the first (head) gemm feeds the second one as an operand, so
-// its result never reaches a store; the walk stops at the consuming gemm and
-// leaves the head untagged. Only the second gemm, whose result reaches the
-// transposed output store, is tagged.
+// it is an intermediate; the walk bails at the consuming gemm and leaves the
+// head untagged. Only the second gemm, whose result reaches the transposed
+// output store, is tagged.
 
 #chain_tmapT = #rock.transform_map<affine_map<(m, n) -> (n * 64 + m)> by [<Unmerge{64, 64} ["n", "m"] at [1, 0] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]>
 
@@ -320,6 +320,40 @@ func.func @chained_gemm(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor
   %dest = rock.transform %dest_raw by #chain_tmapT
     : tensor<4096xf32> to tensor<64x64xf32>
   %r = rock.blockwise_store %g2 -> %dest by set
+    : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  return
+}
+
+// -----
+
+// Chained GEMMs where the head's result ALSO reaches a store through a side
+// path (here arith.addf %g1, %g2) in addition to feeding the second gemm. This
+// mirrors attention, where the scores gemm feeds the second gemm via P yet also
+// reaches the O store through the softmax statistics. The head must still be
+// left untagged: because its result feeds a gemm it is an intermediate with no
+// meaningful output layout, so the walk bails regardless of the reachable store.
+
+#chain_side_tmapT = #rock.transform_map<affine_map<(m, n) -> (n * 64 + m)> by [<Unmerge{64, 64} ["n", "m"] at [1, 0] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]>
+
+// CHECK-LABEL: @chained_gemm_head_reaches_store_via_side_path
+// The head gemm feeds gemm2, so it stays untagged even though %g1 also flows
+// into the store through arith.addf.
+//      CHECK:   rock.blockwise_gemm
+//  CHECK-NOT:     rock.o_transposed
+//      CHECK:   arith.truncf
+// The second gemm reaches the transposed store and is tagged.
+//      CHECK:   rock.blockwise_gemm
+// CHECK-SAME:     rock.o_transposed = #rock.o_transposed<true>
+func.func @chained_gemm_head_reaches_store_via_side_path(%a: tensor<64x64xf16>, %b: tensor<64x64xf16>, %c: tensor<64x64xf32>, %b2: tensor<64x64xf16>, %c2: tensor<64x64xf32>, %dest_raw: tensor<4096xf32>) attributes {rock.kernel} {
+  %g1 = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %g1f16 = arith.truncf %g1 : tensor<64x64xf32> to tensor<64x64xf16>
+  %g2 = rock.blockwise_gemm(%g1f16, %b2, %c2)
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %side = arith.addf %g1, %g2 : tensor<64x64xf32>
+  %dest = rock.transform %dest_raw by #chain_side_tmapT
+    : tensor<4096xf32> to tensor<64x64xf32>
+  %r = rock.blockwise_store %side -> %dest by set
     : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
   return
 }
