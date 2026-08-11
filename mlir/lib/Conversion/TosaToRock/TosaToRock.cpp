@@ -473,13 +473,9 @@ struct ElementwiseRegionFinder {
       return;
     }
     if (auto constOp = dyn_cast_or_null<tosa::ConstOp>(op)) {
-      // Splat constants can be cloned into the elementwise body and freely
-      // reshaped to whatever tile shape later lowering chooses. Dense
-      // non-splat constants cannot: they need the same coordinate transforms
-      // and tiled-load path as an ordinary tensor input. Keep those as
-      // elementwise inputs. Downstream Rock lowering recognizes their
-      // arith.constant roots and backs them with compiler-owned GPU globals,
-      // without adding them to the kernel ABI.
+      // Splat constants can be freely reshaped to any tile shape; dense
+      // non-splat constants require the same transform and tiled-load path as
+      // tensor inputs.
       if (isa<SplatElementsAttr>(constOp.getValuesAttr()))
         constantVals.push_back(input);
       else

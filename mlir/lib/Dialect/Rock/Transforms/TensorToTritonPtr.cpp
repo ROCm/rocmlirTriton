@@ -281,11 +281,8 @@ RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp,
     replaceExtractPtrWithPointer(rewriter, info.extractPtrOp, blockArg);
   }
 
-  // Compiler-owned dense constants are not kernel arguments. Materialize each
-  // one as an internal GPU global and rebuild the pointer splats from its
-  // address. Convert the LLVM pointer to an integer first so that the standard
-  // tt.int_to_ptr lowering can bridge into Triton's pointer type without
-  // requiring Triton-side conversion support for mixed-dialect pointer casts.
+  // Convert LLVM pointers to integers so tt.int_to_ptr can bridge into Triton's
+  // pointer type without mixed-dialect pointer-cast conversion support.
   ModuleOp module = funcOp->getParentOfType<ModuleOp>();
   for (auto &info : constantsToConvert) {
     LLVM::GlobalOp global = getOrCreateConstantGlobal(

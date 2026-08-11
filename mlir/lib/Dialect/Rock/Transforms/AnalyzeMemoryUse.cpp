@@ -100,9 +100,8 @@ void RockAnalyzeMemoryUsePass::runOnOperation() {
       return WalkResult::advance();
     }
 
-    // Dense compiler constants use the same blockwise-load machinery as
-    // kernel inputs, but are backed by internal GPU globals and therefore do
-    // not participate in kernel-argument memory attributes.
+    // Dense non-splat constants do not participate in kernel-argument memory
+    // attributes.
     SmallVector<TransformMapAttr> transforms;
     Value root;
     std::tie(root, std::ignore) =

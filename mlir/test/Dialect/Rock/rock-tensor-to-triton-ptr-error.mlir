@@ -25,8 +25,7 @@ func.func @non_kernel_with_rock_op(%arg0: tensor<4096xf16>) -> i32 {
 
 // -----
 
-// Unsupported scalar users must produce a diagnostic instead of leaving a
-// live placeholder behind and asserting while erasing rock.extract_ptr.
+// Unsupported scalar users must produce a diagnostic.
 // CHECK: error: 'rock.extract_ptr' op expected every result user to be tt.splat, but found arith.addi
 func.func @unsupported_extract_ptr_user(%arg0: tensor<4096xf16>) attributes {rock.arch = "gfx90a", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
   %base = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32

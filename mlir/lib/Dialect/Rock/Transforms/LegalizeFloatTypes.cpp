@@ -163,8 +163,7 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       std::tie(root, std::ignore) = rock::untransform(source, transforms);
       auto blockArg = dyn_cast<BlockArgument>(root);
       if (!blockArg) {
-        // Dense compiler constants are backed by internal GPU globals. They
-        // cannot be packed kernel arguments and need no signature rewrite.
+        // Dense non-splat constants need no kernel-argument signature rewrite.
         if (rock::isDenseNonSplatConstant(root))
           continue;
         loadOp.emitError("transform chain root is not a block argument");

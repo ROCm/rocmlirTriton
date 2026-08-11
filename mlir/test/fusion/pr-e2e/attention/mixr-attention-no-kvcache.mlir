@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention -RMS_threshold 0.01  --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
-// COMMENT: This test does not match to kv-cache but it's a valid fusion.
+// COM: This test does not match the kv-cache pattern but is a valid fusion.
 
 module {
   func.func @mlir_attention(%arg0: !migraphx.shaped<1x96x1x128xf16, 12288x128x128x1>, %arg1: !migraphx.shaped<1x32x2048x128xf16, 8388608x262144x128x1>, %arg2: !migraphx.shaped<1x32x2048x128xf16, 8388608x262144x128x1>, %arg3: !migraphx.shaped<1x32xf32, 1x0>) -> !migraphx.shaped<1x1x4096xf16, 4096x4096x1>  attributes {rock.kernel} {
