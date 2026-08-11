@@ -98,8 +98,11 @@ def run():
     #             shutil.copy(file, outsubdir)
 
     def ignore_not_mlir(dir, files):
+        # Preserve nested lit configs so directory-specific gates survive when
+        # the generated binary tree becomes the Fusion E2E test source root.
         return [
-            f for f in files if not f.endswith('.mlir') and not os.path.isdir(os.path.join(dir, f))
+            f for f in files if not (f.endswith('.mlir') or f == 'lit.local.cfg') and
+            not os.path.isdir(os.path.join(dir, f))
         ]
 
     shutil.copytree(indir, outdir, ignore=ignore_not_mlir, dirs_exist_ok=True)
