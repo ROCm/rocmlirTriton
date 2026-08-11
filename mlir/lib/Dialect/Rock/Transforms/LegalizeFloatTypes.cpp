@@ -205,7 +205,7 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
 /// this as `rock.not_applicable` rather than as a compilation bug. A
 /// loop-variant sub-byte extraction fallback could lower this, but it would
 /// issue one load per 4-bit section instead of one per byte, doubling the
-//  amount of load instructions.
+/// amount of load instructions.
 /// - `Unsupported` means the chain cannot be packed whatever the extents are
 /// (Broadcast, AddDim/ConstDim, Embed, or a Slice that does not start at 0):
 /// those are compiler limitations and must stay hard errors. A loop-variant
@@ -581,7 +581,7 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
     assert(path[pathIdx].first == trOp && "path/chain mismatch");
     int64_t pathLowerDim = path[pathIdx].second;
 
-    HalveFailureKind failureKind;
+    HalveFailureKind failureKind = HalveFailureKind::Unsupported;
     auto result =
         halveDimInMap(ctx, oldMap, curDimIdx, pathLowerDim, failureKind);
     if (failed(result)) {
