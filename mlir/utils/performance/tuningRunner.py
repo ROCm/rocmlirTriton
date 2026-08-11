@@ -1808,10 +1808,12 @@ def run_compile_only(ctx: TuningContext) -> bool:
         pipeline = " | ".join(" ".join(cmd) for cmd in [gen_cmd, td_cmd])
 
         logger.info(f"Compiling problem {problem_idx}/{total_problems}: {problem_hash}")
-        # On an interactive terminal, let the tuning driver's stderr inherit the
-        # console so its live compile progress bar is visible; otherwise capture
-        # it so logs stay clean and the error text is available on failure.
-        live_progress = sys.stderr.isatty() and not options.quiet
+        # Let the tuning driver's stderr inherit this process's so its live
+        # compile progress bar can be seen, and capture it only under --quiet,
+        # where the error text goes into the failure message below instead. The
+        # driver applies its own terminal check on top, so the bar itself still
+        # only appears on a console.
+        live_progress = not options.quiet
         try:
             rc, _out, err = _run_pipeline([gen_cmd, td_cmd],
                                           env=os.environ.copy(),
@@ -1986,7 +1988,7 @@ def _run_resumable_session(ctx: TuningContext,
             progress_bar = tqdm(
                 total=len(ctx.configs),
                 initial=total_skipped,
-                disable=options.quiet or not sys.stderr.isatty(),
+                disable=options.quiet,
                 file=sys.stderr,
                 desc=f"{wording.gerund} {ctx.conf_class.__name__} ({options.tuning_space_kind})",
                 unit="config",

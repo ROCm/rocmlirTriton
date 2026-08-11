@@ -320,7 +320,10 @@ def build_remote_session_script(args: argparse.Namespace) -> str:
             ["docker", "exec", "-w", remote_docker_workdir, args.remote_docker_container, "true"]),
         f"echo {shlex.quote(REMOTE_READY_MARKER)} >&3",
         f"{shlex.quote(args.tar)} -C {shlex.quote(args.remote_artifacts_dir)} -xf -",
-        shlex.join(["rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug"]),
+        shlex.join([
+            "rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug",
+            f"{args.remote_output}.state"
+        ]),
         # tuningRunner.py exits non-zero when any single problem fails, but the
         # problems that already succeeded are in the TSV. Keep the status rather
         # than letting `set -e` abort here, so the rows still get shipped back;
@@ -766,15 +769,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     config_name = args.configs_file.name
 
     # The bundle, the config file, and the result TSV all land in the same
-    # remote directory, and the remote session deletes <output> and
-    # <output>.debug there before benchmarking so a rerun cannot append to a
-    # stale TSV. An --output naming one of the inputs would delete that input.
+    # remote directory, and the remote session deletes <output>, <output>.debug
+    # and <output>.state there before benchmarking so a rerun cannot append to a
+    # stale TSV or resume against one. An --output naming one of the inputs would
+    # delete that input.
     remote_inputs = {
         config_name: "the config file",
         "index.json": "the artifact index",
         "problems": "the compiled bundles",
     }
-    for name in (args.output.name, f"{args.output.name}.debug"):
+    for name in (args.output.name, f"{args.output.name}.debug", f"{args.output.name}.state"):
         if name in remote_inputs:
             parser.error(f"--output would make the remote delete {remote_inputs[name]}: "
                          f"'{name}' is unpacked into --remote-artifacts-dir")

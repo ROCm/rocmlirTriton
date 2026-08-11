@@ -256,6 +256,29 @@ class TestArgumentPostProcessing(CrossCompileTestCase):
         # file, so there is nothing to stream to.
         self.assertIn("--output must be a file path", self.parse_expecting_error("--output", "-"))
 
+    def test_rejects_an_output_that_would_delete_a_remote_input(self):
+        # The compiled bundle, the config file and the result TSV share one
+        # remote directory, and the session clears the result files out of it
+        # before benchmarking.
+        collisions = {
+            "index.json": "the artifact index",
+            "problems": "the compiled bundles",
+            "configs.txt": "the config file",
+        }
+        for name, deleted in collisions.items():
+            with self.subTest(output=name):
+                self.assertIn(f"would make the remote delete {deleted}",
+                              self.parse_expecting_error("--output", str(self.tmp / name)))
+
+    def test_rejects_an_output_whose_state_file_would_delete_a_remote_input(self):
+        # <output>.state is cleared alongside the TSV, so it needs the same check.
+        state_named_config = self.tmp / "out.tsv.state"
+        state_named_config.write_text("-g 1 -m 64 -n 64 -k 64 -t f32\n")
+        self.assertIn(
+            "would make the remote delete the config file",
+            self.parse_expecting_error("--configs-file", str(state_named_config), "--output",
+                                       str(self.tmp / "out.tsv")))
+
     def test_rejects_relative_remote_artifacts_dir(self):
         self.assertIn("must be an absolute remote path",
                       self.parse_expecting_error("--remote-artifacts-dir", "artifacts"))
@@ -560,9 +583,16 @@ class TestRemoteSessionScript(CrossCompileTestCase):
                         script.index('-cf - "${files[@]}" >&3'))
 
     def test_removes_previous_results_before_benchmarking(self):
+        # The state file has to go with the TSV it describes. tuningRunner.py
+        # resumes from the pair, so a state file that outlived its TSV would make
+        # the benchmark skip problems that failed in an earlier run while the
+        # rows recording them are gone -- silently short results, exit code 0.
         args = self.parse()
         script = crossCompile.build_remote_session_script(args)
-        cleanup = shlex.join(["rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug"])
+        cleanup = shlex.join([
+            "rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug",
+            f"{args.remote_output}.state"
+        ])
         self.assertIn(cleanup, script)
         self.assertLess(script.index("-xf -"), script.index(cleanup))
         self.assertLess(script.index(cleanup), script.index("--benchmark-artifacts"))
