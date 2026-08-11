@@ -1613,6 +1613,24 @@ static LogicalResult fixup4BitFusionOps(
 
 /// Legalize all non-TT_Float types to integer types of the same bit width
 /// throughout the kernel function (no shape changes).
+static bool requiresCompilerOwnedStorage(Value constant) {
+  SmallVector<Value> worklist{constant};
+  DenseSet<Value> visited;
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (Operation *user : value.getUsers()) {
+      if (isa<LoadMarkerOp, BlockwiseLoadOp, TransformsToPtrOp, ExtractPtrOp>(
+              user))
+        return true;
+      if (auto transform = dyn_cast<TransformOp>(user))
+        worklist.push_back(transform.getOutput());
+    }
+  }
+  return false;
+}
+
 static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
   WalkResult unsupportedConstant =
       funcOp.walk([&](arith::ConstantOp constant) -> WalkResult {
@@ -1623,7 +1641,8 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
         Type elementType =
             cast<RankedTensorType>(constant.getType()).getElementType();
         if ((isa<IntegerType, FloatType>(elementType)) &&
-            elementType.getIntOrFloatBitWidth() < 8) {
+            elementType.getIntOrFloatBitWidth() < 8 &&
+            requiresCompilerOwnedStorage(constant.getResult())) {
           constant.emitOpError(
               "sub-byte dense non-splat constants are not supported as "
               "compiler-owned storage");

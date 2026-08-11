@@ -512,3 +512,14 @@ func.func @test_f8_constant_bitcast() attributes {rock.kernel} {
   %cst = arith.constant dense<0x00> : tensor<2xf8E8M0FNU>
   return
 }
+
+// -----
+
+// Register-only sub-byte constants do not require compiler-owned storage.
+// CHECK-LABEL: func.func @test_register_only_i1_constant
+// CHECK: %[[MASK:.*]] = arith.constant dense<[true, false]> : tensor<2xi1>
+// CHECK: return %[[MASK]] : tensor<2xi1>
+func.func @test_register_only_i1_constant() -> tensor<2xi1> attributes {rock.kernel} {
+  %mask = arith.constant dense<[true, false]> : tensor<2xi1>
+  return %mask : tensor<2xi1>
+}

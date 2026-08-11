@@ -1423,9 +1423,9 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
 }
 
 TransformMapAttr
-mlir::rock::buildRowMajorFlatteningTransformMap(
-    OpBuilder &b, Location loc, ArrayRef<StringRef> dimNames,
-    ArrayRef<int64_t> shape) {
+mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                                ArrayRef<StringRef> dimNames,
+                                                ArrayRef<int64_t> shape) {
   assert(!shape.empty() && dimNames.size() == shape.size() &&
          "expected one name for each shaped dimension");
   int64_t rank = shape.size();
@@ -1477,12 +1477,13 @@ mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
   return buildRowMajorFlatteningTransformMap(b, loc, dimNames, shape);
 }
 
-TransformMapAttr mlir::rock::buildDenseConstantRowMajorTransformMap(
-    OpBuilder &b, Location loc, Value value) {
+TransformMapAttr
+mlir::rock::buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc,
+                                                   Value value) {
   if (!getDenseTensorConstantAttr(value))
     return {};
   auto tensorType = cast<RankedTensorType>(value.getType());
-  if (tensorType.getRank() <= 1)
+  if (tensorType.getRank() <= 1 || tensorType.getNumElements() == 0)
     return {};
   return buildRowMajorFlatteningTransformMap(b, loc, tensorType.getShape());
 }

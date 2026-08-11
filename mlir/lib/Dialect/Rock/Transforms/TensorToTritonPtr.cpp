@@ -37,6 +37,7 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -65,26 +66,72 @@ static bool isTensorOfPointers(Type type) {
   return false;
 }
 
+using ConstantGlobalMap = DenseMap<Attribute, LLVM::GlobalOp>;
+
+static bool isReusableConstantGlobal(LLVM::GlobalOp global) {
+  return global.getConstant() &&
+         global.getLinkage() == LLVM::Linkage::Internal &&
+         global.getAddrSpace() == 1 &&
+         global.getAlignment().value_or(0) >= 16 && !global.getThreadLocal_() &&
+         !global.getExternallyInitialized();
+}
+
+/// Normalize a reusable global's initializer to the same flat dense form used
+/// for newly created globals.
+static DenseElementsAttr normalizeGlobalInitializer(LLVM::GlobalOp global) {
+  if (!isReusableConstantGlobal(global))
+    return {};
+  auto arrayType = dyn_cast<LLVM::LLVMArrayType>(global.getGlobalType());
+  if (!arrayType || !TensorType::isValidElementType(arrayType.getElementType()))
+    return {};
+
+  int64_t numElements = arrayType.getNumElements();
+  auto flatType =
+      RankedTensorType::get({numElements}, arrayType.getElementType());
+  Attribute initializer = global.getValueAttr();
+  if (auto dense = dyn_cast_or_null<DenseElementsAttr>(initializer)) {
+    if (dense.getElementType() != arrayType.getElementType() ||
+        dense.getNumElements() != numElements)
+      return {};
+    return dense.reshape(flatType);
+  }
+
+  auto array = dyn_cast_or_null<ArrayAttr>(initializer);
+  if (!array || array.size() != static_cast<size_t>(numElements) ||
+      !llvm::all_of(array, [&](Attribute element) {
+        auto typed = dyn_cast<TypedAttr>(element);
+        return typed && typed.getType() == arrayType.getElementType();
+      }))
+    return {};
+  return DenseElementsAttr::get(flatType, array.getValue());
+}
+
+/// Index reusable globals once so each constant lookup is constant-time.
+static ConstantGlobalMap indexConstantGlobals(ModuleOp module) {
+  ConstantGlobalMap globals;
+  for (LLVM::GlobalOp global : module.getOps<LLVM::GlobalOp>())
+    if (DenseElementsAttr initializer = normalizeGlobalInitializer(global))
+      globals.try_emplace(initializer, global);
+  return globals;
+}
+
 /// Return an internal GPU global containing `constant`'s flattened elements.
 /// Identical constants share one global.
 static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
                                                 ModuleOp module,
-                                                arith::ConstantOp constant) {
+                                                arith::ConstantOp constant,
+                                                ConstantGlobalMap &globals) {
   auto values = cast<DenseElementsAttr>(constant.getValue());
   auto tensorType = cast<RankedTensorType>(constant.getType());
-  SmallVector<Attribute> elements =
-      llvm::to_vector(values.getValues<Attribute>());
+  int64_t numElements = tensorType.getNumElements();
   auto globalType =
-      LLVM::LLVMArrayType::get(tensorType.getElementType(), elements.size());
-  auto initializer = builder.getArrayAttr(elements);
+      LLVM::LLVMArrayType::get(tensorType.getElementType(), numElements);
+  auto flatType =
+      RankedTensorType::get({numElements}, tensorType.getElementType());
+  DenseElementsAttr initializer = values.reshape(flatType);
 
-  for (LLVM::GlobalOp global : module.getOps<LLVM::GlobalOp>())
-    if (global.getConstant() &&
-        global.getLinkage() == LLVM::Linkage::Internal &&
-        global.getGlobalType() == globalType &&
-        global.getValueAttr() == initializer && global.getAddrSpace() == 1 &&
-        global.getAlignment().value_or(0) >= 16)
-      return global;
+  if (auto it = globals.find(initializer); it != globals.end())
+    return it->second;
 
   unsigned suffix = 0;
   SmallString<32> name = SymbolTable::generateSymbolName<32>(
@@ -96,10 +143,29 @@ static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(module.getBody());
-  return LLVM::GlobalOp::create(builder, constant.getLoc(), globalType,
-                                /*isConstant=*/true, LLVM::Linkage::Internal,
-                                name, initializer, /*alignment=*/16,
-                                /*addrSpace=*/1);
+  LLVM::GlobalOp global = LLVM::GlobalOp::create(
+      builder, constant.getLoc(), globalType,
+      /*isConstant=*/true, LLVM::Linkage::Internal, name, initializer,
+      /*alignment=*/16,
+      /*addrSpace=*/1);
+  globals.try_emplace(initializer, global);
+  return global;
+}
+
+/// Reject extraction forms that this pass cannot convert without leaving a
+/// dangling integer placeholder or changing its scalar semantics.
+static LogicalResult validateExtractPtr(rock::ExtractPtrOp extractPtrOp) {
+  auto tensorType = cast<RankedTensorType>(extractPtrOp.getSource().getType());
+  if (tensorType.getNumElements() == 0)
+    return extractPtrOp.emitOpError(
+        "zero-sized tensors cannot provide a storage pointer");
+
+  for (Operation *user : extractPtrOp.getResult().getUsers())
+    if (!isa<triton::SplatOp>(user))
+      return extractPtrOp.emitOpError(
+                 "expected every result user to be tt.splat")
+             << ", but found " << user->getName();
+  return success();
 }
 
 /// Replace pointer-placeholder splats fed by `extractPtrOp` with splats of the
@@ -110,9 +176,7 @@ static void replaceExtractPtrWithPointer(IRRewriter &rewriter,
   auto pointerType = cast<triton::PointerType>(pointer.getType());
   for (Operation *user :
        llvm::make_early_inc_range(extractPtrOp.getResult().getUsers())) {
-    auto splatOp = dyn_cast<triton::SplatOp>(user);
-    if (!splatOp)
-      continue;
+    auto splatOp = cast<triton::SplatOp>(user);
     auto resultType = cast<RankedTensorType>(splatOp.getResult().getType());
     auto newResultType = RankedTensorType::get(
         resultType.getShape(), pointerType, resultType.getEncoding());
@@ -130,12 +194,15 @@ struct RockTensorToTritonPtrPass
 
 private:
   /// Process a single kernel function (convert to tt.func)
-  void processFunction(func::FuncOp funcOp);
+  LogicalResult processFunction(func::FuncOp funcOp,
+                                ConstantGlobalMap &constantGlobals);
 };
 
 } // end anonymous namespace
 
-void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
+LogicalResult
+RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp,
+                                           ConstantGlobalMap &constantGlobals) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
   IRRewriter rewriter(ctx);
@@ -165,6 +232,13 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
     argsToConvert.push_back({blockArg.getArgNumber(), extractPtrOp});
   });
 
+  for (const ArgConversionInfo &info : argsToConvert)
+    if (failed(validateExtractPtr(info.extractPtrOp)))
+      return failure();
+  for (const ConstantConversionInfo &info : constantsToConvert)
+    if (failed(validateExtractPtr(info.extractPtrOp)))
+      return failure();
+
   // Step 2: Build new function type with tt.ptr arguments
   FunctionType funcType = funcOp.getFunctionType();
 
@@ -176,7 +250,7 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   // A kernel with only compiler-owned dense constants still needs conversion:
   // its extract_ptr operations become addresses of generated GPU globals.
   if (!hasTensorArgs && constantsToConvert.empty())
-    return;
+    return success();
 
   // Build the new pointer-based signature. Every tensor argument becomes a
   // !tt.ptr.
@@ -214,8 +288,8 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
   // requiring Triton-side conversion support for mixed-dialect pointer casts.
   ModuleOp module = funcOp->getParentOfType<ModuleOp>();
   for (auto &info : constantsToConvert) {
-    LLVM::GlobalOp global =
-        getOrCreateConstantGlobal(builder, module, info.constant);
+    LLVM::GlobalOp global = getOrCreateConstantGlobal(
+        builder, module, info.constant, constantGlobals);
     auto tensorType = cast<RankedTensorType>(info.constant.getType());
     auto llvmPtrType = LLVM::LLVMPointerType::get(ctx, global.getAddrSpace());
     auto tritonPtrType =
@@ -230,6 +304,8 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
         rewriter, info.extractPtrOp.getLoc(), tritonPtrType, integerAddress);
 
     replaceExtractPtrWithPointer(rewriter, info.extractPtrOp, tritonPtr);
+    if (info.constant->use_empty())
+      rewriter.eraseOp(info.constant);
   }
 
   // Step 4: Create tt.func and move body
@@ -304,6 +380,7 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
       changed = true;
     }
   }
+  return success();
 }
 
 void RockTensorToTritonPtrPass::runOnOperation() {
@@ -349,9 +426,12 @@ void RockTensorToTritonPtrPass::runOnOperation() {
     }
   }
 
-  // Process kernel functions (convert to tt.func)
+  // Process kernel functions (convert to tt.func). Index existing globals only
+  // once; newly created globals are added to the same lookup.
+  ConstantGlobalMap constantGlobals = indexConstantGlobals(moduleOp);
   for (func::FuncOp funcOp : funcsToProcess) {
-    processFunction(funcOp);
+    if (failed(processFunction(funcOp, constantGlobals)))
+      return signalPassFailure();
   }
 
   // Verify no Rock dialect ops remain after conversion.

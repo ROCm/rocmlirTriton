@@ -430,5 +430,6 @@ func.func @test_i4_unit_k_tile_not_applicable(
 func.func @test_sub_byte_dense_constant_fails() attributes {rock.kernel} {
   // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
   %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  %base = rock.extract_ptr %values : tensor<2xi4> -> i32
   return
 }

@@ -43,3 +43,15 @@ func.func @test_error_non_dense_constant() attributes {rock.arch = "##TOKEN_ARCH
   %pointers, %mask = rock.transforms_to_ptr %values : tensor<4xf32> -> tensor<4xi32>, tensor<4xi1>
   return
 }
+
+// -----
+
+// Zero-sized constants have no addressable storage and cannot be flattened
+// through an Unmerge transform.
+func.func @test_error_zero_sized_constant() attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %values = arith.constant dense<> : tensor<0x2xf32>
+  // expected-error @+2 {{zero-sized dense constants cannot provide compiler-owned storage}}
+  // expected-error @+1 {{failed to infer returned types}}
+  %pointers, %mask = rock.transforms_to_ptr %values : tensor<0x2xf32> -> tensor<0x2xi32>, tensor<0x2xi1>
+  return
+}
