@@ -27,6 +27,7 @@ enum class DataType : uint32_t {
   I32,
   F4,
   F8E8M0FNU,
+  I4,
   UNKNOWN
 };
 
