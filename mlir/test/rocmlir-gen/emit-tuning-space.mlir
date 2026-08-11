@@ -60,24 +60,25 @@
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}"
 // CHECK-MFMA-GFX950-KPACK: gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,1,}}
 
-// A large-K GEMM must cap kPerBlock at the largest tuning-space candidate
-// (512 for MFMA). We should cap kPerBlock down only (never above the
-// candidate max), so neither the 16384 capping tile nor any kPerBlock > 512
-// may be emitted; 512 must still appear.
+// MAX_K_PER_BLOCK caps the per-block K tile at 512: even for a huge K (here
+// 16384) the GEMM tuning space never emits a kPerBlock beyond 512. A tile
+// larger than PowerOf2Ceil(K) would only pad K, and tiles above 512 waste LDS
+// and are ~never optimal, so the PowerOf2Ceil(K) capping tile is not added once
+// it would exceed 512. (With K thus capped and M/N <= 256, the lowered
+// kPerBlock x (M|N) index/mask tensor also stays well under Triton's
+// 2^20-element per-tensor cap.)
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 256 -k 16384 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-MFMA \
 // RUN:       --implicit-check-not=",16384,"
 // CHECK-TENSOR-CAP-MFMA: gemm:v5:{{[0-9]+,[0-9]+,512,}}
 
-// The same kPerBlock cap applies to attention (gemm+gemm): gemm0's K tile is
-// capped at the largest candidate (2048), not raised to
-// PowerOf2Ceil(head_dim_qk). For head_dim_qk=8192 the old code appended an 8192
-// capping tile (a multi-GB compile); the fix caps gemm0 kPerBlock at 2048, so
-// no 8192 tile is emitted while 2048 still appears.
+// The same MAX_K_PER_BLOCK cap applies to attention's gemm0 K tile: gemm0's K
+// tile is PowerOf2Ceil(head_dim_qk), which can be huge (here head_dim_qk=8192),
+// but the swept kPerBlock is still capped at 512.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 8192 -head_dim_v 128 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN \
 // RUN:       --implicit-check-not=",8192,"
-// CHECK-TENSOR-CAP-ATTN: attn:v6:{{[0-9]+,[0-9]+,[0-9]+,2048,}}
+// CHECK-TENSOR-CAP-ATTN: attn:v6:{{[0-9]+,[0-9]+,[0-9]+,512,}}
 
 // gemm1's N tile is not tuned: gemm1NPerBlock = PowerOf2Ceil(head_dim_v) and
 // its contraction tile is gemm0NPerBlock, so gemm1 lowers a gemm0NPerBlock x
@@ -103,6 +104,28 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
 // RUN:       --implicit-check-not="attn:v6:{{[0-9]+}},256,0,"
 // CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:v6:16,128,
+
+//===----------------------------------------------------------------------===//
+// LDS-overflow blacklist
+//===----------------------------------------------------------------------===//
+
+// Tile shapes known to overflow LDS for an (arch, input dtype) are pruned from
+// the emitted tuning space by the compiled-in blacklist (LdsBlacklist.h,
+// populated offline by generateLDSBlacklist.py). gemm:v5:64,64,128,...,16,1,3
+// (numStages=3) is a shipped gfx950/f32 blacklist entry, so it must be absent
+// from the default exhaustive space.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-LDS-BLACKLIST \
+// RUN:       --implicit-check-not="gemm:v5:64,64,128,1,1,1,16,1,3,"
+// CHECK-LDS-BLACKLIST: gemm:v5:
+
+// The ROCMLIR_DISABLE_LDS_BLACKLIST escape hatch makes LdsBlacklist::lookupGemm
+// return an empty set, so the blacklisted config reappears -- this is what lets
+// generateLDSBlacklist.py enumerate the *unfiltered* space to (re)generate the
+// table idempotently.
+// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-LDS-NOBLACKLIST
+// CHECK-LDS-NOBLACKLIST: gemm:v5:64,64,128,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1,-1
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
