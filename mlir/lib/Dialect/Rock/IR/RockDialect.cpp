@@ -1778,6 +1778,29 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
+
+// Validate sliding window constraints common to attention-like ops.
+static LogicalResult
+verifySlidingWindowConstraints(Operation *op,
+                               std::optional<int32_t> slidingWindowSize,
+                               Value currentSeqLen, int64_t maxSeqLen) {
+  if (!slidingWindowSize)
+    return success();
+  int32_t windowSize = static_cast<int32_t>(*slidingWindowSize);
+
+  if (windowSize <= 0)
+    return op->emitError("slidingWindowSize must be positive");
+
+  if (!currentSeqLen)
+    return op->emitError("slidingWindowSize requires currentSeqLen to be set");
+
+  if (windowSize > maxSeqLen)
+    return op->emitError(
+        "slidingWindowSize must not exceed max sequence length");
+
+  return success();
+}
+
 LogicalResult GridwiseAttentionOp::verify() {
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1805,6 +1828,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
+  if (!getEnableSoftmax() && getSlidingWindowSize())
+    return emitError("slidingWindowSize only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1812,6 +1838,21 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError(
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
+
+  // Validate sliding window constraints.
+  // Keys are normalized to [G, K, N] where N (the gemm0 N dimension, last dim)
+  // is the key sequence length (max seq len). Unlike rocMLIR -- where the key
+  // sequence lives on gemm0's M dimension -- rocmlirTriton keeps the key
+  // sequence on N (matching the KV-cache/sliding-window N loop in
+  // GridwiseAttnToBlockwise), so use prePadG0N, not prePadG0M, for the
+  // pre-padding value. Fall back to the current shape when it is absent.
+  ShapedType kType = cast<ShapedType>(getKeys().getType());
+  int64_t maxSeqLen =
+      getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
 
   return success();
 }
@@ -2299,6 +2340,14 @@ LogicalResult AttentionOp::verify() {
     return emitError(
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
+
+  // Validate sliding window constraints.
+  // Max seq len is the key N dimension.
+  int64_t maxSeqLen = getGemmGemmSize().n;
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
 
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());

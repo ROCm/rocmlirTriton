@@ -475,9 +475,9 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 static LogicalResult commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
     Value b, Value c, Value currentSeqLen, Value prefixOffset, UnitAttr causal,
-    IntegerAttr splitKV, ValueRange elementwiseInputs,
-    Region &preSecondOpRegion, bool enableSoftmax, TypeAttr softmaxType,
-    int64_t numHeadsQ, int64_t numHeadsKV,
+    IntegerAttr splitKV, IntegerAttr slidingWindowSize,
+    ValueRange elementwiseInputs, Region &preSecondOpRegion, bool enableSoftmax,
+    TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
     BoolAttr preSoftmaxHasSplitKVTransforms) {
   Location loc = op->getLoc();
 
@@ -619,7 +619,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
         cast<ShapedType>(lse.getType()).getElementType());
   auto newOp = GridwiseAttentionOp::create(
       rw, loc, newOutputType, newLseType, a, b, c, elementwiseInputs,
-      currentSeqLen, prefixOffset, causal, splitKV,
+      currentSeqLen, prefixOffset, causal, splitKV, slidingWindowSize,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
@@ -678,7 +678,8 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
       rw, op, adaptor.getQueries(), adaptor.getKeys(), adaptor.getValues(),
       adaptor.getCurrentSeqLen(), adaptor.getPrefixOffset(),
       adaptor.getCausalAttr(), adaptor.getSplitKVAttr(),
-      adaptor.getPreSoftmaxElemWiseInputs(), op.getPreSoftmaxBody(),
+      adaptor.getSlidingWindowSizeAttr(), adaptor.getPreSoftmaxElemWiseInputs(),
+      op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
       adaptor.getNumHeadsKV(), adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
 }
@@ -691,7 +692,8 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
       /*currentSeqLen=*/nullptr, /*prefixOffset=*/nullptr, /*causal=*/nullptr,
-      splitKV, adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
+      splitKV, /*slidingWindowSize=*/nullptr, adaptor.getElemwiseInputs(),
+      op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
       /*numHeadsKV=*/1,
       /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));

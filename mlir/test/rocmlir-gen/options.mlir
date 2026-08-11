@@ -41,6 +41,17 @@
 // RUN: not rocmlir-gen --arch %arch --operation attention -t f16 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -transBias 2>&1 | FileCheck %s --check-prefix=ERR_TRANS_BIAS_WITHOUT_BIAS
 // ERR_TRANS_BIAS_WITHOUT_BIAS: --transBias requires --with-attn-bias
 
+// A negative sliding_window_size is a user error: the flag's contract is
+// "positive integer, 0 disables", so it must be rejected instead of silently
+// disabling sliding-window masking.
+// RUN: not rocmlir-gen --arch %arch --operation attention -t f16 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -sliding_window_size=-16 2>&1 | FileCheck %s --check-prefix=ERR_SLIDING_WINDOW_NEG
+// ERR_SLIDING_WINDOW_NEG: sliding_window_size must be non-negative
+
+// A window larger than seq_len_k is rejected by the Rock verifier; catch it in
+// the driver too so the error is reported up front rather than after lowering.
+// RUN: not rocmlir-gen --arch %arch --operation attention -t f16 -seq_len_q 1 -seq_len_k 64 -head_dim_qk 32 -head_dim_v 32 -current_seq_len=32 -sliding_window_size=128 2>&1 | FileCheck %s --check-prefix=ERR_SLIDING_WINDOW_TOO_LARGE
+// ERR_SLIDING_WINDOW_TOO_LARGE: sliding_window_size must not exceed seq_len_k
+
 // Attention, gemm+gemm, and conv+gemm pipelines require -t (dataTypeAlias).
 // RUN: not rocmlir-gen --arch %arch --operation attention -seq_len_q 256 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 2>&1 | FileCheck %s --check-prefix=ERR_NO_DTYPE
 // ERR_NO_DTYPE: Type of the attention/gemm+gemm/conv+gemm operation is not specified
