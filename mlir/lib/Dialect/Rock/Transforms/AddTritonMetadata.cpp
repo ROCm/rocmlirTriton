@@ -61,8 +61,16 @@ struct RockAddTritonMetadataPass
 // stored value. The walk crosses fusion ops (arith/math/rock.transform/etc.)
 // and out of scf.for / scf.if regions via their yields. A single gemm result
 // can be stored by more than one blockwise_store, so all of them are collected.
-// Returns an empty list when no store is reachable (e.g. a chained-dot head
-// whose result is fed into another gemm or returned).
+//
+// Returns an empty list when the gemm output is not directly stored: either no
+// store is reachable at all, or the result feeds another gemm (a chained-dot /
+// gemm-gemm head, e.g. the scores gemm in attention). In the latter case the
+// tile is an intermediate consumed by the next accelerator op, so it has no
+// meaningful global-memory output layout and must keep the accelerator-native
+// layout. Note this cannot be decided by simply not chasing past the consumer
+// gemm: in flash attention the scores gemm also reaches the O store through the
+// softmax statistics (reduce -> scf.yield -> epilogue), so we detect the gemm
+// consumer explicitly and bail regardless of any store found via a side path.
 static llvm::SmallSetVector<rock::BlockwiseStoreOp, 4>
 findConsumerStores(Value root) {
   llvm::SmallSetVector<rock::BlockwiseStoreOp, 4> stores;
@@ -93,9 +101,12 @@ findConsumerStores(Value root) {
         continue;
       }
 
-      // Do not chase into another GEMM: that result keeps its own metadata.
+      // The result feeds another GEMM: this gemm is a chained-dot head whose
+      // output is an intermediate, not a stored tile. It has no output layout
+      // to optimize, so bail out entirely (even if some store is reachable
+      // through a side path such as the softmax statistics in attention).
       if (isa<rock::BlockwiseGemmOp>(user))
-        continue;
+        return {};
 
       // Follow the value through any other (elementwise / cast / transform) op.
       worklist.append(user->result_begin(), user->result_end());
