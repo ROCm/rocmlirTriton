@@ -69,8 +69,10 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   // M/N per-block tiles are the same for the accel and non-accel paths
-  // ({16, 32, 64, 128, 256}); the attention (gemm+gemm) non-accel path keeps
-  // the {32, 64, 128} space and is handled separately in getRangeGemmGemm.
+  // ({16, 32, 64, 128, 256}), except that the non-accel path drops M/N *pairs*
+  // that are too slow to compile (see isOverwideNonAccelMNPair). The attention
+  // (gemm+gemm) non-accel path keeps the {32, 64, 128} space and is handled
+  // separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
   for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
     dPerBlockList.push_back(dPerBlock);
@@ -124,6 +126,15 @@ static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
                                    uint32_t kPerBlock) {
   int64_t maxMN = std::max(mPerBlock, nPerBlock);
   return static_cast<int64_t>(kPerBlock) * maxMN > kTritonMaxTensorNumElements;
+}
+
+// The non-accel (FMA) blockwise GEMM is a fully unrolled scalar loop, so M/N
+// pairs with both tiles >= 128 cost ~70% of the space's compile time while
+// never winning a shape in exhaustive Navi tuning.
+static bool isOverwideNonAccelMNPair(uint32_t mPerBlock, uint32_t nPerBlock) {
+  constexpr uint32_t kNarrowMN = 128;
+  return std::max(mPerBlock, nPerBlock) >= MAX_MN_PER_BLOCK &&
+         std::min(mPerBlock, nPerBlock) >= kNarrowMN;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -352,7 +363,7 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
 
   // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (the same
   // {16, 32, 64, 128, 256} space as the accel paths, capped by the actual M/N
-  // dimension).
+  // dimension); createGemmTuningRangeBF then drops the overwide M/N pairs.
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -687,10 +698,16 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
       getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
+  bool isNonAccel = rock::getMatrixAccelKind(rock::getArchValue(gemmOp),
+                                             gemmOp) == MatrixAccelKind::None;
 
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
+      // Skip M/N pairs that are too costly to compile to be worth tuning on
+      // the FMA path (see isOverwideNonAccelMNPair).
+      if (isNonAccel && isOverwideNonAccelMNPair(gemmMPerBlock, gemmNPerBlock))
+        continue;
       for (uint32_t gemmKPerBlock :
            computeKPerBlock(gemmOp, kind, gemmMPerBlock, gemmNPerBlock)) {
         // Skip tiles whose lowered index/mask tensors would exceed Triton's
