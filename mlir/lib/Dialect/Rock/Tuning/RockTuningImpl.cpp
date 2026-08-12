@@ -141,8 +141,9 @@ static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
 // pairs with both tiles >= 128 cost ~70% of the space's compile time while
 // never winning a shape in exhaustive Navi tuning.
 static bool isOverwideNonAccelMNPair(uint32_t mPerBlock, uint32_t nPerBlock) {
+  constexpr uint32_t kWideMN = 256;
   constexpr uint32_t kNarrowMN = 128;
-  return std::max(mPerBlock, nPerBlock) >= MAX_MN_PER_BLOCK &&
+  return std::max(mPerBlock, nPerBlock) >= kWideMN &&
          std::min(mPerBlock, nPerBlock) >= kNarrowMN;
 }
 
@@ -707,8 +708,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
       getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
-  bool isNonAccel = rock::getMatrixAccelKind(rock::getArchValue(gemmOp),
-                                             gemmOp) == MatrixAccelKind::None;
+  bool isNonAccel = !rock::hasAccel(rock::getArchValue(gemmOp), gemmOp);
 
   // Tile shapes known to overflow LDS for this (arch, input dtype) are dropped
   // up front: LDS usage of a plain GEMM is independent of M/N/K, so this cache
