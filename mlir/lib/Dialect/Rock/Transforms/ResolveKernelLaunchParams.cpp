@@ -74,8 +74,7 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
   for (rock::KernelInfo &kernel : kernels) {
     assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
     assert(kernel.blockSize > 0 && "expected a positive kernel block size");
-    assert(kernel.clusterSize > 0 &&
-           "expected a positive kernel cluster size");
+    assert(kernel.clusterSize > 0 && "expected a positive kernel cluster size");
     if (kernel.blockSize > rock::maxHardwareWorkgroupSize) {
       rock::markAsNotApplicable(moduleOp);
       return kernel.llvmFunc.emitOpError()

@@ -8,8 +8,8 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 
-#include "gtest/gtest.h"
 #include "hip/hip_runtime_api.h"
+#include "gtest/gtest.h"
 
 #include <cstdint>
 
@@ -24,8 +24,8 @@ TEST(HardwareLimitsTest, MaxGridSizeMatchesHip) {
 
   for (int device = 0; device < deviceCount; ++device) {
     int maxGridDimX = 0;
-    status = hipDeviceGetAttribute(&maxGridDimX,
-                                   hipDeviceAttributeMaxGridDimX, device);
+    status = hipDeviceGetAttribute(&maxGridDimX, hipDeviceAttributeMaxGridDimX,
+                                   device);
     ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
     EXPECT_EQ(maxHardwareGridSize, static_cast<uint32_t>(maxGridDimX));
   }

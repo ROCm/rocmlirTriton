@@ -71,8 +71,7 @@ ArrayAttr getIndexArrayAttr(Builder &b, ArrayRef<int64_t> values);
 constexpr int64_t maxHardwareWorkgroupSize = 1024;
 
 // The largest grid X dimension that an HSA dispatch packet can represent.
-constexpr int64_t maxHardwareGridSize =
-    std::numeric_limits<uint32_t>::max();
+constexpr int64_t maxHardwareGridSize = std::numeric_limits<uint32_t>::max();
 
 } // end namespace rock
 } // end namespace mlir
