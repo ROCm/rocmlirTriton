@@ -66,18 +66,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#endif
 
 // Utilities to allocate buffers
 #include "../utils/performance/common/benchmarkUtils.h"
@@ -736,12 +739,19 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   }
 
   auto killAndReap = [&]() -> std::string {
+#ifdef _WIN32
+    // A finite Wait terminates the child with TerminateProcess if it is still
+    // running after the timeout.
+    const std::optional<unsigned> secondsToWait = 1;
+#else
     if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH)
       return std::string("failed to kill child: ") + std::strerror(errno);
+    const std::optional<unsigned> secondsToWait = std::nullopt;
+#endif
 
     std::string reapErr;
     llvm::sys::ProcessInfo reapResult =
-        llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt, &reapErr);
+        llvm::sys::Wait(procInfo, secondsToWait, &reapErr);
     if (reapResult.Pid != procInfo.Pid) {
       std::string message = "failed to reap child";
       if (!reapErr.empty())
@@ -781,11 +791,10 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and
-  // rocmlir-driver links in-process (no grandchildren to orphan), so the
-  // blocking reap returns promptly. A timeout is a non-fatal skip reported as
-  // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
-  // see extra noise).
+  // Budget exceeded: terminate and reap. rocmlir-driver links in-process (no
+  // grandchildren to orphan), so cleanup returns promptly. A timeout is a
+  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
+  // stdout/stderr and must not see extra noise).
   if (timedOut) {
     if (std::string cleanupErr = killAndReap(); !cleanupErr.empty()) {
       fail("Failed to clean up timed-out rocmlir-driver for config: " +
