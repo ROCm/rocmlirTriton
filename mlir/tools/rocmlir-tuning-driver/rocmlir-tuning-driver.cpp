@@ -112,6 +112,18 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
 
+#define HIPCHECK_WITH_CONTEXT(expr, context)                                   \
+  do {                                                                         \
+    hipError_t _status = (expr);                                               \
+    if (hipSuccess != _status) {                                               \
+      llvm::errs() << "HIP error in " << #expr << ": "                         \
+                   << hipGetErrorString(_status) << context << "\n";           \
+      return failure();                                                        \
+    }                                                                          \
+  } while (0)
+
+#define HIPCHECK(expr) HIPCHECK_WITH_CONTEXT(expr, "")
+
 // Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
 // (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
 // launch_cooperative_grid always 0. Returns LogicalResult instead of void.
@@ -151,38 +163,22 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     attributes[1].val.cooperative = 0;
 
     HIP_LAUNCH_CONFIG config = {
-        gridBlocks,
-        1,
-        1, // Grid size
-        blockSize,
-        1,
-        1,             // Block size
-        shared_memory, // Shared memory
-        stream,
-        attributes,
-        2 // Number of attributes
+        gridBlocks,    1,      1,            // Grid size
+        blockSize,     1,      1,            // Block size
+        shared_memory, stream, attributes, 2 // Number of attributes
     };
-    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
-    if (status != hipSuccess) {
-      llvm::errs() << "HIP error in hipDrvLaunchKernelEx: "
-                   << hipGetErrorString(status) << " (grid=" << gridBlocks
-                   << "x1x1, block=" << blockSize
-                   << "x1x1, shared-memory=" << shared_memory
-                   << " bytes, num-ctas=" << num_ctas << ")\n";
-      return failure();
-    }
+    HIPCHECK_WITH_CONTEXT(
+        hipDrvLaunchKernelEx(&config, function, params, 0),
+        " (grid=" << gridBlocks << "x1x1, block=" << blockSize
+                  << "x1x1, shared-memory=" << shared_memory
+                  << " bytes, num-ctas=" << num_ctas << ")");
   } else {
-    hipError_t status =
+    HIPCHECK_WITH_CONTEXT(
         hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
-                              shared_memory, stream, params, nullptr);
-    if (status != hipSuccess) {
-      llvm::errs() << "HIP error in hipModuleLaunchKernel: "
-                   << hipGetErrorString(status) << " (grid=" << gridX
-                   << "x1x1, block=" << blockSize
-                   << "x1x1, shared-memory=" << shared_memory
-                   << " bytes, num-ctas=" << num_ctas << ")\n";
-      return failure();
-    }
+                              shared_memory, stream, params, nullptr),
+        " (grid=" << gridX << "x1x1, block=" << blockSize
+                  << "x1x1, shared-memory=" << shared_memory
+                  << " bytes, num-ctas=" << num_ctas << ")");
   }
   return success();
 }
@@ -411,17 +407,6 @@ static benchmark::DataType getDataType(Type inputType) {
     llvm_unreachable("Kernels only accept ints or floats");
   }
 }
-
-// intentionally leaky macro
-#define HIPCHECK(expr)                                                         \
-  do {                                                                         \
-    hipError_t _status = (expr);                                               \
-    if (hipSuccess != _status) {                                               \
-      llvm::errs() << "HIP error at " << __FILE__ << ":" << __LINE__ << " - "  \
-                   << hipGetErrorString(_status) << "\n";                      \
-      return failure();                                                        \
-    }                                                                          \
-  } while (0)
 
 using SteadyTimePoint = std::chrono::steady_clock::time_point;
 

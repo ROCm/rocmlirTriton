@@ -75,6 +75,14 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
     assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
     assert(kernel.blockSize > 0 && "expected a positive kernel block size");
     assert(kernel.clusterSize > 0 && "expected a positive kernel cluster size");
+    if (kernel.gridSize > rock::maxHardwareGridSize) {
+      rock::markAsNotApplicable(moduleOp);
+      return kernel.llvmFunc.emitOpError()
+             << "grid size " << kernel.gridSize
+             << " exceeds the runtime grid size limit of "
+             << rock::maxHardwareGridSize;
+    }
+
     if (kernel.blockSize > rock::maxHardwareWorkgroupSize) {
       rock::markAsNotApplicable(moduleOp);
       return kernel.llvmFunc.emitOpError()
@@ -94,8 +102,8 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
     return kernel.llvmFunc.emitOpError()
            << "launch dimensions (grid size " << kernel.gridSize
            << ", block size " << kernel.blockSize << ", cluster size "
-           << kernel.clusterSize << ") exceed the AMDGPU limit of "
-           << rock::maxHardwareGridSize << " work-items in the X dimension";
+           << kernel.clusterSize << ") exceed the runtime limit of "
+           << rock::maxHardwareGridSize << " work-items";
   }
 
   return success();
@@ -149,10 +157,8 @@ struct ResolveKernelLaunchParamsPass
       return signalPassFailure();
     }
 
-    if (failed(validateKernelLaunchDimensions(moduleOp))) {
-      signalPassFailure();
-      return;
-    }
+    if (failed(validateKernelLaunchDimensions(moduleOp)))
+      return signalPassFailure();
 
     auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>("global_smem");
     if (!globalOp) {

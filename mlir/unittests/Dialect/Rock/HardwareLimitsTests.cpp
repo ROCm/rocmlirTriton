@@ -15,7 +15,7 @@
 
 using namespace mlir::rock;
 
-TEST(HardwareLimitsTest, MaxGridSizeMatchesHip) {
+TEST(HardwareLimitsTest, LimitsMatchHip) {
   int deviceCount = 0;
   hipError_t status = hipGetDeviceCount(&deviceCount);
   if (status == hipErrorNoDevice || deviceCount == 0)
@@ -28,5 +28,11 @@ TEST(HardwareLimitsTest, MaxGridSizeMatchesHip) {
                                    device);
     ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
     EXPECT_EQ(maxHardwareGridSize, static_cast<uint32_t>(maxGridDimX));
+
+    int maxThreadsPerBlock = 0;
+    status = hipDeviceGetAttribute(&maxThreadsPerBlock,
+                                   hipDeviceAttributeMaxThreadsPerBlock, device);
+    ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
+    EXPECT_EQ(maxHardwareWorkgroupSize, maxThreadsPerBlock);
   }
 }
