@@ -167,18 +167,17 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
         blockSize,     1,      1,            // Block size
         shared_memory, stream, attributes, 2 // Number of attributes
     };
-    HIPCHECK_WITH_CONTEXT(
-        hipDrvLaunchKernelEx(&config, function, params, 0),
-        " (grid=" << gridBlocks << "x1x1, block=" << blockSize
-                  << "x1x1, shared-memory=" << shared_memory
-                  << " bytes, num-ctas=" << num_ctas << ")");
+    HIPCHECK_WITH_CONTEXT(hipDrvLaunchKernelEx(&config, function, params, 0),
+                          " (grid=" << gridBlocks << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
   } else {
-    HIPCHECK_WITH_CONTEXT(
-        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
-                              shared_memory, stream, params, nullptr),
-        " (grid=" << gridX << "x1x1, block=" << blockSize
-                  << "x1x1, shared-memory=" << shared_memory
-                  << " bytes, num-ctas=" << num_ctas << ")");
+    HIPCHECK_WITH_CONTEXT(hipModuleLaunchKernel(function, gridX, 1, 1,
+                                                blockSize, 1, 1, shared_memory,
+                                                stream, params, nullptr),
+                          " (grid=" << gridX << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
   }
   return success();
 }

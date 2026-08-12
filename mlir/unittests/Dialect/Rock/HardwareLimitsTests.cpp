@@ -30,8 +30,8 @@ TEST(HardwareLimitsTest, LimitsMatchHip) {
     EXPECT_EQ(maxHardwareGridSize, static_cast<uint32_t>(maxGridDimX));
 
     int maxThreadsPerBlock = 0;
-    status = hipDeviceGetAttribute(&maxThreadsPerBlock,
-                                   hipDeviceAttributeMaxThreadsPerBlock, device);
+    status = hipDeviceGetAttribute(
+        &maxThreadsPerBlock, hipDeviceAttributeMaxThreadsPerBlock, device);
     ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
     EXPECT_EQ(maxHardwareWorkgroupSize, maxThreadsPerBlock);
   }
