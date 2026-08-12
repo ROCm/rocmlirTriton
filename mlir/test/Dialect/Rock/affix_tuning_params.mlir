@@ -425,8 +425,8 @@ func.func @rock_gemm_fp8_datatype_fallback(%a : tensor<1x72x128xf8E4M3FNUZ>, %b 
 // GRID-LABEL: rock_gemm_f4_datatype_fallback
 func.func @rock_gemm_f4_datatype_fallback(%a : tensor<1x72x128xf4E2M1FN>, %b : tensor<1x72x115200xf4E2M1FN>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 28800
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 128, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 1800
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf4E2M1FN> * tensor<1x72x115200xf4E2M1FN> -> tensor<1x128x115200xf32>
