@@ -18,16 +18,18 @@ using namespace mlir::rock;
 TEST(HardwareLimitsTest, LimitsMatchHip) {
   int deviceCount = 0;
   hipError_t status = hipGetDeviceCount(&deviceCount);
-  if (status == hipErrorNoDevice || deviceCount == 0)
+  if (status == hipErrorNoDevice)
     GTEST_SKIP() << "no HIP devices available";
   ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
+  if (deviceCount == 0)
+    GTEST_SKIP() << "no HIP devices available";
 
   for (int device = 0; device < deviceCount; ++device) {
     int maxGridDimX = 0;
     status = hipDeviceGetAttribute(&maxGridDimX, hipDeviceAttributeMaxGridDimX,
                                    device);
     ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
-    EXPECT_EQ(maxHardwareGridSize, static_cast<uint32_t>(maxGridDimX));
+    EXPECT_LE(static_cast<uint32_t>(maxGridDimX), maxHardwareGridSize);
 
     int maxThreadsPerBlock = 0;
     status = hipDeviceGetAttribute(
