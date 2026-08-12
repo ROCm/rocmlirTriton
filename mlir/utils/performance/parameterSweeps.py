@@ -88,10 +88,16 @@ class PerfConfig:
       ``nPerBlockG1`` is the second-gemm N/head tile; ``0`` means untiled.
     """
 
-    _SHARED_KEYS = ("kPerBlock", "kpack", "numCTAs", "numWaves", "matrixInstrNonkdim",
-                    "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize")
+    # Public GEMM field metadata used by tools that need to inspect or construct
+    # serialized perf configs without duplicating the schema.
+    FIELD_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "kpack", "numCTAs", "numWaves",
+                   "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU",
+                   "gridGroupSize")
+    FIELD_INDEX = dict(zip(FIELD_NAMES, range(len(FIELD_NAMES))))
+
+    _SHARED_KEYS = FIELD_NAMES[2:]
     _KEYS = {
-        'gemm': ("mPerBlock", "nPerBlock") + _SHARED_KEYS,
+        'gemm': FIELD_NAMES,
         'attn': ("mPerBlockG0", "nPerBlockG0", "nPerBlockG1") + _SHARED_KEYS,
     }
     # ``attn`` carries one tunable more than ``gemm``: the ``nPerBlockG1``
