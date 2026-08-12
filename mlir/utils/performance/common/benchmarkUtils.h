@@ -19,17 +19,19 @@
 namespace benchmark {
 
 enum class DataType : uint32_t {
-  F32,
-  F16,
-  BF16,
-  I8,
-  F8,
-  I32,
-  F4,
-  F8E8M0FNU,
-  I4,
-  UNKNOWN
+  F32 = 0,
+  F16 = 1,
+  BF16 = 2,
+  I8 = 3,
+  F8 = 4,
+  I32 = 5,
+  F4 = 6,
+  F8E8M0FNU = 7,
+  UNKNOWN = 8,
+  I4 = 9
 };
+
+inline constexpr uint32_t kNumDataTypes = 10;
 
 struct BenchmarkArgs {
   uint64_t gemmG{0};
