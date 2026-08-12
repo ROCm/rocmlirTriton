@@ -9,12 +9,12 @@
 # vector, so a leftover tsv or `<tsv>.state` file would short-circuit the
 # run and produce empty output for FileCheck.
 # RUN: rm -f %t.tsv %t.tsv.state
-# RUN: tuningRunner.py --op gemm --tuning-space=quick \
+# RUN: tuningRunner.py --op gemm --tuning-space=quick --verify-winning-config \
 # RUN:     --config='-g 1 -m 64 -n 64 -k 64 -t f32 -out_datatype f32 -transA 0 -transB 0' \
 # RUN:     -q -o %t.tsv 2>&1 | FileCheck %s
 #
 # CHECK: Tuned and verified
-# CHECK-SAME: gemm:v4:
+# CHECK-SAME: gemm:v5:
 #
 # Same tiny GEMM, now with ``--debug-quick-tune-data``. This emits a `.debug`
 # TSV of the per-config table entries (PerfConfig + TFlops) but, unlike the
@@ -23,9 +23,10 @@
 # is absent.
 # RUN: rm -f %t2.tsv %t2.tsv.state %t2.tsv.debug
 # RUN: tuningRunner.py --op gemm --tuning-space=quick --debug-quick-tune-data \
+# RUN:     --verify-winning-config \
 # RUN:     --config='-g 1 -m 64 -n 64 -k 64 -t f32 -out_datatype f32 -transA 0 -transB 0' \
 # RUN:     -q -o %t2.tsv 2>&1 | FileCheck %s
 # RUN: FileCheck %s --check-prefix=DEBUG --implicit-check-not=MeasurementsMs < %t2.tsv.debug
 #
 # DEBUG: PerfConfig{{.*}}TFlops
-# DEBUG: gemm:v4:
+# DEBUG: gemm:v5:

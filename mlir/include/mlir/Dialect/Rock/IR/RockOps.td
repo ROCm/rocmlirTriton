@@ -197,7 +197,8 @@ def Rock_AttentionOp
           Optional<TensorOf<[I32]>>:$prefixOffset, I32Attr:$numHeadsQ,
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
-          I32Attr:$splitKV, OptionalAttr<TypeAttr>:$softmaxType,
+          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowSize,
+          OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
           DefaultValuedOptionalAttr<BoolAttr,
@@ -228,6 +229,16 @@ def Rock_AttentionOp
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix
       lengths for each sequence in the batch
 
+    `currentSeqLen` is the zero-based, inclusive current KV-cache position (the
+    last valid key/value index), not the number of cached entries. For a value
+    `P`, key positions `[0, P]` are valid before other masks are applied.
+
+    If `slidingWindowSize` is set to `W`, it specifies the maximum look-back
+    distance from `currentSeqLen`. Key positions
+    `[max(0, P - W), P]` are attended to, including the current position, so
+    the window contains up to `W + 1` key positions. Earlier positions are
+    masked with -inf. This requires `currentSeqLen` to be set.
+
     LSE (log-sum-exp) is an optional output typically used for flash decoding.
     For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled. 
     Flash decoding multiplies the number of blocks by splitKV. Note that "lse" has to be non-null for splitKV > 1. 
@@ -251,6 +262,7 @@ def Rock_AttentionOp
         ` ` `qk` `=` (`tr` $qTransposed^)? $queries `*` (`tr` $kTransposed^)? $keys `:` type($queries) `,` type($keys) `\n`
         (`currentSeqLen` `=` `(` $currentSeqLen^ `:` type($currentSeqLen) `)` `\n`)?
         (`prefixOffset` `=` `(` $prefixOffset^ `:` type($prefixOffset) `)` `\n`)?
+        (`slidingWindowSize` `=` $slidingWindowSize^ `\n`)?
         (`causal` `\n` $causal^)?
         (`qk` `=` `elementwise` (`otherIns` `(` $preSoftmaxElemWiseInputs^ `:` type($preSoftmaxElemWiseInputs) `)`)? $preSoftmaxBody^ `\n`)?
         `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `\n`
@@ -427,7 +439,8 @@ def Rock_LoadMarkerOp
     : Rock_Op<"load_marker", [Pure,
                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
-          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier)>,
+          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier,
+          OptionalAttr<DenseI64ArrayAttr>:$reductionTileAxes)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
@@ -450,6 +463,13 @@ def Rock_LoadMarkerOp
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
     back through the source chain (transforms, fusion ops, block argument)
     and combining all transforms.
+
+    `reductionTileAxes` records what the loaded tile feeds, which decides
+    whether tile-alignment padding may be dropped when the load is narrowed to
+    the dimensions it depends on. An absent attribute means the producer does
+    not know and consumers must stay conservative, an empty array means the
+    tile never reaches a reduction, and otherwise it lists the tile axes that
+    are reduced over.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
@@ -544,8 +564,8 @@ def Rock_GridwiseAttentionOp
           Variadic<AnyRankedTensor>:$preSoftmaxElemWiseInputs,
           Optional<TensorRankOf<[I32], [1]>>:$currentSeqLen,
           Optional<TensorRankOf<[I32], [1]>>:$prefixOffset, UnitAttr:$causal,
-          I32Attr:$splitKV, UnitAttr:$disableQBypassLDS,
-          OptionalAttr<IndexAttr>:$prePadG0M,
+          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowSize,
+          UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
           OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
@@ -558,6 +578,9 @@ def Rock_GridwiseAttentionOp
   let summary = "Gridwise attention";
   let description = [{
     The `rock.gridwise_attention` op computes gridwise attention.
+
+    `currentSeqLen` and `slidingWindowSize` use the same inclusive KV-cache
+    position and maximum look-back distance semantics as `rock.attention`.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{

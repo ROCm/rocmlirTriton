@@ -117,6 +117,12 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
            "onto the reduction dim). kKnobDefault=-1 (heuristic, currently "
            "off), 0=off, 1=on. Not tuned; opt-in via the perfConfig."),
       init(kKnobDefault)};
+  PassOptions::Option<int64_t> useOptimizeEpilogue{
+      *this, "useOptimizeEpilogue",
+      desc("Gate Triton's OptimizeEpilogue pass. kKnobDefault=-1 uses the "
+           "rocMLIR store-tail heuristic, 0=off, 1=unconditionally on. Not "
+           "tuned."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `triton` pipeline to the `OpPassManager`.

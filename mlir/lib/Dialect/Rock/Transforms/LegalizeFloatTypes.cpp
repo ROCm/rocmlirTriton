@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
@@ -319,10 +320,10 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
           newUpper - newParams[subIdx * 2] - newParams[subIdx * 2 + 1];
       newLowerBounds[lowerDim] = newLower;
       halvedLowerDim = lowerDim;
-      newOps.push_back(
-          TransformAttr::get(ctx, trAttr.getType(), newParams,
-                             trAttr.getUpperNames(), trAttr.getUpperDims(),
-                             trAttr.getLowerNames(), trAttr.getLowerDims()));
+      newOps.push_back(TransformAttr::get(
+          ctx, trAttr.getType(), newParams, trAttr.getUpperNames(),
+          trAttr.getUpperDims(), trAttr.getLowerNames(), trAttr.getLowerDims(),
+          trAttr.getIsTileAlignment()));
       break;
     }
     case TransformType::Slice: {
@@ -779,12 +780,7 @@ static Value buildSubByteShiftConstant(OpBuilder &builder, Location loc,
 
   // Insert a unit dim for the OTHER axis, then broadcast to the full tile
   // shape so it can be SHRed against the loaded i8 tile.
-  SmallVector<int64_t> expandedShape(2, 1);
-  expandedShape[loadAxisIdx] = axisLen;
-  auto expandedType = RankedTensorType::get(expandedShape, i8Ty);
-  Value expanded = triton::ExpandDimsOp::create(builder, loc, expandedType,
-                                                shiftI8, otherAxis);
-  return triton::BroadcastOp::create(builder, loc, i8TileType, expanded);
+  return expandDimAndBroadcast(builder, loc, shiftI8, otherAxis, i8TileType);
 }
 
 /// Build a loop-variant tile of nibble-shift values for the FALLBACK PATH

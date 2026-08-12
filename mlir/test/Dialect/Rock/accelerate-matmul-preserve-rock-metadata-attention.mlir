@@ -3,94 +3,104 @@
 // accelerate-matmul-preserve-rock-metadata.mlir).
 //
 // The input is a transposed-output attention (rock.attention with {oTransposed},
-// i.e. --transO) with a trailing arith.addf bias fusion. Both of its matmuls
-// (Q*K^T and softmax(qk)*V) lower to rock.blockwise_gemm and reach the
+// i.e. --transO) with a trailing arith.addf bias fusion. It lowers to two
+// rock.blockwise_gemm ops: the scores gemm (Q*K^T) and the value gemm
+// (softmax(qk)*V). Only the value gemm is stored: its result reaches the
 // column-major / M-fast output store (through the addf fusion), so
-// rock-add-triton-metadata tags both with rock.o_transposed = <true>. Driving it
-// through the rocmlir Triton kernel pipeline exercises:
-//   * RockToTTIR, which carries the discardable attribute onto both lowered
-//     tt.dot ops;
+// rock-add-triton-metadata tags it with rock.o_transposed = <true>. The scores
+// gemm feeds the value gemm as an operand (a chained-dot head), so it has no
+// stored output layout and is intentionally left untagged -- even though it also
+// reaches the store indirectly through the softmax statistics. Leaving it
+// untagged keeps its accelerator-native layout, which on WMMA v1 (gfx1100) is
+// what maps the softmax row reduction into registers instead of cross-lane DPP.
+//
+// Driving it through the rocmlir Triton kernel pipeline exercises:
+//   * RockToTTIR, which carries the discardable attribute onto the tagged
+//     (value) tt.dot only;
 //   * the downstream Triton patch
 //     (triton-patches/patch-wmma-preserve-discardable-attrs.patch), which keeps
-//     the attribute when tritonamdgpu-accelerate-matmul rewrites each tt.dot into
+//     the attribute when tritonamdgpu-accelerate-matmul rewrites the tt.dot into
 //     a WMMA (ttg.amd_wmma) dot;
-//   * rock-set-matmul-output-transpose, which consumes the metadata and selects
-//     the WMMA result layout's isTranspose flag (version-dependent).
+//   * rock-set-matmul-output-transpose, which consumes the metadata on the value
+//     dot and selects its WMMA result layout's isTranspose flag (version-
+//     dependent), while leaving the untagged scores dot at the default layout.
 //
 // gfx1200 uses WMMA version 2, where a column-major output wants isTranspose =
-// false, so the pass flips the accelerate-matmul default (true -> false).
+// false, so the pass flips the value dot from the accelerate-matmul default
+// (true -> false) and leaves the scores dot at true.
 // gfx1250 uses WMMA version 3, which behaves like version 2 (column-major wants
-// isTranspose = false), so the pass also flips true -> false.
+// isTranspose = false), so the pass also flips the value dot true -> false.
 // gfx1100 uses WMMA version 1, where a column-major output already wants
-// isTranspose = true, so the layout is left as-is and only the metadata is
-// dropped.
+// isTranspose = true, so both dots keep isTranspose = true and only the metadata
+// on the value dot is dropped from the layout decision.
 
-// --- gfx1200 (WMMA v2): metadata survives accelerate-matmul on both dots ---
+// --- gfx1200 (WMMA v2): metadata survives accelerate-matmul on the value dot ---
 // RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL12
 // --- gfx1200 (WMMA v2): set-matmul-output-transpose flips true -> false ---
 // RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT12
 
-// --- gfx1250 (WMMA v3): metadata survives accelerate-matmul on both dots ---
+// --- gfx1250 (WMMA v3): metadata survives accelerate-matmul on the value dot ---
 // RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL1250
 // --- gfx1250 (WMMA v3): set-matmul-output-transpose flips true -> false ---
 // RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT1250
 
-// --- gfx1100 (WMMA v1): metadata survives accelerate-matmul on both dots ---
+// --- gfx1100 (WMMA v1): metadata survives accelerate-matmul on the value dot ---
 // RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL11
 // --- gfx1100 (WMMA v1): set-matmul-output-transpose keeps isTranspose = true ---
 // RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT11
 
+// Both dots share the accelerate-matmul default WMMA (isTranspose = true). The
+// scores dot is untagged; only the value dot carries the metadata.
 // ACCEL12: #[[$WMMA:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true,
-// ACCEL12: tt.dot
-// ACCEL12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL12-SAME: -> tensor<64x64xf32, #[[$WMMA]]>
-// ACCEL12: tt.dot
-// ACCEL12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL12-SAME: -> tensor<64x64xf32, #[[$WMMA]]>
+// ACCEL12:      tt.dot
+// ACCEL12-SAME:   -> tensor<64x64xf32, #[[$WMMA]]>
+// ACCEL12-NOT:  rock.o_transposed
+// ACCEL12:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// ACCEL12-SAME:   -> tensor<64x64xf32, #[[$WMMA]]>
 
-// The metadata is discardable and left in place once consumed.
-// SETT12: #[[$WMMAT:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = false,
-// SETT12: tt.dot
-// SETT12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT12-SAME: -> tensor<64x64xf32, #[[$WMMAT]]>
-// SETT12: tt.dot
-// SETT12-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT12-SAME: -> tensor<64x64xf32, #[[$WMMAT]]>
+// The value dot is flipped to isTranspose = false; the scores dot stays at the
+// default isTranspose = true. The metadata is discardable and left in place.
+// SETT12-DAG: #[[$WMMA:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true,
+// SETT12-DAG: #[[$WMMAT:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = false,
+// SETT12:      tt.dot
+// SETT12-SAME:   -> tensor<64x64xf32, #[[$WMMA]]>
+// SETT12-NOT:  rock.o_transposed
+// SETT12:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// SETT12-SAME:   -> tensor<64x64xf32, #[[$WMMAT]]>
 
 // ACCEL1250: #[[$WMMA1250:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = true,
-// ACCEL1250: tt.dot
-// ACCEL1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250]]>
-// ACCEL1250: tt.dot
-// ACCEL1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250]]>
+// ACCEL1250:      tt.dot
+// ACCEL1250-SAME:   -> tensor<64x64xf32, #[[$WMMA1250]]>
+// ACCEL1250-NOT:  rock.o_transposed
+// ACCEL1250:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// ACCEL1250-SAME:   -> tensor<64x64xf32, #[[$WMMA1250]]>
 
-// The metadata is discardable and left in place once consumed.
-// SETT1250: #[[$WMMA1250T:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = false,
-// SETT1250: tt.dot
-// SETT1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250T]]>
-// SETT1250: tt.dot
-// SETT1250-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT1250-SAME: -> tensor<64x64xf32, #[[$WMMA1250T]]>
+// The value dot is flipped to isTranspose = false; the scores dot stays at the
+// default isTranspose = true. The metadata is discardable and left in place.
+// SETT1250-DAG: #[[$WMMA1250:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = true,
+// SETT1250-DAG: #[[$WMMA1250T:.+]] = #ttg.amd_wmma<{version = 3, isTranspose = false,
+// SETT1250:      tt.dot
+// SETT1250-SAME:   -> tensor<64x64xf32, #[[$WMMA1250]]>
+// SETT1250-NOT:  rock.o_transposed
+// SETT1250:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// SETT1250-SAME:   -> tensor<64x64xf32, #[[$WMMA1250T]]>
 
 // ACCEL11: #[[$WMMA11:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
-// ACCEL11: tt.dot
-// ACCEL11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL11-SAME: -> tensor<64x64xf32, #[[$WMMA11]]>
-// ACCEL11: tt.dot
-// ACCEL11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// ACCEL11-SAME: -> tensor<64x64xf32, #[[$WMMA11]]>
+// ACCEL11:      tt.dot
+// ACCEL11-SAME:   -> tensor<64x64xf32, #[[$WMMA11]]>
+// ACCEL11-NOT:  rock.o_transposed
+// ACCEL11:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// ACCEL11-SAME:   -> tensor<64x64xf32, #[[$WMMA11]]>
 
-// For WMMA v1 a column-major output already wants isTranspose = true, so both
-// dots are left untouched (no flip).
+// For WMMA v1 a column-major output already wants isTranspose = true, so the
+// value dot is left untouched (no flip); the untagged scores dot also stays at
+// isTranspose = true. Both keep the same layout.
 // SETT11: #[[$WMMA11T:.+]] = #ttg.amd_wmma<{version = 1, isTranspose = true,
-// SETT11: tt.dot
-// SETT11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT11-SAME: -> tensor<64x64xf32, #[[$WMMA11T]]>
-// SETT11: tt.dot
-// SETT11-SAME: rock.o_transposed = #rock.o_transposed<true>
-// SETT11-SAME: -> tensor<64x64xf32, #[[$WMMA11T]]>
+// SETT11:      tt.dot
+// SETT11-SAME:   -> tensor<64x64xf32, #[[$WMMA11T]]>
+// SETT11-NOT:  rock.o_transposed
+// SETT11:      tt.dot {{.*}}rock.o_transposed = #rock.o_transposed<true>
+// SETT11-SAME:   -> tensor<64x64xf32, #[[$WMMA11T]]>
 // SETT11-NOT: isTranspose = false
 
 #map = affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>

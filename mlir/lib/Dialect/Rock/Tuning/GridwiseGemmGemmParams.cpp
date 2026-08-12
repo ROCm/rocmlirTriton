@@ -91,19 +91,17 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getNumStages(), params.getWavesPerEU(), params.getGridGroupSize(),
       params.getUseAsyncCopy(), params.getUseBlockPingpong(),
       params.getUseInThreadTranspose(), params.getUseBufferOps(),
-      params.getUseBufferAtomics(), params.getUseReductionLayout());
+      params.getUseBufferAtomics(), params.getUseReductionLayout(),
+      params.getUseOptimizeEpilogue());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
-  // Due to limitations, gemm1NPerBlock must be equal to gemm1N
-  // and gemm1NPerBlock must be a power of two.
-  auto cShape = cast<ShapedType>(op.getCType()).getShape();
-  int idx = op.getTransposedC() ? 0 : 1;
-  assert(cShape.size() == 3 || cShape.size() == 2);
-  if (cShape.size() == 3)
-    idx++;
-  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
+  // `nPerBlockG1 == 0` keeps the second GEMM untiled (process the full gemm1N);
+  // otherwise it tiles the head dim.
+  int64_t gemm1N = llvm::PowerOf2Ceil(op.getGemmGemmSize().o);
+  int64_t gemm1NPerBlock =
+      params.getNPerBlockG1() > 0 ? params.getNPerBlockG1() : gemm1N;
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
@@ -112,5 +110,5 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
       params.getGridGroupSize(), params.getUseAsyncCopy(),
       params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
       params.getUseBufferOps(), params.getUseBufferAtomics(),
-      params.getUseReductionLayout());
+      params.getUseReductionLayout(), params.getUseOptimizeEpilogue());
 }

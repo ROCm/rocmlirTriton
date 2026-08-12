@@ -40,6 +40,7 @@ set(LIBS
 
 add_rocmlir_tool(rocmlir-tuning-driver
   rocmlir-tuning-driver.cpp
+  ArtifactIO.cpp
   CacheFlush.cpp
 )
 

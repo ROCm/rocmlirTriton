@@ -17,7 +17,6 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -45,6 +44,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -216,6 +216,9 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     }
   }
 
+  bool isTileAlignment =
+      parser.parseOptionalKeyword("tileAlignment").succeeded();
+
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
   if (parseAndGather<std::string>(parser, AsmParser::Delimiter::Square,
@@ -265,7 +268,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims);
+      upperDims, lowerNames, lowerDims, isTileAlignment);
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -278,6 +281,8 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
     llvm::interleaveComma(params, printer);
     printer << "}";
   }
+  if (getIsTileAlignment())
+    printer << " tileAlignment";
   printer << " [";
   llvm::interleaveComma(getUpperNames(), printer,
                         [&](StringRef s) { printer << "\"" << s << "\""; });
@@ -291,13 +296,41 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "]>";
 }
 
+TransformAttr TransformAttr::get(mlir::MLIRContext *context, TransformType type,
+                                 llvm::ArrayRef<int64_t> params,
+                                 llvm::ArrayRef<llvm::StringRef> upperNames,
+                                 llvm::ArrayRef<uint32_t> upperDims,
+                                 llvm::ArrayRef<llvm::StringRef> lowerNames,
+                                 llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::get(context, type, params, upperNames, upperDims,
+                            lowerNames, lowerDims,
+                            /*isTileAlignment=*/false);
+}
+
+TransformAttr TransformAttr::getChecked(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::MLIRContext *context, TransformType type,
+    llvm::ArrayRef<int64_t> params, llvm::ArrayRef<llvm::StringRef> upperNames,
+    llvm::ArrayRef<uint32_t> upperDims,
+    llvm::ArrayRef<llvm::StringRef> lowerNames,
+    llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
+                                   upperDims, lowerNames, lowerDims,
+                                   /*isTileAlignment=*/false);
+}
+
 LogicalResult
 TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       TransformType type, llvm::ArrayRef<int64_t> params,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims) {
+                      llvm::ArrayRef<unsigned> lowerDims,
+                      bool isTileAlignment) {
+  if (isTileAlignment && type != TransformType::Pad) {
+    return emitError() << "Only a Pad can align a gemm dimension to the tile "
+                          "size";
+  }
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -453,9 +486,11 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
+    bool isTileAlignment) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims);
+                                   upperDims, lowerNames, lowerDims,
+                                   isTileAlignment);
 }
 
 //===---------------------------------------------------------
@@ -982,9 +1017,8 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   auto kernelIds = rock::backwardDataKernelIds(strides, dilations, sizes.fil);
 
   assert(!kernelIds.empty());
-  GemmSize biggest =
-      bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
-                                 kernelIds.front());
+  GemmSize biggest = bwdDataGemmSizeForKernelId(sizes, padding, strides,
+                                                dilations, kernelIds.front());
   for (int64_t kernelId : llvm::drop_begin(kernelIds)) {
     GemmSize single = bwdDataGemmSizeForKernelId(sizes, padding, strides,
                                                  dilations, kernelId);
@@ -1338,6 +1372,12 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
+  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
+  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
+    for (int64_t axis : *axes)
+      if (axis < 0 || axis >= resultRank)
+        return emitOpError() << "reduction tile axis " << axis
+                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),
@@ -1738,6 +1778,29 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
+
+// Validate sliding window constraints common to attention-like ops.
+static LogicalResult
+verifySlidingWindowConstraints(Operation *op,
+                               std::optional<int32_t> slidingWindowSize,
+                               Value currentSeqLen, int64_t maxSeqLen) {
+  if (!slidingWindowSize)
+    return success();
+  int32_t windowSize = static_cast<int32_t>(*slidingWindowSize);
+
+  if (windowSize <= 0)
+    return op->emitError("slidingWindowSize must be positive");
+
+  if (!currentSeqLen)
+    return op->emitError("slidingWindowSize requires currentSeqLen to be set");
+
+  if (windowSize > maxSeqLen)
+    return op->emitError(
+        "slidingWindowSize must not exceed max sequence length");
+
+  return success();
+}
+
 LogicalResult GridwiseAttentionOp::verify() {
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1765,6 +1828,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
+  if (!getEnableSoftmax() && getSlidingWindowSize())
+    return emitError("slidingWindowSize only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1772,6 +1838,21 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError(
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
+
+  // Validate sliding window constraints.
+  // Keys are normalized to [G, K, N] where N (the gemm0 N dimension, last dim)
+  // is the key sequence length (max seq len). Unlike rocMLIR -- where the key
+  // sequence lives on gemm0's M dimension -- rocmlirTriton keeps the key
+  // sequence on N (matching the KV-cache/sliding-window N loop in
+  // GridwiseAttnToBlockwise), so use prePadG0N, not prePadG0M, for the
+  // pre-padding value. Fall back to the current shape when it is absent.
+  ShapedType kType = cast<ShapedType>(getKeys().getType());
+  int64_t maxSeqLen =
+      getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
 
   return success();
 }
@@ -1787,8 +1868,7 @@ LogicalResult TransformsToPtrOp::verify() {
   auto ptrType = cast<RankedTensorType>(getPointers().getType());
 
   size_t idxCount = getExtraIndices().size();
-  if (idxCount + ptrType.getRank() !=
-      static_cast<size_t>(sourceType.getRank()))
+  if (idxCount + ptrType.getRank() != static_cast<size_t>(sourceType.getRank()))
     return emitOpError(
                "extraIndices.size() + pointers rank must equal source rank")
            << " (" << idxCount << " + " << ptrType.getRank()
@@ -1901,8 +1981,7 @@ LogicalResult BlockwiseReduceOp::verify() {
     if (int64_t(inDim) == axis)
       continue;
     if (outShape[outDim] != inpShape[inDim])
-      return emitError(
-          "non-reduction dimension size mismatch at output dim ")
+      return emitError("non-reduction dimension size mismatch at output dim ")
              << outDim;
     ++outDim;
   }
@@ -2262,6 +2341,14 @@ LogicalResult AttentionOp::verify() {
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
 
+  // Validate sliding window constraints.
+  // Max seq len is the key N dimension.
+  int64_t maxSeqLen = getGemmGemmSize().n;
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
+
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
 }
@@ -2277,21 +2364,26 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v5, add a new `kNumKnobFieldsV5`
+// NOTE: If you want to bump the perfConfig to v7, add a new `kNumKnobFieldsV7`
 // constant and update the parser to expect the new number of fields.
 //
 // v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
-// knob block by appending `useReductionLayout` on top of v3's five knobs.
+// knob block by appending `useReductionLayout` on top of v3's five knobs. v5
+// appends `useOptimizeEpilogue`. v6 keeps v5's knob block unchanged but adds a
+// 12th tunable field, `nPerBlockG1`, for GEMM+GEMM (attention) configs only.
 constexpr size_t kNumKnobFieldsV2 = 6;
 constexpr size_t kNumKnobFieldsV3 = 5;
 constexpr size_t kNumKnobFieldsV4 = 6;
+constexpr size_t kNumKnobFieldsV5 = 7;
+constexpr size_t kNumKnobFieldsV6 = 7;
 
 // Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useBlockPingpong,
                                 int64_t useInThreadTranspose,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
-                                int64_t useReductionLayout) {
+                                int64_t useReductionLayout,
+                                int64_t useOptimizeEpilogue) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2299,6 +2391,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useBufferOps", useBufferOps},
       {"useBufferAtomics", useBufferAtomics},
       {"useReductionLayout", useReductionLayout},
+      {"useOptimizeEpilogue", useOptimizeEpilogue},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2366,15 +2459,24 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
 }
 
 // Returns the expected number of comma-separated fields for a perf-config of
-// the given version (11 tunable fields plus the version's knob fields), or
-// std::nullopt if the version is unknown.
-std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
-  static constexpr size_t kNumKnobFieldsByVersion[] = {
-      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4};
+// the given version (the tunable fields plus the version's knob fields), or
+// std::nullopt if the version is unknown. GEMM configs always have 11 tunable
+// fields. GEMM+GEMM (attention) configs also have 11 through v5, but from v6
+// onward carry a 12th tunable field, `nPerBlockG1` (the second-GEMM head-dim
+// tile), so `isGemmGemm` must be set for those to be counted correctly.
+std::optional<size_t> getExpectedPerfConfigFieldCount(int version,
+                                                      bool isGemmGemm) {
+  static constexpr size_t kNumKnobFieldsByVersion[] = {0,
+                                                       kNumKnobFieldsV2,
+                                                       kNumKnobFieldsV3,
+                                                       kNumKnobFieldsV4,
+                                                       kNumKnobFieldsV5,
+                                                       kNumKnobFieldsV6};
   if (version < 1 ||
       version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
     return std::nullopt;
-  return 11 + kNumKnobFieldsByVersion[version - 1];
+  size_t numTunableFields = (isGemmGemm && version >= 6) ? 12 : 11;
+  return numTunableFields + kNumKnobFieldsByVersion[version - 1];
 }
 
 } // namespace
@@ -2392,13 +2494,17 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
   // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
+  // v5: 11 tunable fields + 7 knob fields = 18 (v4 knobs +
+  //     useOptimizeEpilogue).
+  // v6: 11 tunable fields + 7 knob fields = 18 (identical to v5 for plain GEMM;
+  //     the extra `nPerBlockG1` tunable field is GEMM+GEMM-only).
   std::optional<size_t> expectedCount =
-      getExpectedPerfConfigFieldCount(version);
+      getExpectedPerfConfigFieldCount(version, /*isGemmGemm=*/false);
   if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
@@ -2421,6 +2527,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
+  int64_t useOptimizeEpilogue = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2435,10 +2542,12 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     }
     if (version >= 4)
       useReductionLayout = params[idx++];
+    if (version >= 5)
+      useOptimizeEpilogue = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
                                  useBufferOps, useBufferAtomics,
-                                 useReductionLayout))) {
+                                 useReductionLayout, useOptimizeEpilogue))) {
       return {};
     }
   }
@@ -2447,7 +2556,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
+      useOptimizeEpilogue);
 }
 
 //===-----------------------------------------------------===//
@@ -2463,13 +2573,20 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
+  // GEMM+GEMM (attention) configs gain a 12th tunable field, `nPerBlockG1`
+  // (the second-GEMM head-dim tile), starting at v6. v1..v5 have 11 tunable
+  // fields and decode `nPerBlockG1` as 0 ("untiled", the historical behaviour).
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
   // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
+  // v5: 11 tunable fields + 7 knob fields = 18 (v4 knobs +
+  //     useOptimizeEpilogue).
+  // v6: 12 tunable fields + 7 knob fields = 19 (v5 knobs plus the new
+  //     `nPerBlockG1` second-GEMM head-dim tile).
   std::optional<size_t> expectedCount =
-      getExpectedPerfConfigFieldCount(version);
+      getExpectedPerfConfigFieldCount(version, /*isGemmGemm=*/true);
   if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
@@ -2477,6 +2594,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int idx = 0;
   int64_t mPerBlockG0 = params[idx++];
   int64_t nPerBlockG0 = params[idx++];
+  int64_t nPerBlockG1 = (version >= 6) ? params[idx++] : 0;
   int64_t kPerBlock = params[idx++];
   int64_t kpack = params[idx++];
   int64_t numCTAs = params[idx++];
@@ -2492,6 +2610,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
+  int64_t useOptimizeEpilogue = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2506,19 +2625,22 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     }
     if (version >= 4)
       useReductionLayout = params[idx++];
+    if (version >= 5)
+      useOptimizeEpilogue = params[idx++];
     if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
                                  useBlockPingpong, useInThreadTranspose,
                                  useBufferOps, useBufferAtomics,
-                                 useReductionLayout))) {
+                                 useReductionLayout, useOptimizeEpilogue))) {
       return {};
     }
   }
 
   return GemmGemmParamsAttr::get(
-      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
-      kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
-      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, nPerBlockG1,
+      kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
+      numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
+      useOptimizeEpilogue);
 }
 
 //===----------------------------------------------------------------------===//

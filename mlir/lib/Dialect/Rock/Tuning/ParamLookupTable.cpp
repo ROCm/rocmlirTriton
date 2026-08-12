@@ -125,8 +125,7 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
   return relatives;
 }
 
-template <typename ParamsType>
-StringRef ParamLookupTable<ParamsType>::normalizeArch(StringRef arch) {
+StringRef mlir::rock::normalizeArch(StringRef arch) {
   auto gfxPos = arch.find("gfx");
   if (gfxPos == StringRef::npos) {
     llvm_unreachable("Invalid architecture string");
@@ -137,24 +136,9 @@ StringRef ParamLookupTable<ParamsType>::normalizeArch(StringRef arch) {
   return remaining.substr(0, endPos);
 }
 
-template <typename ParamsType>
-std::string
-ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
-  switch (kernelType) {
-  case KernelType::ConvBwdData:
-  case KernelType::ConvBwdWeight:
-    // We use the same suffix for all convolution types
-    return stringifyEnum(KernelType::Conv).lower();
-  default:
-    return stringifyEnum(kernelType).lower();
-  }
-}
-
-template <typename ParamsType>
-std::string ParamLookupTable<ParamsType>::getDataTypeString(Type dataType) {
-  if (dataType.getIntOrFloatBitWidth() == 4 &&
-             isa<FloatType>(dataType)) {
-    // We usa simplified "f4" for all 4-bit float types
+std::string mlir::rock::getDataTypeString(Type dataType) {
+  if (dataType.getIntOrFloatBitWidth() == 4 && isa<FloatType>(dataType)) {
+    // We use a simplified "f4" for all 4-bit float types
     return "f4";
   } else if (dataType.getIntOrFloatBitWidth() == 8 &&
              isa<FloatType>(dataType)) {
@@ -173,6 +157,19 @@ std::string ParamLookupTable<ParamsType>::getDataTypeString(Type dataType) {
       result.erase(result.begin());
     }
     return result;
+  }
+}
+
+template <typename ParamsType>
+std::string
+ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
+  switch (kernelType) {
+  case KernelType::ConvBwdData:
+  case KernelType::ConvBwdWeight:
+    // We use the same suffix for all convolution types
+    return stringifyEnum(KernelType::Conv).lower();
+  default:
+    return stringifyEnum(kernelType).lower();
   }
 }
 

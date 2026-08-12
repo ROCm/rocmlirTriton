@@ -1806,6 +1806,16 @@ public:
       return true;
     }
 
+    // Try Fp8/Bf8 x Fp8/Bf8 -> Fp32 v_dot4. Each of the four operand pairings
+    // has its own instruction, so A and B need not have the same type.
+    // if k % 4 != 0: can not use the packed 4-element V_DOT instruction
+    auto isOcpFp8 = [](Type t) { return t.isF8E4M3FN() || t.isF8E5M2(); };
+    if (targetFeatures.supportsFp8Dot4Fma() && isOcpFp8(dotTypes.a) &&
+        isOcpFp8(dotTypes.b) && dotTypes.c.isF32() && dotTypes.d.isF32() &&
+        k % 4 == 0) {
+      return true;
+    }
+
     // TODO: enable this condition, when fp32 -> fp16 cast works correctly
     // Consider this case as non legal, despite this case is covered by fp16
     // FMA. Because v_dot expected to give both better performance and

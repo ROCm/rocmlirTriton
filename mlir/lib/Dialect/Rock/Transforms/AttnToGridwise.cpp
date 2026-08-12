@@ -331,8 +331,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   const int64_t origN = cast<RankedTensorType>(b.getType()).getShape()[2];
   const int64_t nPad = llvm::alignTo(origN, splitNFactor) - origN;
 
-  b = padMatrix(b, builder, loc, "gemmK", 0, "gemmN", nPad);
-  c = padMatrix(c, builder, loc, "gemmK", nPad, "gemmO", 0);
+  b = padMatrixForTileAlignment(b, builder, loc, "gemmK", 0, "gemmN", nPad);
+  c = padMatrixForTileAlignment(c, builder, loc, "gemmK", nPad, "gemmO", 0);
 
   // perform coordinate transformations
   Value aNew{nullptr}, bNew{nullptr}, cNew{nullptr};
@@ -475,9 +475,9 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 static LogicalResult commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
     Value b, Value c, Value currentSeqLen, Value prefixOffset, UnitAttr causal,
-    IntegerAttr splitKV, ValueRange elementwiseInputs,
-    Region &preSecondOpRegion, bool enableSoftmax, TypeAttr softmaxType,
-    int64_t numHeadsQ, int64_t numHeadsKV,
+    IntegerAttr splitKV, IntegerAttr slidingWindowSize,
+    ValueRange elementwiseInputs, Region &preSecondOpRegion, bool enableSoftmax,
+    TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
     BoolAttr preSoftmaxHasSplitKVTransforms) {
   Location loc = op->getLoc();
 
@@ -572,20 +572,25 @@ static LogicalResult commonAttentionGemmElmtGemm(
                                .value_or(GemmSize{0, 0, 0, 0});
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
+  // gemm1N is split into nPerBlockG1-wide chunks folded back together with
+  // pairwise tt.join, so the chunk count must be a power of two. Round gemm1N
+  // up to a power of two to guarantee this (no-op for the untiled case).
+  int64_t requiredGemm1N = gemm1Size.n + gemm1ExtraPad.n;
+  gemm1ExtraPad.n += llvm::PowerOf2Ceil(requiredGemm1N) - requiredGemm1N;
 
-  a = padMatrix(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
-                gemm0ExtraPad.k);
-  b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
-                gemm0ExtraPad.n);
-  c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
-                gemm1ExtraPad.n);
+  a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
+                                gemm0ExtraPad.k);
+  b = padMatrixForTileAlignment(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
+                                gemm0ExtraPad.n);
+  c = padMatrixForTileAlignment(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
+                                gemm1ExtraPad.n);
   transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
-    return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
-                     gemm1ExtraPad.n);
+    return padMatrixForTileAlignment(v, rw, loc, "gemm1M", gemm1ExtraPad.m,
+                                     "gemm1N", gemm1ExtraPad.n);
   });
   if (hasLse) {
     transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
-      return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
+      return padVectorForTileAlignment(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
     });
   }
 
@@ -614,7 +619,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
         cast<ShapedType>(lse.getType()).getElementType());
   auto newOp = GridwiseAttentionOp::create(
       rw, loc, newOutputType, newLseType, a, b, c, elementwiseInputs,
-      currentSeqLen, prefixOffset, causal, splitKV,
+      currentSeqLen, prefixOffset, causal, splitKV, slidingWindowSize,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
@@ -673,7 +678,8 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
       rw, op, adaptor.getQueries(), adaptor.getKeys(), adaptor.getValues(),
       adaptor.getCurrentSeqLen(), adaptor.getPrefixOffset(),
       adaptor.getCausalAttr(), adaptor.getSplitKVAttr(),
-      adaptor.getPreSoftmaxElemWiseInputs(), op.getPreSoftmaxBody(),
+      adaptor.getSlidingWindowSizeAttr(), adaptor.getPreSoftmaxElemWiseInputs(),
+      op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
       adaptor.getNumHeadsKV(), adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
 }
@@ -686,7 +692,8 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
       /*currentSeqLen=*/nullptr, /*prefixOffset=*/nullptr, /*causal=*/nullptr,
-      splitKV, adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
+      splitKV, /*slidingWindowSize=*/nullptr, adaptor.getElemwiseInputs(),
+      op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
       /*numHeadsKV=*/1,
       /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));

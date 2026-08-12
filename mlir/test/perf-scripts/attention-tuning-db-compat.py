@@ -14,13 +14,26 @@ kernels and must not be silently matched against an old all-false row.
 """
 
 from pathlib import Path
+import os
+import shutil
 import sys
 import types
 import unittest
 
+# perfRunner.py is on PATH (lit's mlir_rock_tools_dir, populated by
+# ci-performance-scripts). Import it from there rather than from the source
+# tree: it depends on the compiled amd_arch_db binding, which only exists
+# alongside the deployed scripts.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
+
+# quickTuningGen.py is an analysis helper that is not deployed, so it still
+# comes from the source tree.
 MLIR_DIR = Path(__file__).resolve().parents[2]
 PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
 sys.path.insert(0, str(PERF_DIR / "analysis"))
 
 
@@ -131,8 +144,42 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("-transBias true", trans_bias_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(trans_bias_config, legacy_all_false_key))
 
-    def test_quick_tuning_gen_defaults_missing_trans_bias_column(self):
-        """Legacy debug TSV rows without TransBias get a false default."""
+    def test_perf_runner_keeps_sliding_window_distinct(self):
+        """A sliding-window kernel must not fall back to a row that lacks it.
+
+        Unlike the boolean flags, sliding_window_size is only present in the key
+        when > 0, so its distinctness relies on the key string, not on the
+        false-flag stripping in lookup_tuning_db.
+        """
+        all_false_config = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false")
+        legacy_all_false_key = drop_flags(all_false_config.to_command_line(),
+                                          " -with-attn-scale false", " -with-attn-bias false",
+                                          " -transBias false")
+
+        sliding_window_config = make_config(
+            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+
+        self.assertIn("-sliding_window_size 8", sliding_window_config.to_command_line())
+        self.assertIsNone(self.lookup_from_legacy_key(sliding_window_config, legacy_all_false_key))
+
+    def test_perf_runner_matches_pre_transbias_sliding_window_key(self):
+        """A sliding-window row from before transBias must still match.
+
+        Exercises the reconciled columns together: stripping the false-valued
+        transBias flag to reach a legacy row must not disturb the
+        sliding_window_size column that sits earlier in the key.
+        """
+        current_config = make_config(
+            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+        legacy_key = drop_flags(current_config.to_command_line(), " -transBias false")
+
+        self.assertIn("-sliding_window_size 8", legacy_key)
+        self.assertNotIn("-transBias", legacy_key)
+        self.assertEqual(self.lookup_from_legacy_key(current_config, legacy_key), PERFCONFIG)
+
+    def test_quick_tuning_gen_defaults_missing_optional_columns(self):
+        """Legacy debug TSV rows without TransBias/SlidingWindowSize get defaults."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
         debug_path.write_text(
             "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
@@ -144,10 +191,44 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         df = load_data([str(debug_path)], no_splitk=False)
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
+        self.assertIn("SlidingWindowSize", df.columns)
+        self.assertTrue(df["SlidingWindowSize"].eq(0).all())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()
         self.assertFalse(grouped.empty)
+
+    def test_quick_tuning_gen_fills_optional_columns_when_mixing_files(self):
+        """Mixing TSVs must not drop rows without SlidingWindowSize.
+
+        pd.concat keeps the SlidingWindowSize column from the newer file and
+        fills the legacy row with NaN. Since groupby drops NaN keys by default,
+        that row would silently disappear unless the NaN is backfilled to the
+        disabled default.
+        """
+        legacy_header = ("DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
+                         "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
+                         "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\t"
+                         "TransBias\n")
+        legacy_path = Path(f"{self.tmp_prefix}.legacy.debug")
+        legacy_path.write_text(
+            legacy_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+            f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+            f"{PERFCONFIG}\t1.0\tFalse\n")
+
+        current_header = legacy_header.rstrip("\n") + "\tSlidingWindowSize\n"
+        current_path = Path(f"{self.tmp_prefix}.current.debug")
+        current_path.write_text(
+            current_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+            f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+            f"{PERFCONFIG}\t1.0\tFalse\t0\n")
+
+        df = load_data([str(legacy_path), str(current_path)], no_splitk=False)
+        self.assertFalse(df["SlidingWindowSize"].isna().any())
+
+        grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
+                             as_index=False)["TFlops"].max()
+        self.assertEqual(len(grouped), 1)
 
 
 if __name__ == "__main__":

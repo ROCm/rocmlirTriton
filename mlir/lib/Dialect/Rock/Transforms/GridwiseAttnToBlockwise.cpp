@@ -31,6 +31,7 @@
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -150,16 +151,47 @@ struct GridwiseAttentionRewritePattern
                          Value rowVector, int64_t numCols) const {
     auto rowType = cast<RankedTensorType>(rowVector.getType());
     int64_t numRows = rowType.getShape()[0];
-    Type elemType = rowType.getElementType();
-    
-    // Step 1: Expand dims [M] -> [M, 1]
-    auto expandedType = RankedTensorType::get({numRows, 1}, elemType);
-    Value expanded = triton::ExpandDimsOp::create(rewriter, loc, expandedType,
-                                                    rowVector, 1);
-    
-    // Step 2: Broadcast [M, 1] -> [M, N]
-    auto resultType = RankedTensorType::get({numRows, numCols}, elemType);
-    return triton::BroadcastOp::create(rewriter, loc, resultType, expanded);
+    auto resultType =
+        RankedTensorType::get({numRows, numCols}, rowType.getElementType());
+    return expandDimAndBroadcast(rewriter, loc, rowVector, /*axis=*/1,
+                                 resultType);
+  }
+
+  // Concatenate `chunks` (each [rows, nPerBlockG1]) along the column (N) axis
+  // into a single [rows, nPerBlockG1 * chunks.size()] tile, preserving order
+  // (chunk c -> columns [c*nPerBlockG1, (c+1)*nPerBlockG1)). The chunk count is
+  // a power of two, so we fold pairs with tt.join + tt.trans + tt.reshape.
+  Value concatChunksAlongN(PatternRewriter &rewriter, Location loc,
+                           ArrayRef<Value> chunks, int64_t rows,
+                           int64_t nPerBlockG1) const {
+    assert(!chunks.empty());
+    assert(llvm::isPowerOf2_64(chunks.size()) &&
+           "chunk count must be a power of two for tt.join folding");
+    if (chunks.size() == 1)
+      return chunks.front();
+
+    SmallVector<Value> level(chunks.begin(), chunks.end());
+    int64_t cols = nPerBlockG1;
+    auto transOrder = rewriter.getDenseI32ArrayAttr({0, 2, 1});
+    while (level.size() > 1) {
+      SmallVector<Value> next;
+      next.reserve(level.size() / 2);
+      for (size_t i = 0; i < level.size(); i += 2) {
+        // join: [rows, cols] x [rows, cols] -> [rows, cols, 2]
+        Value joined =
+            triton::JoinOp::create(rewriter, loc, level[i], level[i + 1]);
+        // trans: [rows, cols, 2] -> [rows, 2, cols]
+        Value transed =
+            triton::TransOp::create(rewriter, loc, joined, transOrder);
+        // reshape: [rows, 2, cols] -> [rows, 2*cols] (block order preserved)
+        Value reshaped = triton::ReshapeOp::create(
+            rewriter, loc, SmallVector<int64_t>{rows, cols * 2}, transed);
+        next.push_back(reshaped);
+      }
+      level = std::move(next);
+      cols *= 2;
+    }
+    return level.front();
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -376,14 +408,17 @@ struct GridwiseAttentionRewritePattern
     return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult, negInfTensor);
   }
 
-  enum class OutOfScopeType { KVCache, Causal, PrefixCausal };
+  enum class OutOfScopeType { KVCache, Causal, PrefixCausal, SlidingWindow };
 
-  Value setGemm0OutputOutOfScope(
-      PatternRewriter &rewriter, Location loc, OutOfScopeType outOfScopeType,
-      layout::GridCoordinates gridCoords, Value firstGemmResult,
-      Value fakeTensorM, Value fakeTensorN, Value negInfTensor, ArrayAttr tileView, bool enabled,
-      Value nLoopIV, Value gemm0NBlocksLastIter, Value currentSeqLen,
-      Value prefixOffset) const {
+  Value setGemm0OutputOutOfScope(PatternRewriter &rewriter, Location loc,
+                                 OutOfScopeType outOfScopeType,
+                                 layout::GridCoordinates gridCoords,
+                                 Value firstGemmResult, Value fakeTensorM,
+                                 Value fakeTensorN, Value negInfTensor,
+                                 ArrayAttr tileView, bool enabled,
+                                 Value nLoopIV, Value gemm0NBlocksLastIter,
+                                 Value currentSeqLen, Value prefixOffset,
+                                 Value slidingWindowLowerBound) const {
     if (enabled) {
       ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
       ArrayAttr mView = outputViewToM(rewriter, loc, tileView);
@@ -445,6 +480,21 @@ struct GridwiseAttentionRewritePattern
         isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
                                           nIndex, threshold);
         break;
+        }
+        case OutOfScopeType::SlidingWindow: {
+          // Sliding window: mask when key_pos < max(0, currentSeqLen -
+          // windowSize). slidingWindowLowerBound is precomputed as
+          // max(0, currentSeqLen - windowSize). The key position is nIndex in
+          // the rocmlirTriton (N-loop) lowering.
+          assert(slidingWindowLowerBound != nullptr);
+          auto splatType = RankedTensorType::get(
+              cast<ShapedType>(nIndex.getType()).getShape(),
+              slidingWindowLowerBound.getType());
+          Value lowerBoundSplat = triton::SplatOp::create(
+              rewriter, loc, splatType, slidingWindowLowerBound);
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult,
+                                            nIndex, lowerBoundSplat);
+          break;
         }
         }
         
@@ -542,18 +592,19 @@ struct GridwiseAttentionRewritePattern
     return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
   }
 
-  std::tuple<Value, Value, Value, Value, Value>
+  std::tuple<Value, Value, Value, Value, Value, Value>
   getNLoopInfo(PatternRewriter &rewriter, Location loc,
                layout::AttnGridCoordinates gridCoordsGemm0,
                Value currentSeqLenTensor, Value prefixOffsetTensor,
                int64_t gemm0M, int64_t gemm0N, int64_t gemm0MPerBlock,
                int64_t gemm0NPerBlock, int64_t splitKV, bool isCausal,
-               bool isKVCache, bool isPrefixCausal,
+               bool isKVCache, bool isPrefixCausal, int64_t slidingWindowSize,
                IntegerAttr numRepeatsGQA = nullptr) const {
     Value gemm0NBlocksLastIter;
     Value currentSeqLen;
     Value prefixOffset;
     Value effectiveSeqLen;
+    Value slidingWindowLowerBound;
     Value start, end;
 
     // Lambda to load a 1D tensor value (used for currentSeqLen and
@@ -580,26 +631,48 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, tensorAddDim, emptyViews,
-          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE,
+          /*reductionTileAxes=*/nullptr);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
 
-    // This is needed for KV Cache/Causal/Prefix Causal masking support
-    if (isCausal || isKVCache || isPrefixCausal) {
+    // This is needed for KV Cache/Causal/Prefix Causal/Sliding Window masking
+    // support
+    if (isCausal || isKVCache || isPrefixCausal || slidingWindowSize > 0) {
+      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), 1);
+      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NPerBlock);
+      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
+      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), gemm0NBlocks);
+
       if (isKVCache) {
         currentSeqLen = loadTensorValue(currentSeqLenTensor);
         effectiveSeqLen = currentSeqLen;
       }
 
+      // Compute sliding window lower bound: max(0, currentSeqLen - windowSize).
+      if (slidingWindowSize > 0) {
+        assert(currentSeqLen != nullptr &&
+               "sliding window requires currentSeqLen (KV-cache)");
+        Value constWindowSize = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), slidingWindowSize);
+        Value zeroConst = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), 0);
+        Value lowerBound = arith::SubIOp::create(rewriter, loc, currentSeqLen,
+                                                 constWindowSize);
+        slidingWindowLowerBound =
+            arith::MaxSIOp::create(rewriter, loc, lowerBound, zeroConst);
+      }
+
       if (isCausal || isPrefixCausal) {
         // Compute the last Q position in the block.
-        // (nIndex + 1) * NPerBlock - 1.
+        // (mIndex + 1) * MPerBlock - 1.
         Value mIndex = gridCoordsGemm0.m_block;
         Value constGemm0MPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), gemm0MPerBlock);
-        Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-            loc, rewriter.getI32Type(), 1);
         Value mIndexPlusOne = arith::AddIOp::create(rewriter, loc, mIndex, one);
         Value nextBlockStart = arith::MulIOp::create(
             rewriter, loc, mIndexPlusOne, constGemm0MPerBlock);
@@ -614,20 +687,15 @@ struct GridwiseAttentionRewritePattern
         }
 
         if (isPrefixCausal) {
-          assert(isCausal && "isPrefixCausal requires isCausal");
-          // For prefix causal: effective seq len = maxRowOfBlock + offset
-          // This determines how many M-blocks we need to process
           prefixOffset = loadTensorValue(prefixOffsetTensor);
           maxRowOfBlock =
               arith::AddIOp::create(rewriter, loc, maxRowOfBlock, prefixOffset);
         }
 
-        if (effectiveSeqLen) {
-          // if effectiveSeqLen is set, it means KV Cache is enabled,
-          // so we need to take the minimum of currentSeqLen and maxRowOfBlock
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
-                                                 maxRowOfBlock);
-        }
+        effectiveSeqLen = maxRowOfBlock;
+        if (isKVCache)
+          effectiveSeqLen = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
+                                                   effectiveSeqLen);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
@@ -636,22 +704,24 @@ struct GridwiseAttentionRewritePattern
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
-          maxRowOfBlock = arith::MinUIOp::create(rewriter, loc, maxRowOfBlock,
-                                                 gemm0NMinusOne);
+          effectiveSeqLen = arith::MinUIOp::create(
+              rewriter, loc, effectiveSeqLen, gemm0NMinusOne);
         }
-
-        effectiveSeqLen = maxRowOfBlock;
+      } else {
+        effectiveSeqLen = currentSeqLen;
       }
 
       // compute end index
-      Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NPerBlock);
       Value numerator = arith::AddIOp::create(rewriter, loc, effectiveSeqLen,
                                               constGemm0NPerBlock);
       end = rewriter.createOrFold<arith::DivUIOp>(loc, numerator,
                                                   constGemm0NPerBlock);
-      Value one = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), 1);
+
+      // Clamp the trip count to the physical K/V allocation. Causal modes are
+      // already bounded by effectiveSeqLen; pure KV cache needs this because
+      // Triton's AMD buffer lowering does not use num_records to bound reads.
+      end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
+
       Value zero = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 0);
 
@@ -679,6 +749,20 @@ struct GridwiseAttentionRewritePattern
                                                  gemm0NIterations);
         end = arith::MinUIOp::create(rewriter, loc, end, endSplitKV);
       }
+
+      // Adjust start for sliding window: skip N-blocks that are entirely below
+      // the window. All positions in those blocks would be masked to -inf
+      // anyway, so we can avoid the loads and GEMMs altogether.
+      if (slidingWindowSize > 0) {
+        Value slidingWindowStart = rewriter.createOrFold<arith::DivUIOp>(
+            loc, slidingWindowLowerBound, constGemm0NPerBlock);
+        // start/slidingWindowStart are non-negative iteration indices derived
+        // from unsigned division; use unsigned max to stay consistent with the
+        // surrounding DivUIOp/MinUIOp arithmetic.
+        start =
+            arith::MaxUIOp::create(rewriter, loc, start, slidingWindowStart);
+      }
+
       // compute last iteration of the block, this will be used later in
       // setGemm0OutputOutOfScope()
       gemm0NBlocksLastIter =
@@ -711,7 +795,7 @@ struct GridwiseAttentionRewritePattern
           loc, rewriter.getI32Type(), gemm0NBlocks);
     }
     return std::make_tuple(start, end, gemm0NBlocksLastIter, currentSeqLen,
-                           prefixOffset);
+                           prefixOffset, slidingWindowLowerBound);
   }
 
   // Helper function to determine if early exit optimization is possible.
@@ -923,11 +1007,14 @@ struct GridwiseAttentionRewritePattern
         allViews.append(globalInputMaps.begin(), globalInputMaps.end());
       ArrayAttr otherInputMap = rewriter.getArrayAttr(allViews);
 
+      // These tiles are fused into the first gemm's output and then flow
+      // through the softmax into the second gemm, so which axis they end up
+      // reduced over is not known here.
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
-          rock::CacheModifier::NONE);
+          rock::CacheModifier::NONE, /*reductionTileAxes=*/nullptr);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }
@@ -1040,8 +1127,20 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0NPerBlock == gemm1KPerBlock);
     int64_t gemm1MPerBlock = gemm1TuningParams.getMPerBlock();
     int64_t gemm1NPerBlock = gemm1TuningParams.getNPerBlock();
-    assert(gemm1N == gemm1NPerBlock &&
-           "Current limitation, gemm1NPerBlock has to be equal to gemm1N");
+    assert(gemm1N % gemm1NPerBlock == 0 &&
+           "gemm1N must be a multiple of gemm1NPerBlock");
+    // The head dim (gemm1N) is processed in `gemm1NChunks`
+    // compile-time-constant chunks of `gemm1NPerBlock`. Each chunk runs its own
+    // V load + second GEMM (so only one nPerBlockG1-wide V tile is staged in
+    // LDS at a time); the per-chunk output tiles are concatenated back into the
+    // full [gemm1MPerBlock, gemm1N] output tile before the single store.
+    int64_t gemm1NChunks = gemm1N / gemm1NPerBlock;
+    // The chunks are folded back together with pairwise tt.join in
+    // concatChunksAlongN, so the chunk count must be a power of two. gemm1N is
+    // padded to a power of two (AttnToGridwise.cpp) and gemm1NPerBlock is a
+    // power of two, so this holds; assert to catch any future regression.
+    assert(llvm::isPowerOf2_64(gemm1NChunks) &&
+           "gemm1NChunks must be a power of two for tt.join folding");
 
     // params related to how we load Q
     bool prefetchQTile = gemm0K == gemm0KPerBlock;
@@ -1079,13 +1178,17 @@ struct GridwiseAttentionRewritePattern
 
     SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
     // We need two different grid lengths because the V input tensor and the
-    // output tensor have different shapes when splitKV > 1:
-    // - V tensor shape: [gemm0G, seqK, headDim] - splitKV is NOT in the batch dim
+    // output tensor have different shapes:
+    // - V tensor shape: [gemm0G, seqK, headDim] - splitKV is NOT in the batch
+    //   dim, and the head dim is indexed by chunk (n_block in [0,
+    //   gemm1NChunks))
     // - Output tensor shape: [gemm0G * splitKV, seqQ, headDim] - splitKV IS in
-    //   the batch dim (each split writes to a separate slice of the output)
+    //   the batch dim (each split writes to a separate slice of the output),
+    //   and the concatenated full-N tile is stored as a single N block
     // Therefore, loadTile for V uses gemm1BidGridLengths, while the output
     // store transforms use gemm1BidGridLengthsForStore.
-    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks, 1};
+    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks,
+                                                   gemm1NChunks};
     SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
@@ -1127,13 +1230,18 @@ struct GridwiseAttentionRewritePattern
     Value gemm0NBlocksLastIter;
     Value currentSeqLen;
     Value prefixOffset;
+    Value slidingWindowLowerBound;
     Value start, end;
+    int64_t slidingWindowSize =
+        static_cast<int64_t>(op.getSlidingWindowSize().value_or(0));
     // get nLoop
-    std::tie(start, end, gemm0NBlocksLastIter, currentSeqLen, prefixOffset) =
+    std::tie(start, end, gemm0NBlocksLastIter, currentSeqLen, prefixOffset,
+             slidingWindowLowerBound) =
         getNLoopInfo(rewriter, loc, gridCoordsGemm0mIter0, currentSeqLenTensor,
                      prefixOffsetTensor, gemm0M, gemm0N, gemm0MPerBlock,
                      gemm0NPerBlock, splitKV, isCausal, isKVCache,
-                     isPrefixCausal, op.getNumRepeatsGQAAttr());
+                     isPrefixCausal, slidingWindowSize,
+                     op.getNumRepeatsGQAAttr());
 
     // Early exit: Skip all computation when there's no work but always write
     // output. The IfOp returns (outAcc, lseOut?) so the code after the if
@@ -1141,7 +1249,7 @@ struct GridwiseAttentionRewritePattern
     // tensors.
     SmallVector<Value> earlyExitElseValues;
     auto initOutAcc = rock::createZeroAccBuffer(
-        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, elemTypeOut);
+        rewriter, loc, {gemm1MPerBlock, gemm1N}, elemTypeOut);
     earlyExitElseValues.push_back(initOutAcc);
     RankedTensorType lseType;
     if (lse) {
@@ -1188,14 +1296,18 @@ struct GridwiseAttentionRewritePattern
     // tile. The second GEMM multiplies softmax output (cast to elemTypeV) by V,
     // so its accumulator type may differ from the first GEMM's (e.g. f32 vs i32
     // when Q/K are i8 but V is f16).
-    Value initNLoopAcc = rock::createZeroAccBuffer(
-        rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
+    SmallVector<Value> nLoopInitArgs;
+    nLoopInitArgs.reserve(gemm1NChunks + 2);
+    for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
+      nLoopInitArgs.push_back(rock::createZeroAccBuffer(
+          rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType));
+    nLoopInitArgs.push_back(maxRow);
+    nLoopInitArgs.push_back(sumRow);
 
     Value one = rewriter.createOrFold<arith::ConstantIntOp>(
         loc, rewriter.getI32Type(), 1);
     scf::ForOp nLoopOp =
-        scf::ForOp::create(rewriter, loc, start, end, one,
-                           ValueRange{initNLoopAcc, maxRow, sumRow});
+        scf::ForOp::create(rewriter, loc, start, end, one, nLoopInitArgs);
     {
       PatternRewriter::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(nLoopOp.getBody());
@@ -1203,11 +1315,15 @@ struct GridwiseAttentionRewritePattern
       // Convert loop IV to i32 for grid layout and load operations
       Value nLoopIV = rewriter.createOrFold<arith::IndexCastOp>(
           loc, rewriter.getI32Type(), nLoopOp.getInductionVar());
-      // Get the iteration arguments
-      Value attentionAcc = nLoopOp.getRegionIterArg(0);
+      // Get the iteration arguments: one accumulator per head-dim chunk,
+      // followed by the shared softmax row state (maxRow, sumRow).
+      SmallVector<Value> attentionAccs;
+      attentionAccs.reserve(gemm1NChunks);
+      for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
+        attentionAccs.push_back(nLoopOp.getRegionIterArg(chunk));
 
-      maxRow = nLoopOp.getRegionIterArg(1);
-      sumRow = nLoopOp.getRegionIterArg(2);
+      maxRow = nLoopOp.getRegionIterArg(gemm1NChunks);
+      sumRow = nLoopOp.getRegionIterArg(gemm1NChunks + 1);
 
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
           rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
@@ -1345,26 +1461,41 @@ struct GridwiseAttentionRewritePattern
         // cache is enabled, regardless of causal/prefix-causal mode.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isKVCache, nLoopIV, gemm0NBlocksLastIter, currentSeqLen,
-            /*prefixOffset=*/nullptr);
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isKVCache, nLoopIV, gemm0NBlocksLastIter,
+            currentSeqLen,
+            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
+
+        // Sliding window masking: mask when key < max(0, currentSeqLen -
+        // windowSize). Independent of causal masking and applied on every
+        // iteration (like causal), alongside KV-cache masking.
+        softmaxInput = setGemm0OutputOutOfScope(
+            rewriter, loc, OutOfScopeType::SlidingWindow, gridCoordsGemm0,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, slidingWindowSize > 0, nLoopIV,
+            gemm0NBlocksLastIter,
+            /*currentSeqLen=*/nullptr,
+            /*prefixOffset=*/nullptr, slidingWindowLowerBound);
 
         // Causal masking: either prefix-causal or standard causal
         // Prefix causal: mask when key > (query + offset).
         // This combines causal masking with a prefix offset
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
-            /*currentSeqLen=*/nullptr, prefixOffset);
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isPrefixCausal, nLoopIV,
+            gemm0NBlocksLastIter,
+            /*currentSeqLen=*/nullptr, prefixOffset,
+            /*slidingWindowLowerBound=*/nullptr);
 
         // Standard causal masking: mask when key > query
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor, gemm0OutTileViewUnPadded,
-            isCausal && !isPrefixCausal, nLoopIV, gemm0NBlocksLastIter,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
+            gemm0NBlocksLastIter,
             /*currentSeqLen=*/nullptr,
-            /*prefixOffset=*/nullptr);
+            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
 
         IntegerAttr reductionAxis = rewriter.getIndexAttr(1);
 
@@ -1403,50 +1534,72 @@ struct GridwiseAttentionRewritePattern
       // from zero because flash-attention corrections handle cross-iteration
       // accumulation. For gemm_gemm (no softmax), we accumulate directly
       // into attentionAcc across nLoop iterations.
-      Value gemm1InitAcc;
-      if (op.getEnableSoftmax()) {
-        gemm1InitAcc = rock::createZeroAccBuffer(
-            rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
-      } else {
-        gemm1InitAcc = attentionAcc;
+      // Process the head dim one nPerBlockG1-wide chunk at a time. Each chunk
+      // loads its own V tile (n_block = chunk) and runs an independent second
+      // GEMM into its own accumulator; the softmax row state is shared.
+      SmallVector<Value> nLoopYields;
+      nLoopYields.reserve(gemm1NChunks + 2);
+      for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk) {
+        Value gemm1InitAcc;
+        if (op.getEnableSoftmax()) {
+          gemm1InitAcc = rock::createZeroAccBuffer(
+              rewriter, loc, {gemm1MPerBlock, gemm1NPerBlock}, gemm1AccType);
+        } else {
+          gemm1InitAcc = attentionAccs[chunk];
+        }
+
+        Value chunkIdx = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), chunk);
+        auto gridCoordsGemm1 = layout::makeGxNGridLayout(
+            rewriter, loc, bid, gemm1MBlocks, chunkIdx, gridSize, arch,
+            rock::getNumChipletsValue(op), splitKVConst);
+
+        Value loadedV =
+            rock::loadTile(rewriter, loc, inV,
+                           /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
+                           gemm1KPerBlock, gemm1NPerBlock,
+                           /*isKFirst=*/true, gemm1BidGridLengths, cacheV);
+
+        Value gemm1Out = BlockwiseGemmOp::create(
+            rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
+            /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
+            /*quantBlockSize=*/nullptr,
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
+
+        // Apply flash attention correction (per chunk, shared row state)
+        if (op.getEnableSoftmax()) {
+          attentionAccs[chunk] = createAttentionRowStateCorrections(
+              rewriter, loc, gemm1Out, attentionAccs[chunk], maxRowDiffExp);
+        } else {
+          attentionAccs[chunk] = gemm1Out;
+        }
+        nLoopYields.push_back(attentionAccs[chunk]);
       }
 
-      auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
-          rock::getNumChipletsValue(op), splitKVConst);
-
-      Value loadedV =
-          rock::loadTile(rewriter, loc, inV,
-                         /*kIter=*/nLoopIV, "n", gridCoordsGemm1,
-                         gemm1KPerBlock, gemm1NPerBlock,
-                         /*isKFirst=*/true, gemm1BidGridLengths, cacheV);
-
-      Value gemm1Out = BlockwiseGemmOp::create(
-          rewriter, loc, gemm0Out, loadedV, gemm1InitAcc,
-          /*matrixScaleA=*/nullptr, /*matrixScaleB=*/nullptr,
-          /*quantBlockSize=*/nullptr,
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
-      // Apply flash attention correction
-      if (op.getEnableSoftmax()) {
-        attentionAcc = createAttentionRowStateCorrections(
-            rewriter, loc, gemm1Out, attentionAcc, maxRowDiffExp);
-      } else {
-        attentionAcc = gemm1Out;
-      }
-        
-        // Yield the updated accumulators (attentionAcc, maxRow, sumRow)
-        scf::YieldOp::create(rewriter, loc, ValueRange{attentionAcc, maxRow, sumRow});
+      // Yield the updated per-chunk accumulators, then maxRow, sumRow.
+      nLoopYields.push_back(maxRow);
+      nLoopYields.push_back(sumRow);
+      scf::YieldOp::create(rewriter, loc, nLoopYields);
     }
-    Value outAcc = nLoopOp.getResult(0);
-    maxRow = nLoopOp.getResult(1);
-    sumRow = nLoopOp.getResult(2);
+    SmallVector<Value> outAccs;
+    outAccs.reserve(gemm1NChunks);
+    for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
+      outAccs.push_back(nLoopOp.getResult(chunk));
+    maxRow = nLoopOp.getResult(gemm1NChunks);
+    sumRow = nLoopOp.getResult(gemm1NChunks + 1);
 
     if (op.getEnableSoftmax()) {
-        outAcc = scaleFinalOutput(rewriter, loc, outAcc,
-                            sumRow);
+      for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
+        outAccs[chunk] =
+            scaleFinalOutput(rewriter, loc, outAccs[chunk], sumRow);
     }
+
+    // Concatenate the per-chunk [gemm1MPerBlock, gemm1NPerBlock] output tiles
+    // into the full [gemm1MPerBlock, gemm1N] tile consumed by the single store.
+    Value outAcc = concatChunksAlongN(rewriter, loc, outAccs, gemm1MPerBlock,
+                                      gemm1NPerBlock);
+
     if (cast<ShapedType>(outAcc.getType()).getElementType() != elemTypeOut) {
         auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
         auto destType = RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
@@ -1483,8 +1636,12 @@ struct GridwiseAttentionRewritePattern
         rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output
+    // The store consumes the full concatenated [gemm1MPerBlock, gemm1N] tile
+    // as a single N block (gemm1BidGridLengthsForStore's n_block length is 1),
+    // so the output transforms must span the full head dim (gemm1N), not the
+    // per-chunk gemm1NPerBlock width used inside the GEMM1 chunk loop.
     FailureOr<ArrayAttr> maybeOutputViews = computeOutputTransforms(
-        rewriter, loc, gemm1MPerBlock, gemm1NPerBlock, gemm1BidGridLengthsForStore);
+        rewriter, loc, gemm1MPerBlock, gemm1N, gemm1BidGridLengthsForStore);
 
     if (failed(maybeOutputViews)) {
       LLVM_DEBUG(llvm::dbgs() << "Failed to compute output transforms\n");

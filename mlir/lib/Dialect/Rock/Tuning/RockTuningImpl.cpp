@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -40,8 +41,10 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <random>
+#include <set>
 
 namespace mlir {
 namespace rock {
@@ -54,6 +57,9 @@ enum class GemmMNDim { M, N };
 // Largest per-block M/N tile size we tune for. Also acts as the threshold below
 // which a small dimension is covered by a single tightly-fitting tile.
 #define MAX_MN_PER_BLOCK 256
+
+// Largest per-block K tile size we tune for.
+#define MAX_K_PER_BLOCK 512
 
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
@@ -108,15 +114,18 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 
 // Drop kPerBlock candidates larger than the K dimension rounded up to the next
 // power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
-// work.
+// work. Adds the capping tile so K stays covered, but only when it does not
+// exceed MAX_K_PER_BLOCK (bigger tiles waste LDS and are ~never optimal).
 static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   assert(k > 0 && !kPerBlockList.empty() &&
          "capKPerBlockByK expects a positive K and a non-empty candidate list");
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
-  uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
-  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
+  if (!llvm::is_contained(kPerBlockList, cap) && k <= MAX_K_PER_BLOCK)
     kPerBlockList.push_back(cap);
+  assert(llvm::all_of(kPerBlockList,
+                      [](uint32_t v) { return v <= MAX_K_PER_BLOCK; }) &&
+         "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -398,11 +407,14 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   std::vector<uint32_t> gridGroupSizeList = {0};
 
   int64_t gemm0K = gemmGemmOp.getGemmGemmSize().k;
-
-  std::vector<uint32_t> kPerBlock = {16, 32, 64, 128, 512, 1024, 2048};
   // use the actual K dimension, typically it's 128 for attention
-  if (kind != TuningParamSetKind::Exhaustive) {
-    kPerBlock = {static_cast<uint32_t>(llvm::PowerOf2Ceil(gemm0K))};
+  uint32_t gemm0KPerBlock =
+      std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), MAX_K_PER_BLOCK);
+  std::vector<uint32_t> kPerBlock = {gemm0KPerBlock};
+  if (kind == TuningParamSetKind::Exhaustive) {
+    for (uint32_t k : {16, 32, 64, 128, 512})
+      if (!llvm::is_contained(kPerBlock, k))
+        kPerBlock.push_back(k);
   }
   // Drop K tiles larger than PowerOf2Ceil(K).
   capKPerBlockByK(kPerBlock, gemm0K);
@@ -417,9 +429,19 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   for (uint32_t kp = 1; kp <= rock::getMaxKpack(arch); kp *= 2)
     kPackList.push_back(kp);
 
+  // Second-GEMM N (attention head-dim) tile candidates. `0` keeps the second
+  // GEMM untiled; the power-of-two candidates tile the head dim, shrinking the
+  // V LDS staging tile (gemm1KPerBlock * nPerBlockG1). Only worth exploring
+  // when the head dim is large, so otherwise keep just `0`.
+  std::vector<uint32_t> nPerBlockG1List = {0};
+  if (gemmGemmOp.getGemmGemmSize().o > 256)
+    for (uint32_t t = 64; t <= 256; t *= 2)
+      nPerBlockG1List.push_back(t);
+
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsMFMA = {
       /*gemm0MPerBlock=*/mPerBlock,
       /*gemm0NPerBlock=*/nPerBlock,
+      /*nPerBlockG1=*/nPerBlockG1List,
       kPerBlock,
       kPackList,
       numWavesRange,
@@ -431,6 +453,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsWMMA = {
       /*gemm0MPerBlock=*/mPerBlock,
       /*gemm0NPerBlock=*/nPerBlock,
+      /*nPerBlockG1=*/nPerBlockG1List,
       kPerBlock,
       /*kPackList=*/{1},
       numWavesRange,
@@ -451,6 +474,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsNonAccel = {
       /*gemm0MPerBlock=*/dPerBlockNonAccel,
       /*gemm0NPerBlock=*/dPerBlockNonAccel,
+      /*nPerBlockG1=*/nPerBlockG1List,
       kPerBlock,
       /*kPackList=*/{1},
       numWavesNonAccel,
@@ -488,17 +512,20 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
+// - `useOptimizeEpilogue`              (set to kKnobDefault)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
   auto waveSize = rock::getWaveSize(rock::getArchValue(gemmGemmOp));
   const std::vector<std::vector<uint32_t>> validRangeGemmGemmParams =
       getRangeGemmGemm(gemmGemmOp, waveSize, kind);
-  // gemm1's N tile is derived, not tuned: gemm1NPerBlock = PowerOf2Ceil(head
-  // dim of V) (see PopulateParamsGemmGemm::getGemm1Params). GemmGemmSize::o is
-  // that head-dim-of-V, already extracted transpose-aware, so guard gemm1's
-  // lowered tensor against the same Triton per-tensor cap as gemm0.
-  uint32_t gemm1NPerBlock =
+  // gemm1's untiled N tile: PowerOf2Ceil(head dim of V) (see
+  // PopulateParamsGemmGemm::getGemm1Params). GemmGemmSize::o is that
+  // head-dim-of-V, already extracted transpose-aware. A tuned nPerBlockG1 of 0
+  // keeps the second GEMM untiled and processes this full width; it is used
+  // below to guard gemm1's lowered index/mask tensor against the same Triton
+  // per-tensor cap as gemm0.
+  uint32_t derivedGemm1NPerBlock =
       static_cast<uint32_t>(llvm::PowerOf2Ceil(gemmGemmOp.getGemmGemmSize().o));
   OpBuilder b(gemmGemmOp.getContext());
   for (uint32_t gemm0MPerBlock : validRangeGemmGemmParams[0]) {
@@ -506,41 +533,50 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
       auto optimalSplitKFactors =
           computeOptimalSplitKFactors(gemmGemmOp, gemm0MPerBlock);
 
-      // gemm1 lowers a gemm0NPerBlock x max(gemm0MPerBlock, gemm1NPerBlock)
-      // index/mask tensor (its contraction tile is gemm0NPerBlock). Guard it
-      // against the same cap as gemm0; this depends only on the gemm0 M/N
-      // tiles, so check it once outside the gemmKPerBlock loop.
-      if (exceedsTritonTensorCap(gemm0MPerBlock, gemm1NPerBlock,
-                                 gemm0NPerBlock))
-        continue;
-
-      for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[2]) {
-        // Skip tiles whose lowered index/mask tensors would exceed Triton's
-        // per-tensor element cap (see exceedsTritonTensorCap).
-        if (exceedsTritonTensorCap(gemm0MPerBlock, gemm0NPerBlock,
-                                   gemmKPerBlock))
+      for (uint32_t gemm1NPerBlock : validRangeGemmGemmParams[2]) {
+        // gemm1 lowers a gemm0NPerBlock x max(gemm0MPerBlock, gemm1NPerBlock)
+        // index/mask tensor (its contraction tile is gemm0NPerBlock). A tuned
+        // nPerBlockG1 of 0 keeps the second GEMM untiled, i.e. the full derived
+        // head-dim width; a non-zero tile shrinks that dim. Guard it against
+        // the same cap as gemm0; this depends only on the gemm0 M/N tiles and
+        // the gemm1 N tile, so check it once outside the gemmKPerBlock loop.
+        uint32_t effectiveGemm1NPerBlock =
+            gemm1NPerBlock == 0 ? derivedGemm1NPerBlock : gemm1NPerBlock;
+        if (exceedsTritonTensorCap(gemm0MPerBlock, effectiveGemm1NPerBlock,
+                                   gemm0NPerBlock))
           continue;
-        for (uint32_t gemmKPack : validRangeGemmGemmParams[3]) {
-          for (uint32_t numWaves : validRangeGemmGemmParams[4]) {
-            for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[5]) {
-              for (int64_t splitKFactor : optimalSplitKFactors) {
-                for (uint32_t numStages : validRangeGemmGemmParams[6]) {
-                  for (uint32_t wavesPerEU : validRangeGemmGemmParams[7]) {
-                    for (uint32_t gridGroupSize : validRangeGemmGemmParams[8]) {
-                      for (uint32_t numCTAs : validRangeGemmGemmParams[9]) {
-                        auto gemmGemmParams = GemmGemmParamsAttr::get(
-                            gemmGemmOp.getContext(), gemm0MPerBlock,
-                            gemm0NPerBlock, gemmKPerBlock, gemmKPack, numCTAs,
-                            numWaves, matrixInstrNonkdim, splitKFactor,
-                            numStages, wavesPerEU, gridGroupSize,
-                            /*useAsyncCopy=*/kKnobDefault,
-                            /*useBlockPingpong=*/kKnobDefault,
-                            /*useInThreadTranspose=*/kKnobDefault,
-                            /*useBufferOps=*/kKnobDefault,
-                            /*useBufferAtomics=*/kKnobDefault,
-                            /*useReductionLayout=*/kKnobDefault);
-                        newSpace->tuningRange.push_back(
-                            cast<RockTuningParamAttrInterface>(gemmGemmParams));
+        for (uint32_t gemmKPerBlock : validRangeGemmGemmParams[3]) {
+          // Skip tiles whose lowered index/mask tensors would exceed Triton's
+          // per-tensor element cap (see exceedsTritonTensorCap).
+          if (exceedsTritonTensorCap(gemm0MPerBlock, gemm0NPerBlock,
+                                     gemmKPerBlock))
+            continue;
+          for (uint32_t gemmKPack : validRangeGemmGemmParams[4]) {
+            for (uint32_t numWaves : validRangeGemmGemmParams[5]) {
+              for (uint32_t matrixInstrNonkdim : validRangeGemmGemmParams[6]) {
+                for (int64_t splitKFactor : optimalSplitKFactors) {
+                  for (uint32_t numStages : validRangeGemmGemmParams[7]) {
+                    for (uint32_t wavesPerEU : validRangeGemmGemmParams[8]) {
+                      for (uint32_t gridGroupSize :
+                           validRangeGemmGemmParams[9]) {
+                        for (uint32_t numCTAs : validRangeGemmGemmParams[10]) {
+                          auto gemmGemmParams = GemmGemmParamsAttr::get(
+                              gemmGemmOp.getContext(), gemm0MPerBlock,
+                              gemm0NPerBlock, gemm1NPerBlock, gemmKPerBlock,
+                              gemmKPack, numCTAs, numWaves, matrixInstrNonkdim,
+                              splitKFactor, numStages, wavesPerEU,
+                              gridGroupSize,
+                              /*useAsyncCopy=*/kKnobDefault,
+                              /*useBlockPingpong=*/kKnobDefault,
+                              /*useInThreadTranspose=*/kKnobDefault,
+                              /*useBufferOps=*/kKnobDefault,
+                              /*useBufferAtomics=*/kKnobDefault,
+                              /*useReductionLayout=*/kKnobDefault,
+                              /*useOptimizeEpilogue=*/kKnobDefault);
+                          newSpace->tuningRange.push_back(
+                              cast<RockTuningParamAttrInterface>(
+                                  gemmGemmParams));
+                        }
                       }
                     }
                   }
@@ -655,6 +691,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useBufferOps`                     (set to kKnobDefault)
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
+// - `useOptimizeEpilogue`              (set to kKnobDefault)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -666,6 +703,15 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
       getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
+
+  // Tile shapes known to overflow LDS for this (arch, input dtype) are dropped
+  // up front: LDS usage of a plain GEMM is independent of M/N/K, so this cache
+  // (populated offline, see LdsBlacklist.h) never depends on the problem shape.
+  // It is keyed on only the LDS-relevant fields (see GemmLdsKey), so it also
+  // covers configs that differ only in an LDS-irrelevant field (kpack, splitK,
+  // ...). A miss returns an empty set, so an un-populated blacklist is a no-op.
+  GemmLdsKeySet ldsBlacklistSet =
+      LdsBlacklist::lookupGemm(rock::getArchValue(gemmOp), info.gemmAType);
 
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
@@ -684,6 +730,17 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
                 for (int64_t numStages : params[5]) {
+                  // Drop LDS-overflowing tiles before building any attribute or
+                  // running the (expensive) performance filter below: the
+                  // projection depends only on fields fixed by this point, so a
+                  // blacklisted tile is dead for every inner splitK/wave/CTA
+                  // combination. Field order must match GemmLdsKey /
+                  // PROJECTION_INDICES.
+                  if (!ldsBlacklistSet.empty() &&
+                      ldsBlacklistSet.count({gemmMPerBlock, gemmNPerBlock,
+                                             gemmKPerBlock, numWaves,
+                                             matrixInstrNonkdim, numStages}))
+                    continue;
                   for (int64_t wavesPerEU : params[6]) {
                     for (int64_t gridGroupSize : params[7]) {
                       for (uint32_t numCTAs : params[8]) {
@@ -697,12 +754,14 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useInThreadTranspose=*/kKnobDefault,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
-                            /*useReductionLayout=*/kKnobDefault);
-                        if (kind != TuningParamSetKind::Full ||
-                            succeeded(tuningInfo->couldBePerformant(
-                                info, gemmParams)))
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(gemmParams));
+                            /*useReductionLayout=*/kKnobDefault,
+                            /*useOptimizeEpilogue=*/kKnobDefault);
+                        if (kind == TuningParamSetKind::Full &&
+                            failed(tuningInfo->couldBePerformant(info,
+                                                                 gemmParams)))
+                          continue;
+                        newSpace->tuningRange.push_back(
+                            cast<RockTuningParamAttrInterface>(gemmParams));
                       }
                     }
                   }
@@ -743,29 +802,7 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   }
 }
 
-bool needToUpdateBest(rock::TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return false;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-unsigned getNumberOfIterations(TuningParamSetKind kind) {
-  switch (kind) {
-  case TuningParamSetKind::Quick:
-  case TuningParamSetKind::Full:
-  case TuningParamSetKind::Exhaustive:
-    return 1;
-  }
-  llvm_unreachable("invalid tuning kind");
-}
-
-TuningParamSet *
-createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind,
-                        rock::TuningParamSpaceSettings &settings) {
+TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
 
@@ -1031,6 +1068,8 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   }
 }
 
+// Keep this problem-key serialization in sync with the corresponding
+// configuration parsing and serialization in perfRunner.py.
 static LogicalResult
 getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
                     SmallVectorImpl<char> &out) {
@@ -1153,6 +1192,11 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
       problemOS << "false" << sep;
 
     problemOS << "-split_kv " << attentionOp.getSplitKV() << sep;
+    // sliding_window_size is optional (KV-cache only); only emit it when set so
+    // non-sliding-window problems keep their existing tuning identity.
+    if (auto slidingWindowSize = attentionOp.getSlidingWindowSize();
+        slidingWindowSize && *slidingWindowSize > 0)
+      problemOS << "-sliding_window_size " << *slidingWindowSize << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;

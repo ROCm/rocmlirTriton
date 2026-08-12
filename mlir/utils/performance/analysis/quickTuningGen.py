@@ -15,7 +15,7 @@ import pandas as pd
 import pulp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from perfRunner import SPLITK_IDX  # noqa: E402
+from perfCommonUtils import SPLITK_IDX  # noqa: E402
 
 # Column definitions for grouping problems
 GEMM_COLUMNS = ['TransA', 'TransB', 'TransO', 'G', 'M', 'K', 'N']
@@ -24,9 +24,9 @@ CONV_COLUMNS = [
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW'
 ]
 ATTENTION_COLUMNS = [
-    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'WithAttnScale',
-    'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK',
-    'HeadDimV'
+    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'SlidingWindowSize',
+    'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ',
+    'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
 ]
 
 # Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
@@ -123,6 +123,15 @@ def load_data(files, no_splitk):
 
     if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
         df['TransBias'] = False
+
+    # Sliding window is optional (KV-cache only) and omitted from the key when
+    # disabled, so legacy attention rows may lack the column or carry NaN after
+    # a mixed-file concat; normalize it to the disabled value 0. Only attention
+    # grouping reads SlidingWindowSize, so defaulting it is a no-op elsewhere.
+    if 'SlidingWindowSize' not in df.columns:
+        df['SlidingWindowSize'] = 0
+    else:
+        df['SlidingWindowSize'] = df['SlidingWindowSize'].fillna(0)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)

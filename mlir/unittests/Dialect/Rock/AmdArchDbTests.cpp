@@ -170,6 +170,42 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
   EXPECT_EQ(getMaxNumChiplets("gfx1250"), 8); // GFX1250
 }
 
+// --- inferNumChiplets ---
+
+TEST(AmdArchDbTest, InferNumChiplets) {
+  EXPECT_EQ(inferNumChiplets("gfx942", 304), 8);
+  EXPECT_EQ(inferNumChiplets("gfx942", 80), 4);
+  EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
+  EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx906", 60), 1);
+  EXPECT_EQ(inferNumChiplets("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-", 304),
+            8);
+}
+
+// MI350X / MI355X compute-partition modes, whose per-partition CU counts are
+// SPX=256, DPX=128, QPX=64, CPX=32.
+TEST(AmdArchDbTest, InferNumChipletsCdna4Partitions) {
+  EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx950", 128), 4);
+  EXPECT_EQ(inferNumChiplets("gfx950", 64), 2);
+  EXPECT_EQ(inferNumChiplets("gfx950", 32), 1);
+  // An unrecognized count must fall back to 1 rather than guess an odd chiplet
+  // number: makeGroupedGridLayout and makeGxNGridLayout assert
+  // numChiplets % 2 == 0 for any count greater than 1.
+  EXPECT_EQ(inferNumChiplets("gfx950", 96), 1);
+}
+
+// gfx1250 reports 256 WGPs over 8 XCDs. No partition-mode CU counts
+// are published for this family, hence the single recognized configuration.
+TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
+  EXPECT_EQ(inferNumChiplets("gfx1250", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx1250", 32), 1);
+  // gfx1251 (MI430X) parses into the same ISA family even though it does not
+  // share gfx1250's XCDs, so it inherits this mapping. Pinned here so that
+  // splitting the two later is a deliberate change rather than a silent one.
+  EXPECT_EQ(inferNumChiplets("gfx1251", 256), 8);
+}
+
 // --- getMinNumCU ---
 
 TEST(AmdArchDbTest, MinNumCU) {
@@ -333,6 +369,12 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
   // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
   EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::WMMA); // GFX1170 (fp8 WMMA v2)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (fp8 x bf8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x fp8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x bf8)
 }
 
 // gfx115x (gfx1150/gfx1151) is RDNA3.5: it carries a gfx11 major number just
@@ -358,6 +400,12 @@ TEST(AmdArchDbTest, MatrixAccelRdna35Gfx1150Boundary) {
   // whereas gfx1170 (WMMA v2) returns WMMA for the same inputs.
   EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::None); // RDNA3.5 (no fp8 WMMA; gfx1170 has it)
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::None);
   // Fast atomic add is F32-only on RDNA3(.5) (no packed f16/bf16), unlike
   // RDNA4.
   EXPECT_TRUE(isFastAtomicAddSupported("gfx1150", e.f32));   // RDNA3.5

@@ -196,6 +196,7 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   tritonOpts.useBufferOps = params.getUseBufferOps();
   tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
   tritonOpts.useReductionLayout = params.getUseReductionLayout();
+  tritonOpts.useOptimizeEpilogue = params.getUseOptimizeEpilogue();
 
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();
