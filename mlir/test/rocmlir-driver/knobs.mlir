@@ -282,6 +282,16 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu \
 // RUN:   | FileCheck %s --check-prefix=BF16X3_ON
 
+// Without fast math the decomposition is off regardless of the knob: neither
+// the gfx950 arch default (-1) nor an explicit request (1) can enable it.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu -disable-fast-math \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_NO_FAST_MATH
+
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu -disable-fast-math \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_NO_FAST_MATH
+
 // The tri-state is consumed by rock-to-ttir, so the bridge attribute that
 // carries it from rock-affix-params must not reach Triton IR. It would sit on
 // the kernel function, ahead of the dot, hence the leading CHECK-NOT.
@@ -295,6 +305,9 @@
 // BF16X3_DEFAULT_OFF: tt.dot
 
 // BF16X3_ON: tt.dot {{.*}} inputPrecision = bf16x3
+
+// BF16X3_NO_FAST_MATH-NOT: inputPrecision = bf16x3
+// BF16X3_NO_FAST_MATH: tt.dot
 
 //===----------------------------------------------------------------------===//
 // `--pass-pipeline=...` validation

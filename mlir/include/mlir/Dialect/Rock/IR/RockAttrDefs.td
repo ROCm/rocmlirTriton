@@ -488,7 +488,9 @@ def Rock_GemmParamsAttr
       products (Triton's `InputPrecision::BF16x3`) rather than issuing an IEEE
       f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
       `0` forces the IEEE path, and `1` forces the decomposition. Has no effect
-      on dots whose operands are not both f32.
+      on dots whose operands are not both f32. Being a precision relaxation, the
+      decomposition additionally requires fast math: `-disable-fast-math` pins
+      the IEEE path even at `1`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -585,6 +587,8 @@ def Rock_GemmGemmParamsAttr
       f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
       `0` forces the IEEE path, and `1` forces the decomposition. Applies to
       both GEMMs and has no effect on dots whose operands are not both f32.
+      Being a precision relaxation, the decomposition additionally requires fast
+      math: `-disable-fast-math` pins the IEEE path even at `1`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -691,7 +695,8 @@ def Rock_UseBf16x3ForF32 : Rock_Attr<"UseBf16x3ForF32"> {
     `rock-affix-params` to `rock-to-ttir`, which needs it when picking the
     `tt.dot` input precision. The lowering pass removes it once the precision
     is baked into the emitted dots, so raw tuning policy does not enter Triton
-    IR.
+    IR. It is only a request: `rock-to-ttir` ignores it under
+    `disable-fast-math`, which forbids the precision relaxation outright.
   }];
 }
 

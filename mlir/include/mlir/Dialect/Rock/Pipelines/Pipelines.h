@@ -46,13 +46,15 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
   /// When false (default), run `rock-allow-fast-math-flags` immediately
-  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass.
+  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass
+  /// and to hold `rock-to-ttir` to IEEE f32 dots.
   PassOptions::Option<bool> disableFastMath{
       *this, "disable-fast-math",
       desc("Skip `rock-allow-fast-math-flags` after split-k regularization "
            "(by default the pass runs and tags floating-point ops with "
            "fastmath flags like `arcp`/`contract`/`nsz`/`afn` for "
-           "reciprocal-style and FMA-friendly lowering)"),
+           "reciprocal-style and FMA-friendly lowering), and keep every f32 "
+           "`tt.dot` at IEEE precision"),
       init(false)};
 };
 

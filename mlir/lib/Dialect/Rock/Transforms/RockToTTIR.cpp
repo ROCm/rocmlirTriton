@@ -55,6 +55,7 @@ using namespace mlir::arith;
 
 namespace {
 struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
+  using rock::impl::RockToTTIRPassBase<RockToTTIRPass>::RockToTTIRPassBase;
   void runOnOperation() override;
 };
 
@@ -437,10 +438,14 @@ struct ArithExtFToFpToFpPattern
 };
 
 // Resolve the `rock.use_bf16x3_for_f32` perfConfig tri-state against the
-// per-arch default. The attribute is absent whenever the kernel did not go
-// through `rock-affix-params` (hand-written lit inputs, for instance), which
-// also falls back to the arch default.
-static bool resolveUseBf16x3ForF32(func::FuncOp funcOp) {
+// per-arch default. If disableFastMath is true, disable bf16x3 for f32,
+// otherwise, use the per-arch default. Expect the resulting slowdown to exceed
+// the lost bf16x3 MFMA throughput on arches that default to it: the quick
+// tuning list was tuned with the decomposition on, so its perfConfigs are no
+// longer the best fit for the IEEE dot on gfx950.
+static bool resolveUseBf16x3ForF32(func::FuncOp funcOp, bool disableFastMath) {
+  if (disableFastMath)
+    return false;
   auto policyAttr = funcOp->getAttrOfType<IntegerAttr>(
       rock::UseBf16x3ForF32Attr::getMnemonic());
   int64_t policy = policyAttr ? policyAttr.getInt() : rock::kKnobDefault;
@@ -461,7 +466,7 @@ void RockToTTIRPass::runOnOperation() {
 
   // Consume the tuning tri-state here: once the precision is baked into the
   // emitted dots, the raw policy must not leak into Triton IR.
-  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp);
+  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp, disableFastMath);
   funcOp->removeAttr(rock::UseBf16x3ForF32Attr::getMnemonic());
 
   ConversionTarget target(*ctx);
