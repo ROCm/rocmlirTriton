@@ -1,0 +1,31 @@
+diff --git a/mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h b/mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h
+index 256065537a..f51b22b2da 100644
+--- a/mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h
++++ b/mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h
+@@ -51,6 +51,7 @@ struct Chipset {
+ 
+ inline bool hasOcpFp8(const Chipset &chipset) {
+   return (chipset.majorVersion == 9 && chipset.minorVersion >= 5) ||
++         (chipset.majorVersion == 11 && chipset.minorVersion == 7) ||
+          chipset.majorVersion >= 12;
+ }
+ 
+diff --git a/mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp b/mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp
+index 570d56f3c6..91ec5b5c2f 100644
+--- a/mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp
++++ b/mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp
+@@ -58,5 +58,14 @@ TEST(ChipsetTest, Comparison) {
+   EXPECT_FALSE(Chipset(9, 0, 0xa) >= Chipset(9, 4, 2));
+ }
+ 
++TEST(ChipsetTest, HasOcpFp8) {
++  EXPECT_FALSE(hasOcpFp8(Chipset(9, 4, 2)));
++  EXPECT_TRUE(hasOcpFp8(Chipset(9, 5, 0)));
++  EXPECT_FALSE(hasOcpFp8(Chipset(11, 5, 0)));
++  EXPECT_TRUE(hasOcpFp8(Chipset(11, 7, 0)));
++  EXPECT_TRUE(hasOcpFp8(Chipset(11, 7, 2)));
++  EXPECT_TRUE(hasOcpFp8(Chipset(12, 0, 0)));
++}
++
+ } // namespace
+ } // namespace mlir::amdgpu

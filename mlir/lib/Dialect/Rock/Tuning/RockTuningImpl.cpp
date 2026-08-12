@@ -1068,6 +1068,8 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   }
 }
 
+// Keep this problem-key serialization in sync with the corresponding
+// configuration parsing and serialization in perfRunner.py.
 static LogicalResult
 getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
                     SmallVectorImpl<char> &out) {
@@ -1190,6 +1192,11 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
       problemOS << "false" << sep;
 
     problemOS << "-split_kv " << attentionOp.getSplitKV() << sep;
+    // sliding_window_size is optional (KV-cache only); only emit it when set so
+    // non-sliding-window problems keep their existing tuning identity.
+    if (auto slidingWindowSize = attentionOp.getSlidingWindowSize();
+        slidingWindowSize && *slidingWindowSize > 0)
+      problemOS << "-sliding_window_size " << *slidingWindowSize << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;

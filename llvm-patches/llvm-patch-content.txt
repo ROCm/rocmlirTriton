@@ -485,3 +485,28 @@ illegal split.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 9d10180.
+
+----------------------------------------------------------------------
+patch-gfx1170-ocp-fp8.patch
+----------------------------------------------------------------------
+- Upstream status : Downstream fix; submit to LLVM before the next bump
+- Upstream title  : [mlir][AMDGPU] Recognize gfx117x OCP FP8 formats
+- File Fixed      : mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h
+                    mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp
+- Contents        : Marks gfx117x as OCP FP8-capable in MLIR's shared chipset
+                    utility and adds positive gfx117x plus negative gfx115x
+                    boundary coverage.
+
+Symptom without the patch
+-------------------------
+The public fp8/bf8 aliases resolve to FNUZ formats on gfx117x, preventing Rock
+from selecting the OCP FP8 WMMA instructions that Triton and LLVM already
+support. Explicit OCP types work, but the normal generator interface does not.
+
+Root cause
+----------
+MLIR's shared hasOcpFp8 predicate only recognizes gfx950 and gfx12+, omitting
+gfx117x even though it has the 128-bit WMMA v2 engine with OCP FP8 operands.
+
+Drop this patch on the next LLVM/Triton bump that includes equivalent upstream
+gfx117x OCP FP8 classification.

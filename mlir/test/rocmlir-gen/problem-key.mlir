@@ -37,6 +37,19 @@
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t i8 -g 8 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_I8_NO_SCALE_BIAS
 // CHECK_I8_NO_SCALE_BIAS: -t i8 {{.*}} -head_dim_v 32 -with-attn-scale false -with-attn-bias false -transBias false
 
+// sliding_window_size is only emitted when set. current_seq_len remains runtime
+// data and defaults to seq_len_k - 1 when this key is reconstructed for tuning.
+// RUN: rocmlir-gen --arch gfx942 --operation attention -sliding_window_size 8 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_SW
+// CHECK_SW: -t f16 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_size 8 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32
+
+// sliding_window_size and transBias are independent optional fields in the
+// attention tuning key. Emitting both at once pins their relative order:
+// -sliding_window_size comes right after -split_kv, and the
+// scale/bias/transBias suffix stays last (kept in sync with
+// AttentionConfiguration.from_command_line() / to_command_line() in perfRunner.py).
+// RUN: rocmlir-gen --arch gfx942 --operation attention -current_seq_len=16 -sliding_window_size 8 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 --with-attn-bias --transBias | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_SW_TRANSBIAS
+// CHECK_SW_TRANSBIAS: -split_kv 1 -sliding_window_size 8 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -with-attn-scale false -with-attn-bias true -transBias true
+
 // RUN: rocmlir-gen --arch gfx942 --operation conv -t f16 --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 256 --in_h 20 --in_w 20 --out_channels 256 --fil_h 7 --fil_w 7 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 3 --padding_w 3 --groupsize 256 --perf_config=gemm:v1:32,256,8,1,1,4,32,1,2,0,0 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_DEPTHWISE_CONV
 // CHECK_DEPTHWISE_CONV: convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 64 -c 256 -H 20 -W 20 -k 256 -y 7 -x 7 -p 3 -q 3 -u 1 -v 1 -l 1 -j 1 -g 256
 

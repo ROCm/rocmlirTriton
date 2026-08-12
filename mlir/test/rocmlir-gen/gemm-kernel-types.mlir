@@ -6,6 +6,10 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -t fp8_bf8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,FP8-BF8
 // RUN: rocmlir-gen --arch gfx950:sramecc+:xnack- --operation gemm -ta fp8 -tb bf8 -tc f32 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,FP8-BF8-OCP
 // RUN: rocmlir-gen --arch gfx950:sramecc+:xnack- --operation gemm -t fp8_bf8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,FP8-BF8-OCP
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t fp8_fp8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,GFX1170-FP8-FP8
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t fp8_bf8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,GFX1170-FP8-BF8
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t bf8_fp8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,GFX1170-BF8-FP8
+// RUN: rocmlir-gen --arch gfx1170 --operation gemm -t bf8_bf8 -g 3 -m 1024 -k 769 -n 512 -pv | FileCheck %s --check-prefixes=CHECK,GFX1170-BF8-BF8
 
 // CHECK-LABEL: func @rock_gemm
 // F16-SAME: (%{{.*}}: tensor<2362368xf16>, %{{.*}}: tensor<1181184xf16>, %{{.*}}: tensor<1572864xf16>)
@@ -14,6 +18,10 @@
 // I8-F32-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xf32>)
 // FP8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FNUZ>, %{{.*}}: tensor<1181184xf8E5M2FNUZ>, %{{.*}}: tensor<1572864xf32>)
 // FP8-BF8-OCP-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-FP8-FP8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E4M3FN>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-FP8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-BF8-FP8-SAME: (%{{.*}}: tensor<2362368xf8E5M2>, %{{.*}}: tensor<1181184xf8E4M3FN>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-BF8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E5M2>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
 
 // CHECK-LABEL: func @host_naive_gemm
 // F16-SAME: (%{{.*}}: tensor<2362368xf16>, %{{.*}}: tensor<1181184xf16>, %{{.*}}: tensor<1572864xf16>)
@@ -22,6 +30,10 @@
 // I8-F32-SAME: (%{{.*}}: tensor<2362368xi8>, %{{.*}}: tensor<1181184xi8>, %{{.*}}: tensor<1572864xf32>)
 // FP8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FNUZ>, %{{.*}}: tensor<1181184xf8E5M2FNUZ>, %{{.*}}: tensor<1572864xf32>)
 // FP8-BF8-OCP-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-FP8-FP8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E4M3FN>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-FP8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E4M3FN>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-BF8-FP8-SAME: (%{{.*}}: tensor<2362368xf8E5M2>, %{{.*}}: tensor<1181184xf8E4M3FN>, %{{.*}}: tensor<1572864xf32>)
+// GFX1170-BF8-BF8-SAME: (%{{.*}}: tensor<2362368xf8E5M2>, %{{.*}}: tensor<1181184xf8E5M2>, %{{.*}}: tensor<1572864xf32>)
 
 // Integer GEMM mirrors the GPU's i32 accumulator: the body sign-extends the i8
 // operands and uses integer multiply/add.
