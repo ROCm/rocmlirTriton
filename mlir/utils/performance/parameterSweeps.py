@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
 import perfRunner
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
@@ -88,20 +89,8 @@ class PerfConfig:
       ``nPerBlockG1`` is the second-gemm N/head tile; ``0`` means untiled.
     """
 
-    # Public GEMM field metadata used by tools that need to inspect or construct
-    # serialized perf configs without duplicating the schema.
-    FIELD_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "kpack", "numCTAs", "numWaves",
-                   "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize")
-    FIELD_INDEX = dict(zip(FIELD_NAMES, range(len(FIELD_NAMES))))
-
-    _SHARED_KEYS = FIELD_NAMES[2:]
-    _KEYS = {
-        'gemm': FIELD_NAMES,
-        'attn': ("mPerBlockG0", "nPerBlockG0", "nPerBlockG1") + _SHARED_KEYS,
-    }
-    # ``attn`` carries one tunable more than ``gemm``: the ``nPerBlockG1``
-    # second-gemm N/head tile, which sits 3rd.
-    _NUM_FIELDS = {kind: len(keys) for kind, keys in _KEYS.items()}
+    _KEYS = PERF_CONFIG_FIELD_NAMES
+    _NUM_FIELDS = {kind: len(names) for kind, names in PERF_CONFIG_FIELD_NAMES.items()}
 
     def __init__(self, config: Sequence[int], kind: str = 'gemm'):
         if kind not in self._NUM_FIELDS:

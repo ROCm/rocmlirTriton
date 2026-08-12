@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import perfRunner
-from perfCommonUtils import parse_perfconfig, serialize_perfconfig
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES, parse_perfconfig, serialize_perfconfig
 from tqdm import tqdm
 
 # Tells LdsBlacklist::lookupGemm (see LdsBlacklist.cpp) to return an empty set so
@@ -207,7 +207,8 @@ def synth_config(proj: Projection) -> str:
         "wavesPerEU": 0,
         "gridGroupSize": 0,
     }
-    return serialize_perfconfig("gemm", values)
+    ordered_values = {name: values[name] for name in PERF_CONFIG_FIELD_NAMES["gemm"]}
+    return serialize_perfconfig("gemm", ordered_values)
 
 
 def default_seed() -> int:
