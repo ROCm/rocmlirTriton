@@ -534,7 +534,8 @@ bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
 
 // Decomposing an f32 dot into three bf16 products trades the f32 MFMA
 // for the higher throughput bf16 ops. On CDNA4 that is a large net win on
-// the f32 conv suite, no other arch has been measured to benefit.
+// the f32 conv suite, no other arch has been measured to benefit. This is only
+// the default: the `useBf16x3ForF32` perfConfig knob can force either path.
 bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
   return isaFamily == ISAFamily::CDNA4;

@@ -223,6 +223,17 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Gate for lowering an f32 `tt.dot` as three bf16 products instead of
+          an IEEE f32 dot. `-1` follows the per-arch default, `0` forces the
+          IEEE path, and `1` forces the decomposition.
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseBf16x3ForF32",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
   ];
 }
 

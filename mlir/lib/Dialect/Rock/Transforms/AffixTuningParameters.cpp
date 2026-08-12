@@ -376,6 +376,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   getOperation()->setAttr(
       rock::UseOptimizeEpilogueAttr::getMnemonic(),
       b.getI64IntegerAttr(gemmParams.getUseOptimizeEpilogue()));
+  getOperation()->setAttr(rock::UseBf16x3ForF32Attr::getMnemonic(),
+                          b.getI64IntegerAttr(gemmParams.getUseBf16x3ForF32()));
 
   // Check fusion legality. These checks should happen after perfConfig is
   // picked either through heuristics or user provided.
@@ -453,4 +455,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   getOperation()->setAttr(
       rock::UseOptimizeEpilogueAttr::getMnemonic(),
       builder.getI64IntegerAttr(attnPerfConfig.getUseOptimizeEpilogue()));
+  getOperation()->setAttr(
+      rock::UseBf16x3ForF32Attr::getMnemonic(),
+      builder.getI64IntegerAttr(attnPerfConfig.getUseBf16x3ForF32()));
 }

@@ -75,12 +75,12 @@ std::string perfConfigNamed(StringRef prefix, ArrayRef<StringRef> keys,
   return out;
 }
 
-std::string gemmNamed(std::array<int64_t, 18> f) {
+std::string gemmNamed(std::array<int64_t, 19> f) {
   return perfConfigNamed(GemmParamsAttr::getPerfConfigPrefix(),
                          GemmParamsAttr::getPerfConfigKeys(), f);
 }
 
-std::string attnNamed(std::array<int64_t, 19> f) {
+std::string attnNamed(std::array<int64_t, 20> f) {
   return perfConfigNamed(GemmGemmParamsAttr::getPerfConfigPrefix(),
                          GemmGemmParamsAttr::getPerfConfigKeys(), f);
 }
@@ -171,7 +171,7 @@ TEST(PerfConfigParsingTest, GemmParamsV2MixedKnobsReserializeAsV5) {
   // named form with the newer knobs defaulted to -1.
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, 1, 0, -1, 1, 0,
-                       -1, -1}));
+                       -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV2IgnoresArbitraryScheduleHintValue) {
@@ -185,7 +185,7 @@ TEST(PerfConfigParsingTest, GemmParamsV2IgnoresArbitraryScheduleHintValue) {
   expectScheduleHintWarning(capture, 4);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, -1, -1, -1, -1,
-                       -1, -1, -1}));
+                       -1, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV2RejectsBoolKnobAboveOne) {
@@ -241,7 +241,7 @@ TEST(PerfConfigParsingTest, GemmParamsV3ReserializesAsV5) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, 1, 0, -1, 1, 0,
-                       -1, -1}));
+                       -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV3RejectsBoolKnobAboveOne) {
@@ -288,7 +288,7 @@ TEST(PerfConfigParsingTest, GemmParamsV4ReserializesAsV5) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, 1, 0, -1, 1, 0, 1,
-                       -1}));
+                       -1, -1}));
 }
 
 TEST(PerfConfigParsingTest,
@@ -301,7 +301,7 @@ TEST(PerfConfigParsingTest,
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, -1, -1, -1, -1,
-                       -1, 0, -1}));
+                       -1, 0, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV4RejectsBadReductionLayout) {
@@ -324,7 +324,7 @@ TEST(PerfConfigParsingTest, GemmParamsV4ReadsReductionLayoutSentinel) {
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, -1, -1, -1, -1,
-                       -1, -1, -1}));
+                       -1, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV4TooFewParams) {
@@ -362,7 +362,7 @@ TEST(PerfConfigParsingTest, GemmParamsV5ReserializesToNamedForm) {
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
             gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, -1, -1, -1, -1,
-                       -1, -1, 1}));
+                       -1, -1, 1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmParamsV5RejectsBadOptimizeEpilogue) {
@@ -389,6 +389,15 @@ TEST(PerfConfigParsingTest, GemmParamsV5TooManyParams) {
 TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV6) {
   PerfConfigTestEnv e;
   auto attr = GemmParamsAttr::get(e.str("gemm:v6:128,128,16,1,1,4,32,1,2,0,1"));
+  EXPECT_FALSE(attr);
+}
+
+// The positional form is frozen at v6: fields added since then live only in the
+// named schema, so a well-formed v7 string is still not a thing.
+TEST(PerfConfigParsingTest, GemmParamsUnknownVersionV7) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v7:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,-1,-1"));
   EXPECT_FALSE(attr);
 }
 
@@ -494,8 +503,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2MixedKnobsReserializeAsV6) {
   // Reserializes in the canonical named form with nPerBlockG1=0 inserted (v2
   // has no such field) and the trailing scheduleHint dropped.
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0,
-                       -1, -1}));
+            attnNamed({64, 64, 0, 32, 2,  1, 2, 16, 1,  1,
+                       0,  1,  1, 0,  -1, 1, 0, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV2IgnoresArbitraryScheduleHintValue) {
@@ -507,8 +516,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV2IgnoresArbitraryScheduleHintValue) {
   ASSERT_TRUE(attr);
   expectScheduleHintWarning(capture, 4);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, -1, -1, -1, -1,
-                       -1, -1, -1}));
+            attnNamed({64, 64, 0,  32, 2,  1,  2,  16, 1,  1,
+                       0,  1,  -1, -1, -1, -1, -1, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV2RejectsBoolKnobAboveOne) {
@@ -549,8 +558,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV3ReserializesAsV6) {
       e.str("attn:v3:64,64,32,2,1,2,16,1,1,0,1,1,0,-1,1,0"));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0,
-                       -1, -1}));
+            attnNamed({64, 64, 0, 32, 2,  1, 2, 16, 1,  1,
+                       0,  1,  1, 0,  -1, 1, 0, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV3TooManyParams) {
@@ -578,8 +587,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV4ReserializesAsV6) {
   auto attr = GemmGemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0,
-                       1, -1}));
+            attnNamed({64, 64, 0, 32, 2,  1, 2, 16, 1,  1,
+                       0,  1,  1, 0,  -1, 1, 0, 1,  -1, -1}));
 }
 
 TEST(PerfConfigParsingTest,
@@ -591,8 +600,8 @@ TEST(PerfConfigParsingTest,
   EXPECT_EQ(attr.getUseReductionLayout(), 0);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, -1, -1, -1, -1,
-                       -1, 0, -1}));
+            attnNamed({64, 64, 0,  32, 2,  1,  2,  16, 1,  1,
+                       0,  1,  -1, -1, -1, -1, -1, 0,  -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV4RejectsBadReductionLayout) {
@@ -613,8 +622,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV4ReadsReductionLayoutSentinel) {
   EXPECT_EQ(attr.getUseReductionLayout(), kKnobDefault);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, -1, -1, -1, -1,
-                       -1, -1, -1}));
+            attnNamed({64, 64, 0,  32, 2,  1,  2,  16, 1,  1,
+                       0,  1,  -1, -1, -1, -1, -1, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV4TooFewParams) {
@@ -647,8 +656,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV5ReserializesToNamedForm) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, -1, -1, -1, -1,
-                       -1, -1, 1}));
+            attnNamed({64, 64, 0,  32, 2,  1,  2,  16, 1, 1,
+                       0,  1,  -1, -1, -1, -1, -1, -1, 1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV5RejectsBadOptimizeEpilogue) {
@@ -696,8 +705,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV6ReserializesToNamedForm) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getNPerBlockG1(), 16);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 16, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0,
-                       1, -1}));
+            attnNamed({64, 64, 16, 32, 2,  1, 2, 16, 1,  1,
+                       0,  1,  1,  0,  -1, 1, 0, 1,  -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV6UntiledReserializesToNamedForm) {
@@ -710,8 +719,8 @@ TEST(PerfConfigParsingTest, GemmGemmParamsV6UntiledReserializesToNamedForm) {
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getNPerBlockG1(), 0);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(),
-            attnNamed({64, 64, 0, 32, 2, 1, 2, 16, 1, 1, 0, 1, -1, -1, -1, -1,
-                       -1, -1, -1}));
+            attnNamed({64, 64, 0,  32, 2,  1,  2,  16, 1,  1,
+                       0,  1,  -1, -1, -1, -1, -1, -1, -1, -1}));
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsV6RejectsBadOptimizeEpilogue) {
@@ -788,21 +797,22 @@ TEST(PerfConfigParsingTest, GemmParamsNamedSchemaIsPinned) {
             "matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,"
             "gridGroupSize,useAsyncCopy,useBlockPingpong,useInThreadTranspose,"
             "useBufferOps,useBufferAtomics,useReductionLayout,"
-            "useOptimizeEpilogue");
+            "useOptimizeEpilogue,useBf16x3ForF32");
   // The value each field takes when a config string omits it.
   EXPECT_EQ(joinInts(GemmParamsAttr::getPerfConfigDefaults()),
-            "32,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1");
+            "32,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsNamedRoundTrip) {
   PerfConfigTestEnv e;
-  std::string original =
-      gemmNamed({128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, 1, 0, -1, 1, 0, 1, 0});
+  std::string original = gemmNamed(
+      {128, 128, 16, 1, 1, 4, 32, 1, 2, 0, 1, 1, 0, -1, 1, 0, 1, 0, 1});
   auto attr = GemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getMPerBlock(), 128);
   EXPECT_EQ(attr.getUseReductionLayout(), 1);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), 0);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), 1);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
 }
 
@@ -824,6 +834,7 @@ TEST(PerfConfigParsingTest, GemmParamsNamedMissingKeysUseDefaults) {
   EXPECT_EQ(attr.getGridGroupSize(), 0);
   EXPECT_EQ(attr.getUseAsyncCopy(), kKnobDefault);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), kKnobDefault);
 }
 
 TEST(PerfConfigParsingTest, GemmParamsNamedPartialOverridesDefaults) {
@@ -895,6 +906,30 @@ TEST(PerfConfigParsingTest, GemmParamsNamedRejectsMissingValue) {
   EXPECT_FALSE(attr);
 }
 
+TEST(PerfConfigParsingTest, GemmParamsNamedReadsBf16x3) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(e.str("gemm:useBf16x3ForF32=1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), 1);
+  EXPECT_TRUE(GemmParamsAttr::get(e.str("gemm:useBf16x3ForF32=0")));
+}
+
+TEST(PerfConfigParsingTest, GemmParamsNamedRejectsBadBf16x3) {
+  PerfConfigTestEnv e;
+  EXPECT_FALSE(GemmParamsAttr::get(e.str("gemm:useBf16x3ForF32=2")));
+}
+
+// `useBf16x3ForF32` was added after the positional form was frozen at v6, so no
+// positional string can carry it and it must decode to the sentinel.
+TEST(PerfConfigParsingTest, GemmParamsPositionalDefaultsBf16x3) {
+  PerfConfigTestEnv e;
+  auto attr = GemmParamsAttr::get(
+      e.str("gemm:v5:128,128,16,1,1,4,32,1,2,0,1,-1,-1,-1,-1,-1,-1,1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), kKnobDefault);
+}
+
 // --- GemmGemmParamsAttr: named schema (canonical `attn:key=value,...`) ---
 
 // See `GemmParamsNamedSchemaIsPinned`. The attention schema additionally
@@ -907,22 +942,23 @@ TEST(PerfConfigParsingTest, GemmGemmParamsNamedSchemaIsPinned) {
             "numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,"
             "gridGroupSize,useAsyncCopy,useBlockPingpong,useInThreadTranspose,"
             "useBufferOps,useBufferAtomics,useReductionLayout,"
-            "useOptimizeEpilogue");
+            "useOptimizeEpilogue,useBf16x3ForF32");
   EXPECT_EQ(joinInts(GemmGemmParamsAttr::getPerfConfigDefaults()),
-            "32,32,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1");
+            "32,32,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsNamedRoundTrip) {
   PerfConfigTestEnv e;
   // A non-zero nPerBlockG1 (16) round-trips like any other tunable field.
   std::string original = attnNamed(
-      {64, 64, 16, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0, 1, 0});
+      {64, 64, 16, 32, 2, 1, 2, 16, 1, 1, 0, 1, 1, 0, -1, 1, 0, 1, 0, 1});
   auto attr = GemmGemmParamsAttr::get(e.str(original));
   ASSERT_TRUE(attr);
   EXPECT_EQ(attr.getMPerBlockG0(), 64);
   EXPECT_EQ(attr.getNPerBlockG1(), 16);
   EXPECT_EQ(attr.getUseReductionLayout(), 1);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), 0);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), 1);
   EXPECT_EQ(attr.getPerfConfigAttr().strref(), original);
 }
 
@@ -937,6 +973,7 @@ TEST(PerfConfigParsingTest, GemmGemmParamsNamedMissingKeysUseDefaults) {
   EXPECT_EQ(attr.getNPerBlockG1(), 0);
   EXPECT_EQ(attr.getKPerBlock(), 16);
   EXPECT_EQ(attr.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), kKnobDefault);
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsNamedRejectsGemmKey) {
@@ -950,4 +987,27 @@ TEST(PerfConfigParsingTest, GemmGemmParamsNamedRejectsUnknownKey) {
   PerfConfigTestEnv e;
   auto attr = GemmGemmParamsAttr::get(e.str("attn:bogus=1"));
   EXPECT_FALSE(attr);
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsNamedReadsBf16x3) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(e.str("attn:useBf16x3ForF32=1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), 1);
+  EXPECT_TRUE(GemmGemmParamsAttr::get(e.str("attn:useBf16x3ForF32=0")));
+}
+
+TEST(PerfConfigParsingTest, GemmGemmParamsNamedRejectsBadBf16x3) {
+  PerfConfigTestEnv e;
+  EXPECT_FALSE(GemmGemmParamsAttr::get(e.str("attn:useBf16x3ForF32=2")));
+}
+
+// See `GemmParamsPositionalDefaultsBf16x3`.
+TEST(PerfConfigParsingTest, GemmGemmParamsPositionalDefaultsBf16x3) {
+  PerfConfigTestEnv e;
+  auto attr = GemmGemmParamsAttr::get(
+      e.str("attn:v6:64,64,16,32,2,1,2,16,1,1,0,1,-1,-1,-1,-1,-1,-1,1"));
+  ASSERT_TRUE(attr);
+  EXPECT_EQ(attr.getUseOptimizeEpilogue(), 1);
+  EXPECT_EQ(attr.getUseBf16x3ForF32(), kKnobDefault);
 }

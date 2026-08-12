@@ -136,6 +136,8 @@ bool supportsNonPow2KPerBlock(StringRef arch);
 
 /// Whether an f32 `tt.dot` should be emulated with the 3xBF16 trick
 /// (`InputPrecision::BF16x3`) instead of being issued as an IEEE f32 dot.
+/// This is the heuristic behind the `useBf16x3ForF32` perfConfig knob's `-1`
+/// setting; an explicit `0`/`1` in the perfConfig overrides it.
 bool preferBf16x3ForF32Dot(StringRef arch);
 
 /// Check if architecture supports TDM (Tensor Descriptor Memory)

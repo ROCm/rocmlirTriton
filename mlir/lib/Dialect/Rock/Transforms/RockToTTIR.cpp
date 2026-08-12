@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -209,7 +210,9 @@ struct RockLoadPtrOpRewritePattern
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseGemmOp> {
-  using OpRewritePattern<rock::BlockwiseGemmOp>::OpRewritePattern;
+  RockBlockwiseGemmOpRewritePattern(MLIRContext *ctx, bool useBf16x3ForF32)
+      : OpRewritePattern<rock::BlockwiseGemmOp>(ctx),
+        useBf16x3ForF32(useBf16x3ForF32) {}
 
   LogicalResult matchAndRewrite(rock::BlockwiseGemmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -257,12 +260,11 @@ struct RockBlockwiseGemmOpRewritePattern
                                            bElemTy.value(), /*fastMath=*/false,
                                            matrixAKPack, matrixBKPack);
     } else {
-      // On arches where the 3xBF16 decomposition pays off, route f32 dots
-      // through bf16 MFMA rather than IEEE MFMA.
+      // When the 3xBF16 decomposition is selected, route f32 dots through
+      // bf16 MFMA rather than IEEE MFMA.
       auto inputPrecision = triton::InputPrecision::IEEE;
-      if (aTensorType.getElementType().isF32() &&
-          bTensorType.getElementType().isF32() &&
-          rock::preferBf16x3ForF32Dot(rock::getArchValue(op)))
+      if (useBf16x3ForF32 && aTensorType.getElementType().isF32() &&
+          bTensorType.getElementType().isF32())
         inputPrecision = triton::InputPrecision::BF16x3;
       // Create tt.dot operation
       result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
@@ -286,6 +288,9 @@ struct RockBlockwiseGemmOpRewritePattern
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  bool useBf16x3ForF32;
 };
 
 struct RockStorePtrOpRewritePattern
@@ -431,6 +436,19 @@ struct ArithExtFToFpToFpPattern
   }
 };
 
+// Resolve the `rock.use_bf16x3_for_f32` perfConfig tri-state against the
+// per-arch default. The attribute is absent whenever the kernel did not go
+// through `rock-affix-params` (hand-written lit inputs, for instance), which
+// also falls back to the arch default.
+static bool resolveUseBf16x3ForF32(func::FuncOp funcOp) {
+  auto policyAttr = funcOp->getAttrOfType<IntegerAttr>(
+      rock::UseBf16x3ForF32Attr::getMnemonic());
+  int64_t policy = policyAttr ? policyAttr.getInt() : rock::kKnobDefault;
+  if (policy == rock::kKnobDefault)
+    return rock::preferBf16x3ForF32Dot(rock::getArchValue(funcOp));
+  return policy != 0;
+}
+
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -440,6 +458,11 @@ void RockToTTIRPass::runOnOperation() {
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
     return;
   }
+
+  // Consume the tuning tri-state here: once the precision is baked into the
+  // emitted dots, the raw policy must not leak into Triton IR.
+  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp);
+  funcOp->removeAttr(rock::UseBf16x3ForF32Attr::getMnemonic());
 
   ConversionTarget target(*ctx);
 
@@ -466,7 +489,7 @@ void RockToTTIRPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
-  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx, useBf16x3ForF32);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);

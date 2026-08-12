@@ -380,7 +380,8 @@ func.func @test_gemm_f32(
 // -----
 
 // Test: on gfx950 an f32 GEMM asks for the 3xBF16 decomposition, which
-// TritonGPUF32DotTC later expands into dense bf16 MFMAs.
+// TritonGPUF32DotTC later expands into dense bf16 MFMAs. Absent
+// `rock.use_bf16x3_for_f32`, the arch default decides.
 
 // CHECK-LABEL: @test_gemm_f32_gfx950
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
@@ -391,6 +392,46 @@ func.func @test_gemm_f32_gfx950(
     %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
     %c: tensor<64x64xf32>) -> tensor<64x64xf32>
     attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 0` in the perfConfig forces the IEEE path even on gfx950,
+// where the arch default would decompose. The tri-state is consumed here, so
+// the bridge attribute must not survive into Triton IR.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950_bf16x3_off
+//  CHECK-NOT:   rock.use_bf16x3_for_f32
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}} : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx950_bf16x3_off(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel,
+                rock.use_bf16x3_for_f32 = 0 : i64} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 1` forces the decomposition on an arch whose default is
+// the IEEE path.
+
+// CHECK-LABEL: @test_gemm_f32_gfx942_bf16x3_on
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}}, inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx942_bf16x3_on(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel,
+                rock.use_bf16x3_for_f32 = 1 : i64} {
   %result = rock.blockwise_gemm(%a, %b, %c)
     : tensor<64x64xf32>, tensor<64x64xf32>,
       tensor<64x64xf32> -> tensor<64x64xf32>

@@ -330,7 +330,8 @@ defvar kRockCommonPerfConfigFields =
      RockPerfConfigField<"useBufferOps", kRockKnobDefault>,
      RockPerfConfigField<"useBufferAtomics", kRockKnobDefault>,
      RockPerfConfigField<"useReductionLayout", kRockKnobDefault>,
-     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>];
+     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>,
+     RockPerfConfigField<"useBf16x3ForF32", kRockKnobDefault>];
 
 // Derives the whole named-perfConfig surface of a tuning-param attribute from a
 // single field list: the `getPerfConfigStr()` emitter, the key/default schema
@@ -441,7 +442,7 @@ defvar kRockGemmParams = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
 
 def Rock_GemmParamsSchema
     : Rock_PerfConfigSchema<"gemm", kRockGemmParams,
@@ -483,6 +484,11 @@ def Rock_GemmParamsAttr
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
+    - useBf16x3ForF32: Gate for decomposing an f32 `tt.dot` into three bf16
+      products (Triton's `InputPrecision::BF16x3`) rather than issuing an IEEE
+      f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
+      `0` forces the IEEE path, and `1` forces the decomposition. Has no effect
+      on dots whose operands are not both f32.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -497,6 +503,7 @@ def Rock_GemmParamsAttr
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
+    - `useBf16x3ForF32`                  (set to -1)
   }];
 
   let parameters = kRockGemmParams;
@@ -521,7 +528,7 @@ defvar kRockGemmGemmParams = (ins "int64_t":$mPerBlockG0,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
 
 // `nPerBlockG1` defaults to 0 ("untiled"), matching how pre-v6 positional
 // configs, which have no such field, decode.
@@ -573,6 +580,11 @@ def Rock_GemmGemmParamsAttr
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
+    - useBf16x3ForF32: Gate for decomposing an f32 `tt.dot` into three bf16
+      products (Triton's `InputPrecision::BF16x3`) rather than issuing an IEEE
+      f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
+      `0` forces the IEEE path, and `1` forces the decomposition. Applies to
+      both GEMMs and has no effect on dots whose operands are not both f32.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -587,6 +599,7 @@ def Rock_GemmGemmParamsAttr
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
+    - `useBf16x3ForF32`                  (set to -1)
   }];
 
   let parameters = kRockGemmGemmParams;
@@ -668,6 +681,17 @@ def Rock_UseOptimizeEpilogue : Rock_Attr<"UseOptimizeEpilogue"> {
     `rock-affix-params` to `rock-add-triton-metadata`. The metadata pass removes
     it after resolving the automatic policy to `rock.prefer_lds_epilogue`, so
     raw tuning policy does not enter Triton IR.
+  }];
+}
+
+def Rock_UseBf16x3ForF32 : Rock_Attr<"UseBf16x3ForF32"> {
+  let mnemonic = "rock.use_bf16x3_for_f32";
+  let description = [{
+    Temporary function attribute carrying the perfConfig tri-state from
+    `rock-affix-params` to `rock-to-ttir`, which needs it when picking the
+    `tt.dot` input precision. The lowering pass removes it once the precision
+    is baked into the emitted dots, so raw tuning policy does not enter Triton
+    IR.
   }];
 }
 
