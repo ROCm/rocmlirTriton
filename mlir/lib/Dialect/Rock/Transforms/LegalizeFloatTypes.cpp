@@ -233,12 +233,9 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
     return failure();
   SmallVector<int64_t> newUpperBounds(mapAttr.getUpperBounds().asArrayRef());
   SmallVector<int64_t> newLowerBounds(mapAttr.getLowerBounds().asArrayRef());
-  auto halveUpperBound = [&]() -> LogicalResult {
-    if (newUpperBounds[upperDimIdx] % 2 != 0)
-      return notDivisible();
-    newUpperBounds[upperDimIdx] /= 2;
-    return success();
-  };
+  if (newUpperBounds[upperDimIdx] % 2 != 0)
+    return notDivisible();
+  newUpperBounds[upperDimIdx] /= 2;
 
   // Find which TransformAttr owns this upper dimension.
   SmallVector<TransformAttr> newOps;
@@ -262,8 +259,6 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
     switch (trAttr.getType()) {
     case TransformType::Unmerge: {
       // Unmerge{a, b, ...}["x","y",...]->["z"]: halve params[subIdx].
-      if (failed(halveUpperBound()))
-        return failure();
       SmallVector<int64_t> newParams(trAttr.getParams());
       if (newParams[subIdx] % 2 != 0)
         return notDivisible();
@@ -283,8 +278,6 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
       break;
     }
     case TransformType::PassThrough: {
-      if (failed(halveUpperBound()))
-        return failure();
       int64_t lowerDim = targetLowerDim;
       if (newLowerBounds[lowerDim] % 2 != 0)
         return notDivisible();
@@ -306,8 +299,6 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
         }
       }
       if (targetIdx < 0)
-        return failure();
-      if (failed(halveUpperBound()))
         return failure();
       if (newParams[targetIdx] % 2 != 0)
         return notDivisible();
@@ -336,8 +327,6 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
     case TransformType::Pad: {
       // Pad adds padding around a dimension. Halving the padded (upper) size
       // requires adjusting the unpadded (lower) bound accordingly.
-      if (failed(halveUpperBound()))
-        return failure();
       SmallVector<int64_t> newParams(trAttr.getParams());
       int64_t lowerDim = targetLowerDim;
       int64_t padBefore = newParams[subIdx * 2];
@@ -367,11 +356,6 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
       int64_t start = newParams[subIdx * 2];
       int64_t end = newParams[subIdx * 2 + 1];
 
-      // TODO: restricted to start=0 for now
-      if (start != 0)
-        return failure();
-      if (failed(halveUpperBound()))
-        return failure();
       if (end % 2 != 0)
         return notDivisible();
 
@@ -425,7 +409,11 @@ static int64_t traceDimThroughMap(TransformMapAttr mapAttr, int64_t upperDimIdx,
       return trAttr.getLowerDims()[0];
     case TransformType::PassThrough:
     case TransformType::Pad:
+      return trAttr.getLowerDims()[subIdx];
     case TransformType::Slice:
+      // Halving a slice with a non-zero start is not supported.
+      if (trAttr.getParams()[subIdx * 2] != 0)
+        return -1;
       return trAttr.getLowerDims()[subIdx];
     case TransformType::Merge:
     case TransformType::AddDim:

@@ -174,6 +174,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
     break;
   case DataType::I4:
     // Pack two signed 4-bit values into each byte.
+    assert(patternInt4.size() % 2 == 0);
     for (size_t i = 0; i < patternInt4.size(); i += 2) {
       uint8_t packedI4 =
           (patternInt4[i] & 0x0F) | ((patternInt4[i + 1] & 0x0F) << 4);
