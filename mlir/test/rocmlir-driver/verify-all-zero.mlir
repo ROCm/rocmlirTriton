@@ -1,3 +1,4 @@
+// REQUIRES: rocm-runner
 // RUN: rocmlir-driver --host-pipeline=backend %s \
 // RUN: | mlir-runner -O2 --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext --entry-point-result=void \
 // RUN: | FileCheck %s
@@ -20,11 +21,10 @@ module {
     %threshold = arith.constant 0.0 : f32
     %printDebug = arith.constant 0 : i8
     %isFP32 = arith.constant true
-    %useAbsDiffGate = arith.constant false
     call @mcpuVerifyFloat(
         %gpuDynamic, %referenceDynamic, %threshold, %threshold, %threshold,
-        %printDebug, %isFP32, %useAbsDiffGate)
-        : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1, i1) -> ()
+        %printDebug, %isFP32)
+        : (memref<?xf32>, memref<?xf32>, f32, f32, f32, i8, i1) -> ()
 
     memref.dealloc %gpu : memref<4xf32>
     memref.dealloc %reference : memref<4xf32>
@@ -32,5 +32,5 @@ module {
   }
 
   func.func private @mcpuVerifyFloat(memref<?xf32>, memref<?xf32>, f32, f32,
-                                    f32, i8, i1, i1)
+                                    f32, i8, i1)
 }

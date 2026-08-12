@@ -199,7 +199,9 @@ struct GridwiseAttentionRewritePattern
   // zero in that case and `original` otherwise.
   Value selectZeroIfBothNegInf(PatternRewriter &rewriter, Location loc, Value a,
                                Value b, Value original) const {
-    assert(a.getType() == b.getType() && b.getType() == original.getType());
+    assert(a.getType() == b.getType() &&
+           b.getType() == original.getType() &&
+           "operands must share a type");
     auto shapedType = cast<ShapedType>(a.getType());
     Type elementType = shapedType.getElementType();
     Value negInf = createConstantFloatOp(
