@@ -292,17 +292,15 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   if (largestAddressInvariantAxis < 0)
     return;
 
-  LLVM_DEBUG(llvm::dbgs()
-             << "reducing axis " << largestAddressInvariantAxis << " of "
-             << srcType << " into destination dim "
-             << (numExtra + largestAddressInvariantAxis) << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "reducing axis " << largestAddressInvariantAxis
+                          << " of " << srcType << " into destination dim "
+                          << (numExtra + largestAddressInvariantAxis) << "\n");
   Location loc = store.getLoc();
   Value reduced = BlockwiseReduceOp::create(
-      b, loc, store.getSource(),
-      b.getIndexAttr(largestAddressInvariantAxis),
+      b, loc, store.getSource(), b.getIndexAttr(largestAddressInvariantAxis),
       b.getAttr<ReduceMethodAttr>(reduceMethod));
-  Value pinnedDest = pinDimToZero(
-      b, loc, store.getDest(), numExtra + largestAddressInvariantAxis);
+  Value pinnedDest = pinDimToZero(b, loc, store.getDest(),
+                                  numExtra + largestAddressInvariantAxis);
   store.getSourceMutable().assign(reduced);
   store.getDestMutable().assign(pinnedDest);
 }
