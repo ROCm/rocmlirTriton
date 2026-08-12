@@ -253,12 +253,6 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   if (!srcType.hasStaticShape() || !destType.hasStaticShape())
     return;
 
-  // A rank-1 source would reduce to a rank-0 tensor, which
-  // rock.blockwise_reduce can express but the tt.reduce it lowers to cannot:
-  // reducing a rank-1 input yields a bare scalar.
-  if (srcType.getRank() < 2)
-    return;
-
   b.setInsertionPoint(store);
   ArrayAttr transformAttrs;
   std::tie(std::ignore, transformAttrs, std::ignore) =

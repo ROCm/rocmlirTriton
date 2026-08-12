@@ -132,8 +132,17 @@ struct RockBlockwiseReduceOpRewritePattern
     
     // Create reduce.return
     triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
-    
-    rewriter.replaceOp(op, reduceOp.getResults());
+
+    rewriter.setInsertionPointAfter(reduceOp);
+    Value replacement = reduceOp->getResult(0);
+    if (replacement.getType() != op.getResult().getType()) {
+      assert(inputType.getRank() == 1 &&
+             "only rank-1 reductions should produce a scalar");
+      replacement = triton::SplatOp::create(
+          rewriter, loc, op.getResult().getType(), replacement);
+    }
+
+    rewriter.replaceOp(op, replacement);
     return success();
   }
 };

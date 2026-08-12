@@ -27,6 +27,23 @@ func.func @reduce_broadcast_axis(%tile: tensor<64x256xf32>, %out: tensor<64xf32>
 
 // -----
 
+// A rank-1 tile can be reduced to a rank-0 tensor. RockToTTIR wraps the scalar
+// result produced by tt.reduce back into this tensor representation.
+// CHECK-LABEL: @reduce_rank1_broadcast_axis
+// CHECK-SAME: (%[[TILE:.*]]: tensor<256xf32>, %[[OUT:.*]]: tensor<1xf32>)
+//      CHECK: %[[VIEW:.*]] = rock.transform %[[OUT]] by {{.*}}Broadcast
+//      CHECK: %[[RED:.*]] = rock.blockwise_reduce sum %[[TILE]] {axis = 0 : index} : tensor<256xf32> -> tensor<f32>
+//      CHECK: %[[PINNED:.*]] = rock.transform %[[VIEW]] by <affine_map<() -> (0)> by [<ConstDim{0, 256} [] at [] -> ["dim0"] at [0]>] bounds = [] -> [256]> : tensor<256xf32> to tensor<f32>
+//      CHECK: rock.blockwise_store %[[RED]] -> %[[PINNED]] by atomic_add : tensor<f32> -> tensor<f32> -> tensor<1xf32>
+func.func @reduce_rank1_broadcast_axis(%tile: tensor<256xf32>, %out: tensor<1xf32>) -> tensor<1xf32> attributes {rock.kernel} {
+  %sm = rock.store_marker %tile views [] : tensor<256xf32> -> tensor<256xf32>
+  %0 = rock.transform %out by <affine_map<(d0) -> (0)> by [<Broadcast{1} ["dim0"] at [0] -> ["dim0"] at [0]>] bounds = [256] -> [1]> : tensor<1xf32> to tensor<256xf32>
+  %1 = rock.store %sm to %0 by atomic_add : tensor<256xf32> -> tensor<1xf32> to tensor<256xf32>
+  return %1 : tensor<1xf32>
+}
+
+// -----
+
 // When both tile axes collapse to the same address, the wider one is reduced.
 // Only one axis is ever reduced, so the store keeps a rank-1 source.
 // CHECK-LABEL: @reduce_largest_invariant_axis
