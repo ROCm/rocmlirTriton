@@ -29,7 +29,7 @@
 // 3. Clones fusion ops to operate on tiles
 // 4. Combines StoreMarkerOp transforms with store destination transforms
 // 5. Creates BlockwiseStoreOp with the combined transform chain
-// 6. Sums a whole tile axis in registers when the destination maps all of it
+// 6. Reduces a whole tile axis in registers when the destination maps all of it
 //    to one address, so one atomic replaces a tile axis worth of them
 //
 // Example:
@@ -235,15 +235,18 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
   return TransformOp::create(b, loc, dest, view.get());
 }
 
-/// Rewrites `store` to sum one tile axis in registers before storing, when
+/// Rewrites `store` to reduce one tile axis in registers before storing, when
 /// that is provably equivalent to the per-element atomics it replaces.
 static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
-  // Only atomic_add accumulates, so only it can absorb a partial sum. A `set`
-  // store keeps the last writer, and atomic_max is left for later because the
-  // NaN and signedness semantics of arith.maximumf and the hardware atomic
-  // still need to be reconciled.
-  if (store.getStoreMethod() != StoreMethod::AtomicAdd)
+  StoreMethod storeMethod = store.getStoreMethod();
+  if (storeMethod != StoreMethod::AtomicAdd)
     return;
+
+  ReduceMethod reduceMethod = storeMethod == StoreMethod::AtomicAdd
+                                  ? ReduceMethod::Sum
+                                  : ReduceMethod::Max;
+  assert(reduceMethod != ReduceMethod::Max &&
+         "atomic_max pre-reduction is not yet supported");
 
   auto srcType = cast<RankedTensorType>(store.getSource().getType());
   auto destType = cast<RankedTensorType>(store.getDest().getType());
@@ -265,8 +268,9 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   if (transforms.empty())
     return;
 
-  // A lane whose store mask is false contributes nothing, so whatever it holds
-  // is irrelevant.
+  // If any destination transform affects validity, some lanes may be masked
+  // off. Since this rewrite does not track which lanes contribute to the
+  // store, reducing them together could include values that never reach memory.
   if (llvm::any_of(transforms, mapImpactsValidity))
     return;
 
@@ -274,28 +278,31 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   // extraIndices, so source axis `a` is destination upper dimension
   // `extraIndices.size() + a`.
   int64_t numExtra = store.getExtraIndices().size();
-  int64_t bestAxis = -1;
-  int64_t bestExtent = 1;
+  int64_t largestAddressInvariantAxis = -1;
+  int64_t largestAddressInvariantExtent = 1;
   for (auto [axis, extent] : llvm::enumerate(srcType.getShape())) {
-    if (extent <= bestExtent)
+    if (extent <= largestAddressInvariantExtent)
       continue;
     int64_t destDim = numExtra + static_cast<int64_t>(axis);
     if (!addressIsInvariantAlongDim(b, transformAttrs, destDim))
       continue;
-    bestAxis = static_cast<int64_t>(axis);
-    bestExtent = extent;
+    largestAddressInvariantAxis = static_cast<int64_t>(axis);
+    largestAddressInvariantExtent = extent;
   }
-  if (bestAxis < 0)
+  if (largestAddressInvariantAxis < 0)
     return;
 
-  LLVM_DEBUG(llvm::dbgs() << "summing axis " << bestAxis << " of " << srcType
-                          << " into destination dim " << (numExtra + bestAxis)
-                          << "\n");
+  LLVM_DEBUG(llvm::dbgs()
+             << "reducing axis " << largestAddressInvariantAxis << " of "
+             << srcType << " into destination dim "
+             << (numExtra + largestAddressInvariantAxis) << "\n");
   Location loc = store.getLoc();
   Value reduced = BlockwiseReduceOp::create(
-      b, loc, store.getSource(), b.getIndexAttr(bestAxis),
-      b.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
-  Value pinnedDest = pinDimToZero(b, loc, store.getDest(), numExtra + bestAxis);
+      b, loc, store.getSource(),
+      b.getIndexAttr(largestAddressInvariantAxis),
+      b.getAttr<ReduceMethodAttr>(reduceMethod));
+  Value pinnedDest = pinDimToZero(
+      b, loc, store.getDest(), numExtra + largestAddressInvariantAxis);
   store.getSourceMutable().assign(reduced);
   store.getDestMutable().assign(pinnedDest);
 }
