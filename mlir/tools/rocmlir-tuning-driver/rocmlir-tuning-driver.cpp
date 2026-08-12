@@ -116,8 +116,8 @@ using namespace rocmlir::tuningdriver;
   do {                                                                         \
     hipError_t _status = (expr);                                               \
     if (hipSuccess != _status) {                                               \
-      llvm::errs() << __FILE__ << ":" << __LINE__ << ": HIP error in "          \
-                   << #expr << ": " << hipGetErrorString(_status) << context    \
+      llvm::errs() << __FILE__ << ":" << __LINE__ << ": HIP error in "         \
+                   << #expr << ": " << hipGetErrorString(_status) << context   \
                    << "\n";                                                    \
       return failure();                                                        \
     }                                                                          \
