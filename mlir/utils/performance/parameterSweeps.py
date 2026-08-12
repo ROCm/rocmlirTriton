@@ -91,8 +91,7 @@ class PerfConfig:
     # Public GEMM field metadata used by tools that need to inspect or construct
     # serialized perf configs without duplicating the schema.
     FIELD_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "kpack", "numCTAs", "numWaves",
-                   "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU",
-                   "gridGroupSize")
+                   "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize")
     FIELD_INDEX = dict(zip(FIELD_NAMES, range(len(FIELD_NAMES))))
 
     _SHARED_KEYS = FIELD_NAMES[2:]
