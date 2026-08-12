@@ -147,14 +147,85 @@
 // Non-accel tuning space
 //===----------------------------------------------------------------------===//
 
+// NOTE ON STRUCTURE: `--implicit-check-not` and `CHECK-NOT` are only scanned
+// over the input ranges *between* ordered directives, so adding a `CHECK-*-DAG`
+// to a prefix silently stops that prefix's negative patterns from being
+// enforced (a `-DAG` block spans the input, collapsing those ranges). Positive
+// `-DAG` assertions therefore get their own prefix and RUN line here, and every
+// negative assertion lives in a prefix that has *no* `-DAG` in it. Don't merge
+// them back together: the test would still pass, but would stop checking.
+
 // f32 on gfx1100 (RDNA3) has no matrix-accel instruction (WMMA has no f32
-// mode), so this exercises the non-accel (FMA) path.
+// mode), so this exercises the non-accel (FMA) path. Negative half: K tile is
+// one of {4,8,16}, no kPack, no matrix-accel instruction.
 // RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,(32|64|128|256|512),}}" \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,2,}}" \
 // RUN:       --implicit-check-not="gemm:v5:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}"
-// CHECK-NAVI: gemm:v5:{{(32|64|128),(32|64|128),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI: gemm:v5:{{(16|32|64|128|256),(16|32|64|128|256),(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+
+// Positive half: the alternation above is a superset of the pre-AIROCMLIR-938
+// {32,64,128} space, so it alone can't prove the extension took effect. Assert
+// the two newly added non-accel tiles (16 and 256) on *both* the M and N axes;
+// these fail if computeDPerBlock's non-accel extension is reverted.
+// RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-TILES
+// CHECK-NAVI-TILES-DAG: gemm:v5:16,{{[0-9]+,(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-TILES-DAG: gemm:v5:256,{{[0-9]+,(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-TILES-DAG: gemm:v5:{{[0-9]+}},16,{{(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+// CHECK-NAVI-TILES-DAG: gemm:v5:{{[0-9]+}},256,{{(4|8|16),1,[0-9]+,[0-9]+,0,[0-9]+,[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
+
+//===----------------------------------------------------------------------===//
+// Non-accel overwide M/N pair filter (isOverwideNonAccelMNPair)
+//===----------------------------------------------------------------------===//
+
+// On the non-accel (FMA) path a 256 M/N tile is only tuned when the *other*
+// tile stays below 128. The blockwise GEMM is a fully unrolled scalar loop, so
+// `{128,256}`, `{256,128}` and `{256,256}` cost ~70% of the whole space's
+// compile time on gfx1201 (256x256 alone is ~10x a 128x128), and exhaustive
+// Navi tuning never picked one of them as the best config for any GEMM or
+// convolution shape (AIROCMLIR-938). These RUNs use `exhaustive` so that no
+// `couldBePerformant` heuristic can mask the filter.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f32 -g 1 -m 2048 -n 2048 -k 2048 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NO-WIDE-MN-GEMM
+// CHECK-NO-WIDE-MN-GEMM-NOT: gemm:v5:128,256,
+// CHECK-NO-WIDE-MN-GEMM-NOT: gemm:v5:256,128,
+// CHECK-NO-WIDE-MN-GEMM-NOT: gemm:v5:256,256,
+
+// The other half: the filter must drop only the wide *pairs*, leaving the
+// narrow 256 tiles on both the M and N axes (those are what actually won) and
+// the 128x128 baseline pair untouched. Fails if the predicate is too broad.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f32 -g 1 -m 2048 -n 2048 -k 2048 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NARROW-MN-GEMM
+// CHECK-NARROW-MN-GEMM-DAG: gemm:v5:128,128,
+// CHECK-NARROW-MN-GEMM-DAG: gemm:v5:256,64,
+// CHECK-NARROW-MN-GEMM-DAG: gemm:v5:64,256,
+
+// Convolution reaches the same filter through `createGemmTuningRangeBF`, and is
+// the operation where tile 256 won most often (15/99 shapes), so pin it here
+// too rather than relying on the plain-GEMM RUNs above.
+// RUN: rocmlir-gen --arch gfx1201 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=256 --in_h=32 --in_w=32 --out_channels=256 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NO-WIDE-MN-CONV
+// CHECK-NO-WIDE-MN-CONV-NOT: gemm:v5:128,256,
+// CHECK-NO-WIDE-MN-CONV-NOT: gemm:v5:256,128,
+// CHECK-NO-WIDE-MN-CONV-NOT: gemm:v5:256,256,
+
+// RUN: rocmlir-gen --arch gfx1201 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=256 --in_h=32 --in_w=32 --out_channels=256 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NARROW-MN-CONV
+// CHECK-NARROW-MN-CONV-DAG: gemm:v5:128,128,
+// CHECK-NARROW-MN-CONV-DAG: gemm:v5:256,64,
+// CHECK-NARROW-MN-CONV-DAG: gemm:v5:64,256,
+
+// Negative control: the filter is gated on MatrixAccelKind::None, so an
+// accelerated path must keep the wide pairs. f16 on gfx1201 (RDNA4) has WMMA,
+// where a 256x256 tile compiles ~4x faster than the FMA one despite a K tile
+// four times larger. This fails if the filter is applied unconditionally.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 2048 -n 2048 -k 2048 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDE-MN
+// CHECK-WMMA-WIDE-MN-DAG: gemm:v5:128,256,
+// CHECK-WMMA-WIDE-MN-DAG: gemm:v5:256,128,
+// CHECK-WMMA-WIDE-MN-DAG: gemm:v5:256,256,
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
 // so this exercises the non-accel `getRangeGemmGemm` path.
@@ -162,8 +233,10 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
 // RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,2,}}" \
 // RUN:       --implicit-check-not="attn:v6:{{[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,(16|32),}}" \
-// RUN:       --implicit-check-not="attn:v6:{{(16|256),}}" \
-// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,(16|256),}}"
+// RUN:       --implicit-check-not="attn:v6:{{16,}}" \
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,16,}}" \
+// RUN:       --implicit-check-not="attn:v6:{{256,}}" \
+// RUN:       --implicit-check-not="attn:v6:{{[0-9]+,256,}}"
 // CHECK-NAVI-ATTN: attn:v6:{{(32|64|128),(32|64|128),0,[0-9]+,1,[0-9]+,[0-9]+,0,(1|2),[0-9]+,0,0,-1,-1,-1,-1,-1,-1,-1}}
 
 //===----------------------------------------------------------------------===//
