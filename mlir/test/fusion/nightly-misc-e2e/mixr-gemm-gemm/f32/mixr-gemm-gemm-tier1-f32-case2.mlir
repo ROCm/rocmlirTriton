@@ -1,6 +1,7 @@
-// Archs that decompose the f32 dot into three bf16 products miss the default
-// rtol (1.3e-6) by 1.07x here, so use 5e-6 as the other gemm-gemm tests do.
-// RUN: rocmlir-gen -fut mlir_gemm_gemm --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_gemm_gemm -rtol=5e-6 --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// Arches that decompose the f32 dot into three bf16 products miss the default
+// rtol (1.3e-6) by 1.07x here, so widen it to 5e-6 for those alone; every
+// other arch keeps the default.
+// RUN: rocmlir-gen -fut mlir_gemm_gemm --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_gemm_gemm %if bf16x3_f32_dot %{-rtol=5e-6%} --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
 // CHECK: [1 1 1]
 module {
   func.func private @mlir_gemm_gemm(%arg0: !migraphx.shaped<2x16x384x64xf32, 393216x24576x64x1>, %arg1: !migraphx.shaped<2x16x64x384xf32, 393216x24576x384x1>, %arg2: !migraphx.shaped<2x16x384x64xf32, 393216x24576x64x1>) -> (!migraphx.shaped<2x16x384x64xf32, 393216x24576x64x1>) attributes {rock.kernel} {

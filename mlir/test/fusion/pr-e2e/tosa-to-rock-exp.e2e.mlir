@@ -1,9 +1,8 @@
 // exp() amplifies conv rounding errors: exp(x+e)-exp(x) ~ e*exp(x), so the
 // default f32 rtol (1.3e-6) is insufficient. 2e-5 covers the amplification
-// factor on its own, but archs that decompose the f32 dot into three bf16
-// products start from a coarser conv result, so the tolerance is set to
-// 7e-5 to cover the loosest arch.
-// RUN: rocmlir-gen -fut test_fusion --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_fusion -rand 1 -rand_type float -rtol=7e-5 --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// factor on its own; arches that decompose the f32 dot into three bf16
+// products start from a coarser conv result and need 7e-5.
+// RUN: rocmlir-gen -fut test_fusion --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel | rocmlir-gen -ph -fut test_fusion -rand 1 -rand_type float %if bf16x3_f32_dot %{-rtol=7e-5%} %else %{-rtol=2e-5%} --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
 
 module {
 // CHECK: [1 1 1]

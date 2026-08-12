@@ -44,6 +44,14 @@ config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))
 
+# Expose a `bf16x3_f32_dot` lit feature for arches that lower an f32 `tt.dot`
+# as three bf16 products (CDNA4). Those start from a coarser dot result, so an
+# f32 E2E test that needs a wider tolerance there can widen it for that arch
+# alone with `%if bf16x3_f32_dot %{-rtol=...%} %else %{-rtol=...%}` rather than
+# loosening the check everywhere.
+if config.arch_prefers_bf16x3_for_f32_dot:
+    config.available_features.add('bf16x3_f32_dot')
+
 # ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
 # such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
 # relocatable SDK). lit otherwise scrubs it from the test environment.
