@@ -546,6 +546,8 @@ def drop_perf_priority(argv):
     if '-perf_priority' not in argv:
         return argv
     idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
     return argv[:idx] + argv[idx + 2:]
 
 
