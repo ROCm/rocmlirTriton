@@ -35,7 +35,8 @@
 // Softmax (shared across chunks): scale, online max, exp2, row-sum.
 // CHECK: %[[scaled:.+]] = arith.mulf %[[G0]], %[[ln2]]
 // CHECK: %[[tileMax:.+]] = rock.blockwise_reduce max %[[scaled]] {axis = 1 : index}
-// CHECK: %[[P:.+]] = math.exp2
+// CHECK: %[[rawP:.+]] = math.exp2
+// CHECK: %[[P:.+]] = arith.select %{{.*}}, %[[zero32]], %[[rawP]]
 // CHECK: rock.blockwise_reduce sum %[[P]] {axis = 1 : index}
 
 // gemm1 chunk 0: load V chunk n_block = 0, second GEMM into a fresh [16x32]
@@ -56,8 +57,10 @@
 
 // Final normalize each chunk by the row-sum, then fold the two [16x32] tiles
 // into one [16x64] tile via tt.join -> tt.trans -> tt.reshape, and store.
-// CHECK: %[[norm0:.+]] = arith.divf %[[OUT]]#0, %{{.*}}
-// CHECK: %[[norm1:.+]] = arith.divf %[[OUT]]#1, %{{.*}}
+// CHECK: %[[rawNorm0:.+]] = arith.divf %[[OUT]]#0, %{{.*}}
+// CHECK: %[[norm0:.+]] = arith.select %{{.*}}, %[[zero32]], %[[rawNorm0]]
+// CHECK: %[[rawNorm1:.+]] = arith.divf %[[OUT]]#1, %{{.*}}
+// CHECK: %[[norm1:.+]] = arith.select %{{.*}}, %[[zero32]], %[[rawNorm1]]
 // CHECK: %[[joined:.+]] = tt.join %[[norm0]], %[[norm1]] : tensor<16x32xf32> -> tensor<16x32x2xf32>
 // CHECK: %[[transed:.+]] = tt.trans %[[joined]] {order = array<i32: 0, 2, 1>} : tensor<16x32x2xf32> -> tensor<16x2x32xf32>
 // CHECK: %[[reshaped:.+]] = tt.reshape %[[transed]] : tensor<16x2x32xf32> -> tensor<16x64xf32>

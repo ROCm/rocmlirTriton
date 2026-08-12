@@ -41,13 +41,21 @@
 // CHECK: %[[maxExp:.+]] = tt.expand_dims %[[newMax]]
 // CHECK: %[[maxBcast:.+]] = tt.broadcast %[[maxExp]]
 // CHECK: %[[sub:.+]] = arith.subf %[[scaled]], %[[maxBcast]]
-// CHECK: %[[P:.+]] = math.exp2 %[[sub]]
+// CHECK: %[[rawP:.+]] = math.exp2 %[[sub]]
+// CHECK: %[[scoreNegInf:.+]] = arith.cmpf oeq, %[[scaled]], %{{.*}}
+// CHECK: %[[maxNegInf:.+]] = arith.cmpf oeq, %[[maxBcast]], %{{.*}}
+// CHECK: %[[bothNegInf:.+]] = arith.andi %[[scoreNegInf]], %[[maxNegInf]]
+// CHECK: %[[P:.+]] = arith.select %[[bothNegInf]], %[[zero32]], %[[rawP]]
 // CHECK: %[[tileSum:.+]] = rock.blockwise_reduce sum %[[P]] {axis = 1 : index}
 
 // Row-sum rescale: l = exp2(m_{j-1} - m_j) * l_{j-1} + rowsum(P).
 // CHECK: %[[newMax2:.+]] = arith.maximumf %[[rmax]], %[[tileMax]]
 // CHECK: %[[maxDiff:.+]] = arith.subf %[[rmax]], %[[newMax2]]
-// CHECK: %[[corr:.+]] = math.exp2 %[[maxDiff]]
+// CHECK: %[[oldMaxNegInf:.+]] = arith.cmpf oeq, %[[rmax]], %[[negInf]]
+// CHECK: %[[newMaxNegInf:.+]] = arith.cmpf oeq, %[[newMax2]], %[[negInf]]
+// CHECK: %[[bothMaxNegInf:.+]] = arith.andi %[[oldMaxNegInf]], %[[newMaxNegInf]]
+// CHECK: %[[safeMaxDiff:.+]] = arith.select %[[bothMaxNegInf]], %[[zeroRow]], %[[maxDiff]]
+// CHECK: %[[corr:.+]] = math.exp2 %[[safeMaxDiff]]
 // CHECK: %[[sumScaled:.+]] = arith.mulf %[[corr]], %[[rsum]]
 // CHECK: %[[newSum:.+]] = arith.addf %[[sumScaled]], %[[tileSum]]
 
@@ -68,9 +76,11 @@
 // CHECK: %[[sumExp:.+]] = tt.expand_dims %[[OUT]]#2
 // CHECK: %[[sumBcast:.+]] = tt.broadcast %[[sumExp]]
 // CHECK: %[[norm:.+]] = arith.divf %[[OUT]]#0, %[[sumBcast]]
+// CHECK: %[[zeroSum:.+]] = arith.cmpf oeq, %[[sumBcast]], %[[zero64]]
+// CHECK: %[[safeNorm:.+]] = arith.select %[[zeroSum]], %[[zero64]], %[[norm]]
 // CHECK: arith.divui %{{.*}}, %[[c24]] : i32
 // CHECK: arith.remui %{{.*}}, %[[c24]] : i32
-// CHECK: rock.store_marker %[[norm]] views [#{{.*}}]
+// CHECK: rock.store_marker %[[safeNorm]] views [#{{.*}}]
 func.func @gridwise_attn_simple(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,

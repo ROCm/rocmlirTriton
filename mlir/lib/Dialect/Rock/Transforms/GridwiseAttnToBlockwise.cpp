@@ -194,6 +194,28 @@ struct GridwiseAttentionRewritePattern
     return level.front();
   }
 
+  // If both `a` and `b` equal -inf, then `a - b` is NaN and any value derived
+  // from that subtraction (for example, `exp2(a - b)`) is poisoned. Return
+  // zero in that case and `original` otherwise.
+  Value selectZeroIfBothNegInf(PatternRewriter &rewriter, Location loc, Value a,
+                               Value b, Value original) const {
+    assert(a.getType() == b.getType() && b.getType() == original.getType());
+    auto shapedType = cast<ShapedType>(a.getType());
+    Type elementType = shapedType.getElementType();
+    Value negInf = createConstantFloatOp(
+        rewriter, loc, shapedType, elementType,
+        -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    Value zero = createConstantFloatOp(rewriter, loc, shapedType, elementType,
+                                       0.0, APFloat::opOK);
+    Value aIsNegInf = arith::CmpFOp::create(
+        rewriter, loc, arith::CmpFPredicate::OEQ, a, negInf);
+    Value bIsNegInf = arith::CmpFOp::create(
+        rewriter, loc, arith::CmpFPredicate::OEQ, b, negInf);
+    Value bothNegInf =
+        arith::AndIOp::create(rewriter, loc, aIsNegInf, bIsNegInf);
+    return arith::SelectOp::create(rewriter, loc, bothNegInf, zero, original);
+  }
+
   // This function computes exp(gemm0 - rowmax_j)
   Value expSubstractMaxFromGemm0(PatternRewriter &rewriter, Location loc,
                                 Value softmaxInput,
@@ -211,7 +233,8 @@ struct GridwiseAttentionRewritePattern
     Value softmaxExp =
         math::Exp2Op::create(rewriter, loc, gemm0SubMaxRow);
 
-    return softmaxExp;
+    return selectZeroIfBothNegInf(rewriter, loc, softmaxInput, maxRowBroadcast,
+                                  softmaxExp);
   }
 
   // This updates the row sum according to the following
@@ -228,7 +251,11 @@ struct GridwiseAttentionRewritePattern
 
     Value maxRowDiff =
         arith::SubFOp::create(rewriter, loc, maxRow, maxRowNew);
-        
+    // A fully masked row keeps both maxima at -inf. Use exp2(0) = 1 for the
+    // previous-sum scale so the zero accumulated sum remains zero.
+    maxRowDiff =
+        selectZeroIfBothNegInf(rewriter, loc, maxRow, maxRowNew, maxRowDiff);
+
     Value maxRowDiffExp =
         math::Exp2Op::create(rewriter, loc, maxRowDiff);
 
@@ -286,7 +313,15 @@ struct GridwiseAttentionRewritePattern
     // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
     sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
 
-    return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
+    Value scaledOutput =
+        arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
+    Type outputElementType = accType.getElementType();
+    Value zero = createConstantFloatOp(rewriter, loc, accType,
+                                       outputElementType, 0.0, APFloat::opOK);
+    Value isZeroSum = arith::CmpFOp::create(
+        rewriter, loc, arith::CmpFPredicate::OEQ, sumRowBroadcast, zero);
+    return arith::SelectOp::create(rewriter, loc, isZeroSum, zero,
+                                   scaledOutput);
   }
 
   // This function does the corrections to row-based tiled reductions
