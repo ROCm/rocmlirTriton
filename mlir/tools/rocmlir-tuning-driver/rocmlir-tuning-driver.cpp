@@ -126,18 +126,9 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
   if (gridX == 0)
     return success();
   if (num_ctas > 1) {
-    // The launch config counts workgroups in a uint32, so compute the cluster
-    // expansion in 64 bits and reject an overflow instead of wrapping it into
-    // the config (ResolveKernelLaunchParams already rejects such launches at
-    // compile time). This also keeps the diagnostic below reporting the grid
-    // HIP was actually given.
-    uint64_t gridBlocks = static_cast<uint64_t>(gridX) * num_ctas;
-    if (gridBlocks > std::numeric_limits<uint32_t>::max()) {
-      llvm::errs() << "Launch grid of " << gridBlocks
-                   << " workgroups (grid=" << gridX << ", num-ctas=" << num_ctas
-                   << ") does not fit in the uint32 dispatch grid\n";
-      return failure();
-    }
+    // ResolveKernelLaunchParams has already verified that the expanded launch
+    // dimensions fit in the dispatch packet.
+    uint32_t gridBlocks = gridX * num_ctas;
 
     // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
     // it loads HIP symbols via dlsym. We link directly, so no check needed.
@@ -160,7 +151,7 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     attributes[1].val.cooperative = 0;
 
     HIP_LAUNCH_CONFIG config = {
-        static_cast<unsigned int>(gridBlocks),
+        gridBlocks,
         1,
         1, // Grid size
         blockSize,

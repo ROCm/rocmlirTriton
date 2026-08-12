@@ -85,12 +85,53 @@ module attributes {
 
 // -----
 
+// Verifies that the cluster size is included in the dispatch-packet limit
+// check. The grid and block product is 2^31 work-items, but multiplying by the
+// cluster size produces 2^32 work-items.
+// NA: module attributes {rock.grid_size.oversized_clustered_grid = 33554432 : i32, rock.not_applicable
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 1 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 2 : i32,
+    "rock.grid_size.oversized_clustered_grid" = 33554432 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{launch dimensions (grid size 33554432, block size 64, cluster size 2) exceed the AMDGPU limit of 4294967295 work-items in the X dimension}}
+  llvm.func @oversized_clustered_grid(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that a launch whose block size exceeds the hardware workgroup limit
+// is rejected and marked not applicable.
+// NA: module attributes {rock.grid_size.oversized_workgroup = 1 : i32, rock.not_applicable
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 17 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.oversized_workgroup" = 1 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{block size 1088 exceeds the AMDGPU workgroup size limit of 1024}}
+  llvm.func @oversized_workgroup(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
 // Verifies that a module carrying grid metadata but missing the Triton launch
-// metadata that the grid check needs (here ttg.num-ctas) reports which
-// attributes are expected instead of failing the pass without a diagnostic.
+// metadata that the grid check needs (here ttg.num-ctas) reports that kernel
+// metadata collection failed instead of failing the pass without a diagnostic.
 // The module is not marked not applicable: missing metadata is a pipeline bug,
 // not a configuration a tuning run should silently skip.
-// expected-error @+1 {{could not collect kernel launch metadata: expected ttg.num-warps (or ttg.total-num-warps), ttg.threads-per-warp and ttg.num-ctas on the module}}
+// expected-error @+1 {{could not validate kernel launch dimensions because kernel metadata collection failed}}
 module attributes {
     "ttg.shared" = 0 : i32,
     "ttg.num-warps" = 2 : i32,
@@ -106,8 +147,9 @@ module attributes {
 
 // -----
 
-// Verifies that collectKernelInfo's missing-grid diagnostic is not followed by
-// a misleading diagnostic about Triton launch metadata.
+// Verifies that collectKernelInfo's missing-grid diagnostic is accompanied by
+// context about why kernel metadata was being collected.
+// expected-error @+1 {{could not validate kernel launch dimensions because kernel metadata collection failed}}
 module attributes {
     "ttg.shared" = 0 : i32,
     "ttg.num-warps" = 2 : i32,
@@ -129,8 +171,9 @@ module attributes {
 
 // -----
 
-// Verifies that collectKernelInfo's malformed-prefill diagnostic is not
-// followed by a misleading diagnostic about Triton launch metadata.
+// Verifies that collectKernelInfo's malformed-prefill diagnostic is
+// accompanied by context about why kernel metadata was being collected.
+// expected-error @+1 {{could not validate kernel launch dimensions because kernel metadata collection failed}}
 module attributes {
     "ttg.shared" = 0 : i32,
     "ttg.num-warps" = 2 : i32,

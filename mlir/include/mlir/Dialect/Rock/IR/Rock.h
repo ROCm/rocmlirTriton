@@ -41,6 +41,9 @@ class PatternRewriter;
 #include "mlir/Dialect/Rock/IR/GemmGemmSize.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 
+#include <cstdint>
+#include <limits>
+
 namespace mlir {
 namespace OpTrait {
 namespace rock {
@@ -66,6 +69,10 @@ ArrayAttr getIndexArrayAttr(Builder &b, ArrayRef<int64_t> values);
 // The largest workgroup size ("block size") that LLVM and the runtime
 // support.
 constexpr int64_t maxHardwareWorkgroupSize = 1024;
+
+// The largest grid X dimension that an HSA dispatch packet can represent.
+constexpr int64_t maxHardwareGridSize =
+    std::numeric_limits<uint32_t>::max();
 
 } // end namespace rock
 } // end namespace mlir

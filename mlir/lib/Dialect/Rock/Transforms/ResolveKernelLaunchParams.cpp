@@ -36,7 +36,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
-#include <limits>
+#include <cassert>
 
 namespace mlir {
 namespace rock {
@@ -63,31 +63,32 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
   if (!hasGridMetadata)
     return success();
 
-  bool hasNumWarps =
-      moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps") ||
-      moduleOp->getAttrOfType<IntegerAttr>("ttg.num-warps");
-  bool hasThreadsPerWarp =
-      moduleOp->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-  bool hasNumCTAs = moduleOp->getAttrOfType<IntegerAttr>("ttg.num-ctas");
-  if (!hasNumWarps || !hasThreadsPerWarp || !hasNumCTAs)
-    return moduleOp.emitError(
-        "could not collect kernel launch metadata: expected ttg.num-warps (or "
-        "ttg.total-num-warps), ttg.threads-per-warp and ttg.num-ctas on the "
-        "module");
-
   SmallVector<rock::KernelInfo> kernels;
   if (failed(rock::collectKernelInfo(moduleOp, kernels)))
-    return failure();
+    return moduleOp.emitError(
+        "could not validate kernel launch dimensions because kernel metadata "
+        "collection failed");
 
   // The dispatch packet counts work-items, not workgroups, so it is the whole
   // grid * block * cluster product that has to fit in a uint32.
-  constexpr int64_t maxGridWorkItems = std::numeric_limits<uint32_t>::max();
   for (rock::KernelInfo &kernel : kernels) {
+    assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
+    assert(kernel.blockSize > 0 && "expected a positive kernel block size");
+    assert(kernel.clusterSize > 0 &&
+           "expected a positive kernel cluster size");
+    if (kernel.blockSize > rock::maxHardwareWorkgroupSize) {
+      rock::markAsNotApplicable(moduleOp);
+      return kernel.llvmFunc.emitOpError()
+             << "block size " << kernel.blockSize
+             << " exceeds the AMDGPU workgroup size limit of "
+             << rock::maxHardwareWorkgroupSize;
+    }
+
     std::optional<int64_t> workItems =
         llvm::checkedMul(kernel.gridSize, kernel.blockSize);
     if (workItems)
       workItems = llvm::checkedMul(*workItems, kernel.clusterSize);
-    if (workItems && *workItems <= maxGridWorkItems)
+    if (workItems && *workItems <= rock::maxHardwareGridSize)
       continue;
 
     rock::markAsNotApplicable(moduleOp);
@@ -95,7 +96,7 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
            << "launch dimensions (grid size " << kernel.gridSize
            << ", block size " << kernel.blockSize << ", cluster size "
            << kernel.clusterSize << ") exceed the AMDGPU limit of "
-           << maxGridWorkItems << " work-items in the X dimension";
+           << rock::maxHardwareGridSize << " work-items in the X dimension";
   }
 
   return success();
