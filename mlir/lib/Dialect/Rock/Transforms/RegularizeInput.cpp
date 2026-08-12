@@ -163,6 +163,9 @@ static FailureOr<Value> distributeLoadMarker(
       valueMapping.insert({cacheKey, newConst.getResult()});
       return newConst.getResult();
     }
+    defOp->emitOpError(
+        "non-splat constant in fusion chain must be a ranked tensor");
+    return failure();
   }
 
   return failure();
