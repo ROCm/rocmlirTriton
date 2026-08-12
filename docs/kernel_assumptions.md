@@ -100,9 +100,11 @@ These constants are compiler-owned storage, not kernel arguments, so they do
 not change the kernel ABI or impose allocation requirements on the caller.
 Splat constants continue to be materialized directly in registers. Sub-byte
 non-splat constants that feed memory-loading paths are rejected because packed
-compiler-owned storage is not yet supported; register-only constants such as
-`i1` masks remain supported. Zero-sized constants cannot provide addressable
-storage and are also rejected when used as memory sources.
+compiler-owned storage is not yet supported. Register-only 4-bit non-splat
+constants are also rejected because the legalization pass cannot pack them;
+register-only constants that need no packing, such as `i1` masks, remain
+supported. Zero-sized constants cannot provide addressable storage and are also
+rejected when used as memory sources.
 
 ### 1.11 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
 

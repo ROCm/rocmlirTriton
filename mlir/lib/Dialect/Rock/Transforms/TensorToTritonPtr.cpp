@@ -68,6 +68,11 @@ static bool isTensorOfPointers(Type type) {
 
 using ConstantGlobalMap = DenseMap<Attribute, LLVM::GlobalOp>;
 
+struct ConstantGlobalState {
+  ConstantGlobalMap globals;
+  unsigned nextSymbolSuffix = 0;
+};
+
 static bool isReusableConstantGlobal(LLVM::GlobalOp global) {
   return global.getConstant() &&
          global.getLinkage() == LLVM::Linkage::Internal &&
@@ -107,12 +112,12 @@ static DenseElementsAttr normalizeGlobalInitializer(LLVM::GlobalOp global) {
 }
 
 /// Index reusable globals once so each constant lookup is constant-time.
-static ConstantGlobalMap indexConstantGlobals(ModuleOp module) {
-  ConstantGlobalMap globals;
+static ConstantGlobalState indexConstantGlobals(ModuleOp module) {
+  ConstantGlobalState state;
   for (LLVM::GlobalOp global : module.getOps<LLVM::GlobalOp>())
     if (DenseElementsAttr initializer = normalizeGlobalInitializer(global))
-      globals.try_emplace(initializer, global);
-  return globals;
+      state.globals.try_emplace(initializer, global);
+  return state;
 }
 
 /// Return an internal GPU global containing `constant`'s flattened elements.
@@ -120,7 +125,7 @@ static ConstantGlobalMap indexConstantGlobals(ModuleOp module) {
 static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
                                                 ModuleOp module,
                                                 arith::ConstantOp constant,
-                                                ConstantGlobalMap &globals) {
+                                                ConstantGlobalState &state) {
   auto values = cast<DenseElementsAttr>(constant.getValue());
   auto tensorType = cast<RankedTensorType>(constant.getType());
   int64_t numElements = tensorType.getNumElements();
@@ -130,16 +135,15 @@ static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
       RankedTensorType::get({numElements}, tensorType.getElementType());
   DenseElementsAttr initializer = values.reshape(flatType);
 
-  if (auto it = globals.find(initializer); it != globals.end())
+  if (auto it = state.globals.find(initializer); it != state.globals.end())
     return it->second;
 
-  unsigned suffix = 0;
   SmallString<32> name = SymbolTable::generateSymbolName<32>(
       "__rock_constant",
       [&](StringRef candidate) {
         return module.lookupSymbol(candidate) != nullptr;
       },
-      suffix);
+      state.nextSymbolSuffix);
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(module.getBody());
@@ -148,7 +152,7 @@ static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
       /*isConstant=*/true, LLVM::Linkage::Internal, name, initializer,
       /*alignment=*/16,
       /*addrSpace=*/1);
-  globals.try_emplace(initializer, global);
+  state.globals.try_emplace(initializer, global);
   return global;
 }
 
@@ -195,14 +199,13 @@ struct RockTensorToTritonPtrPass
 private:
   /// Process a single kernel function (convert to tt.func)
   LogicalResult processFunction(func::FuncOp funcOp,
-                                ConstantGlobalMap &constantGlobals);
+                                ConstantGlobalState &constantGlobals);
 };
 
 } // end anonymous namespace
 
-LogicalResult
-RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp,
-                                           ConstantGlobalMap &constantGlobals) {
+LogicalResult RockTensorToTritonPtrPass::processFunction(
+    func::FuncOp funcOp, ConstantGlobalState &constantGlobals) {
   MLIRContext *ctx = &getContext();
   OpBuilder builder(ctx);
   IRRewriter rewriter(ctx);
@@ -425,7 +428,7 @@ void RockTensorToTritonPtrPass::runOnOperation() {
 
   // Process kernel functions (convert to tt.func). Index existing globals only
   // once; newly created globals are added to the same lookup.
-  ConstantGlobalMap constantGlobals = indexConstantGlobals(moduleOp);
+  ConstantGlobalState constantGlobals = indexConstantGlobals(moduleOp);
   for (func::FuncOp funcOp : funcsToProcess) {
     if (failed(processFunction(funcOp, constantGlobals)))
       return signalPassFailure();

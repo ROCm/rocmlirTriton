@@ -38,6 +38,23 @@ struct TestEnv {
   }
 };
 
+TEST(BuildRowMajorFlatteningTransformMapTest, RankZero) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(b, loc, {});
+
+  EXPECT_TRUE(transform.getUpperBounds().empty());
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(0, 0, b.getAffineConstantExpr(0)));
+
+  TransformMapAttr inverse = invertTransformMap(b, transform, loc);
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_TRUE(inverse.getLowerBounds().empty());
+}
+
 TEST(BuildRowMajorFlatteningTransformMapTest, RankOne) {
   TestEnv env;
   TransformMapAttr transform = buildRowMajorFlatteningTransformMap(

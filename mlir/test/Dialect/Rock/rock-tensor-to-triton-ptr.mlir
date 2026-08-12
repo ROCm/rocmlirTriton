@@ -651,6 +651,29 @@ func.func @test_reuse_existing_global() attributes {rock.arch = "##TOKEN_ARCH##"
 
 // -----
 
+// The module-level lookup is shared across kernel conversion, so identical
+// constants in different kernels reuse one global.
+// CHECK: llvm.mlir.global internal constant @[[$SHARED_GLOBAL:__rock_constant_[0-9]+]](dense<[1, 2]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
+// CHECK-LABEL: tt.func @test_cross_kernel_dedup_first()
+// CHECK: llvm.mlir.addressof @[[$SHARED_GLOBAL]] : !llvm.ptr<1>
+// CHECK-LABEL: tt.func @test_cross_kernel_dedup_second()
+// CHECK: llvm.mlir.addressof @[[$SHARED_GLOBAL]] : !llvm.ptr<1>
+func.func @test_cross_kernel_dedup_first() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}
+func.func @test_cross_kernel_dedup_second() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}
+
+// -----
+
 // Different values require different globals.
 // CHECK-DAG: llvm.mlir.global internal constant @[[$FIRST_GLOBAL:__rock_constant_[0-9]+]](dense<[1, 2]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
 // CHECK-DAG: llvm.mlir.global internal constant @[[$SECOND_GLOBAL:__rock_constant_[0-9]+]](dense<[3, 4]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>

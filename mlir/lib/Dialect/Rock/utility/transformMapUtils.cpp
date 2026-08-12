@@ -1426,8 +1426,14 @@ TransformMapAttr
 mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                                 ArrayRef<StringRef> dimNames,
                                                 ArrayRef<int64_t> shape) {
-  assert(!shape.empty() && dimNames.size() == shape.size() &&
+  assert(dimNames.size() == shape.size() &&
          "expected one name for each shaped dimension");
+  if (shape.empty()) {
+    BottomUpTMBuilder flattener(b, {"raw"}, 1, loc);
+    flattener.dropDimAtIndex("raw", 0);
+    return flattener.get();
+  }
+
   int64_t rank = shape.size();
   SmallVector<uint32_t> upperDims(rank);
   std::iota(upperDims.begin(), upperDims.end(), 0);

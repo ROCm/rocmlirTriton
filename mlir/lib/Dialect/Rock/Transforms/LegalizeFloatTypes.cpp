@@ -1642,13 +1642,22 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
           return WalkResult::advance();
         Type elementType =
             cast<RankedTensorType>(constant.getType()).getElementType();
-        if ((isa<IntegerType, FloatType>(elementType)) &&
-            elementType.getIntOrFloatBitWidth() < 8 &&
-            requiresCompilerOwnedStorage(constant.getResult())) {
-          constant.emitOpError(
-              "sub-byte dense non-splat constants are not supported as "
-              "compiler-owned storage");
-          return WalkResult::interrupt();
+        if (isa<IntegerType, FloatType>(elementType) &&
+            elementType.getIntOrFloatBitWidth() < 8) {
+          bool requiresStorage =
+              requiresCompilerOwnedStorage(constant.getResult());
+          if (requiresStorage) {
+            constant.emitOpError(
+                "sub-byte dense non-splat constants are not supported as "
+                "compiler-owned storage");
+            return WalkResult::interrupt();
+          }
+          if (elementType.getIntOrFloatBitWidth() == 4) {
+            constant.emitOpError(
+                "register-only 4-bit dense non-splat constants are not "
+                "supported");
+            return WalkResult::interrupt();
+          }
         }
         return WalkResult::advance();
       });

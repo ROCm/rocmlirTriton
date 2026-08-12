@@ -446,3 +446,22 @@ func.func @test_sub_byte_dense_constant_through_fusion_fails() attributes {rock.
   %loaded = rock.blockwise_load %sum {cacheModifier = #rock<CacheModifier none>} : tensor<2xi4> -> tensor<2xi4>
   return
 }
+
+// -----
+
+// The 4-bit packing phase only supports values rooted in kernel load paths.
+// Diagnose register-only constants before it separates their result type from
+// the elements attribute.
+func.func @test_register_only_i4_dense_constant_fails() -> tensor<2xi4> attributes {rock.kernel} {
+  // expected-error @+1 {{register-only 4-bit dense non-splat constants are not supported}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  return %values : tensor<2xi4>
+}
+
+// -----
+
+func.func @test_register_only_f4_dense_constant_fails() -> tensor<2xf4E2M1FN> attributes {rock.kernel} {
+  // expected-error @+1 {{register-only 4-bit dense non-splat constants are not supported}}
+  %values = arith.constant dense<[2.0, 4.0]> : tensor<2xf4E2M1FN>
+  return %values : tensor<2xf4E2M1FN>
+}
