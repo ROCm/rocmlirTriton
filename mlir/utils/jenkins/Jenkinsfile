@@ -678,7 +678,7 @@ int setLitWorkerCount() {
 void build_fixedE2ETests() {
     // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-mlir-build-only check-rocmlir-build-only", """
+    buildProject("${params.nightly ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
@@ -1243,11 +1243,24 @@ pipeline {
                                                         }
                                                     }
 
+                                                    // The upstream MLIR suite is host-only and finishes in seconds, so
+                                                    // it runs before the GPU suite to report regressions early.
+                                                    if (params.nightly) {
+                                                        stage('Upstream MLIR: check-mlir') {
+                                                            int limit_lit_workers = setLitWorkerCount()
+                                                            timeout(time: 15, activity: true, unit: 'MINUTES') {
+                                                                dir('build') {
+                                                                    sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-mlir"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
                                                     stage('Shared Library: fixed E2E') {
                                                         int limit_lit_workers = setLitWorkerCount()
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             dir('build') {
-                                                                sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-mlir check-rocmlir"
+                                                                sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                             }
                                                         }
                                                     }

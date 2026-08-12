@@ -560,13 +560,15 @@ matrix. Because the table is compiled into the library, rebuild afterward
 ## Step 12: Run Tests
 
 ```bash
-cd build && ninja check-mlir check-rocmlir
+cd build && ninja check-mlir && ninja check-rocmlir
 ```
 
-`check-mlir` runs the upstream MLIR suite from `external/llvm-project`. It is the
-main signal that a fresh upstream import plus our re-applied `llvm-patches/` did
-not regress MLIR itself, so run it before `check-rocmlir` -- it is host-only and
-finishes in seconds.
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
+the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
+did not regress MLIR itself. Run it first: it is host-only and finishes in
+seconds. The nightly pipeline runs it too, so a bump that lands on `develop` is
+covered even if this step is skipped.
+
 ## Checklist Summary
 
 Use this checklist to track progress:
@@ -598,7 +600,7 @@ Use this checklist to track progress:
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
-- [ ] Run tests with `cd build && ninja check-mlir check-rocmlir`
+- [ ] Run tests with `cd build && ninja check-mlir && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 
