@@ -242,9 +242,9 @@ void mcpuVerify(T *gpuResults, T *validationResults, long long dataSize,
       // f32 subnormals as always being correct
       hist_relDiff[0]++;
     } else {
-      // AIROCMLIR-911: Replace this hard-coded fp16 clamp with a
-      // dtype-aware clamp (or remove it once the comparator handles inf
-      // natively). Currently it masks real mismatches for non-fp16 types.
+      // TODO(AIROCMLIR-911): Make this hard-coded fp16 clamp dtype-aware, or
+      // remove it once the comparator handles inf natively. It currently masks
+      // real mismatches for non-fp16 types.
       constexpr float fp16MaxVal = 65504;
       if (std::isinf(valNum))
         valNum = (valNum > 0 ? fp16MaxVal : -fp16MaxVal);
