@@ -1,6 +1,3 @@
-// Copyright Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 #include "../common/benchmarkUtils.h"
 #include "../common/hip_f8_impl.h"
 

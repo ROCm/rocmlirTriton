@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """Sweep random (problem-shape, perf-config) combinations through the rocMLIR
 pipeline (rocmlir-gen | rocmlir-driver -c | mlir-runner) and classify each as
 PASS / NOT_APPLICABLE / FAIL. Run from the build directory.

@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # Smoke test: ``tuningRunner.py --help`` parses cleanly and advertises the
 # op + tuning-space lists. Lives under ``runtime/`` because
 # tuningRunner.main() calls ``get_arch()`` before argparse, so even

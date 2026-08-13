@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # Smoke test: ``parameterSweeps.py --help`` advertises the right kinds and the
 # common flags shared with attentionSweeps. Catches regressions in the
 # positional choices and ``add_common_args`` flag set without needing a GPU.

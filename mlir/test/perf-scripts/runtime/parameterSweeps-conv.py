@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # End-to-end smoke test: drive one random conv config through
 # rocmlir-gen | rocmlir-driver -c | rocm-run. ``--test-timeout-sec 20`` caps
 # each sub-stage so the test fits in lit's per-test budget. ``> %t || true``

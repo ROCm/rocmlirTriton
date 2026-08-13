@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # Argument-validation smoke tests for attentionSweeps.py. attentionSweeps
 # reuses ``add_common_args`` from parameterSweeps, so spotchecking one
 # common flag here is enough to confirm it's still wired through; the

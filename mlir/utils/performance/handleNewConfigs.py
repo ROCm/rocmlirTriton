@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """ handleNewConfigs.py
 
 This script processes a list of new MLIR problem configurations and appends unique entries

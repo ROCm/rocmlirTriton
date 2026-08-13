@@ -1,6 +1,3 @@
-// Copyright Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 #ifndef MLIR_DIALECT_ROCK_UTILITY_COMPILEUTILS_H
 #define MLIR_DIALECT_ROCK_UTILITY_COMPILEUTILS_H
 

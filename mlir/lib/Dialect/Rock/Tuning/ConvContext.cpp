@@ -1,6 +1,3 @@
-// Copyright Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #include "mlir/Dialect/Rock/Generator/ConvGenerator.h"

@@ -1,8 +1,6 @@
 //===- ConvToGemm.cpp - MLIR Rock ops lowering passes ------------===//
 //
-// Copyright Advanced Micro Devices, Inc.
 // Copyright 2020 The MLIR Authors.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

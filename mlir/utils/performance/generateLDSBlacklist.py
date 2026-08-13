@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """Generate LdsBlacklistPerfconfigs.inc: GEMM tile shapes that overflow LDS.
 
 For each (arch, dtype), this enumerates the *exhaustive* tuning space of a large

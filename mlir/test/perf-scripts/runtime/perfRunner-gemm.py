@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # End-to-end smoke test for perfRunner.py: run a tiny f32 GEMM in MLIR-only
 # mode (``-b``) so we don't need MIOpen / hipBLASLt drivers. Validates the
 # perfRunner pipeline (rocmlir-gen -ph + rocmlir-driver -c + rocprof

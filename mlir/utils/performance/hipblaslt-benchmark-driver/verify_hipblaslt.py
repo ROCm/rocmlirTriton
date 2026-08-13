@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """
 Verification helper for hipblaslt-benchmark-driver.
 

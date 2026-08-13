@@ -1,6 +1,3 @@
-// Copyright Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 #ifndef ROCK_TOSA_CUSTOM_OPS_H
 #define ROCK_TOSA_CUSTOM_OPS_H
 

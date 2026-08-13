@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """Automated performance tuning for rocMLIR generated kernels.
 
 This script tunes MLIR kernels by running them with different performance configurations and selecting the best one based on execution time.

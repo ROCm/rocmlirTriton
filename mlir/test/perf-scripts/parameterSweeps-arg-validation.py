@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # Argument-validation smoke tests for parameterSweeps.py. argparse rejects
 # these inputs before the script touches ROCm, so the tests run without a
 # GPU and stay snappy. Keeps ``_positive_int`` and the positional choices

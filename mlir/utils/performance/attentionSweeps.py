@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 """Sweep random (problem-shape, perf-config) combinations for the
 ``GemmGemmParamsAttr`` perf-config family (``attn:``) — i.e. attention
 and gemm+elementwise+gemm — through the rocMLIR pipeline and classify each

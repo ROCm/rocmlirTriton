@@ -1,6 +1,3 @@
-# Copyright Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
 # Smoke test: ``attentionSweeps.py --help`` advertises the right kinds. The
 # spelling here matches ``rocmlir-gen --operation`` (``attention``,
 # ``gemm_gemm``); a typo on either side would silently break the weekly sweep.
