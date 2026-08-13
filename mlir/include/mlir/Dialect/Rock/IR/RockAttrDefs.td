@@ -289,6 +289,165 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
     let genVerifyDecl = 1;
 }
 
+//===-----------------------------------------------------===//
+// Named perfConfig schema
+//===-----------------------------------------------------===//
+
+// One field of a named `prefix:key=value,...` perfConfig: the key it is
+// serialized under, and the value `get()` falls back to when a config string
+// omits that key. The key must match the attribute parameter it describes;
+// `Rock_PerfConfigSchema` asserts that at build time.
+class RockPerfConfigField<string k, int d> {
+  string key = k;
+  int defaultValue = d;
+}
+
+// The tri-state sentinel every knob field defaults to. This is a copy of
+// `rock::kKnobDefault` (Rock/utility/KnobUtils.h) because TableGen cannot read
+// a C++ constant; `Rock_PerfConfigSchema` emits a `static_assert` that fails
+// the build if the two ever disagree.
+defvar kRockKnobDefault = -1;
+
+// An attribute parameter for one tri-state Triton knob: `kKnobDefault`
+// (arch/heuristic default), `0` (force off), or `1` (force on). ODS takes the
+// default as C++ source text, hence the cast.
+def RockKnobParameter
+    : DefaultValuedParameter<"int64_t", !cast<string>(kRockKnobDefault)>;
+
+// The perfConfig fields shared by every Rock tuning-param attribute, in
+// canonical serialization order. Each attribute prepends its own block-tile
+// fields, which are all that differ between the gemm and gemm+gemm schemas.
+defvar kRockCommonPerfConfigFields =
+    [RockPerfConfigField<"kPerBlock", 16>, RockPerfConfigField<"kpack", 1>,
+     RockPerfConfigField<"numCTAs", 1>, RockPerfConfigField<"numWaves", 4>,
+     RockPerfConfigField<"matrixInstrNonkdim", 0>,
+     RockPerfConfigField<"splitKFactor", 1>,
+     RockPerfConfigField<"numStages", 1>, RockPerfConfigField<"wavesPerEU", 0>,
+     RockPerfConfigField<"gridGroupSize", 0>,
+     RockPerfConfigField<"useAsyncCopy", kRockKnobDefault>,
+     RockPerfConfigField<"useBlockPingpong", kRockKnobDefault>,
+     RockPerfConfigField<"useInThreadTranspose", kRockKnobDefault>,
+     RockPerfConfigField<"useBufferOps", kRockKnobDefault>,
+     RockPerfConfigField<"useBufferAtomics", kRockKnobDefault>,
+     RockPerfConfigField<"useReductionLayout", kRockKnobDefault>,
+     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>];
+
+// Derives the whole named-perfConfig surface of a tuning-param attribute from a
+// single field list: the `getPerfConfigStr()` emitter, the key/default schema
+// that `GemmParamsAttr::get(StringAttr)` in RockDialect.cpp parses against, and
+// a positional builder pairing with that schema. Adding a field to `params` and
+// giving it a default here is therefore enough to have it serialized, accepted
+// on parse, and forwarded to `get()` -- none of which can silently drift from
+// the others.
+//
+// `params` must be the same dag the attribute passes to `let parameters`, since
+// the emitter calls the accessors ODS derives from it. The assert catches a
+// parameter that was added without a matching schema entry (or vice versa),
+// which would otherwise silently drop the field from the serialized form.
+class Rock_PerfConfigSchema<string prefix, dag params,
+                            list<RockPerfConfigField> tileFields> {
+  list<RockPerfConfigField> fields =
+      !listconcat(tileFields, kRockCommonPerfConfigFields);
+
+  list<string> keys = !foreach(f, fields, f.key);
+  list<string> paramNames =
+      !foreach(i, !range(0, !size(params)), !getdagname(params, i));
+
+  assert !eq(!interleave(paramNames, ","), !interleave(keys, ",")),
+      "perfConfig schema must list exactly this attribute's parameters, in "
+      "order: schema has [" # !interleave(keys, ", ") # "], parameters are ["
+#!interleave(paramNames, ", ")#"]";
+
+  // `mPerBlock` -> `"mPerBlock=" + Twine(getMPerBlock())`, chained onto the
+  // `prefix:` header with `,` separators.
+  string emitterExpr =
+      "Twine(\"" # prefix # ":\")\n        + "
+#!interleave(!foreach(f, fields,
+                             "\"" # f.key # "=\" + Twine(get"
+#!toupper(!substr(f.key, 0, 1))
+#!substr(f.key, 1)#"())"),
+                    "\n        + \",\" + ");
+
+  string keysInit =
+      "{"#!interleave(!foreach(f, fields, "\""#f.key#"\""), ", ")#"}";
+  string defaultsInit = "{"#!interleave(
+      !foreach(f, fields, !cast<string>(f.defaultValue)), ", ")#"}";
+  string forwardArgs = !interleave(
+      !foreach(i, !range(0, !size(fields)), "v["#!cast<string>(i)#"]"), ", ");
+
+  code perfConfigDecls = [{
+    // `}]#prefix#[{:key=value,...` is the single canonical output form.
+    // Every field is emitted explicitly (defaults can change over time, so we
+    // never rely on them being reconstructed on parse). Legacy positional
+    // `}]#prefix#[{:vN:` strings remain accepted on input by `get()`.
+    //
+    // This block is generated from the field list in RockAttrDefs.td; see
+    // `Rock_PerfConfigSchema`.
+
+    // `kRockKnobDefault` in RockAttrDefs.td hand-copies the value of
+    // `rock::kKnobDefault`, which TableGen cannot read. Emitting that copy as
+    // a literal here is what lets C++ compare it against the original.
+    static_assert(}]#!cast<string>(kRockKnobDefault)#[{ ==
+                      ::mlir::rock::kKnobDefault,
+                  "kRockKnobDefault in RockAttrDefs.td is out of sync with "
+                  "kKnobDefault in Rock/utility/KnobUtils.h");
+
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        (}]#emitterExpr#[{)
+        .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, ROCMLIR_TUNING_PARAM_STRING_BUFSZ> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
+
+    // The header shared by the named and the legacy positional (`prefix:vN:`)
+    // forms.
+    static StringRef getPerfConfigPrefix() { return "}]#prefix#[{"; }
+
+    // The keys of the named form in canonical order, and the value each field
+    // takes when a config string omits it. Parallel arrays generated from the
+    // one field list, so they cannot disagree in length or order.
+    static ArrayRef<StringRef> getPerfConfigKeys() {
+        static constexpr StringRef keys[] = }]#keysInit#[{;
+        return keys;
+    }
+
+    static ArrayRef<int64_t> getPerfConfigDefaults() {
+        static constexpr int64_t defaults[] = }]#defaultsInit#[{;
+        return defaults;
+    }
+
+    // Builds the attribute from values ordered as `getPerfConfigKeys()`, which
+    // is the order the perfConfig parser resolves them in. The return type is
+    // deduced so that this stays independent of the attribute's C++ name.
+    static auto getFromPerfConfigValues(MLIRContext *context,
+                                        ArrayRef<int64_t> v) {
+        assert(v.size() == getPerfConfigKeys().size() &&
+               "expected one value per perfConfig field");
+        return get(context, }]#forwardArgs#[{);
+    }
+  }];
+}
+
+// Shared by `let parameters` below and the perfConfig schema, so that the
+// serialized form and the parser are both derived from this one list.
+defvar kRockGemmParams = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
+    "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
+    "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim, "int64_t":$splitKFactor,
+    "int64_t":$numStages, "int64_t":$wavesPerEU, "int64_t":$gridGroupSize,
+    RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
+    RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
+    RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
+    RockKnobParameter:$useOptimizeEpilogue);
+
+def Rock_GemmParamsSchema
+    : Rock_PerfConfigSchema<"gemm", kRockGemmParams,
+                            [RockPerfConfigField<"mPerBlock", 32>,
+                             RockPerfConfigField<"nPerBlock", 32>]>;
+
 def Rock_GemmParamsAttr
     : Rock_Attr<"GemmParams", [RockTuningParamAttrInterface]> {
   let mnemonic = "gemm_params";
@@ -340,52 +499,9 @@ def Rock_GemmParamsAttr
     - `useOptimizeEpilogue`              (set to -1)
   }];
 
-  let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
-      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
-      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
-      "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
-      "int64_t":$gridGroupSize,
-      DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
-      DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
-      DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout,
-      DefaultValuedParameter<"int64_t", "-1">:$useOptimizeEpilogue);
+  let parameters = kRockGemmParams;
 
-  let extraClassDeclaration = [{
-    // v5 is the single canonical output form (18 fields: the v4 fields plus
-    // `useOptimizeEpilogue`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v5.
-    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v5:"
-        + Twine(getMPerBlock()) + ","
-        + Twine(getNPerBlock()) + ","
-        + Twine(getKPerBlock()) + ","
-        + Twine(getKpack()) + ","
-        + Twine(getNumCTAs()) + ","
-        + Twine(getNumWaves()) + ","
-        + Twine(getMatrixInstrNonkdim()) + ","
-        + Twine(getSplitKFactor()) + ","
-        + Twine(getNumStages()) + ","
-        + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize()) + ","
-        + Twine(getUseAsyncCopy()) + ","
-        + Twine(getUseBlockPingpong()) + ","
-        + Twine(getUseInThreadTranspose()) + ","
-        + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()) + ","
-        + Twine(getUseOptimizeEpilogue()))
-        .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
-  }];
+  let extraClassDeclaration = Rock_GemmParamsSchema.perfConfigDecls;
 
   let builders = [AttrBuilderWithInferredContext<(
       ins "StringAttr":$perfConfigStr)>];
@@ -394,6 +510,26 @@ def Rock_GemmParamsAttr
     `<` struct(params) `>`
   }];
 }
+
+// Shared by `let parameters` below and the perfConfig schema, so that the
+// serialized form and the parser are both derived from this one list.
+defvar kRockGemmGemmParams = (ins "int64_t":$mPerBlockG0,
+    "int64_t":$nPerBlockG0, "int64_t":$nPerBlockG1, "int64_t":$kPerBlock,
+    "int64_t":$kpack, "int64_t":$numCTAs, "int64_t":$numWaves,
+    "int64_t":$matrixInstrNonkdim, "int64_t":$splitKFactor,
+    "int64_t":$numStages, "int64_t":$wavesPerEU, "int64_t":$gridGroupSize,
+    RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
+    RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
+    RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
+    RockKnobParameter:$useOptimizeEpilogue);
+
+// `nPerBlockG1` defaults to 0 ("untiled"), matching how pre-v6 positional
+// configs, which have no such field, decode.
+def Rock_GemmGemmParamsSchema
+    : Rock_PerfConfigSchema<"attn", kRockGemmGemmParams,
+                            [RockPerfConfigField<"mPerBlockG0", 32>,
+                             RockPerfConfigField<"nPerBlockG0", 32>,
+                             RockPerfConfigField<"nPerBlockG1", 0>]>;
 
 def Rock_GemmGemmParamsAttr
     : Rock_Attr<"GemmGemmParams", [RockTuningParamAttrInterface]> {
@@ -408,8 +544,8 @@ def Rock_GemmGemmParamsAttr
     - nPerBlockG1: The number of values of n to process in each workgroup for
       the second GEMM (i.e. the head-dim tile of the attention output). `0`
       means "untiled": the second GEMM processes the full `gemm1N` in one shot
-      (the historical behaviour and what pre-v4 configs, which have no
-      `nPerBlockG1` field, decode to).
+      (the historical behaviour and what pre-v6 positional configs, which have
+      no `nPerBlockG1` field, decode to).
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
     - numCTAs: The number CTAs
@@ -453,54 +589,9 @@ def Rock_GemmGemmParamsAttr
     - `useOptimizeEpilogue`              (set to -1)
   }];
 
-  let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
-      "int64_t":$nPerBlockG1, "int64_t":$kPerBlock, "int64_t":$kpack,
-      "int64_t":$numCTAs, "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
-      "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
-      "int64_t":$gridGroupSize,
-      DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
-      DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
-      DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout,
-      DefaultValuedParameter<"int64_t", "-1">:$useOptimizeEpilogue);
+  let parameters = kRockGemmGemmParams;
 
-  let extraClassDeclaration = [{
-    // v6 is the single canonical output form (19 fields: the v5 fields plus the
-    // GEMM+GEMM-only `nPerBlockG1` second-GEMM head-dim tile). Older versions
-    // remain accepted on input by `get()`; only the serialized form is fixed to
-    // v6.
-    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("attn:v6:"
-        + Twine(getMPerBlockG0()) + ","
-        + Twine(getNPerBlockG0()) + ","
-        + Twine(getNPerBlockG1()) + ","
-        + Twine(getKPerBlock()) + ","
-        + Twine(getKpack()) + ","
-        + Twine(getNumCTAs()) + ","
-        + Twine(getNumWaves()) + ","
-        + Twine(getMatrixInstrNonkdim()) + ","
-        + Twine(getSplitKFactor()) + ","
-        + Twine(getNumStages()) + ","
-        + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize()) + ","
-        + Twine(getUseAsyncCopy()) + ","
-        + Twine(getUseBlockPingpong()) + ","
-        + Twine(getUseInThreadTranspose()) + ","
-        + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()) + ","
-        + Twine(getUseOptimizeEpilogue()))
-        .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
-
+  let extraClassDeclaration = Rock_GemmGemmParamsSchema.perfConfigDecls#[{
     // Bridge accessors for the RockTuningParamAttrInterface so generic code
     // (e.g. perf-config validation) can treat gemm and gemm+gemm uniformly.
     int64_t getMPerBlock() const { return getMPerBlockG0(); }
@@ -590,7 +681,15 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
   }];
 }
 
-def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
+def Rock_GridSize : Rock_Attr<"GridSize"> {
+  let mnemonic = "rock.grid_size";
+
+  let extraClassDeclaration = [{
+    static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {
+      return (::llvm::Twine(getMnemonic()) + "." + kernelName).str();
+    }
+  }];
+}
 
 def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
   let mnemonic = "rock.cluster_size";

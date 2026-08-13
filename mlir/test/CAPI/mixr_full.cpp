@@ -207,7 +207,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   size_t problemBytes =
       mlirRockTuningGetKey(module, problemKey, ROCMLIR_TUNING_KEY_BUFSZ);
   if (problemBytes >= ROCMLIR_TUNING_KEY_BUFSZ) {
-    printf("Tuning key string too long - %lu bytes", problemBytes);
+    printf("Tuning key string too long - %zu bytes", problemBytes);
     return false;
   }
 
@@ -222,7 +222,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
     size_t paramBytes = mlirRockTuningParamToString(
         tuningParam, paramStr, ROCMLIR_TUNING_PARAM_STRING_BUFSZ);
     if (paramBytes >= ROCMLIR_TUNING_PARAM_STRING_BUFSZ) {
-      printf("Parameter string too long - %lu bytes", paramBytes);
+      printf("Parameter string too long - %zu bytes", paramBytes);
       return false;
     }
 
@@ -290,7 +290,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   if (!mlirGetBinary(module, &binSize, nullptr)) {
     return false;
   }
-  printf("bin size : %lu\n", binSize);
+  printf("bin size : %zu\n", binSize);
 
   char *compiledBin = static_cast<char *>(malloc(binSize));
   // Initialize the memory to hold binary, just for verification, not necessary.

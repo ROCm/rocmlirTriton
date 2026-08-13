@@ -66,17 +66,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#endif
 
 // Utilities to allocate buffers
 #include "../utils/performance/common/benchmarkUtils.h"
@@ -111,6 +115,19 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
 
+#define HIPCHECK_WITH_CONTEXT(expr, context)                                   \
+  do {                                                                         \
+    hipError_t _status = (expr);                                               \
+    if (hipSuccess != _status) {                                               \
+      llvm::errs() << __FILE__ << ":" << __LINE__ << ": HIP error in "         \
+                   << #expr << ": " << hipGetErrorString(_status) << context   \
+                   << "\n";                                                    \
+      return failure();                                                        \
+    }                                                                          \
+  } while (0)
+
+#define HIPCHECK(expr) HIPCHECK_WITH_CONTEXT(expr, "")
+
 // Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
 // (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
 // launch_cooperative_grid always 0. Returns LogicalResult instead of void.
@@ -125,6 +142,10 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
   if (gridX == 0)
     return success();
   if (num_ctas > 1) {
+    // ResolveKernelLaunchParams has already verified that the expanded launch
+    // dimensions fit in the dispatch packet.
+    uint32_t gridBlocks = gridX * num_ctas;
+
     // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
     // it loads HIP symbols via dlsym. We link directly, so no check needed.
     // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
@@ -146,19 +167,21 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
     attributes[1].val.cooperative = 0;
 
     HIP_LAUNCH_CONFIG config = {
-        gridX * num_ctas, 1,      1,            // Grid size
-        blockSize,        1,      1,            // Block size
-        shared_memory,    stream, attributes, 2 // Number of attributes
+        gridBlocks,    1,      1,            // Grid size
+        blockSize,     1,      1,            // Block size
+        shared_memory, stream, attributes, 2 // Number of attributes
     };
-    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
-    if (status != hipSuccess)
-      return failure();
+    HIPCHECK_WITH_CONTEXT(hipDrvLaunchKernelEx(&config, function, params, 0),
+                          " (grid=" << gridBlocks << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
   } else {
-    hipError_t status =
-        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
-                              shared_memory, stream, params, nullptr);
-    if (status != hipSuccess)
-      return failure();
+    HIPCHECK_WITH_CONTEXT(hipModuleLaunchKernel(function, gridX, 1, 1,
+                                                blockSize, 1, 1, shared_memory,
+                                                stream, params, nullptr),
+                          " (grid=" << gridX << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
   }
   return success();
 }
@@ -387,17 +410,6 @@ static benchmark::DataType getDataType(Type inputType) {
     llvm_unreachable("Kernels only accept ints or floats");
   }
 }
-
-// intentionally leaky macro
-#define HIPCHECK(expr)                                                         \
-  do {                                                                         \
-    hipError_t _status = (expr);                                               \
-    if (hipSuccess != _status) {                                               \
-      llvm::errs() << "HIP error at " << __FILE__ << ":" << __LINE__ << " - "  \
-                   << hipGetErrorString(_status) << "\n";                      \
-      return failure();                                                        \
-    }                                                                          \
-  } while (0)
 
 using SteadyTimePoint = std::chrono::steady_clock::time_point;
 
@@ -727,12 +739,19 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   }
 
   auto killAndReap = [&]() -> std::string {
+#ifdef _WIN32
+    // A finite Wait terminates the child with TerminateProcess if it is still
+    // running after the timeout.
+    const std::optional<unsigned> secondsToWait = 1;
+#else
     if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH)
       return std::string("failed to kill child: ") + std::strerror(errno);
+    const std::optional<unsigned> secondsToWait = std::nullopt;
+#endif
 
     std::string reapErr;
     llvm::sys::ProcessInfo reapResult =
-        llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt, &reapErr);
+        llvm::sys::Wait(procInfo, secondsToWait, &reapErr);
     if (reapResult.Pid != procInfo.Pid) {
       std::string message = "failed to reap child";
       if (!reapErr.empty())
@@ -772,11 +791,10 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and
-  // rocmlir-driver links in-process (no grandchildren to orphan), so the
-  // blocking reap returns promptly. A timeout is a non-fatal skip reported as
-  // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
-  // see extra noise).
+  // Budget exceeded: terminate and reap. rocmlir-driver links in-process (no
+  // grandchildren to orphan), so cleanup returns promptly. A timeout is a
+  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
+  // stdout/stderr and must not see extra noise).
   if (timedOut) {
     if (std::string cleanupErr = killAndReap(); !cleanupErr.empty()) {
       fail("Failed to clean up timed-out rocmlir-driver for config: " +
@@ -1446,7 +1464,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // Main tuning pass: collect perf configs, compile, and benchmark.
   {
     // PHASE 1: Collect perf configs
-    std::vector<SmallString<64>> configs;
+    std::vector<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>> configs;
 
     if (!benchmarkParams.benchmarkConfig.empty()) {
       // Benchmark mode - just one config
@@ -1464,7 +1482,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       for (rock::RockTuningParamAttrInterface tuningAttr :
            tuningSpace->tuningRange) {
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         tuningAttr.getPerfConfigStr(perfConfig);
         configs.push_back(perfConfig);
       }

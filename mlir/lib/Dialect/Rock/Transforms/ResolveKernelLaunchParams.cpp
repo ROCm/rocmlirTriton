@@ -28,11 +28,15 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
+
+#include <cassert>
 
 namespace mlir {
 namespace rock {
@@ -46,6 +50,64 @@ namespace rock {
 using namespace mlir;
 
 namespace {
+
+/// Reject launches too large for an HSA dispatch packet, whose `grid_size_x`
+/// is a uint32_t counted in work-items
+static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
+  bool hasGridMetadata = llvm::any_of(
+      moduleOp.getOps<LLVM::LLVMFuncOp>(), [&](LLVM::LLVMFuncOp funcOp) {
+        return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
+               moduleOp->hasAttr(
+                   rock::GridSizeAttr::getModuleAttrName(funcOp.getName()));
+      });
+  if (!hasGridMetadata)
+    return success();
+
+  SmallVector<rock::KernelInfo> kernels;
+  if (failed(rock::collectKernelInfo(moduleOp, kernels)))
+    return moduleOp.emitError(
+        "could not validate kernel launch dimensions because kernel metadata "
+        "collection failed");
+
+  // The dispatch packet counts work-items, not workgroups, so it is the whole
+  // grid * block * cluster product that has to fit in a uint32.
+  for (rock::KernelInfo &kernel : kernels) {
+    assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
+    assert(kernel.blockSize > 0 && "expected a positive kernel block size");
+    assert(kernel.clusterSize > 0 && "expected a positive kernel cluster size");
+    if (kernel.gridSize > rock::maxHardwareGridSize) {
+      rock::markAsNotApplicable(moduleOp);
+      return kernel.llvmFunc.emitOpError()
+             << "grid size " << kernel.gridSize
+             << " exceeds the runtime grid size limit of "
+             << rock::maxHardwareGridSize;
+    }
+
+    if (kernel.blockSize > rock::maxHardwareWorkgroupSize) {
+      rock::markAsNotApplicable(moduleOp);
+      return kernel.llvmFunc.emitOpError()
+             << "block size " << kernel.blockSize
+             << " exceeds the AMDGPU workgroup size limit of "
+             << rock::maxHardwareWorkgroupSize;
+    }
+
+    std::optional<int64_t> workItems =
+        llvm::checkedMul(kernel.gridSize, kernel.blockSize);
+    if (workItems)
+      workItems = llvm::checkedMul(*workItems, kernel.clusterSize);
+    if (workItems && *workItems <= rock::maxHardwareGridSize)
+      continue;
+
+    rock::markAsNotApplicable(moduleOp);
+    return kernel.llvmFunc.emitOpError()
+           << "launch dimensions (grid size " << kernel.gridSize
+           << ", block size " << kernel.blockSize << ", cluster size "
+           << kernel.clusterSize << ") exceed the runtime limit of "
+           << rock::maxHardwareGridSize << " work-items";
+  }
+
+  return success();
+}
 
 struct ResolveKernelLaunchParamsPass
     : public rock::impl::ResolveKernelLaunchParamsPassBase<
@@ -94,6 +156,9 @@ struct ResolveKernelLaunchParamsPass
           << archStr;
       return signalPassFailure();
     }
+
+    if (failed(validateKernelLaunchDimensions(moduleOp)))
+      return signalPassFailure();
 
     auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>("global_smem");
     if (!globalOp) {

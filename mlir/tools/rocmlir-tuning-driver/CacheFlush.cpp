@@ -208,10 +208,6 @@ public:
     std::lock_guard<std::mutex> lock(stateMutex);
     LogicalResult result = success();
     flushBuffer.reset();
-    hipError_t status = hipGetLastError();
-    if (status != hipSuccess) {
-      result = failure();
-    }
     flushSize = 0;
 #if defined(__HIP_PLATFORM_AMD__)
     if (failed(icacheKernel.cleanup()))

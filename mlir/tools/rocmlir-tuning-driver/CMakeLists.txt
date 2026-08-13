@@ -44,23 +44,8 @@ add_rocmlir_tool(rocmlir-tuning-driver
   CacheFlush.cpp
 )
 
-# Grab HIP again, since we'll be using it directly
-if (NOT DEFINED ROCM_PATH)
-  if (NOT DEFINED ENV{ROCM_PATH})
-    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to which ROCm has been installed")
-  else()
-    set(ROCM_PATH $ENV{ROCM_PATH} CACHE PATH "Path to which ROCm has been installed")
-  endif()
-endif()
-# A lot of the ROCm CMake files expect to find their own dependencies in
-# CMAKE_PREFIX_PATH and don't respect PATHS or HINTS :( .
-# Therefore, temporarily add the ROCm path to CMAKE_PREFIX_PATH so we can
-# load HIP, then remove it
-set(REAL_CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
-list(APPEND CMAKE_PREFIX_PATH ${ROCM_PATH} "${ROCM_PATH}/hip" "${ROCM_PATH}/hiprtc")
-find_package(hip REQUIRED)
-find_package(hiprtc REQUIRED)
-set(CMAKE_PREFIX_PATH "${REAL_CMAKE_PREFIX_PATH}")
+# Grab HIP again, since we'll be using it directly.
+rocmlir_find_hip(HIPRTC)
 
 # Supress compiler warnings from HIP headers
 # Only set compile options on mlir_rocm_runtime if it exists and is not an IMPORTED target
