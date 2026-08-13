@@ -55,6 +55,13 @@ def flag_value(cmd, flag):
     return cmd[cmd.index(flag) + 1]
 
 
+def result_tsv(rows):
+    """A result TSV shaped like tuningRunner's: commented header, then rows."""
+    header = "# " + "\t".join(["arch", "numCU", "testVector", "perfConfig", "tflops"])
+    return "".join([header + "\n"] +
+                   [f"{TARGET_ARCH}\t256\tvector-{index}\tv2:1,1\t1.0\n" for index in range(rows)])
+
+
 class FakeStream:
     """Minimal stand-in for ``Popen.stdout``; b"" means EOF."""
 
@@ -359,6 +366,28 @@ class TestPassthroughFlags(CrossCompileTestCase):
     def test_scale_type_is_omitted_when_unset(self):
         self.assertNotIn("--scale-type", self.passthrough(True))
 
+    def test_retune_reaches_both_phases(self):
+        # Starting over has to mean both the bundles and the timings, or the
+        # benchmark host would re-time whatever the compile host rebuilt.
+        for remote in (False, True):
+            with self.subTest(remote=remote):
+                self.assertIn("--retune", self.passthrough(remote, "--retune"))
+
+    def test_retry_only_reaches_the_remote_phase(self):
+        # Failure states are recorded by the benchmark phase; the compile phase
+        # re-attempts anything whose bundle is missing without being asked.
+        self.assertEqual(self.passthrough(True, "--retry", "gpu_timed_out", "failed"),
+                         self.DEFAULT_DATA_TYPES + ["--retry", "gpu_timed_out", "failed"])
+        self.assertEqual(self.passthrough(False, "--retry", "gpu_timed_out"),
+                         self.DEFAULT_DATA_TYPES)
+
+    def test_resuming_is_the_default(self):
+        for remote in (False, True):
+            with self.subTest(remote=remote):
+                cmd = self.passthrough(remote)
+                self.assertNotIn("--retune", cmd)
+                self.assertNotIn("--retry", cmd)
+
 
 class TestLocalCompileCommand(CrossCompileTestCase):
 
@@ -559,13 +588,18 @@ class TestRemoteSessionScript(CrossCompileTestCase):
         self.assertLess(script.index("--benchmark-artifacts"),
                         script.index('-cf - "${files[@]}" >&3'))
 
-    def test_removes_previous_results_before_benchmarking(self):
-        args = self.parse()
-        script = crossCompile.build_remote_session_script(args)
-        cleanup = shlex.join(["rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug"])
-        self.assertIn(cleanup, script)
-        self.assertLess(script.index("-xf -"), script.index(cleanup))
-        self.assertLess(script.index(cleanup), script.index("--benchmark-artifacts"))
+    def test_keeps_previous_results_so_the_remote_can_resume(self):
+        # Deleting them would defeat the benchmark phase's resume: every session
+        # would re-time problems the remote had already measured. --retune is
+        # how a caller asks for a clean run instead.
+        script = crossCompile.build_remote_session_script(self.parse())
+        self.assertNotIn("rm ", script)
+
+    def test_returns_the_state_file_so_a_rerun_sees_the_same_failures(self):
+        # The remote decides what is still outstanding from its own state file.
+        # Bringing it home keeps the local directory a full picture of that.
+        script = crossCompile.build_remote_session_script(self.parse())
+        self.assertIn("if [ -f out.tsv.state ]; then files+=(out.tsv.state); fi", script)
 
     def test_creates_the_remote_artifacts_dir(self):
         script = crossCompile.build_remote_session_script(self.parse())
@@ -769,24 +803,82 @@ class TestExtractReturnedResults(CrossCompileTestCase):
     single bad problem would discard the whole run's results.
     """
 
-    def extract(self, *, contents=b"tar bytes", session_failed=False, tar_fails=False):
-        """Run extract_returned_results, returning the tar command it issued."""
+    def extract(self,
+                *,
+                contents=b"tar bytes",
+                session_failed=False,
+                tar_fails=False,
+                returned=None):
+        """Run extract_returned_results, returning the tar command it issued.
+
+        ``returned`` maps file name to contents and stands in for what the
+        remote put in the archive; the stubbed tar writes those into whatever
+        directory the real one was told to unpack into.
+        """
         args = self.parse()
         tar_path = self.tmp / "results.tar"
         tar_path.write_bytes(contents)
-        error = subprocess.CalledProcessError(2, ["tar"]) if tar_fails else None
-        runner = mock.Mock(side_effect=error)
+
+        def fake_tar(_description, cmd, **_kwargs):
+            unpack_dir = Path(cmd[cmd.index("-C") + 1])
+            for name, text in (returned or {}).items():
+                (unpack_dir / name).write_text(text)
+            if tar_fails:
+                raise subprocess.CalledProcessError(2, cmd)
+
+        runner = mock.Mock(side_effect=fake_tar)
         stderr = io.StringIO()
         with mock.patch.object(crossCompile, "run_command", runner):
             with contextlib.redirect_stderr(stderr):
                 crossCompile.extract_returned_results(args, tar_path, session_failed=session_failed)
         return runner, stderr.getvalue()
 
-    def test_extracts_into_the_output_directory(self):
-        runner, _ = self.extract()
+    def unpack_dir(self, runner):
         cmd = runner.call_args.args[1]
-        self.assertEqual(cmd[:3], [self.parse().tar, "-C", str(self.output.parent)])
+        self.assertEqual(cmd[0], self.parse().tar)
         self.assertEqual(cmd[3], "-xf")
+        return Path(cmd[cmd.index("-C") + 1])
+
+    def test_unpacks_somewhere_other_than_the_output_directory(self):
+        # Staging first is what lets the returned TSV be inspected before it is
+        # allowed to replace results that are already on this machine.
+        runner, _ = self.extract()
+        self.assertNotEqual(self.unpack_dir(runner), self.output.parent)
+
+    def test_installs_the_returned_files_next_to_the_output(self):
+        self.extract(
+            returned={
+                self.output.name: result_tsv(2),
+                self.output.name + ".state": "{}",
+                self.output.name + ".debug": "debug rows",
+            })
+        self.assertEqual(self.output.read_text(), result_tsv(2))
+        self.assertEqual((self.output.parent / "out.tsv.state").read_text(), "{}")
+        self.assertEqual((self.output.parent / "out.tsv.debug").read_text(), "debug rows")
+
+    def test_extends_the_local_results_with_a_resumed_remote_run(self):
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_text(result_tsv(2))
+        self.extract(returned={self.output.name: result_tsv(5)})
+        self.assertEqual(self.output.read_text(), result_tsv(5))
+
+    def test_refuses_to_replace_local_results_with_fewer_returned_rows(self):
+        # Both sides resume, so the remote's TSV is normally a superset of the
+        # local one. A smaller one means they disagree about what has been
+        # benchmarked -- a wiped remote output directory, say -- and taking it
+        # would throw away finished work.
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_text(result_tsv(5))
+        _, printed = self.extract(returned={
+            self.output.name: result_tsv(2),
+            self.output.name + ".state": "{}",
+        })
+        self.assertEqual(self.output.read_text(), result_tsv(5))
+        self.assertEqual((self.output.parent / "out.tsv.returned").read_text(), result_tsv(2))
+        # The state file describes the returned TSV, so it is parked with it
+        # rather than left to contradict the results that were kept.
+        self.assertTrue((self.output.parent / "out.tsv.state.returned").exists())
+        self.assertIn("keeping the local results", printed)
 
     def test_extracts_partial_results_from_a_failed_session(self):
         runner, _ = self.extract(session_failed=True)
@@ -801,6 +893,12 @@ class TestExtractReturnedResults(CrossCompileTestCase):
     def test_does_not_let_a_bad_archive_mask_the_session_failure(self):
         _, printed = self.extract(session_failed=True, tar_fails=True)
         self.assertIn("could not unpack", printed)
+
+    def test_keeps_what_a_truncated_archive_did_yield(self):
+        self.extract(session_failed=True,
+                     tar_fails=True,
+                     returned={self.output.name: result_tsv(1)})
+        self.assertEqual(self.output.read_text(), result_tsv(1))
 
     def test_reports_an_extraction_failure_on_a_successful_session(self):
         with self.assertRaises(subprocess.CalledProcessError):

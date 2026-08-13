@@ -31,9 +31,19 @@ to the result TSV, matching normal local tuning database keys.
      status is reported after the results come back.
   3. Stream artifacts and the config file into the waiting remote session.
   4. Run tuningRunner.py --benchmark-artifacts on the remote host.
-  5. Stream the result TSV back to the local output path over the same session.
-     A run where some problems failed still returns the rows it did produce, and
-     the remote's exit status is reported afterwards.
+  5. Stream the result files back to the local output path over the same
+     session. A run where some problems failed still returns the rows it did
+     produce, and the remote's exit status is reported afterwards.
+
+Both phases resume, which is what makes a long tuning run survivable: the local
+compile skips problems whose bundles it already has, and the remote benchmark
+skips problems already in its TSV and problems it recorded as unsuccessful in
+<--remote-output>.state. Re-running the same command therefore continues where
+the last one stopped, whether it ended in a GPU hang, a dropped SSH connection,
+or Ctrl+C. Pass --retune to start over instead, or --retry <state> to take
+another run at problems that failed. All three files (the TSV, .debug, and
+.state) come back each session, so the local copy stays a full picture of the
+remote's progress.
 """
 
 import argparse
@@ -174,6 +184,11 @@ def add_passthrough_flags(cmd: List[str], args: argparse.Namespace, *, remote: b
     if args.timeout is not None:
         cmd.append(f"--timeout={args.timeout}")
 
+    # Both phases resume by default and both read --retune as "start over", so
+    # it belongs on either side of the split.
+    if args.retune:
+        cmd.append("--retune")
+
     # Both phases expand the config file into test vectors, and the expansion
     # feeds the hash that names each problem's artifact directory. Pass these
     # explicitly rather than letting each side fall back to its own default, so
@@ -198,6 +213,11 @@ def add_passthrough_flags(cmd: List[str], args: argparse.Namespace, *, remote: b
             cmd.append(f"--gpu-run-timeout={args.gpu_run_timeout}")
         if args.allow_commit_mismatch:
             cmd.append("--allow-commit-mismatch")
+        # Only the benchmark phase keeps per-problem failure states; the compile
+        # phase re-attempts anything without a bundle on its own.
+        if args.retry:
+            cmd.append("--retry")
+            cmd.extend(args.retry)
     else:
         if args.num_cpus is not None:
             cmd.append(f"--num-cpus={args.num_cpus}")
@@ -301,7 +321,14 @@ def build_remote_benchmark_args(args: argparse.Namespace) -> List[str]:
 def build_remote_session_script(args: argparse.Namespace) -> str:
     remote_output_dir = posixpath.dirname(args.remote_output) or "."
     remote_output_name = posixpath.basename(args.remote_output)
-    remote_debug_name = remote_output_name + ".debug"
+    remote_result_names = [
+        remote_output_name,
+        remote_output_name + ".debug",
+        # The remote decides what is left to do from its own copy of the state
+        # file, so it has to come back with the results: a local re-run has to
+        # see the same failures the remote recorded.
+        remote_output_name + ".state",
+    ]
     remote_docker_workdir = args.remote_build_dir
 
     # stdout is reserved for the final result tar stream. Redirect normal remote
@@ -320,7 +347,11 @@ def build_remote_session_script(args: argparse.Namespace) -> str:
             ["docker", "exec", "-w", remote_docker_workdir, args.remote_docker_container, "true"]),
         f"echo {shlex.quote(REMOTE_READY_MARKER)} >&3",
         f"{shlex.quote(args.tar)} -C {shlex.quote(args.remote_artifacts_dir)} -xf -",
-        shlex.join(["rm", "-f", "--", args.remote_output, f"{args.remote_output}.debug"]),
+        # The result files are deliberately left in place. They are what lets a
+        # benchmark run that died partway through pick up where it stopped, and
+        # deleting them here would make every session start over. --retune is
+        # forwarded to the remote for the case where starting over is the point.
+        #
         # tuningRunner.py exits non-zero when any single problem fails, but the
         # problems that already succeeded are in the TSV. Keep the status rather
         # than letting `set -e` abort here, so the rows still get shipped back;
@@ -333,10 +364,10 @@ def build_remote_session_script(args: argparse.Namespace) -> str:
         # `tar -cf` on a missing member is itself an error, so build the member
         # list out of what actually exists.
         "files=()",
-        f"if [ -f {shlex.quote(remote_output_name)} ]; then "
-        f"files+=({shlex.quote(remote_output_name)}); fi",
-        f"if [ -f {shlex.quote(remote_debug_name)} ]; then "
-        f"files+=({shlex.quote(remote_debug_name)}); fi",
+    ])
+    script_parts.extend(f"if [ -f {shlex.quote(name)} ]; then files+=({shlex.quote(name)}); fi"
+                        for name in remote_result_names)
+    script_parts.extend([
         f"if [ ${{#files[@]}} -gt 0 ]; then "
         f"{shlex.quote(args.tar)} -cf - \"${{files[@]}}\" >&3; fi",
         "exit $benchmark_rc",
@@ -444,30 +475,74 @@ def wait_for_remote_results(artifact_tar: subprocess.Popen,
     return artifact_rc, remote_rc
 
 
+def count_result_rows(path: Path) -> int:
+    """Count result rows in a tuningRunner TSV, ignoring its commented header."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as tsv:
+            return sum(1 for line in tsv if line.strip() and not line.startswith("#"))
+    except OSError:
+        return 0
+
+
+def install_returned_results(args: argparse.Namespace, staging: Path) -> None:
+    """Move the files the remote returned into the --output directory.
+
+    Both sides resume, and the remote ships back everything it has accumulated,
+    so its TSV is normally a superset of the local one. A smaller one means the
+    two disagree about what has been benchmarked -- a wiped remote output
+    directory, or a --remote-output that points somewhere fresh -- and
+    overwriting would throw away finished work. Park the whole returned set
+    under .returned in that case and leave the local files untouched.
+    """
+    returned_output = staging / args.output.name
+    returned_rows = count_result_rows(returned_output)
+    local_rows = count_result_rows(args.output)
+    shrinks = returned_output.is_file() and args.output.is_file() and returned_rows < local_rows
+    if shrinks:
+        print(
+            f"crossCompile.py: the remote returned {returned_rows} result row(s) but "
+            f"{args.output} already holds {local_rows}; keeping the local results and saving "
+            "the returned files under .returned",
+            file=sys.stderr)
+
+    for member in sorted(staging.iterdir()):
+        name = member.name + ".returned" if shrinks else member.name
+        shutil.move(str(member), str(args.output.parent / name))
+
+
 def extract_returned_results(args: argparse.Namespace, result_tar_path: Path, *,
                              session_failed: bool) -> None:
-    """Unpack the result TSV the remote streamed back, if it sent one.
+    """Unpack the result files the remote streamed back, if it sent any.
 
     The remote returns the rows it managed to write even when some problems
     failed, so this runs before the session status is reported; otherwise a
     single bad problem would discard a whole benchmark run. A session that died
     mid-stream leaves nothing or a truncated archive, which is fallout from the
     original failure and must not replace it as the reported error.
+
+    Unpacking goes through a staging directory so a truncated archive cannot
+    overwrite good local results before anyone has looked at what it contains.
     """
     if not result_tar_path.stat().st_size and session_failed:
         return
 
-    try:
-        run_command(
-            "Extract returned results locally",
-            [args.tar, "-C", str(args.output.parent), "-xf",
-             str(result_tar_path)],
-            verbose=args.verbose)
-    except subprocess.CalledProcessError:
-        if not session_failed:
-            raise
-        print(f"crossCompile.py: could not unpack the results returned in {result_tar_path}",
-              file=sys.stderr)
+    with tempfile.TemporaryDirectory(prefix="rocmlir-cross-results-") as staging:
+        extract_error = None
+        try:
+            run_command("Extract returned results locally",
+                        [args.tar, "-C", staging, "-xf",
+                         str(result_tar_path)],
+                        verbose=args.verbose)
+        except subprocess.CalledProcessError as error:
+            extract_error = error
+            print(f"crossCompile.py: could not unpack the results returned in {result_tar_path}",
+                  file=sys.stderr)
+
+        # Whatever did come out of a partial archive is still worth keeping.
+        install_returned_results(args, Path(staging))
+
+        if extract_error and not session_failed:
+            raise extract_error
 
 
 def raise_for_session_errors(artifact_rc: int, remote_rc: int, artifact_cmd: Sequence[str],
@@ -709,6 +784,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         metavar="SECONDS",
                         help="Per-config GPU-run timeout forwarded to the remote benchmark "
                         "(0 disables the timeout).")
+    parser.add_argument(
+        "--retune",
+        action="store_true",
+        help="Start over rather than resuming: recompile every problem locally and "
+        "discard the remote's result files before benchmarking them all again. Both "
+        "phases resume by default.")
+    parser.add_argument("--retry",
+                        nargs="+",
+                        choices=["failed", "timed_out", "gpu_timed_out", "crashed"],
+                        default=[],
+                        metavar="STATE",
+                        help="Re-attempt problems the remote benchmark recorded in these states in "
+                        "<--remote-output>.state. Without it, a resumed run leaves them alone.")
     parser.add_argument("-v",
                         "--verbose",
                         action="store_true",
