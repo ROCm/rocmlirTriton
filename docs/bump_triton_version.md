@@ -611,9 +611,12 @@ cd build && ninja check-mlir && ninja check-rocmlir
 
 `check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
 the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
-did not regress MLIR itself. Run it first: it is host-only and finishes in
-seconds. The nightly pipeline runs it too, so a bump that lands on `develop` is
-covered even if this step is skipped.
+did not regress MLIR itself. Run it first: the tests are host-only and finish in
+seconds. Budget for the build, though -- `cmake.sh` does not produce the upstream
+MLIR test binaries, and a fresh import has just invalidated them, so the first
+`ninja check-mlir` rebuilds `mlir-opt` and the rest of `MLIR_TEST_DEPENDS`. The
+nightly pipeline runs it too, so a bump that lands on `develop` is covered even
+if this step is skipped.
 
 ## Checklist Summary
 
