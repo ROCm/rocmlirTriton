@@ -1041,6 +1041,7 @@ Map<String,String> classifyBuildFailure(String logText) {
     def stageNames = [
         'SCM Checkout',
         'Configure and build rocmlirTriton', 'Static checks', 'Run tests',
+        'Upstream MLIR: check-mlir', 'Shared Library: fixed E2E', 'Shared Library: random E2E',
         'Install MIGraphX Dependencies', 'Build and Verify MIGraphX with MLIR', 'Verify MIGraphX with MLIR',
         'MIGraphX'
     ]
@@ -1251,8 +1252,9 @@ pipeline {
                                                         }
                                                     }
 
-                                                    // Runs before the GPU suite: it is host-only and finishes in
-                                                    // seconds, so MLIR regressions are reported early.
+                                                    // Runs before the GPU suite: apart from six Integration/GPU/ROCM
+                                                    // tests it is host-only and finishes in seconds, so MLIR
+                                                    // regressions are reported early.
                                                     if (runsCheckMlir(CODEPATH)) {
                                                         stage('Upstream MLIR: check-mlir') {
                                                             int limit_lit_workers = setLitWorkerCount()
