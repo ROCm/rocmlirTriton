@@ -1455,7 +1455,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // Main tuning pass: collect perf configs, compile, and benchmark.
   {
     // PHASE 1: Collect perf configs
-    std::vector<SmallString<64>> configs;
+    std::vector<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>> configs;
 
     if (!benchmarkParams.benchmarkConfig.empty()) {
       // Benchmark mode - just one config
@@ -1473,7 +1473,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       for (rock::RockTuningParamAttrInterface tuningAttr :
            tuningSpace->tuningRange) {
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         tuningAttr.getPerfConfigStr(perfConfig);
         configs.push_back(perfConfig);
       }
