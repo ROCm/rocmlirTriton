@@ -76,5 +76,4 @@ def apply_arch_features(config, lit_config):
     config.arch_support_non_k_packed_scaled_input = (
         amd_arch_db.arch_supports_non_k_packed_scaled_input(chip))
     config.arch_support_kpack = amd_arch_db.get_max_kpack(chip) > 1
-    config.arch_prefers_bf16x3_for_f32_dot = (
-        amd_arch_db.prefer_bf16x3_for_f32_dot(chip))
+    config.arch_prefers_bf16x3_for_f32_dot = (amd_arch_db.prefer_bf16x3_for_f32_dot(chip))
