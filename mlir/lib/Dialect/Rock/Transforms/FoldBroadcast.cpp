@@ -1,6 +1,6 @@
 //===- FoldBroadcast.cpp - fold a broadcasted batch dim  ------===//
 //
-// Copyright 2024 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

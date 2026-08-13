@@ -1,6 +1,6 @@
 //===- ConvToGemm.cpp - Rewrite linalg conv generics to a fused form ------===//
 //
-// Copyright 2026 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
