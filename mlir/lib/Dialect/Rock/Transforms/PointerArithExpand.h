@@ -1,6 +1,7 @@
 //===- PointerArithExpand.h - shared transform->arith helpers ------------===//
 //
 // Copyright Advanced Micro Devices, Inc.
+// Copyright 2026 The MLIR Authors.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
