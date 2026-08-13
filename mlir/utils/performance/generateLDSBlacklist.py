@@ -198,7 +198,7 @@ def synth_config(proj: Projection) -> str:
     gridGroupSize=0) and the knob fields are omitted, so the parser fills them
     with the kKnobDefault sentinel. None of these affect ttg.shared (see
     PROJECTION_*), so the reconstructed config overflows LDS iff the original
-    reconstructed config overflows LDS iff the original projection does.
+    projection does.
 
     Field order comes from PERF_CONFIG_FIELD_NAMES so it is defined in exactly
     one place."""
