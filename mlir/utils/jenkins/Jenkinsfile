@@ -675,10 +675,17 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-void build_fixedE2ETests() {
+// The upstream MLIR suite is host-only, so its result does not depend on the GPU.
+// Run it on the mfma codepath only, like the static checks do; mfma is enabled
+// whenever nightly runs on private CI.
+boolean runsCheckMlir(String codepath) {
+    return params.nightly && codepath == "mfma"
+}
+
+void build_fixedE2ETests(String codepath) {
     // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("${params.nightly ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
+    buildProject("${runsCheckMlir(codepath) ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
@@ -1233,7 +1240,7 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests(CODEPATH)
                                                         }
                                                     }
 
@@ -1243,9 +1250,9 @@ pipeline {
                                                         }
                                                     }
 
-                                                    // The upstream MLIR suite is host-only and finishes in seconds, so
-                                                    // it runs before the GPU suite to report regressions early.
-                                                    if (params.nightly) {
+                                                    // Runs before the GPU suite: it is host-only and finishes in
+                                                    // seconds, so MLIR regressions are reported early.
+                                                    if (runsCheckMlir(CODEPATH)) {
                                                         stage('Upstream MLIR: check-mlir') {
                                                             int limit_lit_workers = setLitWorkerCount()
                                                             timeout(time: 15, activity: true, unit: 'MINUTES') {
@@ -1278,7 +1285,7 @@ pipeline {
                                                             echo "Container environment:"
                                                             showEnv()
 
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests("${CODEPATH}")
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                 sh 'cd build; ninja check-rocmlir'
