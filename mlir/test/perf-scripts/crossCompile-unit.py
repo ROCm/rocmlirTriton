@@ -55,11 +55,28 @@ def flag_value(cmd, flag):
     return cmd[cmd.index(flag) + 1]
 
 
-def result_tsv(rows):
-    """A result TSV shaped like tuningRunner's: commented header, then rows."""
-    header = "# " + "\t".join(["arch", "numCU", "testVector", "perfConfig", "tflops"])
-    return "".join([header + "\n"] +
-                   [f"{TARGET_ARCH}\t256\tvector-{index}\tv2:1,1\t1.0\n" for index in range(rows)])
+RESULT_COLUMNS = [
+    "arch", "numCUs", "numChiplets", "testVector", "perfConfig", "TFlops", "tuningSpace",
+    "commitId", "timestamp", "durationSec"
+]
+
+
+def result_tsv(vectors, *, arch=TARGET_ARCH, num_cu=256, space="quick"):
+    """A result TSV shaped like tuningRunner's: commented header, then rows.
+
+    ``vectors`` is a count, for the common case of "the first N problems", or an
+    explicit list of test vector names. The target columns default to the ones
+    the fixture tunes for, and are overridable so a file can carry rows measured
+    on other hardware, as a long-lived TSV does.
+    """
+    if isinstance(vectors, int):
+        vectors = [f"vector-{index}" for index in range(vectors)]
+    header = "# " + "\t".join(RESULT_COLUMNS)
+    rows = [
+        f"{arch}\t{num_cu}\t8\t{vector}\tv2:1,1\t1.0\t{space}\tabc123\t2026-01-01T00:00:00\t1.5\n"
+        for vector in vectors
+    ]
+    return "".join([header + "\n"] + rows)
 
 
 class FakeStream:
@@ -839,6 +856,11 @@ class TestExtractReturnedResults(CrossCompileTestCase):
         self.assertEqual(cmd[3], "-xf")
         return Path(cmd[cmd.index("-C") + 1])
 
+    def write_local(self, text):
+        """Seed --output as if earlier sessions had already written to it."""
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_text(text)
+
     def test_unpacks_somewhere_other_than_the_output_directory(self):
         # Staging first is what lets the returned TSV be inspected before it is
         # allowed to replace results that are already on this machine.
@@ -857,18 +879,16 @@ class TestExtractReturnedResults(CrossCompileTestCase):
         self.assertEqual((self.output.parent / "out.tsv.debug").read_text(), "debug rows")
 
     def test_extends_the_local_results_with_a_resumed_remote_run(self):
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        self.output.write_text(result_tsv(2))
+        self.write_local(result_tsv(2))
         self.extract(returned={self.output.name: result_tsv(5)})
         self.assertEqual(self.output.read_text(), result_tsv(5))
 
-    def test_refuses_to_replace_local_results_with_fewer_returned_rows(self):
-        # Both sides resume, so the remote's TSV is normally a superset of the
-        # local one. A smaller one means they disagree about what has been
-        # benchmarked -- a wiped remote output directory, say -- and taking it
-        # would throw away finished work.
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        self.output.write_text(result_tsv(5))
+    def test_refuses_to_replace_local_results_that_are_not_in_the_returned_ones(self):
+        # Both sides resume and append, so the remote's TSV is normally a
+        # superset of the local one for this target. Anything it is missing means
+        # they disagree about what has been benchmarked -- a wiped remote output
+        # directory, say -- and taking it would throw away finished work.
+        self.write_local(result_tsv(5))
         _, printed = self.extract(returned={
             self.output.name: result_tsv(2),
             self.output.name + ".state": "{}",
@@ -878,7 +898,47 @@ class TestExtractReturnedResults(CrossCompileTestCase):
         # The state file describes the returned TSV, so it is parked with it
         # rather than left to contradict the results that were kept.
         self.assertTrue((self.output.parent / "out.tsv.state.returned").exists())
-        self.assertIn("keeping the local results", printed)
+        self.assertIn("missing 3 problem(s)", printed)
+
+    def test_refuses_to_replace_local_results_with_an_unreadable_tsv(self):
+        # A TSV the transfer cut off before its header is no evidence that
+        # anything was measured, so it must not displace results that can be
+        # read -- this is the case the guard exists for most of all.
+        self.write_local(result_tsv(2))
+        _, printed = self.extract(session_failed=True,
+                                  tar_fails=True,
+                                  returned={self.output.name: "half a ro"})
+        self.assertEqual(self.output.read_text(), result_tsv(2))
+        self.assertIn("missing 2 problem(s)", printed)
+
+    def test_counts_which_problems_came_back_rather_than_how_many(self):
+        # Equal row counts are not agreement. A remote that measured a different
+        # slice of the config file returns just as many rows while still being
+        # missing everything this machine has.
+        self.write_local(result_tsv(["a", "b"]))
+        _, printed = self.extract(returned={self.output.name: result_tsv(["c", "d"])})
+        self.assertEqual(self.output.read_text(), result_tsv(["a", "b"]))
+        self.assertIn("missing 2 problem(s)", printed)
+
+    def test_ignores_local_rows_measured_on_other_hardware(self):
+        # A TSV accumulates rows for every target it was pointed at. Rows from
+        # another GPU are not work this run can lose, so they must not hold the
+        # returned results back however many of them there are.
+        self.write_local(result_tsv(["other-0", "other-1", "other-2"], arch="gfx942", num_cu=304))
+        self.extract(returned={self.output.name: result_tsv(2)})
+        self.assertEqual(self.output.read_text(), result_tsv(2))
+
+    def test_ignores_local_rows_from_another_tuning_space(self):
+        self.write_local(result_tsv(["exhaustive-0", "exhaustive-1"], space="exhaustive"))
+        self.extract(returned={self.output.name: result_tsv(1)})
+        self.assertEqual(self.output.read_text(), result_tsv(1))
+
+    def test_installs_the_first_results_for_a_target_the_tsv_has_never_seen(self):
+        # The guard must not stand between a new target and its first rows just
+        # because the file already holds another target's.
+        self.write_local(result_tsv(["other-0"], arch="gfx942", num_cu=304))
+        self.extract(returned={self.output.name: result_tsv(0)})
+        self.assertEqual(self.output.read_text(), result_tsv(0))
 
     def test_extracts_partial_results_from_a_failed_session(self):
         runner, _ = self.extract(session_failed=True)

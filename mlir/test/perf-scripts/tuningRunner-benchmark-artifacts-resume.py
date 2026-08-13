@@ -409,17 +409,31 @@ class BenchmarkArtifactsResumeTest(unittest.TestCase):
         self.assertCountEqual(self.tuned_vectors(), VECTORS)
         self.assertCountEqual(set(self.debug_vectors()), VECTORS)
 
-    def test_retune_restarts_from_scratch(self):
+    def test_retune_re_measures_every_problem(self):
         self.run_benchmark(outcomes={self.hash_of(VECTORS[1]): "fail"})
 
         succeeded, driver = self.run_benchmark(retune=True)
 
         self.assertTrue(succeeded)
+        # Including the ones the previous run already got a winner for.
         self.assertCountEqual(driver.calls, self.hashes.values())
-        # The previous run's rows are discarded, not appended to: one row per
-        # problem, no duplicates from the first attempt.
-        self.assertCountEqual(self.tuned_vectors(), VECTORS)
         self.assertEqual(self.read_state(), {})
+
+    def test_retune_adds_to_the_earlier_results_rather_than_erasing_them(self):
+        # --retune means re-measure, not delete. In-place tuning appends to the
+        # TSV as well, and quickTuningGen keeps the best row per problem and perf
+        # config, so the earlier measurements cost nothing by staying as history
+        # -- and a --retune that got interrupted has not destroyed anything.
+        measured_first = [VECTORS[0], VECTORS[2]]
+        self.run_benchmark(outcomes={self.hash_of(VECTORS[1]): "fail"})
+        self.assertCountEqual(self.tuned_vectors(), measured_first)
+        debug_rows_first = len(self.debug_vectors())
+
+        self.run_benchmark(retune=True)
+
+        self.assertCountEqual(self.tuned_vectors(), VECTORS + measured_first)
+        self.assertCountEqual(set(self.debug_vectors()), VECTORS)
+        self.assertGreater(len(self.debug_vectors()), debug_rows_first)
 
     def test_retune_forgets_the_previous_runs_failures(self):
         self.run_benchmark(outcomes={self.hash_of(VECTORS[1]): "fail"})

@@ -1905,27 +1905,29 @@ def run_benchmark_artifacts(ctx: TuningContext, status_only: bool) -> bool:
     # target-option mismatches do not masquerade as missing problem directories.
     _validate_artifact_options(root, options)
 
-    # --retune restarts the run instead of extending it, so the previous run's
-    # records are dropped rather than added to. In-place tuning keeps every
-    # attempt, but this mode has always advertised one fresh TSV per run.
+    # --retune re-measures every problem, but it does not delete results, which
+    # is how the flag behaves for in-place tuning too: the TSV is an append-only
+    # log, and quickTuningGen keeps the best measurement per problem and perf
+    # config, so the earlier rows cost nothing and stay as history.
     #
-    # They go before anything reads them: a state file loaded first would be
-    # written straight back out, leaving failures behind that this run is
-    # supposed to have forgotten. --status only reports, so it deletes nothing.
-    if options.retune and not status_only and options.output != '-':
-        for stale_path in (options.output, f"{options.output}.debug",
-                           get_state_filepath(options.output)):
-            try:
-                os.remove(stale_path)
-            except FileNotFoundError:
-                pass
+    # The state file is the exception. It records what is still outstanding,
+    # which is exactly what --retune is discarding, and it goes before anything
+    # reads it: a state loaded first would be written straight back out, leaving
+    # failures behind that this run is supposed to have forgotten. --status only
+    # reports, so it deletes nothing.
+    state_path = get_state_filepath(options.output)
+    if options.retune and not status_only and state_path:
+        try:
+            os.remove(state_path)
+        except FileNotFoundError:
+            pass
 
     # Resume reads the same two records as in-place tuning: the output TSV names
     # the problems that succeeded, the state file names the ones that did not.
     cache = (TunedConfigsCache() if options.retune else TunedConfigsCache.from_output_file(
         options, ctx.conf_class))
-    state_file = TuningStateFile(get_state_filepath(options.output), options.chip, options.num_cu,
-                                 options.num_chiplets, options.tuning_space_kind, ctx.conf_class)
+    state_file = TuningStateFile(state_path, options.chip, options.num_cu, options.num_chiplets,
+                                 options.tuning_space_kind, ctx.conf_class)
     state = state_file.state
 
     if cache.count() > 0:
@@ -2591,9 +2593,9 @@ def parse_arguments(args=None) -> argparse.Namespace:
         metavar='DIR',
         help="Benchmark phase (GPU): time the configs compiled into <DIR> by a "
         "prior --compile-only run, optionally verify (see --verify-winning-config), "
-        "and write the results as a TSV. Resumes by default, skipping problems already "
+        "and append the results to a TSV. Resumes by default, skipping problems already "
         "recorded in the output TSV or marked unsuccessful in its .state file; --retune "
-        "discards both and starts over, --retry <state> re-attempts unsuccessful ones, and "
+        "re-measures every problem, --retry <state> re-attempts unsuccessful ones, and "
         "--status reports what is left without benchmarking. Uses the lowest detected GPU "
         "by default; --gpus must select exactly one GPU when specified. Requires a build "
         "configured with -DLLVM_ENABLE_ZSTD=FORCE_ON.")

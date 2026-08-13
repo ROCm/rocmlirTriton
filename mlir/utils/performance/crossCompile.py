@@ -40,8 +40,8 @@ compile skips problems whose bundles it already has, and the remote benchmark
 skips problems already in its TSV and problems it recorded as unsuccessful in
 <--remote-output>.state. Re-running the same command therefore continues where
 the last one stopped, whether it ended in a GPU hang, a dropped SSH connection,
-or Ctrl+C. Pass --retune to start over instead, or --retry <state> to take
-another run at problems that failed. All three files (the TSV, .debug, and
+or Ctrl+C. Pass --retune to re-measure everything instead, or --retry <state> to
+take another run at problems that failed. All three files (the TSV, .debug, and
 .state) come back each session, so the local copy stays a full picture of the
 remote's progress.
 """
@@ -349,8 +349,9 @@ def build_remote_session_script(args: argparse.Namespace) -> str:
         f"{shlex.quote(args.tar)} -C {shlex.quote(args.remote_artifacts_dir)} -xf -",
         # The result files are deliberately left in place. They are what lets a
         # benchmark run that died partway through pick up where it stopped, and
-        # deleting them here would make every session start over. --retune is
-        # forwarded to the remote for the case where starting over is the point.
+        # deleting them here would make every session start over. Re-measuring is
+        # tuningRunner.py's --retune, which is forwarded rather than emulated
+        # here, so the returned TSV only ever grows.
         #
         # tuningRunner.py exits non-zero when any single problem fails, but the
         # problems that already succeeded are in the TSV. Keep the status rather
@@ -475,38 +476,81 @@ def wait_for_remote_results(artifact_tar: subprocess.Popen,
     return artifact_rc, remote_rc
 
 
-def count_result_rows(path: Path) -> int:
-    """Count result rows in a tuningRunner TSV, ignoring its commented header."""
+def read_benchmarked_vectors(path: Path, args: argparse.Namespace) -> Optional[set]:
+    """Test vectors a result TSV records for the target this run is tuning.
+
+    A TSV accumulates rows for every target and tuning space it was ever pointed
+    at, and rows measured elsewhere say nothing about this run's progress, so a
+    row only counts once its identity columns match -- the same ones
+    tuningRunner.py matches on when it reads the file to resume. Returns None
+    when the file holds no result table at all, which tells the caller it has
+    nothing to compare.
+    """
+    # tuningRunner.py writes the full gcnArchName but accepts the bare chip from
+    # files written by older versions, so both are matched here as well.
+    accepted_arch = {args.target_arch, args.target_arch.split(":")[0]}
+    identity = {
+        "numCUs": str(args.target_num_cu),
+        "numChiplets": str(args.target_num_chiplets),
+        "tuningSpace": args.tuning_space,
+    }
+    columns: Optional[List[str]] = None
+    vectors = set()
     try:
         with path.open(encoding="utf-8", errors="replace") as tsv:
-            return sum(1 for line in tsv if line.strip() and not line.startswith("#"))
+            for line in tsv:
+                # Every run appends its own header, and "arch" being its first
+                # column is what tells one apart from the file's other comments.
+                # The layout is re-read as each turns up rather than assumed.
+                if line.startswith("# arch\t"):
+                    columns = [field.strip(" #\n") for field in line.split("\t")]
+                    continue
+                if columns is None or line.startswith("#") or not line.strip():
+                    continue
+                row = dict(zip(columns, line.rstrip("\n").split("\t")))
+                if row.get("arch") not in accepted_arch:
+                    continue
+                # A column that is absent or empty is not a mismatch: it is a
+                # file from a version that did not record that field.
+                if any(row.get(name) and row[name] != value for name, value in identity.items()):
+                    continue
+                if row.get("testVector"):
+                    vectors.add(row["testVector"])
     except OSError:
-        return 0
+        return None
+    return vectors if columns is not None else None
 
 
 def install_returned_results(args: argparse.Namespace, staging: Path) -> None:
     """Move the files the remote returned into the --output directory.
 
-    Both sides resume, and the remote ships back everything it has accumulated,
-    so its TSV is normally a superset of the local one. A smaller one means the
-    two disagree about what has been benchmarked -- a wiped remote output
-    directory, or a --remote-output that points somewhere fresh -- and
-    overwriting would throw away finished work. Park the whole returned set
-    under .returned in that case and leave the local files untouched.
+    Both sides resume and both append, so for the target being tuned the
+    remote's TSV is normally a superset of the local one. Anything it is missing
+    means the two disagree about what has been benchmarked -- a wiped remote
+    output directory, a --remote-output pointing somewhere fresh, a truncated
+    archive, or rows this machine measured in place -- and installing over the
+    top would throw that work away. Park the whole returned set under .returned
+    in that case and leave the local files untouched.
     """
     returned_output = staging / args.output.name
-    returned_rows = count_result_rows(returned_output)
-    local_rows = count_result_rows(args.output)
-    shrinks = returned_output.is_file() and args.output.is_file() and returned_rows < local_rows
-    if shrinks:
+    local = read_benchmarked_vectors(args.output, args) or set()
+    # A session that shipped no TSV at all cannot displace anything, so there is
+    # nothing to guard. One that shipped a file too damaged to read as a result
+    # table is a different matter: it counts as missing everything, because
+    # installing it would replace results that can still be read.
+    missing = set()
+    if returned_output.is_file():
+        missing = local - (read_benchmarked_vectors(returned_output, args) or set())
+
+    if missing:
         print(
-            f"crossCompile.py: the remote returned {returned_rows} result row(s) but "
-            f"{args.output} already holds {local_rows}; keeping the local results and saving "
-            "the returned files under .returned",
+            f"crossCompile.py: the results returned by the remote are missing {len(missing)} "
+            f"problem(s) that {args.output} already has for this target; keeping the local "
+            "results and saving the returned files under .returned",
             file=sys.stderr)
 
     for member in sorted(staging.iterdir()):
-        name = member.name + ".returned" if shrinks else member.name
+        name = member.name + ".returned" if missing else member.name
         shutil.move(str(member), str(args.output.parent / name))
 
 
@@ -787,9 +831,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--retune",
         action="store_true",
-        help="Start over rather than resuming: recompile every problem locally and "
-        "discard the remote's result files before benchmarking them all again. Both "
-        "phases resume by default.")
+        help="Re-measure everything rather than resuming: recompile every problem "
+        "locally and re-benchmark every problem on the remote. Results are appended "
+        "rather than discarded; only the remote's record of outstanding work is "
+        "cleared. Both phases resume by default.")
     parser.add_argument("--retry",
                         nargs="+",
                         choices=["failed", "timed_out", "gpu_timed_out", "crashed"],
