@@ -1168,18 +1168,6 @@ class TuningArgumentParser(argparse.ArgumentParser):
             parsed.gpus = []
             return parsed
 
-        if parsed.benchmark_artifacts:
-            unsupported = []
-            if parsed.retune:
-                unsupported.append("--retune")
-            if parsed.retry:
-                unsupported.append("--retry")
-            if parsed.status:
-                unsupported.append("--status")
-            if unsupported:
-                self.error("argument --benchmark-artifacts: does not support " +
-                           ", ".join(unsupported))
-
         requested_gpus = parsed.gpus
         try:
             parsed.gpus = get_gpu_topology().select(requested_gpus)
@@ -1571,6 +1559,17 @@ def _problem_hash(test_vector: str, options: Options) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _problem_label(test_vector: str, problem_hash: str) -> str:
+    """Name a problem by both of the things a reader needs.
+
+    The cross-compile phases key everything off the hash, but a hash on its own
+    can't be acted on: it takes an index.json lookup to learn which shape broke.
+    Carrying the test vector too makes a failure diagnosable from the log alone
+    while the hash still locates the bundle on disk.
+    """
+    return f"'{test_vector}' (problem {problem_hash})"
+
+
 def _run_pipeline(commands: List[List[str]],
                   env: Optional[Dict[str, str]] = None,
                   timeout: Optional[int] = None,
@@ -1764,9 +1763,15 @@ def run_compile_only(ctx: TuningContext) -> bool:
                        "(verification happens on the benchmark host)")
 
     all_ok = True
-    for test_vector in ctx.configs:
+    total = len(ctx.configs)
+    compiled = 0
+    skipped = 0
+    failed = 0
+    for position, test_vector in enumerate(ctx.configs, start=1):
+        progress = f"[{position}/{total}]"
         if test_vector.endswith(".mlir"):
             logger.error(f"--compile-only does not support .mlir test vectors: {test_vector}")
+            failed += 1
             all_ok = False
             if options.abort_on_error:
                 return False
@@ -1783,9 +1788,10 @@ def run_compile_only(ctx: TuningContext) -> bool:
         if not options.retune and current_commit != "unknown" and \
                 artifact_commit == current_commit:
             if os.path.isfile(os.path.join(problem_dir, "manifest.json.z")):
-                logger.info(f"Skipping already-compiled problem {problem_hash} "
+                logger.info(f"{progress} Skipping already-compiled problem {problem_hash} "
                             "(use --retune to recompile)")
                 _merge_index_json(root, options, problem_hash, test_vector, run_id)
+                skipped += 1
                 continue
             logger.warning(f"Recompiling problem {problem_hash}: index.json claims it was "
                            f"compiled at {current_commit} but {problem_dir} has no bundle")
@@ -1817,10 +1823,11 @@ def run_compile_only(ctx: TuningContext) -> bool:
         except subprocess.TimeoutExpired:
             logger.error(
                 format_error(
-                    f"compile-only kernel bundle timed out after {options.timeout}s "
-                    f"for problem {problem_hash}",
+                    f"{progress} compile-only kernel bundle timed out after "
+                    f"{options.timeout}s for {_problem_label(test_vector, problem_hash)}",
                     command=pipeline))
             _discard_problem(root, problem_dir, problem_hash)
+            failed += 1
             all_ok = False
             if options.abort_on_error:
                 return False
@@ -1832,8 +1839,14 @@ def run_compile_only(ctx: TuningContext) -> bool:
         if rc != 0:
             _discard_problem(root, problem_dir, problem_hash)
             raise_if_terminated(rc)
-            logger.error(f"compile-only kernel bundle failed for problem {problem_hash} "
-                         f"(exit {rc}):\n{err}")
+            logger.error(
+                format_error(
+                    f"{progress} compile-only kernel bundle failed for "
+                    f"{_problem_label(test_vector, problem_hash)}",
+                    command=pipeline,
+                    stderr=err,
+                    exit_code=rc))
+            failed += 1
             all_ok = False
             if options.abort_on_error:
                 return False
@@ -1841,12 +1854,47 @@ def run_compile_only(ctx: TuningContext) -> bool:
 
         # 2) Orchestration metadata (records this problem's compile commit).
         _merge_index_json(root, options, problem_hash, test_vector, run_id)
-        logger.info(f"Compiled problem {problem_hash}")
+        compiled += 1
+        logger.info(f"{progress} Compiled problem {problem_hash}")
+
+    logger.info(f"Compile phase: {compiled} compiled, {skipped} already up to date, "
+                f"{failed} failed, of {total} problem(s)")
+    if failed:
+        logger.error(f"{failed} problem(s) did not compile; their bundles were discarded, so a "
+                     "re-run retries them without --retune")
 
     return all_ok
 
 
-def run_benchmark_artifacts(ctx: TuningContext) -> bool:
+def _log_benchmark_summary(state_file: TuningStateFile, benchmarked: int, unsuccessful: int,
+                           bundle_faults: int, total_pending: int) -> None:
+    """Close a benchmark run with what happened and what to do about it.
+
+    Called from a ``finally``, so it also reports a run cut short by Ctrl+C --
+    the case where knowing what was banked matters most. The state counts cover
+    everything still outstanding for this target, including problems recorded
+    by earlier runs, since those are what ``--retry`` would act on.
+    """
+    logger.info(f"Benchmark phase: {benchmarked} benchmarked, {unsuccessful} unsuccessful, "
+                f"{bundle_faults} bundle fault(s), of {total_pending} pending problem(s)")
+
+    state = state_file.state
+    outstanding = [(count, name) for count, name in (
+        (state.failed_count(), "failed"),
+        (state.timed_out_count(), "timed_out"),
+        (state.gpu_timed_out_count(), "gpu_timed_out"),
+        (state.crashed_count(), "crashed"),
+    ) if count]
+    if not outstanding:
+        return
+
+    where = f" in {state_file.filepath}" if state_file.filepath else ""
+    logger.error("Unsuccessful problems recorded" + where + ": " +
+                 ", ".join(f"{count} {name}" for count, name in outstanding))
+    logger.error("Re-attempt them with --retry " + " ".join(name for _count, name in outstanding))
+
+
+def run_benchmark_artifacts(ctx: TuningContext, status_only: bool) -> bool:
     """--benchmark-artifacts: time shipped configs on the GPU, verify, write TSV."""
     options = ctx.options
     paths = ctx.paths
@@ -1857,14 +1905,68 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
     # target-option mismatches do not masquerade as missing problem directories.
     _validate_artifact_options(root, options)
 
-    # This mode intentionally starts a fresh benchmark run. Resume/state flags
-    # are rejected by TuningArgumentParser rather than being silently ignored.
-    if options.output != '-':
-        for output_path in (options.output, f"{options.output}.debug"):
+    # --retune restarts the run instead of extending it, so the previous run's
+    # records are dropped rather than added to. In-place tuning keeps every
+    # attempt, but this mode has always advertised one fresh TSV per run.
+    #
+    # They go before anything reads them: a state file loaded first would be
+    # written straight back out, leaving failures behind that this run is
+    # supposed to have forgotten. --status only reports, so it deletes nothing.
+    if options.retune and not status_only and options.output != '-':
+        for stale_path in (options.output, f"{options.output}.debug",
+                           get_state_filepath(options.output)):
             try:
-                os.remove(output_path)
+                os.remove(stale_path)
             except FileNotFoundError:
                 pass
+
+    # Resume reads the same two records as in-place tuning: the output TSV names
+    # the problems that succeeded, the state file names the ones that did not.
+    cache = (TunedConfigsCache() if options.retune else TunedConfigsCache.from_output_file(
+        options, ctx.conf_class))
+    state_file = TuningStateFile(get_state_filepath(options.output), options.chip, options.num_cu,
+                                 options.num_chiplets, options.tuning_space_kind, ctx.conf_class)
+    state = state_file.state
+
+    if cache.count() > 0:
+        logger.info(f"Found {cache.count()} benchmarked config(s) in {options.output}")
+    if state.crashed_count() > 0:
+        logger.warning(f"Found {state.crashed_count()} crashed config(s) in state file")
+    if state.timed_out_count() > 0:
+        logger.warning(f"Found {state.timed_out_count()} timed out config(s) in state file")
+    if state.gpu_timed_out_count() > 0:
+        logger.warning(f"Found {state.gpu_timed_out_count()} gpu-timed-out config(s) in state file")
+    if state.failed_count() > 0:
+        logger.warning(f"Found {state.failed_count()} failed config(s) in state file")
+
+    pending_configs = ctx.configs
+    skipped_successful = 0
+    skipped_unsuccessful = 0
+    if not options.retune:
+        pending_configs = [c for c in pending_configs if not cache.contains(c)]
+        skipped_successful = len(ctx.configs) - len(pending_configs)
+
+        before_filter = len(pending_configs)
+        pending_configs = [
+            c for c in pending_configs if not state.should_skip(c, options.retry_states)
+        ]
+        skipped_unsuccessful = before_filter - len(pending_configs)
+
+    if skipped_successful > 0:
+        logger.info(f"Skipping {skipped_successful} already benchmarked config(s) - use "
+                    "'--retune' to benchmark them again")
+    if skipped_unsuccessful > 0:
+        logger.info(
+            f"Skipping {skipped_unsuccessful} unsuccessful config(s) - use '--retry <state>' to retry"
+        )
+
+    if status_only:
+        logger.info(f"{len(pending_configs)}/{len(ctx.configs)} config(s) pending benchmarking")
+        return True
+
+    if not pending_configs:
+        logger.info("No configurations to benchmark")
+        return True
 
     timing_args = [
         f"--rep={options.rep_ms}",
@@ -1883,130 +1985,184 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
         logger.warning("Debug output disabled when writing to stdout")
 
     debug_cm = (DebugFileWriter(f"{options.output}.debug") if debug_enabled else nullcontext())
+    gpu_logger = get_gpu_logger(gpu_id)
+    total_pending = len(pending_configs)
+    benchmarked = 0
+    unsuccessful = 0
+    bundle_faults = 0
     all_ok = True
-    with OutputFileWriter(options.output, options) as results_writer, \
-            debug_cm as debug_writer:
-        for test_vector in ctx.configs:
-            if test_vector.endswith(".mlir"):
-                logger.error(f"--benchmark-artifacts does not support .mlir test vectors: "
-                             f"{test_vector}")
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-
-            problem_hash = _problem_hash(test_vector, options)
-            problem_dir = os.path.join(root, "problems", problem_hash)
-            if not os.path.isdir(problem_dir):
-                logger.error(f"no artifacts for problem {problem_hash} in {problem_dir}")
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-
-            # Build-commit guardrail (orchestrator-owned): the artifacts were
-            # compiled by tools built from index.json's per-problem commit; refuse
-            # to benchmark them with a binary built from a different commit, since
-            # the bundle format and grid logic can drift across commits.
-            if not _check_artifact_commit(root, problem_hash, options):
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-
-            command_line = test_vector.split(sep=" ")
-            config = ctx.conf_class.from_command_line(command_line, options.arch, options.num_cu,
-                                                      options.num_chiplets)
-
-            # Benchmark. The C++ tool runs the target-identity guardrail
-            # internally and emits perfConfig\t<ns|N/A>.
-            td_cmd = [
-                paths.mlir_paths.rocmlir_tuning_driver_path, f"--benchmark-artifacts={problem_dir}"
-            ] + timing_args
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            start_time = time.time()
-            try:
-                rc, out, err = _run_pipeline([td_cmd],
-                                             env=make_isolated_gpu_env(gpu_id),
-                                             timeout=options.timeout)
-            except subprocess.TimeoutExpired:
-                logger.error(
-                    format_error(
-                        f"benchmark timed out after {options.timeout}s for problem "
-                        f"{problem_hash}",
-                        command=" ".join(td_cmd),
-                        gpu_id=gpu_id))
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-            duration = time.time() - start_time
-            raise_if_terminated(rc)
-            if rc == GPU_TIMEOUT_EXIT_CODE:
-                logger.error(
-                    format_error(
-                        f"GPU run hung for problem {problem_hash} "
-                        f"(exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
-                        command=" ".join(td_cmd),
-                        stderr=err,
-                        exit_code=rc,
-                        gpu_id=gpu_id))
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-            if rc != 0:
-                logger.error(f"benchmark failed for problem {problem_hash} (exit {rc}):\n{err}")
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-
-            # Winner selection. Suppress find_best_perfconfig's in-process verify
-            # via a copy (Options is frozen); verification is run separately
-            # below when requested.
-            winning_config, max_tflops, entries = find_best_perfconfig(
-                out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False),
-                gpu_id)
-
-            if winning_config is None:
-                logger.error(f"no valid perf config for problem {problem_hash}")
-                all_ok = False
-                if options.abort_on_error:
-                    return False
-                continue
-
-            # Verification (opt-in). The CPU reference is recomputed on this host
-            # via the standard verifier path; only the winning config is checked
-            # unless --verify-all-perfconfigs is set.
-            if options.verify_winning_config or options.verify_all_perfconfigs:
-                to_verify = [winning_config]
-                if options.verify_all_perfconfigs:
-                    to_verify = _successful_perfconfigs(out.splitlines())
-                try:
-                    for pc in to_verify:
-                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id)
-                        if np.isnan(verify_ns):
-                            raise TuningError(f"Verification returned NaN for perfconfig '{pc}'")
-                except TuningError as e:
-                    logger.error(f"verification failed for problem {problem_hash}: {e}")
+    try:
+        with OutputFileWriter(options.output, options) as results_writer, \
+                debug_cm as debug_writer:
+            for position, test_vector in enumerate(pending_configs, start=1):
+                progress = f"[{position}/{total_pending}]"
+                if test_vector.endswith(".mlir"):
+                    gpu_logger.error(
+                        f"{progress} --benchmark-artifacts does not support .mlir test "
+                        f"vectors: {test_vector}")
+                    bundle_faults += 1
                     all_ok = False
                     if options.abort_on_error:
                         return False
                     continue
 
-            result = TuningResult(test_vector=test_vector,
-                                  success=True,
-                                  winning_config=winning_config,
-                                  max_tflops=max_tflops,
-                                  entries=entries,
-                                  timestamp=timestamp,
-                                  duration_seconds=max(duration, 0.1))
-            results_writer.write_result(result)
-            if debug_writer:
-                debug_writer.write_result(result)
-            logger.info(f"Benchmarked problem {problem_hash}: winner '{winning_config}' "
-                        f"({max_tflops:.1f} TFlops)")
+                problem_hash = _problem_hash(test_vector, options)
+                label = _problem_label(test_vector, problem_hash)
+                problem_dir = os.path.join(root, "problems", problem_hash)
+                if not os.path.isdir(problem_dir):
+                    gpu_logger.error(f"{progress} no artifacts for {label} in {problem_dir}; the "
+                                     "bundle is incomplete for this target")
+                    bundle_faults += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+
+                # Build-commit guardrail (orchestrator-owned): the artifacts were
+                # compiled by tools built from index.json's per-problem commit; refuse
+                # to benchmark them with a binary built from a different commit, since
+                # the bundle format and grid logic can drift across commits.
+                if not _check_artifact_commit(root, problem_hash, options):
+                    bundle_faults += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+
+                command_line = test_vector.split(sep=" ")
+                config = ctx.conf_class.from_command_line(command_line, options.arch,
+                                                          options.num_cu, options.num_chiplets)
+
+                # Benchmark. The C++ tool runs the target-identity guardrail
+                # internally and emits perfConfig\t<ns|N/A>.
+                td_cmd = [
+                    paths.mlir_paths.rocmlir_tuning_driver_path,
+                    f"--benchmark-artifacts={problem_dir}"
+                ] + timing_args
+                # Everything rejected above faults the bundle rather than the
+                # problem, so it stays unrecorded and the next run retries it.
+                # From here on the outcome belongs to this problem.
+                state_file.set_running(test_vector)
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                start_time = time.time()
+                try:
+                    rc, out, err = _run_pipeline([td_cmd],
+                                                 env=make_isolated_gpu_env(gpu_id),
+                                                 timeout=options.timeout)
+                except subprocess.TimeoutExpired:
+                    gpu_logger.error(
+                        format_error(
+                            f"{progress} benchmark timed out after {options.timeout}s "
+                            f"for {label}",
+                            command=" ".join(td_cmd),
+                            gpu_id=gpu_id))
+                    state_file.set_timed_out(test_vector)
+                    unsuccessful += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+                duration = time.time() - start_time
+                raise_if_terminated(rc)
+                if rc == GPU_TIMEOUT_EXIT_CODE:
+                    gpu_logger.error(
+                        format_error(
+                            f"{progress} GPU run hung for {label} "
+                            f"(exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
+                            command=" ".join(td_cmd),
+                            stdout=out,
+                            stderr=err,
+                            exit_code=rc,
+                            gpu_id=gpu_id))
+                    state_file.set_gpu_timed_out(test_vector)
+                    unsuccessful += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+                if rc != 0:
+                    gpu_logger.error(
+                        format_error(f"{progress} benchmark failed for {label}",
+                                     command=" ".join(td_cmd),
+                                     stdout=out,
+                                     stderr=err,
+                                     exit_code=rc,
+                                     gpu_id=gpu_id))
+                    state_file.set_failed(test_vector)
+                    unsuccessful += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+
+                # Winner selection. Suppress find_best_perfconfig's in-process verify
+                # via a copy (Options is frozen); verification is run separately
+                # below when requested.
+                winning_config, max_tflops, entries = find_best_perfconfig(
+                    out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False),
+                    gpu_id)
+
+                if winning_config is None:
+                    gpu_logger.error(
+                        format_error(
+                            f"{progress} no perf config produced a valid measurement for {label}",
+                            command=" ".join(td_cmd),
+                            stdout=out,
+                            stderr=err,
+                            gpu_id=gpu_id))
+                    state_file.set_failed(test_vector)
+                    unsuccessful += 1
+                    all_ok = False
+                    if options.abort_on_error:
+                        return False
+                    continue
+
+                # Verification (opt-in). The CPU reference is recomputed on this host
+                # via the standard verifier path; only the winning config is checked
+                # unless --verify-all-perfconfigs is set.
+                if options.verify_winning_config or options.verify_all_perfconfigs:
+                    to_verify = [winning_config]
+                    if options.verify_all_perfconfigs:
+                        to_verify = _successful_perfconfigs(out.splitlines())
+                    try:
+                        for pc in to_verify:
+                            verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id)
+                            if np.isnan(verify_ns):
+                                raise TuningError(
+                                    f"Verification returned NaN for perfconfig '{pc}'")
+                    except TuningError as e:
+                        gpu_logger.error(
+                            format_error(f"{progress} verification failed for {label}: {e}",
+                                         command=" ".join(td_cmd),
+                                         stdout=out,
+                                         gpu_id=gpu_id))
+                        state_file.set_failed(test_vector)
+                        unsuccessful += 1
+                        all_ok = False
+                        if options.abort_on_error:
+                            return False
+                        continue
+
+                result = TuningResult(test_vector=test_vector,
+                                      success=True,
+                                      winning_config=winning_config,
+                                      max_tflops=max_tflops,
+                                      entries=entries,
+                                      timestamp=timestamp,
+                                      duration_seconds=max(duration, 0.1))
+                results_writer.write_result(result)
+                if debug_writer:
+                    debug_writer.write_result(result)
+                # Cleared only after the row is on disk: a crash in between leaves a
+                # stale RUNNING entry, but the TSV already covers the problem and the
+                # cache filter drops it before the state filter is consulted.
+                state_file.set_succeeded(test_vector)
+                benchmarked += 1
+                gpu_logger.info(f"{progress} Benchmarked problem {problem_hash}: winner "
+                                f"'{winning_config}' ({max_tflops:.1f} TFlops)")
+    finally:
+        state_file.finalize_interrupted()
+        _log_benchmark_summary(state_file, benchmarked, unsuccessful, bundle_faults, total_pending)
 
     return all_ok
 
@@ -2435,10 +2591,12 @@ def parse_arguments(args=None) -> argparse.Namespace:
         metavar='DIR',
         help="Benchmark phase (GPU): time the configs compiled into <DIR> by a "
         "prior --compile-only run, optionally verify (see --verify-winning-config), "
-        "and write a fresh TSV, replacing any existing output. Does not support "
-        "--retune, --retry, or --status. Uses the lowest detected GPU by default; "
-        "--gpus must select exactly one GPU when specified. Requires a build configured with "
-        "-DLLVM_ENABLE_ZSTD=FORCE_ON.")
+        "and write the results as a TSV. Resumes by default, skipping problems already "
+        "recorded in the output TSV or marked unsuccessful in its .state file; --retune "
+        "discards both and starts over, --retry <state> re-attempts unsuccessful ones, and "
+        "--status reports what is left without benchmarking. Uses the lowest detected GPU "
+        "by default; --gpus must select exactly one GPU when specified. Requires a build "
+        "configured with -DLLVM_ENABLE_ZSTD=FORCE_ON.")
     logging_group = parser.add_mutually_exclusive_group()
 
     logging_group.add_argument("-q",
@@ -2765,7 +2923,7 @@ def main(args=None):
         if compile_only_dir:
             succeeded = run_compile_only(ctx)
         elif benchmark_artifacts_dir:
-            succeeded = run_benchmark_artifacts(ctx)
+            succeeded = run_benchmark_artifacts(ctx, status_only=parsed_args.status)
         else:
             succeeded = tune_configs(ctx, status_only=parsed_args.status)
     except KeyboardInterrupt:
