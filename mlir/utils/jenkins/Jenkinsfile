@@ -675,9 +675,9 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-// The upstream MLIR suite is host-only, so its result does not depend on the GPU.
-// Run it on the mfma codepath only, like the static checks do; mfma is enabled
-// whenever nightly runs on private CI.
+// The upstream MLIR suite runs on one codepath, like the static checks do: only its
+// six Integration/GPU/ROCM tests touch the GPU, so the rest would repeat identically
+// on every row. mfma is the row that is always enabled when nightly runs.
 boolean runsCheckMlir(String codepath) {
     return params.nightly && codepath == "mfma"
 }
@@ -690,6 +690,7 @@ void build_fixedE2ETests(String codepath) {
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCMLIR_ENABLE_BENCHMARKS=${params.nightly ? 'hipblaslt' : ''}
+              -DMLIR_INCLUDE_INTEGRATION_TESTS=${runsCheckMlir(codepath) ? 'ON' : 'OFF'}
               -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
