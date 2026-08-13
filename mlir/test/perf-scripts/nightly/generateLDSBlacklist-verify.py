@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Drift check for the compiled-in LDS blacklist (LdsBlacklistPerfconfigs.inc).
 #
 # Re-lowers a random sample of the perf configs currently recorded in the

@@ -1,6 +1,7 @@
 //===- RockPrepareLLVM.cpp - prepares the generated code for LLVM       ---===//
 //
 // Copyright 2026 AMD
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

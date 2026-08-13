@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Smoke test: ``perfRunner.py --help`` parses cleanly and advertises the op
 # list. Lives under ``runtime/`` because perfRunner.main() calls
 # ``get_arch()`` (hip device probe) before argparse, so even ``--help``
