@@ -7,10 +7,10 @@
 
 // We specified --two-stage-topk=2, so EXACTLY 2 configs
 // should be measured:
-// CHECK-COUNT-2: {{gemm:v5:[^[:space:]]+[\t ]+[0-9]}}
-// CHECK-NOT: {{gemm:v5:[^[:space:]]+[\t ]+[0-9]}}
+// CHECK-COUNT-2: {{gemm:[^[:space:]]+[\t ]+[0-9]}}
+// CHECK-NOT: {{gemm:[^[:space:]]+[\t ]+[0-9]}}
 
 // The rest of the configs compiled and ran at the coarse budget but not in
 // topK, so they must be reported as `Discarded`.
 
-// OUTSIDETOPK: {{gemm:v5:[^[:space:]]+[\t ]+Discarded}}
+// OUTSIDETOPK: {{gemm:[^[:space:]]+[\t ]+Discarded}}

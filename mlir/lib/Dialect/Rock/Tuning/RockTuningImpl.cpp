@@ -74,23 +74,14 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
-  auto arch = rock::getArchValue(op);
-  bool hasAcceleration = false;
-  if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmOp);
-  else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmGemmOp);
-  else
-    llvm_unreachable("Unexpected op");
-
+  // M/N per-block tiles are the same for the accel and non-accel paths
+  // ({16, 32, 64, 128, 256}), except that the non-accel path drops M/N *pairs*
+  // that are too slow to compile (see isOverwideNonAccelMNPair). The attention
+  // (gemm+gemm) non-accel path keeps the {32, 64, 128} space and is handled
+  // separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
-  if (hasAcceleration) {
-    for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
-      dPerBlockList.push_back(dPerBlock);
-  } else {
-    // non-accel
-    dPerBlockList = {32, 64, 128, 256};
-  }
+  for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
+    dPerBlockList.push_back(dPerBlock);
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
   // tile that covers the dimension tightly and drop the now-oversized larger
@@ -144,6 +135,16 @@ static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
                                    uint32_t kPerBlock) {
   int64_t maxMN = std::max(mPerBlock, nPerBlock);
   return static_cast<int64_t>(kPerBlock) * maxMN > kTritonMaxTensorNumElements;
+}
+
+// The non-accel (FMA) blockwise GEMM is a fully unrolled scalar loop, so M/N
+// pairs with both tiles >= 128 cost ~70% of the space's compile time while
+// never winning a shape in exhaustive Navi tuning.
+static bool isOverwideNonAccelMNPair(uint32_t mPerBlock, uint32_t nPerBlock) {
+  constexpr uint32_t kWideMN = 256;
+  constexpr uint32_t kNarrowMN = 128;
+  return std::max(mPerBlock, nPerBlock) >= kWideMN &&
+         std::min(mPerBlock, nPerBlock) >= kNarrowMN;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -370,8 +371,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
-  // dedicated non-accel branch and caps by the actual M/N dimension).
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (the same
+  // {16, 32, 64, 128, 256} space as the accel paths, capped by the actual M/N
+  // dimension); createGemmTuningRangeBF then drops the overwide M/N pairs.
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -463,7 +465,10 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  // Non-accel path.
+  // Non-accel path. Attention keeps the reduced {32, 64, 128} M/N space:
+  // exhaustive tuning on Navi showed neither 16 nor 256 is worth widening the
+  // attention tuning space (16 helped only one shape, 256 never won and is
+  // LDS-bound). See AIROCMLIR-938.
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64, 128, 256}) {
@@ -703,6 +708,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
       getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
+  bool isNonAccel = !rock::hasAccel(rock::getArchValue(gemmOp), gemmOp);
 
   // Tile shapes known to overflow LDS for this (arch, input dtype) are dropped
   // up front: LDS usage of a plain GEMM is independent of M/N/K, so this cache
@@ -716,6 +722,10 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
+      // Skip M/N pairs that are too costly to compile to be worth tuning on
+      // the FMA path (see isOverwideNonAccelMNPair).
+      if (isNonAccel && isOverwideNonAccelMNPair(gemmMPerBlock, gemmNPerBlock))
+        continue;
       for (uint32_t gemmKPerBlock :
            computeKPerBlock(gemmOp, kind, gemmMPerBlock, gemmNPerBlock)) {
         // Skip tiles whose lowered index/mask tensors would exceed Triton's
@@ -735,7 +745,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   // projection depends only on fields fixed by this point, so a
                   // blacklisted tile is dead for every inner splitK/wave/CTA
                   // combination. Field order must match GemmLdsKey /
-                  // PROJECTION_INDICES.
+                  // PROJECTION_NAMES.
                   if (!ldsBlacklistSet.empty() &&
                       ldsBlacklistSet.count({gemmMPerBlock, gemmNPerBlock,
                                              gemmKPerBlock, numWaves,
@@ -853,7 +863,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setPrimary =
       mod->walk([&](rock::RockGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -862,7 +872,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setGemmGemm =
       mod->walk([&](rock::RockGemmGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -1545,7 +1555,7 @@ bool tuningTableUpdate(TuningTable *perfTable, StringRef problem,
 
 LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
                                 SmallVectorImpl<char> &out) {
-  SmallString<2048> problem;
+  SmallString<ROCMLIR_TUNING_KEY_BUFSZ> problem;
   if (failed(getTuningProblemStr(mod, problem)))
     return failure();
   llvm::sys::SmartScopedReader<true> guard(perfTable->lock);

@@ -70,33 +70,33 @@ def _decode_cmd_output(data: bytes) -> str:
 class PerfConfig:
     """Serialized perf-config for the Triton-backed rocMLIR pipeline.
 
-    The format is a ``<kind>:<version>:`` string with comma-separated integer
-    fields. Two ``kind`` values exist (see RockAttrDefs.td):
+    The canonical format is a ``<kind>:key=value,...`` list. Only the tunable
+    fields are emitted here; the trailing knob fields are omitted and default to
+    -1 on parse (see ``GemmParamsAttr::get`` in RockDialect.cpp). Two ``kind``
+    values exist (see RockAttrDefs.td):
 
-    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels), emitted as
-      ``gemm:v1:`` with 11 fields:
+    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels), with 11
+      fields:
         mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
         matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
 
     * ``attn`` / GemmGemmParamsAttr (used for attention / gemm-gemm kernels),
-      emitted as ``attn:v6:`` with 12 fields plus 7 trailing knob fields (all
-      left at the ``-1`` "use default" sentinel here):
+      with 12 fields:
         mPerBlockG0, nPerBlockG0, nPerBlockG1, kPerBlock, kpack, numCTAs,
         numWaves, matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
         gridGroupSize
       ``nPerBlockG1`` is the second-gemm N/head tile; ``0`` means untiled.
-
-    See ``parsePerfConfigStr`` in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
     """
 
-    # Number of tunable fields per kind (before the attn:v6 trailing knobs).
-    # ``attn`` carries the extra ``nPerBlockG1`` field (the 3rd one).
-    _NUM_FIELDS = {'gemm': 11, 'attn': 12}
-    # Number of trailing knob fields in the attn:v6 format; -1 means "use the
-    # backend default" for each (matches kKnobDefault/kNumKnobFieldsV6 in
-    # RockDialect.cpp).
-    _V6_NUM_KNOBS = 7
-    _KNOB_DEFAULT = -1
+    _SHARED_KEYS = ("kPerBlock", "kpack", "numCTAs", "numWaves", "matrixInstrNonkdim",
+                    "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize")
+    _KEYS = {
+        'gemm': ("mPerBlock", "nPerBlock") + _SHARED_KEYS,
+        'attn': ("mPerBlockG0", "nPerBlockG0", "nPerBlockG1") + _SHARED_KEYS,
+    }
+    # ``attn`` carries one tunable more than ``gemm``: the ``nPerBlockG1``
+    # second-gemm N/head tile, which sits 3rd.
+    _NUM_FIELDS = {kind: len(keys) for kind, keys in _KEYS.items()}
 
     def __init__(self, config: Sequence[int], kind: str = 'gemm'):
         if kind not in self._NUM_FIELDS:
@@ -109,14 +109,8 @@ class PerfConfig:
         self._kind = kind
 
     def __str__(self):
-        fields = self._config
-        version = 'v1'
-        if self._kind == 'attn':
-            # attn:v6 appends the default-valued knob fields after the tunables.
-            version = 'v6'
-            fields = (*fields, *([self._KNOB_DEFAULT] * self._V6_NUM_KNOBS))
-        suffix = ','.join(str(v) for v in fields)
-        return f'{self._kind}:{version}:{suffix}'
+        body = ','.join(f'{k}={v}' for k, v in zip(self._KEYS[self._kind], self._config))
+        return f'{self._kind}:{body}'
 
 
 def multiline_repr(obj, num_fields=4):
@@ -560,7 +554,7 @@ PERF_CONFIG_OPTIONS = {
     # heuristic path is also exercised.
     'waves_per_eu': [0, 1, 2, 4, 8],
     'grid_group_size': [0, 1, 2, 4, 8],
-    # attn-only second-gemm N/head tile (the attn:v6 nPerBlockG1 field). These
+    # attn-only second-gemm N/head tile (the attn nPerBlockG1 field). These
     # are the non-zero (tiled) options; the untiled case (0) is sampled
     # separately (see sample_perf_config). All powers of two so the chunk count
     # (gemm1N / nPerBlockG1, after gemm1N is padded to a power of two in
@@ -797,9 +791,9 @@ def sample_perf_config(rng: random.Random,
                        split_k_choices: Sequence[int],
                        pow2_only: bool = False,
                        is_attention: bool = False) -> Tuple[int, ...]:
-    """Returns one random perf-config tuple: 11 fields for gemm/conv
-    (gemm:v1), or 12 fields for attention / gemm+gemm (attn:v6) with the
-    ``nPerBlockG1`` second-gemm N/head tile spliced in as the 3rd field.
+    """Returns one random perf-config tuple: 11 fields for gemm/conv, or 12
+    fields for attention / gemm+gemm, with the ``nPerBlockG1`` second-gemm
+    N/head tile spliced in as the 3rd field.
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
@@ -830,7 +824,7 @@ def sample_perf_config(rng: random.Random,
     return (
         rng.choice(m_choices),
         rng.choice(n_choices),
-        # attn:v6 inserts nPerBlockG1 here as the 3rd field; gemm:v1 omits it.
+        # attn inserts nPerBlockG1 here as the 3rd field; gemm omits it.
         # Untiled (0) half the time, otherwise a power-of-two tile.
         *([0 if rng.choice([True, False]) else rng.choice(opts['n_per_block_g1'])]
           if is_attention else []),

@@ -259,7 +259,8 @@ void RockTensorToTritonPtrPass::runOnOperation() {
     std::string kernelName = funcOp.getName().str();
     if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
             rock::GridSizeAttr::getMnemonic())) {
-      moduleOp->setAttr("rock.grid_size." + kernelName, gridAttr);
+      moduleOp->setAttr(rock::GridSizeAttr::getModuleAttrName(kernelName),
+                        gridAttr);
     }
 
     // Collect rock.prefill arg attributes.

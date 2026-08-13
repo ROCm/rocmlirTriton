@@ -13,6 +13,7 @@
 #ifndef MLIR_DIALECT_ROCK_ROCKTUNINGTYPE_H
 #define MLIR_DIALECT_ROCK_ROCKTUNINGTYPE_H
 
+#include "mlir-c/Dialect/Rock.h"
 #include "mlir-c/Dialect/RockEnums.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
@@ -62,7 +63,9 @@ bool tuningSetStr(ModuleOp &mod, StringRef perfConfig);
 // thread-safe.
 struct TuningTable {
   llvm::sys::SmartRWMutex<true> lock;
-  llvm::StringMap<std::pair<SmallString<64>, float>> tuningMap;
+  llvm::StringMap<
+      std::pair<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>, float>>
+      tuningMap;
 };
 
 TuningTable *tuningTableCreate();
