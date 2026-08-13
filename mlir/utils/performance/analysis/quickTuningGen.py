@@ -15,7 +15,7 @@ import pandas as pd
 import pulp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from perfCommonUtils import SPLITK_IDX  # noqa: E402
+from perfCommonUtils import SPLITK_KEY, parse_perfconfig  # noqa: E402
 
 # Column definitions for grouping problems
 GEMM_COLUMNS = ['TransA', 'TransB', 'TransO', 'G', 'M', 'K', 'N']
@@ -69,20 +69,11 @@ def get_target_columns(op):
         raise ValueError(f"Unknown operation: {op}")
 
 
-def parse_perfconfig(perfconfig):
-    """Parse a perfconfig string into format, version, and params."""
-    parts = perfconfig.split(":")
-    if len(parts) != 3:
-        raise ValueError(f"Invalid perfconfig format: {perfconfig}")
-    return parts[0], int(parts[1][1:]), parts[2].split(",")
-
-
 def get_splitk_value(perfconfig):
-    """Extract the Split-K value from a perfconfig string."""
-    fmt, version, params = parse_perfconfig(perfconfig)
-    if SPLITK_IDX < len(params):
-        return params[SPLITK_IDX]
-    return None
+    """Extract the Split-K value (as a string) from a perfconfig string."""
+    _, params = parse_perfconfig(perfconfig)
+    value = params.get(SPLITK_KEY)
+    return None if value is None else str(value)
 
 
 # =============================================================================
@@ -346,7 +337,9 @@ def update_inc_file(results, arch, op):
         class_name = get_class_name(arch, dtype, op)
         param_name, count_name = get_param_names(arch, dtype, op)
 
-        # Generate definition
+        # Generate definition. Perf configs are `prefix:key=value,...` strings
+        # containing only identifier, digit, `-`, `=`, `,` and `:` characters,
+        # so they embed directly into a C++ string literal without escaping.
         def_lines = [f"const StringRef {class_name}::{param_name}[] = {{"]
         for i, cfg in enumerate(configs):
             comma = "," if i < len(configs) - 1 else ""
