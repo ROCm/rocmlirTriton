@@ -333,8 +333,8 @@ void RockSetReductionLayoutPass::runOnOperation() {
   //      the `rock.conv_kernel` attribute).
   //    0 (off): disable the rewrite entirely; no kernel is touched.
   //    1 (on): force the rewrite on every kernel.
-  // TODO: Investigate if this can be beneficial for non-convolution kernels.
-  // https://amd-hub.atlassian.net/browse/AIROCMLIR-1049
+  // TODO(AIROCMLIR-1049): Investigate if this can be beneficial for
+  // non-convolution kernels.
   if (useReductionLayout == 0)
     return;
   bool forceAll = useReductionLayout == 1;
