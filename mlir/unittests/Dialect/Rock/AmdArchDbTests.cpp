@@ -62,6 +62,35 @@ TEST(AmdArchDbTest, ParseArchString) {
   }
 }
 
+// --- isFastAtomicMaxSupported ---
+
+TEST(AmdArchDbTest, FastAtomicMaxF32) {
+  ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", e.f32)); // GCN5_1
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx908", e.f32)); // CDNA1
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f32)); // CDNA2
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx942", e.f32)); // CDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f32)); // CDNA4
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1010", e.f32)); // RDNA1
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1030", e.f32)); // RDNA2
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", e.f32)); // RDNA3
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1170", e.f32)); // GFX1170
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1200", e.f32)); // RDNA4
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", e.f32)); // GFX1250
+}
+
+TEST(AmdArchDbTest, FastAtomicMaxNonF32Unsupported) {
+  ArchTestEnv e;
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f16));  // CDNA2
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f16));  // CDNA4
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1010", e.f16)); // RDNA1
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1030", e.f16)); // RDNA2
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", e.f16)); // RDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1170", e.f16)); // GFX1170
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1200", e.f16)); // RDNA4
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", e.f16)); // GFX1250
+}
+
 // --- getMaxNumChiplets ---
 
 TEST(AmdArchDbTest, MaxNumChiplets) {
@@ -431,6 +460,27 @@ TEST(AmdArchDbTest, MaxKpack) {
   EXPECT_EQ(getMaxKpack("gfx1170"), 2); // GFX1170
   EXPECT_EQ(getMaxKpack("gfx1200"), 2); // RDNA4
   EXPECT_EQ(getMaxKpack("gfx1250"), 1); // GFX1250
+}
+
+// --- Dtype overload of isFastAtomicMaxSupported ---
+//
+// A thin adapter over the Type-based overload; the tests below mirror a subset
+// of the Type-overload cases above and serve to catch regressions in the
+// internal Dtype -> mlir::Type mapping.
+
+TEST(AmdArchDbTest, FastAtomicMaxDtypeF32) {
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", Dtype::F32)); // GCN5_1
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", Dtype::F32)); // CDNA4
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", Dtype::F32)); // RDNA3
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1170", Dtype::F32)); // GFX1170
+  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", Dtype::F32)); // GFX1250
+}
+
+TEST(AmdArchDbTest, FastAtomicMaxDtypeNonF32Unsupported) {
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::F16));  // RDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::F16));  // GFX1250
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::BF16)); // RDNA3
+  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::BF16)); // GFX1250
 }
 
 // --- archSupportsAccelFp8 ---

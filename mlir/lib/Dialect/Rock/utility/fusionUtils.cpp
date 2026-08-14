@@ -148,6 +148,33 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(ModuleOp mod) {
   return testFusionLegalitySplitK(func);
 }
 
+LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
+  // Only reduce-max needs an arch gate. Atomic add is always safe to emit:
+  // where the hardware lacks a native instruction the backend expands it to a
+  // compare-and-swap loop. Float atomic max gets no such expansion, because it
+  // lowers to a buffer-atomic intrinsic that AtomicExpandPass never sees, so
+  // fusing it on an unsupported arch is a hard codegen failure rather than a
+  // slow path.
+  WalkResult walkResult = func.walk([&](rock::ReduceOp reduceOp) -> WalkResult {
+    if (reduceOp.getReduceMethod() != ReduceMethod::Max)
+      return WalkResult::advance();
+    auto outElemType = reduceOp.getResult().getType().getElementType();
+    if (!isFastAtomicMaxSupported(rock::getArchValue(reduceOp), outElemType))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+
+  return success(!walkResult.wasInterrupted());
+}
+
+LogicalResult mlir::rock::testFusionLegalityReduce(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  assert(std::distance(funcs.begin(), funcs.end()) &&
+         "expected ModuleOp containing a single func::FuncOp");
+  func::FuncOp func = *(funcs.begin());
+  return testFusionLegalityReduce(func);
+}
+
 LogicalResult mlir::rock::testFusionLegalityBwdDataConv(func::FuncOp func) {
   // For right now, no BwdDataConv ops are fusible
   WalkResult walkResult = func.walk([&](Operation *op) -> WalkResult {
