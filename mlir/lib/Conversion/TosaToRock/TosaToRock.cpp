@@ -3451,7 +3451,7 @@ public:
       outputInitVal = rw.getFloatAttr(
           elementType, APFloat::getInf(APFloat::IEEEsingle(), true));
     } else {
-      return rw.notifyMatchFailure(op, "We only support F32 reductions, yet.");
+      return rw.notifyMatchFailure(op, "We only support F32 reduce-max, yet.");
     }
     return matchAndRewriteReductions(op, rock::ReduceMethod::Max, outputInitVal,
                                      rw);
