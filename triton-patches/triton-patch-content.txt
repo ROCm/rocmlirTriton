@@ -12,12 +12,25 @@ patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-gfx1170.patch
 patch-optimize-epilogue-rock-metadata.patch
+patch-partitionloops-clang-cl.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
 patch11118.patch
+
+patch-partitionloops-clang-cl.patch
+  Upstream PR: https://github.com/triton-lang/triton/pull/11114
+  Upstream title: Fix getPartition overload ambiguity with clang-cl
+  Changes
+  partitions.getPartition((int)0) to partitions.getPartition(0u) in
+  lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp.
+  `(int)0` is also a null-pointer constant, so under clang-cl the call is
+  ambiguous between getPartition(unsigned) and getPartition(Operation*); an
+  explicitly unsigned literal selects the intended getPartition(unsigned)
+  overload. No-op for GCC/Clang on Linux, which resolve the overload fine.
+  Keep until the vendored Triton revision contains the upstream fix.
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -90,9 +103,28 @@ patch-gfx1170.patch
   RDNA4 for the matrix engine (getWmmaVersion -> v2, supportMaximumMinimum,
   scaled-blocked decomposition). Also wires gfx117 into compiler.py
   is_in_thread_transpose_enabled and adds RDNA3/gfx1170 lit coverage. Carries
-  TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, fp8 dot4 in
-  DotOpToLLVM/FMA, i4 WMMA) documenting latent perf gaps that are correct via
-  the software/upcast fallback today.
+  TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, i4 WMMA)
+  documenting latent perf gaps that are correct via the software/upcast
+  fallback today.
+
+  Also implements the fp8 dot4 FMA path that gfx1170 and RDNA4 share.
+  TargetFeatures::supportsFp8Dot4Fma gates {GFX1170, RDNA4}, isLegalFMAForm
+  admits fp8/bf8 operand pairs with k % 4 == 0, and DotOpToLLVM/FMA selects the
+  matching llvm.amdgcn.dot4.f32.{fp8,bf8}.{fp8,bf8} for all four pairings.
+  A and B may differ, since each ordering has its own instruction.
+
+  The path is not reachable through accelerate-matmul today: BlockedToWMMA
+  claims every fp8 dot on these targets except K == 1, and K == 1 in turn fails
+  the k % 4 == 0 requirement. Unlike MFMA, which declines on
+  inputKSize % kDim != 0 and hands off to FMA, WMMA has no K-divisibility guard,
+  so the whole packed-dot FMA family (f16 fdot2, i8 sdot4, fp8 dot4) is latent
+  on WMMA targets. Coverage is therefore at the Conversion level rather than end
+  to end: test/Conversion/amd/fp8_dot4.mlir feeds blocked fp8 dots straight into
+  --convert-triton-amdgpu-to-llvm on gfx1170 and gfx1200, pinning all four
+  FP8/BF8 operand pairings.
+
+  The WMMA v2 conversion regression also covers all four OCP fp8/bf8 operand
+  combinations and their exact LLVM intrinsics.
 
   Drop this patch on the next Triton bump that pulls gfx1170 support upstream
   into external/triton.

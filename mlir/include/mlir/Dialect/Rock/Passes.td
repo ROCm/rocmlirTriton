@@ -470,6 +470,10 @@ def ResolveKernelLaunchParamsPass
        profile-scratch pointer arguments to every kernel.  If they are unused
        in the IR, this pass strips them from the function signature.
 
+    The pass rejects kernel launches whose total workitems are beyond what is
+    supported by the runtime's limit of the AMDGPU dispatch packet. Such
+    launches are marked not applicable so tuning can skip the configuration.
+
     The pass also validates that `ttg.shared` does not exceed the hardware LDS
     limit for the target architecture (read from the `rock.arch` attribute on
     the kernel function).

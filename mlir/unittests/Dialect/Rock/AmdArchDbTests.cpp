@@ -369,6 +369,12 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
   // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
   EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::WMMA); // GFX1170 (fp8 WMMA v2)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (fp8 x bf8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x fp8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x bf8)
 }
 
 // gfx115x (gfx1150/gfx1151) is RDNA3.5: it carries a gfx11 major number just
@@ -394,6 +400,12 @@ TEST(AmdArchDbTest, MatrixAccelRdna35Gfx1150Boundary) {
   // whereas gfx1170 (WMMA v2) returns WMMA for the same inputs.
   EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::None); // RDNA3.5 (no fp8 WMMA; gfx1170 has it)
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::None);
   // Fast atomic add is F32-only on RDNA3(.5) (no packed f16/bf16), unlike
   // RDNA4.
   EXPECT_TRUE(isFastAtomicAddSupported("gfx1150", e.f32));   // RDNA3.5

@@ -51,6 +51,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
@@ -1778,6 +1779,29 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
+
+// Validate sliding window constraints common to attention-like ops.
+static LogicalResult
+verifySlidingWindowConstraints(Operation *op,
+                               std::optional<int32_t> slidingWindowSize,
+                               Value currentSeqLen, int64_t maxSeqLen) {
+  if (!slidingWindowSize)
+    return success();
+  int32_t windowSize = static_cast<int32_t>(*slidingWindowSize);
+
+  if (windowSize <= 0)
+    return op->emitError("slidingWindowSize must be positive");
+
+  if (!currentSeqLen)
+    return op->emitError("slidingWindowSize requires currentSeqLen to be set");
+
+  if (windowSize > maxSeqLen)
+    return op->emitError(
+        "slidingWindowSize must not exceed max sequence length");
+
+  return success();
+}
+
 LogicalResult GridwiseAttentionOp::verify() {
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1805,6 +1829,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
+  if (!getEnableSoftmax() && getSlidingWindowSize())
+    return emitError("slidingWindowSize only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1812,6 +1839,21 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError(
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
+
+  // Validate sliding window constraints.
+  // Keys are normalized to [G, K, N] where N (the gemm0 N dimension, last dim)
+  // is the key sequence length (max seq len). Unlike rocMLIR -- where the key
+  // sequence lives on gemm0's M dimension -- rocmlirTriton keeps the key
+  // sequence on N (matching the KV-cache/sliding-window N loop in
+  // GridwiseAttnToBlockwise), so use prePadG0N, not prePadG0M, for the
+  // pre-padding value. Fall back to the current shape when it is absent.
+  ShapedType kType = cast<ShapedType>(getKeys().getType());
+  int64_t maxSeqLen =
+      getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
 
   return success();
 }
@@ -2300,6 +2342,14 @@ LogicalResult AttentionOp::verify() {
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
 
+  // Validate sliding window constraints.
+  // Max seq len is the key N dimension.
+  int64_t maxSeqLen = getGemmGemmSize().n;
+  if (failed(verifySlidingWindowConstraints(getOperation(),
+                                            getSlidingWindowSize(),
+                                            getCurrentSeqLen(), maxSeqLen)))
+    return failure();
+
   return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
 }
@@ -2430,6 +2480,111 @@ std::optional<size_t> getExpectedPerfConfigFieldCount(int version,
   return numTunableFields + kNumKnobFieldsByVersion[version - 1];
 }
 
+// Recognize the named `prefix:key=value,...` perfConfig form and return its
+// body (the text after `prefix:`) via `body`. Returns false when the `prefix:`
+// header is absent, or when the payload is a legacy positional `prefix:vN:`
+// string (detected by the absence of any `=`). An empty body (i.e. bare
+// `prefix:`) is a valid named config in which every field takes its default.
+bool isNamedPerfConfig(StringRef configStr, StringRef prefix, StringRef &body) {
+  StringRef rest = configStr;
+  if (!rest.consume_front(prefix) || !rest.consume_front(":"))
+    return false;
+  // Legacy positional strings start with `vN:` and never contain `=`.
+  if (!rest.empty() && !rest.contains('='))
+    return false;
+  body = rest;
+  return true;
+}
+
+// Parse a `key=value,...` body into `out`. Whitespace around keys and values is
+// ignored. Every value must be an integer and every key must appear in
+// `allowedKeys` at most once, except a `scheduleHint` entry which is accepted
+// and discarded (with a warning) for back-compat. Emits a diagnostic and
+// returns failure on any malformed entry, non-integer value, unknown key, or
+// repeated key. Schema (which keys are legal and their defaults) is the
+// caller's business; see `parseNamedGemmLikeConfig()`.
+LogicalResult parseNamedPerfConfig(MLIRContext *context,
+                                   StringRef perfConfigStr, StringRef body,
+                                   ArrayRef<StringRef> allowedKeys,
+                                   llvm::StringMap<int64_t> &out) {
+  if (body.trim().empty())
+    return success();
+  SmallVector<StringRef> pieces;
+  body.split(pieces, ',');
+  for (StringRef piece : pieces) {
+    if (!piece.contains('=')) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': expected `key=value` but got `" << piece.trim()
+                   << "`\n";
+      return failure();
+    }
+    auto [keyRaw, valRaw] = piece.split('=');
+    StringRef key = keyRaw.trim();
+    StringRef valStr = valRaw.trim();
+    int64_t value;
+    if (key.empty() || valStr.getAsInteger(10, value)) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr << "': field `"
+                   << key << "` must have an integer value\n";
+      return failure();
+    }
+    if (key == "scheduleHint") {
+      warnIfScheduleHintIgnored(context, perfConfigStr, value);
+      continue;
+    }
+    if (!llvm::is_contained(allowedKeys, key)) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': unknown field `" << key << "`\n";
+      return failure();
+    }
+    // A repeated key has no defensible reading: letting the last one win would
+    // silently run a config nobody asked for.
+    if (!out.try_emplace(key, value).second) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': duplicate field `" << key << "`\n";
+      return failure();
+    }
+  }
+  return success();
+}
+
+// Parse the body of a named `prefix:key=value,...` perfConfig against a schema:
+// `keys` in canonical order and the parallel `defaults` for fields the config
+// string omits. Both come from the attribute's `getPerfConfig*()` accessors,
+// which RockAttrDefs.td generates from one field list, so the schema here can
+// never disagree with the serialized form.
+//
+// Returns the field values in schema order, ready for the attribute's generated
+// `getFromPerfConfigValues()`. Emits a diagnostic and returns failure on a
+// malformed body, an unknown key, or an unsupported knob combination.
+FailureOr<SmallVector<int64_t>>
+parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
+                         StringRef body, ArrayRef<StringRef> keys,
+                         ArrayRef<int64_t> defaults) {
+  llvm::StringMap<int64_t> values;
+  if (failed(parseNamedPerfConfig(context, perfConfigStr, body, keys, values)))
+    return failure();
+
+  // Fill in the fields the config string left out, so `values` ends up holding
+  // every field of the schema.
+  SmallVector<int64_t> ordered;
+  ordered.reserve(keys.size());
+  for (auto [key, defaultValue] : llvm::zip_equal(keys, defaults))
+    ordered.push_back(values.try_emplace(key, defaultValue).first->second);
+
+  auto knob = [&](StringRef key) {
+    auto it = values.find(key);
+    assert(it != values.end() && "knob is not part of this perfConfig schema");
+    return it->second;
+  };
+  if (failed(validateKnobBlock(
+          perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
+          knob("useInThreadTranspose"), knob("useBufferOps"),
+          knob("useBufferAtomics"), knob("useReductionLayout"),
+          knob("useOptimizeEpilogue"))))
+    return failure();
+  return ordered;
+}
+
 } // namespace
 
 //===-----------------------------------------------------===//
@@ -2437,7 +2592,25 @@ std::optional<size_t> getExpectedPerfConfigFieldCount(int version,
 //===-----------------------------------------------------===//
 
 GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
-  auto parsed = parsePerfConfigStr(perfConfigStrAttr.strref(), "gemm");
+  MLIRContext *ctx = perfConfigStrAttr.getContext();
+  StringRef perfConfigStr = perfConfigStrAttr.strref();
+
+  // Canonical `gemm:key=value,...` form. Missing keys fall back to their
+  // defaults; unknown keys (other than the deprecated `scheduleHint`) are
+  // rejected.
+  StringRef body;
+  if (isNamedPerfConfig(perfConfigStr, GemmParamsAttr::getPerfConfigPrefix(),
+                        body)) {
+    FailureOr<SmallVector<int64_t>> values = parseNamedGemmLikeConfig(
+        ctx, perfConfigStr, body, GemmParamsAttr::getPerfConfigKeys(),
+        GemmParamsAttr::getPerfConfigDefaults());
+    if (failed(values))
+      return {};
+    return GemmParamsAttr::getFromPerfConfigValues(ctx, *values);
+  }
+
+  auto parsed =
+      parsePerfConfigStr(perfConfigStr, GemmParamsAttr::getPerfConfigPrefix());
   if (!parsed) {
     return {};
   }
@@ -2516,7 +2689,25 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
 //===-----------------------------------------------------===//
 
 GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
-  auto parsed = parsePerfConfigStr(perfConfigStrAttr.strref(), "attn");
+  MLIRContext *ctx = perfConfigStrAttr.getContext();
+  StringRef perfConfigStr = perfConfigStrAttr.strref();
+
+  // Canonical `attn:key=value,...` form. Missing keys fall back to their
+  // defaults; unknown keys (other than the deprecated `scheduleHint`) are
+  // rejected.
+  StringRef body;
+  if (isNamedPerfConfig(perfConfigStr,
+                        GemmGemmParamsAttr::getPerfConfigPrefix(), body)) {
+    FailureOr<SmallVector<int64_t>> values = parseNamedGemmLikeConfig(
+        ctx, perfConfigStr, body, GemmGemmParamsAttr::getPerfConfigKeys(),
+        GemmGemmParamsAttr::getPerfConfigDefaults());
+    if (failed(values))
+      return {};
+    return GemmGemmParamsAttr::getFromPerfConfigValues(ctx, *values);
+  }
+
+  auto parsed = parsePerfConfigStr(perfConfigStr,
+                                   GemmGemmParamsAttr::getPerfConfigPrefix());
   if (!parsed) {
     return {};
   }

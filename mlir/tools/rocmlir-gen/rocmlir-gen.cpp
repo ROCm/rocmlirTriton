@@ -506,12 +506,12 @@ static llvm::cl::opt<int64_t>
                llvm::cl::desc("number of heads of K,V in attention()"),
                llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
 
-static llvm::cl::list<int64_t>
-    currentSeqLen("current_seq_len",
-                  llvm::cl::desc("List of sequence lengths of K and V (related "
-                                 "to KV-cache) in attention()"),
-                  llvm::cl::value_desc("list of positive integers"),
-                  llvm::cl::CommaSeparated);
+static llvm::cl::list<int64_t> currentSeqLen(
+    "current_seq_len",
+    llvm::cl::desc("List of zero-based, inclusive current KV-cache positions "
+                   "(last valid K/V indices) in attention()"),
+    llvm::cl::value_desc("list of non-negative integers"),
+    llvm::cl::CommaSeparated);
 
 static llvm::cl::opt<int64_t> sequenceLengthQ(
     "seq_len_q", llvm::cl::desc("sequence length of Q in attention()"),
@@ -591,6 +591,16 @@ static llvm::cl::opt<int64_t> splitKV(
     llvm::cl::desc("Flash decoding enabled if split-kv > 1. Describes "
                    "the number of blocks in the sequenceLengthK dimension."),
     llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
+
+static llvm::cl::opt<int64_t> slidingWindowSize(
+    "sliding_window_size",
+    llvm::cl::desc(
+        "Maximum look-back distance from current_seq_len. Includes the current "
+        "KV-cache position, so up to sliding_window_size + 1 key positions are "
+        "attended to. If current_seq_len is omitted, it defaults to "
+        "seq_len_k - 1."),
+    llvm::cl::value_desc("non-negative integer (0 disables)"),
+    llvm::cl::init(0));
 
 static llvm::cl::opt<bool> returnLSE(
     "return_lse",
@@ -1265,6 +1275,38 @@ static LogicalResult detectMissingArguments() {
       llvm::errs()
           << "If split-kv > 1 (flash decoding), we need to return LSE\n";
       return failure();
+    }
+    // Sliding-window masking is defined relative to the KV-cache position, so
+    // the Rock verifier requires currentSeqLen.
+    // The flag's contract is "positive integer, 0 disables". A negative value
+    // is a user error that would otherwise slip through silently, since every
+    // downstream use is gated on `slidingWindowSize > 0`.
+    if (slidingWindowSize < 0) {
+      llvm::errs() << "sliding_window_size must be non-negative\n";
+      return failure();
+    }
+    if (slidingWindowSize > 0) {
+      // slidingWindowSize is later materialized into i32 attributes/constants,
+      // so reject values that would silently truncate.
+      if (slidingWindowSize > std::numeric_limits<int32_t>::max()) {
+        llvm::errs() << "sliding_window_size must fit in a 32-bit integer\n";
+        return failure();
+      }
+      // The Rock verifier rejects a window larger than the key sequence length
+      // ("slidingWindowSize must not exceed max sequence length"). Reject it
+      // here too so the driver reports a clear error instead of emitting IR
+      // that only fails later in verification.
+      if (sequenceLengthK > 0 && slidingWindowSize > sequenceLengthK) {
+        llvm::errs() << "sliding_window_size must not exceed seq_len_k\n";
+        return failure();
+      }
+      // currentSeqLen is runtime data and therefore is not part of the tuning
+      // problem key. When a serialized tuning problem is reconstructed by
+      // tuningRunner, use the full-cache position, matching the existing
+      // split-KV default in computeValidSplitKV().
+      if (currentSeqLen.empty())
+        for (int64_t i = 0; i < groupSize; ++i)
+          currentSeqLen.push_back(sequenceLengthK - 1);
     }
   }
 
@@ -3410,6 +3452,68 @@ static Value maskKVCacheTosa(OpBuilder builder, Location loc, Value inputTensor,
   return resultReshaped;
 }
 
+// Sliding window masking: mask positions where col < max(0, currentSeqLen -
+// slidingWindowSize). The inputTensor shape is [b*num_heads_q, seq_len_q,
+// seq_len_kv]. currentSeqLenVal has shape [1x1x1x1xi32] (already reshaped).
+static Value slidingWindowMaskingTosa(OpBuilder builder, Location loc,
+                                      Value inputTensor, Value currentSeqLenVal,
+                                      int64_t windowSize, float initValue) {
+  auto origType = cast<RankedTensorType>(inputTensor.getType());
+  ArrayRef<int64_t> origShape = origType.getShape();
+  SmallVector<int64_t, 4> newShape = {origShape[0] / numHeadsQ, numHeadsQ,
+                                      origShape[1], origShape[2]};
+  ImplicitLocOpBuilder implicitBuilder(loc, builder);
+  auto newShapeValue = tosa::getTosaConstShape(implicitBuilder, newShape);
+  inputTensor = rock::tosa::createOpAndInfer<tosa::ReshapeOp>(
+      builder, loc, origType.getElementType(), inputTensor, newShapeValue);
+
+  auto inpType = cast<RankedTensorType>(inputTensor.getType());
+  ArrayRef<int64_t> inpShape = inpType.getShape();
+
+  // Create column range [0, 1, ..., seq_len_kv-1]
+  Value colRange = createRange(builder, loc, 3, inpShape);
+
+  // Broadcast currentSeqLen to full shape
+  auto outType = RankedTensorType::get(inpShape, builder.getI32Type());
+  auto currentSeqLenBroadcast = rock::tosa::getMulOp(
+      builder, loc, currentSeqLenVal,
+      rock::tosa::getOneTensor(builder, loc, outType), builder.getI32Type());
+
+  // Compute lowerBound = max(0, currentSeqLen - slidingWindowSize).
+  // Build the window-size and zero operands as rank-matched 1x...x1 scalar
+  // constants and let tosa.sub/tosa.maximum broadcast them, rather than
+  // materializing full-rank B*H*Q*K constant tensors.
+  SmallVector<int64_t, 4> scalarShape(inpShape.size(), 1);
+  auto scalarType = RankedTensorType::get(scalarShape, builder.getI32Type());
+  DenseElementsAttr windowSizeAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(windowSize));
+  Value windowSizeConst =
+      tosa::ConstOp::create(builder, loc, scalarType, windowSizeAttr);
+  Value lowerBound = rock::tosa::createOpAndInfer<tosa::SubOp>(
+      builder, loc, builder.getI32Type(), currentSeqLenBroadcast,
+      windowSizeConst);
+
+  // Clamp lower bound to >= 0
+  DenseElementsAttr zeroAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(0));
+  Value zeroConst = tosa::ConstOp::create(builder, loc, scalarType, zeroAttr);
+  lowerBound = rock::tosa::createOpAndInfer<tosa::MaximumOp>(
+      builder, loc, builder.getI32Type(), lowerBound, zeroConst);
+
+  // Create mask: col < lowerBound (i.e., lowerBound > col)
+  auto mask = rock::tosa::createOpAndInfer<tosa::GreaterOp>(
+      builder, loc, builder.getIntegerType(1), lowerBound, colRange);
+
+  Value result = applyMask(builder, loc, inputTensor, mask, initValue);
+
+  // Reshape result back to [batch_size*num_heads_q, seq_len_q, seq_len_kv]
+  auto origShapeValue = tosa::getTosaConstShape(implicitBuilder, origShape);
+  auto resultReshaped = rock::tosa::createOpAndInfer<tosa::ReshapeOp>(
+      builder, loc, inpType.getElementType(), result, origShapeValue);
+
+  return resultReshaped;
+}
+
 static Value broadcastBatchTosa(OpBuilder builder, Location loc,
                                 Value inputTensor, int64_t numRepeat) {
   if (numRepeat == 1)
@@ -3741,7 +3845,11 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       builder, loc, outputLogicalType, returnLSE ? lseLogicalType : nullptr,
       queries, keys, values, elemwiseInputs, currentSeqLenTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
-      transposeV, transposeO, actualCausal, splitKV, softmaxType,
+      transposeV, transposeO, actualCausal, splitKV,
+      /*slidingWindowSize=*/
+      slidingWindowSize > 0 ? builder.getI32IntegerAttr(slidingWindowSize)
+                            : nullptr,
+      softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr);
   {
     Block *preSoftmaxElemwiseBlock =
@@ -4816,6 +4924,14 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     qkTensor = maskKVCacheTosa(builder, loc, qkTensor, currentSeqLenTensor,
                                -std::numeric_limits<float>::infinity());
     optionalArgsCounter++;
+  }
+
+  // Apply sliding window masking if slidingWindowSize is set.
+  // Masks positions where col < max(0, currentSeqLen - slidingWindowSize).
+  if (slidingWindowSize > 0 && currentSeqLenTensor) {
+    qkTensor = slidingWindowMaskingTosa(
+        builder, loc, qkTensor, currentSeqLenTensor, slidingWindowSize,
+        -std::numeric_limits<float>::infinity());
   }
 
   // Apply prefix offset masking if prefixOffset is provided
@@ -6719,7 +6835,7 @@ int main(int argc, char **argv) {
   if (emitTuningSpace.getNumOccurrences() > 0) {
     std::unique_ptr<rock::TuningParamSet> tunableParams(
         rock::createTunableParamSpace(*module, emitTuningSpace));
-    SmallString<64> perfConfigStr;
+    SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfigStr;
     for (auto param : tunableParams->tuningRange) {
       param.getPerfConfigStr(perfConfigStr);
       llvm::outs() << perfConfigStr << "\n";
@@ -6729,7 +6845,7 @@ int main(int argc, char **argv) {
   }
 
   if (emitTuningKey) {
-    SmallString<2048> tuningKey;
+    SmallString<ROCMLIR_TUNING_KEY_BUFSZ> tuningKey;
     if (failed(rock::getTuningProblemStr(*module, tuningKey))) {
       llvm::errs() << "Failed to get tuning key for module: " << *module
                    << "\n";

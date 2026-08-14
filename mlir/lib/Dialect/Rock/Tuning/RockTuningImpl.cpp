@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -40,8 +41,10 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <random>
+#include <set>
 
 namespace mlir {
 namespace rock {
@@ -54,6 +57,9 @@ enum class GemmMNDim { M, N };
 // Largest per-block M/N tile size we tune for. Also acts as the threshold below
 // which a small dimension is covered by a single tightly-fitting tile.
 #define MAX_MN_PER_BLOCK 256
+
+// Largest per-block K tile size we tune for.
+#define MAX_K_PER_BLOCK 512
 
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
@@ -68,23 +74,14 @@ static uint32_t tileReducingPartitions(uint32_t d) {
 
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
-  auto arch = rock::getArchValue(op);
-  bool hasAcceleration = false;
-  if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmOp);
-  else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op))
-    hasAcceleration = rock::hasAccel(arch, gemmGemmOp);
-  else
-    llvm_unreachable("Unexpected op");
-
+  // M/N per-block tiles are the same for the accel and non-accel paths
+  // ({16, 32, 64, 128, 256}), except that the non-accel path drops M/N *pairs*
+  // that are too slow to compile (see isOverwideNonAccelMNPair). The attention
+  // (gemm+gemm) non-accel path keeps the {32, 64, 128} space and is handled
+  // separately in getRangeGemmGemm.
   std::vector<uint32_t> dPerBlockList;
-  if (hasAcceleration) {
-    for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
-      dPerBlockList.push_back(dPerBlock);
-  } else {
-    // non-accel
-    dPerBlockList = {32, 64, 128, 256};
-  }
+  for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
+    dPerBlockList.push_back(dPerBlock);
 
   // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
   // tile that covers the dimension tightly and drop the now-oversized larger
@@ -108,15 +105,18 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
 
 // Drop kPerBlock candidates larger than the K dimension rounded up to the next
 // power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
-// work.
+// work. Adds the capping tile so K stays covered, but only when it does not
+// exceed MAX_K_PER_BLOCK (bigger tiles waste LDS and are ~never optimal).
 static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   assert(k > 0 && !kPerBlockList.empty() &&
          "capKPerBlockByK expects a positive K and a non-empty candidate list");
   uint32_t cap = static_cast<uint32_t>(llvm::PowerOf2Ceil(k));
-  uint32_t maxCandidateK = *llvm::max_element(kPerBlockList);
   llvm::erase_if(kPerBlockList, [&](uint32_t v) { return v > cap; });
-  if (!llvm::is_contained(kPerBlockList, cap) && cap < maxCandidateK)
+  if (!llvm::is_contained(kPerBlockList, cap) && k <= MAX_K_PER_BLOCK)
     kPerBlockList.push_back(cap);
+  assert(llvm::all_of(kPerBlockList,
+                      [](uint32_t v) { return v <= MAX_K_PER_BLOCK; }) &&
+         "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -135,6 +135,16 @@ static bool exceedsTritonTensorCap(uint32_t mPerBlock, uint32_t nPerBlock,
                                    uint32_t kPerBlock) {
   int64_t maxMN = std::max(mPerBlock, nPerBlock);
   return static_cast<int64_t>(kPerBlock) * maxMN > kTritonMaxTensorNumElements;
+}
+
+// The non-accel (FMA) blockwise GEMM is a fully unrolled scalar loop, so M/N
+// pairs with both tiles >= 128 cost ~70% of the space's compile time while
+// never winning a shape in exhaustive Navi tuning.
+static bool isOverwideNonAccelMNPair(uint32_t mPerBlock, uint32_t nPerBlock) {
+  constexpr uint32_t kWideMN = 256;
+  constexpr uint32_t kNarrowMN = 128;
+  return std::max(mPerBlock, nPerBlock) >= kWideMN &&
+         std::min(mPerBlock, nPerBlock) >= kNarrowMN;
 }
 
 static std::vector<uint32_t> computeNumWaves(TuningParamSetKind tuningKind,
@@ -361,8 +371,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (which has a
-  // dedicated non-accel branch and caps by the actual M/N dimension).
+  // Non-accel (FMA) parameters. M/N tiles reuse computeDPerBlock (the same
+  // {16, 32, 64, 128, 256} space as the accel paths, capped by the actual M/N
+  // dimension); createGemmTuningRangeBF then drops the overwide M/N pairs.
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64u, 128u, 256u}) {
     if (blockSize % waveSize == 0)
@@ -400,10 +411,10 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   int64_t gemm0K = gemmGemmOp.getGemmGemmSize().k;
   // use the actual K dimension, typically it's 128 for attention
   uint32_t gemm0KPerBlock =
-      std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), 2048);
+      std::min<uint64_t>(llvm::PowerOf2Ceil(gemm0K), MAX_K_PER_BLOCK);
   std::vector<uint32_t> kPerBlock = {gemm0KPerBlock};
   if (kind == TuningParamSetKind::Exhaustive) {
-    for (uint32_t k : {16, 32, 64, 128, 512, 1024, 2048})
+    for (uint32_t k : {16, 32, 64, 128, 512})
       if (!llvm::is_contained(kPerBlock, k))
         kPerBlock.push_back(k);
   }
@@ -454,7 +465,10 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  // Non-accel path.
+  // Non-accel path. Attention keeps the reduced {32, 64, 128} M/N space:
+  // exhaustive tuning on Navi showed neither 16 nor 256 is worth widening the
+  // attention tuning space (16 helped only one shape, 256 never won and is
+  // LDS-bound). See AIROCMLIR-938.
   std::vector<uint32_t> dPerBlockNonAccel = {32, 64, 128};
   std::vector<uint32_t> numWavesNonAccel;
   for (uint32_t blockSize : {64, 128, 256}) {
@@ -694,10 +708,24 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
       getRangeGemm(gemmOp, waveSize, maxWavesPerEU, kind);
 
   auto tuningInfo = std::make_unique<PopulateParams>();
+  bool isNonAccel = !rock::hasAccel(rock::getArchValue(gemmOp), gemmOp);
+
+  // Tile shapes known to overflow LDS for this (arch, input dtype) are dropped
+  // up front: LDS usage of a plain GEMM is independent of M/N/K, so this cache
+  // (populated offline, see LdsBlacklist.h) never depends on the problem shape.
+  // It is keyed on only the LDS-relevant fields (see GemmLdsKey), so it also
+  // covers configs that differ only in an LDS-irrelevant field (kpack, splitK,
+  // ...). A miss returns an empty set, so an un-populated blacklist is a no-op.
+  GemmLdsKeySet ldsBlacklistSet =
+      LdsBlacklist::lookupGemm(rock::getArchValue(gemmOp), info.gemmAType);
 
   OpBuilder b(gemmOp.getContext());
   for (uint32_t gemmMPerBlock : params[0]) {
     for (uint32_t gemmNPerBlock : params[1]) {
+      // Skip M/N pairs that are too costly to compile to be worth tuning on
+      // the FMA path (see isOverwideNonAccelMNPair).
+      if (isNonAccel && isOverwideNonAccelMNPair(gemmMPerBlock, gemmNPerBlock))
+        continue;
       for (uint32_t gemmKPerBlock :
            computeKPerBlock(gemmOp, kind, gemmMPerBlock, gemmNPerBlock)) {
         // Skip tiles whose lowered index/mask tensors would exceed Triton's
@@ -712,6 +740,17 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   gemmOp, gemmMPerBlock, gemmNPerBlock, gemmKPerBlock);
               for (int64_t splitKFactor : optimalSplitKFactors) {
                 for (int64_t numStages : params[5]) {
+                  // Drop LDS-overflowing tiles before building any attribute or
+                  // running the (expensive) performance filter below: the
+                  // projection depends only on fields fixed by this point, so a
+                  // blacklisted tile is dead for every inner splitK/wave/CTA
+                  // combination. Field order must match GemmLdsKey /
+                  // PROJECTION_NAMES.
+                  if (!ldsBlacklistSet.empty() &&
+                      ldsBlacklistSet.count({gemmMPerBlock, gemmNPerBlock,
+                                             gemmKPerBlock, numWaves,
+                                             matrixInstrNonkdim, numStages}))
+                    continue;
                   for (int64_t wavesPerEU : params[6]) {
                     for (int64_t gridGroupSize : params[7]) {
                       for (uint32_t numCTAs : params[8]) {
@@ -727,11 +766,12 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBufferAtomics=*/kKnobDefault,
                             /*useReductionLayout=*/kKnobDefault,
                             /*useOptimizeEpilogue=*/kKnobDefault);
-                        if (kind != TuningParamSetKind::Full ||
-                            succeeded(tuningInfo->couldBePerformant(
-                                info, gemmParams)))
-                          newSpace->tuningRange.push_back(
-                              cast<RockTuningParamAttrInterface>(gemmParams));
+                        if (kind == TuningParamSetKind::Full &&
+                            failed(tuningInfo->couldBePerformant(info,
+                                                                 gemmParams)))
+                          continue;
+                        newSpace->tuningRange.push_back(
+                            cast<RockTuningParamAttrInterface>(gemmParams));
                       }
                     }
                   }
@@ -823,7 +863,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setPrimary =
       mod->walk([&](rock::RockGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -832,7 +872,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setGemmGemm =
       mod->walk([&](rock::RockGemmGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -1038,6 +1078,8 @@ static void getAttentionScaleBias(AttentionOp attnOp, bool isQuantized,
   }
 }
 
+// Keep this problem-key serialization in sync with the corresponding
+// configuration parsing and serialization in perfRunner.py.
 static LogicalResult
 getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
                     SmallVectorImpl<char> &out) {
@@ -1160,6 +1202,11 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
       problemOS << "false" << sep;
 
     problemOS << "-split_kv " << attentionOp.getSplitKV() << sep;
+    // sliding_window_size is optional (KV-cache only); only emit it when set so
+    // non-sliding-window problems keep their existing tuning identity.
+    if (auto slidingWindowSize = attentionOp.getSlidingWindowSize();
+        slidingWindowSize && *slidingWindowSize > 0)
+      problemOS << "-sliding_window_size " << *slidingWindowSize << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;
@@ -1508,7 +1555,7 @@ bool tuningTableUpdate(TuningTable *perfTable, StringRef problem,
 
 LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
                                 SmallVectorImpl<char> &out) {
-  SmallString<2048> problem;
+  SmallString<ROCMLIR_TUNING_KEY_BUFSZ> problem;
   if (failed(getTuningProblemStr(mod, problem)))
     return failure();
   llvm::sys::SmartScopedReader<true> guard(perfTable->lock);

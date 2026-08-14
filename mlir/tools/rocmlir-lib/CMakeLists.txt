@@ -1,7 +1,9 @@
 llvm_canonicalize_cmake_booleans(BUILD_FAT_LIBROCKCOMPILER)
 # Static library target, enabled only when building static libs
 if(BUILD_FAT_LIBROCKCOMPILER)
-  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS /opt/rocm)
+  # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
+  # /opt/rocm stays as the Linux fallback.
+  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -34,6 +36,10 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   add_library(${LIBRARY_NAME} INTERFACE)
 
   if (WIN32)
+    # Triton builds as separate static libraries on Windows, so propagate its
+    # registered targets through the fat-library interface and package.
+    get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
+
     add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets})
 
     foreach(__library ${__mlir_libs})
@@ -52,14 +58,28 @@ if(BUILD_FAT_LIBROCKCOMPILER)
               $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library}.lib>)
     endforeach()
 
+    add_dependencies(${LIBRARY_NAME} ${__triton_libs})
+    foreach(__library ${__triton_libs})
+      list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+      target_link_libraries(${LIBRARY_NAME}
+          INTERFACE
+              $<BUILD_INTERFACE:${__library}>
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+    endforeach()
+
     rocm_install(FILES ${__mlir_libraries}
             DESTINATION lib/llvm)
 
     rocm_install(FILES ${__rocmlir_libraries}
             DESTINATION lib)
 
+    rocm_install(FILES ${__triton_libraries}
+            DESTINATION lib/llvm)
+
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
+    unset(__triton_libs)
+    unset(__triton_libraries)
 
     # Linux compatibility custom target
     add_custom_target(lib${LIBRARY_NAME} ALL DEPENDS ${LIBRARY_NAME})
@@ -218,7 +238,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   rocm_create_package(
     NAME ${CMAKE_PROJECT_NAME}
     DESCRIPTION "MLIR packages"
-    MAINTAINER "rocMLIR Dev Team dl.dl-mlir@amd.com"
+    MAINTAINER "ROCm Dev Support <rocm-dev.support@amd.com>"
     HEADER_ONLY
   )
 endif()

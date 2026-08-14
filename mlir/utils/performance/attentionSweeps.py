@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sweep random (problem-shape, perf-config) combinations for the
-``GemmGemmParamsAttr`` perf-config family (``attn:v1:``) — i.e. attention
+``GemmGemmParamsAttr`` perf-config family (``attn:``) — i.e. attention
 and gemm+elementwise+gemm — through the rocMLIR pipeline and classify each
 as PASS / NOT_APPLICABLE / FAIL. Run from the build directory.
 
@@ -76,7 +76,7 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     ``(mPerBlock * nPerBlock) / threads <= vgprs_per_eu / effective_wpe``,
     where ``threads = numWaves * waveSize`` and ``effective_wpe`` is
     ``wavesPerEU`` itself, or ``1`` when ``wavesPerEU == 0``."""
-    # 12-field attn:v4 layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
+    # 12-field attn layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
     # sit one slot later than in the 11-field gemm layout.
     mpb, npb = perf_config[0], perf_config[1]
     num_waves = perf_config[6]
@@ -208,6 +208,15 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     # the ``seqlen_k_lo`` block above guarantees this range is non-empty.
     current_seqlen = ([rng.randint(1, seqlen_k - 1) for _ in range(g)] if use_kvcache else None)
 
+    # Sweeps use an explicit ``current_seqlen`` for runtime sliding-window
+    # masking. Reconstructed tuning keys may instead use rocmlir-gen's
+    # full-cache default. The window must be positive and must not exceed the
+    # max sequence length (``seqlen_k``). Leave it disabled (0) otherwise, and
+    # disable it half the time even in KV-cache mode so the sweep still covers
+    # the plain KV-cache path.
+    sliding_window_size = (rng.randint(1, seqlen_k)
+                           if use_kvcache and rng.choice([True, False]) else 0)
+
     num_heads_q, num_heads_kv = _sample_num_heads(rng)
 
     return (
@@ -229,6 +238,7 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         return_lse,
         split_kv,
         current_seqlen,
+        sliding_window_size,
     )
 
 
@@ -299,7 +309,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
     shape, perf = params
     dtype, g, m, k, n, o, ta, tb, tc, to = shape
     # ``kind='attn'`` is intentional: gemm+gemm and attention share the same
-    # GemmGemmParamsAttr perf-config family (serialized as ``attn:v6:...``);
+    # GemmGemmParamsAttr perf-config family (serialized as ``attn:...``);
     # see the ``PerfConfig`` docstring and RockAttrDefs.td.
     return perfRunner.GemmGemmConfiguration(
         dtype=dtype,
@@ -322,7 +332,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
-     split_kv, current_seqlen) = shape
+     split_kv, current_seqlen, sliding_window_size) = shape
     attn_config = perfRunner.AttentionConfiguration(
         dtype=dtype,
         g=g,
@@ -346,6 +356,7 @@ def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
         num_chiplets=options.num_chiplets,
         perf_config=str(PerfConfig(perf, kind='attn')),
         current_seqlen=current_seqlen,
+        sliding_window_size=sliding_window_size,
     )
     # Precision-aware rocmlir-gen flags (e.g. --pv-f64) picked up per-config
     # in parameterSweeps._build_rocmlir_gen_opts to combat CPU reference drift
@@ -361,7 +372,7 @@ def main() -> bool:
                         choices=['attention', 'gemm_gemm'],
                         help="Kind of kernel to sweep: 'attention' or 'gemm_gemm'. "
                         "The spelling matches rocmlir-gen --operation. Both share "
-                        "the GemmGemmParamsAttr (attn:v6:) perf-config family but "
+                        "the GemmGemmParamsAttr (attn:) perf-config family but "
                         "have different problem-shape spaces.")
     add_common_args(parser)
     args = parser.parse_args()

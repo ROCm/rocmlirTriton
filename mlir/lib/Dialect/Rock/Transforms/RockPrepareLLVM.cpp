@@ -166,8 +166,8 @@ static void annotateMemoryAccesses(LLVM::LLVMFuncOp func, OpBuilder &b) {
     return b.getArrayAttr(mergedScopes);
   };
 
-  // TODO: figure out if it's worth using "nontemporal" (see rocMLIR's
-  // AnalyzeMemoryUse.cpp comments), ticket AIROCMLIR-802
+  // TODO(AIROCMLIR-802): Consider whether "nontemporal" is useful here (see
+  // rocMLIR's AnalyzeMemoryUse.cpp comments).
   func.walk([&](LLVM::AliasAnalysisOpInterface aliasIface) {
     Operation *aliasOp = aliasIface.getOperation();
     Value ptrArg;
