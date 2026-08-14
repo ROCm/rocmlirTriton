@@ -23,10 +23,6 @@ namespace rock {
 // Checks whether a function is valid for split-k.
 LogicalResult testFusionLegalitySplitK(func::FuncOp func);
 
-// Checks whether a function contains any `rock::ReduceOp` and
-// the atomic operation is supported by the hardware.
-LogicalResult testFusionLegalityReduce(func::FuncOp func);
-
 // Checks whether a function contains any `rock::BwdDataConv` ops and verifies
 // fusion legality for backward data convolutions
 LogicalResult testFusionLegalityBwdDataConv(func::FuncOp func);
@@ -37,9 +33,6 @@ LogicalResult testFusionLegalityBwdDataConv(func::FuncOp func);
 // `testFusionLegalitySplitK` (see above). Note, this overloaded function
 // assumes that `ModuleOp` contains a single `func:FuncOp`
 LogicalResult testFusionLegalitySplitK(ModuleOp mod);
-
-// Same as above, overload of `testFusionLegalityReduce` for `ModuleOp`.
-LogicalResult testFusionLegalityReduce(ModuleOp mod);
 
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
