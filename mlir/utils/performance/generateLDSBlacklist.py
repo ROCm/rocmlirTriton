@@ -15,7 +15,7 @@ empirically (vary one field, hold the rest, watch ttg.shared):
 
 change it; kpack, numCTAs, splitKFactor, wavesPerEU, gridGroupSize and the
 knob fields do NOT. So we key the blacklist on just those six fields (see
-PROJECTION_INDICES / GemmLdsKey in LdsBlacklist.h -- the field order must match
+PROJECTION_NAMES / GemmLdsKey in LdsBlacklist.h -- the field order must match
 the C++ struct). This makes the table small and, crucially, lets the C++
 consumer also drop configs that share the projection but differ in an
 LDS-irrelevant field (e.g. every splitK/kpack variant), which the big-K sweep
@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import perfRunner
-from parameterSweeps import PerfConfig
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES, parse_perfconfig, serialize_perfconfig
 from tqdm import tqdm
 
 # Tells LdsBlacklist::lookupGemm (see LdsBlacklist.cpp) to return an empty set so
@@ -79,12 +79,10 @@ BLACKLIST_BYPASS_ENV = "ROCMLIR_DISABLE_LDS_BLACKLIST"
 LDS_OVERFLOW_MARKER = "exceeds LDS limit"
 
 # The perf-config fields that affect ttg.shared, in the order of GemmLdsKey in
-# LdsBlacklist.h and the projection built in RockTuningImpl.cpp. The positions
-# are derived from PerfConfig.FIELD_INDEX so the field order lives in exactly
-# one place (parameterSweeps.PerfConfig) rather than being duplicated here.
+# LdsBlacklist.h and the projection built in RockTuningImpl.cpp. Perf configs are
+# keyed by field name, so only this order (which the .inc tuples follow) matters.
 PROJECTION_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "numWaves", "matrixInstrNonkdim",
                     "numStages")
-PROJECTION_INDICES = tuple(PerfConfig.FIELD_INDEX[name] for name in PROJECTION_NAMES)
 
 Projection = Tuple[int, ...]
 
@@ -182,15 +180,13 @@ def emit_exhaustive_space(paths: perfRunner.Paths, arch: str, gen_dtype: str,
 def project(perf_config: str) -> Optional[Projection]:
     """Extract the LDS-relevant field tuple from a perf-config string.
 
-    Version-agnostic: only the 11-field tunable body (shared across every
-    schema version, see PerfConfig) is indexed, so any ``gemm:vN:...`` string
-    works regardless of the trailing knob block."""
+    Fields are looked up by name in the canonical ``gemm:key=value,...`` form,
+    so this is insensitive to which other tunable or knob fields the string
+    carries."""
     try:
-        # Drop the "<kind>:vN:" prefix and keep the comma-separated field body.
-        body = perf_config.split(":", 2)[2]
-        fields = [int(x) for x in body.split(",")]
-        return tuple(fields[i] for i in PROJECTION_INDICES)
-    except (IndexError, ValueError):
+        _, params = parse_perfconfig(perf_config)
+        return tuple(params[name] for name in PROJECTION_NAMES)
+    except (KeyError, ValueError):
         return None
 
 
@@ -199,12 +195,13 @@ def synth_config(proj: Projection) -> str:
 
     The LDS-irrelevant tunable fields are pinned to the constants the GEMM
     tuning space always uses (kpack=1, numCTAs=1, splitKFactor=1, wavesPerEU=0,
-    gridGroupSize=0) and the knob fields are left to default (the emitted v1
-    string omits them, so the parser fills them with the kKnobDefault
-    sentinel). None of these affect ttg.shared (see PROJECTION_*), so the
-    reconstructed config overflows LDS iff the original projection does.
+    gridGroupSize=0) and the knob fields are omitted, so the parser fills them
+    with the kKnobDefault sentinel. None of these affect ttg.shared (see
+    PROJECTION_*), so the reconstructed config overflows LDS iff the original
+    projection does.
 
-    Built via PerfConfig so the field order is defined in exactly one place."""
+    Field order comes from PERF_CONFIG_FIELD_NAMES so it is defined in exactly
+    one place."""
     values = {
         **dict(zip(PROJECTION_NAMES, proj)),
         "kpack": 1,
@@ -213,8 +210,8 @@ def synth_config(proj: Projection) -> str:
         "wavesPerEU": 0,
         "gridGroupSize": 0,
     }
-    body = [values[name] for name in PerfConfig.FIELD_NAMES]
-    return str(PerfConfig(body, kind="gemm"))
+    ordered_values = {name: values[name] for name in PERF_CONFIG_FIELD_NAMES["gemm"]}
+    return serialize_perfconfig("gemm", ordered_values)
 
 
 def default_seed() -> int:
@@ -424,7 +421,7 @@ def parse_inc(path: Path) -> Dict[Tuple[str, str], List[Projection]]:
         km = _KEY_RE.search(line)
         if km:
             nums = tuple(int(x) for x in km.group(1).split(","))
-            if len(nums) == len(PROJECTION_INDICES):
+            if len(nums) == len(PROJECTION_NAMES):
                 results[cur_key].append(nums)
     return {k: v for k, v in results.items() if v}
 

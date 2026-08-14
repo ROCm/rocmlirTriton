@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 import reportUtils
-from perfCommonUtils import GEMMLibrary, Operation, SPLITK_IDX
+from perfCommonUtils import GEMMLibrary, Operation, SPLITK_KEY, parse_perfconfig, serialize_perfconfig
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
@@ -997,7 +997,7 @@ def get_conv_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1039,7 +1039,7 @@ def get_gemm_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1089,7 +1089,7 @@ def get_attn_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -2440,15 +2440,15 @@ def benchmark_fusion_kernels(test_dir,
 
     if tuning_db:
         # Force all split-K factors to 1, to avoid trouble because fusion
-        # and split-K aren't compatible.  Crude parser mirroring the CSV
-        # layout serialized by GemmParamsAttr::getPerfConfigStr (see
-        # RockAttrDefs.td); SPLITK_IDX must match the splitKFactor field
-        # position.
+        # and split-K aren't compatible. Parse the named
+        # ``prefix:key=value,...`` perfConfig serialized by
+        # GemmParamsAttr::getPerfConfigStr (see RockAttrDefs.td) and rewrite the
+        # splitKFactor field by name.
         for (arch, config), perfconfig in tuning_db.items():
-            split_perf = perfconfig.split(',')
-            if int(split_perf[SPLITK_IDX]) > 1:
-                split_perf[SPLITK_IDX] = '1'
-                tuning_db[arch, config] = ','.join(split_perf)
+            prefix, params = parse_perfconfig(perfconfig)
+            if int(params.get(SPLITK_KEY, 1)) > 1:
+                params[SPLITK_KEY] = 1
+                tuning_db[arch, config] = serialize_perfconfig(prefix, params)
 
     # Profile each test case
     for test in all_tests:

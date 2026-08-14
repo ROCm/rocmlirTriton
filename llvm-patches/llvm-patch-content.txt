@@ -82,6 +82,29 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 #202743.
 
 ----------------------------------------------------------------------
+patch-rocm-runtime-dllexport.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/213046
+- Upstream title  : [MLIR][ROCm] Export runtime wrappers on Windows
+- File Fixed      : mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+- Contents        : Adds an MLIR_ROCM_RUNTIME_EXPORT macro
+                    (__declspec(dllexport) on _WIN32, empty elsewhere) and
+                    prefixes it onto the mgpu* runtime entry points, mirroring
+                    SyclRuntimeWrappers.cpp.
+
+Symptom without the patch
+-------------------------
+On Windows, clang-cl / lld-link hide every symbol by default, so the ORC JIT
+that dlopen-loads libmlir_rocm_runtime cannot resolve the mgpu* entry points;
+mlir-runner --shared-libs execution then fails at runtime. Linux is unaffected
+because default visibility already exports the symbols.
+
+This is an independent Windows concern from patch205651 (STANDALONE linkage);
+it touches the same file but has a different lifecycle. Keep it even after
+patch205651 is dropped, until the vendored LLVM revision contains the upstream
+fix.
+
+----------------------------------------------------------------------
 patch205637.patch
 ----------------------------------------------------------------------
 - Upstream commit : 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c
@@ -268,7 +291,7 @@ patch167347.patch
 - Upstream PR     : https://github.com/llvm/llvm-project/pull/167347
 - Upstream title  : [AMDGPU] Verify dominance when rewriting spills to
                     registers
-- JIRA case       : https://amd-hub.atlassian.net/browse/LCOMPILER-2224
+- JIRA case       : LCOMPILER-2224
 - File Fixed      : llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
                     llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.h (new)
 - Contents        : Requires a MachineDominatorTree in the AGPR-copy-MFMA

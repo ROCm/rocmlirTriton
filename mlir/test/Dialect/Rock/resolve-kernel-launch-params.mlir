@@ -142,3 +142,25 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies that the largest grid representable by the dispatch packet remains
+// applicable: 4294967295 workgroups * 1 warp * 1 thread = UINT32_MAX
+// work-items.
+// CHECK-LABEL: module
+// CHECK-NOT: rock.not_applicable
+// CHECK: llvm.func @max_grid_work_items(%arg0: !llvm.ptr)
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 1 : i32,
+    "ttg.threads-per-warp" = 1 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.max_grid_work_items" = 4294967295 : i64
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @max_grid_work_items(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}

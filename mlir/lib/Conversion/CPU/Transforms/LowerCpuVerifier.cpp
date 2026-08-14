@@ -200,8 +200,8 @@ static std::optional<MatmulTileSizes> chooseMatmulTileSizes(func::FuncOp func) {
   int64_t N = loopRanges[dims->nDim];
   int64_t K = loopRanges[dims->kDim];
 
-  // TODO: Properly figure out this values based on the target architecture.
-  // https://amd-hub.atlassian.net/browse/AIROCMLIR-812
+  // TODO(AIROCMLIR-812): Determine these values based on the target
+  // architecture.
   static constexpr int64_t mLadder[] = {512, 256, 128, 64, 32, 16, 8};
   static constexpr int64_t nLadder[] = {16, 8};
   static constexpr int64_t kLadder[] = {784, 392, 196, 128, 64, 32, 16, 8};

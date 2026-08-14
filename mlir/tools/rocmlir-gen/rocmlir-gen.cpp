@@ -6835,7 +6835,7 @@ int main(int argc, char **argv) {
   if (emitTuningSpace.getNumOccurrences() > 0) {
     std::unique_ptr<rock::TuningParamSet> tunableParams(
         rock::createTunableParamSpace(*module, emitTuningSpace));
-    SmallString<64> perfConfigStr;
+    SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfigStr;
     for (auto param : tunableParams->tuningRange) {
       param.getPerfConfigStr(perfConfigStr);
       llvm::outs() << perfConfigStr << "\n";
@@ -6845,7 +6845,7 @@ int main(int argc, char **argv) {
   }
 
   if (emitTuningKey) {
-    SmallString<2048> tuningKey;
+    SmallString<ROCMLIR_TUNING_KEY_BUFSZ> tuningKey;
     if (failed(rock::getTuningProblemStr(*module, tuningKey))) {
       llvm::errs() << "Failed to get tuning key for module: " << *module
                    << "\n";

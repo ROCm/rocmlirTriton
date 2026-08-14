@@ -14,7 +14,7 @@
 # RUN:     -q -o %t.tsv 2>&1 | FileCheck %s
 #
 # CHECK: Tuned and verified
-# CHECK-SAME: gemm:v5:
+# CHECK-SAME: gemm:
 #
 # Same tiny GEMM, now with ``--debug-quick-tune-data``. This emits a `.debug`
 # TSV of the per-config table entries (PerfConfig + TFlops) but, unlike the
@@ -29,4 +29,4 @@
 # RUN: FileCheck %s --check-prefix=DEBUG --implicit-check-not=MeasurementsMs < %t2.tsv.debug
 #
 # DEBUG: PerfConfig{{.*}}TFlops
-# DEBUG: gemm:v5:
+# DEBUG: gemm:
