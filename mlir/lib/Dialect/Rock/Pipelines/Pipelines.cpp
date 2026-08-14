@@ -147,7 +147,12 @@ static bool isBufferOpsEnabled(int64_t useBufferOpsOverride) {
 static bool isBufferAtomicsEnabled(int64_t useBufferAtomicsOverride) {
   if (useBufferAtomicsOverride != rock::kKnobDefault)
     return useBufferAtomicsOverride;
-  return true;
+  // EXPERIMENT ONLY, DO NOT MERGE: default flipped off to pair with the
+  // subtarget-feature disables in TritonToHsaco.cpp. Those only reach a
+  // compare-and-swap loop if the accumulation is still a generic `atomicrmw`,
+  // so convert-buffer-ops must not rewrite it into a buffer atomic. Pass an
+  // explicit perfConfig `useBufferAtomics=1` to get the old behavior back.
+  return false;
 }
 
 static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(

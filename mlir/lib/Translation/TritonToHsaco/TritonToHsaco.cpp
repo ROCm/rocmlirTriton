@@ -878,6 +878,24 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string asmFeatures;
   if (disableTrue16)
     asmFeatures = "-real-true16";
+  // EXPERIMENT ONLY, DO NOT MERGE: turning these subtarget features off makes
+  // AtomicExpandPass lower float atomic add to a compare-and-swap loop instead
+  // of the native instruction, so split-K and reduce-sum performance can be
+  // measured against the native path. This is the TM that feeds makeAMDGCN, and
+  // the kernel only carries an overriding `target-features` attribute under
+  // asan, so -mattr here wins.
+  //
+  // Relies on buffer atomics being off (see `isBufferAtomicsEnabled` in
+  // Pipelines.cpp). AtomicExpandPass only sees generic `atomicrmw`; the
+  // buffer-atomic intrinsics that tritonamdgpu-convert-buffer-ops would
+  // otherwise emit reach ISel unexpanded and fail to select once these features
+  // are gone ("Cannot select AMDGPUISD::BUFFER_ATOMIC_FADD").
+  appendFeature(asmFeatures, "-atomic-buffer-global-pk-add-f16-insts");
+  appendFeature(asmFeatures, "-atomic-buffer-global-pk-add-f16-no-rtn-insts");
+  appendFeature(asmFeatures, "-atomic-global-pk-add-bf16-inst");
+  appendFeature(asmFeatures, "-atomic-flat-pk-add-16-insts");
+  appendFeature(asmFeatures, "-atomic-fadd-rtn-insts");
+  appendFeature(asmFeatures, "-atomic-fadd-no-rtn-insts");
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
