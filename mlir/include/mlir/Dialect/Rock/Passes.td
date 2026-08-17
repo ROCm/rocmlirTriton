@@ -713,6 +713,10 @@ def RockTosaToElementwisePass
   }];
   let dependentDialects = ["arith::ArithDialect", "math::MathDialect",
                            "tensor::TensorDialect", "tosa::TosaDialect"];
+  let options =
+      [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+              "Preserve IEEE NaN semantics in float-to-int cast lowerings">,
+  ];
 }
 
 def RockFlattenTosaFuncArgsPass

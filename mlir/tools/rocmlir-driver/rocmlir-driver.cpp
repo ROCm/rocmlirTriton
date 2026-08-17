@@ -133,6 +133,18 @@ static cl::opt<bool> disableFastMath(
              "themselves are worth: the quick tuning list is tuned with the "
              "3xBF16 dot decomposition enabled on gfx950"));
 
+/// Values copied out of the `cl::opt`s above before any pipeline runs.
+///
+/// The binary stage links with in-process LLD, which calls
+/// `cl::ResetAllOptionOccurrences()` and puts every `cl::opt` back to its
+/// default. Any option consumed at or after that point must be read from this
+/// snapshot; reading the `cl::opt` directly would silently yield the default.
+struct CLOptionSnapshot {
+  std::string outputFilename;
+  std::string dumpCpuSchedules;
+  bool disableFastMath;
+};
+
 namespace test {
 void registerTestDialect(DialectRegistry &);
 } // namespace test
@@ -197,9 +209,13 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   return result;
 }
 
+/// `noFastMath` comes from `CLOptionSnapshot` rather than from the
+/// `-disable-fast-math` cl::opt, because this function runs the binary stage
+/// that resets every option.
 static LogicalResult
 runKernelPipeline(StringRef archName, ModuleOp m,
-                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet) {
+                  llvm::SmallDenseSet<StringRef> &kernelPipelineSet,
+                  bool noFastMath) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
@@ -271,7 +287,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
-    opts.disableFastMath = disableFastMath.getValue();
+    opts.disableFastMath = noFastMath;
 
     rock::buildKernelPipeline(pm, opts);
   }
@@ -300,7 +316,8 @@ runKernelPipeline(StringRef archName, ModuleOp m,
 }
 
 static LogicalResult runMLIRPasses(ModuleOp &module,
-                                   mlir::PassPipelineCLParser &passPipeline) {
+                                   mlir::PassPipelineCLParser &passPipeline,
+                                   const CLOptionSnapshot &clOpts) {
 
   // Canonicalize arch name
   if (!arch.empty()) {
@@ -337,33 +354,47 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   };
   auto isHost = [&](func::FuncOp f) { return !isKernel(f); };
 
-  // Phase 1: MIGraphX lowering (host and kernel independently)
+  // Phase 1: MIGraphX lowering (host and kernel independently).
+  //
+  // The no-NaN assumption belongs to the kernel path alone, so only the kernel
+  // run gets `-disable-fast-math` threaded into it. The host run is pinned to
+  // the IEEE behaviour: it lowers the CPU reference, whose whole job is to say
+  // what the kernel ought to have computed, and relaxing it would both change
+  // its NaN semantics and (since upstream tosa-to-linalg spells IGNORE as the
+  // propagating op plus a compare and select per operand) make it slower.
   if (hostPipelineSet.contains("migraphx")) {
     if (failed(runWithDetach(
-            module, "Host MIGraphX", isKernel,
-            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
+            module, "Host MIGraphX", isKernel, [](PassManager &pm) {
+              migraphx::addMIGraphXPipeline(pm, /*disableFastMath=*/true);
+            })))
       return failure();
   }
   if (kernelPipelineSet.contains("migraphx")) {
     if (failed(runWithDetach(
-            module, "Kernel MIGraphX", isHost,
-            [](PassManager &pm) { migraphx::addMIGraphXPipeline(pm); })))
+            module, "Kernel MIGraphX", isHost, [&](PassManager &pm) {
+              migraphx::addMIGraphXPipeline(pm, clOpts.disableFastMath);
+            })))
       return failure();
   }
 
-  // Phase 2: Highlevel (host and kernel independently)
+  // Phase 2: Highlevel (host and kernel independently). `disableRock` picks the
+  // CPU or kernel lowering, and `disableFastMath` follows it for the same
+  // reason as in phase 1.
+  rock::HighlevelOptions highlevelOpts;
+  auto runHighlevel = [&](PassManager &pm) {
+    rock::buildHighlevelPipeline(pm, highlevelOpts);
+  };
+
   if (hostPipelineSet.contains("highlevel")) {
-    rock::HighlevelOptions opts;
-    opts.disableRock = true;
-    if (failed(runWithDetach(
-            module, "Host Highlevel", isKernel,
-            [&](PassManager &pm) { rock::buildHighlevelPipeline(pm, opts); })))
+    highlevelOpts.disableRock = true;
+    highlevelOpts.disableFastMath = true;
+    if (failed(runWithDetach(module, "Host Highlevel", isKernel, runHighlevel)))
       return failure();
   }
   if (kernelPipelineSet.contains("highlevel")) {
-    if (failed(runWithDetach(
-            module, "Kernel Highlevel", isHost,
-            [](PassManager &pm) { rock::buildHighlevelPipeline(pm); })))
+    highlevelOpts.disableRock = false;
+    highlevelOpts.disableFastMath = clOpts.disableFastMath;
+    if (failed(runWithDetach(module, "Kernel Highlevel", isHost, runHighlevel)))
       return failure();
   }
 
@@ -386,7 +417,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                 .getValue();
       }
     }
-    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet)))
+    if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
+                                 clOpts.disableFastMath)))
       return failure();
   }
 
@@ -401,7 +433,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   if (hostPipelineSet.contains("backend")) {
     if (failed(runWithDetach(
             module, "Host Backend", isKernel, [&](PassManager &pm) {
-              rock::buildHostLoweringPipeline(pm, dumpCpuSchedules.getValue());
+              rock::buildHostLoweringPipeline(pm, clOpts.dumpCpuSchedules);
             })))
       return failure();
   }
@@ -448,6 +480,11 @@ int main(int argc, char **argv) {
   // Parse pass names in main to ensure static initialization completed.
   cl::ParseCommandLineOptions(argc, argv, "MLIR Rock Dialect driver\n");
 
+  // Snapshot the cl::opts that are consumed once lowering is under way, right
+  // after parsing and before anything can reset them; see CLOptionSnapshot.
+  const CLOptionSnapshot clOpts = {outputFilename, dumpCpuSchedules,
+                                   disableFastMath};
+
   // Create context after ParseCommandLineOptions, otherwise the context
   // will be created without the command line flags.
   MLIRContext context(registry);
@@ -486,13 +523,6 @@ int main(int argc, char **argv) {
     exit(EXIT_FAILURE);
   }
 
-  // Snapshot -o before running the pipeline: the binary stage links with
-  // in-process LLD, which calls cl::ResetAllOptionOccurrences() and resets
-  // every cl::opt (including outputFilename) back to its default. Read the
-  // value now so the output still lands in the requested file rather than
-  // stdout.
-  std::string outputFilenameValue = outputFilename;
-
   // Run MLIR passes with passed in tuning parameters. If a rock pass
   // determined the (kernel x perf-config x hw) combination is structurally
   // inapplicable it will have signalled pass failure AND set the
@@ -501,7 +531,7 @@ int main(int argc, char **argv) {
   // that from a real lowering bug via a dedicated exit code so callers
   // (parameterSweeps.py, tuning frontends, ...) can classify the failure
   // without having to scrape stderr.
-  if (failed(runMLIRPasses(module, passPipeline))) {
+  if (failed(runMLIRPasses(module, passPipeline, clOpts))) {
     if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
       llvm::errs() << "Lowering not applicable.\n";
       exit(rock::kExitNotApplicable);
@@ -511,7 +541,7 @@ int main(int argc, char **argv) {
   }
 
   // Set up the output file.
-  auto output = openOutputFile(outputFilenameValue, &errorMessage);
+  auto output = openOutputFile(clOpts.outputFilename, &errorMessage);
   if (!output) {
     llvm::errs() << errorMessage << "\n";
     exit(EXIT_FAILURE);

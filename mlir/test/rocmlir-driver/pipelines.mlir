@@ -10,12 +10,34 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
 
+// `-disable-fast-math` has to reach every pass that takes it, in each phase
+// that has one and on the host pipeline as well as the kernel one. Asserting on
+// the constructed pipeline rather than on generated code is what catches a phase
+// that was never wired up at all: a code-level test can pass by accident when
+// an earlier phase already forced the shape the later one would have produced.
+// RUN: rocmlir-driver -dump-pipelines -disable-fast-math -kernel-pipeline=migraphx -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=NOFAST_MIGRAPHX
+// RUN: rocmlir-driver -dump-pipelines -disable-fast-math -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=NOFAST_HIGHLEVEL
+
+// The gpu phase both drops a pass and sets an option, so the absence is checked
+// over the whole dump rather than at a point: rock-allow-fast-math-flags exists
+// only to hand out flags this mode is refusing to hand out.
+// RUN: rocmlir-driver -dump-pipelines -disable-fast-math -kernel-pipeline=gpu -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=NOFAST_GPU --implicit-check-not=rock-allow-fast-math-flags
+
+// The host pipeline runs the same migraphx phase against the CPU reference, and
+// it is threaded separately in the driver, so it needs its own check.
+// RUN: rocmlir-driver -dump-pipelines -disable-fast-math -host-pipeline=migraphx -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=NOFAST_HOST
+
+// NOFAST_MIGRAPHX:migraphx-to-tosa{disable-fast-math=true}
+// NOFAST_HIGHLEVEL:rock-tosa-to-elementwise{disable-fast-math=true}
+// NOFAST_GPU:rock-to-ttir{disable-fast-math=true}
+// NOFAST_HOST:migraphx-to-tosa{disable-fast-math=true}
+
 // COM: Do not put a leading space between the colon and the pass you're looking for
 // MIGRAPHX:Kernel MIGraphX pipeline:
 // MIGRAPHX-NEXT:builtin.module(func.func(migraphx-realize-int4,
 // MIGRAPHX-NEXT:migraphx-transform,
 // MIGRAPHX-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// MIGRAPHX-NEXT:migraphx-to-tosa,
+// MIGRAPHX-NEXT:migraphx-to-tosa{disable-fast-math=false},
 // MIGRAPHX-NEXT:cse,
 // MIGRAPHX-NEXT:migraphx-tosa-simplify))
 
@@ -309,7 +331,7 @@
 // HIGHLEVEL-NEXT:rock-detect-flash-decoding,
 // HIGHLEVEL-NEXT:rocmlir-custom-tosa-decompose,
 // HIGHLEVEL-NEXT:rocmlir-promote-softmax-precision,
-// HIGHLEVEL-NEXT:rock-tosa-to-elementwise),
+// HIGHLEVEL-NEXT:rock-tosa-to-elementwise{disable-fast-math=false}),
 // HIGHLEVEL-NEXT:func.func(tosa-optional-decompositions),
 // HIGHLEVEL-NEXT:func.func(canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}),
 // HIGHLEVEL-NEXT:func.func(tosa-infer-shapes{convert-function-boundaries=false fold-shape-expressions=false}),

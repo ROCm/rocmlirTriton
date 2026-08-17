@@ -65,7 +65,7 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
 /// (e.g. F8E8M0FNU has no zero, F4E2M1FN has no infinity) must be promoted
 /// to a wider float type before invoking this helper.
 Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
-                           Type dstIntType, bool isUnsigned);
+                           Type dstIntType, bool isUnsigned, bool assumeNoNaNs);
 
 // Get a 1-D version of the shaped type `type`, preserving memory space.
 Type getFlattenedType(Type type);

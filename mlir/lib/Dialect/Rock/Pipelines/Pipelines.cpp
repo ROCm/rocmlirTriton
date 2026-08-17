@@ -368,7 +368,9 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
     funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
   if (!noRock) {
-    funcPm.addPass(rock::createRockTosaToElementwisePass());
+    rock::RockTosaToElementwisePassOptions elementwiseOpts;
+    elementwiseOpts.disableFastMath = options.disableFastMath;
+    funcPm.addPass(rock::createRockTosaToElementwisePass(elementwiseOpts));
   }
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)
