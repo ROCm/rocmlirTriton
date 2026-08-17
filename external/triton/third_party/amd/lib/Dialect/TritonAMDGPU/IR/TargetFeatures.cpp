@@ -297,6 +297,25 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
   }
 }
 
+bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
+  auto isaFamily = getISAFamily();
+  if (elementType.isF32()) {
+    // gfx1170 is RDNA3-based for the memory model, so it has the same
+    // BUFFER_ATOMIC_{MIN,MAX}_F32 as gfx11.
+    return llvm::is_contained({ISAFamily::RDNA1, ISAFamily::RDNA2,
+                               ISAFamily::RDNA3, ISAFamily::GFX1170,
+                               ISAFamily::RDNA4, ISAFamily::GFX1250},
+                              isaFamily);
+  }
+  if (elementType.isF64()) {
+    return llvm::is_contained({ISAFamily::CDNA2, ISAFamily::CDNA3,
+                               ISAFamily::CDNA4, ISAFamily::RDNA1,
+                               ISAFamily::RDNA2, ISAFamily::GFX1250},
+                              isaFamily);
+  }
+  return false;
+}
+
 int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
   const int sc0Bit = 0b1;          // TH_ATOMIC_RETURN (cpol bit 0)
   const int scopeDevBit = 0b10000; // SCOPE_DEV = 2 << 3 (cpol bits [4:3])
