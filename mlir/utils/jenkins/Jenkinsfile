@@ -593,11 +593,20 @@ void setHeartbeat() {
     }
 }
 
+List<String> getEnabledMfmaArchitectures() {
+    def architectures = []
+    if (params.disable942 == false) architectures << 'gfx942'
+    if (params.disable908 == false) architectures << 'gfx908'
+    if (params.disable90a == false) architectures << 'gfx90a'
+    return architectures
+}
+
 String getLabelFromCodepath(String codepath) {
     echo "codepath is ${codepath}"
     String label = ''
     if (codepath == "mfma") {
-        label = 'mlir && (gfx942 || gfx908 || gfx90a)'
+        def architectures = getEnabledMfmaArchitectures()
+        label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
         //     label = 'mlir && linux-mi350-8'
@@ -733,7 +742,8 @@ boolean shouldRunFromCodepath(String codepath) {
         return true
     }
     // Run mfma when xdlops are available.
-    if ((codepath == "mfma") && params.canXdlops) {
+    if ((codepath == "mfma") && params.canXdlops &&
+        !getEnabledMfmaArchitectures().isEmpty()) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
@@ -807,7 +817,7 @@ boolean shouldRunBuildAndTest(String codepath) {
     // When a particular codepath is selected, test it if it is supported and
     // enabled.
     if (params.codepath == codepath && params.canXdlops) {
-        if (params.codepath == "mfma") return true
+        if (params.codepath == "mfma") return !getEnabledMfmaArchitectures().isEmpty()
         if (params.codepath == "vanilla") return true
         if (params.codepath == "gfx950" && params.disable950 == false) return true
         if (params.codepath == "navi21" && params.disableNavi21 == false) return true
@@ -2156,3 +2166,4 @@ PY
         }
     }
 }
+
