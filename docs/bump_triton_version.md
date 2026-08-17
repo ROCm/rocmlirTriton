@@ -664,6 +664,7 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
 - [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
+- [ ] Extend `appendFastAtomicDisables()` if a new architecture brings a new fast float atomic subtarget feature (see section 5.7)
 - [ ] Mirror new or dropped `knobs.amd.*` switches, and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
 - [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
 - [ ] Build project with `cmake.sh`
