@@ -6,7 +6,7 @@
 // RUN:     --benchmark-config="gemm:v1:64,64,64,1,1,4,16,1,2,0,0" \
 // RUN: | FileCheck %s
 //
-// CHECK: gemm:v1:64,64,64,1,1,4,16,1,2,0,0{{[[:space:]]+}}[0-9]
+// CHECK: gemm:v1:64,64,64,1,1,4,16,1,2,0,0{{[[:space:]]+[0-9]}}
 
 #map = affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
 #map1 = affine_map<(d0) -> (0, d0 floordiv 64, d0 mod 64)>
