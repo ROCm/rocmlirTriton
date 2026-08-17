@@ -401,7 +401,8 @@ LogicalResult rocmlir::tuningdriver::loadArtifacts(
                    << *bytes << "\n";
       return failure();
     }
-    if (*dt < 0 || *dt >= static_cast<int64_t>(benchmark::DataType::UNKNOWN)) {
+    if (*dt < 0 || *dt >= static_cast<int64_t>(benchmark::kNumDataTypes) ||
+        *dt == static_cast<int64_t>(benchmark::DataType::UNKNOWN)) {
       llvm::errs() << "manifest 'buffers' entry has invalid dataType value "
                    << *dt << "\n";
       return failure();

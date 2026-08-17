@@ -111,6 +111,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
   std::vector<uint8_t> patternFp4 = {2, 4, 8, 10};
   std::vector<uint8_t> patternF8E8M0FNU = {1, 2, 4, 8};
   std::vector<int> patternInt{1, -1, 2};
+  std::vector<int> patternInt4{1, -1, 2, -2};
   std::vector<uint8_t> res;
   switch (dataType) {
   case DataType::F32:
@@ -171,6 +172,15 @@ std::vector<uint8_t> getPattern(DataType dataType) {
       res.push_back(packedF4);
     }
     break;
+  case DataType::I4:
+    // Pack two signed 4-bit values into each byte.
+    assert(patternInt4.size() % 2 == 0);
+    for (size_t i = 0; i < patternInt4.size(); i += 2) {
+      uint8_t packedI4 =
+          (patternInt4[i] & 0x0F) | ((patternInt4[i + 1] & 0x0F) << 4);
+      res.push_back(packedI4);
+    }
+    break;
   case DataType::UNKNOWN:
     break;
   }
@@ -195,6 +205,8 @@ DataType strToDataType(const std::string &dataTypeStr) {
     return DataType::F8E8M0FNU;
   } else if (dataTypeStr == "f4E2M1FN") {
     return DataType::F4;
+  } else if (dataTypeStr == "i4") {
+    return DataType::I4;
   } else {
     return DataType::UNKNOWN;
   }
@@ -219,6 +231,8 @@ std::string dataTypeToStr(DataType dataType) {
     return "f8E8M0FNU";
   case DataType::F4:
     return "f4E2M1FN";
+  case DataType::I4:
+    return "i4";
   default:
     return "unknown";
   }
@@ -359,6 +373,7 @@ size_t getByteSize(DataType dataType, size_t elems) {
   case DataType::F8E8M0FNU:
     return elems;
   case DataType::F4:
+  case DataType::I4:
     return (elems + 1) / 2; // ceilDiv
   default:
     return 0;
@@ -377,6 +392,7 @@ size_t getBytesPerElement(DataType dataType) {
   case DataType::F8:
   case DataType::F8E8M0FNU:
   case DataType::F4:
+  case DataType::I4:
     return 1;
   default:
     llvm_unreachable("Data type unknown");
@@ -437,8 +453,10 @@ void *makeHostConstant(float flt, DataType computeDataType) {
     *ret = (*(reinterpret_cast<uint32_t *>(&flt)) >> 23) & 0xFF;
     return ret;
   }
-  // fp4 is not supported yet, this is used for rocMLIR benchmarking only
+  // Packed 4-bit constants are not supported yet; these types are used for
+  // rocMLIR benchmarking only.
   case DataType::F4:
+  case DataType::I4:
   default:
     return nullptr;
   }

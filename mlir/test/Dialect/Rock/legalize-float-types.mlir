@@ -769,3 +769,33 @@ func.func @test_f4_fusion_with_f8_scale_convert(
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
+
+// -----
+
+// Test: An i4 dequant chain with a two-element K tile can be packed. The pass
+// halves k_iter from 2 to 1, loads one i8 per pair of i4 values, and unpacks
+// the nibbles before the conversion to f16.
+
+// CHECK-LABEL: func.func @test_i4_two_element_k_tile
+// CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>, %{{.*}}: tensor<16xf32>)
+// CHECK: rock.transform %[[DATA]] by <{{.*}}Unmerge{4, 2}
+// CHECK: rock.transform {{.*}}Unmerge{2, 1}{{.*}}["k_loop", "k_iter"]
+// CHECK: rock.blockwise_load {{.*}} : tensor<2x1x1x1x1x4xi8> -> tensor<1x4xi8>
+// CHECK: arith.andi {{.*}} : tensor<1x4xi8>
+// CHECK: tt.join
+// CHECK: arith.uitofp {{.*}} : tensor<2x4xi8> to tensor<2x4xf16>
+func.func @test_i4_two_element_k_tile(
+    %data: tensor<16xi4>, %out: tensor<16xf32>) -> tensor<16xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+  %data_2d = rock.transform %data by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{4, 4} ["n", "k"] at [0, 1] -> ["raw"] at [0]>] bounds = [4, 4] -> [16]> : tensor<16xi4> to tensor<4x4xi4>
+  %data_3d = rock.transform %data_2d by <affine_map<(d0, d1, d2) -> (d2, d1)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <PassThrough ["k"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [0]>] bounds = [1, 4, 4] -> [4, 4]> : tensor<4x4xi4> to tensor<1x4x4xi4>
+  %data_6d = rock.transform %data_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{2, 2} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [2, 1, 1, 1, 2, 4] -> [1, 4, 4]> : tensor<1x4x4xi4> to tensor<2x1x1x1x2x4xi4>
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>} : tensor<2x1x1x1x2x4xi4> -> tensor<2x4xi4>
+  %ext = arith.extui %data_tile : tensor<2x4xi4> to tensor<2x4xi8>
+  %dequant = arith.uitofp %ext : tensor<2x4xi8> to tensor<2x4xf16>
+  %a = arith.constant dense<1.0> : tensor<4x2xf16>
+  %cst = arith.constant dense<0.0> : tensor<4x4xf32>
+  %result = rock.blockwise_gemm(%a, %dequant, %cst) : tensor<4x2xf16>, tensor<2x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
+  return %out : tensor<16xf32>
+}
