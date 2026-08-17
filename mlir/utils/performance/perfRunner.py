@@ -396,7 +396,9 @@ def read_tuning_db(path: str,
 def extract_tuning_key_metadata(argv: list) -> Tuple[list, bool]:
     """Extract problem identity metadata that is not a rocmlir-gen option."""
     filtered = []
-    supports_split_k = False
+    # Config files describe unfused generated kernels, which support split-K.
+    # Emitted fusion tuning keys carry an explicit false value when needed.
+    supports_split_k = True
     i = 0
     while i < len(argv):
         if argv[i] == '-supportsSplitK':
@@ -547,7 +549,7 @@ def run_pipeline(proc_specs):
 
 class PerfConfiguration:
     TABLE_COLUMNS = []
-    supports_split_k = False
+    supports_split_k = True
 
     def tuning_key_metadata(self) -> str:
         return f"-supportsSplitK {str(self.supports_split_k).lower()}"
@@ -1801,8 +1803,7 @@ class AttentionConfiguration(PerfConfiguration):
                  perf_config: str = '',
                  last_valid_kv_index: Optional[List[int]] = None,
                  trans_bias: bool = False,
-                 sliding_window_look_back: Optional[int] = None,
-                 supports_split_k: bool = False):
+                 sliding_window_look_back: Optional[int] = None):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
         if trans_bias and not with_attn_bias:
@@ -1855,7 +1856,6 @@ class AttentionConfiguration(PerfConfiguration):
         self.num_cu = num_cu
         self.num_chiplets = num_chiplets
         self.perfconfig = perf_config
-        self.supports_split_k = supports_split_k
 
     def compute_tflops(self, ns, only_matmul_flops=True):
         # NaN will propagate as expected
@@ -2012,31 +2012,32 @@ class AttentionConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete Attention configuration")
 
-        return cls(dtype,
-                   g,
-                   seq_len_q,
-                   seq_len_k,
-                   num_heads_q,
-                   num_heads_kv,
-                   head_dim_qk,
-                   head_dim_v,
-                   with_attn_scale,
-                   with_attn_bias,
-                   trans_q,
-                   trans_k,
-                   trans_v,
-                   trans_o,
-                   causal,
-                   return_lse,
-                   split_kv,
-                   arch,
-                   num_cu,
-                   num_chiplets,
-                   perf_config,
-                   last_valid_kv_index=last_valid_kv_index,
-                   trans_bias=trans_bias,
-                   sliding_window_look_back=sliding_window_look_back,
-                   supports_split_k=supports_split_k)
+        config = cls(dtype,
+                     g,
+                     seq_len_q,
+                     seq_len_k,
+                     num_heads_q,
+                     num_heads_kv,
+                     head_dim_qk,
+                     head_dim_v,
+                     with_attn_scale,
+                     with_attn_bias,
+                     trans_q,
+                     trans_k,
+                     trans_v,
+                     trans_o,
+                     causal,
+                     return_lse,
+                     split_kv,
+                     arch,
+                     num_cu,
+                     num_chiplets,
+                     perf_config,
+                     last_valid_kv_index=last_valid_kv_index,
+                     trans_bias=trans_bias,
+                     sliding_window_look_back=sliding_window_look_back)
+        config.supports_split_k = supports_split_k
+        return config
 
     def to_command_line(self):
         return (
@@ -2250,8 +2251,9 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
     """Return the perf config for ``config_str``, including legacy keys.
 
     Tuning keys gained split-K support metadata and optional attention flags
-    over time. Missing split-K metadata defaults to the restrictive ``false``
-    value. Missing false-valued attention flags are also identity cases.
+    over time. Legacy rows without split-K metadata describe unfused generated
+    kernels, so they are equivalent to ``supportsSplitK true``. Missing
+    false-valued attention flags are also identity cases.
     """
     if not tuning_db:
         return None
@@ -2260,8 +2262,8 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
         return tuning_db[arch, config_str]
 
     candidate_config_strs = [config_str]
-    if not config.supports_split_k:
-        legacy_split_k_key = config_str.replace(" -supportsSplitK false", "")
+    if config.supports_split_k:
+        legacy_split_k_key = config_str.replace(" -supportsSplitK true", "")
         candidate_config_strs.append(legacy_split_k_key)
         if (arch, legacy_split_k_key) in tuning_db:
             return tuning_db[arch, legacy_split_k_key]
@@ -2574,6 +2576,30 @@ def run_fusion_kernel(filename, rocmlir_gen_args, paths: Paths):
     return nanoseconds
 
 
+def lookup_fusion_tuning_config(tuning_db: MaybeTuningDb, arch: str, config: PerfConfiguration,
+                                config_str: str) -> Optional[str]:
+    """Find a fusion perf config, allowing a no-split-K key to use a base-op row.
+
+    ``benchmark_fusion_kernels`` forces every candidate's split-K factor to one
+    before calling this helper, so retrying a split-K-capable base key cannot
+    select an illegal split-K configuration.
+    """
+    perf_config = lookup_tuning_db(tuning_db, arch, config, config_str)
+    if perf_config is not None or config.supports_split_k:
+        return perf_config
+
+    false_suffix = "-supportsSplitK false"
+    assert config_str.endswith(false_suffix)
+    fallback_config_str = config_str[:-len(false_suffix)] + "-supportsSplitK true"
+    if not tuning_db:
+        return None
+    if (arch, fallback_config_str) in tuning_db:
+        return tuning_db[arch, fallback_config_str]
+
+    legacy_fallback = fallback_config_str[:-len("-supportsSplitK true")].rstrip()
+    return tuning_db.get((arch, legacy_fallback))
+
+
 # Generate fusion vs. gemm/conv performance results
 def benchmark_fusion_kernels(test_dir,
                              paths: Paths,
@@ -2632,7 +2658,7 @@ def benchmark_fusion_kernels(test_dir,
         best_perf = ""
         if tuning_db:
             config_str = config.to_command_line()
-            perf_config = lookup_tuning_db(tuning_db, arch, config, config_str)
+            perf_config = lookup_fusion_tuning_config(tuning_db, arch, config, config_str)
             if perf_config is not None:
                 best_perf = perf_config
                 config.set_perfconfig(best_perf)

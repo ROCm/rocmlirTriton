@@ -25,8 +25,8 @@ sys.modules.setdefault("hip", hip_package)
 
 from perfRunner import (  # noqa: E402
     AttentionConfiguration, ConvConfiguration, ConvGemmConfiguration, GemmConfiguration,
-    GemmGemmConfiguration, canonicalize_config, extract_tuning_key_metadata, lookup_tuning_db,
-    read_tuning_db,
+    GemmGemmConfiguration, canonicalize_config, extract_tuning_key_metadata,
+    lookup_fusion_tuning_config, lookup_tuning_db, read_tuning_db,
 )
 
 ARCH = "gfx900"
@@ -69,11 +69,19 @@ class SplitKTuningKeyTest(unittest.TestCase):
                 self.assertNotIn("-supportsSplitK",
                                  config.generate_mlir_driver_commandline("", kernel_repeats=None))
 
-    def test_missing_metadata_defaults_to_no_split_k_support(self):
+    def test_missing_metadata_defaults_to_split_k_support(self):
         for config_class, raw in SAMPLES:
             with self.subTest(config_class=config_class.__name__):
                 canonical = canonicalize_config(raw, config_class, ARCH, NUM_CU, NUM_CHIPLETS)
-                self.assertTrue(canonical.endswith("-supportsSplitK false"))
+                self.assertTrue(canonical.endswith("-supportsSplitK true"))
+
+    def test_i8_base_key_defaults_to_split_k_support(self):
+        raw = ("-t i8 -out_datatype i32 -transA false -transB false -transO false "
+               "-g 1 -m 64 -n 64 -k 64")
+        config = GemmConfiguration.from_command_line(raw.split(), ARCH, NUM_CU, NUM_CHIPLETS)
+
+        self.assertTrue(config.supports_split_k)
+        self.assertTrue(config.to_command_line().endswith("-supportsSplitK true"))
 
     def test_metadata_is_not_a_driver_option(self):
         argv, supports_split_k = extract_tuning_key_metadata(
@@ -86,20 +94,33 @@ class SplitKTuningKeyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid value"):
             extract_tuning_key_metadata(["-supportsSplitK", "maybe"])
 
-    def test_legacy_key_only_matches_restrictive_default(self):
+    def test_legacy_key_matches_unfused_default(self):
         config_class, raw = SAMPLES[1]
-        no_split_k = config_class.from_command_line(raw.split(), ARCH, NUM_CU, NUM_CHIPLETS)
-        legacy_key = no_split_k.to_command_line().replace(" -supportsSplitK false", "")
+        supports_split_k = config_class.from_command_line(raw.split(), ARCH, NUM_CU, NUM_CHIPLETS)
+        legacy_key = supports_split_k.to_command_line().replace(" -supportsSplitK true", "")
         tuning_db = {(ARCH, legacy_key): "perf_config"}
 
         self.assertEqual(
-            lookup_tuning_db(tuning_db, ARCH, no_split_k, no_split_k.to_command_line()),
+            lookup_tuning_db(tuning_db, ARCH, supports_split_k, supports_split_k.to_command_line()),
             "perf_config")
 
-        supports_split_k = config_class.from_command_line(f"{raw} -supportsSplitK true".split(),
-                                                          ARCH, NUM_CU, NUM_CHIPLETS)
+        no_split_k = config_class.from_command_line(f"{raw} -supportsSplitK false".split(), ARCH,
+                                                    NUM_CU, NUM_CHIPLETS)
         self.assertIsNone(
-            lookup_tuning_db(tuning_db, ARCH, supports_split_k, supports_split_k.to_command_line()))
+            lookup_tuning_db(tuning_db, ARCH, no_split_k, no_split_k.to_command_line()))
+
+    def test_fusion_lookup_falls_back_to_split_k_capable_base_key(self):
+        config_class, raw = SAMPLES[1]
+        no_split_k = config_class.from_command_line(f"{raw} -supportsSplitK false".split(), ARCH,
+                                                    NUM_CU, NUM_CHIPLETS)
+        capable_key = raw + " -supportsSplitK true"
+        tuning_db = {(ARCH, capable_key): "v2:64,64,32,32,1,1,1"}
+
+        perf_config = lookup_fusion_tuning_config(tuning_db, ARCH, no_split_k,
+                                                  no_split_k.to_command_line())
+
+        self.assertEqual(perf_config, "v2:64,64,32,32,1,1,1")
+        self.assertFalse(no_split_k.supports_split_k)
 
     def test_tuning_db_distinguishes_split_k_support(self):
         raw = SAMPLES[1][1]
