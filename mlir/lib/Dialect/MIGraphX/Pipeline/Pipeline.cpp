@@ -40,13 +40,15 @@ using namespace mlir;
 
 //===- Consolidate the Rock Pipelines here ---------------------===//
 
-void migraphx::addMIGraphXPipeline(PassManager &pm) {
+void migraphx::addMIGraphXPipeline(PassManager &pm, bool disableFastMath) {
   // passes for MIXR to TOSA
   auto &funcPm = pm.nest<func::FuncOp>();
   funcPm.addPass(migraphx::createMIGraphXRealizeInt4Pass());
   funcPm.addPass(migraphx::createMIGraphXTransformPass());
   funcPm.addPass(createCanonicalizerPass());
-  funcPm.addPass(createMIGraphXToTosaPass());
+  MIGraphXToTosaPassOptions tosaOpts;
+  tosaOpts.disableFastMath = disableFastMath;
+  funcPm.addPass(createMIGraphXToTosaPass(tosaOpts));
   funcPm.addPass(createCSEPass());
   funcPm.addPass(migraphx::createMIGraphXTosaSimplifyPass());
 }
