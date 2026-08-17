@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Generate TableGen headers required by clang-tidy static checks.
 #
-# mlir-headers covers upstream MLIR and most chained targets. The targets
-# below are rocmlirTriton orphan tablegen targets not hooked into
-# mlir-headers. Any new add_public_tablegen_target() in mlir/ must be
-# appended here.
+# mlir-headers covers add_mlir_dialect() / dialect tablegen; mlir-generic-headers
+# covers add_mlir_interface() / generic tablegen. The targets below are
+# rocmlirTriton orphan TableGen targets (bare add_public_tablegen_target() in
+# mlir/) not hooked into either umbrella. Any new such orphan must be appended
+# here.
 set -euo pipefail
 
 BUILD_DIR="${1:-build}"
@@ -16,6 +17,7 @@ fi
 
 cmake --build "${BUILD_DIR}" --target \
   mlir-headers \
+  mlir-generic-headers \
   MLIRCpuPassIncGen \
   MLIRRockAttrDefsIncGen \
   MLIRRockTuningParamAttrInterfaceIncGen \

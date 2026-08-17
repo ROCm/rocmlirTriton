@@ -114,11 +114,8 @@ def build_tablegen_headers(repo_root: str) -> bool:
     if not os.path.isfile(script):
         print(f'Error: {script} not found.')
         return False
+    # compile_commands.json is validated inside the script (also used standalone).
     build_dir = os.path.join(repo_root, 'build')
-    compile_commands = os.path.join(build_dir, 'compile_commands.json')
-    if not os.path.isfile(compile_commands):
-        print(f'Error: {compile_commands} not found; configure the project first.')
-        return False
     result = subprocess.run(['bash', script, build_dir], check=False)
     if result.returncode != 0:
         print('TableGen header generation failed.')
