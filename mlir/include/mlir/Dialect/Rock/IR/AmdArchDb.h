@@ -103,10 +103,7 @@ enum class Dtype { F32, F16, BF16 };
 /// Whether there's a native atomic max instruction for `type`.
 ///
 /// Unlike atomic add, an unsupported float atomic max has no software
-/// fallback in our lowering: it becomes a buffer-atomic intrinsic, which the
-/// AMDGPU backend cannot select where the instruction is missing (it never
-/// reaches AtomicExpandPass, so no compare-and-swap loop is generated).
-/// Callers must therefore avoid emitting atomic max when this returns false.
+/// fallback in our lowering.
 bool isFastAtomicMaxSupported(StringRef arch, Type type);
 
 /// Enum-dtype overload of \ref isFastAtomicMaxSupported (currently only
