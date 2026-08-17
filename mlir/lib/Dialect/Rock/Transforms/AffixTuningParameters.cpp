@@ -168,6 +168,19 @@ static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
   return success();
 }
 
+// Dropping the native float atomics only reaches a compare-and-swap loop if
+// every float atomic is still a generic `atomicrmw` by the time
+// AtomicExpandPass runs. A buffer atomic bypasses that pass and would reach
+// ISel unexpanded, once the subtarget features are gone, so the two knobs have
+// to agree rather than one silently overruling the other.
+static LogicalResult validateFastAtomics(Operation *op, int64_t useFastAtomics,
+                                         int64_t useBufferAtomics) {
+  if (useFastAtomics != 0 || useBufferAtomics == 0)
+    return success();
+  return op->emitError() << "useFastAtomics=0 requires useBufferAtomics=0, got "
+                         << useBufferAtomics;
+}
+
 // Single entry point: run all per-field checks via
 // `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
 // `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
@@ -207,6 +220,9 @@ static LogicalResult validatePerfConfig(Operation *op,
   if (failed(validateWavesPerEU(op, params.getWavesPerEU())))
     return failure();
   if (failed(validateGridGroupSize(op, params.getGridGroupSize())))
+    return failure();
+  if (failed(validateFastAtomics(op, params.getUseFastAtomics(),
+                                 params.getUseBufferAtomics())))
     return failure();
   return success();
 }

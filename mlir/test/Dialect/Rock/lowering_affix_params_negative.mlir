@@ -178,6 +178,21 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=NPERBLOCKG1-NOT-POW2
 
+// ---- validateFastAtomics: useFastAtomics=0 needs useBufferAtomics=0 --------
+// A buffer atomic never reaches AtomicExpandPass, so it would survive to ISel
+// once the native float atomic features are dropped. Leaving useBufferAtomics
+// at its -1 default is just as wrong as asking for it explicitly.
+
+// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
+// RUN:   --perf_config "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=128,useFastAtomics=0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=FASTATOMICS-DEFAULT-BUFFER
+
+// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
+// RUN:   --perf_config "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=128,useBufferAtomics=1,useFastAtomics=0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=FASTATOMICS-BUFFER-ON
+
 // MPERBLOCK-NON-POSITIVE: error: mPerBlock=0 must be positive
 // NPERBLOCK-NON-POSITIVE: error: nPerBlock=0 must be positive
 // MPERBLOCK-NOT-POW2:    error: mPerBlock=3 must be a positive power of two
@@ -202,3 +217,5 @@
 // WAVESPEREU-TOO-LARGE:  error: wavesPerEU=9 exceeds max (8) for amdgcn-amd-amdhsa:gfx90a
 // GRIDGROUP-NEGATIVE:    error: gridGroupSize=-1 must be >= 0
 // NPERBLOCKG1-NOT-POW2:  error: nPerBlockG1=3 must be 0 (untiled) or a positive power of two
+// FASTATOMICS-DEFAULT-BUFFER: error: useFastAtomics=0 requires useBufferAtomics=0, got -1
+// FASTATOMICS-BUFFER-ON: error: useFastAtomics=0 requires useBufferAtomics=0, got 1

@@ -223,6 +223,18 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Gate for the native ("fast") float atomic instructions. `-1` is
+          the knob default and `1` keeps them, while `0` forces the float
+          atomics whose instruction is a per-GPU subtarget feature through
+          a compare-and-swap loop and requires `useBufferAtomics=0`.
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseFastAtomics",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
   ];
 }
 

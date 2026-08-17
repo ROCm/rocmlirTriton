@@ -201,6 +201,7 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();
   backendOpts.wavesPerEU = params.getWavesPerEU();
+  backendOpts.useFastAtomics = params.getUseFastAtomics();
   return success();
 }
 

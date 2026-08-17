@@ -330,7 +330,8 @@ defvar kRockCommonPerfConfigFields =
      RockPerfConfigField<"useBufferOps", kRockKnobDefault>,
      RockPerfConfigField<"useBufferAtomics", kRockKnobDefault>,
      RockPerfConfigField<"useReductionLayout", kRockKnobDefault>,
-     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>];
+     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>,
+     RockPerfConfigField<"useFastAtomics", kRockKnobDefault>];
 
 // Derives the whole named-perfConfig surface of a tuning-param attribute from a
 // single field list: the `getPerfConfigStr()` emitter, the key/default schema
@@ -441,7 +442,7 @@ defvar kRockGemmParams = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useFastAtomics);
 
 def Rock_GemmParamsSchema
     : Rock_PerfConfigSchema<"gemm", kRockGemmParams,
@@ -483,6 +484,13 @@ def Rock_GemmParamsAttr
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
+    - useFastAtomics: Gate for the native ("fast") float atomic instructions.
+      `-1` is the knob default and `1` keeps them, while `0` drops the subtarget
+      features that provide them so that AtomicExpandPass rewrites the atomic
+      into a compare-and-swap loop. This covers float add everywhere and float
+      min/max only where the instruction comes from a per-GPU feature (see
+      `appendFastAtomicDisables` in TritonToHsaco.cpp). Since a buffer atomic
+      never reaches AtomicExpandPass, `0` also requires `useBufferAtomics=0`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -497,6 +505,7 @@ def Rock_GemmParamsAttr
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
+    - `useFastAtomics`                   (set to -1)
   }];
 
   let parameters = kRockGemmParams;
@@ -521,7 +530,7 @@ defvar kRockGemmGemmParams = (ins "int64_t":$mPerBlockG0,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useFastAtomics);
 
 // `nPerBlockG1` defaults to 0 ("untiled"), matching how pre-v6 positional
 // configs, which have no such field, decode.
@@ -573,6 +582,13 @@ def Rock_GemmGemmParamsAttr
     - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
       selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
       enables it unconditionally.
+    - useFastAtomics: Gate for the native ("fast") float atomic instructions.
+      `-1` is the knob default and `1` keeps them, while `0` drops the subtarget
+      features that provide them so that AtomicExpandPass rewrites the atomic
+      into a compare-and-swap loop. This covers float add everywhere and float
+      min/max only where the instruction comes from a per-GPU feature (see
+      `appendFastAtomicDisables` in TritonToHsaco.cpp). Since a buffer atomic
+      never reaches AtomicExpandPass, `0` also requires `useBufferAtomics=0`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -587,6 +603,7 @@ def Rock_GemmGemmParamsAttr
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
+    - `useFastAtomics`                   (set to -1)
   }];
 
   let parameters = kRockGemmGemmParams;

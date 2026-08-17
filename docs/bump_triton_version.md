@@ -412,6 +412,37 @@ if (rock::supportsTDM(arch))
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
 
+### 5.7 Fast float atomic subtarget features
+
+`appendFastAtomicDisables()` in `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp`
+implements the `useFastAtomics=0` perfConfig knob by removing, from the AMDGCN
+TargetMachine, the subtarget features that provide the native float atomic
+instructions, which leaves AtomicExpandPass to rewrite the atomic into a
+compare-and-swap loop. The list mirrors the subtarget queries
+`SITargetLowering::shouldExpandAtomicRMWInIR()` makes for a global, buffer or
+flat `atomicrmw fadd`/`fmin`/`fmax`, so an architecture that brings a new
+fast-atomic instruction needs a new entry, otherwise the knob silently keeps
+that instruction:
+
+```bash
+# New or renamed atomic features, and the hooks that gate the expansion
+git diff "$OLD_REPO..$NEW_REPO" -- external/llvm-project/llvm/lib/Target/AMDGPU/AMDGPU.td | rg atomic
+git diff "$OLD_REPO..$NEW_REPO" -- external/llvm-project/llvm/lib/Target/AMDGPU/SIISelLowering.cpp | rg 'AtomicRMWInst::(FAdd|FMin|FMax)' -A 60
+```
+
+Only features owned by a per-GPU `FeatureISAVersion*` definition may be
+removed. Removing one that a `GCNSubtargetFeatureGeneration` block implies makes
+the AMDGPU backend assert (`Invalid opcode!`) while sizing the instructions of
+*any* kernel, atomic or not, which is why the f32 `fmin`/`fmax` pair is dropped
+on gfx9 only: the generation blocks own it from gfx10 on. So grep `AMDGPU.td`
+for a candidate feature before adding it, and confirm it is not listed between
+`def FeatureGFX9` and the `FeatureISAVersion*` definitions.
+
+`mlir/test/Dialect/Rock/triton-to-hsaco-fast-atomics.mlir` compiles a split-K
+gemm with the knob on and off on a CDNA and an RDNA target and checks the
+emitted assembly, so it catches both a feature that stopped disabling anything
+and a feature that cannot be removed.
+
 ## Step 6: Regenerate Fat Library Dependencies
 
 The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.

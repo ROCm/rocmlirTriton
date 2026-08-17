@@ -102,7 +102,8 @@ struct GemmGemmOrderingTestEnv {
                                    /*useBufferOps=*/kKnobDefault,
                                    /*useBufferAtomics=*/kKnobDefault,
                                    /*useReductionLayout=*/kKnobDefault,
-                                   /*useOptimizeEpilogue=*/kKnobDefault);
+                                   /*useOptimizeEpilogue=*/kKnobDefault,
+                                   /*useFastAtomics=*/kKnobDefault);
   }
 };
 } // namespace

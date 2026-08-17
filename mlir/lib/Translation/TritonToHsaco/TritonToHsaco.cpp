@@ -717,6 +717,58 @@ static void appendFeature(std::string &features, llvm::StringRef feature) {
   features += feature;
 }
 
+/// Whether the native ("fast") float atomic instructions may be used. `-1` is
+/// the knob default, `0` forces every float atomic through a compare-and-swap
+/// loop, and `1` keeps them.
+static bool isFastAtomicsEnabled(int useFastAtomics) {
+  if (useFastAtomics == kKnobDefault)
+    return true;
+  return useFastAtomics != 0;
+}
+
+/// With these subtarget features off, AtomicExpandPass lowers the matching
+/// float atomic to a compare-and-swap loop instead of the native instruction.
+/// This is the target machine that feeds make_amdgcn, and a kernel only carries
+/// an overriding `target-features` attribute under asan, so `-mattr` wins here.
+///
+/// The list mirrors the subtarget queries `SITargetLowering::
+/// shouldExpandAtomicRMWInIR` makes for a global, buffer or flat float atomic,
+/// so a new architecture that brings a new fast-atomic feature has to be added
+/// here (see docs/bump_triton_version.md). LDS atomics are deliberately left
+/// alone: they are not the accumulation path this knob exists to measure.
+///
+/// Only per-GPU features can be dropped like this. The f32 `fmin`/`fmax`
+/// features belong to the gfx10/gfx11/gfx12 *generation* feature sets, and
+/// removing a generation feature makes the AMDGPU backend assert ("Invalid
+/// opcode!") while sizing the instructions of any kernel, atomic or not. So f32
+/// atomic min/max keeps its native instruction from gfx10 on; on gfx9 there is
+/// no such instruction in the first place and it is already a CAS loop. Their
+/// f64 counterparts are per-GPU on gfx9 and generation-owned from gfx10 on,
+/// hence the gate below.
+///
+/// Requires buffer atomics to be off, which `validateFastAtomics` in
+/// AffixTuningParameters.cpp enforces: AtomicExpandPass only ever sees generic
+/// `atomicrmw`, so the buffer-atomic intrinsics that convert-buffer-ops emits
+/// would reach ISel unexpanded and fail to select once these features are gone
+/// ("Cannot select AMDGPUISD::BUFFER_ATOMIC_FADD").
+static void appendFastAtomicDisables(std::string &features, StringRef arch) {
+  // atomicrmw fadd, f32 then f64 then the packed 16-bit types
+  appendFeature(features, "-atomic-fadd-rtn-insts");
+  appendFeature(features, "-atomic-fadd-no-rtn-insts");
+  appendFeature(features, "-flat-atomic-fadd-f32-inst");
+  appendFeature(features, "-flat-buffer-global-fadd-f64-inst");
+  appendFeature(features, "-atomic-buffer-global-pk-add-f16-insts");
+  appendFeature(features, "-atomic-buffer-global-pk-add-f16-no-rtn-insts");
+  appendFeature(features, "-atomic-global-pk-add-bf16-inst");
+  appendFeature(features, "-atomic-buffer-pk-add-bf16-inst");
+  appendFeature(features, "-atomic-flat-pk-add-16-insts");
+  // atomicrmw fmax / fmin
+  if (arch.starts_with("gfx9")) {
+    appendFeature(features, "-atomic-fmin-fmax-global-f64");
+    appendFeature(features, "-atomic-fmin-fmax-flat-f64");
+  }
+}
+
 FailureOr<llvm::SmallVector<char, 0>>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   initializeLLVMTargets();
@@ -878,24 +930,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string asmFeatures;
   if (disableTrue16)
     asmFeatures = "-real-true16";
-  // EXPERIMENT ONLY, DO NOT MERGE: turning these subtarget features off makes
-  // AtomicExpandPass lower float atomic add to a compare-and-swap loop instead
-  // of the native instruction, so split-K and reduce-sum performance can be
-  // measured against the native path. This is the TM that feeds makeAMDGCN, and
-  // the kernel only carries an overriding `target-features` attribute under
-  // asan, so -mattr here wins.
-  //
-  // Relies on buffer atomics being off (see `isBufferAtomicsEnabled` in
-  // Pipelines.cpp). AtomicExpandPass only sees generic `atomicrmw`; the
-  // buffer-atomic intrinsics that tritonamdgpu-convert-buffer-ops would
-  // otherwise emit reach ISel unexpanded and fail to select once these features
-  // are gone ("Cannot select AMDGPUISD::BUFFER_ATOMIC_FADD").
-  appendFeature(asmFeatures, "-atomic-buffer-global-pk-add-f16-insts");
-  appendFeature(asmFeatures, "-atomic-buffer-global-pk-add-f16-no-rtn-insts");
-  appendFeature(asmFeatures, "-atomic-global-pk-add-bf16-inst");
-  appendFeature(asmFeatures, "-atomic-flat-pk-add-16-insts");
-  appendFeature(asmFeatures, "-atomic-fadd-rtn-insts");
-  appendFeature(asmFeatures, "-atomic-fadd-no-rtn-insts");
+  if (!isFastAtomicsEnabled(options.useFastAtomics))
+    appendFastAtomicDisables(asmFeatures, arch);
   auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                                    options.enableFpFusion);
   if (!tmAsm) {
@@ -1012,6 +1048,7 @@ public:
     options.scalarizePackedFops = scalarizePackedFops.getValue();
     options.llvmFnAttrs = llvmFnAttrs.getValue();
     options.useExpertScheduling = useExpertScheduling.getValue();
+    options.useFastAtomics = useFastAtomics.getValue();
 
     // Call the translation
     auto hsacoOrErr = translateTritonToHsaco(module, options);

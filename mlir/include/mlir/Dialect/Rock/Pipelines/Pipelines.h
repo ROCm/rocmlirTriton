@@ -169,6 +169,13 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
            "(kKnobDefault=arch default (on for gfx1250), 0=off, 1=on). "
            "Debug-only override; not a perfConfig knob."),
       init(kKnobDefault)};
+  PassOptions::Option<int> useFastAtomics{
+      *this, "useFastAtomics",
+      desc("Gate the native float atomic instructions (kKnobDefault=-1, "
+           "1=use them, 0=drop the subtarget features so AtomicExpandPass "
+           "emits a compare-and-swap loop instead). Mirrors the perfConfig "
+           "field of the same name; 0 requires useBufferAtomics=0."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

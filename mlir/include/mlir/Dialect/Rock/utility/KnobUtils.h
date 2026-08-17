@@ -26,7 +26,7 @@ namespace rock {
 /// Tri-state sentinel for the Triton knob fields in the perfConfig
 /// (`useAsyncCopy`, `useBlockPingpong`, `useInThreadTranspose`,
 /// `useBufferOps`, `useBufferAtomics`, `useReductionLayout`,
-/// `useOptimizeEpilogue`) plus the debug-only
+/// `useOptimizeEpilogue`, `useFastAtomics`) plus the debug-only
 /// `TritonOptions::bufferOpsAnalyzeSmallTensorRange` override (which lives
 /// outside the perfConfig). A field set to `kKnobDefault` selects its
 /// automatic/default behavior; `0` and `1` mean explicit off/on. Lives here

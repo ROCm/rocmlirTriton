@@ -40,6 +40,7 @@ struct TritonToHsacoOptions {
   bool scalarizePackedFops = false; // Scalarize packed float ops
   std::string llvmFnAttrs;
   int useExpertScheduling = kKnobDefault;
+  int useFastAtomics = kKnobDefault;
   std::vector<std::string> externLibPaths; // Paths to external device libraries
                                            // (ocml.bc, ockl.bc, etc.)
 };

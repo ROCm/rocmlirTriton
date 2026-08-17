@@ -62,27 +62,34 @@ void expectScheduleHintWarning(const WarningCapture &capture,
 }
 
 // Builds the canonical named form from `values`, which are in schema order.
-// The keys come from the attribute's own schema rather than a copy of it, so
-// these helpers stay usable when a field is added; what the keys and their
-// order actually are is pinned by the `...NamedSchemaIsPinned` tests below,
-// which is where a schema change is meant to show up.
+// Trailing fields a caller leaves out take their schema default, so appending a
+// knob does not have to touch every test. The keys come from the attribute's
+// own schema rather than a copy of it, so these helpers stay usable when a
+// field is added; what the keys and their order actually are is pinned by the
+// `...NamedSchemaIsPinned` tests below, which is where a schema change is meant
+// to show up.
 std::string perfConfigNamed(StringRef prefix, ArrayRef<StringRef> keys,
+                            ArrayRef<int64_t> defaults,
                             ArrayRef<int64_t> values) {
-  assert(keys.size() == values.size() && "perfConfig field count mismatch");
+  assert(values.size() <= keys.size() && "too many perfConfig fields");
   std::string out = (prefix + ":").str();
-  for (size_t i = 0, e = keys.size(); i < e; ++i)
-    out += (Twine(i ? "," : "") + keys[i] + "=" + Twine(values[i])).str();
+  for (size_t i = 0, e = keys.size(); i < e; ++i) {
+    int64_t value = i < values.size() ? values[i] : defaults[i];
+    out += (Twine(i ? "," : "") + keys[i] + "=" + Twine(value)).str();
+  }
   return out;
 }
 
-std::string gemmNamed(std::array<int64_t, 18> f) {
+std::string gemmNamed(ArrayRef<int64_t> f) {
   return perfConfigNamed(GemmParamsAttr::getPerfConfigPrefix(),
-                         GemmParamsAttr::getPerfConfigKeys(), f);
+                         GemmParamsAttr::getPerfConfigKeys(),
+                         GemmParamsAttr::getPerfConfigDefaults(), f);
 }
 
-std::string attnNamed(std::array<int64_t, 19> f) {
+std::string attnNamed(ArrayRef<int64_t> f) {
   return perfConfigNamed(GemmGemmParamsAttr::getPerfConfigPrefix(),
-                         GemmGemmParamsAttr::getPerfConfigKeys(), f);
+                         GemmGemmParamsAttr::getPerfConfigKeys(),
+                         GemmGemmParamsAttr::getPerfConfigDefaults(), f);
 }
 
 // `llvm::join` only handles strings, and gmock's container matchers aren't
@@ -788,10 +795,10 @@ TEST(PerfConfigParsingTest, GemmParamsNamedSchemaIsPinned) {
             "matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,"
             "gridGroupSize,useAsyncCopy,useBlockPingpong,useInThreadTranspose,"
             "useBufferOps,useBufferAtomics,useReductionLayout,"
-            "useOptimizeEpilogue");
+            "useOptimizeEpilogue,useFastAtomics");
   // The value each field takes when a config string omits it.
   EXPECT_EQ(joinInts(GemmParamsAttr::getPerfConfigDefaults()),
-            "32,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1");
+            "32,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmParamsNamedRoundTrip) {
@@ -907,9 +914,9 @@ TEST(PerfConfigParsingTest, GemmGemmParamsNamedSchemaIsPinned) {
             "numWaves,matrixInstrNonkdim,splitKFactor,numStages,wavesPerEU,"
             "gridGroupSize,useAsyncCopy,useBlockPingpong,useInThreadTranspose,"
             "useBufferOps,useBufferAtomics,useReductionLayout,"
-            "useOptimizeEpilogue");
+            "useOptimizeEpilogue,useFastAtomics");
   EXPECT_EQ(joinInts(GemmGemmParamsAttr::getPerfConfigDefaults()),
-            "32,32,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1");
+            "32,32,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1,-1");
 }
 
 TEST(PerfConfigParsingTest, GemmGemmParamsNamedRoundTrip) {

@@ -2384,7 +2384,8 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useInThreadTranspose,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
                                 int64_t useReductionLayout,
-                                int64_t useOptimizeEpilogue) {
+                                int64_t useOptimizeEpilogue,
+                                int64_t useFastAtomics) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2393,6 +2394,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useBufferAtomics", useBufferAtomics},
       {"useReductionLayout", useReductionLayout},
       {"useOptimizeEpilogue", useOptimizeEpilogue},
+      {"useFastAtomics", useFastAtomics},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2580,7 +2582,7 @@ parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
           perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
           knob("useInThreadTranspose"), knob("useBufferOps"),
           knob("useBufferAtomics"), knob("useReductionLayout"),
-          knob("useOptimizeEpilogue"))))
+          knob("useOptimizeEpilogue"), knob("useFastAtomics"))))
     return failure();
   return ordered;
 }
@@ -2618,7 +2620,9 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v1: 11 tunable fields. The 8 knob fields default to `kKnobDefault`.
+  // No positional version carries `useFastAtomics`; it only exists in the
+  // named form, so it always decodes to `kKnobDefault` here.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
@@ -2652,6 +2656,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  int64_t useFastAtomics = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2668,10 +2673,10 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useFastAtomics))) {
       return {};
     }
   }
@@ -2681,7 +2686,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useFastAtomics);
 }
 
 //===-----------------------------------------------------===//
@@ -2718,7 +2723,9 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   // GEMM+GEMM (attention) configs gain a 12th tunable field, `nPerBlockG1`
   // (the second-GEMM head-dim tile), starting at v6. v1..v5 have 11 tunable
   // fields and decode `nPerBlockG1` as 0 ("untiled", the historical behaviour).
-  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
+  // v1: 11 tunable fields. The 8 knob fields default to `kKnobDefault`.
+  // No positional version carries `useFastAtomics`; it only exists in the
+  // named form, so it always decodes to `kKnobDefault` here.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
@@ -2753,6 +2760,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  int64_t useFastAtomics = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2769,10 +2777,10 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useFastAtomics))) {
       return {};
     }
   }
@@ -2782,7 +2790,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
       numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useFastAtomics);
 }
 
 //===----------------------------------------------------------------------===//
