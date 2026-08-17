@@ -691,7 +691,7 @@ def Rock_UseOptimizeEpilogue : Rock_Attr<"UseOptimizeEpilogue"> {
 def Rock_UseBf16x3ForF32 : Rock_Attr<"UseBf16x3ForF32"> {
   let mnemonic = "rock.use_bf16x3_for_f32";
   let description = [{
-    Temporary function attribute carrying the perfConfig tri-state from
+    Transient function attribute carrying the perfConfig tri-state from
     `rock-affix-params` to `rock-to-ttir`, which needs it when picking the
     `tt.dot` input precision. The lowering pass removes it once the precision
     is baked into the emitted dots, so raw tuning policy does not enter Triton

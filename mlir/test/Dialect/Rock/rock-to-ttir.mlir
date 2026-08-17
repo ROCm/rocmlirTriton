@@ -1,4 +1,5 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file -mlir-print-op-generic | FileCheck %s --check-prefix=IEEE
 
 // CHECK-LABEL: @test_load_conversion
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
@@ -408,6 +409,8 @@ func.func @test_gemm_f32_gfx950(
 //  CHECK-NOT:   rock.use_bf16x3_for_f32
 //      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}} : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
 //  CHECK-NOT:   rock.blockwise_gemm
+// IEEE-LABEL:   sym_name = "test_gemm_f32_gfx950_bf16x3_off"
+// IEEE:         "tt.dot"({{.*}}) <{inputPrecision = 2 : i32,
 func.func @test_gemm_f32_gfx950_bf16x3_off(
     %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
     %c: tensor<64x64xf32>) -> tensor<64x64xf32>
