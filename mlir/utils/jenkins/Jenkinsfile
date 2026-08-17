@@ -606,6 +606,9 @@ String getLabelFromCodepath(String codepath) {
     String label = ''
     if (codepath == "mfma") {
         def architectures = getEnabledMfmaArchitectures()
+        if (architectures.isEmpty()) {
+            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+        }
         label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
