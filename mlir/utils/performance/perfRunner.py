@@ -536,6 +536,21 @@ class PerfConfiguration:
         return f"{self.__class__.__name__}({attrs})"
 
 
+def drop_perf_priority(argv):
+    """Return a tokenized config without its -perf_priority flag and value.
+
+    -perf_priority records how much of a model's runtime a config was responsible
+    for, so the tuner knows what to work on first. It says nothing about the problem
+    itself, and neither getopt nor MIOpenDriver will accept it.
+    """
+    if '-perf_priority' not in argv:
+        return argv
+    idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
+    return argv[:idx] + argv[idx + 2:]
+
+
 # convolution configurations.
 def get_conv_configurations(filename, target_chip: Optional[str] = None):
     configs = []
@@ -706,6 +721,10 @@ class ConvConfiguration(PerfConfiguration):
         elif argv[0] == 'convbf8_bf8':
             datatype = 'bf8_bf8'
 
+        # getopt has no way to spell a single-dash long option, so -perf_priority
+        # would otherwise be read as -p with the value "erf_priority".
+        argv = drop_perf_priority(argv)
+
         try:
             # TBD:
             # implement -m ?
@@ -866,6 +885,7 @@ class ConvConfiguration(PerfConfiguration):
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME))
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
+        commandline = drop_perf_priority(commandline)
         miopen_driver_cmd = [MIOPENDRIVER, *commandline, '-V', '0', '-t', '1']
         print("Running MIOpen Benchmark: ", ' '.join(commandline))
         # invoke MIOpenDriver.
@@ -1237,6 +1257,9 @@ class GemmConfiguration(PerfConfiguration):
                 trans_scale_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transScaleB"):
                 trans_scale_b = (val.lower() in ["1", "true"])
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown GEMM config argument {opt} -> {val}")
             i += 2
@@ -1505,6 +1528,9 @@ class ConvGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown conv+gemm config argument {opt} -> {val}")
         for v in [
@@ -1650,6 +1676,9 @@ class GemmGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown gemm+gemm config argument {opt} -> {val}")
         for v in [dtype, g, m, k, n, o, trans_a, trans_b, trans_c, trans_o]:
@@ -1875,6 +1904,9 @@ class AttentionConfiguration(PerfConfiguration):
                 current_seqlen = [int(x) for x in val.split(",")]
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown Attention config argument {opt} -> {val}")
         for v in [
