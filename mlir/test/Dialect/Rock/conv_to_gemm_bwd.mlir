@@ -209,9 +209,8 @@ func.func @bwd_weight_non_atomic(%arg0: tensor<512xf32>, %arg1: tensor<288xf32>,
 // ============================================================================
 // @bwd_weight_atomic
 // Backward weight on gfx908 with larger shapes (N=128, K=C=64, 14x14 ->
-// 12x12 with 3x3 filter). isFastAtomicAddSupported(gfx908, f32) is true and
-// affix-params picked kBlocks = 32, so the pass takes the
-// `backwardWeightAtomicAdd` path:
+// 12x12 with 3x3 filter). affix-params picked kBlocks = 32, so the pass takes
+// the `backwardWeightAtomicAdd` path:
 //   - filter destination carries `rock.prefill = 0.000000e+00`
 //   - filter gets an extra AddDim{32} ["kBlock"] dimension that becomes part
 //     of gemmG (1 * 32 = 32)
@@ -246,8 +245,7 @@ func.func @bwd_weight_atomic(%arg0: tensor<1605632xf32>, %arg1: tensor<1179648xf
 // @bwd_weight_atomic but with f16 instead of f32. After removing the
 // historic fp32 workspace + cast-kernel pair, fp16 BwdWeight uses a single
 // kernel that atomic-adds partial sums directly into the f16 filter buffer.
-// `isFastAtomicAddSupported(gfx942, f16)` is true, so the atomic path runs;
-// the lowering must NOT materialize any f32 workspace tensor.
+// The lowering must NOT materialize any f32 workspace tensor.
 // ============================================================================
 // CHECK-LABEL: @bwd_weight_atomic_fp16
 // CHECK-SAME: tensor<{{[0-9]+}}xf16> {rock.prefill = 0.000000e+00 : f16}

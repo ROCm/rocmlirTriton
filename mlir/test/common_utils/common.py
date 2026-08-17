@@ -36,7 +36,7 @@ def apply_arch_features(config, lit_config):
     """
     try:
         import amd_arch_db
-        if not hasattr(amd_arch_db, 'is_fast_atomic_add_supported'):
+        if not hasattr(amd_arch_db, 'get_isa_family'):
             raise ImportError("amd_arch_db loaded without expected symbols")
     except ImportError as e:
         lit_config.fatal("amd_arch_db pybind11 module not importable (%s); rebuild "
@@ -44,9 +44,6 @@ def apply_arch_features(config, lit_config):
 
     config.no_AMD_GPU = False
     config.arch = ""
-    config.arch_support_atomic_add_f32 = False
-    config.arch_support_atomic_add_f16 = False
-    config.arch_support_atomic_add_bf16 = False
     config.arch_support_atomic_max_f32 = False
     config.arch_support_accel_fp8 = False
     config.arch_support_scaled_gemm = False
@@ -71,12 +68,6 @@ def apply_arch_features(config, lit_config):
     # expected to be homogeneous; if that ever changes, switch this to an
     # all()/any() reduction over agents.
     chip = next(iter(agents)).split(':')[0]
-    config.arch_support_atomic_add_f32 = amd_arch_db.is_fast_atomic_add_supported(
-        chip, amd_arch_db.Dtype.F32)
-    config.arch_support_atomic_add_f16 = amd_arch_db.is_fast_atomic_add_supported(
-        chip, amd_arch_db.Dtype.F16)
-    config.arch_support_atomic_add_bf16 = amd_arch_db.is_fast_atomic_add_supported(
-        chip, amd_arch_db.Dtype.BF16)
     config.arch_support_atomic_max_f32 = amd_arch_db.is_fast_atomic_max_supported(
         chip, amd_arch_db.Dtype.F32)
     config.arch_support_accel_fp8 = amd_arch_db.arch_supports_accel_fp8(chip)

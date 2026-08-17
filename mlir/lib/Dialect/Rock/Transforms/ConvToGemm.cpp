@@ -1242,8 +1242,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     if (ConvOpType::BwdWeight == convOpType &&
-        isWrWAtomicKernel(rock::getArchValue(op), dataType,
-                          maybeGemmExtraPad.has_value())) {
+        isWrWAtomicKernel(dataType, maybeGemmExtraPad.has_value())) {
       return backwardWeightAtomicAdd(cast<ConvBwdWeightOp>(op), b);
     }
   }

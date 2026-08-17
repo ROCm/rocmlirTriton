@@ -86,6 +86,7 @@ if (ROCK_E2E_TEST_ENABLED)
   gemm_split_k_f16
   gemm_split_k_bf16
   gemm_split_k_f32
+  gemm_split_k_i8
   gemm_scaled_split_k_f4
   )
   list(APPEND CONFIGS
@@ -108,7 +109,7 @@ add_custom_command(OUTPUT ${LOCAL_CONFIG_FILE_BIN}
 
 # Add a command to generate E2E tests for each config file
 # We use a xxx.cfg file associated with xxx.toml file to apply additional guards on the tests.
-# Check gemm_split_k_f32 as an example to guard the tests on the `atomic_add` feature only.
+# Check gemm_scaled_split_k_f4 as an example to guard the tests on the `scaled_gemm` feature only.
 # The assumption is that the directory name in xxx.toml is the same as xxx.
 foreach(config ${CONFIGS})
   set(config_file ${CONFIG_DIR}/${config}.toml)

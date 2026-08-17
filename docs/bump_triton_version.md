@@ -358,8 +358,7 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | Function | What to check |
 |----------|---------------|
 | `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
-| `isFastAtomicAddSupported()` | Add the new `ISAFamily` case if atomic f32/f16/bf16 adds are supported. |
-| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. |
+| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. Mirrors LLVM's `FeatureAtomicFMinFMaxF32GlobalInsts`; there is no compare-and-swap fallback for float atomic max, so a wrong answer here is a codegen failure, not a slowdown. |
 | `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
 | `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |

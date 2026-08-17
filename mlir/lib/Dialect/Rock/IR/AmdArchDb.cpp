@@ -247,55 +247,12 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
-  auto [isaFamily, _] = getArch(arch);
-
-  Type elem = getElementTypeOrSelf(type);
-  if (elem.isF32()) {
-    switch (isaFamily) {
-    case ISAFamily::GCN5_1:
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA1:
-    case ISAFamily::RDNA2:
-    case ISAFamily::RDNA3:
-    case ISAFamily::GFX1170:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isBF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  }
-  return false;
-}
-
 bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
   auto [isaFamily, _] = getArch(arch);
 
+  // Mirrors LLVM's FeatureAtomicFMinFMaxF32GlobalInsts, which gates
+  // BUFFER_ATOMIC_FMIN/FMAX: set for GFX6/GFX7 and GFX10 onwards, but not for
+  // GFX8/GFX9 (gfx906 and every CDNA chip). No target has an f16/bf16 form.
   Type elem = getElementTypeOrSelf(type);
   if (elem.isF32()) {
     switch (isaFamily) {
@@ -313,11 +270,10 @@ bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
   return false;
 }
 
-// Enum-dtype adapters: build a real MLIR Type and dispatch to the existing
-// Type-based overload. The Type-based versions remain the single source of
-// truth for the family-vs-dtype matrix; this is just a thin convenience for
-// out-of-MLIR callers (e.g. the Python test binding) that prefer to pass a
-// dtype as an enum rather than constructing an MLIR Type themselves.
+// Enum-dtype adapter: build a real MLIR Type and dispatch to the Type-based
+// overload, which remains the single source of truth for the family-vs-dtype
+// matrix. This is a thin convenience for out-of-MLIR callers (e.g. the Python
+// test binding) that prefer an enum over constructing an MLIR Type.
 static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
   Builder b(&ctx);
   switch (dtype) {
@@ -329,14 +285,6 @@ static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
     return b.getBF16Type();
   }
   return failure();
-}
-
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Dtype dtype) {
-  MLIRContext ctx;
-  FailureOr<Type> t = dtypeToType(ctx, dtype);
-  if (failed(t))
-    return false;
-  return isFastAtomicAddSupported(arch, *t);
 }
 
 bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Dtype dtype) {

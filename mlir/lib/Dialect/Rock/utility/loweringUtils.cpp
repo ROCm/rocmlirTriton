@@ -42,10 +42,8 @@ using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
 
-bool mlir::rock::isWrWAtomicKernel(StringRef arch, Type dataType,
-                                   bool requiredPadding) {
-  return isFastAtomicAddSupported(arch, dataType) &&
-         (dataType.isF32() || dataType.isF16()) && !requiredPadding;
+bool mlir::rock::isWrWAtomicKernel(Type dataType, bool requiredPadding) {
+  return (dataType.isF32() || dataType.isF16()) && !requiredPadding;
 }
 
 bool mlir::rock::is4GBMemoryType(ShapedType type) {

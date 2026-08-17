@@ -23,8 +23,9 @@ namespace rock {
 // Checks whether a function is valid for split-k.
 LogicalResult testFusionLegalitySplitK(func::FuncOp func);
 
-// Checks whether a function contains any `rock::ReduceOp` and
-// the atomic operation is supported by the hardware.
+// Checks whether a function contains a `rock::ReduceOp` whose atomic store
+// method has no hardware support and no software fallback (see
+// `isFastAtomicMaxSupported`).
 LogicalResult testFusionLegalityReduce(func::FuncOp func);
 
 // Checks whether a function contains any `rock::BwdDataConv` ops and verifies
