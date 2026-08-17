@@ -489,7 +489,7 @@ void preMergeCheck(String codepath) {
         if [ ! -f ./compile_commands.json ]; then
           ln -s build/compile_commands.json compile_commands.json
         fi
-        bash ./mlir/utils/jenkins/static-checks/build-tablegen-for-static-checks.sh build
+        # TableGen headers are built inside premerge-checks.py before clang-tidy.
         '''
         def targetBranch = env.CHANGE_TARGET
         if (!targetBranch) {

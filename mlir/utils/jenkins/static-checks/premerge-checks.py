@@ -19,7 +19,7 @@ import os
 import sys
 import re
 import subprocess
-from typing import Tuple
+from typing import List, Tuple
 import pathspec
 import unidiff
 import argparse
@@ -108,16 +108,17 @@ def check_third_party_file(filename: str) -> bool:
     return not re.search(regex, filename)
 
 
-def build_tablegen_headers() -> bool:
+def build_tablegen_headers(repo_root: str) -> bool:
     """Generate TableGen outputs needed by clang-tidy."""
     script = os.path.join(os.path.dirname(__file__), 'build-tablegen-for-static-checks.sh')
     if not os.path.isfile(script):
-        print(f'Warning: {script} not found; skipping TableGen header generation.')
-        return True
-    build_dir = 'build'
-    if not os.path.isfile(os.path.join(build_dir, 'compile_commands.json')):
-        print('No compile_commands.json; skipping TableGen header generation.')
-        return True
+        print(f'Error: {script} not found.')
+        return False
+    build_dir = os.path.join(repo_root, 'build')
+    compile_commands = os.path.join(build_dir, 'compile_commands.json')
+    if not os.path.isfile(compile_commands):
+        print(f'Error: {compile_commands} not found; configure the project first.')
+        return False
     result = subprocess.run(['bash', script, build_dir], check=False)
     if result.returncode != 0:
         print('TableGen header generation failed.')
@@ -125,7 +126,7 @@ def build_tablegen_headers() -> bool:
     return True
 
 
-def clang_tidy_extra_include_args(repo_root: str) -> list:
+def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
     """Return -extra-arg=-I... flags for generated and vendored include trees.
 
     Header-only diffs have no compile command, so clang-tidy-diff interpolates
@@ -158,7 +159,9 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     """Apply clang-tidy and return if no issues were found.
   Extracted from https://github.com/google/llvm-premerge-checks/blob/master/scripts/clang_tidy_report.py"""
 
-    if not build_tablegen_headers():
+    repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
+
+    if not build_tablegen_headers(repo_root):
         return False
 
     # Exclude the vendored upstream trees from the diff entirely so clang-tidy
@@ -176,7 +179,6 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     else:
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, [])
     cpu_count = multiprocessing.cpu_count()
-    repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
     extra_args = clang_tidy_extra_include_args(repo_root)
     p = subprocess.Popen([
         './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py', '-p0',
