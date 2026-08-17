@@ -391,9 +391,73 @@ static bool hasFp8ElementType(Type t) {
              Float8E5M2FNUZType>(elem);
 }
 
+/// Map an `arith` rounding mode onto its Triton counterpart. Triton models
+/// only RTZ and RTNE, so directed modes have none.
+static std::optional<triton::RoundingMode>
+toTritonRoundingMode(arith::RoundingMode mode) {
+  switch (mode) {
+  case arith::RoundingMode::toward_zero:
+    return triton::RoundingMode::RTZ;
+  case arith::RoundingMode::to_nearest_even:
+    return triton::RoundingMode::RTNE;
+  default:
+    return std::nullopt;
+  }
+}
+
+/// Effective rounding mode for `op`. An absent attribute means RTNE.
+static arith::RoundingMode truncFEffectiveRounding(arith::TruncFOp op) {
+  if (std::optional<arith::RoundingMode> rm = op.getRoundingmode())
+    return *rm;
+  return arith::RoundingMode::to_nearest_even;
+}
+
+/// Return true when `tt.fp_to_fp` can honour the requested rounding on `op`.
+/// RTNE downcasts can stay in `arith`: Triton's AMD `TruncFOpConversion` always
+/// lowers f32 -> f16/bf16 via RTNE and never reads the rounding attribute
+/// (see `TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp`).
+static bool truncFCanHonourViaFpToFp(arith::TruncFOp op) {
+  arith::RoundingMode rm = truncFEffectiveRounding(op);
+  if (rm == arith::RoundingMode::to_nearest_even)
+    return false;
+
+  std::optional<triton::RoundingMode> mapped = toTritonRoundingMode(rm);
+  if (!mapped)
+    return false;
+
+  if (hasFp8ElementType(op.getOut().getType()))
+    return true;
+
+  if (*mapped != triton::RoundingMode::RTZ)
+    return false;
+
+  Type srcElem = getElementTypeOrSelf(op.getIn().getType());
+  Type dstElem = getElementTypeOrSelf(op.getOut().getType());
+  return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
+}
+
+/// Return true when `op` carries a rounding mode that neither `arith` (on the
+/// Triton AMD path) nor `tt.fp_to_fp` can honour.
+static bool truncFHasUnhonouredRounding(arith::TruncFOp op) {
+  arith::RoundingMode rm = truncFEffectiveRounding(op);
+  if (rm == arith::RoundingMode::to_nearest_even)
+    return false;
+  return !truncFCanHonourViaFpToFp(op);
+}
+
+/// Decide whether `op` must become `tt.fp_to_fp`. FP8 destinations always do,
+/// since Triton maps FP8 to i8. Non-default rounding that `tt.fp_to_fp` can
+/// express also does; RTNE stays in `arith` per Triton's `semantic.cast`.
+static bool truncFNeedsFpToFp(arith::TruncFOp op) {
+  if (hasFp8ElementType(op.getOut().getType()))
+    return true;
+  return truncFCanHonourViaFpToFp(op);
+}
+
 //===----------------------------------------------------------------------===//
-// ArithTruncFToFpToFpPattern - Convert arith.truncf (wider → FP8) to
-// tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
+// ArithTruncFToFpToFpPattern - Convert arith.truncf to tt.fp_to_fp for FP8
+// destinations and for RTZ downcasts; reject rounding modes that cannot be
+// honoured.
 //===----------------------------------------------------------------------===//
 struct ArithTruncFToFpToFpPattern
     : public OpRewritePattern<arith::TruncFOp> {
@@ -401,28 +465,21 @@ struct ArithTruncFToFpToFpPattern
 
   LogicalResult matchAndRewrite(arith::TruncFOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!hasFp8ElementType(op.getOut().getType()))
+    if (truncFHasUnhonouredRounding(op)) {
+      arith::RoundingMode arithRM = truncFEffectiveRounding(op);
+      return op.emitError() << "arith.truncf rounding mode "
+                            << arith::stringifyRoundingMode(arithRM)
+                            << " cannot be honoured by Triton lowering";
+    }
+    if (!truncFNeedsFpToFp(op))
       return failure();
 
-    triton::RoundingMode tritonRM = triton::RoundingMode::RTNE;
-    if (auto arithRM = op.getRoundingmodeAttr()) {
-      switch (arithRM.getValue()) {
-      case arith::RoundingMode::toward_zero:
-        tritonRM = triton::RoundingMode::RTZ;
-        break;
-      case arith::RoundingMode::to_nearest_even:
-        tritonRM = triton::RoundingMode::RTNE;
-        break;
-      default:
-        LLVM_DEBUG(llvm::dbgs()
-                   << "arith.truncf rounding mode "
-                   << arith::stringifyRoundingMode(arithRM.getValue())
-                   << " has no exact Triton equivalent, defaulting to RTNE\n");
-        break;
-      }
-    }
+    arith::RoundingMode arithRM = truncFEffectiveRounding(op);
+    std::optional<triton::RoundingMode> mapped = toTritonRoundingMode(arithRM);
+    assert(mapped && "truncf marked for tt.fp_to_fp must have a mappable mode");
+
     auto roundingAttr =
-        triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
+        triton::RoundingModeAttr::get(rewriter.getContext(), *mapped);
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(op, op.getOut().getType(),
                                                    op.getIn(), roundingAttr);
     return success();
@@ -498,8 +555,11 @@ void RockToTTIRPass::runOnOperation() {
 
   // arith.truncf / arith.extf with FP8 types must be converted to
   // tt.fp_to_fp; Triton's LLVM lowering cannot handle them directly.
-  target.addDynamicallyLegalOp<arith::TruncFOp>(
-      [](arith::TruncFOp op) { return !hasFp8ElementType(op.getOut().getType()); });
+  // Non-default rounding that tt.fp_to_fp can express must also leave arith,
+  // because the Triton AMD truncf lowering ignores the attribute.
+  target.addDynamicallyLegalOp<arith::TruncFOp>([](arith::TruncFOp op) {
+    return !truncFNeedsFpToFp(op) && !truncFHasUnhonouredRounding(op);
+  });
   target.addDynamicallyLegalOp<arith::ExtFOp>(
       [](arith::ExtFOp op) { return !hasFp8ElementType(op.getIn().getType()); });
 
