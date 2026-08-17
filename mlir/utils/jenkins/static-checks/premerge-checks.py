@@ -127,26 +127,32 @@ def build_tablegen_headers(repo_root: str) -> bool:
 
 
 def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
-    """Return -extra-arg=-I... flags for generated and vendored include trees.
+    """Return -extra-arg=-I... flags for source and generated include trees.
 
     Header-only diffs have no compile command, so clang-tidy-diff interpolates
-    from a nearby .cpp and may miss generated include directories.
+    from a nearby .cpp and may miss include directories. Real compile lines
+    always pass both source and build roots (config/TableGen live in build;
+    llvm/... and mlir/... headers live in source).
     """
     include_dirs = []
-    triton_roots = [os.path.join('external', 'triton', d) for d in ('include', 'third_party')]
-    for root in triton_roots:
+    # Source root first, then matching build root (same order as compile_commands).
+    paired_roots = [
+        os.path.join('mlir', 'include'),
+        os.path.join('external', 'llvm-project', 'mlir', 'include'),
+        os.path.join('external', 'llvm-project', 'llvm', 'include'),
+        os.path.join('external', 'triton', 'include'),
+        os.path.join('external', 'triton', 'third_party'),
+        os.path.join('external', 'triton', 'third_party', 'amd', 'include'),
+        os.path.join('external', 'triton', 'third_party', 'nvidia', 'include'),
+    ]
+    for root in paired_roots:
         include_dirs.append(os.path.join(repo_root, root))
         include_dirs.append(os.path.join(repo_root, 'build', root))
-    generated_roots = [
-        os.path.join('build', 'mlir', 'include'),
-        os.path.join('build', 'external', 'llvm-project', 'llvm', 'tools', 'mlir', 'include'),
-        os.path.join('build', 'external', 'llvm-project', 'llvm', 'include'),
-        os.path.join('build', 'external', 'triton', 'include'),
-        os.path.join('build', 'external', 'triton', 'third_party', 'amd', 'include'),
-        os.path.join('build', 'external', 'triton', 'third_party', 'nvidia', 'include'),
-    ]
-    for root in generated_roots:
-        include_dirs.append(os.path.join(repo_root, root))
+    # MLIR's generated headers land under the LLVM tools build tree, not
+    # build/external/llvm-project/mlir/include.
+    include_dirs.append(
+        os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm',
+                     'tools', 'mlir', 'include'))
 
     extra_args = ['-extra-arg=-std=c++17']
     for inc in include_dirs:
