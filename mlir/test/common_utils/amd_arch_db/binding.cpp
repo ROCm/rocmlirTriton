@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Pure-plumbing pybind11 binding over the arch-string + `Dtype` enum helpers
-// in `mlir/Dialect/Rock/IR/AmdArchDb.h`. Per-arch semantics live there.
+// Pure-plumbing pybind11 binding over the arch-string helpers in
+// `mlir/Dialect/Rock/IR/AmdArchDb.h`. Per-arch semantics live there.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,11 +26,6 @@ namespace py = pybind11;
 PYBIND11_MODULE(amd_arch_db, m) {
   m.doc() = "rocmlirTriton AmdArchDb bindings (in-tree test helper). "
             "See mlir/Dialect/Rock/IR/AmdArchDb.h for per-function semantics.";
-
-  py::enum_<mlir::rock::Dtype>(m, "Dtype")
-      .value("F32", mlir::rock::Dtype::F32)
-      .value("F16", mlir::rock::Dtype::F16)
-      .value("BF16", mlir::rock::Dtype::BF16);
 
   using mlir::triton::amdgpu::ISAFamily;
   py::enum_<ISAFamily>(m, "ISAFamily")
@@ -53,13 +48,6 @@ PYBIND11_MODULE(amd_arch_db, m) {
         return std::get<0>(mlir::rock::getArch(arch));
       },
       py::arg("arch"));
-
-  m.def(
-      "is_fast_atomic_max_supported",
-      [](const std::string &arch, mlir::rock::Dtype dtype) {
-        return mlir::rock::isFastAtomicMaxSupported(arch, dtype);
-      },
-      py::arg("arch"), py::arg("dtype"));
 
   m.def(
       "arch_supports_accel_fp8",

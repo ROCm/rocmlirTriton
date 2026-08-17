@@ -1,0 +1,251 @@
+diff --git a/test/Conversion/amd/tritongpu_to_llvm.mlir b/test/Conversion/amd/tritongpu_to_llvm.mlir
+--- a/test/Conversion/amd/tritongpu_to_llvm.mlir
++++ b/test/Conversion/amd/tritongpu_to_llvm.mlir
+@@ -81,6 +81,42 @@
+ 
+ // -----
+ 
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
++  // COMMON-LABEL: atomic_max_f16_fallback
++  tt.func @atomic_max_f16_fallback(%ptr : !tt.ptr<f16>, %mask : i1,
++                                   %value : f16) {
++    // COMMON: llvm.atomicrmw fmax
++    %0 = tt.atomic_rmw max, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f16>, f16, i1) -> f16
++    tt.return
++  }
++
++  // COMMON-LABEL: atomic_min_bf16_fallback
++  tt.func @atomic_min_bf16_fallback(%ptr : !tt.ptr<bf16>, %mask : i1,
++                                    %value : bf16) {
++    // COMMON: llvm.atomicrmw fmin
++    %0 = tt.atomic_rmw min, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<bf16>, bf16, i1) -> bf16
++    tt.return
++  }
++
++  // COMMON-LABEL: atomic_max_f32_fallback
++  tt.func @atomic_max_f32_fallback(%ptr : !tt.ptr<f32>, %mask : i1,
++                                   %value : f32) {
++    // COMMON: llvm.atomicrmw fmax
++    %0 = tt.atomic_rmw max, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f32>, f32, i1) -> f32
++    tt.return
++  }
++
++  // COMMON-LABEL: atomic_min_f64_fallback
++  tt.func @atomic_min_f64_fallback(%ptr : !tt.ptr<f64>, %mask : i1,
++                                   %value : f64) {
++    // COMMON: llvm.atomicrmw fmin
++    %0 = tt.atomic_rmw min, relaxed, gpu, %ptr, %value, %mask : (!tt.ptr<f64>, f64, i1) -> f64
++    tt.return
++  }
++}
++
++// -----
++
+ // Smoke test to check that mfma 32 and dot operand layouts can work with small tensors, for example with shape 16x16
+ #mfma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [2, 2], instrShape = [32, 32, 8], isTransposed = true}>
+ #dotop0 = #ttg.dot_op<{opIdx = 0, parent = #mfma, kWidth=4}>
+diff --git a/test/TritonGPU/amd/amd-convert-buffer-ops.mlir b/test/TritonGPU/amd/amd-convert-buffer-ops.mlir
+--- a/test/TritonGPU/amd/amd-convert-buffer-ops.mlir
++++ b/test/TritonGPU/amd/amd-convert-buffer-ops.mlir
+@@ -1,6 +1,9 @@
+-// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx942 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX942-ONLY,CDNA
+-// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx950 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX950-PLUS,CDNA
+-// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1250 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX950-PLUS
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx942 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX942-ONLY,CDNA,FMINMAX,FMINMAX-NO-F32,FMINMAX-F64,IMINMAX
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx950 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX950-PLUS,CDNA,FMINMAX,FMINMAX-NO-F32,FMINMAX-F64,IMINMAX
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1100 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=FMINMAX,FMINMAX-F32,FMINMAX-NO-F64,IMINMAX
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1170 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=FMINMAX,FMINMAX-F32,FMINMAX-NO-F64,IMINMAX
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1200 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=FMINMAX,FMINMAX-F32,FMINMAX-NO-F64,IMINMAX
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1250 analyze-small-tensor-ofst=true"| FileCheck %s --check-prefixes=COMMON,GFX950-PLUS,FMINMAX,FMINMAX-F32,FMINMAX-F64,IMINMAX
+ 
+ #blocked0 = #ttg.blocked<{sizePerThread = [8], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
+@@ -946,3 +949,107 @@
+     tt.return
+   }
+ }
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  // FMINMAX-LABEL: atomic_max_f16
++  // FMINMAX-NOT: amdg.buffer_atomic_rmw
++  // FMINMAX: tt.atomic_rmw max
++  tt.func public @atomic_max_f16(%arg0: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %values: tensor<1024xf16, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f16>, i32
++    %4 = tt.splat %3 : !tt.ptr<f16> -> tensor<1024x!tt.ptr<f16>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f16>, #blocked>, tensor<1024xi32, #blocked>
++    %6 = tt.atomic_rmw max, acq_rel, gpu, %5, %values : (tensor<1024x!tt.ptr<f16>, #blocked>, tensor<1024xf16, #blocked>) -> tensor<1024xf16, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  // FMINMAX-LABEL: atomic_min_bf16
++  // FMINMAX-NOT: amdg.buffer_atomic_rmw
++  // FMINMAX: tt.atomic_rmw min
++  tt.func public @atomic_min_bf16(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %values: tensor<1024xbf16, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<bf16>, i32
++    %4 = tt.splat %3 : !tt.ptr<bf16> -> tensor<1024x!tt.ptr<bf16>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<bf16>, #blocked>, tensor<1024xi32, #blocked>
++    %6 = tt.atomic_rmw min, acq_rel, gpu, %5, %values : (tensor<1024x!tt.ptr<bf16>, #blocked>, tensor<1024xbf16, #blocked>) -> tensor<1024xbf16, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  // FMINMAX-F32-LABEL: atomic_max_f32
++  // FMINMAX-F32: amdg.buffer_atomic_rmw max
++  // FMINMAX-NO-F32-LABEL: atomic_max_f32
++  // FMINMAX-NO-F32-NOT: amdg.buffer_atomic_rmw
++  // FMINMAX-NO-F32: tt.atomic_rmw max
++  tt.func public @atomic_max_f32(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %values: tensor<1024xf32, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f32>, i32
++    %4 = tt.splat %3 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f32>, #blocked>, tensor<1024xi32, #blocked>
++    %6 = tt.atomic_rmw max, acq_rel, gpu, %5, %values : (tensor<1024x!tt.ptr<f32>, #blocked>, tensor<1024xf32, #blocked>) -> tensor<1024xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  // FMINMAX-F64-LABEL: atomic_min_f64
++  // FMINMAX-F64: amdg.buffer_atomic_rmw min
++  // FMINMAX-NO-F64-LABEL: atomic_min_f64
++  // FMINMAX-NO-F64-NOT: amdg.buffer_atomic_rmw
++  // FMINMAX-NO-F64: tt.atomic_rmw min
++  tt.func public @atomic_min_f64(%arg0: !tt.ptr<f64> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %values: tensor<1024xf64, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f64>, i32
++    %4 = tt.splat %3 : !tt.ptr<f64> -> tensor<1024x!tt.ptr<f64>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f64>, #blocked>, tensor<1024xi32, #blocked>
++    %6 = tt.atomic_rmw min, acq_rel, gpu, %5, %values : (tensor<1024x!tt.ptr<f64>, #blocked>, tensor<1024xf64, #blocked>) -> tensor<1024xf64, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  // IMINMAX-LABEL: atomic_max_i32
++  // IMINMAX-NOT: amdg.buffer_atomic_rmw
++  // IMINMAX: tt.atomic_rmw max
++  tt.func public @atomic_max_i32(%arg0: !tt.ptr<i32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %values: tensor<1024xi32, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<i32>, i32
++    %4 = tt.splat %3 : !tt.ptr<i32> -> tensor<1024x!tt.ptr<i32>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<i32>, #blocked>, tensor<1024xi32, #blocked>
++    %6 = tt.atomic_rmw max, acq_rel, gpu, %5, %values : (tensor<1024x!tt.ptr<i32>, #blocked>, tensor<1024xi32, #blocked>) -> tensor<1024xi32, #blocked>
++    tt.return
++  }
++}
+diff --git a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+--- a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
++++ b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+@@ -78,6 +78,7 @@
+ 
+   bool supportsBufferAtomicRMW() const;
+   bool supportsBufferAtomicFadd(Type elementType) const;
++  bool supportsBufferAtomicFMinMax(Type elementType) const;
+   int32_t getBufferAtomicCachePolicy(bool hasUsers) const;
+ 
+   bool supportMaximumMinimum() const;
+diff --git a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
+--- a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
++++ b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
+@@ -297,6 +297,25 @@
+   }
+ }
+ 
++bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
++  auto isaFamily = getISAFamily();
++  if (elementType.isF32()) {
++    // gfx1170 is RDNA3-based for the memory model, so it has the same
++    // BUFFER_ATOMIC_{MIN,MAX}_F32 as gfx11.
++    return llvm::is_contained(
++        {ISAFamily::RDNA1, ISAFamily::RDNA2, ISAFamily::RDNA3,
++         ISAFamily::GFX1170, ISAFamily::RDNA4, ISAFamily::GFX1250},
++        isaFamily);
++  }
++  if (elementType.isF64()) {
++    return llvm::is_contained({ISAFamily::CDNA2, ISAFamily::CDNA3,
++                               ISAFamily::CDNA4, ISAFamily::RDNA1,
++                               ISAFamily::RDNA2, ISAFamily::GFX1250},
++                              isaFamily);
++  }
++  return false;
++}
++
+ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
+   const int sc0Bit = 0b1;          // TH_ATOMIC_RETURN (cpol bit 0)
+   const int scopeDevBit = 0b10000; // SCOPE_DEV = 2 << 3 (cpol bits [4:3])
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/ConvertToBufferOps.cpp
+@@ -403,6 +403,20 @@
+     }
+     LDBG("RMW FADD supported type");
+ 
++    if (atomicRmwOp == RMWOp::MAX || atomicRmwOp == RMWOp::MIN) {
++      if (checkType.isInteger()) {
++        return rewriter.notifyMatchFailure(
++            op, "signed integer min/max RMW operations use generic atomic "
++                "lowering");
++      }
++      if (!targetFeatures.supportsBufferAtomicFMinMax(checkType)) {
++        return rewriter.notifyMatchFailure(
++            op, "no native buffer atomic supports this floating-point min/max "
++                "target/type combination");
++      }
++      LDBG("RMW floating-point min/max supported type");
++    }
++
+     auto vecSize = getVectorSize(ptr, axisAnalysisPass);
+     if (auto mask = op.getMask()) {
+       vecSize = std::min(vecSize, axisAnalysisPass.getMaskAlignment(mask));
+@@ -425,15 +439,9 @@
+     case RMWOp::UMAX:
+     case RMWOp::UMIN:
+     case RMWOp::XCHG:
+-      break;
+     case RMWOp::MAX:
+     case RMWOp::MIN:
+-      // TODO: It likely means smax/smin, for now intrinsic
+-      // llvm.amdgcn.raw.ptr.buffer.atomic.{min|max} is emitted, and llvm get
+-      // confused as how to deal with {f|s|u}{min|max}.
+-      if (!checkType.isInteger())
+-        break;
+-      // else fall through
++      break;
+     default:
+       auto rmwOpStr = stringifyRMWOp(atomicRmwOp).str();
+       return rewriter.notifyMatchFailure(op, "RMW with unsupported op: " +

@@ -44,7 +44,6 @@ def apply_arch_features(config, lit_config):
 
     config.no_AMD_GPU = False
     config.arch = ""
-    config.arch_support_atomic_max_f32 = False
     config.arch_support_accel_fp8 = False
     config.arch_support_scaled_gemm = False
     config.arch_support_non_k_packed_scaled_input = False
@@ -68,8 +67,6 @@ def apply_arch_features(config, lit_config):
     # expected to be homogeneous; if that ever changes, switch this to an
     # all()/any() reduction over agents.
     chip = next(iter(agents)).split(':')[0]
-    config.arch_support_atomic_max_f32 = amd_arch_db.is_fast_atomic_max_supported(
-        chip, amd_arch_db.Dtype.F32)
     config.arch_support_accel_fp8 = amd_arch_db.arch_supports_accel_fp8(chip)
     config.arch_support_scaled_gemm = amd_arch_db.arch_supports_scaled_gemm(chip)
     config.arch_support_non_k_packed_scaled_input = (

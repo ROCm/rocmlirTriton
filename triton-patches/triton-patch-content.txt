@@ -18,6 +18,7 @@ patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+patch11018.patch
 patch11118.patch
 
 patch-partitionloops-clang-cl.patch
@@ -187,6 +188,26 @@ patch10928.patch
 
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
+
+patch11018.patch
+  Gates buffer atomic float min/max on native hardware support:
+  ConvertToBufferOps only rewrites tt.atomic_rmw max/min into
+  amdg.buffer_atomic_rmw when TargetFeatures::supportsBufferAtomicFMinMax
+  accepts the target/type pair (f32 on RDNA1-4/gfx1170/gfx1250, f64 on
+  CDNA2-4/RDNA1/RDNA2/gfx1250); integer min/max always take the generic path.
+  Buffer atomics never reach AtomicExpandPass, so a missing instruction (f32 on
+  CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
+  fallback always has a CAS expansion. That is what lets rocMLIR drop its
+  isFastAtomicMaxSupported() fusion gate.
+
+  Imports https://github.com/triton-lang/triton/pull/11018, plus GFX1170 in the
+  f32 list (downstream-only family, see patch-gfx1170.patch) and minus the
+  LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
+  already covers centrally in matchAtomicOp. gfx1100/gfx1170 expect the f32 fast
+  path here because patch-buffer-atomics.patch enables buffer atomic RMW on
+  every family.
+
+  Drop on the next Triton bump that pulls PR #11018, keeping the gfx1170 entry.
 
 patch11118.patch
   Removes the AMD backend's second arith.minimumf/arith.maximumf conversion
