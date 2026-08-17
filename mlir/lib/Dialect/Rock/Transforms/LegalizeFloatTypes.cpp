@@ -200,12 +200,14 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
 
 /// Enum to contain why a halving attempt failed:
 /// - `NotDivisible` means the concrete extents of this (kernel x perf-config)
-/// leave an odd number of 4-bit values along the packing axis, so two of them
-/// cannot share a byte. Another tile shape would succeed, so callers classify
-/// this as `rock.not_applicable` rather than as a compilation bug. A
-/// loop-variant sub-byte extraction fallback could lower this, but it would
-/// issue one load per 4-bit section instead of one per byte, doubling the
-/// amount of load instructions.
+/// leave an odd number of 4-bit values along a packing segment. The interior
+/// values can still be loaded in pairs, only the unmatched value at the
+/// segment boundary needs special handling. A fallback could load the byte
+/// containing that value and extract the relevant nibble, adding one boundary
+/// load per odd segment rather than doubling all loads. This rewrite does not
+/// implement that boundary case. Because another tile shape can make every
+/// segment even, callers classify this as `rock.not_applicable` rather than a
+/// compiler error.
 /// - `Unsupported` means the chain cannot be packed whatever the extents are
 /// (Broadcast, AddDim/ConstDim, Embed, or a Slice that does not start at 0):
 /// those are compiler limitations and must stay hard errors. A loop-variant
