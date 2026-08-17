@@ -148,8 +148,8 @@ def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
     # MLIR's generated headers land under the LLVM tools build tree, not
     # build/external/llvm-project/mlir/include.
     include_dirs.append(
-        os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm',
-                     'tools', 'mlir', 'include'))
+        os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm', 'tools', 'mlir',
+                     'include'))
 
     extra_args = ['-extra-arg=-std=c++17']
     for inc in include_dirs:
