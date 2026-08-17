@@ -174,9 +174,9 @@ def Rock_GemmOp
 def Rock_ReduceOp
     : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>,
                          DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
-      Arguments<(ins Arg<TensorOf<[BF16, F16, F32]>, "input">:$in,
+      Arguments<(ins Arg<AnyRankedTensor, "input">:$in,
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
-      Results<(outs TensorOf<[BF16, F16, F32]>:$result)> {
+      Results<(outs AnyRankedTensor:$result)> {
   let summary = "Axes-wide reduction operation";
   let hasVerifier = 1;
   let assemblyFormat = [{

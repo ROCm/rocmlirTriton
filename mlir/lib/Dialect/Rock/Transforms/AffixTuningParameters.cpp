@@ -345,8 +345,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   int64_t gemmKBlocks = 1;
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
   auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-  if (maybeWrwOp && isWrWAtomicKernel(rock::getArchValue(op), info.gemmAType,
-                                      requiredPadding)) {
+  if (maybeWrwOp && isWrWAtomicKernel(info.gemmAType, requiredPadding)) {
     auto res = calculateKBlockNum(
         info.batchSize, paddedGemmSize, gemmParams.getMPerBlock(),
         gemmParams.getNPerBlock(), gemmParams.getKPerBlock(),

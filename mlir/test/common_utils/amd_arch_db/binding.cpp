@@ -55,13 +55,6 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
-      "is_fast_atomic_add_supported",
-      [](const std::string &arch, mlir::rock::Dtype dtype) {
-        return mlir::rock::isFastAtomicAddSupported(arch, dtype);
-      },
-      py::arg("arch"), py::arg("dtype"));
-
-  m.def(
       "is_fast_atomic_max_supported",
       [](const std::string &arch, mlir::rock::Dtype dtype) {
         return mlir::rock::isFastAtomicMaxSupported(arch, dtype);

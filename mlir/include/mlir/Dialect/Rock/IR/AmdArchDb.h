@@ -100,14 +100,10 @@ int64_t getVGPRsPerEU(StringRef arch);
 /// MLIR `Type`s those helpers actually switch on.
 enum class Dtype { F32, F16, BF16 };
 
-/// Whether there's fast atomic add support
-bool isFastAtomicAddSupported(StringRef arch, Type type);
-
-/// Enum-dtype overload of \ref isFastAtomicAddSupported, intended for
-/// out-of-MLIR callers (e.g. the Python test binding).
-bool isFastAtomicAddSupported(StringRef arch, Dtype dtype);
-
-/// Whether there's fast atomic max support
+/// Whether there's a native atomic max instruction for `type`.
+///
+/// Unlike atomic add, an unsupported float atomic max has no software
+/// fallback in our lowering.
 bool isFastAtomicMaxSupported(StringRef arch, Type type);
 
 /// Enum-dtype overload of \ref isFastAtomicMaxSupported (currently only
