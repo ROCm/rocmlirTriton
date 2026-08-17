@@ -35,10 +35,7 @@ apply the changes, or fix the formatting manually.
    ```
    `check-rocmlir` covers this project's tests and runs on every PR. `check-mlir`
    covers the upstream MLIR suite in `external/llvm-project`, where we carry
-   downstream patches (see `llvm-patches/`); CI runs it in nightly only. The tests
-   themselves are host-only and finish in seconds, but the first run also builds the
-   upstream MLIR test binaries (`mlir-opt` and friends), which `cmake.sh` does not,
-   so expect a few minutes for that.
+   downstream patches (see `llvm-patches/`); CI runs it in nightly only.
 5. Open a PR against `develop`. Describe *what* changed and *why*; link any related issue.
 6. Ensure CI passes and request review from the relevant [CODEOWNERS](.github/CODEOWNERS).
 
