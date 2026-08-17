@@ -143,6 +143,10 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
         triton_includes.append(os.path.join(repo_root, 'build', root))
     extra_args = ['-extra-arg=-std=c++17']
     extra_args += [f'-extra-arg=-I{inc}' for inc in triton_includes]
+    # TableGen outputs for rocmlirTriton (e.g. mlir/Conversion/CPU/Passes.h.inc)
+    # land under build/mlir/include. Header-only diffs have no compile command, so
+    # clang-tidy-diff must see that directory explicitly.
+    extra_args.append(f'-extra-arg=-I{os.path.join(repo_root, "build", "mlir", "include")}')
     p = subprocess.Popen([
         './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py', '-p0',
         '-quiet', '-j',

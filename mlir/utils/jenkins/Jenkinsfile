@@ -481,6 +481,7 @@ void preMergeCheck(String codepath) {
     if ( (params.nightly == false) && (codepath == "mfma") ) {
         echo "Performing Static Test (preMergeCheck)"
         sh '''
+        set -euo pipefail
         if [ ! -f ./build/compile_commands.json ];  then
           echo "No compile commands, bailing."
           exit 1
@@ -488,6 +489,19 @@ void preMergeCheck(String codepath) {
         if [ ! -f ./compile_commands.json ]; then
           ln -s build/compile_commands.json compile_commands.json
         fi
+        # mlir-headers covers upstream MLIR + everything chained into it.
+        # The targets below are rocmlirTriton orphan tablegen targets not
+        # hooked into mlir-headers. Any new add_public_tablegen_target()
+        # declared in this repo must be added to the list below.
+        cmake --build build --target \
+          mlir-headers \
+          MLIRCpuPassIncGen \
+          MLIRRockAttrDefsIncGen \
+          MLIRRockTuningParamAttrInterfaceIncGen \
+          MLIRRockPassIncGen \
+          RocMLIRConversionPassIncGen \
+          MLIRMIGraphXTypeIncGen \
+          MLIRMIGraphXPassIncGen
         '''
         def targetBranch = env.CHANGE_TARGET
         if (!targetBranch) {
