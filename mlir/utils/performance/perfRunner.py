@@ -997,7 +997,7 @@ def get_conv_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1039,7 +1039,7 @@ def get_gemm_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1089,7 +1089,7 @@ def get_attn_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 

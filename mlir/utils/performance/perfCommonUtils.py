@@ -1,6 +1,19 @@
 import enum
 import re
 
+# Tunable field order in the serialized perf-config schemas. Keep these in sync
+# with GemmParamsAttr and GemmGemmParamsAttr in RockAttrDefs.td.
+PERF_CONFIG_FIELD_NAMES = {
+    'gemm': ("mPerBlock", "nPerBlock", "kPerBlock", "kpack", "numCTAs", "numWaves",
+             "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize"),
+    'attn':
+        ("mPerBlockG0", "nPerBlockG0", "nPerBlockG1", "kPerBlock", "kpack", "numCTAs", "numWaves",
+         "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize"),
+}
+PERF_CONFIG_FIELD_INDEX = {
+    kind: dict(zip(names, range(len(names)))) for kind, names in PERF_CONFIG_FIELD_NAMES.items()
+}
+
 # Key name of the Split-K factor within serialized perf configs.
 SPLITK_KEY = "splitKFactor"
 
@@ -67,7 +80,7 @@ class Operation(enum.IntEnum):
             raise ValueError(f"Unknown operation type {name}")
 
 
-CORRECT_RESULT_RE = re.compile('\[1\s*1\s*1\]')
+CORRECT_RESULT_RE = re.compile(r'\[1\s*1\s*1\]')
 
 
 class GEMMLibrary(enum.IntEnum):

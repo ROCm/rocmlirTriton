@@ -1,5 +1,4 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
-// used for private CI
 import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
 import hudson.plugins.git.extensions.impl.CheckoutOption
@@ -733,27 +732,27 @@ void runSweep(String script, String kind, int samples, String codepath) {
 
 
 boolean shouldRunFromCodepath(String codepath) {
-    // Run vanilla on public CI
+    // Run vanilla when xdlops are unavailable.
     if ((codepath == "vanilla") && (params.canXdlops == false)) {
         return true
     }
-    // Run mfma on private CI
+    // Run mfma when xdlops are available.
     if ((codepath == "mfma") && params.canXdlops) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
         return true
     }
-    // Run navi21 on private nightly or weekly CI if it is not disabled
+    // Run navi21 during scheduled CI if it is not disabled.
     if (params.canXdlops && (params.disableNavi21 == false) && (codepath == "navi21") &&
         (params.nightly || params.weekly)) {
         return true
     }
-    // Run navi3x on private CI if it is not disabled
+    // Run navi3x if it is not disabled.
     if (params.canXdlops && (params.disableNavi3x == false) && (codepath == "navi3x")) {
         return true
     }
-    // Run navi4x on private CI if it is not disabled
+    // Run navi4x if it is not disabled.
     if (params.canXdlops && (params.disableNavi4x == false) && (codepath == "navi4x")) {  
         return true;  
     }  
@@ -804,13 +803,13 @@ void archivePerfDB() {
 */
 
 boolean shouldRunBuildAndTest(String codepath) {
-    // When default codepath is selected, we test mfma, navi21, navi3x and navi4x on
-    // private CI and vanilla on public CI
+    // When the default codepath is selected, test every codepath enabled for
+    // this runner.
     if (params.codepath == "default" && shouldRunFromCodepath(codepath))
         return true
 
-    // When a particular codepath is selected, we only test the codepath
-    // on private CI
+    // When a particular codepath is selected, test it if it is supported and
+    // enabled.
     if (params.codepath == codepath && params.canXdlops) {
         if (params.codepath == "mfma") return true
         if (params.codepath == "vanilla") return true

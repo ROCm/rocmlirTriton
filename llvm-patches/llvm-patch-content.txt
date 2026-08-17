@@ -291,7 +291,7 @@ patch167347.patch
 - Upstream PR     : https://github.com/llvm/llvm-project/pull/167347
 - Upstream title  : [AMDGPU] Verify dominance when rewriting spills to
                     registers
-- JIRA case       : https://amd-hub.atlassian.net/browse/LCOMPILER-2224
+- JIRA case       : LCOMPILER-2224
 - File Fixed      : llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
                     llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.h (new)
 - Contents        : Requires a MachineDominatorTree in the AGPR-copy-MFMA
