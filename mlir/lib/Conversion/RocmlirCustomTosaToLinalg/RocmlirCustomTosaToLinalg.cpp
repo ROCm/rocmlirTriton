@@ -103,14 +103,16 @@ LogicalResult UnsignedOpLoweringPattern::matchAndRewrite(
             assert(isa<FloatType>(inElemType));
             assert(isa<IntegerType>(outElemType));
             result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
-                                                /*isUnsigned=*/true);
+                                                /*isUnsigned=*/true,
+                                                /*assumeNoNaNs=*/false);
           }
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
           assert(isa<FloatType>(inElemType));
           assert(isa<IntegerType>(outElemType));
           assert(inputs.size() == 2);
           result = rock::createClampedFPToInt(b, loc, inputs[0], outElemType,
-                                              /*isUnsigned=*/false);
+                                              /*isUnsigned=*/false,
+                                              /*assumeNoNaNs=*/false);
         } else if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
           assert(isa<IntegerType>(outElemType));
           assert(isa<IntegerType>(inElemType));
@@ -161,7 +163,7 @@ void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
   target.addLegalOp<
       linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp, arith::TruncIOp,
       arith::DivUIOp, arith::MaxUIOp, arith::FPToSIOp, arith::FPToUIOp,
-      arith::UIToFPOp, arith::MaximumFOp, arith::MinimumFOp, arith::CmpFOp,
+      arith::UIToFPOp, arith::MaxNumFOp, arith::MinNumFOp, arith::CmpFOp,
       arith::SelectOp, arith::ConstantOp, tensor::EmptyOp, tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;

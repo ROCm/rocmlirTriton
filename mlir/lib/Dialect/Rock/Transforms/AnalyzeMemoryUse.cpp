@@ -21,7 +21,7 @@
 // accordingly.
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
-// rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
+// rocmlirTriton kernel ABI documented in `docs/kernel_assumptions.md`.
 // If you add, remove, or change the meaning of any attribute below, please
 // update that document (and the matching tablegen description in
 // `mlir/include/mlir/Dialect/Rock/Passes.td`) so external callers stay in
