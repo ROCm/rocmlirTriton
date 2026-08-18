@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Regression + bypass-class fixture suite for sanitize_claude_actions.sh.
 #
 # Every fixture builds a minimal actions.json (one thread_update body)

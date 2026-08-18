@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Smoke test: ``crossCompile.py --help`` advertises the remote-host options and
 # the tuning flags it forwards to tuningRunner.py. Also guards the import
 # surface: crossCompile.py pulls in tuningArgumentUtils, so this fails if
