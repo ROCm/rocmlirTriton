@@ -61,17 +61,6 @@ enum class GemmMNDim { M, N };
 // Largest per-block K tile size we tune for.
 #define MAX_K_PER_BLOCK 512
 
-// Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
-// tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
-// round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
-static uint32_t tileReducingPartitions(uint32_t d) {
-  if (d == 0 || llvm::isPowerOf2_64(d))
-    return d;
-  uint32_t top = llvm::PowerOf2Ceil(d) / 2; // largest power of two < d
-  uint32_t rem = d - top;
-  return top + llvm::PowerOf2Ceil(rem);
-}
-
 static std::vector<uint32_t>
 computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   // M/N per-block tiles are the same for the accel and non-accel paths
@@ -83,20 +72,44 @@ computeDPerBlock(Operation *op, TuningParamSetKind tuningKind, GemmMNDim dim) {
   for (uint32_t dPerBlock = 16; dPerBlock <= MAX_MN_PER_BLOCK; dPerBlock *= 2)
     dPerBlockList.push_back(dPerBlock);
 
-  // For a plain GEMM with a small (< MAX_MN_PER_BLOCK) M/N, cap the list with a
-  // tile that covers the dimension tightly and drop the now-oversized larger
-  // tiles (e.g. tile=80 -> {16, 32, 64, 80}). gemm+gemm isn't lowered through
-  // rock-decompose-nonpow2-tiles, so it's skipped. Scaled GEMMs are also
-  // skipped since the decomposition pass doesn't support them yet, so they must
-  // keep power-of-two M/N tiles.
+  // For a small (< MAX_MN_PER_BLOCK) M dimension, cap the list with a tile that
+  // covers the dimension tightly and drop the now-oversized larger tiles (e.g.
+  // tile=80 -> {16, 32, 64, 80}); rock-decompose-nonpow2-tiles then splits the
+  // non-pow2 tile into pow2 sub-tiles.
+  //
+  // - Plain GEMM: cap both M and N (both are grid-splittable). Scaled GEMMs are
+  //   skipped since the decomposition pass doesn't support them yet, so they
+  //   must keep power-of-two M/N tiles.
+  // - gemm+gemm / attention: cap only M (seqLenQ). The N here is seqLenK, the
+  //   softmax reduction, which is not grid-splittable and must stay pow2; the
+  //   head dim (gemm1N) tightness is handled separately in getGemm1Params.
+  auto capTile = [&](int64_t d) {
+    if (d > 0 && d < MAX_MN_PER_BLOCK) {
+      uint32_t tile = rock::tileReducingPartitions(static_cast<uint32_t>(d));
+      llvm::erase_if(dPerBlockList, [&](uint32_t v) { return v >= tile; });
+      dPerBlockList.push_back(tile);
+    }
+  };
   if (auto gemmOp = dyn_cast<RockGemmWrapperInterface>(op)) {
     bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
     GemmSize size = gemmOp.getGemmSize();
-    int64_t d = dim == GemmMNDim::M ? size.m : size.n;
-    if (!isScaledGemm && d > 0 && d < MAX_MN_PER_BLOCK) {
-      uint32_t tile = tileReducingPartitions(static_cast<uint32_t>(d));
-      llvm::erase_if(dPerBlockList, [&](uint32_t v) { return v >= tile; });
-      dPerBlockList.push_back(tile);
+    if (!isScaledGemm)
+      capTile(dim == GemmMNDim::M ? size.m : size.n);
+  } else if (auto gemmGemmOp = dyn_cast<RockGemmGemmWrapperInterface>(op)) {
+    if (dim == GemmMNDim::M) {
+      int64_t m = gemmGemmOp.getGemmGemmSize().m;
+      // For GQA, `moveNumHeadsToSeqLenQ` (AttnToGridwise) later folds
+      // numHeadsQ/numHeadsKV query-head repeats into seqLenQ, so the M the
+      // gemm0 tiling actually sees is seqLenQ * factorGQA. getGemmGemmSize()
+      // reports the pre-fold seqLenQ, so scale it up here to cap against the
+      // real (folded) M. gemm+gemm / conv+gemm have numHeadsQ == numHeadsKV.
+      if (auto attnOp = dyn_cast<AttentionOp>(op)) {
+        int64_t numHeadsQ = attnOp.getNumHeadsQ();
+        int64_t numHeadsKV = attnOp.getNumHeadsKV();
+        if (numHeadsKV > 0 && numHeadsQ % numHeadsKV == 0)
+          m *= numHeadsQ / numHeadsKV;
+      }
+      capTile(m);
     }
   }
 

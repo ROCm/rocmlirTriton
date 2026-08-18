@@ -53,6 +53,35 @@
 // (nPerBlockG1) head-dim tiling; varying only head_dim_v isolates its effect.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-TILED
 // CHECK-ATTN-SPACE-TILED: {{^ *3600$}}
+//
+// A small (< MAX_MN_PER_BLOCK) non-power-of-two seq_len_q triggers the gemm0 M
+// (seqLenQ) tile cap (tileReducingPartitions): the oversized pow2 M tiles are
+// dropped and a single tight non-pow2 tile is added, so
+// rock-decompose-nonpow2-tiles can later split it. This is the M-axis knob
+// added for non-pow2 attention. seq_len_q=80 keeps only M tiles {16,32,64,80}
+// (128 and 256 dropped, 80 added) -- 4 of the 5 baseline M tiles -- shrinking
+// the same 900 baseline above to 720. seq_len_k stays 256 (a pow2 reduction
+// dim), so only the M cap moves the count.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 80 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-MCAP
+// CHECK-ATTN-SPACE-MCAP: {{^ *720$}}
+//
+// Same shape, pinning the tile set: the tight non-pow2 M tile (80) must appear
+// and the dropped oversized M tiles (128, 256) must not.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 80 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-ATTN-MCAP-TILES \
+// RUN:       --implicit-check-not="attn:v6:128," \
+// RUN:       --implicit-check-not="attn:v6:256,"
+// CHECK-ATTN-MCAP-TILES: attn:v6:80,
+//
+// GQA fold: moveNumHeadsToSeqLenQ later folds numHeadsQ/numHeadsKV query-head
+// repeats into seqLenQ, so the M the gemm0 tiling sees is seq_len_q * factorGQA.
+// The cap must use that folded M, not the pre-fold seq_len_q. seq_len_q=24 with
+// numHeadsQ/numHeadsKV = 4/2 folds to M=48 -> tight tile 48 (tiles {16,32,48}),
+// NOT the raw-24 cap (tiles {16,24}). So tile 48 must appear and 24 must not.
+// RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 24 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-ATTN-MCAP-GQA \
+// RUN:       --implicit-check-not="attn:v6:24,"
+// CHECK-ATTN-MCAP-GQA: attn:v6:48,
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \

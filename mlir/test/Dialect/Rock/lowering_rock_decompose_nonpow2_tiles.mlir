@@ -9,7 +9,7 @@
 // -canonicalize is used to drop the now-dead original gridwise_gemm/store
 // (the real pipeline DCEs them via addWithDCE).
 
-// RUN: rocmlir-opt -rock-decompose-nonpow2-tiles -canonicalize -split-input-file -mlir-print-local-scope %s | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-decompose-nonpow2-tiles -canonicalize -split-input-file -mlir-print-local-scope | FileCheck %s
 
 #p80x80 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
@@ -114,6 +114,28 @@ func.func @test_nothing_to_do(%a: tensor<1x128x64xf16>, %b: tensor<1x64x128xf16>
   %r = rock.gridwise_gemm(%a, %b) {params = #p64x64} : tensor<1x128x64xf16>, tensor<1x64x128xf16> -> tensor<1x128x128xf32>
   %out = rock.store %r to %c by set : tensor<1x128x128xf32> -> tensor<1x128x128xf32> to tensor<1x128x128xf32>
   return %out : tensor<1x128x128xf32>
+}
+
+// -----
+
+#p32x32 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Non-power-of-two GEMM dimensions (M = N = 160) but power-of-two
+// tiles (mPerBlock = nPerBlock = 32): the pass keys off the TILE,
+// not the padded dimension, so decomposePow2(32) yields a single
+// segment and this is a no-op (one gemm, one store, unchanged).
+// ============================================================
+
+// CHECK-LABEL: func.func @test_nonpow2_dim_pow2_tile
+// CHECK: rock.gridwise_gemm{{.*}}mPerBlock = 32, nPerBlock = 32
+// CHECK-NOT: rock.gridwise_gemm
+// CHECK: rock.store
+// CHECK-NOT: rock.store
+func.func @test_nonpow2_dim_pow2_tile(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  %r = rock.gridwise_gemm(%a, %b) {params = #p32x32} : tensor<1x160x64xf16>, tensor<1x64x160xf16> -> tensor<1x160x160xf32>
+  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
 }
 
 // -----
@@ -246,4 +268,258 @@ func.func @test_chained_stores_nonpow2(%a0: tensor<1x160x64xf16>, %b0: tensor<1x
   %dest1 = rock.transform %dest by <affine_map<(d0, d1, d2) -> (d0, d1 + 160, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Slice{160, 320} ["m1"] at [1] -> ["m"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 160, 128] -> [1, 320, 128]> : tensor<1x320x128xf32> to tensor<1x160x128xf32>
   %s1 = rock.store %r1 to %dest1 alias %s0 by set : tensor<1x160x128xf32> -> tensor<1x320x128xf32> to tensor<1x160x128xf32> alias tensor<1x320x128xf32>
   return %s1 : tensor<1x320x128xf32>
+}
+
+// -----
+
+// The attention path (processGridwiseAttention) splits a rock.gridwise_attention
+// along its two output axes: seqLenQ (params0.mPerBlock, the grid M tile) and
+// headDimV (result N = gemm1N). seqLenK (params0.nPerBlock, the softmax
+// reduction) stays whole. Each (mSeg, nSeg) cell becomes a sub-attention over
+// sliced queries (M) / values (head dim) / output (M and N).
+
+#a0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#a1n16 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Only the head dim (result N = 80) is non-power-of-two: the
+// attention splits into head-dim segments {64,16}. seqLenQ (M)
+// stays whole, so queries are not sliced; only V and the output
+// are sliced along the head dim.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_headdim_nonpow2
+// CHECK-COUNT-2: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK-DAG: rock.store {{.*}} : tensor<1x64x64xf32> -> tensor<1x64x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x64x16xf32> -> tensor<1x64x80xf32>
+func.func @test_attn_headdim_nonpow2(%q: tensor<1x64x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x80xf32>, %o: tensor<1x64x80xf32>) -> tensor<1x64x80xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #a0, params1 = #a1n16, splitKV = 1 : i32} : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x80xf32> -> tensor<1x64x80xf32>
+  %out = rock.store %result to %o by set : tensor<1x64x80xf32> -> tensor<1x64x80xf32> to tensor<1x64x80xf32>
+  return %out : tensor<1x64x80xf32>
+}
+
+// -----
+
+#ap0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#ap1n16 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Head dim (result N = 80) non-power-of-two, seqLenQ (M) stays
+// whole, but seqLenQ = 128 is padded (prePadG0M = 100) across
+// mBlocks = 128/32 = 4 blocks. Since M is not split, both head-dim
+// sub-attentions must carry the original prePadG0M unchanged (it is
+// a full-M quantity that exceeds a single mPerBlock tile).
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_headdim_nonpow2_mpad_multiblock
+// CHECK: rock.gridwise_attention
+// CHECK: prePadG0M = 100 : index
+// CHECK: rock.gridwise_attention
+// CHECK: prePadG0M = 100 : index
+// CHECK-NOT: rock.gridwise_attention
+func.func @test_attn_headdim_nonpow2_mpad_multiblock(%q: tensor<1x128x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x80xf32>, %o: tensor<1x128x80xf32>) -> tensor<1x128x80xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, prePadG0M = 100 : index, params0 = #ap0, params1 = #ap1n16, splitKV = 1 : i32} : tensor<1x128x32xf32>, tensor<1x32x64xf32>, tensor<1x64x80xf32> -> tensor<1x128x80xf32>
+  %out = rock.store %result to %o by set : tensor<1x128x80xf32> -> tensor<1x128x80xf32> to tensor<1x128x80xf32>
+  return %out : tensor<1x128x80xf32>
+}
+
+// -----
+
+#am0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#am1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Only seqLenQ is non-power-of-two (mPerBlock = 80, seqLenQ =
+// 160 -> mBlocks = 2), with an LSE output. M splits into {64,16}
+// (per-block sizes 2*64 = 128 and 2*16 = 32). LSE is head-dim
+// independent, so each M-segment gets its own LSE store.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_seqq_nonpow2_lse
+// CHECK-COUNT-2: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128x64xf32> -> tensor<1x160x64xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32x64xf32> -> tensor<1x160x64xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128xf32> -> tensor<1x160xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32xf32> -> tensor<1x160xf32>
+func.func @test_attn_seqq_nonpow2_lse(%q: tensor<1x160x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x64xf32>, %lse: tensor<1x160xf32>, %o: tensor<1x160x64xf32>) -> (tensor<1x160x64xf32>, tensor<1x160xf32>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result, %lseOut = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #am0, params1 = #am1, splitKV = 1 : i32} : tensor<1x160x32xf32>, tensor<1x32x64xf32>, tensor<1x64x64xf32> -> tensor<1x160x64xf32>, tensor<1x160xf32>
+  %out = rock.store %result to %o by set : tensor<1x160x64xf32> -> tensor<1x160x64xf32> to tensor<1x160x64xf32>
+  %lseStore = rock.store %lseOut to %lse by set : tensor<1x160xf32> -> tensor<1x160xf32> to tensor<1x160xf32>
+  return %out, %lseStore : tensor<1x160x64xf32>, tensor<1x160xf32>
+}
+
+// -----
+
+#am0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#am1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Same M-split as above but the LSE output carries an elementwise
+// fusion (add then mul against rank-2 [G, seqLenQ] biases). The
+// LSE fusion DAG is replicated per M segment, so each segment gets
+// its own add/mul before the sliced store.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_lse_output_fusion
+// CHECK-COUNT-2: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK-COUNT-2: arith.addf
+// CHECK-COUNT-2: arith.mulf
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128xf32> -> tensor<1x160xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32xf32> -> tensor<1x160xf32>
+func.func @test_attn_lse_output_fusion(%q: tensor<1x160x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x64xf32>, %lseBias0: tensor<1x160xf32>, %lseBias1: tensor<1x160xf32>, %lse: tensor<1x160xf32>, %o: tensor<1x160x64xf32>) -> (tensor<1x160x64xf32>, tensor<1x160xf32>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result, %lseOut = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #am0, params1 = #am1, splitKV = 1 : i32} : tensor<1x160x32xf32>, tensor<1x32x64xf32>, tensor<1x64x64xf32> -> tensor<1x160x64xf32>, tensor<1x160xf32>
+  %out = rock.store %result to %o by set : tensor<1x160x64xf32> -> tensor<1x160x64xf32> to tensor<1x160x64xf32>
+  %lseAdd = arith.addf %lseOut, %lseBias0 : tensor<1x160xf32>
+  %lseMul = arith.mulf %lseAdd, %lseBias1 : tensor<1x160xf32>
+  %lseStore = rock.store %lseMul to %lse by set : tensor<1x160xf32> -> tensor<1x160xf32> to tensor<1x160xf32>
+  return %out, %lseStore : tensor<1x160x64xf32>, tensor<1x160xf32>
+}
+
+// -----
+
+#amp0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#amp1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// seqLenQ non-power-of-two (mPerBlock = 80, seqLenQ = 160 ->
+// mBlocks = 2) AND padded (prePadG0M = 150). M splits into
+// {64,16}. Each segment forwards the original prePadG0M unchanged
+// and records the pre-split tile (gemm0MOrigPerBlock = 80) and its
+// slice offset so lowering can replay the (mBlocks, tile) + slice +
+// pad on the first-gemm mask (the padded rows are interleaved per
+// block, which no single scalar per segment can express).
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_seqq_nonpow2_mpad
+// CHECK: rock.gridwise_attention
+// CHECK: gemm0MOrigPerBlock = 80 : index
+// CHECK-SAME: gemm0MSliceOffset = 0 : index
+// CHECK-SAME: prePadG0M = 150 : index
+// CHECK: rock.gridwise_attention
+// CHECK: gemm0MOrigPerBlock = 80 : index
+// CHECK-SAME: gemm0MSliceOffset = 64 : index
+// CHECK-SAME: prePadG0M = 150 : index
+// CHECK-NOT: rock.gridwise_attention
+func.func @test_attn_seqq_nonpow2_mpad(%q: tensor<1x160x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x64xf32>, %o: tensor<1x160x64xf32>) -> tensor<1x160x64xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, prePadG0M = 150 : index, params0 = #amp0, params1 = #amp1, splitKV = 1 : i32} : tensor<1x160x32xf32>, tensor<1x32x64xf32>, tensor<1x64x64xf32> -> tensor<1x160x64xf32>
+  %out = rock.store %result to %o by set : tensor<1x160x64xf32> -> tensor<1x160x64xf32> to tensor<1x160x64xf32>
+  return %out : tensor<1x160x64xf32>
+}
+
+// -----
+
+#ab0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#ab1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Both axes non-power-of-two (seqLenQ = 160/mPerBlock = 80, head
+// dim = 80): a 2x2 grid of sub-attentions over M x head-dim =
+// {64,16} x {64,16}.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_both_nonpow2
+// CHECK-COUNT-4: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128x64xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128x16xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32x64xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32x16xf32> -> tensor<1x160x80xf32>
+func.func @test_attn_both_nonpow2(%q: tensor<1x160x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x80xf32>, %o: tensor<1x160x80xf32>) -> tensor<1x160x80xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #ab0, params1 = #ab1, splitKV = 1 : i32} : tensor<1x160x32xf32>, tensor<1x32x64xf32>, tensor<1x64x80xf32> -> tensor<1x160x80xf32>
+  %out = rock.store %result to %o by set : tensor<1x160x80xf32> -> tensor<1x160x80xf32> to tensor<1x160x80xf32>
+  return %out : tensor<1x160x80xf32>
+}
+
+// -----
+
+#abl0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#abl1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Both axes non-power-of-two (seqLenQ = 160/mPerBlock = 80, head
+// dim = 80) AND an LSE output: the main result splits into a 2x2
+// grid over M x head-dim = {64,16} x {64,16}, but the LSE is
+// head-dim independent so it only splits along M into {64,16}
+// (per-block 128 and 32). Both head-dim sub-tiles that share an
+// M-segment therefore store into the same LSE slice.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_both_nonpow2_lse
+// CHECK-COUNT-4: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128x64xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128x16xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32x64xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32x16xf32> -> tensor<1x160x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x128xf32> -> tensor<1x160xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x32xf32> -> tensor<1x160xf32>
+func.func @test_attn_both_nonpow2_lse(%q: tensor<1x160x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x80xf32>, %lse: tensor<1x160xf32>, %o: tensor<1x160x80xf32>) -> (tensor<1x160x80xf32>, tensor<1x160xf32>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result, %lseOut = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #abl0, params1 = #abl1, splitKV = 1 : i32} : tensor<1x160x32xf32>, tensor<1x32x64xf32>, tensor<1x64x80xf32> -> tensor<1x160x80xf32>, tensor<1x160xf32>
+  %out = rock.store %result to %o by set : tensor<1x160x80xf32> -> tensor<1x160x80xf32> to tensor<1x160x80xf32>
+  %lseStore = rock.store %lseOut to %lse by set : tensor<1x160xf32> -> tensor<1x160xf32> to tensor<1x160xf32>
+  return %out, %lseStore : tensor<1x160x80xf32>, tensor<1x160xf32>
+}
+
+// -----
+
+#ap0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#ap1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Pre-softmax fusion (a scale mul) with a non-power-of-two head
+// dim (80). The preSoftmax region is cloned into each head-dim
+// sub-attention; the scale input is gemm0-shaped (seqLenQ x
+// seqLenK), so it is NOT sliced along the head dim (both cells
+// share the same scale operand).
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_presoftmax_headdim_nonpow2
+// CHECK-DAG: rock.gridwise_attention
+// CHECK-DAG: rock.gridwise_attention
+// CHECK-DAG: arith.mulf
+// CHECK-DAG: arith.mulf
+// CHECK-DAG: rock.store {{.*}} : tensor<1x64x64xf32> -> tensor<1x64x80xf32>
+// CHECK-DAG: rock.store {{.*}} : tensor<1x64x16xf32> -> tensor<1x64x80xf32>
+func.func @test_attn_presoftmax_headdim_nonpow2(%q: tensor<1x64x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x80xf32>, %scale: tensor<1xf32>, %o: tensor<1x64x80xf32>) -> tensor<1x64x80xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %s0 = rock.transform %scale by <affine_map<(d0, d1, d2) -> (d0 + d1 + d2)> by [<Unmerge{1, 1, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 1, 1] -> [1]> : tensor<1xf32> to tensor<1x1x1xf32>
+  %s1 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0, 0, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <Broadcast{1} ["dim2"] at [2] -> ["dim2"] at [2]>] bounds = [1, 64, 64] -> [1, 1, 1]> : tensor<1x1x1xf32> to tensor<1x64x64xf32>
+  %result = rock.gridwise_attention(%q, %k, %v, %s1) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x64x64xf32>, %arg_scale: tensor<1x64x64xf32>):
+    %0 = arith.mulf %arg_qk, %arg_scale : tensor<1x64x64xf32>
+    rock.yield %0 : tensor<1x64x64xf32>
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>, params0 = #ap0, params1 = #ap1, splitKV = 1 : i32} : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x80xf32>, tensor<1x64x64xf32> -> tensor<1x64x80xf32>
+  %out = rock.store %result to %o by set : tensor<1x64x80xf32> -> tensor<1x64x80xf32> to tensor<1x64x80xf32>
+  return %out : tensor<1x64x80xf32>
+}
+
+// -----
+
+#anop0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+#anop1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+
+// ============================================================
+// Nothing to do: seqLenQ tile (32) and head dim (64) are both
+// powers of two. The attention and store are left unchanged.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_attn_nothing_to_do
+// CHECK: rock.gridwise_attention
+// CHECK-NOT: rock.gridwise_attention
+// CHECK: rock.store
+// CHECK-NOT: rock.store
+func.func @test_attn_nothing_to_do(%q: tensor<1x64x32xf32>, %k: tensor<1x32x64xf32>, %v: tensor<1x64x64xf32>, %o: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  } {operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>, params0 = #anop0, params1 = #anop1, splitKV = 1 : i32} : tensor<1x64x32xf32>, tensor<1x32x64xf32>, tensor<1x64x64xf32> -> tensor<1x64x64xf32>
+  %out = rock.store %result to %o by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  return %out : tensor<1x64x64xf32>
 }

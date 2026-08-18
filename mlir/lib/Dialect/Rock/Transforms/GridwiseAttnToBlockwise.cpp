@@ -346,6 +346,54 @@ struct GridwiseAttentionRewritePattern
                              rewriter.getArrayAttr({padMap}));
   }
 
+  // Undo one rock-decompose-nonpow2-tiles M split on a first-gemm tile view:
+  // map this sub-op's sliced M tile (`mBlocks * segLen`) back onto the original
+  // pre-split M (`mBlocks * origMPerBlock`), sliced at `sliceOffset`. This
+  // replays the exact (mBlocks, origMPerBlock) restructure + slice the sliced Q
+  // operand carries, so the resulting lower shape is the original padded M and
+  // unpadTileView can then pad it down to the valid seqLenQ as usual (seqLenK /
+  // N is never split, so it passes through unchanged here).
+  ArrayAttr decomposeTileView(PatternRewriter &rewriter, Location loc,
+                              ArrayAttr tileView, int64_t mBlocks,
+                              int64_t origMPerBlock,
+                              int64_t sliceOffset) const {
+    ArrayRef<int64_t> slicedShape = getLowerShape(tileView);
+    assert(slicedShape.size() == 3);
+    int64_t g = slicedShape[0];
+    int64_t gemmN = slicedShape[2];
+    assert(slicedShape[1] % mBlocks == 0 &&
+           "sliced tile M must be a multiple of mBlocks");
+    int64_t segLen = slicedShape[1] / mBlocks;
+    int64_t origM = mBlocks * origMPerBlock;
+
+    // sliced tile M (mBlocks * segLen) -> original padded M (mBlocks *
+    // origMPerBlock), built bottom-up over the original-M shape:
+    //   split:  origM        -> (m_b, m_i)   restructure into (block, tile)
+    //   sliceM: m_i (tile)   -> segment      window the tile to this segment
+    //   merge:  (m_b, m_i)   -> sliced tile M
+    BottomUpTMBuilder split{rewriter, {"g", "m", "n"}, {g, origM, gemmN}, loc};
+    split.passThrough({"g"}, {0}, {"g"});
+    split.unmerge({"m_b", "m_i"}, {1, 2}, "m", {mBlocks, origMPerBlock});
+    split.passThrough({"n"}, {3}, {"n"});
+    TransformMapAttr splitMap = split.get();
+
+    BottomUpTMBuilder sliceM = BottomUpTMBuilder::above(split, splitMap);
+    sliceM.passThrough({"g", "m_b"});
+    sliceM.slice({"m_i"}, {"m_i"}, {sliceOffset}, {sliceOffset + segLen});
+    sliceM.passThrough("n");
+    TransformMapAttr sliceMap = sliceM.get();
+
+    BottomUpTMBuilder merge = BottomUpTMBuilder::above(sliceM, sliceMap);
+    merge.passThrough({"g"}, {0}, {"g"});
+    merge.merge("m", 1, {"m_b", "m_i"});
+    merge.passThrough({"n"}, {2}, {"n"});
+    TransformMapAttr mergeMap = merge.get();
+
+    return prependUpperViews(
+        rewriter, tileView,
+        rewriter.getArrayAttr({mergeMap, sliceMap, splitMap}));
+  }
+
   ArrayAttr outputViewToIndex(PatternRewriter &rewriter, Location loc,
                               ArrayAttr tileView) const {
     ArrayRef<int64_t> shape = getLowerShape(tileView);
@@ -592,14 +640,14 @@ struct GridwiseAttentionRewritePattern
     return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
   }
 
-  std::tuple<Value, Value, Value, Value, Value, Value>
-  getNLoopInfo(PatternRewriter &rewriter, Location loc,
-               layout::AttnGridCoordinates gridCoordsGemm0,
-               Value currentSeqLenTensor, Value prefixOffsetTensor,
-               int64_t gemm0M, int64_t gemm0N, int64_t gemm0MPerBlock,
-               int64_t gemm0NPerBlock, int64_t splitKV, bool isCausal,
-               bool isKVCache, bool isPrefixCausal, int64_t slidingWindowSize,
-               IntegerAttr numRepeatsGQA = nullptr) const {
+  std::tuple<Value, Value, Value, Value, Value, Value> getNLoopInfo(
+      PatternRewriter &rewriter, Location loc,
+      layout::AttnGridCoordinates gridCoordsGemm0, Value currentSeqLenTensor,
+      Value prefixOffsetTensor, int64_t gemm0M, int64_t gemm0N,
+      int64_t gemm0MPerBlock, int64_t gemm0NPerBlock, int64_t splitKV,
+      bool isCausal, bool isKVCache, bool isPrefixCausal,
+      int64_t slidingWindowSize, IntegerAttr numRepeatsGQA = nullptr,
+      int64_t gemm0MOrigPerBlock = 0, int64_t gemm0MSliceOffset = 0) const {
     Value gemm0NBlocksLastIter;
     Value currentSeqLen;
     Value prefixOffset;
@@ -669,15 +717,32 @@ struct GridwiseAttentionRewritePattern
 
       if (isCausal || isPrefixCausal) {
         // Compute the last Q position in the block.
-        // (mIndex + 1) * MPerBlock - 1.
+        // Normally row `m_block` covers original rows
+        //   [m_block*gemm0MPerBlock, (m_block+1)*gemm0MPerBlock),
+        // so the last row is (m_block + 1) * gemm0MPerBlock - 1.
+        //
+        // When rock-decompose-nonpow2-tiles has split M, gemm0MPerBlock is this
+        // sub-op's sliced segment length and m_block indexes into the compacted
+        // (mBlocks * segLen) space. Block m_block / row i then maps back to the
+        // original query row
+        //   m_block*gemm0MOrigPerBlock + gemm0MSliceOffset + i,
+        // so the last original row is
+        //   m_block*gemm0MOrigPerBlock + gemm0MSliceOffset +
+        //   (gemm0MPerBlock-1).
+        // Using the sliced stride/offset here would underestimate the causal
+        // last-row and skip live seqLenK blocks. gemm0N (seqLenK) is never
+        // split, so it needs no adjustment.
+        int64_t mStride =
+            gemm0MOrigPerBlock ? gemm0MOrigPerBlock : gemm0MPerBlock;
         Value mIndex = gridCoordsGemm0.m_block;
-        Value constGemm0MPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
-            loc, rewriter.getI32Type(), gemm0MPerBlock);
-        Value mIndexPlusOne = arith::AddIOp::create(rewriter, loc, mIndex, one);
-        Value nextBlockStart = arith::MulIOp::create(
-            rewriter, loc, mIndexPlusOne, constGemm0MPerBlock);
+        Value constMStride = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), mStride);
+        Value blockStart =
+            arith::MulIOp::create(rewriter, loc, mIndex, constMStride);
+        Value segLast = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), gemm0MSliceOffset + gemm0MPerBlock - 1);
         Value maxRowOfBlock =
-            arith::SubIOp::create(rewriter, loc, nextBlockStart, one);
+            arith::AddIOp::create(rewriter, loc, blockStart, segLast);
         if (numRepeatsGQA) {
           Value constNumRepeatsGQA =
               rewriter.createOrFold<arith::ConstantIntOp>(
@@ -698,9 +763,14 @@ struct GridwiseAttentionRewritePattern
                                                    effectiveSeqLen);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
-        // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
-        // exceed the key sequence length. In both cases, bound by gemm0N - 1.
-        if (gemm0M > gemm0N || isPrefixCausal) {
+        // gemm0N. Similarly, when the query sequence is longer than the key
+        // sequence, the last query position can exceed the key sequence
+        // length. In both cases, bound by gemm0N - 1. maxRowOfBlock is
+        // expressed in original (pre-split) query rows, so the comparison must
+        // use the original padded M too: `gemm0M` is this sub-op's compacted
+        // tile, which is smaller whenever M has been split.
+        int64_t origPaddedM = (gemm0M / gemm0MPerBlock) * mStride;
+        if (origPaddedM > gemm0N || isPrefixCausal) {
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
@@ -1235,13 +1305,20 @@ struct GridwiseAttentionRewritePattern
     int64_t slidingWindowSize =
         static_cast<int64_t>(op.getSlidingWindowSize().value_or(0));
     // get nLoop
+    int64_t gemm0MOrigPerBlock =
+        op.getGemm0MOrigPerBlock().has_value()
+            ? op.getGemm0MOrigPerBlock()->getSExtValue()
+            : 0;
+    int64_t gemm0MSliceOffset = op.getGemm0MSliceOffset().has_value()
+                                    ? op.getGemm0MSliceOffset()->getSExtValue()
+                                    : 0;
     std::tie(start, end, gemm0NBlocksLastIter, currentSeqLen, prefixOffset,
              slidingWindowLowerBound) =
-        getNLoopInfo(rewriter, loc, gridCoordsGemm0mIter0, currentSeqLenTensor,
-                     prefixOffsetTensor, gemm0M, gemm0N, gemm0MPerBlock,
-                     gemm0NPerBlock, splitKV, isCausal, isKVCache,
-                     isPrefixCausal, slidingWindowSize,
-                     op.getNumRepeatsGQAAttr());
+        getNLoopInfo(
+            rewriter, loc, gridCoordsGemm0mIter0, currentSeqLenTensor,
+            prefixOffsetTensor, gemm0M, gemm0N, gemm0MPerBlock, gemm0NPerBlock,
+            splitKV, isCausal, isKVCache, isPrefixCausal, slidingWindowSize,
+            op.getNumRepeatsGQAAttr(), gemm0MOrigPerBlock, gemm0MSliceOffset);
 
     // Early exit: Skip all computation when there's no work but always write
     // output. The IfOp returns (outAcc, lseOut?) so the code after the if
@@ -1368,7 +1445,32 @@ struct GridwiseAttentionRewritePattern
       }
       Value firstGemmResult = kLoopOp.getResult(0);
 
-      int64_t prePadG0M = gemm0M;
+      // When rock-decompose-nonpow2-tiles has split M, gemm0M is this sub-op's
+      // sliced M tile (mBlocks * segLen), not the original padded seqLenQ.
+      // decomposeTileView below expands the tile view's lower M back to the
+      // original padded M (mBlocks * origMPerBlock), so the pad extent must be
+      // measured against that original padded M, not the sliced tile. When M
+      // isn't split this is just gemm0M (the padded seqLenQ).
+      int64_t origPaddedM = gemm0M;
+      ArrayAttr gemm0OutTileViewDecomposed = gemm0OutTileView;
+      if (op.getGemm0MOrigPerBlock().has_value()) {
+        // M is a pow2 slice of a larger padded seqLenQ (from
+        // rock-decompose-nonpow2-tiles): undo the slice first so the pad below
+        // reflects the per-block valid rows, not a single flattened tail.
+        int64_t origMPerBlock = op.getGemm0MOrigPerBlock()->getSExtValue();
+        // An absent gemm0MSliceOffset means the first segment of the original
+        // tile, i.e. offset 0.
+        int64_t sliceOffset = op.getGemm0MSliceOffset().has_value()
+                                  ? op.getGemm0MSliceOffset()->getSExtValue()
+                                  : 0;
+        int64_t mBlocks = gemm0M / gemm0MPerBlock;
+        origPaddedM = mBlocks * origMPerBlock;
+        gemm0OutTileViewDecomposed =
+            decomposeTileView(rewriter, loc, gemm0OutTileView, mBlocks,
+                              origMPerBlock, sliceOffset);
+      }
+
+      int64_t prePadG0M = origPaddedM;
       if (op.getPrePadG0M().has_value()) {
         prePadG0M = op.getPrePadG0M().value().getSExtValue();
       }
@@ -1376,8 +1478,8 @@ struct GridwiseAttentionRewritePattern
       if (op.getPrePadG0N().has_value()) {
         prePadG0N = op.getPrePadG0N().value().getSExtValue();
       }
-      ArrayAttr gemm0OutTileViewUnPadded =
-          unpadTileView(rewriter, loc, gemm0OutTileView, prePadG0M, prePadG0N);
+      ArrayAttr gemm0OutTileViewUnPadded = unpadTileView(
+          rewriter, loc, gemm0OutTileViewDecomposed, prePadG0M, prePadG0N);
 
       // undo Grouped-Query Attention (GQA) transforms
       // This is needed because the preSoftmaxElementWise inputs (if any), don't

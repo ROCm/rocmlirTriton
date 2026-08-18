@@ -519,6 +519,27 @@ func.func @rock_attention_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>, %arg
   return %out : tensor<1x16384x512xf32>
 }
 
+// attn:v6 with a non-power-of-two mPerBlockG0 (80): rock-affix-params accepts the
+// non-pow2 seqLenQ tile (it is peeled later by rock-decompose-nonpow2-tiles) and
+// sets both gemms' mPerBlock = 80, while the N dims stay power-of-two. seqLenQ =
+// 16384 with mPerBlock = 80 gives ceil(16384 / 80) = 205 M-blocks (grid_size).
+// CHECK-LABEL: func.func @rock_attention_mperblockg0_nonpow2
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_mperblockg0_nonpow2
+// GRID-SAME: rock.grid_size = 205
+func.func @rock_attention_mperblockg0_nonpow2(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 512, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:v6:80,128,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
 // CHECK-LABEL: func.func @rock_attention_mperblockg1_wmma
 // CHECK-SAME: rock.block_size = 128
 // GRID-LABEL: func.func @rock_attention_mperblockg1_wmma
@@ -826,7 +847,9 @@ func.func @rock_gemm_gemm_splitk(%arg0: tensor<1474560xf16>, %arg1: tensor<14745
   %2 = rock.transform %arg2 by <affine_map<(d0, d1, d2) -> (d1 * 360 + d2)> by [<Unmerge{4096, 360} ["n", "gemmO"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4096, 360] -> [1474560]> : tensor<1474560xf16> to tensor<1x4096x360xf16>
   // CHECK: rock.gemm_elementwise_gemm
   // CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 512, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // gemmO = 360 pads to tileReducingPartitions(360) = 256 + 128 = 384 (a tight
+  // two-pow2-segment cover), not PowerOf2Ceil(360) = 512.
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 384, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.gridwise_attention
   %result = rock.gemm_elementwise_gemm{
     ab = %0 * %1 : tensor<1x4096x360xf16>, tensor<1x360x4096xf16>

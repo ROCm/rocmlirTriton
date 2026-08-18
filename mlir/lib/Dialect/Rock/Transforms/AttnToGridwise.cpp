@@ -572,11 +572,25 @@ static LogicalResult commonAttentionGemmElmtGemm(
                                .value_or(GemmSize{0, 0, 0, 0});
   GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
                                .value_or(GemmSize{0, 0, 0, 0});
-  // gemm1N is split into nPerBlockG1-wide chunks folded back together with
-  // pairwise tt.join, so the chunk count must be a power of two. Round gemm1N
-  // up to a power of two to guarantee this (no-op for the untiled case).
+  // The full head dim (gemm1N) is produced by a single block and processed
+  // intra-block as `gemm1NChunks = gemm1N / gemm1NPerBlock` chunks that are
+  // folded back together with pairwise tt.join, so the chunk count within each
+  // gridwise_attention must be a power of two. Unlike the grid-blocked gemm
+  // M/N, the head dim is not tiled across the grid, so the decomposable unit is
+  // the whole gemm1N: rock-decompose-nonpow2-tiles splits a non-pow2 gemm1N
+  // into pow2 sub-attentions (each with a pow2 gemm1N_sub and
+  // gemm1NPerBlock_sub, so a pow2 chunk count).
+  //
+  // Size the whole head dim to `tileReducingPartitions(gemm1N)` -- the smallest
+  // value whose binary form has at most two set bits (top pow2 bit + remainder
+  // rounded up to one pow2) -- so decomposePow2 yields at most two
+  // sub-attentions (e.g. 77 -> 80 = {64, 16}) with minimal padding, instead of
+  // PowerOf2Ceil's single oversized pow2 (128, wasting 48 head-dim columns) or
+  // the raw binary decomposition's many tiny segments (77 -> {64, 8, 4, 1}).
   int64_t requiredGemm1N = gemm1Size.n + gemm1ExtraPad.n;
-  gemm1ExtraPad.n += llvm::PowerOf2Ceil(requiredGemm1N) - requiredGemm1N;
+  gemm1ExtraPad.n +=
+      rock::tileReducingPartitions(static_cast<uint32_t>(requiredGemm1N)) -
+      requiredGemm1N;
 
   a = padMatrixForTileAlignment(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
                                 gemm0ExtraPad.k);
@@ -621,6 +635,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
       rw, loc, newOutputType, newLseType, a, b, c, elementwiseInputs,
       currentSeqLen, prefixOffset, causal, splitKV, slidingWindowSize,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
+      /*gemm0MOrigPerBlock=*/nullptr, /*gemm0MSliceOffset=*/nullptr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
   bool fusionsFound = rock::gemmGemmHasPreSecondGemmFusion(op);

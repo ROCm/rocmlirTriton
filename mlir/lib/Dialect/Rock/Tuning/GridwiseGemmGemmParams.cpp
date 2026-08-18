@@ -2,6 +2,7 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -98,8 +99,12 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
   // `nPerBlockG1 == 0` keeps the second GEMM untiled (process the full gemm1N);
-  // otherwise it tiles the head dim.
-  int64_t gemm1N = llvm::PowerOf2Ceil(op.getGemmGemmSize().o);
+  // otherwise it tiles the head dim. The untiled head dim is rounded up to a
+  // tight `tileReducingPartitions` size (a few pow2 segments) rather than the
+  // next power of two, so rock-decompose-nonpow2-tiles can split it into pow2
+  // sub-attentions instead of padding e.g. 80 up to 128.
+  int64_t gemm1N = rock::tileReducingPartitions(
+      static_cast<uint32_t>(op.getGemmGemmSize().o));
   int64_t gemm1NPerBlock =
       params.getNPerBlockG1() > 0 ? params.getNPerBlockG1() : gemm1N;
   return GemmParamsAttr::get(

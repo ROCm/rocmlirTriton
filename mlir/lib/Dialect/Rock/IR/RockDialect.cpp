@@ -1855,6 +1855,28 @@ LogicalResult GridwiseAttentionOp::verify() {
                                             getCurrentSeqLen(), maxSeqLen)))
     return failure();
 
+  // M-split bookkeeping left by rock-decompose-nonpow2-tiles. `params0`'s
+  // mPerBlock is the sliced segment length; it must be a window
+  // [gemm0MSliceOffset, gemm0MSliceOffset + mPerBlock) of the original,
+  // pre-split tile `gemm0MOrigPerBlock`.
+  std::optional<APInt> gemm0MOrigPerBlock = getGemm0MOrigPerBlock();
+  std::optional<APInt> gemm0MSliceOffset = getGemm0MSliceOffset();
+  if (gemm0MSliceOffset && !gemm0MOrigPerBlock)
+    return emitError(
+        "gemm0MSliceOffset requires gemm0MOrigPerBlock to be set.");
+  if (gemm0MOrigPerBlock) {
+    int64_t origPerBlock = gemm0MOrigPerBlock->getSExtValue();
+    int64_t sliceOffset =
+        gemm0MSliceOffset ? gemm0MSliceOffset->getSExtValue() : 0;
+    int64_t mPerBlock = gemm0TuningParams.getMPerBlock();
+    if (origPerBlock <= 0)
+      return emitError("gemm0MOrigPerBlock must be positive.");
+    if (sliceOffset < 0 || sliceOffset + mPerBlock > origPerBlock)
+      return emitError("the gemm0 M slice [gemm0MSliceOffset, "
+                       "gemm0MSliceOffset + params0.mPerBlock) must lie within "
+                       "[0, gemm0MOrigPerBlock).");
+  }
+
   return success();
 }
 

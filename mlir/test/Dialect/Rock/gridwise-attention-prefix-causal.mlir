@@ -3,9 +3,11 @@
 module {
   // CHECK-LABEL: func @mlir_attention
   // Verify prefix causal loop bound calculation: effectiveSeqLen = min(maxRowOfBlock + prefixOffset, gemm0N - 1)
-  // The muli computes m_block * blockSize, then subi computes maxRowOfBlock = nextBlockStart - 1
+  // The muli computes m_block * gemm0MPerBlock (the per-block row stride), then
+  // addi adds the in-block last row (gemm0MSliceOffset + gemm0MPerBlock - 1 =
+  // 0 + 32 - 1 = 31) to get maxRowOfBlock.
   // CHECK: arith.muli %{{.*}}, %c32{{.*}} : i32
-  // CHECK: %[[MAX_ROW:.*]] = arith.subi %{{.*}}, %c1{{.*}} : i32
+  // CHECK: %[[MAX_ROW:.*]] = arith.addi %{{.*}}, %c31{{.*}} : i32
   // The prefixOffset is loaded from tensor as a scalar i32
   // CHECK: %[[OFFSET:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
   // effectiveSeqLen = maxRowOfBlock + prefixOffset

@@ -170,20 +170,27 @@ static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
 
 // Single entry point: run all per-field checks via
 // `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
-// `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
-// must be powers of two: gemm+gemm requires it, plain gemm only requires them
-// to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
+// `GemmGemmParamsAttr`). `requirePow2M`/`requirePow2N` control whether
+// mPerBlock/nPerBlock must be powers of two, independently, since
+// rock-decompose-nonpow2-tiles splits some axes but not others:
+//   - plain gemm: neither M nor N need be pow2 (both grid-splittable).
+//   - gemm+gemm / attention: M (seqLenQ) may be non-pow2, but N (seqLenK) is
+//     the softmax reduction and must stay pow2.
+// nPerBlockG1 (the intra-block head-dim chunk) must always be a power of two.
 // `requirePow2K` likewise controls kPerBlock: plain gemm allows non-pow2 K
 // (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments),
 // while gemm+gemm and scaled gemm still require a power-of-two K tile.
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
-                                        bool requirePow2MN, bool requirePow2K) {
-  auto validateMN =
-      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
+                                        bool requirePow2M, bool requirePow2N,
+                                        bool requirePow2K) {
+  auto validateM =
+      requirePow2M ? validatePositivePowerOfTwo : validatePositiveValue;
+  auto validateN =
+      requirePow2N ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateM(op, "mPerBlock", params.getMPerBlock())))
     return failure();
-  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+  if (failed(validateN(op, "nPerBlock", params.getNPerBlock())))
     return failure();
   if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
     if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
@@ -332,7 +339,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
   bool requirePow2K =
       isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
-  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
+  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2M=*/isScaledGemm,
+                                /*requirePow2N=*/isScaledGemm,
                                 /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
 
@@ -407,7 +415,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
+  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2M=*/false,
+                                /*requirePow2N=*/true,
                                 /*requirePow2K=*/true)))
     return signalPassFailure();
 
