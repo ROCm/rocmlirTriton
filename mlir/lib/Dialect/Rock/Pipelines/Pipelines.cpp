@@ -417,6 +417,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
+  // Cannot be merged with addWithDCE: that helper runs the pass in a new
+  // func nest and the DCE at module level, whereas here both the pass and the
+  // DCE runs on the caller existing func nest.
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
@@ -507,15 +514,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
   // chains feeding TransformsToPtrOp by collapsing contiguous merges.
-  funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
   // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
   // it, leaving the original chain dead. DCE it so TransformsToPointerArith
-  // only sees the collapsed chain. Keep this nested per-func: a module-level
-  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
-  // breaks downstream lowering ("rock.arch not found on kernel function").
-  funcPm2.addPass(createRemoveDeadValuesPass());
-  funcPm2.addPass(rock::createRockIncrementalPointerArithPass());
-  funcPm2.addPass(createRemoveDeadValuesPass());
+  // only sees the collapsed chain.
+  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
+  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
