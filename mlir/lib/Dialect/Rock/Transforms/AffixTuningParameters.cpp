@@ -345,8 +345,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   int64_t gemmKBlocks = 1;
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
   auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-  if (maybeWrwOp && isWrWAtomicKernel(rock::getArchValue(op), info.gemmAType,
-                                      requiredPadding)) {
+  if (maybeWrwOp && isWrWAtomicKernel(info.gemmAType, requiredPadding)) {
     auto res = calculateKBlockNum(
         info.batchSize, paddedGemmSize, gemmParams.getMPerBlock(),
         gemmParams.getNPerBlock(), gemmParams.getKPerBlock(),
@@ -379,10 +378,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // picked either through heuristics or user provided.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
@@ -425,10 +420,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Check fusion legality.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();

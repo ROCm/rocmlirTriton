@@ -593,11 +593,23 @@ void setHeartbeat() {
     }
 }
 
+List<String> getEnabledMfmaArchitectures() {
+    def architectures = []
+    if (params.disable942 == false) architectures << 'gfx942'
+    if (params.disable908 == false) architectures << 'gfx908'
+    if (params.disable90a == false) architectures << 'gfx90a'
+    return architectures
+}
+
 String getLabelFromCodepath(String codepath) {
     echo "codepath is ${codepath}"
     String label = ''
     if (codepath == "mfma") {
-        label = 'mlir && (gfx942 || gfx908 || gfx90a)'
+        def architectures = getEnabledMfmaArchitectures()
+        if (architectures.isEmpty()) {
+            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+        }
+        label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
         //     label = 'mlir && linux-mi350-8'
@@ -674,14 +686,22 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-void build_fixedE2ETests() {
+// The upstream MLIR suite runs on one codepath, like the static checks do: only its
+// six Integration/GPU/ROCM tests touch the GPU, so the rest would repeat identically
+// on every row. mfma is the row that is always enabled when nightly runs.
+boolean runsCheckMlir(String codepath) {
+    return params.nightly && codepath == "mfma"
+}
+
+void build_fixedE2ETests(String codepath) {
     // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-rocmlir-build-only", """
+    buildProject("${runsCheckMlir(codepath) ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCMLIR_ENABLE_BENCHMARKS=${params.nightly ? 'hipblaslt' : ''}
+              -DMLIR_INCLUDE_INTEGRATION_TESTS=${runsCheckMlir(codepath) ? 'ON' : 'OFF'}
               -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
@@ -690,22 +710,18 @@ void build_fixedE2ETests() {
 
 void check_randomE2ETests() {
     int limit_lit_workers = setLitWorkerCount()
-    timeout(time: 60, activity: true, unit: 'MINUTES') {
-        dir('build') {
-            // Use cmake directly instead of buildProject/cmake.sh because
-            // cmake.sh wipes the build directory. We only need to reconfigure
-            // flags (add RANDOM_DATA_SEED=1) after build_fixedE2ETests.
-            sh """cmake .. \
-                -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \
-                -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
-                -DROCK_E2E_TEST_ENABLED=1 \
-                -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1 \
-                -DLLVM_ENABLE_ZSTD=FORCE_ON \
-                -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}' \
-                -DCMAKE_EXPORT_COMPILE_COMMANDS=1"""
-            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
-        }
-    }
+    // --no-clean keeps the build directory from build_fixedE2ETests; only the
+    // lit configs change here.
+    buildProject('check-rocmlir', """
+              --no-clean
+              -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
+              -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
+              -DROCK_E2E_TEST_ENABLED=1
+              -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
+              -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=1
+             """)
 }
 
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
@@ -733,7 +749,8 @@ boolean shouldRunFromCodepath(String codepath) {
         return true
     }
     // Run mfma when xdlops are available.
-    if ((codepath == "mfma") && params.canXdlops) {
+    if ((codepath == "mfma") && params.canXdlops &&
+        !getEnabledMfmaArchitectures().isEmpty()) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
@@ -807,7 +824,7 @@ boolean shouldRunBuildAndTest(String codepath) {
     // When a particular codepath is selected, test it if it is supported and
     // enabled.
     if (params.codepath == codepath && params.canXdlops) {
-        if (params.codepath == "mfma") return true
+        if (params.codepath == "mfma") return !getEnabledMfmaArchitectures().isEmpty()
         if (params.codepath == "vanilla") return true
         if (params.codepath == "gfx950" && params.disable950 == false) return true
         if (params.codepath == "navi21" && params.disableNavi21 == false) return true
@@ -1036,6 +1053,7 @@ Map<String,String> classifyBuildFailure(String logText) {
     def stageNames = [
         'SCM Checkout',
         'Configure and build rocmlirTriton', 'Static checks', 'Run tests',
+        'Upstream MLIR: check-mlir', 'Shared Library: fixed E2E', 'Shared Library: random E2E',
         'Install MIGraphX Dependencies', 'Build and Verify MIGraphX with MLIR', 'Verify MIGraphX with MLIR',
         'MIGraphX'
     ]
@@ -1236,13 +1254,27 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests(CODEPATH)
                                                         }
                                                     }
 
                                                     stage('Static checks (clang-format & clang-tidy)') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
                                                             preMergeCheck(CODEPATH)
+                                                        }
+                                                    }
+
+                                                    // Runs before the GPU suite: apart from six Integration/GPU/ROCM
+                                                    // tests it is host-only and finishes in seconds, so MLIR
+                                                    // regressions are reported early.
+                                                    if (runsCheckMlir(CODEPATH)) {
+                                                        stage('Upstream MLIR: check-mlir') {
+                                                            int limit_lit_workers = setLitWorkerCount()
+                                                            timeout(time: 15, activity: true, unit: 'MINUTES') {
+                                                                dir('build') {
+                                                                    sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-mlir"
+                                                                }
+                                                            }
                                                         }
                                                     }
 
@@ -1268,7 +1300,7 @@ pipeline {
                                                             echo "Container environment:"
                                                             showEnv()
 
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests("${CODEPATH}")
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                 sh 'cd build; ninja check-rocmlir'

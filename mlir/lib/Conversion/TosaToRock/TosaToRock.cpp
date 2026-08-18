@@ -366,11 +366,7 @@ static LogicalResult setSplitKAttrs(OpT op,
       Type elementType =
           cast<ShapedType>(returnOp->getOperand(resNumber).getType())
               .getElementType();
-      if (!isa<Float32Type, Float16Type, BFloat16Type>(elementType)) {
-        return rw.notifyMatchFailure(
-            op, "We only support F32, F16 and BF16 split-k, yet.");
-      }
-      Attribute outputInitVal = rw.getFloatAttr(elementType, 0.0);
+      Attribute outputInitVal = rw.getZeroAttr(elementType);
       func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                          outputInitVal);
     }
@@ -3435,11 +3431,7 @@ public:
                                 ConversionPatternRewriter &rw) const final {
     Type elementType =
         cast<ShapedType>(op.getInput().getType()).getElementType();
-    if (!isa<Float32Type, Float16Type, BFloat16Type>(elementType)) {
-      return rw.notifyMatchFailure(
-          op, "We only support F32, F16 and BF16 reductions, yet.");
-    }
-    Attribute outputInitVal = rw.getFloatAttr(elementType, 0.0000);
+    Attribute outputInitVal = rw.getZeroAttr(elementType);
     return matchAndRewriteReductions(op, rock::ReduceMethod::Sum, outputInitVal,
                                      rw);
   }
@@ -3459,7 +3451,7 @@ public:
       outputInitVal = rw.getFloatAttr(
           elementType, APFloat::getInf(APFloat::IEEEsingle(), true));
     } else {
-      return rw.notifyMatchFailure(op, "We only support F32 reductions, yet.");
+      return rw.notifyMatchFailure(op, "We only support F32 reduce-max.");
     }
     return matchAndRewriteReductions(op, rock::ReduceMethod::Max, outputInitVal,
                                      rw);
