@@ -56,24 +56,34 @@ class SplitKTuningKeyTest(unittest.TestCase):
     def test_metadata_round_trips_for_all_problem_types(self):
         for config_class, raw in SAMPLES:
             with self.subTest(config_class=config_class.__name__):
-                canonical = canonicalize_config(f"{raw} -supportsSplitK true", config_class, ARCH,
-                                                NUM_CU, NUM_CHIPLETS)
+                supports_split_k = config_class is not AttentionConfiguration
+                canonical = canonicalize_config(
+                    f"{raw} -supportsSplitK {str(supports_split_k).lower()}", config_class, ARCH,
+                    NUM_CU, NUM_CHIPLETS)
                 config = config_class.from_command_line(canonical.split(), ARCH, NUM_CU,
                                                         NUM_CHIPLETS)
 
-                self.assertTrue(config.supports_split_k)
-                self.assertTrue(canonical.endswith("-supportsSplitK true"))
+                self.assertEqual(config.supports_split_k, supports_split_k)
+                self.assertTrue(
+                    canonical.endswith(f"-supportsSplitK {str(supports_split_k).lower()}"))
                 self.assertEqual(
                     canonicalize_config(canonical, config_class, ARCH, NUM_CU, NUM_CHIPLETS),
                     canonical)
                 self.assertNotIn("-supportsSplitK",
                                  config.generate_mlir_driver_commandline("", kernel_repeats=None))
 
-    def test_missing_metadata_defaults_to_split_k_support(self):
+    def test_missing_metadata_defaults_to_operation_split_k_support(self):
         for config_class, raw in SAMPLES:
             with self.subTest(config_class=config_class.__name__):
                 canonical = canonicalize_config(raw, config_class, ARCH, NUM_CU, NUM_CHIPLETS)
-                self.assertTrue(canonical.endswith("-supportsSplitK true"))
+                expected = "false" if config_class is AttentionConfiguration else "true"
+                self.assertTrue(canonical.endswith(f"-supportsSplitK {expected}"))
+
+    def test_attention_rejects_split_k_support(self):
+        raw = SAMPLES[-1][1]
+        with self.assertRaisesRegex(AssertionError, "attention does not support split-K"):
+            AttentionConfiguration.from_command_line(f"{raw} -supportsSplitK true".split(), ARCH,
+                                                     NUM_CU, NUM_CHIPLETS)
 
     def test_i8_base_key_defaults_to_split_k_support(self):
         raw = ("-t i8 -out_datatype i32 -transA false -transB false -transO false "
@@ -108,6 +118,16 @@ class SplitKTuningKeyTest(unittest.TestCase):
                                                     NUM_CU, NUM_CHIPLETS)
         self.assertIsNone(
             lookup_tuning_db(tuning_db, ARCH, no_split_k, no_split_k.to_command_line()))
+
+    def test_legacy_attention_key_matches_no_split_k_default(self):
+        config_class, raw = SAMPLES[-1]
+        config = config_class.from_command_line(raw.split(), ARCH, NUM_CU, NUM_CHIPLETS)
+        legacy_key = config.to_command_line().replace(" -supportsSplitK false", "")
+        tuning_db = {(ARCH, legacy_key): "perf_config"}
+
+        self.assertFalse(config.supports_split_k)
+        self.assertEqual(lookup_tuning_db(tuning_db, ARCH, config, config.to_command_line()),
+                         "perf_config")
 
     def test_fusion_lookup_falls_back_to_split_k_capable_base_key(self):
         config_class, raw = SAMPLES[1]

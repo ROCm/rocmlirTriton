@@ -393,12 +393,14 @@ def read_tuning_db(path: str,
         return None
 
 
-def extract_tuning_key_metadata(argv: list) -> Tuple[list, bool]:
+def extract_tuning_key_metadata(argv: list,
+                                default_supports_split_k: bool = True) -> Tuple[list, bool]:
     """Extract problem identity metadata that is not a rocmlir-gen option."""
     filtered = []
-    # Config files describe unfused generated kernels, which support split-K.
+    # Most config files describe unfused generated kernels, which support
+    # split-K. Attention overrides this default because it uses splitKV instead.
     # Emitted fusion tuning keys carry an explicit false value when needed.
-    supports_split_k = True
+    supports_split_k = default_supports_split_k
     i = 0
     while i < len(argv):
         if argv[i] == '-supportsSplitK':
@@ -836,10 +838,31 @@ class ConvConfiguration(PerfConfiguration):
                 continue
 
         # MIOpen only supports symmetric padding; replicate to both sides.
-        config = cls(datatype, direction, filter_layout, input_layout, output_layout, n, c, hi, wi,
-                     k, y, x, conv_stride_h, conv_stride_w, padding_h, padding_h, padding_w,
-                     padding_w, dilation_h, dilation_w, group, arch, num_cu, num_chiplets)
-        config.supports_split_k = supports_split_k
+        config = cls(datatype,
+                     direction,
+                     filter_layout,
+                     input_layout,
+                     output_layout,
+                     n,
+                     c,
+                     hi,
+                     wi,
+                     k,
+                     y,
+                     x,
+                     conv_stride_h,
+                     conv_stride_w,
+                     padding_h,
+                     padding_h,
+                     padding_w,
+                     padding_w,
+                     dilation_h,
+                     dilation_w,
+                     group,
+                     arch,
+                     num_cu,
+                     num_chiplets,
+                     supports_split_k=supports_split_k)
         return config
 
     def to_command_line(self):
@@ -882,7 +905,8 @@ class ConvConfiguration(PerfConfiguration):
                  arch: str,
                  num_cu: int,
                  num_chiplets: int,
-                 perf_config: str = ''):
+                 perf_config: str = '',
+                 supports_split_k: bool = True):
         if dtype not in DATA_TYPES_CONV:
             raise ValueError(f"Invalid datatype: {dtype}")
         if direction not in {"fwd", "bwd"}:
@@ -929,6 +953,7 @@ class ConvConfiguration(PerfConfiguration):
                               (self.x - 1) * self.dilation_w - 1) / self.conv_stride_w) + 1
 
         self.perfconfig = perf_config
+        self.supports_split_k = supports_split_k
 
     @classmethod
     def benchmark_external(cls, commandline, paths: Paths, arch, num_cu, num_chiplets):
@@ -1336,10 +1361,25 @@ class GemmConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete GEMM configuration")
 
-        config = cls(dtype, out_dtype, g, m, k, n, trans_a, trans_b, trans_o, scaled_gemm,
-                     scale_a_dtype, scale_b_dtype, trans_scale_a, trans_scale_b, arch, num_cu,
-                     num_chiplets, perf_config)
-        config.supports_split_k = supports_split_k
+        config = cls(dtype,
+                     out_dtype,
+                     g,
+                     m,
+                     k,
+                     n,
+                     trans_a,
+                     trans_b,
+                     trans_o,
+                     scaled_gemm,
+                     scale_a_dtype,
+                     scale_b_dtype,
+                     trans_scale_a,
+                     trans_scale_b,
+                     arch,
+                     num_cu,
+                     num_chiplets,
+                     perf_config,
+                     supports_split_k=supports_split_k)
         return config
 
     def to_command_line(self):
@@ -1377,7 +1417,8 @@ class GemmConfiguration(PerfConfiguration):
                  arch: str = '',
                  num_cu: int = 0,
                  num_chiplets: int = 0,
-                 perf_config: str = ''):
+                 perf_config: str = '',
+                 supports_split_k: bool = True):
         if dtype not in DATA_TYPES_GEMM:
             raise ValueError(f"Invalid datatype: {dtype}")
 
@@ -1408,6 +1449,7 @@ class GemmConfiguration(PerfConfiguration):
         self.chip = GFX_CHIP_RE.search(arch).group(0)
         self.num_cu = num_cu
         self.num_chiplets = num_chiplets
+        self.supports_split_k = supports_split_k
 
 
 class ConvGemmConfiguration(PerfConfiguration):
@@ -1437,7 +1479,8 @@ class ConvGemmConfiguration(PerfConfiguration):
                  arch: str,
                  num_cu: int,
                  num_chiplets: int,
-                 perf_config: str = ''):
+                 perf_config: str = '',
+                 supports_split_k: bool = True):
         if dtype not in DATA_TYPES_CONV_GEMM:
             raise ValueError(f"Invalid datatype for a: {dtype}")
 
@@ -1470,6 +1513,7 @@ class ConvGemmConfiguration(PerfConfiguration):
         self.num_cu = num_cu
         self.num_chiplets = num_chiplets
         self.perfconfig = perf_config
+        self.supports_split_k = supports_split_k
 
         self.ho = math.floor((self.hi + self.padding_h * 2 -
                               (self.y - 1) * self.dilation_h - 1) / self.conv_stride_h) + 1
@@ -1612,10 +1656,31 @@ class ConvGemmConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete conv+gemm configuration")
 
-        config = cls(dtype, filter_layout, input_layout, trans_c, trans_o, n, c, hi, wi, k, y, x, o,
-                     conv_stride_h, conv_stride_w, padding_h, padding_w, dilation_h, dilation_w,
-                     group, arch, num_cu, num_chiplets, perf_config)
-        config.supports_split_k = supports_split_k
+        config = cls(dtype,
+                     filter_layout,
+                     input_layout,
+                     trans_c,
+                     trans_o,
+                     n,
+                     c,
+                     hi,
+                     wi,
+                     k,
+                     y,
+                     x,
+                     o,
+                     conv_stride_h,
+                     conv_stride_w,
+                     padding_h,
+                     padding_w,
+                     dilation_h,
+                     dilation_w,
+                     group,
+                     arch,
+                     num_cu,
+                     num_chiplets,
+                     perf_config,
+                     supports_split_k=supports_split_k)
         return config
 
     def to_command_line(self):
@@ -1647,7 +1712,8 @@ class GemmGemmConfiguration(PerfConfiguration):
                  arch: str,
                  num_cu: int,
                  num_chiplets: int,
-                 perf_config: str = ''):
+                 perf_config: str = '',
+                 supports_split_k: bool = True):
         if dtype not in DATA_TYPES_GEMM_GEMM:
             raise ValueError(f"Invalid datatype for a: {dtype}")
 
@@ -1667,6 +1733,7 @@ class GemmGemmConfiguration(PerfConfiguration):
         self.num_cu = num_cu
         self.num_chiplets = num_chiplets
         self.perfconfig = perf_config
+        self.supports_split_k = supports_split_k
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -1761,9 +1828,21 @@ class GemmGemmConfiguration(PerfConfiguration):
             if v is None:
                 raise ValueError("Incomplete gemm+gemm configuration")
 
-        config = cls(dtype, g, m, k, n, o, trans_a, trans_b, trans_c, trans_o, arch, num_cu,
-                     num_chiplets, perf_config)
-        config.supports_split_k = supports_split_k
+        config = cls(dtype,
+                     g,
+                     m,
+                     k,
+                     n,
+                     o,
+                     trans_a,
+                     trans_b,
+                     trans_c,
+                     trans_o,
+                     arch,
+                     num_cu,
+                     num_chiplets,
+                     perf_config,
+                     supports_split_k=supports_split_k)
         return config
 
     def to_command_line(self):
@@ -1803,7 +1882,8 @@ class AttentionConfiguration(PerfConfiguration):
                  perf_config: str = '',
                  last_valid_kv_index: Optional[List[int]] = None,
                  trans_bias: bool = False,
-                 sliding_window_look_back: Optional[int] = None):
+                 sliding_window_look_back: Optional[int] = None,
+                 supports_split_k: bool = False):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
         if trans_bias and not with_attn_bias:
@@ -1821,6 +1901,7 @@ class AttentionConfiguration(PerfConfiguration):
                 raise ValueError("sliding_window_look_back must be positive or -1")
             if sliding_window_look_back > seq_len_k - 1:
                 raise ValueError("sliding_window_look_back must not exceed seq_len_k - 1")
+        assert not supports_split_k, "attention does not support split-K"
 
         self.datatype = dtype
         self.g = g
@@ -1856,6 +1937,7 @@ class AttentionConfiguration(PerfConfiguration):
         self.num_cu = num_cu
         self.num_chiplets = num_chiplets
         self.perfconfig = perf_config
+        self.supports_split_k = supports_split_k
 
     def compute_tflops(self, ns, only_matmul_flops=True):
         # NaN will propagate as expected
@@ -1930,7 +2012,7 @@ class AttentionConfiguration(PerfConfiguration):
 
     @classmethod
     def from_command_line(cls, argv, arch, num_cu, num_chiplets):
-        argv, supports_split_k = extract_tuning_key_metadata(argv)
+        argv, supports_split_k = extract_tuning_key_metadata(argv, default_supports_split_k=False)
         # optional defaults
         perf_config = ''
         dtype = None
@@ -2035,8 +2117,8 @@ class AttentionConfiguration(PerfConfiguration):
                      perf_config,
                      last_valid_kv_index=last_valid_kv_index,
                      trans_bias=trans_bias,
-                     sliding_window_look_back=sliding_window_look_back)
-        config.supports_split_k = supports_split_k
+                     sliding_window_look_back=sliding_window_look_back,
+                     supports_split_k=supports_split_k)
         return config
 
     def to_command_line(self):
@@ -2252,8 +2334,9 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
 
     Tuning keys gained split-K support metadata and optional attention flags
     over time. Legacy rows without split-K metadata describe unfused generated
-    kernels, so they are equivalent to ``supportsSplitK true``. Missing
-    false-valued attention flags are also identity cases.
+    kernels, so they are equivalent to ``supportsSplitK true`` except for
+    attention, which never supports perf-config split-K. Missing false-valued
+    attention flags are also identity cases.
     """
     if not tuning_db:
         return None
@@ -2262,8 +2345,9 @@ def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfigurat
         return tuning_db[arch, config_str]
 
     candidate_config_strs = [config_str]
-    if config.supports_split_k:
-        legacy_split_k_key = config_str.replace(" -supportsSplitK true", "")
+    if config.supports_split_k or isinstance(config, AttentionConfiguration):
+        split_k_value = str(config.supports_split_k).lower()
+        legacy_split_k_key = config_str.replace(f" -supportsSplitK {split_k_value}", "")
         candidate_config_strs.append(legacy_split_k_key)
         if (arch, legacy_split_k_key) in tuning_db:
             return tuning_db[arch, legacy_split_k_key]
