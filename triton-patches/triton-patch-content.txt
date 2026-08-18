@@ -13,6 +13,7 @@ patch-buffer-atomics.patch
 patch-gfx1170.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
+patch11295.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
@@ -228,4 +229,21 @@ patch-optimize-epilogue-rock-metadata.patch
   and tri-state policy resolution live in rocMLIR's rock-add-triton-metadata
   pass; no Rock-specific performance model remains in the vendored Triton
   implementation.
+
+patch11295.patch
+  Fixes a GFX9 direct-to-LDS miscompile that faults at runtime. The lowering
+  implements a swizzled shared encoding as a within-warp lane shuffle to
+  `laneId + swizzleLaneOffset`, assuming that lands in [0, warpSize), but a
+  wide operand swizzle can have a reach of `vec * maxPhase` larger than the
+  lanes covering the swizzled dimension, so the shuffle crosses the warp
+  boundary and issues an out-of-bounds global read.
+  Once a load passes final async-copy eligibility, createStreamOps halves the
+  candidate encoding's maxPhase until the shuffle is provably in-warp, and
+  keeps the clamp only if the load remains async-copy eligible afterward.
+  This keeps the direct-to-LDS fast path with its vectorization intact at the
+  cost of some bank-conflict avoidance, while ineligible stream copies retain
+  their original encoding.
+
+  Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
+  the pinned Triton revision includes that change.
 
