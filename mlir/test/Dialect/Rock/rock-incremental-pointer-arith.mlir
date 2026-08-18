@@ -463,7 +463,7 @@ func.func @carry_conv2d_input_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor
 // @carry_conv2d_input_rank_redundant where the non-impacting channel is a
 // dropped prefix.
 //
-// Consequences of the no-prefix path (see emitFullTileCarry):
+// Consequences of the no-prefix path (see emitCarryStep):
 //   - the most-significant carried coordinate (tap0) is the global top of the
 //     merge, so the loop upper bound keeps it in range and it is NEVER wrapped
 //     (no compare/select emitted for it); it only advances via the carry
