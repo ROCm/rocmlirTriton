@@ -4,12 +4,12 @@
 // A reduction fused into a GEMM arrives here as a Broadcast on the store
 // destination plus an atomic_add store, because that is what rock-lower-reduce
 // emits. When a whole tile axis maps to one address, the pass sums that axis in
-// registers and pins the matching destination dimension to zero, so one atomic
-// replaces a tile axis worth of them.
+// a blockwise reduction and pins the matching destination dimension to zero, so
+// one atomic replaces a tile axis worth of them.
 
 // RUN: rocmlir-opt -split-input-file -rock-lower-stores -canonicalize -mlir-print-local-scope %s | FileCheck %s
 
-// A tile axis that the destination broadcasts away is summed in registers and
+// A tile axis that the destination broadcasts away is reduced blockwise and
 // pinned to zero in the destination view.
 // CHECK-LABEL: @reduce_broadcast_axis
 // CHECK-SAME: (%[[TILE:.*]]: tensor<64x256xf32>, %[[OUT:.*]]: tensor<64xf32>)
@@ -68,7 +68,7 @@ func.func @reduce_largest_invariant_axis(%tile: tensor<64x256xf32>, %out: tensor
 
 // CHECK-LABEL: @reduce_fused_gemm_reduction
 //      CHECK: %[[RED:.*]] = rock.blockwise_reduce sum %{{.*}} {axis = 1 : index} : tensor<64x256xf32> -> tensor<64xf32>
-//      CHECK: %[[PINNED:.*]] = rock.transform %{{.*}} by <affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3, 0)> by [<PassThrough ["dim0", "dim1", "dim2", "dim3"] at [0, 1, 2, 3] -> ["dim0", "dim1", "dim2", "dim3"] at [0, 1, 2, 3]>, <ConstDim{0, 256} [] at [] -> ["dim4"] at [4]>] bounds = [1, 5, 128, 64] -> [1, 5, 128, 64, 256]> : tensor<1x5x128x64x256xf32> to tensor<1x5x128x64xf32>
+//      CHECK: %[[PINNED:.*]] = rock.transform %{{.*}} by <affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3, 0)> by [<PassThrough ["g_block", "m_block", "n_block", "m_iter"] at [0, 1, 2, 3] -> ["g_block", "m_block", "n_block", "m_iter"] at [0, 1, 2, 3]>, <ConstDim{0, 256} [] at [] -> ["n_iter"] at [4]>] bounds = [1, 5, 128, 64] -> [1, 5, 128, 64, 256]> : tensor<1x5x128x64x256xf32> to tensor<1x5x128x64xf32>
 //      CHECK: rock.blockwise_store %[[RED]] -> %[[PINNED]][%{{.*}}, %{{.*}}, %{{.*}}] by atomic_add : tensor<64xf32> -> tensor<1x5x128x64xf32> -> tensor<64xf32>
 func.func @reduce_fused_gemm_reduction(%tile: tensor<64x256xf32>, %out: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
   %c0 = arith.constant 0 : i32
@@ -95,6 +95,20 @@ func.func @no_reduce_when_address_varies(%tile: tensor<64x256xf32>, %out: tensor
   %0 = rock.transform %out by <affine_map<(d0, d1) -> (d0 * 256 + d1)> by [<Unmerge{64, 256} ["dim0", "dim1"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 256] -> [16384]> : tensor<16384xf32> to tensor<64x256xf32>
   %1 = rock.store %sm to %0 by atomic_add : tensor<64x256xf32> -> tensor<16384xf32> to tensor<64x256xf32>
   return %1 : tensor<16384xf32>
+}
+
+// -----
+
+// AddDim removes its coordinate from the destination address, but a unit source
+// axis has only one contributor and therefore needs no blockwise reduction.
+// CHECK-LABEL: @no_reduce_for_unit_add_dim
+//  CHECK-NOT: rock.blockwise_reduce
+//      CHECK: rock.blockwise_store %{{.*}} by atomic_add : tensor<64x1xf32> -> tensor<64x1xf32> -> tensor<64xf32>
+func.func @no_reduce_for_unit_add_dim(%tile: tensor<64x1xf32>, %out: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %sm = rock.store_marker %tile views [] : tensor<64x1xf32> -> tensor<64x1xf32>
+  %0 = rock.transform %out by <affine_map<(d0, d1) -> (d0)> by [<PassThrough ["row"] at [0] -> ["row"] at [0]>, <AddDim{1} ["unit"] at [1] -> [] at []>] bounds = [64, 1] -> [64]> : tensor<64xf32> to tensor<64x1xf32>
+  %1 = rock.store %sm to %0 by atomic_add : tensor<64x1xf32> -> tensor<64xf32> to tensor<64x1xf32>
+  return %1 : tensor<64xf32>
 }
 
 // -----

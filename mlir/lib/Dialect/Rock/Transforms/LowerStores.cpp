@@ -29,8 +29,8 @@
 // 3. Clones fusion ops to operate on tiles
 // 4. Combines StoreMarkerOp transforms with store destination transforms
 // 5. Creates BlockwiseStoreOp with the combined transform chain
-// 6. Reduces a whole tile axis in registers when the destination maps all of it
-//    to one address, so one atomic replaces a tile axis worth of them
+// 6. Blockwise-reduces a tile axis when all its elements map to one destination
+//    address, replacing its per-element atomic stores with one
 //
 // Example:
 //   Before:
@@ -68,9 +68,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 
@@ -207,14 +205,16 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
   assert(destDim >= 0 && destDim < static_cast<int64_t>(destShape.size()) &&
          "destDim must index the destination shape");
 
-  // Fill the name storage before taking any StringRef into it, so that growing
-  // the vector cannot invalidate the names handed to the builder.
-  SmallVector<SmallString<8>> nameStorage;
-  for (size_t i = 0, e = destShape.size(); i < e; ++i) {
-    SmallString<8> name;
-    ("dim" + Twine(i)).toVector(name);
-    nameStorage.push_back(name);
+  auto topTransform = dest.getDefiningOp<TransformOp>();
+  assert(topTransform && "expected transformed store destination");
+  SmallVector<StringRef> destNames(destShape.size());
+  for (TransformAttr transform : topTransform.getTransform().getOps()) {
+    for (auto [name, dim] : llvm::zip_equal(transform.getUpperNames(),
+                                            transform.getUpperDims()))
+      destNames[dim] = name;
   }
+  assert(llvm::none_of(destNames, [](StringRef name) { return name.empty(); }) &&
+         "expected a name for every destination dimension");
 
   SmallVector<StringRef> keptNames;
   SmallVector<uint32_t> keptDims;
@@ -222,7 +222,7 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
   for (auto [i, size] : llvm::enumerate(destShape)) {
     if (static_cast<int64_t>(i) == destDim)
       continue;
-    keptNames.push_back(nameStorage[i]);
+    keptNames.push_back(destNames[i]);
     keptDims.push_back(static_cast<uint32_t>(i));
     keptShape.push_back(size);
   }
@@ -230,23 +230,25 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
   TopDownTMBuilder view(b, keptNames, keptShape, loc);
   if (!keptNames.empty())
     view.passThrough(keptNames, keptDims, keptNames);
-  view.constDim(nameStorage[destDim], static_cast<uint32_t>(destDim),
+  view.constDim(destNames[destDim], static_cast<uint32_t>(destDim),
                 /*constantVal=*/0, /*lowerSize=*/destShape[destDim]);
   return TransformOp::create(b, loc, dest, view.get());
 }
 
-/// Rewrites `store` to reduce one tile axis in registers before storing, when
-/// that is provably equivalent to the per-element atomics it replaces.
+/// Rewrites `store` to blockwise-reduce one tile axis before storing, when that
+/// is provably equivalent to the per-element atomics it replaces.
+///
+/// Transform chains that affect validity are unsupported (currently nontrivial
+/// Pad and potentially invalid Embed transforms). Address invariance must also
+/// be proven by getLowerSubDimensions, which supports PassThrough, Slice, Merge,
+/// Unmerge, Broadcast, AddDim, and ConstDim. Pad and Embed are not modeled, and
+/// ambiguous merge boundaries are conservatively treated as address-dependent.
 static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   StoreMethod storeMethod = store.getStoreMethod();
+  // LowerReduce maps reduce_sum to atomic_add and reduce_max to atomic_max, so
+  // accepting only atomic_add limits this rewrite to sum reductions.
   if (storeMethod != StoreMethod::AtomicAdd)
     return;
-
-  ReduceMethod reduceMethod = storeMethod == StoreMethod::AtomicAdd
-                                  ? ReduceMethod::Sum
-                                  : ReduceMethod::Max;
-  assert(reduceMethod != ReduceMethod::Max &&
-         "atomic_max pre-reduction is not yet supported");
 
   auto srcType = cast<RankedTensorType>(store.getSource().getType());
   auto destType = cast<RankedTensorType>(store.getDest().getType());
@@ -273,9 +275,14 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   // `extraIndices.size() + a`.
   int64_t numExtra = store.getExtraIndices().size();
   int64_t largestAddressInvariantAxis = -1;
-  int64_t largestAddressInvariantExtent = 1;
+  int64_t largestAddressInvariantExtent = 0;
+
+  // Since validity-affecting transforms were rejected above, `extent` counts
+  // actual contributing source elements rather than padded lanes. It is the
+  // source tile-axis extent, not necessarily an underlying buffer dimension.
   for (auto [axis, extent] : llvm::enumerate(srcType.getShape())) {
-    if (extent <= largestAddressInvariantExtent)
+    // Unit axes need no reduction.
+    if (extent <= 1 || extent <= largestAddressInvariantExtent)
       continue;
     int64_t destDim = numExtra + static_cast<int64_t>(axis);
     if (!addressIsInvariantAlongDim(b, transformAttrs, destDim))
@@ -292,7 +299,7 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   Location loc = store.getLoc();
   Value reduced = BlockwiseReduceOp::create(
       b, loc, store.getSource(), b.getIndexAttr(largestAddressInvariantAxis),
-      b.getAttr<ReduceMethodAttr>(reduceMethod));
+      b.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
   Value pinnedDest = pinDimToZero(b, loc, store.getDest(),
                                   numExtra + largestAddressInvariantAxis);
   store.getSourceMutable().assign(reduced);
