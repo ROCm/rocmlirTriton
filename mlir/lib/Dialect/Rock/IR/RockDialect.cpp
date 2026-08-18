@@ -1783,21 +1783,22 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 // Validate sliding window constraints common to attention-like ops.
 static LogicalResult
 verifySlidingWindowConstraints(Operation *op,
-                               std::optional<int32_t> slidingWindowSize,
-                               Value currentSeqLen, int64_t maxSeqLen) {
-  if (!slidingWindowSize)
+                               std::optional<int32_t> slidingWindowLookBack,
+                               Value lastValidKVIndex, int64_t maxSeqLen) {
+  if (!slidingWindowLookBack)
     return success();
-  int32_t windowSize = static_cast<int32_t>(*slidingWindowSize);
+  int32_t windowSize = static_cast<int32_t>(*slidingWindowLookBack);
 
   if (windowSize <= 0)
-    return op->emitError("slidingWindowSize must be positive");
+    return op->emitError("slidingWindowLookBack must be positive");
 
-  if (!currentSeqLen)
-    return op->emitError("slidingWindowSize requires currentSeqLen to be set");
+  if (!lastValidKVIndex)
+    return op->emitError(
+        "slidingWindowLookBack requires lastValidKVIndex to be set");
 
   if (windowSize > maxSeqLen)
     return op->emitError(
-        "slidingWindowSize must not exceed max sequence length");
+        "slidingWindowLookBack must not exceed max sequence length");
 
   return success();
 }
@@ -1820,8 +1821,8 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError("Setting softmax type only works for attention.");
   }
 
-  if (!getEnableSoftmax() && getCurrentSeqLen())
-    return emitError("currentSeqLen only works for attention.");
+  if (!getEnableSoftmax() && getLastValidKVIndex())
+    return emitError("lastValidKVIndex only works for attention.");
 
   if (!getEnableSoftmax() && getPrefixOffset())
     return emitError("prefixOffset only works for attention.");
@@ -1829,8 +1830,8 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
-  if (!getEnableSoftmax() && getSlidingWindowSize())
-    return emitError("slidingWindowSize only works for attention.");
+  if (!getEnableSoftmax() && getSlidingWindowLookBack())
+    return emitError("slidingWindowLookBack only works for attention.");
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
@@ -1851,8 +1852,8 @@ LogicalResult GridwiseAttentionOp::verify() {
   int64_t maxSeqLen =
       getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
   if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowSize(),
-                                            getCurrentSeqLen(), maxSeqLen)))
+                                            getSlidingWindowLookBack(),
+                                            getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
   return success();
@@ -2060,7 +2061,7 @@ GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
 }
 
 static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
-                                              Value currentSeqLen, Value lse,
+                                              Value lastValidKVIndex, Value lse,
                                               int32_t numHeadsQ,
                                               int32_t numHeadsKV) {
   // number of heads for Q and K, V
@@ -2138,15 +2139,15 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     return op.emitError("Head dimensions do not match (V and Output)");
   }
 
-  // check currentSeqLen (KV Cache)
-  if (currentSeqLen) {
-    ShapedType seqLenType = cast<ShapedType>(currentSeqLen.getType());
+  // check lastValidKVIndex (KV Cache)
+  if (lastValidKVIndex) {
+    ShapedType seqLenType = cast<ShapedType>(lastValidKVIndex.getType());
     if (seqLenType.getShape().size() != 1) {
-      return op.emitError("Number of dimensions is not one (currentSeqLen)");
+      return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
     if (seqLenType.getShape()[0] != oBatchDim) {
       return op.emitError(
-          "Batch dimensions do not match (currentSeqLen and Output)");
+          "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
   }
 
@@ -2200,7 +2201,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 }
 
 LogicalResult GemmElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2279,7 +2280,7 @@ GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
 }
 
 LogicalResult ConvElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2346,11 +2347,11 @@ LogicalResult AttentionOp::verify() {
   // Max seq len is the key N dimension.
   int64_t maxSeqLen = getGemmGemmSize().n;
   if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowSize(),
-                                            getCurrentSeqLen(), maxSeqLen)))
+                                            getSlidingWindowLookBack(),
+                                            getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
-  return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
+  return verifyGemmPlusGemmLikeOp(*this, getLastValidKVIndex(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
 }
 

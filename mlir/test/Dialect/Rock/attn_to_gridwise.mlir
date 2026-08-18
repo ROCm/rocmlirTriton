@@ -55,14 +55,14 @@ func.func @rock_attention_tr_padded(%arg0: tensor<1x7x49xf32>, %arg1: tensor<1x7
 }
 
 // CHECK-LABEL: func.func @rock_attention_kvcache
-// CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>, %[[currentSeqLen:.*]]: tensor<1xi32>)
+// CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>, %[[lastValidKVIndex:.*]]: tensor<1xi32>)
 // CHECK-SAME: rock.block_size = 64 : i32, rock.grid_size = 32 : i32
 func.func @rock_attention_kvcache(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>, %arg4: tensor<1xi32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: %[[trQ:.*]] = rock.transform %[[q]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK: rock.gridwise_attention(%[[trQ]], %[[k]], %[[v]], %[[currentSeqLen]])
+  // CHECK: rock.gridwise_attention(%[[trQ]], %[[k]], %[[v]], %[[lastValidKVIndex]])
   %result = rock.attention{
     qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
-    currentSeqLen = (%arg4 : tensor<1xi32>)
+    lastValidKVIndex = (%arg4 : tensor<1xi32>)
     softmax(qk) * %arg2 : tensor<1x1024x64xf32>
   } {
     params0 = #xldops_attn_params_g0,

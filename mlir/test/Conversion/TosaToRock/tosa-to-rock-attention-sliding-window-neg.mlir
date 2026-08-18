@@ -2,13 +2,13 @@
 // RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-2147483648>/dense<3>/' %s | rocmlir-opt --tosa-to-rock -split-input-file -verify-diagnostics -o -| FileCheck %s --check-prefix=NEGATIVE
 
 // Edge case 1: a sliding-window-shaped lower mask WITHOUT a separate KV-cache
-// upper mask. Folding this as sliding-window attention would set currentSeqLen
+// upper mask. Folding this as sliding-window attention would set lastValidKVIndex
 // and introduce a new upper mask for keys after that position. Keep the lower
 // mask in the elementwise region instead.
 // CHECK-LABEL: func @sliding_window_no_kvcache
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen
-// CHECK-NOT: slidingWindowSize
+// CHECK-NOT: lastValidKVIndex
+// CHECK-NOT: slidingWindowLookBack
 // CHECK: qk = elementwise
 // CHECK: tosa.maximum
 // CHECK: tosa.minimum
@@ -69,14 +69,14 @@ func.func @sliding_window_no_kvcache(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>
 // -----
 
 // Edge case 2: a mask shaped like greater(x - window, col) where the
-// subtracted-from operand `x` is a constant, NOT the currentSeqLen block
+// subtracted-from operand `x` is a constant, NOT the lastValidKVIndex block
 // argument. The matcher must NOT classify this as sliding-window attention.
 // The KV-cache mask is still detected, so a rock.attention is produced with
-// currentSeqLen but without slidingWindowSize.
+// lastValidKVIndex but without slidingWindowLookBack.
 // CHECK-LABEL: func @not_sliding_window_wrong_operand
 // CHECK: rock.attention
-// CHECK: currentSeqLen =
-// CHECK-NOT: slidingWindowSize
+// CHECK: lastValidKVIndex =
+// CHECK-NOT: slidingWindowLookBack
 func.func @not_sliding_window_wrong_operand(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %4 = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x1x8xf32>}> : () -> tensor<1x2x1x8xf32>
@@ -102,7 +102,7 @@ func.func @not_sliding_window_wrong_operand(%arg0: tensor<1xi32>, %arg1: tensor<
   %26 = tosa.matmul %collapsed, %collapsed_2, %11, %11 {acc_type = f32} : (tensor<2x1x2xf16>, tensor<2x2x8xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<2x1x8xf16>
   %expanded_3 = tensor.expand_shape %26 [[0, 1], [2], [3]] output_shape [1, 2, 1, 8] : tensor<2x1x8xf16> into tensor<1x2x1x8xf16>
   %27 = tosa.mul %expanded_3, %8, %17 : (tensor<1x2x1x8xf16>, tensor<1x2x1x8xf16>, tensor<1xi8>) -> tensor<1x2x1x8xf16>
-  // Subtract the window size from a constant (%0), not from currentSeqLen.
+  // Subtract the window size from a constant (%0), not from lastValidKVIndex.
   %28 = tosa.add %0, %16 : (tensor<1x1x1x1xi32>, tensor<1x1x1x1xi32>) -> tensor<1x1x1x1xi32>
   %29 = tosa.mul %28, %7, %17 : (tensor<1x1x1x1xi32>, tensor<8x1x1x1xi32>, tensor<1xi8>) -> tensor<8x1x1x1xi32>
   %collapsed_4 = tensor.collapse_shape %29 [[0, 1, 2, 3]] : tensor<8x1x1x1xi32> into tensor<8xi32>
@@ -142,17 +142,17 @@ func.func @not_sliding_window_wrong_operand(%arg0: tensor<1xi32>, %arg1: tensor<
 // -----
 
 // Edge case 4: an outer sliding-window mask and an inner KV-cache mask that
-// reference the *same* currentSeqLen block argument (%arg0) but clamp it to
+// reference the *same* lastValidKVIndex block argument (%arg0) but clamp it to
 // *different* ranges: the KV-cache mask uses min(max(x, 4), 4) while the
 // sliding-window mask uses min(max(x, 2), 2). sameSeqLenBlockArg only matches
 // the underlying block argument (it skips through the clip min/max), so without
 // an explicit clip comparison the divergent sliding-window clip would be
-// silently dropped. A single folded currentSeqLen carries one clip and cannot
+// silently dropped. A single folded lastValidKVIndex carries one clip and cannot
 // reproduce both clamp ranges, so the pass must refuse to fold them.
 // CHECK-LABEL: func @sliding_window_kvcache_mismatched_clip
 // CHECK: rock.attention
-// CHECK-NOT: slidingWindowSize
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: slidingWindowLookBack
+// CHECK-NOT: lastValidKVIndex
 func.func @sliding_window_kvcache_mismatched_clip(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %2 = "tosa.const"() <{values = dense<2> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
@@ -227,13 +227,13 @@ func.func @sliding_window_kvcache_mismatched_clip(%arg0: tensor<1xi32>, %arg1: t
 // mask over a *different* i32 block argument %arg4. Because the sliding window
 // is peeled before the KV-cache mask, the seq-len operands must still be
 // reconciled: they disagree (%arg0 vs %arg4), so the two masks cannot be folded
-// into a single rock.attention with one currentSeqLen. The pass must refuse to
+// into a single rock.attention with one lastValidKVIndex. The pass must refuse to
 // fold them (and instead keep both masks explicit) rather than silently
 // applying the sliding window relative to the KV-cache seq-len.
 // CHECK-LABEL: func @sliding_window_kvcache_mismatched_seqlen
 // CHECK: rock.attention
-// CHECK-NOT: slidingWindowSize
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: slidingWindowLookBack
+// CHECK-NOT: lastValidKVIndex
 func.func @sliding_window_kvcache_mismatched_seqlen(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>, %arg4: tensor<1xi32>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %4 = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x1x8xf32>}> : () -> tensor<1x2x1x8xf32>
@@ -303,21 +303,21 @@ func.func @sliding_window_kvcache_mismatched_seqlen(%arg0: tensor<1xi32>, %arg1:
 // -----
 
 // Edge case 5: negating the minimum i32 offset produces a window size that
-// cannot be represented by the i32 slidingWindowSize attribute. Keep the
+// cannot be represented by the i32 slidingWindowLookBack attribute. Keep the
 // sliding-window mask explicit while still folding the valid KV-cache mask.
 // CHECK-LABEL: func @sliding_window_offset_overflow
 // CHECK: rock.attention
-// CHECK: currentSeqLen =
-// CHECK-NOT: slidingWindowSize
+// CHECK: lastValidKVIndex =
+// CHECK-NOT: slidingWindowLookBack
 // CHECK: qk = elementwise
 // CHECK: tosa.add
 // CHECK: tosa.select
 // A positive offset represents a negative window size. It must also remain
-// explicit rather than becoming an invalid slidingWindowSize attribute.
+// explicit rather than becoming an invalid slidingWindowLookBack attribute.
 // NEGATIVE-LABEL: func @sliding_window_offset_overflow
 // NEGATIVE: rock.attention
-// NEGATIVE: currentSeqLen =
-// NEGATIVE-NOT: slidingWindowSize
+// NEGATIVE: lastValidKVIndex =
+// NEGATIVE-NOT: slidingWindowLookBack
 // NEGATIVE: qk = elementwise
 // NEGATIVE: tosa.add
 // NEGATIVE: tosa.select

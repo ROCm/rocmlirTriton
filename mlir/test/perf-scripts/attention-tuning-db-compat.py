@@ -91,15 +91,15 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         write_tuning_db(path, legacy_key)
         return lookup_tuning_db(read_tuning_db(str(path)), ARCH, config, config.to_command_line())
 
-    def test_current_seq_len_is_runtime_only(self):
-        """current_seq_len reaches rocmlir-gen without changing tuning identity."""
+    def test_last_valid_kv_index_is_runtime_only(self):
+        """last_valid_kv_index reaches rocmlir-gen without changing tuning identity."""
         config = make_config("-with-attn-scale false -with-attn-bias false -transBias false")
-        config.current_seqlen = [4]
+        config.last_valid_kv_index = [4]
 
-        self.assertNotIn("-current_seq_len", config.to_command_line())
+        self.assertNotIn("-last_valid_kv_index", config.to_command_line())
 
         gen_args = config.generate_mlir_driver_commandline("", kernel_repeats=None).split()
-        self.assertEqual(gen_args.count("-current_seq_len=4"), 1)
+        self.assertEqual(gen_args.count("-last_valid_kv_index=4"), 1)
 
     def test_perf_runner_matches_legacy_all_false_attention_flags(self):
         """Old DB rows may omit all false-valued attention flags."""
@@ -147,7 +147,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
     def test_perf_runner_keeps_sliding_window_distinct(self):
         """A sliding-window kernel must not fall back to a row that lacks it.
 
-        Unlike the boolean flags, sliding_window_size is only present in the key
+        Unlike the boolean flags, sliding_window_look_back is only present in the key
         when > 0, so its distinctness relies on the key string, not on the
         false-flag stripping in lookup_tuning_db.
         """
@@ -158,9 +158,10 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
                                           " -transBias false")
 
         sliding_window_config = make_config(
-            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+            "-sliding_window_look_back 8 -with-attn-scale false -with-attn-bias false -transBias false"
+        )
 
-        self.assertIn("-sliding_window_size 8", sliding_window_config.to_command_line())
+        self.assertIn("-sliding_window_look_back 8", sliding_window_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(sliding_window_config, legacy_all_false_key))
 
     def test_perf_runner_matches_pre_transbias_sliding_window_key(self):
@@ -168,18 +169,19 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
 
         Exercises the reconciled columns together: stripping the false-valued
         transBias flag to reach a legacy row must not disturb the
-        sliding_window_size column that sits earlier in the key.
+        sliding_window_look_back column that sits earlier in the key.
         """
         current_config = make_config(
-            "-sliding_window_size 8 -with-attn-scale false -with-attn-bias false -transBias false")
+            "-sliding_window_look_back 8 -with-attn-scale false -with-attn-bias false -transBias false"
+        )
         legacy_key = drop_flags(current_config.to_command_line(), " -transBias false")
 
-        self.assertIn("-sliding_window_size 8", legacy_key)
+        self.assertIn("-sliding_window_look_back 8", legacy_key)
         self.assertNotIn("-transBias", legacy_key)
         self.assertEqual(self.lookup_from_legacy_key(current_config, legacy_key), PERFCONFIG)
 
     def test_quick_tuning_gen_defaults_missing_optional_columns(self):
-        """Legacy debug TSV rows without TransBias/SlidingWindowSize get defaults."""
+        """Legacy debug TSV rows without TransBias/SlidingWindowLookBack get defaults."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
         debug_path.write_text(
             "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
@@ -191,17 +193,17 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         df = load_data([str(debug_path)], no_splitk=False)
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
-        self.assertIn("SlidingWindowSize", df.columns)
-        self.assertTrue(df["SlidingWindowSize"].eq(0).all())
+        self.assertIn("SlidingWindowLookBack", df.columns)
+        self.assertTrue(df["SlidingWindowLookBack"].eq(0).all())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()
         self.assertFalse(grouped.empty)
 
     def test_quick_tuning_gen_fills_optional_columns_when_mixing_files(self):
-        """Mixing TSVs must not drop rows without SlidingWindowSize.
+        """Mixing TSVs must not drop rows without SlidingWindowLookBack.
 
-        pd.concat keeps the SlidingWindowSize column from the newer file and
+        pd.concat keeps the SlidingWindowLookBack column from the newer file and
         fills the legacy row with NaN. Since groupby drops NaN keys by default,
         that row would silently disappear unless the NaN is backfilled to the
         disabled default.
@@ -216,7 +218,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
             f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
             f"{PERFCONFIG}\t1.0\tFalse\n")
 
-        current_header = legacy_header.rstrip("\n") + "\tSlidingWindowSize\n"
+        current_header = legacy_header.rstrip("\n") + "\tSlidingWindowLookBack\n"
         current_path = Path(f"{self.tmp_prefix}.current.debug")
         current_path.write_text(
             current_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
@@ -224,7 +226,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
             f"{PERFCONFIG}\t1.0\tFalse\t0\n")
 
         df = load_data([str(legacy_path), str(current_path)], no_splitk=False)
-        self.assertFalse(df["SlidingWindowSize"].isna().any())
+        self.assertFalse(df["SlidingWindowLookBack"].isna().any())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()

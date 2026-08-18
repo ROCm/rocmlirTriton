@@ -301,13 +301,13 @@ func.func @rock_gridwise_attention_sliding_window(%q: tensor<1x384x64xf32>, %k: 
     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
     splitKV = 1 : i32,
-    slidingWindowSize = 128 : i32
+    slidingWindowLookBack = 128 : i32
   } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
   return %result : tensor<1x384x64xf32>
 }
 // CHECK-LABEL: func.func @rock_gridwise_attention_sliding_window
 // CHECK: rock.gridwise_attention
-// CHECK: slidingWindowSize = 128
+// CHECK: slidingWindowLookBack = 128
 
 func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
@@ -322,15 +322,15 @@ func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v
 func.func @rock_attention_sliding_window(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %csl: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
     qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-    currentSeqLen = (%csl : tensor<1xi32>)
+    lastValidKVIndex = (%csl : tensor<1xi32>)
     softmax(qk) * %v : tensor<1x384x64xf16>
-  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowSize = 128 : i32} -> tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 128 : i32} -> tensor<1x384x64xf16>
   return %result : tensor<1x384x64xf16>
 }
 // CHECK-LABEL: func.func @rock_attention_sliding_window
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%{{.*}} : tensor<1xi32>)
-// CHECK: slidingWindowSize = 128
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<1xi32>)
+// CHECK: slidingWindowLookBack = 128
 
 func.func @rock_reduce_sum(%in: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>

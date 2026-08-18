@@ -1,4 +1,4 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_SCALE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -last_valid_kv_index=33 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 --with-attn-scale -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_SCALE
 
 // CHECK_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
@@ -7,21 +7,21 @@
 // CHECK_SCALE-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
 // CHECK_SCALE-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
 // CHECK_SCALE-SAME: %[[scaleRaw:.*3]]: tensor<4194304xf32>,
-// CHECK_SCALE-SAME: %[[currentSeqLenRaw:.*4]]: tensor<1xi32>,
+// CHECK_SCALE-SAME: %[[lastValidKVIndexRaw:.*4]]: tensor<1xi32>,
 // CHECK_SCALE-SAME: %[[outputRaw:.*5]]: tensor<131072xf32>)
 // CHECK_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
 // CHECK_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
 // CHECK_SCALE-NEXT: %[[scale:.*]] = rock.transform %[[scaleRaw]] {{.*}} : tensor<4194304xf32> to tensor<4x1024x1024xf32>
-// CHECK_SCALE-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
-// CHECK_SCALE-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
-// CHECK_SCALE-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
-// CHECK_SCALE-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
+// CHECK_SCALE-NEXT: %[[lastValidKVIndex:.*]] = rock.transform %[[lastValidKVIndexRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK_SCALE-NEXT: %[[lastValidKVIndexAddDim:.*]] = rock.transform %[[lastValidKVIndex]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK_SCALE-NEXT: %[[lastValidKVIndexBroadcast:.*]] = rock.transform %[[lastValidKVIndexAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK_SCALE-NEXT: %[[lastValidKVIndexMerge:.*]] = rock.transform %[[lastValidKVIndexBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
 // CHECK_SCALE-NEXT: rock.attention
 // CHECK_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK_SCALE-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK_SCALE-NEXT: lastValidKVIndex = (%[[lastValidKVIndexMerge]] : tensor<4xi32>)
 // CHECK_SCALE-NEXT: qk = elementwise otherIns(%[[scale]]
 // CHECK_SCALE: softmax(qk) * %[[values]]
 // CHECK_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
@@ -80,7 +80,7 @@
 
 // ----
 
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_NO_SCALE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -last_valid_kv_index=33 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK_NO_SCALE
 
 // CHECK_NO_SCALE: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
@@ -88,20 +88,20 @@
 // CHECK_NO_SCALE-SAME: (%[[queriesRaw:.*0]]: tensor<131072xf32>,
 // CHECK_NO_SCALE-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
 // CHECK_NO_SCALE-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
-// CHECK_NO_SCALE-SAME: %[[currentSeqLenRaw:.*3]]: tensor<1xi32>,
+// CHECK_NO_SCALE-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK_NO_SCALE-SAME: %[[outputRaw:.*4]]: tensor<131072xf32>)
 // CHECK_NO_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
 // CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
-// CHECK_NO_SCALE-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
-// CHECK_NO_SCALE-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
-// CHECK_NO_SCALE-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
-// CHECK_NO_SCALE-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
+// CHECK_NO_SCALE-NEXT: %[[lastValidKVIndex:.*]] = rock.transform %[[lastValidKVIndexRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK_NO_SCALE-NEXT: %[[lastValidKVIndexAddDim:.*]] = rock.transform %[[lastValidKVIndex]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK_NO_SCALE-NEXT: %[[lastValidKVIndexBroadcast:.*]] = rock.transform %[[lastValidKVIndexAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK_NO_SCALE-NEXT: %[[lastValidKVIndexMerge:.*]] = rock.transform %[[lastValidKVIndexBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
 // CHECK_NO_SCALE-NEXT: rock.attention
 // CHECK_NO_SCALE-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK_NO_SCALE-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK_NO_SCALE-NEXT: lastValidKVIndex = (%[[lastValidKVIndexMerge]] : tensor<4xi32>)
 // CHECK_NO_SCALE: softmax(qk) * %[[values]]
 // CHECK_NO_SCALE-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK_NO_SCALE: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}

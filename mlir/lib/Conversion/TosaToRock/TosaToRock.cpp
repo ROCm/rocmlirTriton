@@ -1603,10 +1603,10 @@ struct AttentionMatcherValues {
   SoftmaxMatcherValues softmaxValues;
   Value lse;
   Value causalMaskInput;
-  Value currentSeqLen;
+  Value lastValidKVIndex;
   bool isCausal;
   Value prefixOffset;
-  std::optional<int64_t> slidingWindowSize;
+  std::optional<int64_t> slidingWindowLookBack;
   std::optional<int32_t> seqLenClipMin;
   std::optional<int32_t> seqLenClipMax;
   Type softmaxType;
@@ -1833,9 +1833,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
            isa<BlockArgument>(maybeBlockArg.value());
   }
 
-  // Returns true when both values resolve to the same currentSeqLen block
+  // Returns true when both values resolve to the same lastValidKVIndex block
   // argument after skipping reshape/broadcast ops. Used to confirm that a
-  // sliding-window mask references the same currentSeqLen as the KV-cache mask.
+  // sliding-window mask references the same lastValidKVIndex as the KV-cache
+  // mask.
   bool sameSeqLenBlockArg(Value a, Value b,
                           const DenseSet<StringRef> &seqLenSkip) const {
     FailureOr<Value> resolvedA = getValueSkipping(a, seqLenSkip);
@@ -1975,13 +1976,14 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     Value inputToContinue; // The value to continue pattern matching with
     Value seqLen;          // The sequence length
     Value prefixOffset;    // The prefix offset value
-    std::optional<int64_t> slidingWindowSize; // The sliding window size
-    // Clip bounds detected on currentSeqLen during KV-cache pattern matching.
+    std::optional<int64_t> slidingWindowLookBack; // The sliding window size
+    // Clip bounds detected on lastValidKVIndex during KV-cache pattern
+    // matching.
     std::optional<int32_t> seqLenClipMin;
     std::optional<int32_t> seqLenClipMax;
-    // The currentSeqLen block argument referenced by the sliding-window mask.
-    // Used to verify that the sliding-window and KV-cache masks have the same
-    // position operand.
+    // The lastValidKVIndex block argument referenced by the sliding-window
+    // mask. Used to verify that the sliding-window and KV-cache masks have the
+    // same position operand.
     Value slidingWindowSeqLen;
     // Clip bounds detected on the sliding-window seq-len operand.
     //
@@ -2111,8 +2113,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       unclippedInput = maybeMax->getInput2();
     }
 
-    // Rock lowers currentSeqLen masking with unsigned comparisons. A negative
-    // clip bound can therefore change the signed TOSA mask semantics.
+    // Rock lowers lastValidKVIndex masking with unsigned comparisons. A
+    // negative clip bound can therefore change the signed TOSA mask semantics.
     if (*clipMin < 0 || *clipMax < 0)
       return failure();
 
@@ -2139,7 +2141,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     KVCacheResult result;
     Value seqLenCandidate = *maybeNonOne;
-    // MIGraphX may broadcast currentSeqLen more than once, for example first
+    // MIGraphX may broadcast lastValidKVIndex more than once, for example first
     // across heads and then across the key sequence dimension. Peel all
     // broadcast-only multiplications before looking for a clip.
     while (true) {
@@ -2159,22 +2161,22 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // Resolve through the remaining reshape, transpose, and broadcast chain.
     // Returning the block argument lets addBroadcastForBlockArg reconstruct
     // the head broadcast after nested broadcasts have been peeled.
-    FailureOr<Value> maybeCurrentSeqLen =
+    FailureOr<Value> maybeLastValidKVIndex =
         getValueSkipping(seqLenCandidate, seqLenSkip);
-    if (failed(maybeCurrentSeqLen) ||
-        !isI32BlockArgument(*maybeCurrentSeqLen, seqLenSkip))
+    if (failed(maybeLastValidKVIndex) ||
+        !isI32BlockArgument(*maybeLastValidKVIndex, seqLenSkip))
       return failure();
 
-    result.seqLen = *maybeCurrentSeqLen;
+    result.seqLen = *maybeLastValidKVIndex;
     return result;
   }
 
   // Result of sliding-window pattern detection.
   struct SlidingWindowResult {
     int64_t windowSize;
-    // The currentSeqLen operand feeding (currentSeqLen - windowSize), resolved
-    // through reshape/clip ops so it can be matched against the KV-cache
-    // seq-len.
+    // The lastValidKVIndex operand feeding (lastValidKVIndex - windowSize),
+    // resolved through reshape/clip ops so it can be matched against the
+    // KV-cache seq-len.
     Value seqLen;
     // Clip bounds (min(max(x, lo), hi)) detected on the seq-len operand.
     // Carried so they can be compared with the KV-cache clip bounds.
@@ -2184,7 +2186,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
   // Helper to try detecting sliding window pattern:
   // greater(add(seqLen, negative_const_offset) * broadcast, col_indices)
-  // Returns the window size and the currentSeqLen operand if successful.
+  // Returns the window size and the lastValidKVIndex operand if successful.
   FailureOr<SlidingWindowResult>
   trySlidingWindowPattern(Value input,
                           const DenseSet<StringRef> &seqLenSkip) const {
@@ -2205,8 +2207,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     auto add = maybeAdd.value();
 
-    // One operand of the add is currentSeqLen (also tracked by KV-cache), the
-    // other is a negative constant (-windowSize). Try both operands.
+    // One operand of the add is lastValidKVIndex (also tracked by KV-cache),
+    // the other is a negative constant (-windowSize). Try both operands.
     Value seqLenOperand;
     auto tryExtractNegativeConst = [&](Value candidate,
                                        Value other) -> FailureOr<int64_t> {
@@ -2256,7 +2258,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       clipMax = maybeClip->clipMax;
     }
 
-    // Validate that the non-constant add operand is actually a currentSeqLen
+    // Validate that the non-constant add operand is actually a lastValidKVIndex
     // block argument. Without this, an unrelated greater(x - const, col) mask
     // would be misclassified as sliding-window attention.
     FailureOr<Value> maybeSeqLen =
@@ -2473,11 +2475,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       // done once, centrally, after all masks have been peeled. Doing it here
       // would miss the case where the sliding-window mask is seen before the
       // KV-cache mask.
-      if (!result.slidingWindowSize) {
+      if (!result.slidingWindowLookBack) {
         auto maybeSlidingWindow = trySlidingWindowPattern(input1, seqLenSkip);
         if (succeeded(maybeSlidingWindow)) {
           auto sw = maybeSlidingWindow.value();
-          result.slidingWindowSize = sw.windowSize;
+          result.slidingWindowLookBack = sw.windowSize;
           result.slidingWindowSeqLen = sw.seqLen;
           result.slidingWindowClipMin = sw.clipMin;
           result.slidingWindowClipMax = sw.clipMax;
@@ -2521,7 +2523,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // chained-select handling and supports all three masks being present.
     auto foundCount = [](const SeqLenMaskResult &r) {
       return (r.seqLen ? 1 : 0) + (r.prefixOffset ? 1 : 0) +
-             (r.slidingWindowSize.has_value() ? 1 : 0);
+             (r.slidingWindowLookBack.has_value() ? 1 : 0);
     };
     while (foundCount(currentResult) > 0 && foundCount(currentResult) < 3) {
       auto maybeChainedSelect =
@@ -2538,11 +2540,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       currentResult.inputToContinue = chainedSelect.getInput3();
     }
 
-    // Sliding window is defined relative to currentSeqLen and rock.attention
-    // requires currentSeqLen whenever a sliding window is set. Reconcile the
+    // Sliding window is defined relative to lastValidKVIndex and rock.attention
+    // requires lastValidKVIndex whenever a sliding window is set. Reconcile the
     // sliding-window seq-len with any KV-cache seq-len here, independent of the
     // order in which the two masks were peeled.
-    if (currentResult.slidingWindowSize) {
+    if (currentResult.slidingWindowLookBack) {
       // Sliding-window folding requires both the lower window bound and the
       // KV-cache upper bound represented by the attention op.
       if (!currentResult.seqLen)
@@ -2550,11 +2552,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
       // The sliding-window mask must reference the same seq-len block argument
       // as the KV-cache mask; otherwise the two masks disagree on the sequence
-      // length and cannot be folded into an op with one currentSeqLen.
+      // length and cannot be folded into an op with one lastValidKVIndex.
       if (!sameSeqLenBlockArg(currentResult.seqLen,
                               currentResult.slidingWindowSeqLen, seqLenSkip))
         return failure();
-      // Both masks must clamp currentSeqLen identically. sameSeqLenBlockArg
+      // Both masks must clamp lastValidKVIndex identically. sameSeqLenBlockArg
       // only matches the underlying block argument (it skips through the clip
       // min/max), so a divergent clip would otherwise be silently dropped.
       if (currentResult.seqLenClipMin != currentResult.slidingWindowClipMin ||
@@ -2564,7 +2566,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     // We need at least one pattern to be detected
     if (!currentResult.seqLen && !currentResult.prefixOffset &&
-        !currentResult.slidingWindowSize)
+        !currentResult.slidingWindowLookBack)
       return failure();
 
     return currentResult;
@@ -2785,25 +2787,25 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       op->moveAfter(expandedOutLse);
   }
 
-  // Broadcast a shared or per-batch currentSeqLen block argument shaped [1],
+  // Broadcast a shared or per-batch lastValidKVIndex block argument shaped [1],
   // [1, 1], [B], or [B, 1] across the query heads.
   FailureOr<Value> addBroadcastForBlockArg(PatternRewriter &rewriter,
-                                           Value currentSeqLen,
+                                           Value lastValidKVIndex,
                                            Value matrixQ) const {
-    // Exit early if there is no currentSeqLen (no kv-cache)
-    if (!currentSeqLen)
+    // Exit early if there is no lastValidKVIndex (no kv-cache)
+    if (!lastValidKVIndex)
       return failure();
 
-    if (!isa<BlockArgument>(currentSeqLen))
+    if (!isa<BlockArgument>(lastValidKVIndex))
       return failure();
 
-    auto currentSeqLenType =
-        dyn_cast<RankedTensorType>(currentSeqLen.getType());
-    if (!currentSeqLenType)
+    auto lastValidKVIndexType =
+        dyn_cast<RankedTensorType>(lastValidKVIndex.getType());
+    if (!lastValidKVIndexType)
       return failure();
-    ArrayRef<int64_t> currentSeqLenShape = currentSeqLenType.getShape();
-    if (currentSeqLenShape.size() != 1 &&
-        (currentSeqLenShape.size() != 2 || currentSeqLenShape[1] != 1))
+    ArrayRef<int64_t> lastValidKVIndexShape = lastValidKVIndexType.getShape();
+    if (lastValidKVIndexShape.size() != 1 &&
+        (lastValidKVIndexShape.size() != 2 || lastValidKVIndexShape[1] != 1))
       return failure();
 
     // Find the original shape of matrixQ (before reshaping) to get the batch
@@ -2828,18 +2830,18 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     int64_t batch = srcShape[0];
     int64_t numHeads = srcShape[1];
-    if (currentSeqLenShape[0] != 1 && currentSeqLenShape[0] != batch)
+    if (lastValidKVIndexShape[0] != 1 && lastValidKVIndexShape[0] != batch)
       return failure();
 
-    auto loc = currentSeqLen.getLoc();
-    Type elemTy = currentSeqLenType.getElementType();
-    Value expanded = currentSeqLen;
-    if (currentSeqLenShape.size() == 1) {
+    auto loc = lastValidKVIndex.getLoc();
+    Type elemTy = lastValidKVIndexType.getElementType();
+    Value expanded = lastValidKVIndex;
+    if (lastValidKVIndexShape.size() == 1) {
       auto expandedType =
-          RankedTensorType::get({currentSeqLenShape[0], 1}, elemTy);
+          RankedTensorType::get({lastValidKVIndexShape[0], 1}, elemTy);
       SmallVector<ReassociationIndices, 1> reassoc{{0, 1}};
       expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
-                                               currentSeqLen, reassoc);
+                                               lastValidKVIndex, reassoc);
     }
 
     // Create a tosa.const that is all ones in our desired shape of
@@ -3124,23 +3126,23 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // Detect sequence length masking patterns (KV-cache or prefix causal)
     // Note that non KV-Cache fusions might have tosa.select
     // so, if the checks fail, we just keep going
-    Value kvCacheInput, currentSeqLen, prefixOffset;
-    std::optional<int64_t> slidingWindowSize;
+    Value kvCacheInput, lastValidKVIndex, prefixOffset;
+    std::optional<int64_t> slidingWindowLookBack;
     std::optional<int32_t> seqLenClipMin, seqLenClipMax;
     auto maybeSeqLenMask = getSeqLenMask(softmaxInput);
     if (succeeded(maybeSeqLenMask)) {
       auto result = maybeSeqLenMask.value();
       kvCacheInput = result.inputToContinue;
-      currentSeqLen = result.seqLen;
+      lastValidKVIndex = result.seqLen;
       prefixOffset = result.prefixOffset;
-      slidingWindowSize = result.slidingWindowSize;
+      slidingWindowLookBack = result.slidingWindowLookBack;
       seqLenClipMin = result.seqLenClipMin;
       seqLenClipMax = result.seqLenClipMax;
     } else {
       kvCacheInput = softmaxInput;
     }
 
-    // currentSeqLen and prefixOffset need one or two dimensions
+    // lastValidKVIndex and prefixOffset need one or two dimensions
     auto hasInvalidRank = [](Value v, StringRef name) {
       if (v && cast<ShapedType>(v.getType()).getRank() > 2) {
         LLVM_DEBUG(llvm::dbgs() << name << " has more than 2 dimensions\n");
@@ -3148,7 +3150,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       }
       return false;
     };
-    if (hasInvalidRank(currentSeqLen, "currentSeqLen") ||
+    if (hasInvalidRank(lastValidKVIndex, "lastValidKVIndex") ||
         hasInvalidRank(prefixOffset, "prefixOffset"))
       return failure();
 
@@ -3178,7 +3180,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     LLVM_DEBUG(llvm::dbgs()
                << "first matmul = " << maybeFirstMatMul.value() << "\n");
     LLVM_DEBUG(llvm::dbgs() << "hasReduceOp = " << hasReduceOp << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "isKVCache: " << (bool)currentSeqLen << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "isKVCache: " << (bool)lastValidKVIndex << "\n");
     LLVM_DEBUG(llvm::dbgs() << "isCausal = " << isCausal << "\n");
     LLVM_DEBUG(llvm::dbgs()
                << "isPrefixCausal = " << (bool)prefixOffset << "\n");
@@ -3212,8 +3214,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     attentionMatcherValues.softmaxValues = softmaxMatcherValues;
     attentionMatcherValues.lse = lse;
     attentionMatcherValues.causalMaskInput = causalMaskInput;
-    attentionMatcherValues.currentSeqLen = currentSeqLen;
-    attentionMatcherValues.slidingWindowSize = slidingWindowSize;
+    attentionMatcherValues.lastValidKVIndex = lastValidKVIndex;
+    attentionMatcherValues.slidingWindowLookBack = slidingWindowLookBack;
     attentionMatcherValues.seqLenClipMin = seqLenClipMin;
     attentionMatcherValues.seqLenClipMax = seqLenClipMax;
     attentionMatcherValues.preSoftmaxElementwiseFinder =
@@ -3262,7 +3264,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     Value causalMaskInput = attentionMatcherValues.causalMaskInput;
     tosa::MatMulOp firstMatMulOp =
         preSoftmaxElementwiseFinder.getFirstGemmBasedOp().value();
-    Value currentSeqLen = attentionMatcherValues.currentSeqLen;
+    Value lastValidKVIndex = attentionMatcherValues.lastValidKVIndex;
     Value prefixOffset = attentionMatcherValues.prefixOffset;
     bool isCausal = attentionMatcherValues.isCausal;
     TypeAttr softmaxTypeAttr =
@@ -3288,30 +3290,30 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       }
     };
 
-    prepareBlockArgTensor(currentSeqLen);
+    prepareBlockArgTensor(lastValidKVIndex);
     prepareBlockArgTensor(prefixOffset);
 
     // Preserve clipping that was stripped while identifying the underlying
-    // currentSeqLen block argument.
-    if (currentSeqLen && attentionMatcherValues.seqLenClipMin &&
+    // lastValidKVIndex block argument.
+    if (lastValidKVIndex && attentionMatcherValues.seqLenClipMin &&
         attentionMatcherValues.seqLenClipMax) {
-      auto seqLenType = cast<RankedTensorType>(currentSeqLen.getType());
+      auto seqLenType = cast<RankedTensorType>(lastValidKVIndex.getType());
       Type elementType = seqLenType.getElementType();
       auto clipMinAttr = DenseElementsAttr::get(
           seqLenType, rewriter.getIntegerAttr(
                           elementType, *attentionMatcherValues.seqLenClipMin));
       Value clipMin =
           tosa::ConstOp::create(rewriter, loc, seqLenType, clipMinAttr);
-      currentSeqLen = tosa::MaximumOp::create(rewriter, loc, seqLenType,
-                                              currentSeqLen, clipMin);
+      lastValidKVIndex = tosa::MaximumOp::create(rewriter, loc, seqLenType,
+                                                 lastValidKVIndex, clipMin);
 
       auto clipMaxAttr = DenseElementsAttr::get(
           seqLenType, rewriter.getIntegerAttr(
                           elementType, *attentionMatcherValues.seqLenClipMax));
       Value clipMax =
           tosa::ConstOp::create(rewriter, loc, seqLenType, clipMaxAttr);
-      currentSeqLen = tosa::MinimumOp::create(rewriter, loc, seqLenType,
-                                              currentSeqLen, clipMax);
+      lastValidKVIndex = tosa::MinimumOp::create(rewriter, loc, seqLenType,
+                                                 lastValidKVIndex, clipMax);
     }
 
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
@@ -3323,21 +3325,21 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     std::tie(queries, keys, values, numHeadsQ, numHeadsKV) = getGQAValues(
         rewriter, firstMatMulOp.getA(), firstMatMulOp.getB(), op.getB());
 
-    IntegerAttr slidingWindowSizeAttr;
-    if (attentionMatcherValues.slidingWindowSize.has_value())
-      slidingWindowSizeAttr = rewriter.getI32IntegerAttr(
-          attentionMatcherValues.slidingWindowSize.value());
+    IntegerAttr slidingWindowLookBackAttr;
+    if (attentionMatcherValues.slidingWindowLookBack.has_value())
+      slidingWindowLookBackAttr = rewriter.getI32IntegerAttr(
+          attentionMatcherValues.slidingWindowLookBack.value());
 
     rock::AttentionOp attnOp = rock::AttentionOp::create(
         rewriter, loc, outputType, lseType, queries, keys, values,
-        elementwiseOtherArgs, currentSeqLen, prefixOffset,
+        elementwiseOtherArgs, lastValidKVIndex, prefixOffset,
         /*numHeadsQ=*/numHeadsQ,
         /*numHeadsKV=*/numHeadsKV,
         /*qTransposed=*/nullptr,
         /*kTransposed=*/nullptr,
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
-        /*splitKV=*/rewriter.getI32IntegerAttr(1), slidingWindowSizeAttr,
+        /*splitKV=*/rewriter.getI32IntegerAttr(1), slidingWindowLookBackAttr,
         softmaxTypeAttr,
         /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSoftmaxElemwiseBlock = &attnOp.getPreSoftmaxBody().emplaceBlock();

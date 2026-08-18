@@ -1,16 +1,16 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -split-input-file -verify-diagnostics -o -| FileCheck %s
 
 // A per-head, non-splat lower bound is not representable as attributes on the
-// folded currentSeqLen. Keep the complete clip and mask in the elementwise
+// folded lastValidKVIndex. Keep the complete clip and mask in the elementwise
 // region instead of specializing the attention as KV-cache.
 // CHECK-LABEL: func @kvcache_nonsplat_clip_bound
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: lastValidKVIndex
 // CHECK: tosa.maximum
 // CHECK: tosa.minimum
 // CHECK: tosa.greater
 // CHECK: tosa.select
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: lastValidKVIndex
 func.func @kvcache_nonsplat_clip_bound(%arg0: tensor<2xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %softmax_ones = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x1x8xf32>}> : () -> tensor<1x2x1x8xf32>
   %broadcast_ones = "tosa.const"() <{values = dense<1> : tensor<1x2x1x8xi32>}> : () -> tensor<1x2x1x8xi32>
@@ -56,17 +56,17 @@ func.func @kvcache_nonsplat_clip_bound(%arg0: tensor<2xi32>, %arg1: tensor<12xf1
 
 // -----
 
-// Rock uses unsigned comparisons for currentSeqLen masking, so a clip that
+// Rock uses unsigned comparisons for lastValidKVIndex masking, so a clip that
 // permits a negative effective length must remain in the signed TOSA
 // elementwise computation.
 // CHECK-LABEL: func @kvcache_negative_clip_bound
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: lastValidKVIndex
 // CHECK: tosa.maximum
 // CHECK: tosa.minimum
 // CHECK: tosa.greater
 // CHECK: tosa.select
-// CHECK-NOT: currentSeqLen
+// CHECK-NOT: lastValidKVIndex
 func.func @kvcache_negative_clip_bound(%arg0: tensor<2xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %softmax_ones = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x1x8xf32>}> : () -> tensor<1x2x1x8xf32>
   %broadcast_ones = "tosa.const"() <{values = dense<1> : tensor<1x2x1x8xi32>}> : () -> tensor<1x2x1x8xi32>

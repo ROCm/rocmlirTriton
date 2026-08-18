@@ -1,16 +1,16 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 
 // Runtime sliding-window masking combined with KV-cache seq-len clipping.
-// The KV-cache clip (max/min on currentSeqLen) is re-emitted in front of the
-// attention op, and the sliding-window size is captured as the slidingWindowSize
+// The KV-cache clip (max/min on lastValidKVIndex) is re-emitted in front of the
+// attention op, and the sliding-window size is captured as the slidingWindowLookBack
 // attribute so the gridwise lowering can mask keys below
-// max(0, currentSeqLen - slidingWindowSize).
+// max(0, lastValidKVIndex - slidingWindowLookBack).
 // CHECK-LABEL: func @mlir_attention_kvcache_sliding_window
 // CHECK: %[[MAX:.*]] = tosa.maximum
 // CHECK: %[[CLIP:.*]] = tosa.minimum %[[MAX]], {{.*}} : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%[[CLIP]] : tensor<2xi32>)
-// CHECK: slidingWindowSize = 3
+// CHECK: lastValidKVIndex = (%[[CLIP]] : tensor<2xi32>)
+// CHECK: slidingWindowLookBack = 3
 func.func @mlir_attention_kvcache_sliding_window(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %1 = tosa.const_shape  {values = dense<4> : tensor<1xindex>} : () -> !tosa.shape<1>

@@ -506,8 +506,8 @@ static llvm::cl::opt<int64_t>
                llvm::cl::desc("number of heads of K,V in attention()"),
                llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
 
-static llvm::cl::list<int64_t> currentSeqLen(
-    "current_seq_len",
+static llvm::cl::list<int64_t> lastValidKVIndex(
+    "last_valid_kv_index",
     llvm::cl::desc("List of zero-based, inclusive current KV-cache positions "
                    "(last valid K/V indices) in attention()"),
     llvm::cl::value_desc("list of non-negative integers"),
@@ -592,12 +592,14 @@ static llvm::cl::opt<int64_t> splitKV(
                    "the number of blocks in the sequenceLengthK dimension."),
     llvm::cl::value_desc("positive integer"), llvm::cl::init(1));
 
-static llvm::cl::opt<int64_t> slidingWindowSize(
-    "sliding_window_size",
+static llvm::cl::opt<int64_t> slidingWindowLookBack(
+    "sliding_window_look_back",
     llvm::cl::desc(
-        "Maximum look-back distance from current_seq_len. Includes the current "
-        "KV-cache position, so up to sliding_window_size + 1 key positions are "
-        "attended to. If current_seq_len is omitted, it defaults to "
+        "Maximum look-back distance from last_valid_kv_index. Includes the "
+        "current "
+        "KV-cache position, so up to sliding_window_look_back + 1 key "
+        "positions are "
+        "attended to. If last_valid_kv_index is omitted, it defaults to "
         "seq_len_k - 1."),
     llvm::cl::value_desc("non-negative integer (0 disables)"),
     llvm::cl::init(0));
@@ -956,7 +958,7 @@ struct AttentionQuantizedArgIndex {
   static const size_t quantScale = 4;
   static const size_t scale = 5;
   static const size_t bias = 6;
-  static const size_t currentSeqLen = 7;
+  static const size_t lastValidKVIndex = 7;
   static const size_t prefixOffset = 8;
   static const size_t lse = 9;
 };
@@ -967,7 +969,7 @@ struct AttentionArgIndex {
   static const size_t v = 2;
   static const size_t scale = 3;
   static const size_t bias = 4;
-  static const size_t currentSeqLen = 5;
+  static const size_t lastValidKVIndex = 5;
   static const size_t prefixOffset = 6;
   static const size_t lse = 7;
 };
@@ -1277,36 +1279,37 @@ static LogicalResult detectMissingArguments() {
       return failure();
     }
     // Sliding-window masking is defined relative to the KV-cache position, so
-    // the Rock verifier requires currentSeqLen.
+    // the Rock verifier requires lastValidKVIndex.
     // The flag's contract is "positive integer, 0 disables". A negative value
     // is a user error that would otherwise slip through silently, since every
-    // downstream use is gated on `slidingWindowSize > 0`.
-    if (slidingWindowSize < 0) {
-      llvm::errs() << "sliding_window_size must be non-negative\n";
+    // downstream use is gated on `slidingWindowLookBack > 0`.
+    if (slidingWindowLookBack < 0) {
+      llvm::errs() << "sliding_window_look_back must be non-negative\n";
       return failure();
     }
-    if (slidingWindowSize > 0) {
-      // slidingWindowSize is later materialized into i32 attributes/constants,
-      // so reject values that would silently truncate.
-      if (slidingWindowSize > std::numeric_limits<int32_t>::max()) {
-        llvm::errs() << "sliding_window_size must fit in a 32-bit integer\n";
+    if (slidingWindowLookBack > 0) {
+      // slidingWindowLookBack is later materialized into i32
+      // attributes/constants, so reject values that would silently truncate.
+      if (slidingWindowLookBack > std::numeric_limits<int32_t>::max()) {
+        llvm::errs()
+            << "sliding_window_look_back must fit in a 32-bit integer\n";
         return failure();
       }
       // The Rock verifier rejects a window larger than the key sequence length
-      // ("slidingWindowSize must not exceed max sequence length"). Reject it
-      // here too so the driver reports a clear error instead of emitting IR
+      // ("slidingWindowLookBack must not exceed max sequence length"). Reject
+      // it here too so the driver reports a clear error instead of emitting IR
       // that only fails later in verification.
-      if (sequenceLengthK > 0 && slidingWindowSize > sequenceLengthK) {
-        llvm::errs() << "sliding_window_size must not exceed seq_len_k\n";
+      if (sequenceLengthK > 0 && slidingWindowLookBack > sequenceLengthK) {
+        llvm::errs() << "sliding_window_look_back must not exceed seq_len_k\n";
         return failure();
       }
-      // currentSeqLen is runtime data and therefore is not part of the tuning
-      // problem key. When a serialized tuning problem is reconstructed by
-      // tuningRunner, use the full-cache position, matching the existing
+      // lastValidKVIndex is runtime data and therefore is not part of the
+      // tuning problem key. When a serialized tuning problem is reconstructed
+      // by tuningRunner, use the full-cache position, matching the existing
       // split-KV default in computeValidSplitKV().
-      if (currentSeqLen.empty())
+      if (lastValidKVIndex.empty())
         for (int64_t i = 0; i < groupSize; ++i)
-          currentSeqLen.push_back(sequenceLengthK - 1);
+          lastValidKVIndex.push_back(sequenceLengthK - 1);
     }
   }
 
@@ -1427,14 +1430,14 @@ static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
   SmallVector<int32_t> validSplitKV;
   for (int64_t i = 0; i < groupSize; ++i) {
     int32_t currSeqLen =
-        currentSeqLen.empty() ? (sequenceLengthK - 1) : currentSeqLen[i];
+        lastValidKVIndex.empty() ? (sequenceLengthK - 1) : lastValidKVIndex[i];
     // For prefix causal masking, the effective sequence length is
     // min(currSeqLen, queryPos + prefixOffset). Since queryPos is 0
     // for seqLenQ=1 (decoding), this becomes min(currSeqLen, prefixOffset).
     // Note: prefixOffset implies causal is enabled, so we handle it first.
     if (!prefixOffset.empty()) {
       // Prefix causal: effectiveSeqLen = prefixOffset (when queryPos=0)
-      // If KVCache is also enabled, take min with currentSeqLen
+      // If KVCache is also enabled, take min with lastValidKVIndex
       int32_t prefixEffectiveLen = static_cast<int32_t>(prefixOffset[i]);
       currSeqLen = std::min(currSeqLen, prefixEffectiveLen);
     } else if (causalMasking) {
@@ -1614,7 +1617,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
     // The split-KV finalization below masks out split slots that did not run.
     // Match GridwiseAttnToBlockwise's Triton lowering, which splits the
-    // current_seq_len / key-sequence work over gemm0NPerBlock.
+    // last_valid_kv_index / key-sequence work over gemm0NPerBlock.
     SmallVector<int32_t> validSplitKV = computeValidSplitKV(nPerBlock);
 
     // split KV to batch
@@ -3063,9 +3066,9 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
                                         : AttentionArgIndex::scale;
   const size_t biasIndex =
       isQuantized ? AttentionQuantizedArgIndex::bias : AttentionArgIndex::bias;
-  const size_t currentSeqLenIndex =
-      isQuantized ? AttentionQuantizedArgIndex::currentSeqLen
-                  : AttentionArgIndex::currentSeqLen;
+  const size_t lastValidKVIndexIndex =
+      isQuantized ? AttentionQuantizedArgIndex::lastValidKVIndex
+                  : AttentionArgIndex::lastValidKVIndex;
   const size_t lseIndex =
       isQuantized ? AttentionQuantizedArgIndex::lse : AttentionArgIndex::lse;
 
@@ -3110,17 +3113,17 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
         RankedTensorType::get(biasDims, elemTypes[biasIndex]);
     result.push_back(bType);
   }
-  if (!currentSeqLen.empty()) {
+  if (!lastValidKVIndex.empty()) {
     SmallVector<int64_t> currentSeqDims{groupSize};
     RankedTensorType currSeqLenType =
-        RankedTensorType::get(currentSeqDims, elemTypes[currentSeqLenIndex]);
+        RankedTensorType::get(currentSeqDims, elemTypes[lastValidKVIndexIndex]);
     result.push_back(currSeqLenType);
   }
   if (!prefixOffset.empty()) {
     SmallVector<int64_t> prefixOffsetDims{groupSize};
-    // prefixOffset uses the same i32 type as currentSeqLen
-    RankedTensorType prefixOffsetType =
-        RankedTensorType::get(prefixOffsetDims, elemTypes[currentSeqLenIndex]);
+    // prefixOffset uses the same i32 type as lastValidKVIndex
+    RankedTensorType prefixOffsetType = RankedTensorType::get(
+        prefixOffsetDims, elemTypes[lastValidKVIndexIndex]);
     result.push_back(prefixOffsetType);
   }
   if (returnLSE) {
@@ -3164,7 +3167,7 @@ getAttentionDimNames(SmallVectorImpl<SmallVector<StringRef>> &result,
     result.emplace_back(
         SmallVector<StringRef>{gName, transposeBias ? seqKName : seqQName,
                                transposeBias ? seqQName : seqKName});
-  if (!currentSeqLen.empty())
+  if (!lastValidKVIndex.empty())
     result.emplace_back(SmallVector<StringRef>{gName});
   if (!prefixOffset.empty())
     result.emplace_back(SmallVector<StringRef>{gName});
@@ -3410,7 +3413,7 @@ static Value prefixOffsetMaskingTosa(OpBuilder builder, Location loc,
 }
 
 static Value maskKVCacheTosa(OpBuilder builder, Location loc, Value inputTensor,
-                             Value currentSeqLenVal, float initValue) {
+                             Value lastValidKVIndexVal, float initValue) {
   // inputTensor is [B*NUM_HEADS, SEQ_LEN_Q, SEQ_LEN_KV], we want to reshape to
   // [B, NUM_HEADS, SEQ_LEN_Q, SEQ_LEN_KV]
   auto origType = cast<RankedTensorType>(inputTensor.getType());
@@ -3425,7 +3428,7 @@ static Value maskKVCacheTosa(OpBuilder builder, Location loc, Value inputTensor,
   auto inpType = cast<RankedTensorType>(inputTensor.getType());
   ArrayRef<int64_t> inpShape = inpType.getShape();
 
-  for (auto v : currentSeqLen)
+  for (auto v : lastValidKVIndex)
     assert(v >= 0 && v < inpShape[3]);
 
   // generate range
@@ -3433,14 +3436,14 @@ static Value maskKVCacheTosa(OpBuilder builder, Location loc, Value inputTensor,
 
   // zero tensor
   auto outType = RankedTensorType::get(inpShape, builder.getI32Type());
-  // broadcast currentSeqLen
-  auto currentSeqLenBroadcast = rock::tosa::getMulOp(
-      builder, loc, currentSeqLenVal,
+  // broadcast lastValidKVIndex
+  auto lastValidKVIndexBroadcast = rock::tosa::getMulOp(
+      builder, loc, lastValidKVIndexVal,
       rock::tosa::getOneTensor(builder, loc, outType), builder.getI32Type());
   // create mask
   auto mask = rock::tosa::createOpAndInfer<tosa::GreaterOp>(
       builder, loc, builder.getIntegerType(1), rangeBroadcast,
-      currentSeqLenBroadcast);
+      lastValidKVIndexBroadcast);
 
   Value result = applyMask(builder, loc, inputTensor, mask, initValue);
 
@@ -3452,11 +3455,12 @@ static Value maskKVCacheTosa(OpBuilder builder, Location loc, Value inputTensor,
   return resultReshaped;
 }
 
-// Sliding window masking: mask positions where col < max(0, currentSeqLen -
-// slidingWindowSize). The inputTensor shape is [b*num_heads_q, seq_len_q,
-// seq_len_kv]. currentSeqLenVal has shape [1x1x1x1xi32] (already reshaped).
+// Sliding window masking: mask positions where col < max(0, lastValidKVIndex -
+// slidingWindowLookBack). The inputTensor shape is [b*num_heads_q, seq_len_q,
+// seq_len_kv]. lastValidKVIndexVal has shape [1x1x1x1xi32] (already reshaped).
 static Value slidingWindowMaskingTosa(OpBuilder builder, Location loc,
-                                      Value inputTensor, Value currentSeqLenVal,
+                                      Value inputTensor,
+                                      Value lastValidKVIndexVal,
                                       int64_t windowSize, float initValue) {
   auto origType = cast<RankedTensorType>(inputTensor.getType());
   ArrayRef<int64_t> origShape = origType.getShape();
@@ -3473,13 +3477,13 @@ static Value slidingWindowMaskingTosa(OpBuilder builder, Location loc,
   // Create column range [0, 1, ..., seq_len_kv-1]
   Value colRange = createRange(builder, loc, 3, inpShape);
 
-  // Broadcast currentSeqLen to full shape
+  // Broadcast lastValidKVIndex to full shape
   auto outType = RankedTensorType::get(inpShape, builder.getI32Type());
-  auto currentSeqLenBroadcast = rock::tosa::getMulOp(
-      builder, loc, currentSeqLenVal,
+  auto lastValidKVIndexBroadcast = rock::tosa::getMulOp(
+      builder, loc, lastValidKVIndexVal,
       rock::tosa::getOneTensor(builder, loc, outType), builder.getI32Type());
 
-  // Compute lowerBound = max(0, currentSeqLen - slidingWindowSize).
+  // Compute lowerBound = max(0, lastValidKVIndex - slidingWindowLookBack).
   // Build the window-size and zero operands as rank-matched 1x...x1 scalar
   // constants and let tosa.sub/tosa.maximum broadcast them, rather than
   // materializing full-rank B*H*Q*K constant tensors.
@@ -3490,7 +3494,7 @@ static Value slidingWindowMaskingTosa(OpBuilder builder, Location loc,
   Value windowSizeConst =
       tosa::ConstOp::create(builder, loc, scalarType, windowSizeAttr);
   Value lowerBound = rock::tosa::createOpAndInfer<tosa::SubOp>(
-      builder, loc, builder.getI32Type(), currentSeqLenBroadcast,
+      builder, loc, builder.getI32Type(), lastValidKVIndexBroadcast,
       windowSizeConst);
 
   // Clamp lower bound to >= 0
@@ -3589,8 +3593,8 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
 static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
                                         Value resultTensor, Value lseTensor,
                                         SmallVector<int32_t> &validSplitKV) {
-  if (!currentSeqLen.empty())
-    assert(validSplitKV.size() == (numHeadsQ * currentSeqLen.size()) &&
+  if (!lastValidKVIndex.empty())
+    assert(validSplitKV.size() == (numHeadsQ * lastValidKVIndex.size()) &&
            "Number of valid split KV must match current sequence length");
   SmallVector<int64_t> newResultShape;
   SmallVector<int64_t> newResultShapeAfterTranpose = {
@@ -3679,7 +3683,7 @@ static Value broadcastGQATosa(OpBuilder builder, Location loc,
   return broadcastBatchTosa(builder, loc, inputTensor, numRepeat);
 }
 
-// Broadcasts a 1D batch tensor (e.g., currentSeqLen or prefixOffset) to have
+// Broadcasts a 1D batch tensor (e.g., lastValidKVIndex or prefixOffset) to have
 // shape [G * numHeadsQ] by adding a numHeadsQ dimension and merging it with G.
 static Value broadcastBatchTensorRock(OpBuilder builder, Location loc,
                                       Value inputTensor) {
@@ -3793,7 +3797,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   Value quantScale;
   Value scale;
   Value bias;
-  Value currentSeqLenTensor;
+  Value lastValidKVIndexTensor;
   Value prefixOffsetTensor;
 
   ShapedType qType = cast<ShapedType>(queries.getType());
@@ -3827,8 +3831,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     }
     elemwiseInputs.push_back(bias);
   }
-  if (!currentSeqLen.empty()) {
-    currentSeqLenTensor = broadcastBatchTensorRock(
+  if (!lastValidKVIndex.empty()) {
+    lastValidKVIndexTensor = broadcastBatchTensorRock(
         builder, loc, unflattenedArgs[optionalArgsCounter++]);
   }
   if (!prefixOffset.empty()) {
@@ -3843,12 +3847,13 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       TypeAttr::get(typeFromString(softmaxDataType.getValue(), ctx));
   auto attention = rock::AttentionOp::create(
       builder, loc, outputLogicalType, returnLSE ? lseLogicalType : nullptr,
-      queries, keys, values, elemwiseInputs, currentSeqLenTensor,
+      queries, keys, values, elemwiseInputs, lastValidKVIndexTensor,
       prefixOffsetTensor, numHeadsQ, numHeadsKV, transposeQ, transposeK,
       transposeV, transposeO, actualCausal, splitKV,
-      /*slidingWindowSize=*/
-      slidingWindowSize > 0 ? builder.getI32IntegerAttr(slidingWindowSize)
-                            : nullptr,
+      /*slidingWindowLookBack=*/
+      slidingWindowLookBack > 0
+          ? builder.getI32IntegerAttr(slidingWindowLookBack)
+          : nullptr,
       softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr);
   {
@@ -4819,12 +4824,12 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
         builder, loc, type.getElementType(), tensorRaw, shapeValue);
   };
 
-  // get currentSeqLenTensor and prefixOffsetTensor
-  Value currentSeqLenTensor;
+  // get lastValidKVIndexTensor and prefixOffsetTensor
+  Value lastValidKVIndexTensor;
   Value prefixOffsetTensor;
   // Walk through optional arguments to find the correct indices.
   // Argument layout: [q, k, v, (quantBias, quantScale)?, scale?, bias?,
-  //                   currentSeqLen?, prefixOffset?, lse?, output]
+  //                   lastValidKVIndex?, prefixOffset?, lse?, output]
   unsigned optionalArgIndex = 3; // Start after q, k, v
   if (isQuantized)
     optionalArgIndex += 2; // Skip quantBias, quantScale
@@ -4832,8 +4837,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     optionalArgIndex++; // Skip scale
   if (hasAttnBias)
     optionalArgIndex++; // Skip bias
-  if (!currentSeqLen.empty()) {
-    currentSeqLenTensor = loadMaskingTensor(optionalArgIndex++);
+  if (!lastValidKVIndex.empty()) {
+    lastValidKVIndexTensor = loadMaskingTensor(optionalArgIndex++);
   }
   if (!prefixOffset.empty()) {
     prefixOffsetTensor = loadMaskingTensor(optionalArgIndex++);
@@ -4842,8 +4847,8 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     // Scale and bias are masked before being applied to qk. Use their neutral
     // elements so later multiplication/addition leaves masked positions
     // unchanged.
-    if (currentSeqLenTensor)
-      tensor = maskKVCacheTosa(builder, loc, tensor, currentSeqLenTensor,
+    if (lastValidKVIndexTensor)
+      tensor = maskKVCacheTosa(builder, loc, tensor, lastValidKVIndexTensor,
                                neutralValue);
     if (prefixOffsetTensor)
       return prefixOffsetMaskingTosa(builder, loc, tensor, prefixOffsetTensor,
@@ -4919,18 +4924,19 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   auto softmaxType = wideF(typeFromString(softmaxDataType.getValue(), ctx));
   qkTensor = castTensor(qkTensor, softmaxType);
 
-  // Apply KV-cache masking if currentSeqLen is provided
-  if (currentSeqLenTensor) {
-    qkTensor = maskKVCacheTosa(builder, loc, qkTensor, currentSeqLenTensor,
+  // Apply KV-cache masking if lastValidKVIndex is provided
+  if (lastValidKVIndexTensor) {
+    qkTensor = maskKVCacheTosa(builder, loc, qkTensor, lastValidKVIndexTensor,
                                -std::numeric_limits<float>::infinity());
     optionalArgsCounter++;
   }
 
-  // Apply sliding window masking if slidingWindowSize is set.
-  // Masks positions where col < max(0, currentSeqLen - slidingWindowSize).
-  if (slidingWindowSize > 0 && currentSeqLenTensor) {
+  // Apply sliding window masking if slidingWindowLookBack is set.
+  // Masks positions where col < max(0, lastValidKVIndex -
+  // slidingWindowLookBack).
+  if (slidingWindowLookBack > 0 && lastValidKVIndexTensor) {
     qkTensor = slidingWindowMaskingTosa(
-        builder, loc, qkTensor, currentSeqLenTensor, slidingWindowSize,
+        builder, loc, qkTensor, lastValidKVIndexTensor, slidingWindowLookBack,
         -std::numeric_limits<float>::infinity());
   }
 
@@ -6090,7 +6096,7 @@ static LogicalResult populateHostHarnessLogic(
         ++optionalArgsCounter;
       if (hasAttnBias)
         ++optionalArgsCounter;
-      if (!currentSeqLen.empty())
+      if (!lastValidKVIndex.empty())
         ++optionalArgsCounter;
       if (!prefixOffset.empty())
         ++optionalArgsCounter;
@@ -6114,8 +6120,8 @@ static LogicalResult populateHostHarnessLogic(
 
   SmallVector<Value, 5> localVars;
   SmallVector<Value, 5> valVars;
-  // Calculate expected indices for currentSeqLen and prefixOffset tensors.
-  // The layout is: ..., currentSeqLen?, prefixOffset?, LSE?, Output
+  // Calculate expected indices for lastValidKVIndex and prefixOffset tensors.
+  // The layout is: ..., lastValidKVIndex?, prefixOffset?, LSE?, Output
   // We need to count backwards from the end.
   int64_t offsetFromEnd = 1; // Output is always last
   if (returnLSE)
@@ -6125,7 +6131,8 @@ static LogicalResult populateHostHarnessLogic(
   if (!prefixOffset.empty())
     ++offsetFromEnd;
   const int64_t expectedCurrSeqLenIdx =
-      !currentSeqLen.empty() ? (root0.params.size() - offsetFromEnd - 1) : -1;
+      !lastValidKVIndex.empty() ? (root0.params.size() - offsetFromEnd - 1)
+                                : -1;
 
   // Timer for memory initialization
   func::FuncOp initTimerStopFunc;
@@ -6169,9 +6176,9 @@ static LogicalResult populateHostHarnessLogic(
       }
     };
 
-    if (!currentSeqLen.empty() && isAttention &&
+    if (!lastValidKVIndex.empty() && isAttention &&
         static_cast<int64_t>(idx) == expectedCurrSeqLenIdx) {
-      fillWithI32Values(currentSeqLen);
+      fillWithI32Values(lastValidKVIndex);
     } else if (!prefixOffset.empty() && isAttention &&
                static_cast<int64_t>(idx) == expectedPrefixOffsetIdx) {
       fillWithI32Values(prefixOffset);
@@ -6531,7 +6538,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
           Float16Type::get(context);
       genParams.types[AttentionQuantizedArgIndex::bias] =
           Float16Type::get(context);
-      genParams.types[AttentionQuantizedArgIndex::currentSeqLen] =
+      genParams.types[AttentionQuantizedArgIndex::lastValidKVIndex] =
           IntegerType::get(context, 32);
       genParams.types[AttentionQuantizedArgIndex::prefixOffset] =
           IntegerType::get(context, 32);
@@ -6544,7 +6551,7 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       for (size_t argIdx{0}; argIdx < maxNumArgs; ++argIdx) {
         genParams.types.push_back(elemType);
       }
-      // extra operand: currentSeqLen (i32)
+      // extra operand: lastValidKVIndex (i32)
       genParams.types.push_back(IntegerType::get(context, 32));
       // extra operand: prefixOffset (i32)
       genParams.types.push_back(IntegerType::get(context, 32));

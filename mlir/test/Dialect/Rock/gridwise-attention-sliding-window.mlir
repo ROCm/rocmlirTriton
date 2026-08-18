@@ -3,12 +3,12 @@
 module {
   // CHECK-LABEL: func @mlir_attention
   // Runtime sliding-window masking on the KV-cache N-loop. The lower bound is
-  // slidingWindowLowerBound = max(0, currentSeqLen - slidingWindowSize); key
+  // slidingWindowLowerBound = max(0, lastValidKVIndex - slidingWindowLookBack); key
   // positions (nIndex) below it are masked with -inf.
 
-  // currentSeqLen is loaded from the tensor as a scalar i32.
+  // lastValidKVIndex is loaded from the tensor as a scalar i32.
   // CHECK: %[[SEQLEN:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
-  // slidingWindowLowerBound = max(0, currentSeqLen - slidingWindowSize)
+  // slidingWindowLowerBound = max(0, lastValidKVIndex - slidingWindowLookBack)
   // CHECK: %[[SEQ_MINUS_WINDOW:.*]] = arith.subi %[[SEQLEN]], %c3{{.*}} : i32
   // CHECK: %[[LOWER_BOUND:.*]] = arith.maxsi %[[SEQ_MINUS_WINDOW]], %c0{{.*}} : i32
 
@@ -25,7 +25,7 @@ module {
   // CHECK: arith.select %[[SW_MASK]], %{{.*}}, %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
 
   func.func @mlir_attention(
-      %currentSeqLen: tensor<1xi32>,
+      %lastValidKVIndex: tensor<1xi32>,
       %q: tensor<1x64x32xf16>,
       %k: tensor<1x32x64xf16>,
       %v: tensor<1x64x32xf16>) -> tensor<1x64x32xf16>
@@ -35,7 +35,7 @@ module {
         rock.kernel,
         rock.arch = "##TOKEN_ARCH##"
       } {
-    %result = rock.gridwise_attention(%q, %k, %v, %currentSeqLen) preSoftmaxOps = {
+    %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
     ^bb0(%arg_qk: tensor<1x32x32xf16>):
       %cst = arith.constant dense<1.250000e-01> : tensor<1x32x32xf16>
       %scaled = arith.mulf %arg_qk, %cst : tensor<1x32x32xf16>
@@ -46,7 +46,7 @@ module {
       prePadG0N = 4 : index,
       softmaxType = f32,
       splitKV = 1 : i32,
-      slidingWindowSize = 3 : i32,
+      slidingWindowLookBack = 3 : i32,
       params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
       params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
     } : tensor<1x64x32xf16>, tensor<1x32x64xf16>, tensor<1x64x32xf16>, tensor<1xi32> -> tensor<1x64x32xf16>

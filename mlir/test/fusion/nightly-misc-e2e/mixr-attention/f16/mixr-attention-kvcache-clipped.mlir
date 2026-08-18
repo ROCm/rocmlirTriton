@@ -7,7 +7,7 @@
 // IR-SAME: %[[MAX]]{{[, ]}}
 // IR-SAME: : tensor<2xi32>
 // IR: rock.attention
-// IR: currentSeqLen = (%[[CLIPPED]] : tensor<2xi32>)
+// IR: lastValidKVIndex = (%[[CLIPPED]] : tensor<2xi32>)
 
 module {
   // E2E: [1 1 1]

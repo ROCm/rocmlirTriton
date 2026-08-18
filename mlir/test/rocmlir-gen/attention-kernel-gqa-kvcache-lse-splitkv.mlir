@@ -1,13 +1,13 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -split_kv 8 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -last_valid_kv_index=33 -return_lse -split_kv 8 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // Use a perf_config with mPerBlockG0 != nPerBlockG0 so the split-KV finalization
 // must use the key-sequence block size rather than the query block size.
-// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --perf_config=attn:v1:128,64,32,2,1,16,32,1,1,4,4 --current_seq_len=255,18,268,69,317 -pv | rocmlir-opt | FileCheck %s --check-prefix=VALID-SPLIT-KV
+// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --perf_config=attn:v1:128,64,32,2,1,16,32,1,1,4,4 --last_valid_kv_index=255,18,268,69,317 -pv | rocmlir-opt | FileCheck %s --check-prefix=VALID-SPLIT-KV
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
 // VALID-SPLIT-KV-LABEL: func.func @rock_attention_gpu
-// With current_seq_len=255,18,268,69,317 and nPerBlockG0=64, the valid split
+// With last_valid_kv_index=255,18,268,69,317 and nPerBlockG0=64, the valid split
 // mask is [4, 1, 5, 2, 5]. Using mPerBlockG0=128 would produce [2, 1, 3, 1, 3].
 // VALID-SPLIT-KV: "tosa.const"() <{values = dense<{{\[+}}4{{\]+}}, {{\[+}}1{{\]+}}, {{\[+}}5{{\]+}}, {{\[+}}2{{\]+}}, {{\[+}}5{{\]+}}> : tensor<5x1x1x1xi32>}>
 
@@ -15,21 +15,21 @@
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<128xf32>,
 // CHECK-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
 // CHECK-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
-// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: tensor<1xi32>,
+// CHECK-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK-SAME: %[[lseRaw:.*4]]: tensor<32xf32>,
 // CHECK-SAME: %[[outputRaw:.*5]]: tensor<1024xf32>)
 // CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
 // CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<128xf32> to tensor<4x1x32xf32>
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
-// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
-// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
-// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
-// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
+// CHECK-NEXT: %[[lastValidKVIndex:.*]] = rock.transform %[[lastValidKVIndexRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK-NEXT: %[[lastValidKVIndexAddDim:.*]] = rock.transform %[[lastValidKVIndex]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK-NEXT: %[[lastValidKVIndexBroadcast:.*]] = rock.transform %[[lastValidKVIndexAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK-NEXT: %[[lastValidKVIndexMerge:.*]] = rock.transform %[[lastValidKVIndexBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
 // CHECK-NEXT: %[[output:.*]], %[[lse:.*]] = rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK-NEXT: lastValidKVIndex = (%[[lastValidKVIndexMerge]] : tensor<4xi32>)
 // CHECK: softmax(qk) * %[[values]]
 // CHECK-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK-SAME: splitKV = 8 : i32

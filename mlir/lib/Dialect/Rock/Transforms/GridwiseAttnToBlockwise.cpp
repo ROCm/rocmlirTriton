@@ -418,7 +418,7 @@ struct GridwiseAttentionRewritePattern
                                  Value fakeTensorN, Value negInfTensor,
                                  ArrayAttr tileView, bool enabled,
                                  Value nLoopIV, Value gemm0NBlocksLastIter,
-                                 Value currentSeqLen, Value prefixOffset,
+                                 Value lastValidKVIndex, Value prefixOffset,
                                  Value slidingWindowLowerBound) const {
     if (enabled) {
       ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
@@ -448,15 +448,16 @@ struct GridwiseAttentionRewritePattern
 
         switch (outOfScopeType) {
         case OutOfScopeType::KVCache: {
-        assert(currentSeqLen != nullptr);
-        auto splatType =
-            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
-                                  currentSeqLen.getType());
-        Value currentSeqLenSplat = triton::SplatOp::create(rewriter, loc, splatType, currentSeqLen);
-        // pointerTensor is mIndex
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, currentSeqLenSplat);
-        break;
+          assert(lastValidKVIndex != nullptr);
+          auto splatType = RankedTensorType::get(
+              cast<ShapedType>(mIndex.getType()).getShape(),
+              lastValidKVIndex.getType());
+          Value lastValidKVIndexSplat = triton::SplatOp::create(
+              rewriter, loc, splatType, lastValidKVIndex);
+          // pointerTensor is mIndex
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, lastValidKVIndexSplat);
+          break;
         }
         case OutOfScopeType::Causal: {
         // pointerTensor is nIndex
@@ -483,10 +484,10 @@ struct GridwiseAttentionRewritePattern
         break;
         }
         case OutOfScopeType::SlidingWindow: {
-          // Sliding window: mask when key_pos < max(0, currentSeqLen -
+          // Sliding window: mask when key_pos < max(0, lastValidKVIndex -
           // windowSize). slidingWindowLowerBound is precomputed as
-          // max(0, currentSeqLen - windowSize). The key position is nIndex in
-          // the rocmlirTriton (N-loop) lowering.
+          // max(0, lastValidKVIndex - windowSize). The key position is nIndex
+          // in the rocmlirTriton (N-loop) lowering.
           assert(slidingWindowLowerBound != nullptr);
           auto splatType = RankedTensorType::get(
               cast<ShapedType>(nIndex.getType()).getShape(),
@@ -596,19 +597,20 @@ struct GridwiseAttentionRewritePattern
   std::tuple<Value, Value, Value, Value, Value, Value>
   getNLoopInfo(PatternRewriter &rewriter, Location loc,
                layout::AttnGridCoordinates gridCoordsGemm0,
-               Value currentSeqLenTensor, Value prefixOffsetTensor,
+               Value lastValidKVIndexTensor, Value prefixOffsetTensor,
                int64_t gemm0M, int64_t gemm0N, int64_t gemm0MPerBlock,
                int64_t gemm0NPerBlock, int64_t splitKV, bool isCausal,
-               bool isKVCache, bool isPrefixCausal, int64_t slidingWindowSize,
+               bool isKVCache, bool isPrefixCausal,
+               int64_t slidingWindowLookBack,
                IntegerAttr numRepeatsGQA = nullptr) const {
     Value gemm0NBlocksLastIter;
-    Value currentSeqLen;
+    Value lastValidKVIndex;
     Value prefixOffset;
     Value effectiveSeqLen;
     Value slidingWindowLowerBound;
     Value start, end;
 
-    // Lambda to load a 1D tensor value (used for currentSeqLen and
+    // Lambda to load a 1D tensor value (used for lastValidKVIndex and
     // prefixOffset)
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
@@ -640,7 +642,7 @@ struct GridwiseAttentionRewritePattern
 
     // This is needed for KV Cache/Causal/Prefix Causal/Sliding Window masking
     // support
-    if (isCausal || isKVCache || isPrefixCausal || slidingWindowSize > 0) {
+    if (isCausal || isKVCache || isPrefixCausal || slidingWindowLookBack > 0) {
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
       Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -650,20 +652,21 @@ struct GridwiseAttentionRewritePattern
           loc, rewriter.getI32Type(), gemm0NBlocks);
 
       if (isKVCache) {
-        currentSeqLen = loadTensorValue(currentSeqLenTensor);
-        effectiveSeqLen = currentSeqLen;
+        lastValidKVIndex = loadTensorValue(lastValidKVIndexTensor);
+        effectiveSeqLen = lastValidKVIndex;
       }
 
-      // Compute sliding window lower bound: max(0, currentSeqLen - windowSize).
-      if (slidingWindowSize > 0) {
-        assert(currentSeqLen != nullptr &&
-               "sliding window requires currentSeqLen (KV-cache)");
+      // Compute sliding window lower bound: max(0, lastValidKVIndex -
+      // windowSize).
+      if (slidingWindowLookBack > 0) {
+        assert(lastValidKVIndex != nullptr &&
+               "sliding window requires lastValidKVIndex (KV-cache)");
         Value constWindowSize = rewriter.createOrFold<arith::ConstantIntOp>(
-            loc, rewriter.getI32Type(), slidingWindowSize);
+            loc, rewriter.getI32Type(), slidingWindowLookBack);
         Value zeroConst = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), 0);
-        Value lowerBound = arith::SubIOp::create(rewriter, loc, currentSeqLen,
-                                                 constWindowSize);
+        Value lowerBound = arith::SubIOp::create(
+            rewriter, loc, lastValidKVIndex, constWindowSize);
         slidingWindowLowerBound =
             arith::MaxSIOp::create(rewriter, loc, lowerBound, zeroConst);
       }
@@ -695,8 +698,8 @@ struct GridwiseAttentionRewritePattern
 
         effectiveSeqLen = maxRowOfBlock;
         if (isKVCache)
-          effectiveSeqLen = arith::MinUIOp::create(rewriter, loc, currentSeqLen,
-                                                   effectiveSeqLen);
+          effectiveSeqLen = arith::MinUIOp::create(
+              rewriter, loc, lastValidKVIndex, effectiveSeqLen);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
@@ -709,7 +712,7 @@ struct GridwiseAttentionRewritePattern
               rewriter, loc, effectiveSeqLen, gemm0NMinusOne);
         }
       } else {
-        effectiveSeqLen = currentSeqLen;
+        effectiveSeqLen = lastValidKVIndex;
       }
 
       // compute end index
@@ -754,7 +757,7 @@ struct GridwiseAttentionRewritePattern
       // Adjust start for sliding window: skip N-blocks that are entirely below
       // the window. All positions in those blocks would be masked to -inf
       // anyway, so we can avoid the loads and GEMMs altogether.
-      if (slidingWindowSize > 0) {
+      if (slidingWindowLookBack > 0) {
         Value slidingWindowStart = rewriter.createOrFold<arith::DivUIOp>(
             loc, slidingWindowLowerBound, constGemm0NPerBlock);
         // start/slidingWindowStart are non-negative iteration indices derived
@@ -795,7 +798,7 @@ struct GridwiseAttentionRewritePattern
       end = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), gemm0NBlocks);
     }
-    return std::make_tuple(start, end, gemm0NBlocksLastIter, currentSeqLen,
+    return std::make_tuple(start, end, gemm0NBlocksLastIter, lastValidKVIndex,
                            prefixOffset, slidingWindowLowerBound);
   }
 
@@ -1091,9 +1094,9 @@ struct GridwiseAttentionRewritePattern
 
     Value lse = op.getLse();
 
-    Value currentSeqLenTensor = op.getCurrentSeqLen();
+    Value lastValidKVIndexTensor = op.getLastValidKVIndex();
     Value prefixOffsetTensor = op.getPrefixOffset();
-    bool isKVCache = currentSeqLenTensor != nullptr;
+    bool isKVCache = lastValidKVIndexTensor != nullptr;
     bool isCausal = op.getCausal();
     bool isPrefixCausal = isCausal && prefixOffsetTensor;
     int64_t splitKV = op.getSplitKV();
@@ -1229,19 +1232,19 @@ struct GridwiseAttentionRewritePattern
     Value zero = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
 
     Value gemm0NBlocksLastIter;
-    Value currentSeqLen;
+    Value lastValidKVIndex;
     Value prefixOffset;
     Value slidingWindowLowerBound;
     Value start, end;
-    int64_t slidingWindowSize =
-        static_cast<int64_t>(op.getSlidingWindowSize().value_or(0));
+    int64_t slidingWindowLookBack =
+        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
     // get nLoop
-    std::tie(start, end, gemm0NBlocksLastIter, currentSeqLen, prefixOffset,
+    std::tie(start, end, gemm0NBlocksLastIter, lastValidKVIndex, prefixOffset,
              slidingWindowLowerBound) =
-        getNLoopInfo(rewriter, loc, gridCoordsGemm0mIter0, currentSeqLenTensor,
-                     prefixOffsetTensor, gemm0M, gemm0N, gemm0MPerBlock,
-                     gemm0NPerBlock, splitKV, isCausal, isKVCache,
-                     isPrefixCausal, slidingWindowSize,
+        getNLoopInfo(rewriter, loc, gridCoordsGemm0mIter0,
+                     lastValidKVIndexTensor, prefixOffsetTensor, gemm0M, gemm0N,
+                     gemm0MPerBlock, gemm0NPerBlock, splitKV, isCausal,
+                     isKVCache, isPrefixCausal, slidingWindowLookBack,
                      op.getNumRepeatsGQAAttr());
 
     // Early exit: Skip all computation when there's no work but always write
@@ -1458,24 +1461,24 @@ struct GridwiseAttentionRewritePattern
 
         // Negative Infinite for extra values based on masking type
         // KV cache masking is independent of causal masking - it masks out
-        // positions beyond currentSeqLen (padding). Apply it whenever KV
+        // positions beyond lastValidKVIndex (padding). Apply it whenever KV
         // cache is enabled, regardless of causal/prefix-causal mode.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
             gemm0OutTileViewUnPadded, isKVCache, nLoopIV, gemm0NBlocksLastIter,
-            currentSeqLen,
+            lastValidKVIndex,
             /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
 
-        // Sliding window masking: mask when key < max(0, currentSeqLen -
+        // Sliding window masking: mask when key < max(0, lastValidKVIndex -
         // windowSize). Independent of causal masking and applied on every
         // iteration (like causal), alongside KV-cache masking.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::SlidingWindow, gridCoordsGemm0,
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, slidingWindowSize > 0, nLoopIV,
+            gemm0OutTileViewUnPadded, slidingWindowLookBack > 0, nLoopIV,
             gemm0NBlocksLastIter,
-            /*currentSeqLen=*/nullptr,
+            /*lastValidKVIndex=*/nullptr,
             /*prefixOffset=*/nullptr, slidingWindowLowerBound);
 
         // Causal masking: either prefix-causal or standard causal
@@ -1486,7 +1489,7 @@ struct GridwiseAttentionRewritePattern
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
             gemm0OutTileViewUnPadded, isPrefixCausal, nLoopIV,
             gemm0NBlocksLastIter,
-            /*currentSeqLen=*/nullptr, prefixOffset,
+            /*lastValidKVIndex=*/nullptr, prefixOffset,
             /*slidingWindowLowerBound=*/nullptr);
 
         // Standard causal masking: mask when key > query
@@ -1495,7 +1498,7 @@ struct GridwiseAttentionRewritePattern
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
             gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
             gemm0NBlocksLastIter,
-            /*currentSeqLen=*/nullptr,
+            /*lastValidKVIndex=*/nullptr,
             /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
 
         IntegerAttr reductionAxis = rewriter.getIndexAttr(1);
