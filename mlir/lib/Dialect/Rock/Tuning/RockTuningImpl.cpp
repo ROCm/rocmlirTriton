@@ -1202,8 +1202,8 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
       problemOS << "false" << sep;
 
     problemOS << "-split_kv " << attentionOp.getSplitKV() << sep;
-    // sliding_window_look_back is optional (KV-cache only); only emit it when
-    // set so non-sliding-window problems keep their existing tuning identity.
+    // The look-back is optional; only emit it when set so non-sliding problems
+    // omit the field from their tuning identity.
     if (auto slidingWindowLookBack = attentionOp.getSlidingWindowLookBack();
         slidingWindowLookBack && *slidingWindowLookBack > 0)
       problemOS << "-sliding_window_look_back " << *slidingWindowLookBack

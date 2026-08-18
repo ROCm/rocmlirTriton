@@ -118,14 +118,14 @@ def load_data(files, no_splitk):
     if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
         df['TransBias'] = False
 
-    # Sliding window is optional (KV-cache only) and omitted from the key when
-    # disabled, so legacy attention rows may lack the column or carry NaN after
-    # a mixed-file concat; normalize it to the disabled value 0. Only attention
+    # Sliding look-back is optional (KV-cache only) and omitted from the key when
+    # disabled, so legacy attention rows may lack the column or carry NaN after a
+    # mixed-file concat; normalize it to the disabled sentinel -1. Only attention
     # grouping reads SlidingWindowLookBack, so defaulting it is a no-op elsewhere.
     if 'SlidingWindowLookBack' not in df.columns:
-        df['SlidingWindowLookBack'] = 0
+        df['SlidingWindowLookBack'] = -1
     else:
-        df['SlidingWindowLookBack'] = df['SlidingWindowLookBack'].fillna(0)
+        df['SlidingWindowLookBack'] = df['SlidingWindowLookBack'].fillna(-1)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)

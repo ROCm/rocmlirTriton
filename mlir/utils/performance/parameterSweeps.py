@@ -121,7 +121,7 @@ def multiline_repr(obj, num_fields=4):
     fields = []
     in_quotes = False
     # Bracket depth so commas inside list/tuple/dict literals (e.g.
-    # ``last_valid_kv_index=[51, 100, 88]``) don't split a field.
+    # ``last_valid_kv_index=[0, 100, 88]``) don't split a field.
     bracket_depth = 0
     perf_config_str = None
 

@@ -4,8 +4,8 @@
 // TUNING-KEY-NOT: last_valid_kv_index
 // CHECK: [1 1 1]
 
-// Runtime sliding-window masking combined with KV-cache seq-len clipping, driven
-// through the MIGraphX fusion path. The clip (migraphx.clip on lastValidKVIndex)
+// Runtime sliding-window masking combined with last-valid-index clipping, driven
+// through the MIGraphX fusion path. The clip on lastValidKVIndex
 // exercises the front-end-only KV-cache clip re-emission, and the second
 // greater/where pair encodes the sliding-window mask.
 

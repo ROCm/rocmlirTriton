@@ -38,8 +38,8 @@
 // CHECK_SCALE: %[[valuesTensor:.*]] = tensor.collapse_shape %[[valuesAdd]] {{.*}} : tensor<2x2x1024x32xf32> into [[valuesShape:tensor<.*>]]
 // CHECK_SCALE: %[[qkTensorOrig:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor]], %{{.*}}, %{{.*}} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[squareShape:tensor<.*>]]
 
-// CHECK_SCALE: %[[currSeqLenTensorDumbReshaped:.*]] = tosa.reshape %[[currSeqLenTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
-// CHECK_SCALE: %[[currSeqLenTensorReshaped:.*]] = tosa.reshape %[[currSeqLenTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
+// CHECK_SCALE: %[[lastValidKVIndexTensorDumbReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
+// CHECK_SCALE: %[[lastValidKVIndexTensorReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
 
 // CHECK_SCALE: %[[scaledFirstReshaped:.*]] = tosa.reshape %[[scaledTensorRaw:.*]], %{{.*}} : (tensor<4194304xf32>, !tosa.shape<3>) -> tensor<4x1024x1024xf32>
 // CHECK_SCALE: %[[scaledReshaped:.*]] = tosa.reshape %[[scaledFirstReshaped:.*]], %{{.*}} : (tensor<4x1024x1024xf32>, !tosa.shape<4>) -> tensor<1x4x1024x1024xf32>
@@ -48,8 +48,8 @@
 // CHECK_SCALE: %[[one:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
 // CHECK_SCALE: %[[rangeBroadcast2:.*]] = tosa.mul %[[range2Reshaped]], %[[one]], %{{.*}} : (tensor<1x1x1x1024xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
 // CHECK_SCALE: %[[one2:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
-// CHECK_SCALE: %[[currSeqLenTensorBroadcast2:.*]] = tosa.mul %[[currSeqLenTensorReshaped]], %[[one2]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
-// CHECK_SCALE: %[[mask2:.*]] = tosa.greater %[[rangeBroadcast2]], %[[currSeqLenTensorBroadcast2]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
+// CHECK_SCALE: %[[lastValidKVIndexTensorBroadcast2:.*]] = tosa.mul %[[lastValidKVIndexTensorReshaped]], %[[one2]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
+// CHECK_SCALE: %[[mask2:.*]] = tosa.greater %[[rangeBroadcast2]], %[[lastValidKVIndexTensorBroadcast2]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
 // CHECK_SCALE: %[[one:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x4x1024x1024xf32>}> : () -> tensor<1x4x1024x1024xf32>
 // CHECK_SCALE: %[[scaleTensorBeforeReshape:.*]] = tosa.select %[[mask2]], %[[one]], %[[scaledReshaped]] : (tensor<1x4x1024x1024xi1>, tensor<1x4x1024x1024xf32>, tensor<1x4x1024x1024xf32>) -> tensor<1x4x1024x1024xf32>
 // CHECK_SCALE: %[[scaleTensor:.*]] = tosa.reshape %[[scaleTensorBeforeReshape]], %{{.*}} : (tensor<1x4x1024x1024xf32>, !tosa.shape<3>) -> tensor<4x1024x1024xf32>
@@ -62,8 +62,8 @@
 // CHECK_SCALE: %[[one3:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
 // CHECK_SCALE: %[[rangeBroadcast:.*]] = tosa.mul %[[rangeReshaped]], %[[one3]], %{{.*}} : (tensor<1x1x1x1024xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
 // CHECK_SCALE: %[[one4:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
-// CHECK_SCALE: %[[currSeqLenTensorBroadcast:.*]] = tosa.mul %[[currSeqLenTensorReshaped]], %[[one4]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
-// CHECK_SCALE: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[currSeqLenTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
+// CHECK_SCALE: %[[lastValidKVIndexTensorBroadcast:.*]] = tosa.mul %[[lastValidKVIndexTensorReshaped]], %[[one4]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
+// CHECK_SCALE: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[lastValidKVIndexTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
 // CHECK_SCALE: %[[negInf:.*]] = "tosa.const"() <{values = dense<0xFF800000> : tensor<1x4x1024x1024xf32>}> : () -> tensor<1x4x1024x1024xf32>
 // CHECK_SCALE: %[[qkTensorBeforeReshape:.*]] = tosa.select %[[mask]], %[[negInf]], %[[qkTensorReshaped]] : (tensor<1x4x1024x1024xi1>, tensor<1x4x1024x1024xf32>, tensor<1x4x1024x1024xf32>) -> tensor<1x4x1024x1024xf32>
 // CHECK_SCALE: %[[qkTensor:.*]] = tosa.reshape %[[qkTensorBeforeReshape]], %{{.*}} : (tensor<1x4x1024x1024xf32>, !tosa.shape<3>) -> tensor<4x1024x1024xf32>
@@ -117,8 +117,8 @@
 // CHECK_NO_SCALE: %[[valuesTensor:.*]] = tensor.collapse_shape %[[valuesMul]] {{.*}} : tensor<2x2x1024x32xf32> into [[valuesShape:tensor<.*>]]
 // CHECK_NO_SCALE: %[[qkTensorOrig:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor:.*]], %{{.*}}, %{{.*}} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[squareShape:tensor<.*>]]
 
-// CHECK_NO_SCALE: %[[currSeqLenTensorDumbReshaped:.*]] = tosa.reshape %[[currSeqLenTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
-// CHECK_NO_SCALE: %[[currSeqLenTensorReshaped:.*]] = tosa.reshape %[[currSeqLenTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
+// CHECK_NO_SCALE: %[[lastValidKVIndexTensorDumbReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
+// CHECK_NO_SCALE: %[[lastValidKVIndexTensorReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
 // CHECK_NO_SCALE: %[[qkTensorCast:.*]] = tosa.cast %[[qkTensorOrig]] : (tensor<4x1024x1024xf32>) -> tensor<4x1024x1024xf32>
 // CHECK_NO_SCALE: %[[qkTensorReshaped:.*]] = tosa.reshape %[[qkTensorCast]], %{{.*}} : (tensor<4x1024x1024xf32>, !tosa.shape<4>) -> tensor<1x4x1024x1024xf32>
 // CHECK_NO_SCALE: %[[range:.*]] = "tosa.const"() <{values = {{.*}} : tensor<1024xi32>}> : () -> tensor<1024xi32>
@@ -126,8 +126,8 @@
 // CHECK_NO_SCALE: %[[one:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
 // CHECK_NO_SCALE: %[[rangeBroadcast:.*]] = tosa.mul %[[rangeReshaped]], %[[one]], %{{.*}} : (tensor<1x1x1x1024xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
 // CHECK_NO_SCALE: %[[one2:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
-// CHECK_NO_SCALE: %[[currSeqLenTensorBroadcast:.*]] = tosa.mul %[[currSeqLenTensorReshaped]], %[[one2]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
-// CHECK_NO_SCALE: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[currSeqLenTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
+// CHECK_NO_SCALE: %[[lastValidKVIndexTensorBroadcast:.*]] = tosa.mul %[[lastValidKVIndexTensorReshaped]], %[[one2]], %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
+// CHECK_NO_SCALE: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[lastValidKVIndexTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
 // CHECK_NO_SCALE: %[[negInf:.*]] = "tosa.const"() <{values = dense<0xFF800000> : tensor<1x4x1024x1024xf32>}> : () -> tensor<1x4x1024x1024xf32>
 // CHECK_NO_SCALE: %[[qkTensorBeforeReshape:.*]] = tosa.select %[[mask]], %[[negInf]], %[[qkTensorReshaped]] : (tensor<1x4x1024x1024xi1>, tensor<1x4x1024x1024xf32>, tensor<1x4x1024x1024xf32>) -> tensor<1x4x1024x1024xf32>
 // CHECK_NO_SCALE: %[[qkTensor:.*]] = tosa.reshape %[[qkTensorBeforeReshape]], %{{.*}} : (tensor<1x4x1024x1024xf32>, !tosa.shape<3>) -> tensor<4x1024x1024xf32>

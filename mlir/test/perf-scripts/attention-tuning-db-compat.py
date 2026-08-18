@@ -15,10 +15,12 @@ kernels and must not be silently matched against an old all-false row.
 
 from pathlib import Path
 import os
+import random
 import shutil
 import sys
 import types
 import unittest
+from unittest import mock
 
 # perfRunner.py is on PATH (lit's mlir_rock_tools_dir, populated by
 # ci-performance-scripts). Import it from there rather than from the source
@@ -44,21 +46,28 @@ def stub_optional_pulp():
 
 stub_optional_pulp()
 
+import attentionSweeps  # noqa: E402
 from perfRunner import AttentionConfiguration, lookup_tuning_db, read_tuning_db  # noqa: E402
 from quickTuningGen import get_target_columns, load_data  # noqa: E402
 
 ARCH = "gfx950:sramecc+:xnack-"
 NUM_CU = 256
 NUM_CHIPLETS = 8
-PERFCONFIG = "attn:v4:32,256,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1"
+# Canonical named perfConfig form. The legacy positional `attn:vN:` spelling is
+# no longer emitted and parse_perfconfig() rejects it, so fixtures must not use it.
+PERFCONFIG = ("attn:mPerBlockG0=32,nPerBlockG0=256,nPerBlockG1=32,kPerBlock=32,kpack=1,"
+              "numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,"
+              "wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,"
+              "useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,"
+              "useReductionLayout=-1,useOptimizeEpilogue=-1")
 TMP_PREFIX = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/attention-tuning-db-compat")
 
 
-def make_config(extra_flags):
+def make_config(extra_flags, g=1):
     """Build a canonical attention config with the requested optional flags."""
     key = ("-t f16 "
            "-transQ false -transK false -transV false -transO false "
-           "-causal false -return_lse false -split_kv 1 -g 1 "
+           f"-causal false -return_lse false -split_kv 1 -g {g} "
            "-seq_len_q 16 -seq_len_k 16 -num_heads_q 1 -num_heads_kv 1 "
            "-head_dim_qk 32 -head_dim_v 32 "
            f"{extra_flags}")
@@ -92,14 +101,62 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         return lookup_tuning_db(read_tuning_db(str(path)), ARCH, config, config.to_command_line())
 
     def test_last_valid_kv_index_is_runtime_only(self):
-        """last_valid_kv_index reaches rocmlir-gen without changing tuning identity."""
-        config = make_config("-with-attn-scale false -with-attn-bias false -transBias false")
-        config.last_valid_kv_index = [4]
+        """The runtime KV index reaches rocmlir-gen without changing tuning identity."""
+        config = make_config("-last_valid_kv_index 4 "
+                             "-with-attn-scale false -with-attn-bias false -transBias false")
 
         self.assertNotIn("-last_valid_kv_index", config.to_command_line())
 
         gen_args = config.generate_mlir_driver_commandline("", kernel_repeats=None).split()
         self.assertEqual(gen_args.count("-last_valid_kv_index=4"), 1)
+
+    def test_perf_runner_accepts_last_valid_kv_index_endpoints(self):
+        """Both inclusive KV-index endpoints are valid."""
+        for index in (0, 15):
+            with self.subTest(index=index):
+                config = make_config(
+                    f"-last_valid_kv_index {index} "
+                    "-with-attn-scale false -with-attn-bias false -transBias false")
+                self.assertEqual(config.last_valid_kv_index, [index])
+
+    def test_perf_runner_rejects_invalid_last_valid_kv_indices(self):
+        """KV indices outside [0, K - 1] are rejected."""
+        for index in (-1, 16):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError,
+                                                                   "0 <= P < seq_len_k"):
+                make_config(f"-last_valid_kv_index {index} "
+                            "-with-attn-scale false -with-attn-bias false -transBias false")
+
+    def test_perf_runner_accepts_sliding_look_back_endpoints(self):
+        """The disabled sentinel and maximum positive look-back are valid."""
+        disabled = make_config("-sliding_window_look_back -1 "
+                               "-with-attn-scale false -with-attn-bias false -transBias false")
+        self.assertIsNone(disabled.sliding_window_look_back)
+
+        maximum = make_config("-last_valid_kv_index 15 -sliding_window_look_back 15 "
+                              "-with-attn-scale false -with-attn-bias false -transBias false")
+        self.assertEqual(maximum.sliding_window_look_back, 15)
+
+    def test_perf_runner_rejects_invalid_sliding_look_backs(self):
+        """Look-backs outside {-1} union [1, K - 1] are rejected."""
+        for look_back in (-2, 0, 16):
+            with self.subTest(look_back=look_back), self.assertRaises(ValueError):
+                make_config(f"-last_valid_kv_index 15 -sliding_window_look_back {look_back} "
+                            "-with-attn-scale false -with-attn-bias false -transBias false")
+
+    def test_attention_sweep_handles_single_key_kv_cache(self):
+        """K=1 KV-cache samples use P=0 and disable sliding look-back."""
+        with mock.patch.object(attentionSweeps, "MAX_TOKENS", 1):
+            for seed in range(100):
+                shape = attentionSweeps._sample_attn_shape(random.Random(seed), n_per_block=16)
+                last_valid_kv_index = shape[-2]
+                if last_valid_kv_index is not None:
+                    self.assertEqual(shape[3], 1)
+                    self.assertTrue(all(index == 0 for index in last_valid_kv_index))
+                    self.assertIsNone(shape[-1])
+                    break
+            else:
+                self.fail("No deterministic K=1 KV-cache sample found")
 
     def test_perf_runner_matches_legacy_all_false_attention_flags(self):
         """Old DB rows may omit all false-valued attention flags."""
@@ -144,11 +201,11 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("-transBias true", trans_bias_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(trans_bias_config, legacy_all_false_key))
 
-    def test_perf_runner_keeps_sliding_window_distinct(self):
+    def test_perf_runner_keeps_sliding_look_back_distinct(self):
         """A sliding-window kernel must not fall back to a row that lacks it.
 
-        Unlike the boolean flags, sliding_window_look_back is only present in the key
-        when > 0, so its distinctness relies on the key string, not on the
+        Unlike the boolean flags, sliding_window_look_back is only present in
+        sliding keys, so its distinctness relies on the key string, not on the
         false-flag stripping in lookup_tuning_db.
         """
         all_false_config = make_config(
@@ -157,14 +214,14 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
                                           " -with-attn-scale false", " -with-attn-bias false",
                                           " -transBias false")
 
-        sliding_window_config = make_config(
-            "-sliding_window_look_back 8 -with-attn-scale false -with-attn-bias false -transBias false"
-        )
+        sliding_config = make_config(
+            "-last_valid_kv_index 15 -sliding_window_look_back 8 "
+            "-with-attn-scale false -with-attn-bias false -transBias false")
 
-        self.assertIn("-sliding_window_look_back 8", sliding_window_config.to_command_line())
-        self.assertIsNone(self.lookup_from_legacy_key(sliding_window_config, legacy_all_false_key))
+        self.assertIn("-sliding_window_look_back 8", sliding_config.to_command_line())
+        self.assertIsNone(self.lookup_from_legacy_key(sliding_config, legacy_all_false_key))
 
-    def test_perf_runner_matches_pre_transbias_sliding_window_key(self):
+    def test_perf_runner_matches_pre_transbias_sliding_look_back_key(self):
         """A sliding-window row from before transBias must still match.
 
         Exercises the reconciled columns together: stripping the false-valued
@@ -172,16 +229,27 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         sliding_window_look_back column that sits earlier in the key.
         """
         current_config = make_config(
-            "-sliding_window_look_back 8 -with-attn-scale false -with-attn-bias false -transBias false"
-        )
+            "-last_valid_kv_index 15 -sliding_window_look_back 8 "
+            "-with-attn-scale false -with-attn-bias false -transBias false")
         legacy_key = drop_flags(current_config.to_command_line(), " -transBias false")
 
         self.assertIn("-sliding_window_look_back 8", legacy_key)
         self.assertNotIn("-transBias", legacy_key)
         self.assertEqual(self.lookup_from_legacy_key(current_config, legacy_key), PERFCONFIG)
 
+    def test_perf_runner_rejects_wrong_last_valid_kv_index_count(self):
+        """Each attention group requires exactly one last-valid K/V index."""
+        for indices in ("15", "15,14,13"):
+            expected_count = len(indices.split(","))
+            with self.subTest(indices=indices), self.assertRaisesRegex(
+                    ValueError, rf"expected 2, got {expected_count}"):
+                make_config(
+                    f"-last_valid_kv_index {indices} "
+                    "-with-attn-scale false -with-attn-bias false -transBias false",
+                    g=2)
+
     def test_quick_tuning_gen_defaults_missing_optional_columns(self):
-        """Legacy debug TSV rows without TransBias/SlidingWindowLookBack get defaults."""
+        """Debug TSV rows without TransBias/look-back columns get defaults."""
         debug_path = Path(f"{self.tmp_prefix}.debug")
         debug_path.write_text(
             "DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
@@ -194,7 +262,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
         self.assertIn("SlidingWindowLookBack", df.columns)
-        self.assertTrue(df["SlidingWindowLookBack"].eq(0).all())
+        self.assertTrue(df["SlidingWindowLookBack"].eq(-1).all())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
                              as_index=False)["TFlops"].max()
@@ -223,7 +291,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         current_path.write_text(
             current_header + f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
             f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
-            f"{PERFCONFIG}\t1.0\tFalse\t0\n")
+            f"{PERFCONFIG}\t1.0\tFalse\t-1\n")
 
         df = load_data([str(legacy_path), str(current_path)], no_splitk=False)
         self.assertFalse(df["SlidingWindowLookBack"].isna().any())

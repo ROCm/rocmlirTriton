@@ -196,12 +196,12 @@ non-zero value would cause the runtime to **add** that amount on top of
 the static `.amdhsa_group_segment_fixed_size`, potentially exceeding the
 hardware LDS limit and causing a launch failure.
 
-### 2.9 KV-cache attention: dynamic sequence length
+### 2.9 KV-cache attention: dynamic last-valid index
 
 Attention kernels with KV-cache support use **statically-shaped** K and V
 tensors (compiled to a maximum sequence length `maxSeqLen`) but accept a
 per-batch runtime scalar `lastValidKVIndex` that gives the **last valid key
-index** (0-based, inclusive — so `lastValidKVIndex + 1` tokens are
+index** (0-based and inclusive, so `lastValidKVIndex + 1` tokens are
 meaningful).
 
 The kernel shortens its N-loop to `ceil((lastValidKVIndex + 1) /
@@ -213,14 +213,15 @@ the softmax result.
 
 - K and V buffers must be valid for at least
   `ceil((lastValidKVIndex + 1) / NPerBlock) * NPerBlock` elements along
-  the sequence axis (i.e. `lastValidKVIndex` rounded up to the next tile
+  the sequence axis (i.e. `lastValidKVIndex + 1` rounded up to the next tile
   boundary). Padding values beyond `lastValidKVIndex` are irrelevant
   (masked to `-inf`), but the memory must be mapped and accessible.
   Note: `llvm.dereferenceable` is set to the full static `maxSeqLen`
   byte size, so strictly speaking the safest option is to allocate the
   full `maxSeqLen` extent; in practice the kernel only accesses the
   tile-rounded region.
-- `lastValidKVIndex` must satisfy `0 <= lastValidKVIndex <= maxSeqLen - 1`.
+- `lastValidKVIndex` must satisfy
+  `0 <= lastValidKVIndex <= maxSeqLen - 1`.
   A value >= `maxSeqLen` can drive the N-loop past the static tensor
   extent, causing out-of-bounds loads.
 - `lastValidKVIndex` is a 1-D tensor with one element per batch, matching

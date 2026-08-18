@@ -129,8 +129,8 @@ static Value moveNumHeadsToSeqLenQ(OpBuilder builder, Location loc,
   return rock::TransformOp::create(builder, loc, matrixUnmerge, mergerAttr);
 }
 
-// Same as moveNumHeadsToSeqLenQ() but for currSeqLen tensor (KV-Cache)
-static Value moveNumHeadsToSeqLenCurrSeqLen(OpBuilder builder, Location loc,
+// Same as moveNumHeadsToSeqLenQ() but for per-group metadata tensors.
+static Value moveNumHeadsToSeqLenGroupInput(OpBuilder builder, Location loc,
                                             Value inputTensor,
                                             int64_t numRepeats) {
   ArrayRef<int64_t> inpShape =
@@ -264,10 +264,10 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
     queries = moveNumHeadsToSeqLenQ(rw, loc, queries, numRepeats);
     if (lastValidKVIndex)
       lastValidKVIndex =
-          moveNumHeadsToSeqLenCurrSeqLen(rw, loc, lastValidKVIndex, numRepeats);
+          moveNumHeadsToSeqLenGroupInput(rw, loc, lastValidKVIndex, numRepeats);
     if (prefixOffset)
       prefixOffset =
-          moveNumHeadsToSeqLenCurrSeqLen(rw, loc, prefixOffset, numRepeats);
+          moveNumHeadsToSeqLenGroupInput(rw, loc, prefixOffset, numRepeats);
 
     transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
       return moveNumHeadsToSeqLenOut(rw, loc, v, numRepeats, splitKV);

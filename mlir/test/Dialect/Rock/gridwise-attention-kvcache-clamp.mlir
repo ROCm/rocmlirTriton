@@ -7,9 +7,9 @@
 module {
   // CHECK-LABEL: func @attn_kvcache_clamps_nloop
   // lastValidKVIndex is loaded as a scalar.
-  // CHECK: %[[CSL:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
+  // CHECK: %[[LVKI:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
   // end = (lastValidKVIndex + nPerBlock) / nPerBlock.
-  // CHECK: arith.addi %[[CSL]], %c32{{.*}} : i32
+  // CHECK: arith.addi %[[LVKI]], %c32{{.*}} : i32
   // CHECK: %[[END_UNBOUND:.*]] = arith.divui %{{.*}}, %c32{{.*}} : i32
   // The trip count is clamped to the static N-block count (gemm0N / nPerBlock =
   // 32768 / 32 = 1024) so a runtime lastValidKVIndex cannot drive the loop past

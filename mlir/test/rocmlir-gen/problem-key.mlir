@@ -37,10 +37,15 @@
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t i8 -g 8 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefixes=CHECK_I8_NO_SCALE_BIAS
 // CHECK_I8_NO_SCALE_BIAS: -t i8 {{.*}} -head_dim_v 32 -with-attn-scale false -with-attn-bias false -transBias false
 
-// sliding_window_look_back is only emitted when set. last_valid_kv_index remains runtime
-// data and defaults to seq_len_k - 1 when this key is reconstructed for tuning.
+// sliding_window_look_back is only emitted when set. last_valid_kv_index remains
+// runtime data and defaults to seq_len_k - 1 when this key is reconstructed.
 // RUN: rocmlir-gen --arch gfx942 --operation attention -sliding_window_look_back 8 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 | rocmlir-gen --emit-tuning-key - | FileCheck %s  --check-prefixes=CHECK_SW
 // CHECK_SW: -t f16 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_look_back 8 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32
+
+// Omission and -1 both mean non-sliding and omit the field from the key.
+// RUN: rocmlir-gen --arch gfx942 --operation attention -last_valid_kv_index=0 -sliding_window_look_back=-1 -seq_len_q 1 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefix=CHECK_SW_DISABLED
+// CHECK_SW_DISABLED-NOT: sliding_window_look_back
+// CHECK_SW_DISABLED: -split_kv 1 -num_heads_q 1
 
 // sliding_window_look_back and transBias are independent optional fields in the
 // attention tuning key. Emitting both at once pins their relative order:

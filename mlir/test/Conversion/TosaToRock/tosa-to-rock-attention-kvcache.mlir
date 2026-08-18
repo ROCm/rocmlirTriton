@@ -50,7 +50,7 @@ func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, 
 // -----
 
 // CHECK-LABEL: func @mlir_attention_clipped
-// CHECK-DAG: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1024> : tensor<32xi32>}> : () -> tensor<32xi32>
+// CHECK-DAG: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1023> : tensor<32xi32>}> : () -> tensor<32xi32>
 // CHECK-DAG: %[[LOWER:.*]] = "tosa.const"() <{values = dense<16> : tensor<32xi32>}> : () -> tensor<32xi32>
 // CHECK: %[[HEAD_BROADCAST:.*]] = rock.transform %arg3 {{.*}} : tensor<1x1xi32> to tensor<1x32xi32>
 // CHECK: %[[FLAT:.*]] = tensor.collapse_shape %[[HEAD_BROADCAST]]
@@ -79,7 +79,7 @@ func.func @mlir_attention_clipped(%arg0: tensor<12288xf16>, %arg1: tensor<419430
   %7 = tosa.mul %cst, %6, %shift : (tensor<1x1x1x1024xi32>, tensor<1x32x1x1024xi32>, tensor<1xi8>) -> tensor<1x32x1x1024xi32>
   %expanded_5 = tensor.expand_shape %arg3 [[0], [1, 2, 3]] output_shape [1, 1, 1, 1] : tensor<1x1xi32> into tensor<1x1x1x1xi32>
   %clip_min = "tosa.const"() <{values = dense<16> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
-  %clip_max = "tosa.const"() <{values = dense<1024> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
+  %clip_max = "tosa.const"() <{values = dense<1023> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %clip_broadcast_ones = "tosa.const"() <{values = dense<1> : tensor<1x32x1x1xi32>}> : () -> tensor<1x32x1x1xi32>
   // Exercise commuted clip operands; the reconstructed clip is canonicalized.
   %clamped = tosa.maximum %clip_min, %expanded_5 : (tensor<1x1x1x1xi32>, tensor<1x1x1x1xi32>) -> tensor<1x1x1x1xi32>

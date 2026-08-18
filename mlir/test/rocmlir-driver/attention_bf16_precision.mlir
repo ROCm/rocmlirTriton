@@ -9,7 +9,7 @@
 // ops in MLIR, the LLVM backend lowers bf16 arithmetic by extending to f32,
 // so the CPU effectively computes scale*QK+bias in f32.  This causes
 // numerical divergence from the GPU — especially visible with
-// last_valid_kv_index masking in GQA + KV Cache configurations.  This is why
+// last_valid_kv_index masking in GQA + KV Cache configurations. This is why
 // PrAttentionBF16.toml uses relaxed thresholds for those tests.
 
 // --- GPU assembly: gfx1100 (RDNA3) ---

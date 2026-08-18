@@ -174,21 +174,14 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     split_kv = rng.choice(SPLIT_KV_OPTIONS) if return_lse else 1
 
     use_kvcache = rng.choice([True, False])
-    # KV-cache mode requires per-group ``last_valid_kv_index[i]`` in [1, seqlen_k - 1]
-    # (see the ``last_valid_kv_index`` block below for why), so we need at least
-    # ``seqlen_k >= 2`` whenever kvcache is enabled.
-    seqlen_k_lo = 2 if use_kvcache else 1
-    if seqlen_k_lo > max_valid_seqlen:
-        use_kvcache = False
-        seqlen_k_lo = 1
-    seqlen_k = rng.randint(seqlen_k_lo, max_valid_seqlen)
+    seqlen_k = rng.randint(1, max_valid_seqlen)
 
     # Causal masking combined with KV-cache decode (seq_len_q == 1) doesn't
     # make sense: the single query attends only to cached past keys anyway.
     causal = False if use_kvcache else rng.choice([True, False])
 
-    # KV-cache mode: a single query token per call, looking up `last_valid_kv_index`
-    # already-cached keys/values per group. Otherwise cap seq_len_q so:
+    # KV-cache mode: a single query token per call. Each group's inclusive
+    # `last_valid_kv_index` P makes keys [0, P] valid. Otherwise cap seq_len_q so:
     #   1. The first matmul (Q @ K^T, shape seq_len_q x seq_len_k) stays under
     #      MAX_FIRST_MATMUL elements -- the dominant cost on prefill shapes.
     #   2. When causal masking is combined with split-KV, seq_len_q stays at
@@ -204,22 +197,17 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         if causal and split_kv > 1:
             max_seqlen_q = min(max_seqlen_q, n_per_block)
         seqlen_q = rng.randint(1, max_seqlen_q)
-    # rocmlir-gen.cpp (maskKVCacheTosa) asserts ``v >= 0 && v < seqlen_k``
-    # on each per-group ``last_valid_kv_index[i]``. We additionally need ``v >= 1``
-    # because ``v == 0`` (no valid cached keys) makes the softmax denominator
-    # 0 -> nan even without causal masking. So sample in [1, seqlen_k - 1];
-    # the ``seqlen_k_lo`` block above guarantees this range is non-empty.
-    last_valid_kv_index = ([rng.randint(1, seqlen_k - 1) for _ in range(g)]
+    # P is an inclusive index, not a count. In particular, P == 0 means one
+    # valid cached key. Sample the complete legal range [0, seqlen_k - 1].
+    last_valid_kv_index = ([rng.randint(0, seqlen_k - 1) for _ in range(g)]
                            if use_kvcache else None)
 
-    # Sweeps use an explicit ``last_valid_kv_index`` for runtime sliding-window
-    # masking. Reconstructed tuning keys may instead use rocmlir-gen's
-    # full-cache default. The window must be positive and must not exceed the
-    # max sequence length (``seqlen_k``). Leave it disabled (0) otherwise, and
-    # disable it half the time even in KV-cache mode so the sweep still covers
-    # the plain KV-cache path.
-    sliding_window_look_back = (rng.randint(1, seqlen_k)
-                                if use_kvcache and rng.choice([True, False]) else 0)
+    # A sliding look-back L is strictly positive and bounded by seqlen_k - 1.
+    # Sweeps use explicit last-valid indices, while reconstructed tuning keys
+    # may use rocmlir-gen's full-cache default. None is the non-sliding spelling;
+    # keep that path and skip sliding when seqlen_k == 1 because no valid L exists.
+    sliding_window_look_back = (rng.randint(1, seqlen_k - 1) if use_kvcache and seqlen_k > 1 and
+                                rng.choice([True, False]) else None)
 
     num_heads_q, num_heads_kv = _sample_num_heads(rng)
 

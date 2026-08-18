@@ -485,9 +485,9 @@ struct GridwiseAttentionRewritePattern
         }
         case OutOfScopeType::SlidingWindow: {
           // Sliding window: mask when key_pos < max(0, lastValidKVIndex -
-          // windowSize). slidingWindowLowerBound is precomputed as
-          // max(0, lastValidKVIndex - windowSize). The key position is nIndex
-          // in the rocmlirTriton (N-loop) lowering.
+          // slidingWindowLookBack). slidingWindowLowerBound is precomputed as
+          // max(0, lastValidKVIndex - slidingWindowLookBack). The key position
+          // is nIndex in the rocmlirTriton (N-loop) lowering.
           assert(slidingWindowLowerBound != nullptr);
           auto splatType = RankedTensorType::get(
               cast<ShapedType>(nIndex.getType()).getShape(),
@@ -606,7 +606,7 @@ struct GridwiseAttentionRewritePattern
     Value gemm0NBlocksLastIter;
     Value lastValidKVIndex;
     Value prefixOffset;
-    Value effectiveSeqLen;
+    Value effectiveLastKeyIndex;
     Value slidingWindowLowerBound;
     Value start, end;
 
@@ -653,20 +653,20 @@ struct GridwiseAttentionRewritePattern
 
       if (isKVCache) {
         lastValidKVIndex = loadTensorValue(lastValidKVIndexTensor);
-        effectiveSeqLen = lastValidKVIndex;
+        effectiveLastKeyIndex = lastValidKVIndex;
       }
 
       // Compute sliding window lower bound: max(0, lastValidKVIndex -
-      // windowSize).
+      // slidingWindowLookBack).
       if (slidingWindowLookBack > 0) {
         assert(lastValidKVIndex != nullptr &&
                "sliding window requires lastValidKVIndex (KV-cache)");
-        Value constWindowSize = rewriter.createOrFold<arith::ConstantIntOp>(
+        Value constLookBack = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), slidingWindowLookBack);
         Value zeroConst = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), 0);
         Value lowerBound = arith::SubIOp::create(
-            rewriter, loc, lastValidKVIndex, constWindowSize);
+            rewriter, loc, lastValidKVIndex, constLookBack);
         slidingWindowLowerBound =
             arith::MaxSIOp::create(rewriter, loc, lowerBound, zeroConst);
       }
@@ -696,10 +696,10 @@ struct GridwiseAttentionRewritePattern
               arith::AddIOp::create(rewriter, loc, maxRowOfBlock, prefixOffset);
         }
 
-        effectiveSeqLen = maxRowOfBlock;
+        effectiveLastKeyIndex = maxRowOfBlock;
         if (isKVCache)
-          effectiveSeqLen = arith::MinUIOp::create(
-              rewriter, loc, lastValidKVIndex, effectiveSeqLen);
+          effectiveLastKeyIndex = arith::MinUIOp::create(
+              rewriter, loc, lastValidKVIndex, effectiveLastKeyIndex);
 
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
@@ -708,22 +708,23 @@ struct GridwiseAttentionRewritePattern
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
-          effectiveSeqLen = arith::MinUIOp::create(
-              rewriter, loc, effectiveSeqLen, gemm0NMinusOne);
+          effectiveLastKeyIndex = arith::MinUIOp::create(
+              rewriter, loc, effectiveLastKeyIndex, gemm0NMinusOne);
         }
       } else {
-        effectiveSeqLen = lastValidKVIndex;
+        effectiveLastKeyIndex = lastValidKVIndex;
       }
 
       // compute end index
-      Value numerator = arith::AddIOp::create(rewriter, loc, effectiveSeqLen,
-                                              constGemm0NPerBlock);
+      Value numerator = arith::AddIOp::create(
+          rewriter, loc, effectiveLastKeyIndex, constGemm0NPerBlock);
       end = rewriter.createOrFold<arith::DivUIOp>(loc, numerator,
                                                   constGemm0NPerBlock);
 
       // Clamp the trip count to the physical K/V allocation. Causal modes are
-      // already bounded by effectiveSeqLen; pure KV cache needs this because
-      // Triton's AMD buffer lowering does not use num_records to bound reads.
+      // already bounded by effectiveLastKeyIndex; pure KV cache needs this
+      // because Triton's AMD buffer lowering does not use num_records to bound
+      // reads.
       end = arith::MinUIOp::create(rewriter, loc, end, constGemm0NBlocks);
 
       Value zero = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -1471,8 +1472,8 @@ struct GridwiseAttentionRewritePattern
             /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
 
         // Sliding window masking: mask when key < max(0, lastValidKVIndex -
-        // windowSize). Independent of causal masking and applied on every
-        // iteration (like causal), alongside KV-cache masking.
+        // slidingWindowLookBack). Independent of causal masking and applied on
+        // every iteration (like causal), alongside KV-cache masking.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::SlidingWindow, gridCoordsGemm0,
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,

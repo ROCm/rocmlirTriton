@@ -7,10 +7,10 @@ module {
   // positions (nIndex) below it are masked with -inf.
 
   // lastValidKVIndex is loaded from the tensor as a scalar i32.
-  // CHECK: %[[SEQLEN:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
+  // CHECK: %[[LAST_VALID:.*]] = tt.unsplat %{{.*}} : tensor<1xi32>
   // slidingWindowLowerBound = max(0, lastValidKVIndex - slidingWindowLookBack)
-  // CHECK: %[[SEQ_MINUS_WINDOW:.*]] = arith.subi %[[SEQLEN]], %c3{{.*}} : i32
-  // CHECK: %[[LOWER_BOUND:.*]] = arith.maxsi %[[SEQ_MINUS_WINDOW]], %c0{{.*}} : i32
+  // CHECK: %[[LAST_VALID_MINUS_LOOK_BACK:.*]] = arith.subi %[[LAST_VALID]], %c3{{.*}} : i32
+  // CHECK: %[[LOWER_BOUND:.*]] = arith.maxsi %[[LAST_VALID_MINUS_LOOK_BACK]], %c0{{.*}} : i32
 
   // The N-loop start iteration skips blocks fully below the lower bound:
   // start = max(0, floor(slidingWindowLowerBound / nPerBlock)). Both operands
