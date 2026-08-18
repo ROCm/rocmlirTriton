@@ -378,10 +378,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // picked either through heuristics or user provided.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
@@ -424,10 +420,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Check fusion legality.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
