@@ -71,6 +71,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <tuple>
 
@@ -255,6 +256,11 @@ static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   auto srcType = cast<RankedTensorType>(store.getSource().getType());
   auto destType = cast<RankedTensorType>(store.getDest().getType());
   if (!srcType.hasStaticShape() || !destType.hasStaticShape())
+    return;
+  // Triton requires tensor operands to contain a power-of-two number of
+  // elements. The production pipeline decomposes non-power-of-two GEMM tiles
+  // before this pass; conservatively leave unexpected standalone shapes alone.
+  if (!llvm::isPowerOf2_64(srcType.getNumElements()))
     return;
 
   b.setInsertionPoint(store);

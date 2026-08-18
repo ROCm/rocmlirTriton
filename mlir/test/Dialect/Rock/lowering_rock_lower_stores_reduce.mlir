@@ -113,6 +113,21 @@ func.func @no_reduce_for_unit_add_dim(%tile: tensor<64x1xf32>, %out: tensor<64xf
 
 // -----
 
+// The standalone pass may encounter shapes that the production pipeline would
+// first decompose. Leave their atomics intact rather than create a tt.reduce
+// whose tensor has a non-power-of-two element count.
+// CHECK-LABEL: @no_reduce_for_non_power_of_two_tile
+//  CHECK-NOT: rock.blockwise_reduce
+//      CHECK: rock.blockwise_store %{{.*}} by atomic_add : tensor<64x3xf32> -> tensor<64x3xf32> -> tensor<64xf32>
+func.func @no_reduce_for_non_power_of_two_tile(%tile: tensor<64x3xf32>, %out: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
+  %sm = rock.store_marker %tile views [] : tensor<64x3xf32> -> tensor<64x3xf32>
+  %0 = rock.transform %out by <affine_map<(d0, d1) -> (d0)> by [<PassThrough ["row"] at [0] -> ["row"] at [0]>, <AddDim{3} ["reduction"] at [1] -> [] at []>] bounds = [64, 3] -> [64]> : tensor<64xf32> to tensor<64x3xf32>
+  %1 = rock.store %sm to %0 by atomic_add : tensor<64x3xf32> -> tensor<64xf32> to tensor<64x3xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
 // Only atomic_add accumulates, so a `set` store over the same broadcast view
 // keeps its last-writer-wins semantics.
 // CHECK-LABEL: @no_reduce_for_set_store
