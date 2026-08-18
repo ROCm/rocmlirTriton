@@ -780,6 +780,37 @@ static bool incrementalizeLoop(scf::ForOp loop) {
   return changed;
 }
 
+/// Rebuild the validity mask for one iteration: splice the carried `suffix`
+/// coordinates into the iv == lb coordinate vector, then re-expand the
+/// sub-chain below the merge. Returns failure if that expansion fails.
+static FailureOr<Value> expandCarryMask(OpBuilder &b, Location loc,
+                                        const CarryPlan &plan,
+                                        ValueRange suffix) {
+  SmallVector<Value> coords(plan.iter0Coords);
+  ArrayRef<unsigned> suffixPos =
+      ArrayRef<unsigned>(plan.cand.coordPositions).take_back(plan.suffixCount);
+  for (auto [k, pos] : llvm::enumerate(suffixPos))
+    coords[pos] = suffix[k];
+  FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
+      b, loc, plan.cand.belowMaps(), coords, plan.ptrType.getShape(),
+      plan.ptrType.getElementType(),
+      /*computeOffset=*/false);
+  if (failed(om))
+    return failure();
+  return om->mask;
+}
+
+/// Test whether `expandCarryMask` will succeed for `plan`, so that eligibility
+/// is decided before the loop is rewritten.
+static bool carryMaskIsExpandable(const CarryPlan &plan, Location loc) {
+  // Emit the trial IR into a fresh block that is only used for the trial so
+  // we dont pollute the main loop IR.
+  Block trial;
+  OpBuilder b(loc.getContext());
+  b.setInsertionPointToStart(&trial);
+  return succeeded(expandCarryMask(b, loc, plan, plan.carriedInits));
+}
+
 /// Analyze each carry candidate and, for those eligible for the pointer
 /// recurrence, emit their preheader init values (base coordinates,
 /// carried suffix coordinates, zero offset accumulator) and return the
@@ -929,6 +960,12 @@ buildCarryPlans(OpBuilder &b, scf::ForOp loop,
     // candidate isn't eligible; skip it and let the op be lowered in place.
     if (!carriedInitsOk)
       continue;
+    // Bail out if mask is not expandable.
+    if (!carryMaskIsExpandable(plan, loc)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Mask is not expandable, skip " << op.getLoc() << "\n");
+      continue;
+    }
     auto offTy = RankedTensorType::get(outShape, ptrType.getElementType());
     plan.offsetAccInit = splatConst(b, loc, offTy, 0);
     plans.push_back(std::move(plan));
@@ -946,25 +983,15 @@ static Value buildCarryBasePtr(OpBuilder &b, Location loc,
   return baseOp.getPointers();
 }
 
-/// Rebuild the validity mask for the current iteration: splice the carried
-/// suffix coordinates (the new loop's iter_args) into the iv == lb coordinate
-/// vector, then re-expand the sub-chain below the merge. Returns failure if the
-/// sub-chain expansion fails.
-static FailureOr<Value> buildCarryMask(OpBuilder &b, Location loc,
-                                       const CarryPlan &plan,
-                                       scf::ForOp newLoop) {
-  SmallVector<Value> coords(plan.iter0Coords);
-  ArrayRef<unsigned> suffixPos =
-      ArrayRef<unsigned>(plan.cand.coordPositions).take_back(plan.suffixCount);
-  for (auto [k, pos] : llvm::enumerate(suffixPos))
-    coords[pos] = newLoop.getRegionIterArg(plan.iterArgStart + k);
-  FailureOr<OffsetAndMask> om = expandCoordsToOffsetAndMask(
-      b, loc, plan.cand.belowMaps(), coords, plan.ptrType.getShape(),
-      plan.ptrType.getElementType(),
-      /*computeOffset=*/false);
-  if (failed(om))
-    return failure();
-  return om->mask;
+/// The loop-carried suffix coordinates of `plan` in `newLoop`, highest place
+/// first. The offset accumulator follows them and is not included.
+static SmallVector<Value> suffixIterArgs(const CarryPlan &plan,
+                                         scf::ForOp newLoop) {
+  SmallVector<Value> suffix;
+  for (BlockArgument arg :
+       newLoop.getRegionIterArgs().slice(plan.iterArgStart, plan.suffixCount))
+    suffix.push_back(arg);
+  return suffix;
 }
 
 /// Form the current pointer as the base tile plus the carried full-tile offset
@@ -977,7 +1004,10 @@ static Value buildCarryPtr(OpBuilder &b, Location loc, Value basePtr,
 
 /// Rewrite the eligible Carry candidates in `carryCands`: replace `loop` with a
 /// new loop that carries the merge's decomposed coordinate state via the
-/// pointer recurrence. Returns true if the candidates were rewritten.
+/// pointer recurrence. Returns true if the candidates were rewritten, false if
+/// none of them qualified and `loop` was left untouched. Eligibility is settled
+/// by `buildCarryPlans` before `loop` is replaced, so the rewrite cannot fail
+/// part-way through.
 static bool simplifyCarryCandidates(scf::ForOp loop,
                                     ArrayRef<CarryCandidate> carryCands) {
   Location loc = loop.getLoc();
@@ -1011,13 +1041,10 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   for (CarryPlan &plan : plans) {
     b.setInsertionPoint(plan.cand.op);
     Value basePtr = buildCarryBasePtr(b, loc, plan);
-    FailureOr<Value> mask = buildCarryMask(b, loc, plan, newLoop);
-    if (failed(mask)) {
-      SmallVector<Value> unchanged(
-          newLoop.getRegionIterArgs().drop_front(numOrig));
-      appendToForOpYield(newLoop, unchanged);
-      return false;
-    }
+    FailureOr<Value> mask =
+        expandCarryMask(b, loc, plan, suffixIterArgs(plan, newLoop));
+    if (failed(mask))
+      llvm_unreachable("carry mask expansion was decided by buildCarryPlans");
     ptrsAndMasks.emplace_back(buildCarryPtr(b, loc, basePtr, plan, newLoop),
                               *mask);
   }
@@ -1029,12 +1056,8 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   for (CarryPlan &plan : plans) {
     // Advance the full-tile validity (suffix) coordinates and the
     // full-tile offset accumulator by the per-step delta.
-    SmallVector<Value> suffix;
-    for (unsigned k = 0; k < plan.suffixCount; ++k)
-      suffix.push_back(newLoop.getRegionIterArg(plan.iterArgStart + k));
-
     CarryStep carryStep = emitCarryStep(
-        b, loc, suffix,
+        b, loc, suffixIterArgs(plan, newLoop),
         ArrayRef<int64_t>(plan.cand.coordSizes).take_back(plan.suffixCount),
         ArrayRef<int64_t>(plan.cand.coordSteps).take_back(plan.suffixCount),
         ArrayRef<int64_t>(plan.offsetStrides).take_back(plan.suffixCount),
