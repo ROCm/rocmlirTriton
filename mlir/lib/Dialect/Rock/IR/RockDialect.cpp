@@ -1780,25 +1780,25 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
 
-// Validate sliding window constraints common to attention-like ops.
+// Validate sliding-window look-back constraints common to attention-like ops.
 static LogicalResult
-verifySlidingWindowConstraints(Operation *op,
-                               std::optional<int32_t> slidingWindowLookBack,
-                               Value lastValidKVIndex, int64_t maxSeqLen) {
+verifySlidingWindowLookBack(Operation *op,
+                            std::optional<int32_t> slidingWindowLookBack,
+                            Value lastValidKVIndex, int64_t maxSeqLen) {
   if (!slidingWindowLookBack)
     return success();
-  int32_t windowSize = static_cast<int32_t>(*slidingWindowLookBack);
+  int32_t lookBack = static_cast<int32_t>(*slidingWindowLookBack);
 
-  if (windowSize <= 0)
+  if (lookBack <= 0)
     return op->emitError("slidingWindowLookBack must be positive");
 
   if (!lastValidKVIndex)
     return op->emitError(
         "slidingWindowLookBack requires lastValidKVIndex to be set");
 
-  if (windowSize > maxSeqLen)
+  if (lookBack >= maxSeqLen)
     return op->emitError(
-        "slidingWindowLookBack must not exceed max sequence length");
+        "slidingWindowLookBack must be less than max sequence length");
 
   return success();
 }
@@ -1851,9 +1851,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   ShapedType kType = cast<ShapedType>(getKeys().getType());
   int64_t maxSeqLen =
       getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
-  if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowLookBack(),
-                                            getLastValidKVIndex(), maxSeqLen)))
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
   return success();
@@ -2139,13 +2139,13 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     return op.emitError("Head dimensions do not match (V and Output)");
   }
 
-  // check lastValidKVIndex (KV Cache)
+  // Check lastValidKVIndex (KV cache).
   if (lastValidKVIndex) {
-    ShapedType seqLenType = cast<ShapedType>(lastValidKVIndex.getType());
-    if (seqLenType.getShape().size() != 1) {
+    ShapedType indexType = cast<ShapedType>(lastValidKVIndex.getType());
+    if (indexType.getShape().size() != 1) {
       return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
-    if (seqLenType.getShape()[0] != oBatchDim) {
+    if (indexType.getShape()[0] != oBatchDim) {
       return op.emitError(
           "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
@@ -2346,9 +2346,9 @@ LogicalResult AttentionOp::verify() {
   // Validate sliding window constraints.
   // Max seq len is the key N dimension.
   int64_t maxSeqLen = getGemmGemmSize().n;
-  if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowLookBack(),
-                                            getLastValidKVIndex(), maxSeqLen)))
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
   return verifyGemmPlusGemmLikeOp(*this, getLastValidKVIndex(), getLse(),

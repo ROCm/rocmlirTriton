@@ -229,15 +229,17 @@ def Rock_AttentionOp
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix
       lengths for each sequence in the batch
 
-    `lastValidKVIndex` is the zero-based, inclusive current KV-cache position (the
-    last valid key/value index), not the number of cached entries. For a value
-    `P`, key positions `[0, P]` are valid before other masks are applied.
+    `lastValidKVIndex` is the zero-based, inclusive last valid KV-cache index,
+    not the number of cached entries. For a value `P`, key positions `[0, P]`
+    are valid before other masks are applied.
 
-    If `slidingWindowLookBack` is set to `W`, it specifies the maximum look-back
-    distance from `lastValidKVIndex`. Key positions
-    `[max(0, P - W), P]` are attended to, including the current position, so
-    the window contains up to `W + 1` key positions. Earlier positions are
-    masked with -inf. This requires `lastValidKVIndex` to be set.
+    Without `slidingWindowLookBack`, attention is non-sliding. If it is set to
+    `L`, it specifies a strictly positive look-back index distance from
+    `lastValidKVIndex`. Key positions `[max(0, P - L), P]` are attended to,
+    including the current position, so the window contains up to `L + 1` key
+    positions. Earlier positions are masked with -inf. This requires
+    `lastValidKVIndex` to be set, and `L` must satisfy
+    `1 <= L <= maxSeqLen - 1`.
 
     LSE (log-sum-exp) is an optional output typically used for flash decoding.
     For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled. 
@@ -579,8 +581,8 @@ def Rock_GridwiseAttentionOp
   let description = [{
     The `rock.gridwise_attention` op computes gridwise attention.
 
-    `lastValidKVIndex` and `slidingWindowLookBack` use the same inclusive KV-cache
-    position and maximum look-back distance semantics as `rock.attention`.
+    `lastValidKVIndex` and `slidingWindowLookBack` use the same inclusive
+    KV-cache index and look-back distance semantics as `rock.attention`.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{
