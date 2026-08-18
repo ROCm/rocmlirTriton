@@ -1,6 +1,14 @@
 # Test-only binding. Never linked into librockCompiler.
 pybind11_add_module(amd_arch_db MODULE binding.cpp)
 
+# pybind11's PYBIND11_MODULE macro uses try/catch and typeid. clang-cl (the
+# Windows toolchain) defaults to exceptions and RTTI disabled (inherited from
+# the LLVM/MLIR build flags), so re-enable both for this binding. On Linux
+# clang already enables exceptions by default, so this is Windows-only.
+if(WIN32)
+  target_compile_options(amd_arch_db PRIVATE /EHsc /GR)
+endif()
+
 get_property(rocmlir_dialect_libs GLOBAL PROPERTY ROCMLIR_DIALECT_LIBS)
 get_property(rocmlir_conversion_libs GLOBAL PROPERTY ROCMLIR_CONVERSION_LIBS)
 get_property(rocmlir_test_libs GLOBAL PROPERTY ROCMLIR_TEST_LIBS)

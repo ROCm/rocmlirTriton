@@ -1,6 +1,7 @@
 //===- RockPrepareLLVM.cpp - prepares the generated code for LLVM       ---===//
 //
-// Copyright 2026 AMD
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -166,8 +167,8 @@ static void annotateMemoryAccesses(LLVM::LLVMFuncOp func, OpBuilder &b) {
     return b.getArrayAttr(mergedScopes);
   };
 
-  // TODO: figure out if it's worth using "nontemporal" (see rocMLIR's
-  // AnalyzeMemoryUse.cpp comments), ticket AIROCMLIR-802
+  // TODO(AIROCMLIR-802): Consider whether "nontemporal" is useful here (see
+  // rocMLIR's AnalyzeMemoryUse.cpp comments).
   func.walk([&](LLVM::AliasAnalysisOpInterface aliasIface) {
     Operation *aliasOp = aliasIface.getOperation();
     Value ptrArg;

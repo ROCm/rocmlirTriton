@@ -1,6 +1,7 @@
 //===- ConvToGemm.cpp - MLIR Rock ops lowering passes ------------===//
 //
-// Copyright 2020 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -1242,8 +1243,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     if (ConvOpType::BwdWeight == convOpType &&
-        isWrWAtomicKernel(rock::getArchValue(op), dataType,
-                          maybeGemmExtraPad.has_value())) {
+        isWrWAtomicKernel(dataType, maybeGemmExtraPad.has_value())) {
       return backwardWeightAtomicAdd(cast<ConvBwdWeightOp>(op), b);
     }
   }

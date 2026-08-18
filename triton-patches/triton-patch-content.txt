@@ -12,12 +12,26 @@ patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-gfx1170.patch
 patch-optimize-epilogue-rock-metadata.patch
+patch-partitionloops-clang-cl.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+patch11018.patch
 patch11118.patch
+
+patch-partitionloops-clang-cl.patch
+  Upstream PR: https://github.com/triton-lang/triton/pull/11114
+  Upstream title: Fix getPartition overload ambiguity with clang-cl
+  Changes
+  partitions.getPartition((int)0) to partitions.getPartition(0u) in
+  lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp.
+  `(int)0` is also a null-pointer constant, so under clang-cl the call is
+  ambiguous between getPartition(unsigned) and getPartition(Operation*); an
+  explicitly unsigned literal selects the intended getPartition(unsigned)
+  overload. No-op for GCC/Clang on Linux, which resolve the overload fine.
+  Keep until the vendored Triton revision contains the upstream fix.
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -174,6 +188,27 @@ patch10928.patch
 
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
+
+patch11018.patch
+  Gates buffer atomic float min/max on native hardware support:
+  ConvertToBufferOps only rewrites tt.atomic_rmw max/min into
+  amdg.buffer_atomic_rmw when TargetFeatures::supportsBufferAtomicFMinMax
+  accepts the target/type pair (f32 on RDNA1/RDNA2/RDNA3/RDNA4m/RDNA4/GFX1250,
+  f64 on CDNA2/CDNA3/CDNA4/RDNA1/RDNA2/GFX1250); integer min/max always take the
+  generic path.
+  Buffer atomics never reach AtomicExpandPass, so a missing instruction (f32 on
+  CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
+  fallback always has a CAS expansion. That is what lets rocMLIR drop its
+  isFastAtomicMaxSupported() fusion gate.
+
+  Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
+  the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
+  already covers centrally in matchAtomicOp. Lit coverage lives in
+  amd-convert-buffer-ops-atomic-fminmax.mlir as upstream does, leaving
+  amd-convert-buffer-ops.mlir unchanged. Upstream names gfx1170 ISAFamily::RDNA4m;
+  this tree uses ISAFamily::GFX1170 (patch-gfx1170.patch) at the same list slot.
+
+  Drop on the next Triton bump that pulls PR #11018.
 
 patch11118.patch
   Removes the AMD backend's second arith.minimumf/arith.maximumf conversion

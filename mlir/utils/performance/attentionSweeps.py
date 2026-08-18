@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Sweep random (problem-shape, perf-config) combinations for the
-``GemmGemmParamsAttr`` perf-config family (``attn:v1:``) — i.e. attention
+``GemmGemmParamsAttr`` perf-config family (``attn:``) — i.e. attention
 and gemm+elementwise+gemm — through the rocMLIR pipeline and classify each
 as PASS / NOT_APPLICABLE / FAIL. Run from the build directory.
 
@@ -76,7 +79,7 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     ``(mPerBlock * nPerBlock) / threads <= vgprs_per_eu / effective_wpe``,
     where ``threads = numWaves * waveSize`` and ``effective_wpe`` is
     ``wavesPerEU`` itself, or ``1`` when ``wavesPerEU == 0``."""
-    # 12-field attn:v4 layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
+    # 12-field attn layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
     # sit one slot later than in the 11-field gemm layout.
     mpb, npb = perf_config[0], perf_config[1]
     num_waves = perf_config[6]
@@ -309,7 +312,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
     shape, perf = params
     dtype, g, m, k, n, o, ta, tb, tc, to = shape
     # ``kind='attn'`` is intentional: gemm+gemm and attention share the same
-    # GemmGemmParamsAttr perf-config family (serialized as ``attn:v6:...``);
+    # GemmGemmParamsAttr perf-config family (serialized as ``attn:...``);
     # see the ``PerfConfig`` docstring and RockAttrDefs.td.
     return perfRunner.GemmGemmConfiguration(
         dtype=dtype,
@@ -372,7 +375,7 @@ def main() -> bool:
                         choices=['attention', 'gemm_gemm'],
                         help="Kind of kernel to sweep: 'attention' or 'gemm_gemm'. "
                         "The spelling matches rocmlir-gen --operation. Both share "
-                        "the GemmGemmParamsAttr (attn:v6:) perf-config family but "
+                        "the GemmGemmParamsAttr (attn:) perf-config family but "
                         "have different problem-shape spaces.")
     add_common_args(parser)
     args = parser.parse_args()

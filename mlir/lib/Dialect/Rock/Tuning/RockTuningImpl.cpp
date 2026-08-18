@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2022 Advanced Micro Devices INc.
+// Copyright Advanced Micro Devices, Inc.
 //===----------------------------------------------------------------------===//
 //
 // This file implements the tuning interfaces
@@ -745,7 +745,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                   // projection depends only on fields fixed by this point, so a
                   // blacklisted tile is dead for every inner splitK/wave/CTA
                   // combination. Field order must match GemmLdsKey /
-                  // PROJECTION_INDICES.
+                  // PROJECTION_NAMES.
                   if (!ldsBlacklistSet.empty() &&
                       ldsBlacklistSet.count({gemmMPerBlock, gemmNPerBlock,
                                              gemmKPerBlock, numWaves,
@@ -863,7 +863,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setPrimary =
       mod->walk([&](rock::RockGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -872,7 +872,7 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
   WalkResult setGemmGemm =
       mod->walk([&](rock::RockGemmGemmWrapperInterface op) -> WalkResult {
         auto *ctx = op.getContext();
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         paramEntry->param.getPerfConfigStr(perfConfig);
         StringAttr attr = StringAttr::get(ctx, perfConfig);
         op->setAttr("perf_config", attr);
@@ -1555,7 +1555,7 @@ bool tuningTableUpdate(TuningTable *perfTable, StringRef problem,
 
 LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
                                 SmallVectorImpl<char> &out) {
-  SmallString<2048> problem;
+  SmallString<ROCMLIR_TUNING_KEY_BUFSZ> problem;
   if (failed(getTuningProblemStr(mod, problem)))
     return failure();
   llvm::sys::SmartScopedReader<true> guard(perfTable->lock);
@@ -1601,8 +1601,7 @@ RocmlirSplitKSelectionLikelihood isSplitKFaster(int64_t gDim, int64_t mDim,
 }
 
 bool isModuleFusible(ModuleOp module, StringRef perfConfig) {
-  bool fusible = succeeded(rock::testFusionLegalityReduce(module)) &&
-                 succeeded(rock::testFusionLegalityBwdDataConv(module));
+  bool fusible = succeeded(rock::testFusionLegalityBwdDataConv(module));
   if (!rock::isSplitKRequested(module, perfConfig))
     return fusible;
   return fusible && succeeded(rock::testFusionLegalitySplitK(module));

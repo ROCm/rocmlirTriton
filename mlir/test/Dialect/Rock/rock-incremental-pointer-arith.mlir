@@ -1,8 +1,8 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-transforms-invariant-code-motion --split-input-file --verify-diagnostics | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-incremental-pointer-arith --split-input-file --verify-diagnostics | FileCheck %s
 
-// CHECK-LABEL: func @hoist_linear_load
+// CHECK-LABEL: func @affine_linear_load
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-// No hoisting: the loop carries only the original iter_arg (no offset accumulator).
+// Affine path: no new iter_arg, the loop carries only the original one.
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>)
 // Base pointer rebuilt in the loop with the iv pinned to the lower bound %c0_i32:
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
@@ -16,7 +16,7 @@
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -34,9 +34,9 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
 
 // Same linear load, but the loop induction variable is `index` instead of i32.
 //
-// CHECK-LABEL: func @hoist_index_iv
+// CHECK-LABEL: func @affine_index_iv
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-// No hoisting; only the original iter_arg is carried:
+// Affine path: only the original iter_arg is carried:
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>) {
 // Base index uses the loop lower bound (index_cast of %c0), not the iv:
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%{{.*}}, %c0_i32, %c0_i32, %c1_i32]
@@ -51,7 +51,7 @@ func.func @hoist_linear_load(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>)
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
@@ -72,10 +72,10 @@ func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) ->
 
 // Negative case: the transform chain contains a Pad on the K dimension, so the
 // validity mask is coordinate-dependent (and here even iv-dependent). The pass
-// must conservatively leave the loop untouched: nothing is hoisted before the
+// must conservatively leave the loop untouched: no state is added before the
 // loop and the transforms_to_ptr stays in the body.
 //
-// CHECK-LABEL: func @no_hoist_with_pad
+// CHECK-LABEL: func @no_simplify_with_pad
 //   CHECK-NOT:   rock.transforms_to_ptr
 //       CHECK:   scf.for
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%{{.*}}, %c0_i32, %c0_i32, %c1_i32]
@@ -87,7 +87,7 @@ func.func @hoist_index_iv(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) ->
 #transform_map = #rock.transform_map<#map by [<Unmerge{254, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 254, 128] -> [32512]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]>
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @no_simplify_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -111,9 +111,9 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
 //   - the input chain has a Pad on K, so it is NOT simplified and its
 //     transforms_to_ptr stays inside the loop, still indexed by the iv.
 //
-// CHECK-LABEL: func @hoist_one_of_two
+// CHECK-LABEL: func @affine_one_of_two
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<32768xf16>, %[[INPUT:.*]]: tensor<32512xf16>, %[[INIT:.*]]: tensor<64x64xf16>)
-// No hoisting and no offset accumulator: only the original iter_arg is carried.
+// Affine path: no offset accumulator, only the original iter_arg is carried.
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x64xf16>)
 // Filter operand simplified in place: base op pinned to %c0_i32 + scalar affine tail.
 //       CHECK:     %[[FPTRS:.*]], %[[FMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32]
@@ -127,7 +127,7 @@ func.func @no_hoist_with_pad(%arg0: tensor<32512xf16>, %arg1: tensor<64x64xf16>)
 //       CHECK:     %[[IPTRS:.*]], %[[IMASK:.*]] = rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c1_i32]
 //       CHECK:     rock.blockwise_load_ptr %[[IPTRS]][%[[IMASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16>, %init: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -143,7 +143,7 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
     %fptr, %fmask = rock.transforms_to_ptr %f1[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
     %fload = rock.blockwise_load_ptr %fptr[%fmask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 
-    // Input Pad (K 254 -> 256) makes the mask coordinate-dependent: not hoisted.
+    // Input Pad (K 254 -> 256) makes the mask coordinate-dependent: not simplified.
     %i1 = rock.transform %i0 by <affine_map<(d0, d1, d2) -> (d0, d1, d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Pad{0, 2} ["kpad"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [2]>] bounds = [1, 256, 128] -> [1, 254, 128]> : tensor<1x254x128xf16> to tensor<1x256x128xf16>
     %i2 = rock.transform %i1 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]> : tensor<1x256x128xf16> to tensor<4x1x1x2x64x64xf16>
     %iptr, %imask = rock.transforms_to_ptr %i2[%k, %c0_i32, %c0_i32, %c1_i32] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
@@ -161,11 +161,11 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
 // Validity-impacting Pad on a dimension the iv does NOT flow through.
 // This mirrors a 3x3-conv filter operand: gemmM is padded (Pad{0, 192}) while
 // the induction variable (k_loop) lives in gemmK. The mask therefore does not
-// vary with the iv, so the op IS hoisted even though the chain contains a Pad.
+// vary with the iv, so the op IS simplified even though the chain contains a Pad.
 //
-// CHECK-LABEL: func @hoist_pad_on_non_iv_dim
+// CHECK-LABEL: func @affine_pad_on_non_iv_dim
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
-// No hoisting; only the original iter_arg is carried:
+// Affine path: only the original iter_arg is carried:
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<256x32xi8>)
 // Base op pinned to %c0_i32 (Pad on a non-iv dim keeps the mask iv-invariant):
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
@@ -175,7 +175,7 @@ func.func @hoist_one_of_two(%filter: tensor<32768xf16>, %input: tensor<32512xf16
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c18_i32 = arith.constant 18 : i32
@@ -206,11 +206,11 @@ func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x
 // factors (9/3/3), so a flattened affine map keeps opaque floordiv/mod; the
 // transform-aware index-diff stride computation handles it (constantFold of the
 // merge gives component diffs 3/1/2, recombined through the contiguous pack
-// strides 9/3/1 = 9*3 + 3*1 + 1*2 = 32) and the op IS hoisted.
+// strides 9/3/1 = 9*3 + 3*1 + 1*2 = 32) and the op IS simplified.
 //
-// CHECK-LABEL: func @hoist_conv_filter_merge
+// CHECK-LABEL: func @affine_conv_filter_merge
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<36864xi8>, %[[INIT:.*]]: tensor<256x32xi8>)
-// No hoisting; only the original iter_arg is carried:
+// Affine path: only the original iter_arg is carried:
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<256x32xi8>)
 // Base op pinned to %c0_i32; the merge is constant-folded away at the lb seed:
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
@@ -220,7 +220,7 @@ func.func @hoist_pad_on_non_iv_dim(%filter: tensor<36864xi8>, %init: tensor<256x
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<256x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x32xi8>) -> tensor<256x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c18_i32 = arith.constant 18 : i32
@@ -247,12 +247,12 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
 
 // -----
 
-// Two hoistable loads in one loop that point to the same root buffer
+// Two simplifiable loads in one loop that point to the same root buffer
 // (%arg0) but view it through differently-shaped tiles (64x64 and 64x128).
 //
-// CHECK-LABEL: func @hoist_two_sharing_base
+// CHECK-LABEL: func @affine_two_sharing_base
 //  CHECK-SAME: (%[[BUF:.*]]: tensor<32768xf16>, %[[INITA:.*]]: tensor<64x64xf16>, %[[INITB:.*]]: tensor<64x128xf16>)
-// No hoisting and no offset accumulators: only the two original iter_args:
+// Affine path: no offset accumulators, only the two original iter_args:
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INITA]], %{{.*}} = %[[INITB]]) -> (tensor<64x64xf16>, tensor<64x128xf16>)
 //       CHECK:     %[[PTRS0:.*]], %[[MASK0:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c1_i32] {{.*}} -> tensor<64x64xi32>
 //       CHECK:     %[[P0:.*]] = arith.addi %[[PTRS0]], %{{.*}} : tensor<64x64xi32>
@@ -267,7 +267,7 @@ func.func @hoist_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256x
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
 #transform_map2 = #rock.transform_map<#map2 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{1, 128} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 1, 64, 128] -> [1, 256, 128]>
-func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64xf16>, %initB: tensor<64x128xf16>) -> (tensor<64x64xf16>, tensor<64x128xf16>) attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64xf16>, %initB: tensor<64x128xf16>) -> (tensor<64x64xf16>, tensor<64x128xf16>) attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32
@@ -294,13 +294,13 @@ func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64
 // gemmK is therefore Merge{64, 1, 1} of only the
 // channel dim c (raw stride 1). The iv (k_loop) advances gemmK by 32, which
 // stays entirely within c (32 < 64, no carry), so the offset is linear with
-// stride 32 and the op IS hoisted. The size-1 dims must be skipped by the
+// stride 32 and the op IS simplified. The size-1 dims must be skipped by the
 // merge carry-neutrality guard: their stride-0 layout would otherwise spuriously
 // fail the contiguity check (stride(c) 1 != stride("0") 0) and bail.
 //
-// CHECK-LABEL: func @hoist_conv_1x1_unit_merge
+// CHECK-LABEL: func @affine_conv_1x1_unit_merge
 //  CHECK-SAME: (%[[FILTER:.*]]: tensor<4096xi8>, %[[INIT:.*]]: tensor<64x32xi8>)
-// No hoisting; only the original iter_arg is carried:
+// Affine path: only the original iter_arg is carried:
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<64x32xi8>)
 //       CHECK:     %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}}[%c0_i32, %c0_i32, %c0_i32, %c0_i32]
 //       CHECK:     %[[D:.*]] = arith.subi %[[IV]], %{{.*}} : i32
@@ -309,7 +309,7 @@ func.func @hoist_two_sharing_base(%arg0: tensor<32768xf16>, %initA: tensor<64x64
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %[[OFFT]] : tensor<64x32xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][%[[MASK]]]
 //       CHECK:     scf.yield
-func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x32xi8>) -> tensor<64x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @affine_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x32xi8>) -> tensor<64x32xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c2_i32 = arith.constant 2 : i32
@@ -347,7 +347,7 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 // mask, and forms the pointer as base + accumulator. The high channel
 // coordinate is dropped; its offset contribution is recovered from the carry.
 //
-// CHECK-LABEL: func @hoist_conv_input_carry
+// CHECK-LABEL: func @carry_conv_input
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<8xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
 // The loop carries the tap coordinate (full tile) and a full-tile offset
 // accumulator alongside the result:
@@ -368,7 +368,7 @@ func.func @hoist_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64x
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select
 //       CHECK:     scf.yield
-func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @carry_conv_input(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c3_i32 = arith.constant 3 : i32
@@ -405,7 +405,7 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 // mixed-radix add/compare/select odometer, and rebuilds only the mask. The high
 // channel coordinate is dropped; its offset contribution comes from the carry.
 //
-// CHECK-LABEL: func @hoist_conv2d_input_carry_rank_redundant
+// CHECK-LABEL: func @carry_conv2d_input_rank_redundant
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<32xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
 // The two tap coordinates (full tile) and a full-tile offset accumulator are
 // carried alongside the result:
@@ -428,7 +428,7 @@ func.func @hoist_conv_input_carry(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) ->
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select
 //       CHECK:     scf.yield
-func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @carry_conv2d_input_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c9_i32 = arith.constant 9 : i32
@@ -459,11 +459,11 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 // coordinate above them -- and *both* taps flow through a halo Pad + Embed
 // sliding window, so every carried coordinate is validity-impacting. The
 // impacting coordinates therefore form the *entire* suffix (prefixSize == 0,
-// hasPrefix == false), unlike @hoist_conv_input_carry /
-// @hoist_conv2d_input_carry_rank_redundant where the non-impacting channel is a
+// hasPrefix == false), unlike @carry_conv_input /
+// @carry_conv2d_input_rank_redundant where the non-impacting channel is a
 // dropped prefix.
 //
-// Consequences of the no-prefix path (see emitFullTileCarry):
+// Consequences of the no-prefix path (see emitCarryStep):
 //   - the most-significant carried coordinate (tap0) is the global top of the
 //     merge, so the loop upper bound keeps it in range and it is NEVER wrapped
 //     (no compare/select emitted for it); it only advances via the carry
@@ -474,7 +474,7 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 // (tap0). Only tap1 needs a wrap guard, so exactly one compare/select stage is
 // emitted.
 //
-// CHECK-LABEL: func @hoist_conv2d_input_carry_no_prefix
+// CHECK-LABEL: func @carry_conv2d_input_no_prefix
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<16xi8>, %[[INIT:.*]]: tensor<1x4xi8>)
 // Both tap coordinates (full tile) and a full-tile offset accumulator are
 // carried alongside the result (no coordinate is dropped as a prefix):
@@ -497,7 +497,7 @@ func.func @hoist_conv2d_input_carry_rank_redundant(%arg0: tensor<32xi8>, %arg1: 
 //       CHECK:     arith.select
 //   CHECK-NOT:     arith.cmpi uge
 //       CHECK:     scf.yield
-func.func @hoist_conv2d_input_carry_no_prefix(%arg0: tensor<16xi8>, %arg1: tensor<1x4xi8>) -> tensor<1x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @carry_conv2d_input_no_prefix(%arg0: tensor<16xi8>, %arg1: tensor<1x4xi8>) -> tensor<1x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c9_i32 = arith.constant 9 : i32
@@ -572,7 +572,7 @@ func.func @affine_variant_non_iv_index(%arg0: tensor<32768xf16>, %arg1: tensor<6
 // -----
 
 // Loop-variant, non-iv extra index on the CARRY path. Same halo-padded conv
-// input chain as @hoist_conv_input_carry (the iv straddles a non-contiguous
+// input chain as @carry_conv_input (the iv straddles a non-contiguous
 // Merge and the mask is iv-dependent, so the affine fast path cannot apply),
 // but g_block (slot 1) is fed by a second loop iter_arg (%vb) that advances
 // every iteration. The carry path rebuilds the base coordinate slice in the
@@ -686,7 +686,7 @@ func.func @skip_non_kernel_func(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf1
 // The pointer does not depend on the iv at all (every extra index is a
 // constant): there is nothing to incrementalize, so the pass bails.
 //
-// CHECK-LABEL: func @no_hoist_iv_independent
+// CHECK-LABEL: func @no_simplify_iv_independent
 //       CHECK:   scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (tensor<64x64xf16>)
 //       CHECK:     rock.transforms_to_ptr
 //   CHECK-NOT:     arith.muli
@@ -695,7 +695,7 @@ func.func @skip_non_kernel_func(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf1
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 128} ["k", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 256, 128] -> [32768]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{4, 64} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{2, 64} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
-func.func @no_hoist_iv_independent(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
+func.func @no_simplify_iv_independent(%arg0: tensor<32768xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
   %c4_i32 = arith.constant 4 : i32

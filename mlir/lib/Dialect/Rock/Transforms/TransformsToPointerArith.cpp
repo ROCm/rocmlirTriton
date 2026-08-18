@@ -1,6 +1,7 @@
 //===- TransformsToPointerArith.cpp - Expand transform maps to arith ------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +20,8 @@
 // arithmetic operations that compute pointer offsets and validity masks. The
 // coordinate/validity expansion engine lives here (its only consumer); it is
 // built on the small shared arith/broadcast helpers in PointerArithExpand.cpp,
-// which the carry-based LICM path also uses to rebuild the per-iteration mask.
+// which rock-incremental-pointer-arith also uses to rebuild the per-iteration
+// mask on its carry path.
 //
 //===----------------------------------------------------------------------===//
 

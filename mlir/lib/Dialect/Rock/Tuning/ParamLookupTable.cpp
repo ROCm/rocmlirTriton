@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
@@ -23,7 +26,7 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   // GEMM tables and cross-falls-back to gfx1201 for conv/attention, all of
   // which fit. This alias is scoped to tuning-table selection only; WMMA
   // detection, LDS sizing, and pipeline gating still use the real gfx1170.
-  // TODO(AIROCMLIR-705): generate a proper quick-tuning table for gfx1170 and
+  // TODO(AIROCMLIR-705): Generate a proper quick-tuning table for gfx1170 and
   // remove this alias.
   if (arch == "gfx1170")
     arch = "gfx1200";
