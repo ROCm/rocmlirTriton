@@ -2099,6 +2099,52 @@ def _benchmark_one_artifact(test_vector: str, ctx: TuningContext, gpu_id: int,
     # emits perfConfig\t<ns|N/A>.
     td_cmd = [paths.mlir_paths.rocmlir_tuning_driver_path, f"--benchmark-artifacts={problem_dir}"
              ] + timing_args
+    command = " ".join(td_cmd)
+
+    def report_driver_failure(context: str, rc: int, out: str, err: str) -> None:
+        """Log a concise failure and preserve the complete driver streams."""
+        diagnostic_path = None
+        if options.output != '-':
+            diagnostic_dir = f"{options.output}.failures"
+            diagnostic_name = (
+                f"{problem_hash}-{timestamp.replace('-', '').replace(':', '')}-"
+                f"{os.getpid()}.log")
+            diagnostic_path = os.path.abspath(os.path.join(diagnostic_dir, diagnostic_name))
+            try:
+                os.makedirs(diagnostic_dir, exist_ok=True)
+                with open(diagnostic_path, 'w', encoding='utf-8') as diagnostic_file:
+                    diagnostic_file.write(f"{context}\n")
+                    diagnostic_file.write(f"Timestamp: {timestamp}\n")
+                    diagnostic_file.write(f"Problem hash: {problem_hash}\n")
+                    diagnostic_file.write(f"Test vector: {test_vector}\n")
+                    diagnostic_file.write(f"Exit code: {rc}\n")
+                    diagnostic_file.write(
+                        f"Reproduce: ROCR_VISIBLE_DEVICES={gpu_id} {command}\n")
+                    diagnostic_file.write("\nSTDOUT:\n")
+                    diagnostic_file.write(out if out else "(empty)\n")
+                    if out and not out.endswith('\n'):
+                        diagnostic_file.write('\n')
+                    diagnostic_file.write("\nSTDERR:\n")
+                    diagnostic_file.write(err if err else "(empty)\n")
+                    if err and not err.endswith('\n'):
+                        diagnostic_file.write('\n')
+            except OSError as e:
+                logger.warning(
+                    f"failed to write diagnostics for problem {problem_hash} to "
+                    f"{diagnostic_path}: {e}")
+                diagnostic_path = None
+
+        message = format_error(context,
+                               command=command,
+                               stdout=out,
+                               stderr=err,
+                               exit_code=rc,
+                               gpu_id=gpu_id,
+                               max_lines=20)
+        if diagnostic_path:
+            message += f"\nFull diagnostic log: {diagnostic_path}"
+        logger.error(message)
+
     try:
         rc, out, err = _run_pipeline([td_cmd],
                                      env=make_isolated_gpu_env(gpu_id),
@@ -2114,17 +2160,12 @@ def _benchmark_one_artifact(test_vector: str, ctx: TuningContext, gpu_id: int,
 
     raise_if_terminated(rc)
     if rc == GPU_TIMEOUT_EXIT_CODE:
-        logger.error(
-            format_error(
-                f"GPU run hung for problem {problem_hash} "
-                f"(exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
-                command=" ".join(td_cmd),
-                stderr=err,
-                exit_code=rc,
-                gpu_id=gpu_id))
+        report_driver_failure(
+            f"GPU run hung for problem {problem_hash} "
+            f"(exceeded --gpu-run-timeout={options.gpu_run_timeout}s)", rc, out, err)
         return fail(gpu_timed_out=True)
     if rc != 0:
-        logger.error(f"benchmark failed for problem {problem_hash} (exit {rc}):\n{err}")
+        report_driver_failure(f"benchmark failed for problem {problem_hash}", rc, out, err)
         return fail()
 
     # Winner selection. Suppress find_best_perfconfig's in-process verify via a
@@ -2134,7 +2175,7 @@ def _benchmark_one_artifact(test_vector: str, ctx: TuningContext, gpu_id: int,
         out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False), gpu_id)
 
     if winning_config is None:
-        logger.error(f"no valid perf config for problem {problem_hash}")
+        report_driver_failure(f"no valid perf config for problem {problem_hash}", rc, out, err)
         return fail()
 
     # Verification (opt-in). The CPU reference is recomputed on this host via the
