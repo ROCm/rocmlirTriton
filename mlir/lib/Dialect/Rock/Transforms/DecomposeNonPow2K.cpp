@@ -179,7 +179,6 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   auto markerA = gemm.getMatrixA().getDefiningOp<LoadMarkerOp>();
   auto markerB = gemm.getMatrixB().getDefiningOp<LoadMarkerOp>();
   if (!markerA || !markerB) {
-    rock::markAsNotApplicable(gemm);
     return gemm.emitOpError("non-power-of-two K tile requires both operands to "
                             "be loaded by rock.load_marker");
   }
@@ -219,6 +218,7 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
 
   // This is due to a bug in Triton, reported here:
   // https://github.com/ROCm/triton/issues/958
+  // TODO: Revert this once the bug is fixed.
   constexpr int64_t minIntKSegment = 4;
   if (isa<IntegerType>(elemTypeA) && isa<IntegerType>(elemTypeB) &&
       llvm::any_of(kSegs, [](const Pow2Segment &seg) {
