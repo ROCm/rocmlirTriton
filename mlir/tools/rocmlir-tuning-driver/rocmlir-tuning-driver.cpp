@@ -1368,20 +1368,28 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
   for (size_t i = 0; i < results.size(); ++i) {
     CompilationResult &result = results[i];
     llvm::outs() << result.perfConfig << "\t";
+    // Flush the config before launching it. A wedged kernel terminates this
+    // process with _Exit, and a GPU memory fault may abort it asynchronously;
+    // neither path runs normal stream cleanup. Keeping the prefix outside the
+    // output buffer makes the exact in-flight config recoverable from stdout.
+    llvm::outs().flush();
 
     if (!reportPrecise[i]) {
       llvm::outs() << (result.status == CompilationStatus::Success ? "Discarded"
                                                                    : "N/A")
                    << "\n";
+      llvm::outs().flush();
       continue;
     }
 
     FailureOr<double> timing = timeConfig(result, params);
     if (failed(timing)) {
-      llvm::errs() << "Kernel execution failed\n";
+      llvm::errs() << "Kernel execution failed for config: "
+                   << result.perfConfig << "\n";
       return failure();
     }
     llvm::outs() << timing.value() << "\n";
+    llvm::outs().flush();
 
     validResults++;
   }
