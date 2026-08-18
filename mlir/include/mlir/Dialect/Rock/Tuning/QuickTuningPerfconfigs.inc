@@ -1895,29 +1895,28 @@ const StringRef PopulateParamsGemmGemm::initParametersBf16AttentionGfx1151[] = {
 
 // BEGIN_ATTENTION_GemmGemm_f16_gfx1151_DEFS
 const StringRef PopulateParamsGemmGemm::initParametersF16AttentionGfx1151[] = {
-    "attn:v2:64,32,128,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:128,64,64,1,1,8,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,64,32,1,1,8,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:64,64,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:256,64,128,1,1,16,0,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,32,32,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:16,64,32,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,16,64,1,1,1,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,64,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:16,16,64,1,1,1,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:64,16,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,128,16,1,1,2,0,1,2,0,0,-1,-1,-1,-1,-1,-1"
+    "attn:mPerBlockG0=64,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=128,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=128,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=128,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=64,nPerBlockG1=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1"
 };
 // END_ATTENTION_GemmGemm_f16_gfx1151_DEFS
 
 // BEGIN_ATTENTION_GemmGemm_f32_gfx1151_DEFS
 const StringRef PopulateParamsGemmGemm::initParametersF32AttentionGfx1151[] = {
-    "attn:v2:32,32,16,1,1,8,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:64,32,16,1,1,8,0,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:32,32,16,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:64,32,16,1,1,8,0,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:128,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "attn:v2:64,32,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1"
+    "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1"
 };
 // END_ATTENTION_GemmGemm_f32_gfx1151_DEFS
 
@@ -2110,12 +2109,12 @@ static const StringRef initParametersBf16AttentionGfx1151[nInitParametersBf16Att
 // END_ATTENTION_GemmGemm_bf16_gfx1151_DECS
 
 // BEGIN_ATTENTION_GemmGemm_f16_gfx1151_DECS
-static constexpr size_t nInitParametersF16AttentionGfx1151 = 12;
+static constexpr size_t nInitParametersF16AttentionGfx1151 = 13;
 static const StringRef initParametersF16AttentionGfx1151[nInitParametersF16AttentionGfx1151];
 // END_ATTENTION_GemmGemm_f16_gfx1151_DECS
 
 // BEGIN_ATTENTION_GemmGemm_f32_gfx1151_DECS
-static constexpr size_t nInitParametersF32AttentionGfx1151 = 6;
+static constexpr size_t nInitParametersF32AttentionGfx1151 = 4;
 static const StringRef initParametersF32AttentionGfx1151[nInitParametersF32AttentionGfx1151];
 // END_ATTENTION_GemmGemm_f32_gfx1151_DECS
 
