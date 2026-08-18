@@ -55,7 +55,7 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
                                             int64_t kPerBlock,
                                             int64_t dPerBlock, bool isKFirst);
 
-bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
+bool isWrWAtomicKernel(Type dataType, bool requiredPadding);
 
 // Return true if this shaped type will occupy more than 4 GB (2 ^ 32 bytes)
 // in memory.

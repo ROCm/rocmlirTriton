@@ -332,3 +332,34 @@ func.func @rock_attention_sliding_window(%q: tensor<1x384x64xf16>, %k: tensor<1x
 // CHECK: currentSeqLen = (%{{.*}} : tensor<1xi32>)
 // CHECK: slidingWindowSize = 128
 
+func.func @rock_reduce_sum(%in: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
+  return %result : tensor<8x1xf32>
+}
+// CHECK-LABEL: func.func @rock_reduce_sum
+// CHECK: rock.reduce sum
+
+func.func @rock_reduce_max(%in: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.reduce max %in {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
+  return %result : tensor<8x1xf32>
+}
+// CHECK-LABEL: func.func @rock_reduce_max
+// CHECK: rock.reduce max
+
+// Integer reductions are legal: they lower to an integer atomic add, which the
+// backend expands to a compare-and-swap loop where no native instruction
+// exists.
+func.func @rock_reduce_sum_i32(%in: tensor<8x32xi32>) -> tensor<8x1xi32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xi32> -> tensor<8x1xi32>
+  return %result : tensor<8x1xi32>
+}
+// CHECK-LABEL: func.func @rock_reduce_sum_i32
+// CHECK: rock.reduce sum
+
+func.func @rock_reduce_sum_i8(%in: tensor<8x32xi8>) -> tensor<8x1xi8> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xi8> -> tensor<8x1xi8>
+  return %result : tensor<8x1xi8>
+}
+// CHECK-LABEL: func.func @rock_reduce_sum_i8
+// CHECK: rock.reduce sum
+

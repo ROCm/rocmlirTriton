@@ -102,20 +102,8 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // Use the result directly if there's no output argument (e.g., GemmOp)
         Value gemmResult = gemmOp->getResult(0);
 
-        auto maybeBlockArgs = traceRootOutputToArgs(gemmResult, func);
-        if (failed(maybeBlockArgs))
+        if (failed(traceRootOutputToArgs(gemmResult, func)))
           return WalkResult::interrupt();
-
-        // Verify hardware compatibility (split-k) for kernel output.
-        // Checks if atomic_add operations are supported by the target hardware.
-        auto blockArgs = maybeBlockArgs.value();
-        for (auto blockArg : blockArgs) {
-          auto outElementType =
-              cast<ShapedType>(blockArg.getType()).getElementType();
-          if (!isFastAtomicAddSupported(rock::getArchValue(gemmOp),
-                                        outElementType))
-            return WalkResult::interrupt();
-        }
 
         SmallVector<std::tuple<Operation *, int>> adds;
         if (failed(checkValidOutputFusion(gemmResult, adds)))
@@ -131,20 +119,8 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // here
         auto gemmGemmResult = gemmGemmOp->getResult(0);
 
-        auto maybeBlockArgs = traceRootOutputToArgs(gemmGemmResult, func);
-        if (failed(maybeBlockArgs))
+        if (failed(traceRootOutputToArgs(gemmGemmResult, func)))
           return WalkResult::interrupt();
-
-        // Verify hardware compatibility (split-k) for kernel output.
-        // Checks if atomic_add operations are supported by the target hardware.
-        auto blockArgs = maybeBlockArgs.value();
-        for (auto blockArg : blockArgs) {
-          auto outElementType =
-              cast<ShapedType>(blockArg.getType()).getElementType();
-          if (!isFastAtomicAddSupported(rock::getArchValue(gemmGemmOp),
-                                        outElementType))
-            return WalkResult::interrupt();
-        }
 
         // no fusions allowed for now
         auto fusionInfo = rock::collectFusionInfo(gemmGemmResult);
@@ -170,30 +146,6 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(ModuleOp mod) {
          "expected ModuleOp containing a single func::FuncOp");
   func::FuncOp func = *(funcs.begin());
   return testFusionLegalitySplitK(func);
-}
-
-LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
-  WalkResult walkResult = func.walk([&](rock::ReduceOp reduceOp) -> WalkResult {
-    auto outElemType = reduceOp.getResult().getType().getElementType();
-    if (reduceOp.getReduceMethod() == ReduceMethod::Max) {
-      if (!isFastAtomicMaxSupported(rock::getArchValue(reduceOp), outElemType))
-        return WalkResult::interrupt();
-    } else {
-      if (!isFastAtomicAddSupported(rock::getArchValue(reduceOp), outElemType))
-        return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-
-  return success(!walkResult.wasInterrupted());
-}
-
-LogicalResult mlir::rock::testFusionLegalityReduce(ModuleOp mod) {
-  auto funcs = mod.getOps<func::FuncOp>();
-  assert(std::distance(funcs.begin(), funcs.end()) &&
-         "expected ModuleOp containing a single func::FuncOp");
-  func::FuncOp func = *(funcs.begin());
-  return testFusionLegalityReduce(func);
 }
 
 LogicalResult mlir::rock::testFusionLegalityBwdDataConv(func::FuncOp func) {

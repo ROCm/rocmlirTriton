@@ -1098,8 +1098,8 @@ void RockTransformsInvariantCodeMotionPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
 
-  // TODO: Investigate if this can be beneficial for non-convolution kernels.
-  // https://amd-hub.atlassian.net/browse/AIROCMLIR-1049
+  // TODO(AIROCMLIR-1049): Investigate if this can be beneficial for
+  // non-convolution kernels.
   if (!func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
     return;
 

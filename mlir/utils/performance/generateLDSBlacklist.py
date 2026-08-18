@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import perfRunner
-from perfCommonUtils import parse_perfconfig, serialize_perfconfig
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES, parse_perfconfig, serialize_perfconfig
 from tqdm import tqdm
 
 # Tells LdsBlacklist::lookupGemm (see LdsBlacklist.cpp) to return an empty set so
@@ -198,7 +198,10 @@ def synth_config(proj: Projection) -> str:
     gridGroupSize=0) and the knob fields are omitted, so the parser fills them
     with the kKnobDefault sentinel. None of these affect ttg.shared (see
     PROJECTION_*), so the reconstructed config overflows LDS iff the original
-    projection does."""
+    projection does.
+
+    Field order comes from PERF_CONFIG_FIELD_NAMES so it is defined in exactly
+    one place."""
     values = {
         **dict(zip(PROJECTION_NAMES, proj)),
         "kpack": 1,
@@ -207,7 +210,8 @@ def synth_config(proj: Projection) -> str:
         "wavesPerEU": 0,
         "gridGroupSize": 0,
     }
-    return serialize_perfconfig("gemm", values)
+    ordered_values = {name: values[name] for name in PERF_CONFIG_FIELD_NAMES["gemm"]}
+    return serialize_perfconfig("gemm", ordered_values)
 
 
 def default_seed() -> int:
