@@ -76,7 +76,11 @@ constexpr int64_t maxHardwareGridSize = std::numeric_limits<uint32_t>::max();
 } // end namespace rock
 } // end namespace mlir
 
+#include "mlir-c/Dialect/Rock.h"
+
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
+// The generated perfConfig schema static_asserts against `kKnobDefault`.
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #define GET_ATTRDEF_CLASSES
 #include "mlir/Dialect/Rock/IR/RockAttrDefs.h.inc"
 

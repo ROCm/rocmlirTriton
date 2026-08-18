@@ -62,98 +62,6 @@ TEST(AmdArchDbTest, ParseArchString) {
   }
 }
 
-// --- isFastAtomicAddSupported ---
-
-TEST(AmdArchDbTest, FastAtomicAddF32) {
-  ArchTestEnv e;
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", e.f32));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f32));  // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f32));  // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f32));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.f32));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1010", e.f32)); // RDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1030", e.f32)); // RDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1100", e.f32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1170", e.f32)); // GFX1170
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.f32)); // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.f32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddF16) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.f16));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f16));   // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f16));   // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f16));   // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.f16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1010", e.f16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1030", e.f16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.f16)); // RDNA3
-  EXPECT_FALSE(
-      isFastAtomicAddSupported("gfx1170", e.f16)); // GFX1170 (no pk-add)
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.f16));  // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.f16));  // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddBf16) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.bf16));  // GCN5_1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.bf16));  // CDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.bf16));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.bf16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1010", e.bf16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1030", e.bf16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.bf16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1170", e.bf16)); // GFX1170
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.bf16));  // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.bf16));  // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddIntUnsupported) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.i32));  // GCN5_1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.i32));  // CDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.i32));  // CDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx950", e.i32));  // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.i32)); // RDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1170", e.i32)); // GFX1170
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1200", e.i32)); // RDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1250", e.i32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddWithTriple) {
-  ArchTestEnv e;
-  EXPECT_TRUE(isFastAtomicAddSupported("amdgcn-amd-amdhsa:gfx90a", e.f32));
-}
-
-// --- isFastAtomicMaxSupported ---
-
-TEST(AmdArchDbTest, FastAtomicMaxF32) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", e.f32)); // GCN5_1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx908", e.f32)); // CDNA1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f32)); // CDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f32)); // CDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1010", e.f32)); // RDNA1
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1030", e.f32)); // RDNA2
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", e.f32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1170", e.f32)); // GFX1170
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1200", e.f32)); // RDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", e.f32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicMaxNonF32Unsupported) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f16));  // CDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f16));  // CDNA4
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1010", e.f16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1030", e.f16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", e.f16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1170", e.f16)); // GFX1170
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1200", e.f16)); // RDNA4
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", e.f16)); // GFX1250
-}
-
 // --- getMaxNumChiplets ---
 
 TEST(AmdArchDbTest, MaxNumChiplets) {
@@ -381,8 +289,7 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
 // like gfx117x, but unlike gfx1170 (GFX1170 / WMMA v2) it is a plain
 // RDNA3-class part. This boundary test guards against gfx115x accidentally
 // being routed into the gfx117x / RDNA4 matrix path: it must behave as RDNA3
-// (WMMA v1, no native fp8 WMMA, F32-only fast atomic add). The
-// getMatrixAccelKind / isFastAtomicAddSupported calls also exercise
+// (WMMA v1, no native fp8 WMMA). The getMatrixAccelKind calls also exercise
 // getArch("gfx1150"), which would llvm_unreachable if gfx115x resolved to an
 // Unknown family.
 TEST(AmdArchDbTest, MatrixAccelRdna35Gfx1150Boundary) {
@@ -406,11 +313,6 @@ TEST(AmdArchDbTest, MatrixAccelRdna35Gfx1150Boundary) {
             MatrixAccelKind::None);
   EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e5m2),
             MatrixAccelKind::None);
-  // Fast atomic add is F32-only on RDNA3(.5) (no packed f16/bf16), unlike
-  // RDNA4.
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1150", e.f32));   // RDNA3.5
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1150", e.f16));  // RDNA3.5
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1150", e.bf16)); // RDNA3.5
 }
 
 TEST(AmdArchDbTest, MatrixAccelScaledMfma) {
@@ -531,56 +433,6 @@ TEST(AmdArchDbTest, MaxKpack) {
   EXPECT_EQ(getMaxKpack("gfx1250"), 1); // GFX1250
 }
 
-// --- Dtype overloads of isFastAtomicAddSupported / isFastAtomicMaxSupported
-// ---
-//
-// These are thin adapters over the Type-based overloads; the tests below mirror
-// a subset of the Type-overload cases above and serve to catch regressions in
-// the internal Dtype -> mlir::Type mapping.
-
-TEST(AmdArchDbTest, FastAtomicAddDtypeF32) {
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", Dtype::F32));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F32));  // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", Dtype::F32));  // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F32));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F32));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1100", Dtype::F32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1170", Dtype::F32)); // GFX1170
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::F32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddDtypeF16) {
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", Dtype::F16));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F16));   // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F16));   // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", Dtype::F16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1170", Dtype::F16)); // GFX1170
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::F16));  // RDNA4
-}
-
-TEST(AmdArchDbTest, FastAtomicAddDtypeBf16) {
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", Dtype::BF16)); // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::BF16));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::BF16)); // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::BF16)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicMaxDtypeF32) {
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", Dtype::F32)); // GCN5_1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", Dtype::F32)); // CDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", Dtype::F32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1170", Dtype::F32)); // GFX1170
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", Dtype::F32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicMaxDtypeNonF32Unsupported) {
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::F16));  // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::F16));  // GFX1250
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::BF16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::BF16)); // GFX1250
-}
-
 // --- archSupportsAccelFp8 ---
 //
 // Implemented via getMatrixAccelKind, so this reflects what selectFor reports
@@ -658,10 +510,8 @@ TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInputWithTriple) {
 // (the kind that show up as rock.arch attributes) all parse correctly and
 // dispatch to the GCN5_1 code paths.
 TEST(AmdArchDbTest, Gfx906ArchStringForms) {
-  ArchTestEnv e;
   EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906"), 10);
   EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906:xnack-"), 10);
   EXPECT_EQ(getMaxWavesPerEU("amdgcn-amd-amdhsa:gfx906"), 8);
   EXPECT_EQ(getWaveSize("amdgcn-amd-amdhsa:gfx906"), 64);
-  EXPECT_TRUE(isFastAtomicAddSupported("amdgcn-amd-amdhsa:gfx906", e.f32));
 }

@@ -1,6 +1,7 @@
 //===- LegalizeFloatTypes.cpp - non-TT_Float -> integer legalization ------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -198,6 +199,24 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
   return inputs;
 }
 
+/// Enum to contain why a halving attempt failed:
+/// - `NotDivisible` means the concrete extents of this (kernel x perf-config)
+/// leave an odd number of 4-bit values along a packing segment. The interior
+/// values can still be loaded in pairs, only the unmatched value at the
+/// segment boundary needs special handling. A fallback could load the byte
+/// containing that value and extract the relevant nibble, adding one boundary
+/// load per odd segment rather than doubling all loads. This rewrite does not
+/// implement that boundary case. Because another tile shape can make every
+/// segment even, callers classify this as `rock.not_applicable` rather than a
+/// compiler error.
+/// - `Unsupported` means the chain cannot be packed whatever the extents are
+/// (Broadcast, AddDim/ConstDim, Embed, or a Slice that does not start at 0):
+/// those are compiler limitations and must stay hard errors. A loop-variant
+/// sub-byte extraction fallback could lower this, but it would issue one load
+/// per 4-bit section instead of one per byte, doubling the amount of load
+/// instructions.
+enum class HalveFailureKind { NotDivisible, Unsupported };
+
 /// Given a TransformMapAttr and a dimension index, halve the size of that
 /// dimension in the upper bounds and adjust the transform op that produces it.
 /// Returns the new TransformMapAttr and the index of the halved lower dimension
@@ -206,13 +225,19 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
 /// used as the authoritative target for all transform types.
 static FailureOr<std::pair<TransformMapAttr, int64_t>>
 halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
-              int64_t targetLowerDim) {
+              int64_t targetLowerDim, HalveFailureKind &failureKind) {
+  failureKind = HalveFailureKind::Unsupported;
+  auto notDivisible = [&failureKind]() -> LogicalResult {
+    failureKind = HalveFailureKind::NotDivisible;
+    return failure();
+  };
+
   if (targetLowerDim < 0)
     return failure();
   SmallVector<int64_t> newUpperBounds(mapAttr.getUpperBounds().asArrayRef());
   SmallVector<int64_t> newLowerBounds(mapAttr.getLowerBounds().asArrayRef());
   if (newUpperBounds[upperDimIdx] % 2 != 0)
-    return failure();
+    return notDivisible();
   newUpperBounds[upperDimIdx] /= 2;
 
   // Find which TransformAttr owns this upper dimension.
@@ -239,7 +264,7 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
       // Unmerge{a, b, ...}["x","y",...]->["z"]: halve params[subIdx].
       SmallVector<int64_t> newParams(trAttr.getParams());
       if (newParams[subIdx] % 2 != 0)
-        return failure();
+        return notDivisible();
       newParams[subIdx] /= 2;
       // Propagate to the lower dimension: recalculate the product of all
       // params (which equals the lower bound for that dim).
@@ -258,7 +283,7 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
     case TransformType::PassThrough: {
       int64_t lowerDim = targetLowerDim;
       if (newLowerBounds[lowerDim] % 2 != 0)
-        return failure();
+        return notDivisible();
       newLowerBounds[lowerDim] /= 2;
       halvedLowerDim = lowerDim;
       newOps.push_back(trAttr);
@@ -276,13 +301,14 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
           break;
         }
       }
-      if (targetIdx < 0 || targetIdx >= (int64_t)trAttr.getLowerDims().size() ||
-          newParams[targetIdx] % 2 != 0)
+      if (targetIdx < 0)
         return failure();
+      if (newParams[targetIdx] % 2 != 0)
+        return notDivisible();
       newParams[targetIdx] /= 2;
       int64_t lowerDim = trAttr.getLowerDims()[targetIdx];
       if (newLowerBounds[lowerDim] % 2 != 0)
-        return failure();
+        return notDivisible();
       newLowerBounds[lowerDim] /= 2;
       halvedLowerDim = lowerDim;
       newOps.push_back(
@@ -311,7 +337,7 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
 
       // We must be able to divide the padding params by two
       if (padBefore % 2 != 0 || padAfter % 2 != 0)
-        return failure();
+        return notDivisible();
 
       newParams[subIdx * 2] = padBefore / 2;
       newParams[subIdx * 2 + 1] = padAfter / 2;
@@ -333,15 +359,14 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
       int64_t start = newParams[subIdx * 2];
       int64_t end = newParams[subIdx * 2 + 1];
 
-      // TODO: restricted to start=0 for now
-      if (start != 0 || end % 2 != 0)
-        return failure();
+      if (end % 2 != 0)
+        return notDivisible();
 
       int64_t newEnd = start + (end - start) / 2;
       newParams[subIdx * 2 + 1] = newEnd;
       int64_t lowerDim = targetLowerDim;
       if (newLowerBounds[lowerDim] % 2 != 0)
-        return failure();
+        return notDivisible();
       newLowerBounds[lowerDim] /= 2;
       halvedLowerDim = lowerDim;
       newOps.push_back(
@@ -387,7 +412,11 @@ static int64_t traceDimThroughMap(TransformMapAttr mapAttr, int64_t upperDimIdx,
       return trAttr.getLowerDims()[0];
     case TransformType::PassThrough:
     case TransformType::Pad:
+      return trAttr.getLowerDims()[subIdx];
     case TransformType::Slice:
+      // Halving a slice with a non-zero start is not supported.
+      if (trAttr.getParams()[subIdx * 2] != 0)
+        return -1;
       return trAttr.getLowerDims()[subIdx];
     case TransformType::Merge:
     case TransformType::AddDim:
@@ -543,9 +572,16 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
     assert(path[pathIdx].first == trOp && "path/chain mismatch");
     int64_t pathLowerDim = path[pathIdx].second;
 
-    auto result = halveDimInMap(ctx, oldMap, curDimIdx, pathLowerDim);
-    if (failed(result))
+    HalveFailureKind failureKind = HalveFailureKind::Unsupported;
+    auto result =
+        halveDimInMap(ctx, oldMap, curDimIdx, pathLowerDim, failureKind);
+    if (failed(result)) {
+      // Loading each 4-bit section separately would double load instructions
+      // compared with loading packed bytes, so reject this tile shape.
+      if (failureKind == HalveFailureKind::NotDivisible)
+        rock::markAsNotApplicable(trOp);
       return trOp.emitError("failed to halve dimension ") << curDimIdx;
+    }
     auto [newMap, nextDimIdx] = *result;
     trOp.setTransformAttr(newMap);
 

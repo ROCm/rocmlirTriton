@@ -1,6 +1,6 @@
 //===- rocmlir-tuning-driver.cpp - rocMLIR tuning driver -------------===//
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 // Part of the rocMLIR project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
@@ -66,18 +66,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#endif
 
 // Utilities to allocate buffers
 #include "../utils/performance/common/benchmarkUtils.h"
@@ -395,6 +398,8 @@ static benchmark::DataType getDataType(Type inputType) {
     return benchmark::DataType::BF16;
   } else if (inputType.isInteger(8)) {
     return benchmark::DataType::I8;
+  } else if (inputType.isInteger(4)) {
+    return benchmark::DataType::I4;
   } else if (isa<Float8E4M3FNUZType, Float8E4M3FNType, Float8E5M2Type,
                  Float8E5M2FNUZType>(inputType)) {
     return benchmark::DataType::F8;
@@ -736,12 +741,19 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   }
 
   auto killAndReap = [&]() -> std::string {
+#ifdef _WIN32
+    // A finite Wait terminates the child with TerminateProcess if it is still
+    // running after the timeout.
+    const std::optional<unsigned> secondsToWait = 1;
+#else
     if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH)
       return std::string("failed to kill child: ") + std::strerror(errno);
+    const std::optional<unsigned> secondsToWait = std::nullopt;
+#endif
 
     std::string reapErr;
     llvm::sys::ProcessInfo reapResult =
-        llvm::sys::Wait(procInfo, /*SecondsToWait=*/std::nullopt, &reapErr);
+        llvm::sys::Wait(procInfo, secondsToWait, &reapErr);
     if (reapResult.Pid != procInfo.Pid) {
       std::string message = "failed to reap child";
       if (!reapErr.empty())
@@ -781,11 +793,10 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  // Budget exceeded: kill and reap. SIGKILL cannot be caught, and
-  // rocmlir-driver links in-process (no grandchildren to orphan), so the
-  // blocking reap returns promptly. A timeout is a non-fatal skip reported as
-  // N/A, so stay silent here (tuningRunner.py parses stdout/stderr and must not
-  // see extra noise).
+  // Budget exceeded: terminate and reap. rocmlir-driver links in-process (no
+  // grandchildren to orphan), so cleanup returns promptly. A timeout is a
+  // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
+  // stdout/stderr and must not see extra noise).
   if (timedOut) {
     if (std::string cleanupErr = killAndReap(); !cleanupErr.empty()) {
       fail("Failed to clean up timed-out rocmlir-driver for config: " +
@@ -1455,7 +1466,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // Main tuning pass: collect perf configs, compile, and benchmark.
   {
     // PHASE 1: Collect perf configs
-    std::vector<SmallString<64>> configs;
+    std::vector<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>> configs;
 
     if (!benchmarkParams.benchmarkConfig.empty()) {
       // Benchmark mode - just one config
@@ -1473,7 +1484,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       for (rock::RockTuningParamAttrInterface tuningAttr :
            tuningSpace->tuningRange) {
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         tuningAttr.getPerfConfigStr(perfConfig);
         configs.push_back(perfConfig);
       }

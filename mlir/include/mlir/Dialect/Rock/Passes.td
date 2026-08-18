@@ -336,28 +336,40 @@ def RockCollapseContiguousMergesPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockTransformsInvariantCodeMotionPass
-    : Pass<"rock-transforms-invariant-code-motion", "::mlir::func::FuncOp"> {
-  let summary =
-      "Hoist loop-invariant transforms_to_ptr arithmetic out of scf.for loops";
+def RockIncrementalPointerArithPass
+    : Pass<"rock-incremental-pointer-arith", "::mlir::func::FuncOp"> {
+  let summary = "Make loop address/mask arithmetic computed incrementally";
   let description = [{
-    Loop-invariant code motion for `rock.transforms_to_ptr` ops nested 
-    inside `scf.for` loops. Runs before TransformsToPointerArith.
+    Computes the address and mask arithmetic of `rock.transforms_to_ptr` ops
+    inside loops incrementally. Currently limited to convolution kernels.
 
-    The pass hoists only if 2 conditions are met:
-    1. The pointer offset is an affine-linear function of the loop induction variable.
-    2. The validity mask is loop-invariant
+    TransformsToPointerArith would lower the address and masks such that they
+    are re-computed from scratch for every iteration of the loop. This can be
+    very inefficient, flooding VALU units with expensive computations. This
+    pass instead rewrites the address and mask computations as an update of the
+    previous iteration's values.
 
-    The rewrite replaces in loop pointer recomputation with a loop-invariant base + 
-    one constant stride per iteration, and computes the mask once before the loop. 
-    That's only valid when:
-    - The per-iteration offset change is one constant: this breaks for a non-contiguous
-      Merge because the increment is not constant, they vary depending on specific values
-      of the loop counter, not on every step, making the real increment position-dependent.
-    - The mask is identical every iteration: which breaks when a Pad/Embed decides
-      validity by checking a coordinate that moves as the IV increases: the set of valid
-      elements is then different on each iteration, so the mask would have to be recomputed
-      every step and cannot be precomputed once.
+    Two rewrites are available. The affine path is preferred since it is more
+    efficient, but the carry is applicable in cases where the affine is not:
+
+    1. Affine. When the offset advances by a single compile-time constant per
+       iteration and the mask does not depend on the induction variable, the
+       pointer becomes `base + (iv - lb) * stride`.
+
+    2. Carry. When the induction variable goes through a `Merge` whose lower
+       dimensions are not contiguous in the buffer, so the per-element
+       increment is position-dependent, and/or a Pad/Embed decides validity
+       from a coordinate that moves with the induction variable: this means
+       that the set of valid elements differs every iteration.
+
+       This path decomposes the merged dimension into its lower coordinates and
+       carries them as loop iter_args, advancing them with add, compare, select
+       ops (no div/mod, what the IR looks like before this pass runs). The mask
+       is rebuilt each iteration from the carried coordinates, while the offset
+       is accumulated rather than re-linearized from coordinates each iteration.
+
+    Both paths are conservative: any construct that cannot be proven to admit a
+    constant-arithmetic recurrence leaves the op untouched.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",

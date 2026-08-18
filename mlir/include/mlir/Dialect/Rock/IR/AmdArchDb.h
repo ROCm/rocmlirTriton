@@ -95,25 +95,6 @@ int64_t getMaxWavesPerEU(StringRef arch);
 /// Get the SIMD VGPR file size per execution unit for this arch.
 int64_t getVGPRsPerEU(StringRef arch);
 
-/// Element type used by the out-of-MLIR (e.g. Python test binding) overloads
-/// of the per-arch dtype-dispatched queries below. Mirrors the small set of
-/// MLIR `Type`s those helpers actually switch on.
-enum class Dtype { F32, F16, BF16 };
-
-/// Whether there's fast atomic add support
-bool isFastAtomicAddSupported(StringRef arch, Type type);
-
-/// Enum-dtype overload of \ref isFastAtomicAddSupported, intended for
-/// out-of-MLIR callers (e.g. the Python test binding).
-bool isFastAtomicAddSupported(StringRef arch, Dtype dtype);
-
-/// Whether there's fast atomic max support
-bool isFastAtomicMaxSupported(StringRef arch, Type type);
-
-/// Enum-dtype overload of \ref isFastAtomicMaxSupported (currently only
-/// `Dtype::F32` is recognized as supportable on any arch).
-bool isFastAtomicMaxSupported(StringRef arch, Dtype dtype);
-
 /// Whether this architecture has any FP8 matrix-acceleration intrinsics
 /// (MFMA on CDNA3+, WMMA on RDNA4+ / GFX1250). Independent of any specific
 /// operation; useful for gating test suites that require an FP8 hardware

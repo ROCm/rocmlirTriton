@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "../common/benchmarkUtils.h"
 #include "../common/hip_f8_impl.h"
 
@@ -49,6 +52,7 @@ static hipDataType toHipDataType(benchmark::DataType dataType) {
     return HIP_R_32I;
   case benchmark::DataType::F4:
   case benchmark::DataType::F8E8M0FNU:
+  case benchmark::DataType::I4:
   case benchmark::DataType::UNKNOWN:
     fprintf(stderr, "Unsupported data type\n");
     exit(1);
@@ -70,7 +74,8 @@ static benchmark::DataType getComputeDataType(benchmark::DataType inputType,
 
   // F4 and other types are not supported by hipBLASLt
   if (inputType == benchmark::DataType::F4 ||
-      inputType == benchmark::DataType::F8E8M0FNU) {
+      inputType == benchmark::DataType::F8E8M0FNU ||
+      inputType == benchmark::DataType::I4) {
     fprintf(stderr, "Data type not supported by hipBLASLt\n");
     exit(1);
   }

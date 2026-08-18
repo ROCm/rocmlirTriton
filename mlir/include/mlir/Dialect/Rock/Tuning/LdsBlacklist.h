@@ -53,7 +53,7 @@ namespace rock {
 // The only perf-config fields that change a GEMM's per-block LDS footprint.
 // Determined empirically (see generateLDSBlacklist.py); kpack, numCTAs,
 // splitKFactor, wavesPerEU, gridGroupSize and the knob fields have no effect.
-// Field order must match PROJECTION_INDICES in generateLDSBlacklist.py.
+// Field order must match PROJECTION_NAMES in generateLDSBlacklist.py.
 struct GemmLdsKey {
   int64_t mPerBlock;
   int64_t nPerBlock;

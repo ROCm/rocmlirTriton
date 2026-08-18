@@ -31,8 +31,11 @@ apply the changes, or fix the formatting manually.
 4. Build and run the test suite locally:
    ```bash
    bash cmake.sh
-   cd build && ninja check-rocmlir
+   cd build && ninja check-mlir && ninja check-rocmlir
    ```
+   `check-rocmlir` covers this project's tests and runs on every PR. `check-mlir`
+   covers the upstream MLIR suite in `external/llvm-project`, where we carry
+   downstream patches (see `llvm-patches/`); CI runs it in nightly only.
 5. Open a PR against `develop`. Describe *what* changed and *why*; link any related issue.
 6. Ensure CI passes and request review from the relevant [CODEOWNERS](.github/CODEOWNERS).
 

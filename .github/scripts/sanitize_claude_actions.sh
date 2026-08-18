@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Validate /tmp/pr/actions.json before posting to GitHub.
 #
 # This step runs in the SAME job as the Claude review (which has the LLM Gateway

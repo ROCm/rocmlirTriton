@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 
 import csv
 from collections import OrderedDict
@@ -23,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 import reportUtils
-from perfCommonUtils import GEMMLibrary, Operation, SPLITK_IDX
+from perfCommonUtils import GEMMLibrary, Operation, SPLITK_KEY, parse_perfconfig, serialize_perfconfig
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
@@ -536,6 +539,21 @@ class PerfConfiguration:
         return f"{self.__class__.__name__}({attrs})"
 
 
+def drop_perf_priority(argv):
+    """Return a tokenized config without its -perf_priority flag and value.
+
+    -perf_priority records how much of a model's runtime a config was responsible
+    for, so the tuner knows what to work on first. It says nothing about the problem
+    itself, and neither getopt nor MIOpenDriver will accept it.
+    """
+    if '-perf_priority' not in argv:
+        return argv
+    idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
+    return argv[:idx] + argv[idx + 2:]
+
+
 # convolution configurations.
 def get_conv_configurations(filename, target_chip: Optional[str] = None):
     configs = []
@@ -706,6 +724,10 @@ class ConvConfiguration(PerfConfiguration):
         elif argv[0] == 'convbf8_bf8':
             datatype = 'bf8_bf8'
 
+        # getopt has no way to spell a single-dash long option, so -perf_priority
+        # would otherwise be read as -p with the value "erf_priority".
+        argv = drop_perf_priority(argv)
+
         try:
             # TBD:
             # implement -m ?
@@ -866,6 +888,7 @@ class ConvConfiguration(PerfConfiguration):
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME))
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
+        commandline = drop_perf_priority(commandline)
         miopen_driver_cmd = [MIOPENDRIVER, *commandline, '-V', '0', '-t', '1']
         print("Running MIOpen Benchmark: ", ' '.join(commandline))
         # invoke MIOpenDriver.
@@ -997,7 +1020,7 @@ def get_conv_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1039,7 +1062,7 @@ def get_gemm_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1089,7 +1112,7 @@ def get_attn_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1237,6 +1260,9 @@ class GemmConfiguration(PerfConfiguration):
                 trans_scale_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transScaleB"):
                 trans_scale_b = (val.lower() in ["1", "true"])
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown GEMM config argument {opt} -> {val}")
             i += 2
@@ -1505,6 +1531,9 @@ class ConvGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown conv+gemm config argument {opt} -> {val}")
         for v in [
@@ -1650,6 +1679,9 @@ class GemmGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown gemm+gemm config argument {opt} -> {val}")
         for v in [dtype, g, m, k, n, o, trans_a, trans_b, trans_c, trans_o]:
@@ -1875,6 +1907,9 @@ class AttentionConfiguration(PerfConfiguration):
                 current_seqlen = [int(x) for x in val.split(",")]
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown Attention config argument {opt} -> {val}")
         for v in [
@@ -2440,15 +2475,15 @@ def benchmark_fusion_kernels(test_dir,
 
     if tuning_db:
         # Force all split-K factors to 1, to avoid trouble because fusion
-        # and split-K aren't compatible.  Crude parser mirroring the CSV
-        # layout serialized by GemmParamsAttr::getPerfConfigStr (see
-        # RockAttrDefs.td); SPLITK_IDX must match the splitKFactor field
-        # position.
+        # and split-K aren't compatible. Parse the named
+        # ``prefix:key=value,...`` perfConfig serialized by
+        # GemmParamsAttr::getPerfConfigStr (see RockAttrDefs.td) and rewrite the
+        # splitKFactor field by name.
         for (arch, config), perfconfig in tuning_db.items():
-            split_perf = perfconfig.split(',')
-            if int(split_perf[SPLITK_IDX]) > 1:
-                split_perf[SPLITK_IDX] = '1'
-                tuning_db[arch, config] = ','.join(split_perf)
+            prefix, params = parse_perfconfig(perfconfig)
+            if int(params.get(SPLITK_KEY, 1)) > 1:
+                params[SPLITK_KEY] = 1
+                tuning_db[arch, config] = serialize_perfconfig(prefix, params)
 
     # Profile each test case
     for test in all_tests:

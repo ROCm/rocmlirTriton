@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # gemm+gemm companion to ``parameterSweeps-conv.py``: shares the attn:v1:
 # perf-config family with attention but drives the GemmGemmConfiguration
 # problem space (independent split-K, no causal mask, no KV-cache).
