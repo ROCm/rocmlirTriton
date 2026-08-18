@@ -209,12 +209,13 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
   assert(topTransform && "expected transformed store destination");
   SmallVector<StringRef> destNames(destShape.size());
   for (TransformAttr transform : topTransform.getTransform().getOps()) {
-    for (auto [name, dim] : llvm::zip_equal(transform.getUpperNames(),
-                                            transform.getUpperDims()))
+    for (auto [name, dim] :
+         llvm::zip_equal(transform.getUpperNames(), transform.getUpperDims()))
       destNames[dim] = name;
   }
-  assert(llvm::none_of(destNames, [](StringRef name) { return name.empty(); }) &&
-         "expected a name for every destination dimension");
+  assert(
+      llvm::none_of(destNames, [](StringRef name) { return name.empty(); }) &&
+      "expected a name for every destination dimension");
 
   SmallVector<StringRef> keptNames;
   SmallVector<uint32_t> keptDims;
@@ -240,9 +241,10 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
 ///
 /// Transform chains that affect validity are unsupported (currently nontrivial
 /// Pad and potentially invalid Embed transforms). Address invariance must also
-/// be proven by getLowerSubDimensions, which supports PassThrough, Slice, Merge,
-/// Unmerge, Broadcast, AddDim, and ConstDim. Pad and Embed are not modeled, and
-/// ambiguous merge boundaries are conservatively treated as address-dependent.
+/// be proven by getLowerSubDimensions, which supports PassThrough, Slice,
+/// Merge, Unmerge, Broadcast, AddDim, and ConstDim. Pad and Embed are not
+/// modeled, and ambiguous merge boundaries are conservatively treated as
+/// address-dependent.
 static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   StoreMethod storeMethod = store.getStoreMethod();
   // LowerReduce maps reduce_sum to atomic_add and reduce_max to atomic_max, so
