@@ -2544,11 +2544,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         return failure();
 
       // Rock attention requires the look-back distance to be strictly less
-      // than the key sequence length. Leave out-of-range masks explicit rather
-      // than creating an attention op that fails verification.
+      // than the key sequence length. Leave truly out-of-range masks explicit
+      // rather than creating an attention op that fails verification.
       int64_t maxSeqLen =
           cast<ShapedType>(softmaxInput.getType()).getShape().back();
-      if (ShapedType::isDynamic(maxSeqLen) || *result.lookBack >= maxSeqLen)
+      if (ShapedType::isDynamic(maxSeqLen) || *result.lookBack > maxSeqLen)
         return failure();
 
       // Both masks must reference the same last-valid-index block argument.
@@ -2560,6 +2560,13 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       if (result.lastKVClipMin != result.windowClipMin ||
           result.lastKVClipMax != result.windowClipMax)
         return failure();
+
+      // For an in-contract index P < maxSeqLen, a look-back equal to
+      // maxSeqLen has a lower bound of max(0, P - maxSeqLen) = 0 and is
+      // therefore redundant. Drop only the look-back while preserving the
+      // KV-cache fold and its runtime N-loop bound.
+      if (*result.lookBack == maxSeqLen)
+        result.lookBack.reset();
     }
 
     // We need at least one pattern to be detected
