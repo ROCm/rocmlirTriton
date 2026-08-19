@@ -91,12 +91,14 @@ VERIFY_REPEATS = 1
 # mlir/include/mlir/Dialect/Rock/utility/compileUtils.h.
 GPU_TIMEOUT_EXIT_CODE = 3
 
-# Status tokens that rocmlir-tuning-driver can return.
+# Timing tokens that rocmlir-tuning-driver can return in place of a plain
+# nanosecond count.
 # - "N/A" means the config never ran;
-# - "Discarded" means it ran but it was not inside the topK list.
+# - "coarse:<ns>" means it ran at the two-stage coarse budget but was not inside
+#   the topK list, so it never got a precise measurement. The timing is real and
+#   worth recording, but too imprecise to crown a winner with.
 NOT_APPLICABLE_STATUS = "N/A"
-DISCARDED_STATUS = "Discarded"
-UNMEASURED_STATUSES = frozenset({NOT_APPLICABLE_STATUS, DISCARDED_STATUS})
+COARSE_TIMING_PREFIX = "coarse:"
 
 OUTPUT_HEADER_COLUMNS = [
     'arch', 'numCUs', 'numChiplets', 'testVector', 'perfConfig', 'TFlops', 'tuningSpace',
@@ -1126,10 +1128,6 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.test_dir and op_type != Operation.FUSION:
             self.error("argument --test-dir: only allowed with --op=fusion")
 
-        if parsed.debug_quick_tune_data and (parsed.two_stage or (parsed.two_stage_topk or 0) > 0):
-            self.error(
-                "argument --debug-quick-tune-data: not allowed with --two-stage/--two-stage-topk")
-
         # The coarse warmup is capped at what --warmup affords, so a larger
         # floor would be silently inert. The driver rejects this too.
         if (parsed.two_stage or (parsed.two_stage_topk or 0) > 0) \
@@ -1373,9 +1371,13 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
 
         perfconfig = parts[0]
         time = parts[-1]
+        is_coarse = time.startswith(COARSE_TIMING_PREFIX)
         try:
-            if time in UNMEASURED_STATUSES:
+            if time == NOT_APPLICABLE_STATUS:
                 nano_seconds = np.nan
+                measurements = None
+            elif is_coarse:
+                nano_seconds = float(time[len(COARSE_TIMING_PREFIX):])
                 measurements = None
             else:
                 nano_seconds = float(time)
@@ -1388,16 +1390,24 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         entry = config.table_entry(nano_seconds)
         if options.debug:
             entry["MeasurementsMs"] = measurements
-            entry["Status"] = time if np.isnan(nano_seconds) else "Measured"
+            if np.isnan(nano_seconds):
+                entry["Status"] = time
+            else:
+                entry["Status"] = "Coarse" if is_coarse else "Measured"
         entries.append(entry)
 
-        # Verify Discarded configs too: gating this on the timing
+        # Verify coarse-only configs too: gating this on the timing
         # instead would silently skip verification of non topK configs.
         if options.verify_all_perfconfigs and time != NOT_APPLICABLE_STATUS:
             verify_ns = verify_perfconfig(perfconfig, config, paths, options, gpu_id)
             if np.isnan(verify_ns):
                 raise TuningError(f"Verification returned NaN for perfconfig '{perfconfig}'")
 
+        # Only a precise-budget timing may crown a winner. A coarse estimate is
+        # measured well enough to rank on but not to separate near-ties, which
+        # is exactly what picking the maximum does.
+        if is_coarse:
+            continue
         these_tflops = entry['TFlops']
         if not np.isnan(these_tflops) and (max_tflops is None or these_tflops > max_tflops):
             max_tflops = these_tflops
@@ -2545,7 +2555,9 @@ def parse_arguments(args=None) -> argparse.Namespace:
                         "measurement that stops once each config's estimate is precise enough to "
                         "rank it, see --coarse-rel-sem-target; capped by --coarse-rep-iters) to "
                         "shortlist the K fastest, then re-benchmarked at the precise budget to "
-                        "pick the winner. Unset by default.")
+                        "pick the winner. Configs outside the shortlist still report their coarse "
+                        "timing, so --debug-quick-tune-data gets a datapoint for every config; "
+                        "only the precise ones are eligible to win. Unset by default.")
 
     parser.add_argument("--coarse-rep-iters",
                         type=int,

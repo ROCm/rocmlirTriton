@@ -30,3 +30,18 @@
 #
 # DEBUG: PerfConfig{{.*}}TFlops
 # DEBUG: gemm:v5:
+#
+# Quick-tune data combined with two-stage tuning. Only the single top-K config
+# is re-measured at the precise budget, but the configs the shortlist dropped
+# still report their coarse timing, so every row carries a real TFlops number
+# rather than the NaN a dropped config used to get. Requiring 2 numeric rows
+# under --two-stage-topk=1 is what proves a non-shortlisted config was recorded.
+# RUN: rm -f %t3.tsv %t3.tsv.state %t3.tsv.debug
+# RUN: tuningRunner.py --op gemm --tuning-space=quick --debug-quick-tune-data \
+# RUN:     --two-stage-topk=1 --coarse-warmup-floor-ms=0 \
+# RUN:     --config='-g 1 -m 64 -n 64 -k 64 -t f32 -out_datatype f32 -transA 0 -transB 0' \
+# RUN:     -q -o %t3.tsv 2>&1 | FileCheck %s --check-prefix=TWOSTAGE --allow-empty
+# RUN: FileCheck %s --check-prefix=QTDEBUG < %t3.tsv.debug
+#
+# TWOSTAGE-NOT: not allowed with
+# QTDEBUG-COUNT-2: {{gemm:v5:[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[0-9]}}

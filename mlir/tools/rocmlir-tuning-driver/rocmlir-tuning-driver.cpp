@@ -1201,13 +1201,15 @@ static bool doesModuleHaveFusions(ModuleOp module) {
 // Shared timing path used by both the in-process run and --benchmark-artifacts,
 // guaranteeing identical measurement semantics. Allocates host/device buffers
 // from `layout`, then sequentially benchmarks each config that is due a precise
-// measurement, printing `perfConfig\t<ns|Discarded|N/A>`. Timed-out configs are
+// measurement, printing `perfConfig\t<ns|coarse:ns|N/A>`. Timed-out configs are
 // reported as N/A, like not-applicable configs. When two-stage tuning is on
 // (params.twoStageTopK > 0) a coarse pass parameterized by `coarseConfig` runs
-// first and narrows the precise pass to the K fastest configs; the rest are
-// reported as Discarded. For artifact results (empty hsacoBinary + nonempty
-// blobPath) each HSACO is decompressed just before launch and freed right
-// after. A decompression, launch, or timing failure aborts the run.
+// first and narrows the precise pass to the K fastest configs; the rest report
+// the coarse timing they already produced, tagged `coarse:` so a consumer can
+// tell an estimate from a precise measurement. For artifact results (empty
+// hsacoBinary + nonempty blobPath) each HSACO is decompressed just before
+// launch and freed right after. A decompression, launch, or timing failure
+// aborts the run.
 static LogicalResult
 runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
                   const BufferLayout &layout, const BenchmarkParams &params,
@@ -1273,20 +1275,21 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
 
   // Which configs get a precise (reported) benchmark. Only Success carries a
   // code object, so in single-pass mode that is every Success config; in
-  // two-stage mode it is narrowed to the coarse-pass shortlist below.
-  // Everything else gets a status token instead of a timing: "Discarded" for a
-  // config dropped by top-K, "N/A" for one that never became measurable
-  // (NotApplicable, CompilationFailed or TimedOut).
+  // two-stage mode it is narrowed to the coarse-pass shortlist below. A config
+  // dropped by top-K reports the coarse timing recorded here instead; one that
+  // never became measurable (NotApplicable, CompilationFailed or TimedOut)
+  // gets the "N/A" token.
   std::vector<bool> reportPrecise(results.size(), false);
   for (size_t i = 0; i < results.size(); ++i)
     reportPrecise[i] = results[i].status == CompilationStatus::Success;
+  std::vector<std::optional<double>> coarseNs(results.size());
 
   // Two-stage tuning is only meaningful when we are searching a space; in
   // single-config benchmark mode there is nothing to shortlist.
   if (params.twoStageTopK > 0 && params.benchmarkConfig.empty()) {
     // COARSE PASS: benchmark every applicable config once at the cheap budget.
-    // Stats/measurement printing is suppressed so this pass emits no stdout;
-    // only the shortlist is reported (with precise timings) below.
+    // Stats/measurement printing is suppressed so this pass emits no stdout of
+    // its own; the timings it produces are reported by the loop below.
     BenchmarkParams coarseParams = params;
     // Adaptive, iteration-based coarse ranking (hardware-independent): stop
     // once the relative SEM is below target, floored at minRepIters and capped
@@ -1322,12 +1325,13 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
                      << results[i].perfConfig << "\n";
         return failure();
       }
+      coarseNs[i] = timing.value();
       coarseTimes.emplace_back(i, timing.value());
     }
 
-    // Shortlist the K fastest (smallest ns). Everything not shortlisted is
-    // demoted to "Discarded" so the downstream winner selection (min time) can
-    // only pick a config that was re-benchmarked at the precise budget.
+    // Shortlist the K fastest (smallest ns). Everything not shortlisted keeps
+    // only its coarse timing, which the `coarse:` tag marks as ineligible to
+    // win so the choice still rests on a precise-budget measurement.
     std::fill(reportPrecise.begin(), reportPrecise.end(), false);
     unsigned k = std::min<unsigned>(params.twoStageTopK, coarseTimes.size());
     std::partial_sort(
@@ -1339,21 +1343,24 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
   }
 
   // PRECISE (reporting) PASS. Sequential for accurate timing. A config that
-  // compiled and ran but lost the coarse-pass shortlist is reported as
-  // "Discarded", which keeps a deliberate two-stage demotion distinguishable
-  // from a config that never produced a measurement at all ("N/A"); the sweep
-  // keeps going either way, so one bad config cannot sink the whole run.
-  // Re-benchmarking the shortlist reuses the binaries already in `results`, so
-  // there is no recompilation.
+  // compiled and ran but lost the coarse-pass shortlist reports its coarse
+  // timing under the "coarse:" tag: it is a real timing, just measured at the
+  // cheap budget, and it is the only datapoint a consumer that needs one per
+  // config (quick-tune list generation) will ever get for it. That stays
+  // distinguishable from a config which never produced a measurement at all
+  // ("N/A"); the sweep keeps going either way, so one bad config cannot sink
+  // the whole run. Re-benchmarking the shortlist reuses the binaries already
+  // in `results`, so there is no recompilation.
   int64_t validResults = 0;
   for (size_t i = 0; i < results.size(); ++i) {
     CompilationResult &result = results[i];
     llvm::outs() << result.perfConfig << "\t";
 
     if (!reportPrecise[i]) {
-      llvm::outs() << (result.status == CompilationStatus::Success ? "Discarded"
-                                                                   : "N/A")
-                   << "\n";
+      if (coarseNs[i])
+        llvm::outs() << "coarse:" << *coarseNs[i] << "\n";
+      else
+        llvm::outs() << "N/A\n";
       continue;
     }
 
