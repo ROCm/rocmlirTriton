@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir-c/Dialect/Rock.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"

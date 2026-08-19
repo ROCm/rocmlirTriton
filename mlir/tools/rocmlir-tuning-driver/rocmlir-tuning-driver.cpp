@@ -1,6 +1,6 @@
 //===- rocmlir-tuning-driver.cpp - rocMLIR tuning driver -------------===//
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 // Part of the rocMLIR project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.

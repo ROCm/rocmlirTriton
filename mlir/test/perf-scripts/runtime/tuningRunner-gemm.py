@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # End-to-end smoke test for tuningRunner.py: tune a tiny f32 GEMM with
 # ``--tuning-space=quick``. Drives rocmlir-gen | rocmlir-tuning-driver and
 # verifies the winning perf-config against the CPU reference, exercising
