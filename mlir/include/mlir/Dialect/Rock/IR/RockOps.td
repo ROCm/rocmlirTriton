@@ -229,9 +229,10 @@ def Rock_AttentionOp
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix
       lengths for each sequence in the batch
 
-    `lastValidKVIndex` is the zero-based, inclusive last valid KV-cache index,
-    not the number of cached entries. For a value `P`, key positions `[0, P]`
-    are valid before other masks are applied.
+    `lastValidKVIndex` is the zero-based, inclusive index of the last valid
+    position along the K/V sequence-length dimension, not the number of cached
+    entries. For a value `P`, key positions `[0, P]` are valid before other
+    masks are applied.
 
     Without `slidingWindowLookBack`, attention is non-sliding. If it is set to
     `L`, it specifies a strictly positive look-back index distance from

@@ -196,7 +196,7 @@ non-zero value would cause the runtime to **add** that amount on top of
 the static `.amdhsa_group_segment_fixed_size`, potentially exceeding the
 hardware LDS limit and causing a launch failure.
 
-### 2.9 KV-cache attention: dynamic last-valid index
+### 2.9 KV-cache attention: dynamic sequence length
 
 Attention kernels with KV-cache support use **statically-shaped** K and V
 tensors (compiled to a maximum sequence length `maxSeqLen`) but accept a
