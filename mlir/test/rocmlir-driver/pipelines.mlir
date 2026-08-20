@@ -148,7 +148,10 @@
 // TRITON-NEXT:cse,
 // TRITON-NEXT:symbol-dce,
 // TRITON-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx942},
-// TRITON-NEXT:reconcile-unrealized-casts)
+// TRITON-NEXT:reconcile-unrealized-casts,
+// TRITON-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:cse)
 
 // TRITON_GFX1250:Kernel pipeline:
 // TRITON_GFX1250-NEXT:builtin.module(inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 },
@@ -211,7 +214,10 @@
 // TRITON_GFX1250-NEXT:cse,
 // TRITON_GFX1250-NEXT:symbol-dce,
 // TRITON_GFX1250-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx1250},
-// TRITON_GFX1250-NEXT:reconcile-unrealized-casts)
+// TRITON_GFX1250-NEXT:reconcile-unrealized-casts,
+// TRITON_GFX1250-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON_GFX1250-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON_GFX1250-NEXT:cse)
 
 // gfx1100, gfx1170, and gfx1201 run the same pipeline, so they share a single check prefix:
 // TRITON_RDNA:Kernel pipeline:
@@ -277,7 +283,10 @@
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:symbol-dce,
 // TRITON_RDNA-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
-// TRITON_RDNA-NEXT:reconcile-unrealized-casts)
+// TRITON_RDNA-NEXT:reconcile-unrealized-casts,
+// TRITON_RDNA-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON_RDNA-NEXT:cse)
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
 // produce `gpu.binary` (via TritonToHsaco + RockEmitGpuBinary) but must NOT
