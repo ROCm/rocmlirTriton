@@ -533,3 +533,36 @@ gfx117x even though it has the 128-bit WMMA v2 engine with OCP FP8 operands.
 
 Drop this patch on the next LLVM/Triton bump that includes equivalent upstream
 gfx117x OCP FP8 classification.
+
+----------------------------------------------------------------------
+patch-amdgpu-fold-oob-buffer-store.patch
+----------------------------------------------------------------------
+- Upstream status : Downstream fix; submit to LLVM before the next bump
+- Upstream title  : [AMDGPU][InstCombine] Erase provably out-of-bounds raw
+                    buffer stores
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPUInstCombineIntrinsic.cpp
+                    llvm/lib/Target/AMDGPU/SIInstrInfo.h
+                    llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+                    llvm/test/Transforms/InstCombine/AMDGPU/raw-ptr-buffer-store-oob.ll (new)
+- Contents        : Erases a llvm.amdgcn.raw.ptr.buffer.store whose offset is
+                    known to be at or past the descriptor's NumRecords, on the
+                    descriptor configurations where the hardware discards such
+                    an access. Also adds RSRC_OOB_SELECT_SHIFT/_MASK beside the
+                    existing RSRC_ constants in SIInstrInfo.h. The gating
+                    conditions are documented in the fold itself.
+
+Symptom without the patch
+-------------------------
+Fused kernels whose GEMM M dimension is padded up to mPerBlock run several
+times slower than the rocMLIR equivalent: a depthwise convolution with M=1
+padded to 32 ran at 49.9us against 16.5us on gfx1100, using 174 VGPRs to 45.
+
+Root cause
+----------
+Triton's BufferOpsEmitter predicates stores without branching, giving a
+masked-off lane an offset past NumRecords so the hardware drops the store.
+LLVM sees an unconditional store and keeps the whole padded-tile epilogue
+alive. rocMLIR escapes this by erasing the accesses during canonicalization.
+
+Drop this patch on the next LLVM/Triton bump that includes an equivalent
+upstream fold.
