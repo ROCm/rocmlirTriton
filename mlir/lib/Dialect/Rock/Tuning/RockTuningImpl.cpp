@@ -265,9 +265,11 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 // The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
 // at or below it the pow2 list {1,4,8,16} already samples K densely, and the
 // window itself reaches the small two-segment divisors (9, 12) on a 16- or
-// 32-wide tile. Above the high bound the dot operands spill -- at 64x16,
-// kPerBlock=45 already compiles to 256 VGPRs with 7 spills, against 95 and none
-// at kPerBlock=9. No divisor outside these bounds won on any conv measured.
+// 32-wide tile. On an accel path the caller's own minimum clamps the range
+// further, to [17,64] for MFMA and [32,64] for WMMA. Above the high bound the
+// dot operands spill -- at 64x16, kPerBlock=45 already compiles to 256 VGPRs
+// with 7 spills, against 95 and none at kPerBlock=9. No divisor outside these
+// bounds won on any conv measured.
 static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
 static constexpr uint32_t kRelaxedMaxKPerBlock = 64;
 
@@ -340,10 +342,10 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
     // A K that no power-of-two tile divides has no remainder-free kPerBlock in
-    // the default space, so widen the search for it. Restricted to the
-    // non-accel path: that is both where the two-segment rule stops meaning
-    // anything and the only place the relaxation has been measured.
-    bool relaxed = !isMfma && !isWmma && !pow2KPerBlockDividesK(kList, k);
+    // the default space, so widen the search for it. What counts as such a K is
+    // per-path, since kList is: the accel lists bottom out at 16 (MFMA) or 32
+    // (WMMA), so the gate opens for them on more shapes than for {1,4,8,16}.
+    bool relaxed = !pow2KPerBlockDividesK(kList, k);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
                                               /*maxK=*/256, relaxed)) {
       if (isIntegerGemm && d % 4 != 0)
