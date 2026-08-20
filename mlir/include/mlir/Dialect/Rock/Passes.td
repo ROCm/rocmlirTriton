@@ -899,6 +899,33 @@ def RockNarrowRedundantLoadsPass
                            "math::MathDialect"];
 }
 
+def RockVerifyPackedUpcastLayoutPass
+    : Pass<"rock-verify-packed-upcast-layout", "::mlir::ModuleOp"> {
+  let summary = "Reject packed FP4/FP8 upcasts whose layout leaves a partial "
+                "per-thread group";
+  let description = [{
+    The AMD lowerings of the packed sub-byte upcasts consume a thread's values
+    in whole groups, because one group fills the register their conversion
+    sequences operate on. They assert that precondition and then index the
+    group unconditionally, so a layout that leaves a thread with a partial
+    group reads out of bounds once assertions are compiled out.
+
+    The per-thread count follows from the distributed layout Triton assigns
+    while accelerating the matmul -- tile shape, wave count and instruction
+    size rather than any single tuning parameter -- so it cannot be predicted
+    while the tuning space is built. This pass runs immediately before the
+    conversion to LLVM, where the layouts are final, and marks a violating
+    configuration `rock.not_applicable` so the tuning driver skips it.
+
+    The group size depends on the widest conversion the target offers for the
+    op at hand, hence the `arch` option.
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
+                           "triton::amdgpu::TritonAMDGPUDialect"];
+  let options = [Option<"arch", "arch", "std::string", "\"\"",
+                        "AMDGPU architecture (e.g., gfx950, gfx1250)">];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";

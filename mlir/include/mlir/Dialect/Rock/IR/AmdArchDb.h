@@ -173,6 +173,12 @@ bool preferBf16x3ForF32Dot(StringRef arch);
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
+/// Whether this architecture has the eight-at-a-time scaled upcast conversion
+/// (`v_cvt_pk_scale_pk8_*`). Where it exists, Triton lowers a scaled FP8
+/// upcast through it, so a thread's packed values are consumed in groups of
+/// eight rather than four.
+bool supportsScaledUpcastPk8(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 

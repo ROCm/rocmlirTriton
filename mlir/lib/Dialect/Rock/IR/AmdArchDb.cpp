@@ -685,3 +685,9 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
 }
+
+bool mlir::rock::supportsScaledUpcastPk8(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.supportsCvtPkScalePk8();
+}
