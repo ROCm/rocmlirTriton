@@ -32,6 +32,24 @@ using namespace ROCDL;
 #include "mlir/Dialect/LLVMIR/ROCDLOpsDialect.cpp.inc"
 
 //===----------------------------------------------------------------------===//
+// Integer range inference for ROCDL ops
+//===----------------------------------------------------------------------===//
+
+/// Infer the result ranges for a ROCDL SpecialIdRegisterOp from its optional
+/// `range` attribute, which mirrors the `!range` metadata the AMDGPU backend
+/// attaches to the corresponding intrinsic call.
+static void rocdlInferResultRanges(Operation *op, Value result,
+                                   ArrayRef<::mlir::ConstantIntRanges> argRanges,
+                                   SetIntRangeFn setResultRanges) {
+  if (auto rangeAttr = op->getAttrOfType<LLVM::ConstantRangeAttr>("range")) {
+    setResultRanges(result, {rangeAttr.getLower(), rangeAttr.getUpper(),
+                             rangeAttr.getLower(), rangeAttr.getUpper()});
+  } else {
+    setResultRanges(result, IntegerValueRange::getMaxRange(result).getValue());
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // Parsing for ROCDL ops
 //===----------------------------------------------------------------------===//
 

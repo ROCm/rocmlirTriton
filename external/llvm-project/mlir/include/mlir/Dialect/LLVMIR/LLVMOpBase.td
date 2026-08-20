@@ -17,8 +17,15 @@
 include "mlir/Dialect/LLVMIR/LLVMAttrDefs.td"
 include "mlir/Dialect/LLVMIR/LLVMInterfaces.td"
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/InferIntRangeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
+
+// Trait shorthand for the integer ops whose result ranges the shared
+// `mlir::intrange` helpers can infer. Implemented in
+// lib/Dialect/LLVMIR/IR/LLVMInferIntRangeInterfaceImpls.cpp.
+defvar LLVM_InferIntRange =
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>;
 
 //===----------------------------------------------------------------------===//
 // LLVM dialect type constraints.

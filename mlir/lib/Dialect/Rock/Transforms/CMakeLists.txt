@@ -40,6 +40,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeInterGemmFusion.cpp
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
+  RockFoldOobBufferOps.cpp
   RockPrepareLLVM.cpp
   RockTosaToElementwise.cpp
   RockAllowFastMathFlags.cpp
@@ -55,6 +56,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
 
   LINK_LIBS PUBLIC
   MLIRAffineTransforms
+  MLIRAnalysis
   MLIRArithTransforms
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
@@ -65,6 +67,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   MLIRLinalgUtils
   MLIRLinalgTransforms
   MLIRLLVMDialect
+  MLIRROCDLDialect
   MLIRMathToLLVM
   MLIRMemRefTransforms
   MLIRAffineToStandard

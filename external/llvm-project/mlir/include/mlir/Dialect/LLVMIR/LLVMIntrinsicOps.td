@@ -176,10 +176,10 @@ def LLVM_MaxNumOp : LLVM_BinarySameArgsIntrOpF<"maxnum">;
 def LLVM_MinNumOp : LLVM_BinarySameArgsIntrOpF<"minnum">;
 def LLVM_MaximumOp : LLVM_BinarySameArgsIntrOpF<"maximum">;
 def LLVM_MinimumOp : LLVM_BinarySameArgsIntrOpF<"minimum">;
-def LLVM_SMaxOp : LLVM_BinarySameArgsIntrOpI<"smax">;
-def LLVM_SMinOp : LLVM_BinarySameArgsIntrOpI<"smin">;
-def LLVM_UMaxOp : LLVM_BinarySameArgsIntrOpI<"umax">;
-def LLVM_UMinOp : LLVM_BinarySameArgsIntrOpI<"umin">;
+def LLVM_SMaxOp : LLVM_BinarySameArgsIntrOpI<"smax", [LLVM_InferIntRange]>;
+def LLVM_SMinOp : LLVM_BinarySameArgsIntrOpI<"smin", [LLVM_InferIntRange]>;
+def LLVM_UMaxOp : LLVM_BinarySameArgsIntrOpI<"umax", [LLVM_InferIntRange]>;
+def LLVM_UMinOp : LLVM_BinarySameArgsIntrOpI<"umin", [LLVM_InferIntRange]>;
 
 class LLVM_CmpIntrOp<string func>
     : LLVM_OneResultIntrOp<func, [0], [0], [Pure, SameTypeOperands]> {

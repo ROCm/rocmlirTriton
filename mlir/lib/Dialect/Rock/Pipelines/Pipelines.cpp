@@ -684,6 +684,15 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   // in the host lowering pipeline) sees the trimmed signature.
   pm.addPass(rock::createResolveKernelLaunchParamsPass());
 
+  // Erase the buffer stores that Triton predicated by pointing them past the
+  // descriptor's NumRecords, then clean up the epilogue arithmetic that only
+  // fed them. Runs here because the address computation is fully canonicalized
+  // by this point, so the range analysis sees plain llvm/rocdl arithmetic
+  // rather than insertvalue/extractvalue chains.
+  pm.addNestedPass<LLVM::LLVMFuncOp>(rock::createRockFoldOobBufferOpsPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+
   // Annotate LLVM IR for efficient AMDGPU codegen (GEP inbounds, alias
   // scopes, invariant loads, atomic metadata).
   RockPrepareLLVMPassOptions prepareLLVMOpts;

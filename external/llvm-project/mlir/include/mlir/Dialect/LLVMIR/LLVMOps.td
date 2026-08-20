@@ -150,26 +150,37 @@ class LLVM_UnaryFloatArithmeticOp<Type type, string mnemonic,
 
 // Integer binary operations.
 def LLVM_AddOp : LLVM_IntArithmeticOpWithOverflowFlag<"add", "Add",
-    [Commutative, Pure]>;
-def LLVM_SubOp : LLVM_IntArithmeticOpWithOverflowFlag<"sub", "Sub", [Pure]>;
+    [Commutative, Pure, LLVM_InferIntRange]>;
+def LLVM_SubOp : LLVM_IntArithmeticOpWithOverflowFlag<"sub", "Sub",
+    [Pure, LLVM_InferIntRange]>;
 def LLVM_MulOp : LLVM_IntArithmeticOpWithOverflowFlag<"mul", "Mul",
-    [Commutative, Pure]>;
+    [Commutative, Pure, LLVM_InferIntRange]>;
 def LLVM_UDivOp : LLVM_IntArithmeticOpWithExactFlag<"udiv", "UDiv",
-    [DeclareOpInterfaceMethods<ConditionallySpeculatable>]>;
+    [DeclareOpInterfaceMethods<ConditionallySpeculatable>,
+     LLVM_InferIntRange]>;
 def LLVM_SDivOp : LLVM_IntArithmeticOpWithExactFlag<"sdiv", "SDiv",
-    [DeclareOpInterfaceMethods<ConditionallySpeculatable>]>;
-def LLVM_URemOp : LLVM_IntArithmeticOp<"urem", "URem", [Pure]>;
-def LLVM_SRemOp : LLVM_IntArithmeticOp<"srem", "SRem", [Pure]>;
-def LLVM_AndOp : LLVM_IntArithmeticOp<"and", "And", [Pure]>;
-def LLVM_OrOp : LLVM_IntArithmeticOpWithDisjointFlag<"or", "Or", [Pure]> {
+    [DeclareOpInterfaceMethods<ConditionallySpeculatable>,
+     LLVM_InferIntRange]>;
+def LLVM_URemOp : LLVM_IntArithmeticOp<"urem", "URem",
+    [Pure, LLVM_InferIntRange]>;
+def LLVM_SRemOp : LLVM_IntArithmeticOp<"srem", "SRem",
+    [Pure, LLVM_InferIntRange]>;
+def LLVM_AndOp : LLVM_IntArithmeticOp<"and", "And",
+    [Pure, LLVM_InferIntRange]>;
+def LLVM_OrOp : LLVM_IntArithmeticOpWithDisjointFlag<"or", "Or",
+    [Pure, LLVM_InferIntRange]> {
   let hasFolder = 1;
 }
-def LLVM_XOrOp : LLVM_IntArithmeticOp<"xor", "Xor", [Pure]>;
-def LLVM_ShlOp : LLVM_IntArithmeticOpWithOverflowFlag<"shl", "Shl", [Pure]> {
+def LLVM_XOrOp : LLVM_IntArithmeticOp<"xor", "Xor",
+    [Pure, LLVM_InferIntRange]>;
+def LLVM_ShlOp : LLVM_IntArithmeticOpWithOverflowFlag<"shl", "Shl",
+    [Pure, LLVM_InferIntRange]> {
   let hasFolder = 1;
 }
-def LLVM_LShrOp : LLVM_IntArithmeticOpWithExactFlag<"lshr", "LShr", [Pure]>;
-def LLVM_AShrOp : LLVM_IntArithmeticOpWithExactFlag<"ashr", "AShr", [Pure]>;
+def LLVM_LShrOp : LLVM_IntArithmeticOpWithExactFlag<"lshr", "LShr",
+    [Pure, LLVM_InferIntRange]>;
+def LLVM_AShrOp : LLVM_IntArithmeticOpWithExactFlag<"ashr", "AShr",
+    [Pure, LLVM_InferIntRange]>;
 
 // Base class for compare operations. A compare operation takes two operands
 // of the same type and returns a boolean result. If the operands are
@@ -182,7 +193,7 @@ class LLVM_ArithmeticCmpOp<string mnemonic, list<Trait> traits = []> :
 }
 
 // Other integer operations.
-def LLVM_ICmpOp : LLVM_ArithmeticCmpOp<"icmp", [Pure]> {
+def LLVM_ICmpOp : LLVM_ArithmeticCmpOp<"icmp", [Pure, LLVM_InferIntRange]> {
   let arguments = (ins ICmpPredicate:$predicate,
                    AnyTypeOf<[LLVM_ScalarOrVectorOf<AnySignlessInteger>,
                               LLVM_ScalarOrVectorOf<LLVM_AnyPointer>]>:$lhs,
@@ -1073,6 +1084,8 @@ def LLVM_SelectOp
     : LLVM_Op<"select",
           [Pure, AllTypesMatch<["trueValue", "falseValue", "res"]>,
            DeclareOpInterfaceMethods<FastmathFlagsInterface>,
+           DeclareOpInterfaceMethods<InferIntRangeInterface,
+                                     ["inferResultRangesFromOptional"]>,
            DeclareOpInterfaceMethods<SelectLikeOpInterface>]>,
       LLVM_Builder<
           "$res = builder.CreateSelect($condition, $trueValue, $falseValue);"> {
@@ -2231,7 +2244,7 @@ def LLVM_ZeroOp
 }
 
 def LLVM_ConstantOp
-    : LLVM_Op<"mlir.constant", [Pure, ConstantLike]>,
+    : LLVM_Op<"mlir.constant", [Pure, ConstantLike, LLVM_InferIntRange]>,
       LLVM_Builder<[{$res = getLLVMConstant($_resultType, $value, $_location,
                                             moduleTranslation);}]>
 {

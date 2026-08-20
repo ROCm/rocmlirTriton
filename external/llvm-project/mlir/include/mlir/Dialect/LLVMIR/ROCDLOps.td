@@ -15,6 +15,7 @@
 
 include "mlir/Dialect/GPU/IR/CompilationAttrInterfaces.td"
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
+include "mlir/Interfaces/InferIntRangeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
@@ -172,9 +173,10 @@ class ROCDL_Op<string mnemonic, list<Trait> traits = []> :
   LLVM_OpBase<ROCDL_Dialect, mnemonic, traits> {
 }
 
-class ROCDL_IntrPure1Op<string mnemonic> :
+class ROCDL_IntrPure1Op<string mnemonic, list<Trait> traits = []> :
   LLVM_IntrOpBase<ROCDL_Dialect, mnemonic,
-  "amdgcn_" # !subst(".", "_", mnemonic), [], [], [Pure], 1>;
+  "amdgcn_" # !subst(".", "_", mnemonic), [], [],
+  !listconcat([Pure], traits), 1>;
 
 class ROCDL_IntrOp<string mnemonic, list<int> overloadedResults,
   list<int> overloadedOperands, list<Trait> traits, int numResults,
@@ -200,12 +202,24 @@ class ROCDL_ConcreteNonMemIntrOp<string mnemonic, list<Trait> traits,
 //===----------------------------------------------------------------------===//
 
 class ROCDL_SpecialIdRegisterOp<string mnemonic> :
-    ROCDL_IntrPure1Op<mnemonic>,
+    ROCDL_IntrPure1Op<mnemonic,
+      [DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]>,
     Arguments<(ins OptionalAttr<LLVM_ConstantRangeAttr>:$range)> {
   string llvmBuilder = baseLlvmBuilder # setRangeRetAttrCode # baseLlvmBuilderCoda;
   string mlirBuilder = baseMlirBuilder # importRangeRetAttrCode # baseMlirBuilderCoda;
 
   let assemblyFormat = "(`range` $range^)? attr-dict `:` type($res)";
+
+  // Define this method for the InferIntRangeInterface.
+  let extraClassDefinition = [{
+    // Infer the result ranges based on the range attribute.
+    void $cppClass::inferResultRanges(
+        ArrayRef<::mlir::ConstantIntRanges> argRanges,
+        SetIntRangeFn setResultRanges) {
+      rocdlInferResultRanges(getOperation(), getResult(), argRanges,
+                             setResultRanges);
+    }
+  }];
 
     // Temporaly builder until Nvidia ops also support range attributes.
   let builders = [

@@ -282,6 +282,9 @@
 // `--host-pipeline=backend` (covered by runner-pipelines.mlir).
 // BINARY:Kernel pipeline:
 // BINARY-NEXT:builtin.module(resolve-kernel-launch-params,
+// BINARY-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// BINARY-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// BINARY-NEXT:cse,
 // BINARY-NEXT:llvm.func(rock-prepare-llvm{allow-flush-denorm=true}),
 // BINARY-NEXT:triton-to-hsaco{allow-flush-denorm=true arch={{gfx90a|gfx942|gfx950}} enable-fp-fusion=true features= llvm-fn-attrs= num-ctas=1 num-warps=4 opt-level=3 scalarize-packed-fops=false triple=amdgcn-amd-amdhsa use-expert-scheduling=-1 waves-per-eu=0},
 // BINARY-NEXT:rock-emit-gpu-binary{arch={{gfx90a|gfx942|gfx950}} features= opt-level=3 triple=amdgcn-amd-amdhsa})

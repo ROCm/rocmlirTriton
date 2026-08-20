@@ -882,4 +882,32 @@ def RockPrepareLLVMPass
   let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
 }
 
+def RockFoldOobBufferOpsPass
+    : Pass<"rock-fold-oob-buffer-ops", "::mlir::LLVM::LLVMFuncOp"> {
+  let summary = "Erase provably out-of-bounds ROCDL buffer stores";
+  let description = [{
+    Triton predicates stores branchlessly: a masked-off lane gets an offset
+    past the buffer descriptor's NumRecords and the hardware drops the access.
+    That hides the predicate from dead code elimination, so a GEMM whose M
+    dimension is padded up to `mPerBlock` keeps its entire padded-tile
+    epilogue alive.
+
+    This pass seeds an `IntegerRangeAnalysis` by attaching `range` to the ROCDL
+    workitem/workgroup id reads from the kernel's `rock.block_size` and
+    `rock.grid_size` attributes, then erases every
+    `rocdl.raw.ptr.buffer.store` whose offset provably lands at or past
+    NumRecords. It is restricted to the descriptor configurations where the
+    hardware actually discards the access: zero stride, `add_tid_enable`
+    clear, and `OOB_SELECT == 3`. Since that encoding is per-generation, the
+    pass only runs on the architectures whose flags word it can decode, namely
+    GFX10 through GFX12 excluding GFX12.5.
+
+    This is the llvm/rocdl-level counterpart of what `rock-clean-math` plus the
+    `amdgpu.raw_buffer_store` canonicalization do for rocMLIR, where the
+    surrounding address arithmetic is still `arith` and the buffer length lives
+    in a `memref` type.
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
+}
+
 #endif // MLIR_DIALECT_ROCK_PASSES
