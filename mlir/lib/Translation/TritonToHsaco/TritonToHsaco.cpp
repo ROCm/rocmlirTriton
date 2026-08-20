@@ -80,6 +80,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Transforms/Scalar/ADCE.h"
 
 #include <array>
 #include <mutex>
@@ -457,6 +458,24 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   }
 
   mpm.addPass(pb.buildPerModuleDefaultPipeline(optLevel));
+
+  // --- rocmlirTriton pass ----
+  // Upstream's optimize_module adds nothing after the default pipeline, so keep
+  // this when reconciling with llvm.cc.
+  //
+  // A GEMM whose M overhangs mPerBlock has accumulator tiles that lie entirely
+  // outside the output, leaving a closed K-loop cycle of phi, insertelement,
+  // wmma and extractelement. Every instruction in it has a use - the next one
+  // around the cycle - so only ADCE, which holds instructions dead until proven
+  // live from a side-effecting root, can reclaim it.
+  //
+  // It has to run after buildPerModuleDefaultPipeline: the dead lanes only
+  // become separable once BreakStructPhiNodesPass splits the aggregate
+  // accumulator phi, which happens after the pipeline's own ADCE.
+  if (optLevel != llvm::OptimizationLevel::O0)
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ADCEPass()));
+  // --- rocmlirTriton pass ----
+
   mpm.run(module, mam);
 }
 
