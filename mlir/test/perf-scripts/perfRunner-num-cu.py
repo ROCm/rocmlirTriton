@@ -61,6 +61,14 @@ if _script is None:
              "`ninja ci-performance-scripts`?")
 sys.path.insert(0, os.path.dirname(_script))
 
+# Keep this test independent of the host GPU while exercising the pybind
+# call used by perfRunner.
+import amd_arch_db  # noqa: E402
+amd_arch_db.get_native_num_cu = lambda chip: {
+    "gfx942": 304,
+    "gfx1170": 4,
+}.get(chip)
+
 # Start in CU mode so importing perfRunner must warn and force WGP mode.
 os.environ["GPU_ENABLE_WGP_MODE"] = "0"
 IMPORT_STDERR = io.StringIO()

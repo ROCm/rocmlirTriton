@@ -11,7 +11,7 @@
 // CHECK-SAME: %[[valuesRaw:.*2]]: tensor<2048xf32>,
 // CHECK-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK-SAME: %[[outputRaw:.*4]]: tensor<32xf32>)
-// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel{{.*}}}
 
 // CHECK: rock.attention
 // CHECK-NEXT: qk = %{{.*}} * %{{.*}}

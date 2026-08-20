@@ -431,7 +431,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::CDNA3:
     return 20;
   case ISAFamily::CDNA4:
-    return 256;
+    return 128;
   case ISAFamily::RDNA1:
     return 20;
   case ISAFamily::RDNA2:

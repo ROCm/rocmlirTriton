@@ -2668,11 +2668,10 @@ def parse_data_types(data_types):
 
 
 def get_num_cu(chip):
-    for props in iter_device_props():
-        agent = props.gcnArchName.decode('utf-8')
-        if chip in agent:
-            return int(props.multiProcessorCount)
-    raise RuntimeError(f"Cannot find number of CUs for {chip}")
+    numCUs = amd_arch_db.get_native_num_cu(chip)
+    if numCUs is None:
+        raise RuntimeError(f"Cannot find number of CUs for {chip}")
+    return numCUs
 
 
 def found_external_tool(paths: Paths,

@@ -107,6 +107,19 @@ TEST(GetRockInfoTest, GetNumCURejectsLegacyUnprefixedName) {
   EXPECT_EQ(*maybeNumCU, 256);
 }
 
+TEST(GetRockInfoTest, DefaultNumChipletsFollowDefaultNumCU) {
+  GetRockInfoTestEnv e;
+  (*e.module)->setAttr(rock::ArchAttr::getMnemonic(),
+                       e.b.getStringAttr("amdgcn-amd-amdhsa:gfx950"));
+  Block *body = e.addFunc();
+  auto op = e.makeOp(body);
+  auto func = cast<func::FuncOp>(body->getParentOp());
+
+  EXPECT_EQ(rock::getNumCUValue(op), 128);
+  EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), 4);
+  EXPECT_EQ(rock::getNumChipletsValue(op), 4);
+}
+
 // An op with no enclosing function should yield a clean failure rather than
 // crash.  The module's `rock.arch` is intentionally set to make sure the
 // lookup doesn't accidentally fall through to it without going via a func.

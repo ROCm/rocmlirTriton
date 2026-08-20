@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/utility/DeviceInfo.h"
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 
@@ -105,4 +106,14 @@ PYBIND11_MODULE(amd_arch_db, m) {
         return mlir::rock::inferNumChiplets(arch, numCUs);
       },
       py::arg("arch"), py::arg("num_cus"));
+
+  m.def(
+      "get_native_num_cu",
+      [](const std::string &arch) -> py::object {
+        std::optional<int64_t> numCUs = mlir::rock::getNativeNumCU(arch);
+        if (!numCUs)
+          return py::none();
+        return py::int_(*numCUs);
+      },
+      py::arg("arch") = "");
 }
