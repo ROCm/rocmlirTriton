@@ -9870,9 +9870,9 @@ uint64_t SIInstrInfo::getDefaultRsrcDataFormat() const {
     int64_t Format = ST.getGeneration() >= AMDGPUSubtarget::GFX11
                          ? (int64_t)AMDGPU::UfmtGFX11::UFMT_32_FLOAT
                          : (int64_t)AMDGPU::UfmtGFX10::UFMT_32_FLOAT;
-    return (Format << 44) |
-           (1ULL << 56) | // RESOURCE_LEVEL = 1
-           (3ULL << 60); // OOB_SELECT = 3
+    // RESOURCE_LEVEL = 1, OOB_SELECT = 3.
+    return (Format << 44) | (1ULL << 56) |
+           (3ULL << AMDGPU::RSRC_OOB_SELECT_SHIFT);
   }
 
   uint64_t RsrcDataFormat = AMDGPU::RSRC_DATA_FORMAT;
