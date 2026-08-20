@@ -1049,6 +1049,56 @@ tryOptimizeShufflePattern(InstCombiner &IC, IntrinsicInst &II,
   return IC.replaceInstUsesWith(II, Result);
 }
 
+/// Return true if a buffer resource built by llvm.amdgcn.make.buffer.rsrc with
+/// the given constant \p Stride and \p Flags makes the hardware discard raw
+/// buffer accesses whose offset is at least NumRecords.
+static bool rsrcDiscardsOffsetPastNumRecords(const GCNSubtarget *ST,
+                                             uint64_t Stride, uint64_t Flags) {
+  // A non-zero stride selects structured addressing, where the bounds check
+  // involves the index rather than the offset alone. On the descriptors that
+  // keep swizzle_enable in the stride field, requiring a zero stride also
+  // guarantees swizzling is off, which the raw bounds check depends on.
+  if (Stride != 0)
+    return false;
+
+  // Targets with a 45-bit NumRecords field build a different descriptor:
+  // SITargetLowering::lowerPointerAsRsrcIntrin shifts the flags operand left by
+  // 28, so only its low four bits survive, landing in descriptor bits
+  // [127:124]. Keep these in sync with that lowering.
+  if (ST->has45BitNumRecordsBufferResource()) {
+    constexpr uint64_t FlagsSwizzleEnable = 1;
+    constexpr uint64_t FlagsTypeMask = 3 << 2;
+    // The bounds check only applies when swizzle_enable is clear, and a
+    // non-zero type is not a buffer, so require both. OOB_SELECT, the remaining
+    // bit, needs no constraint: it picks between
+    //   0: index * stride + offset + payload > NumRecords
+    //   1: the above, or offset + payload > stride
+    // and a raw access has no index, so with a zero stride the first reduces to
+    // comparing the offset against the byte count and the second discards every
+    // access. A store past NumRecords is therefore discarded either way.
+    return (Flags & (FlagsSwizzleEnable | FlagsTypeMask)) == 0;
+  }
+
+  // The flags operand becomes the high dword of the descriptor, so the shared
+  // RSRC_ constants, which are relative to its high half, apply once shifted
+  // down by 32. add_tid_enable makes a buffer accessed without an index a
+  // private (scratch) buffer, which is not range-checked at all.
+  if (Flags & (AMDGPU::RSRC_TID_ENABLE >> 32))
+    return false;
+
+  // Before GFX10 there is no OOB_SELECT field and a stride-zero buffer always
+  // bounds-checks the offset against NumRecords.
+  if (ST->getGeneration() < AMDGPUSubtarget::GFX10)
+    return true;
+
+  // On GFX10+ only OOB_SELECT=3 checks the offset against NumRecords when the
+  // stride is zero, which is also what getDefaultRsrcDataFormat emits. Of the
+  // rest, 0 is structured, 2 disables the check, and 1 checks the index, which
+  // a raw access leaves at zero.
+  return ((Flags >> (AMDGPU::RSRC_OOB_SELECT_SHIFT - 32)) &
+          AMDGPU::RSRC_OOB_SELECT_MASK) == 3;
+}
+
 std::optional<Instruction *>
 GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
   Intrinsic::ID IID = II.getIntrinsicID();
@@ -2087,6 +2137,74 @@ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
     if (isa<PoisonValue>(Src))
       return IC.replaceInstUsesWith(II, PoisonValue::get(II.getType()));
     return std::nullopt;
+  }
+  case Intrinsic::amdgcn_raw_ptr_buffer_store: {
+    // The hardware discards a raw buffer store whose offset is at or past the
+    // resource's NumRecords, so such a store can be deleted. Frontends that
+    // predicate stores branchlessly, by selecting an out-of-bounds offset when
+    // the predicate is false, depend on this: without it the store keeps the
+    // stored value, and everything that computes it, artificially alive.
+    auto *Rsrc = dyn_cast<IntrinsicInst>(II.getArgOperand(1));
+    if (!Rsrc || Rsrc->getIntrinsicID() != Intrinsic::amdgcn_make_buffer_rsrc)
+      break;
+    auto *Stride = dyn_cast<ConstantInt>(Rsrc->getArgOperand(1));
+    auto *NumRecords = dyn_cast<ConstantInt>(Rsrc->getArgOperand(2));
+    auto *Flags = dyn_cast<ConstantInt>(Rsrc->getArgOperand(3));
+    if (!Stride || !NumRecords || !Flags)
+      break;
+
+    // Volatile accesses are left alone.
+    auto *Aux = cast<ConstantInt>(II.getArgOperand(4));
+    if (Aux->getZExtValue() & AMDGPU::CPol::VOLATILE)
+      break;
+
+    if (!rsrcDiscardsOffsetPastNumRecords(ST, Stride->getZExtValue(),
+                                          Flags->getZExtValue()))
+      break;
+
+    // NumRecords is declared as i64, but the descriptor field is narrower and a
+    // wider value reaches the hardware truncated. That truncation never has to
+    // be modelled here: an extent too wide for the field also exceeds every
+    // i32 offset, so the comparison at the end of this fold declines on its
+    // own.
+    unsigned NumRecordsBits = ST->has45BitNumRecordsBufferResource() ? 45 : 32;
+    APInt Extent = NumRecords->getValue();
+
+    // Decline on the extremes of the field. A zero extent marks the resource
+    // unbound, and an all-ones extent is the idiom for one whose size is not
+    // tracked. Targets differ in whether an access past either is still
+    // performed, so neither is worth folding.
+    if (Extent.isZero() || Extent == APInt::getAllOnes(NumRecordsBits).zext(64))
+      break;
+
+    // llvm.amdgcn.raw.ptr.buffer.store documents soffset as excluded from
+    // bounds checking, but the targets that instead compare against
+    // NumRecords - soffset only tighten the bound, so a store at or past
+    // NumRecords is out of bounds on those too. The exception is an soffset
+    // past NumRecords, where that subtraction underflows and widens the bound
+    // instead, so require an soffset that cannot underflow it. The largest
+    // value decides, in contrast to the offset bound below, because the fold
+    // has to rule the underflow out for every soffset rather than prove
+    // something about one of them. getMaxValue() treats every bit that is not
+    // known zero as one, so an soffset that cannot be analysed compares as
+    // UINT32_MAX and stops the fold for any extent a 32-bit offset can reach.
+    KnownBits SOffsetKnown = IC.computeKnownBits(II.getArgOperand(3), &II);
+    if (SOffsetKnown.getMaxValue().zext(64).ugt(Extent))
+      break;
+
+    // Targets differ in whether they test the offset alone against NumRecords
+    // or add the size of the transfer first. Ignoring the transfer size keeps
+    // the fold correct on both, at the cost of not folding a store that only
+    // straddles the end of the resource.
+    // The store has to be discarded for every offset it can take, so the
+    // smallest one decides. An offset that cannot be analysed has a
+    // getMinValue() of zero, which is below the extent rejected as zero above,
+    // so it stops the fold here without needing a separate test.
+    KnownBits OffsetKnown = IC.computeKnownBits(II.getArgOperand(2), &II);
+    if (OffsetKnown.getMinValue().zext(64).ult(Extent))
+      break;
+
+    return IC.eraseInstFromFunction(II);
   }
   case Intrinsic::amdgcn_raw_buffer_store_format:
   case Intrinsic::amdgcn_struct_buffer_store_format:
