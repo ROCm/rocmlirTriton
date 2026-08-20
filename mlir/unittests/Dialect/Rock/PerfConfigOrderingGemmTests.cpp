@@ -107,8 +107,10 @@ struct TuningSpaceGemmEnv {
 
   // Builds the full tuning space and checks that every non-power-of-two
   // kPerBlock candidate obeys the `windowDividingKPerBlock` heuristic. Returns
-  // the set of kPerBlock values the space offers.
-  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k) {
+  // the set of kPerBlock values the space offers. Set `relaxed` for a K that no
+  // pow2 tile divides, where the heuristic also offers the divisors of K in a
+  // flat range, bypassing its two-segment and window rules.
+  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k, bool relaxed = false) {
     std::unique_ptr<TuningParamSet> space(
         createTunableParamSpace(*module, TuningParamSetKind::Full));
     std::set<int64_t> kValues;
@@ -126,6 +128,10 @@ struct TuningSpaceGemmEnv {
         continue;
       EXPECT_EQ(k % kPerBlock, 0) << "non-pow2 kPerBlock=" << kPerBlock
                                   << " must evenly divide K=" << k;
+      // Relaxed mode adds the divisors of K in (16, 64] to the window's
+      // candidates, so a candidate may satisfy either rule set.
+      if (relaxed && kPerBlock > 16 && kPerBlock <= 64)
+        continue;
       EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(kPerBlock)), 2)
           << "non-pow2 kPerBlock=" << kPerBlock
           << " must peel into two pow2 segments";
@@ -462,6 +468,54 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisorsOnFma) {
                                    "in space; is this the FMA path?";
   // 24 lands in the [16,32) window of a min(m,n)=32 tile.
   EXPECT_TRUE(kValues.count(24)) << "expected non-pow2 kPerBlock=24 in space";
+}
+
+// A K that no power-of-two tile divides has no remainder-free kPerBlock in the
+// default space, so the non-accel range additionally offers every divisor of K
+// in (16, 64], bypassing the two-segment and window rules.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnFmaForAwkwardK) {
+  // K = 4635 = 515 * 3 * 3, from the AIROCMLIR-1182 convs. It is odd, so none
+  // of the non-accel pow2 tiles {4, 8, 16} divides it. f32 on gfx1101 (RDNA3)
+  // has no matrix-accelerator instruction, so this takes the FMA path.
+  const int64_t K = 4635;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF32Type(); },
+                       /*m=*/128, /*n=*/128, K, "gfx1101");
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K, /*relaxed=*/true);
+
+  // 45 is the candidate that motivates the relaxation: it is measurably the
+  // best kPerBlock for this conv, yet it falls outside every tile's window and
+  // peels into four segments (45 = 32 + 8 + 4 + 1), so both rules reject it.
+  EXPECT_TRUE(kValues.count(45)) << "expected relaxed kPerBlock=45 in space";
+  // The window still contributes what it always did: 9 divides K, peels into
+  // two segments and lands in the [8,16) window of a 16-wide tile.
+  EXPECT_TRUE(kValues.count(9)) << "expected windowed kPerBlock=9 in space";
+  // 103 divides K too but sits above the range, where the dot operands spill.
+  EXPECT_FALSE(kValues.count(103)) << "kPerBlock=103 is above the flat range";
+  // 5 and 15 divide K but sit at or below the largest pow2 candidate, which the
+  // base list and the window already sample.
+  EXPECT_FALSE(kValues.count(5)) << "kPerBlock=5 is below the flat range";
+  EXPECT_FALSE(kValues.count(15)) << "kPerBlock=15 is below the flat range";
+}
+
+// A K that a pow2 tile does divide keeps the default two-segment/window rules,
+// so the relaxation cannot grow the search space of a well-behaved shape.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceKeepsWindowOnFmaForPow2DivisibleK) {
+  // K = 432 = 48 * 3 * 3, from the same conv set. 16 divides it, so the gate
+  // must not fire.
+  const int64_t K = 432;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF32Type(); },
+                       /*m=*/128, /*n=*/128, K, "gfx1101");
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
+
+  // 27 and 54 divide K and sit inside the flat range, but both peel into four
+  // segments (27 = 16 + 8 + 2 + 1), so only the relaxed mode would offer them.
+  EXPECT_FALSE(kValues.count(27))
+      << "kPerBlock=27 must stay out while a pow2 tile divides K";
+  EXPECT_FALSE(kValues.count(54))
+      << "kPerBlock=54 must stay out while a pow2 tile divides K";
+  // The two-segment divisors the window does allow are unaffected.
+  EXPECT_TRUE(kValues.count(24)) << "expected non-pow2 kPerBlock=24 in space";
+  EXPECT_TRUE(kValues.count(16)) << "expected base pow2 kPerBlock=16 in space";
 }
 
 // gfx950 is opted out of the non-pow2 kPerBlock candidates while the LLVM

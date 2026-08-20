@@ -119,6 +119,17 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
          "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
+// Whether any power-of-two kPerBlock candidate tiles K without a remainder. A
+// kPerBlock of 1 always divides K but degenerates the K loop into one iteration
+// per K element, so it does not count as a usable tiling. When this is false
+// every reachable configuration masks a K remainder on each iteration, which is
+// what makes it worth widening the non-pow2 search (see
+// windowDividingKPerBlock's relaxed mode).
+static bool pow2KPerBlockDividesK(ArrayRef<uint32_t> kPerBlockList, int64_t k) {
+  return llvm::any_of(kPerBlockList,
+                      [&](uint32_t v) { return v > 1 && k % v == 0; });
+}
+
 // Triton caps every tensor at 2^20 elements and enforces it via
 // OpTrait::impl::verifyTensorSize. Hand-mirrored from `maxTensorNumElements` in
 // external/triton/include/triton/Dialect/Triton/IR/Traits.h; re-audited on
@@ -248,10 +259,22 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 //
 // The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
 // 22500).
-static SmallVector<uint32_t, 2>
+
+// Bounds of the flat range relaxed mode adds on top of rule (3)'s window.
+//
+// The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
+// at or below it the pow2 list {1,4,8,16} already samples K densely, and the
+// window itself reaches the small two-segment divisors (9, 12) on a 16- or
+// 32-wide tile. Above the high bound the dot operands spill -- at 64x16,
+// kPerBlock=45 already compiles to 256 VGPRs with 7 spills, against 95 and none
+// at kPerBlock=9. No divisor outside these bounds won on any conv measured.
+static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
+static constexpr uint32_t kRelaxedMaxKPerBlock = 64;
+
+static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
-                        uint32_t minBaseK, uint32_t maxK) {
-  SmallVector<uint32_t, 2> candidates;
+                        uint32_t minBaseK, uint32_t maxK, bool relaxed) {
+  SmallVector<uint32_t, 8> candidates;
   assert(gemmK > 0 && "gemmK must be greater than 0");
 
   uint32_t minMN = std::min(mPerBlock, nPerBlock);
@@ -259,6 +282,18 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
   uint32_t hi = std::min<uint32_t>(maxK, minMN);
   for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= gemmK; ++d) {
     if (gemmK % d == 0 && llvm::popcount(d) == 2)
+      candidates.push_back(d);
+  }
+  if (!relaxed)
+    return candidates;
+
+  // Relaxed mode only ever adds to the window's candidates, so that enabling it
+  // cannot take a kPerBlock away from a shape that the default rules do serve.
+  uint32_t relaxedLo = std::max(minBaseK, kRelaxedMinExclusiveKPerBlock + 1);
+  uint32_t relaxedHi = std::min<uint32_t>(maxK, kRelaxedMaxKPerBlock + 1);
+  for (uint32_t d = relaxedLo;
+       d < relaxedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (gemmK % d == 0 && !llvm::is_contained(candidates, d))
       candidates.push_back(d);
   }
   return candidates;
@@ -304,8 +339,13 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     bool isIntegerGemm = isa<IntegerType>(gemmOp.getAType()) &&
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
+    // A K that no power-of-two tile divides has no remainder-free kPerBlock in
+    // the default space, so widen the search for it. Restricted to the
+    // non-accel path: that is both where the two-segment rule stops meaning
+    // anything and the only place the relaxation has been measured.
+    bool relaxed = !isMfma && !isWmma && !pow2KPerBlockDividesK(kList, k);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              /*maxK=*/256)) {
+                                              /*maxK=*/256, relaxed)) {
       if (isIntegerGemm && d % 4 != 0)
         continue;
       if (!llvm::is_contained(kList, d))

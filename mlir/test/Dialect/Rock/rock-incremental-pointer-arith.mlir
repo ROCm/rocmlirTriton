@@ -365,9 +365,14 @@ func.func @affine_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
 //       CHECK:     rock.blockwise_load_ptr %[[PTR]][
 // Mixed-radix carry update (compare + select) advances the coordinate:
-//       CHECK:     arith.cmpi uge
-//       CHECK:     arith.select
-//       CHECK:     scf.yield
+//       CHECK:     %[[GE:.*]] = arith.cmpi uge
+//       CHECK:     %[[WRAPPED:.*]] = arith.subi
+//       CHECK:     %[[NEXT:.*]] = arith.select %[[GE]], %[[WRAPPED]], %{{.*}}
+// The offset delta is a per-step constant plus one wrap correction selected on
+// that same predicate, so advancing the accumulator takes no multiply by the
+// stride and never reads the pre-step coordinate:
+//   CHECK-NOT:     arith.muli
+//       CHECK:     scf.yield %{{.*}}, %[[NEXT]], %{{.*}}
 func.func @carry_conv_input(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
   %c1_i32 = arith.constant 1 : i32
