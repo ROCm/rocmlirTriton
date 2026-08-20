@@ -324,8 +324,9 @@ uint32_t ConvGenerator::getNumCU() const {
 }
 
 int64_t ConvGenerator::getNumChiplets() const {
-  return config.num_chiplets.has_value() ? config.num_chiplets.value()
-                                         : rock::getMaxNumChiplets(config.arch);
+  return config.num_chiplets.has_value()
+             ? config.num_chiplets.value()
+             : rock::inferNumChiplets(config.arch, getNumCU());
 }
 
 LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,

@@ -8,7 +8,7 @@
 // CHECK-SAME: %[[valuesRaw:.*2]]: tensor<2048xf32>,
 // CHECK-SAME: %[[prefixOffsetRaw:.*3]]: tensor<1xi32>,
 // CHECK-SAME: %[[outputRaw:.*4]]: tensor<1024xf32>)
-// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel{{.*}}}
 // CHECK: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<1024xf32> to tensor<4x8x32xf32>
 // CHECK: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<2048xf32> to tensor<4x32x16xf32>
 // CHECK: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<2048xf32> to tensor<4x16x32xf32>

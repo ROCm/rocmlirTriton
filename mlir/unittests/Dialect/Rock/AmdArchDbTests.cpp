@@ -121,7 +121,7 @@ TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
-  EXPECT_EQ(getMinNumCU("gfx950"), 256);  // CDNA4
+  EXPECT_EQ(getMinNumCU("gfx950"), 128);  // CDNA4
   EXPECT_EQ(getMinNumCU("gfx1010"), 30);  // RDNA1
   EXPECT_EQ(getMinNumCU("gfx1030"), 30);  // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3

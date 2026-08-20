@@ -1,3 +1,5 @@
+rocmlir_find_hip()
+
 add_rocmlir_dialect_library(MLIRRockUtility
   builderUtils.cpp
   loweringUtils.cpp
@@ -6,6 +8,7 @@ add_rocmlir_dialect_library(MLIRRockUtility
   tosaUtils.cpp
   RocmDeviceName.cpp
   compileUtils.cpp
+  DeviceInfo.cpp
   tritonUtils.cpp
   KnobUtils.cpp
 
@@ -29,6 +32,10 @@ add_rocmlir_dialect_library(MLIRRockUtility
   TritonIR
   TritonAMDGPUTransforms
 )
+
+target_link_libraries(MLIRRockUtility PRIVATE hip::host hip::amdhip64)
+set_source_files_properties(DeviceInfo.cpp PROPERTIES COMPILE_OPTIONS
+  "-Wno-c++98-compat-extra-semi;-Wno-shadow;-Wno-undef")
 
 # Triton include directories needed by tritonUtils.cpp.
 rocmlir_add_triton_includes(MLIRRockUtility)
