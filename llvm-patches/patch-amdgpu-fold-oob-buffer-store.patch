@@ -1,0 +1,998 @@
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUInstCombineIntrinsic.cpp b/llvm/lib/Target/AMDGPU/AMDGPUInstCombineIntrinsic.cpp
+index b288f30d8c29..d69d3d291655 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUInstCombineIntrinsic.cpp
++++ b/llvm/lib/Target/AMDGPU/AMDGPUInstCombineIntrinsic.cpp
+@@ -1049,6 +1049,56 @@ tryOptimizeShufflePattern(InstCombiner &IC, IntrinsicInst &II,
+   return IC.replaceInstUsesWith(II, Result);
+ }
+ 
++/// Return true if a buffer resource built by llvm.amdgcn.make.buffer.rsrc with
++/// the given constant \p Stride and \p Flags makes the hardware discard raw
++/// buffer accesses whose offset is at least NumRecords.
++static bool rsrcDiscardsOffsetPastNumRecords(const GCNSubtarget *ST,
++                                             uint64_t Stride, uint64_t Flags) {
++  // A non-zero stride selects structured addressing, where the bounds check
++  // involves the index rather than the offset alone. On the descriptors that
++  // keep swizzle_enable in the stride field, requiring a zero stride also
++  // guarantees swizzling is off, which the raw bounds check depends on.
++  if (Stride != 0)
++    return false;
++
++  // Targets with a 45-bit NumRecords field build a different descriptor:
++  // SITargetLowering::lowerPointerAsRsrcIntrin shifts the flags operand left by
++  // 28, so only its low four bits survive, landing in descriptor bits
++  // [127:124]. Keep these in sync with that lowering.
++  if (ST->has45BitNumRecordsBufferResource()) {
++    constexpr uint64_t FlagsSwizzleEnable = 1;
++    constexpr uint64_t FlagsTypeMask = 3 << 2;
++    // The bounds check only applies when swizzle_enable is clear, and a
++    // non-zero type is not a buffer, so require both. OOB_SELECT, the remaining
++    // bit, needs no constraint: it picks between
++    //   0: index * stride + offset + payload > NumRecords
++    //   1: the above, or offset + payload > stride
++    // and a raw access has no index, so with a zero stride the first reduces to
++    // comparing the offset against the byte count and the second discards every
++    // access. A store past NumRecords is therefore discarded either way.
++    return (Flags & (FlagsSwizzleEnable | FlagsTypeMask)) == 0;
++  }
++
++  // The flags operand becomes the high dword of the descriptor, so the shared
++  // RSRC_ constants, which are relative to its high half, apply once shifted
++  // down by 32. add_tid_enable makes a buffer accessed without an index a
++  // private (scratch) buffer, which is not range-checked at all.
++  if (Flags & (AMDGPU::RSRC_TID_ENABLE >> 32))
++    return false;
++
++  // Before GFX10 there is no OOB_SELECT field and a stride-zero buffer always
++  // bounds-checks the offset against NumRecords.
++  if (ST->getGeneration() < AMDGPUSubtarget::GFX10)
++    return true;
++
++  // On GFX10+ only OOB_SELECT=3 checks the offset against NumRecords when the
++  // stride is zero, which is also what getDefaultRsrcDataFormat emits. Of the
++  // rest, 0 is structured, 2 disables the check, and 1 checks the index, which
++  // a raw access leaves at zero.
++  return ((Flags >> (AMDGPU::RSRC_OOB_SELECT_SHIFT - 32)) &
++          AMDGPU::RSRC_OOB_SELECT_MASK) == 3;
++}
++
+ std::optional<Instruction *>
+ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
+   Intrinsic::ID IID = II.getIntrinsicID();
+@@ -2088,6 +2138,74 @@ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
+       return IC.replaceInstUsesWith(II, PoisonValue::get(II.getType()));
+     return std::nullopt;
+   }
++  case Intrinsic::amdgcn_raw_ptr_buffer_store: {
++    // The hardware discards a raw buffer store whose offset is at or past the
++    // resource's NumRecords, so such a store can be deleted. Frontends that
++    // predicate stores branchlessly, by selecting an out-of-bounds offset when
++    // the predicate is false, depend on this: without it the store keeps the
++    // stored value, and everything that computes it, artificially alive.
++    auto *Rsrc = dyn_cast<IntrinsicInst>(II.getArgOperand(1));
++    if (!Rsrc || Rsrc->getIntrinsicID() != Intrinsic::amdgcn_make_buffer_rsrc)
++      break;
++    auto *Stride = dyn_cast<ConstantInt>(Rsrc->getArgOperand(1));
++    auto *NumRecords = dyn_cast<ConstantInt>(Rsrc->getArgOperand(2));
++    auto *Flags = dyn_cast<ConstantInt>(Rsrc->getArgOperand(3));
++    if (!Stride || !NumRecords || !Flags)
++      break;
++
++    // Volatile accesses are left alone.
++    auto *Aux = cast<ConstantInt>(II.getArgOperand(4));
++    if (Aux->getZExtValue() & AMDGPU::CPol::VOLATILE)
++      break;
++
++    if (!rsrcDiscardsOffsetPastNumRecords(ST, Stride->getZExtValue(),
++                                          Flags->getZExtValue()))
++      break;
++
++    // NumRecords is declared as i64, but the descriptor field is narrower and a
++    // wider value reaches the hardware truncated. That truncation never has to
++    // be modelled here: an extent too wide for the field also exceeds every
++    // i32 offset, so the comparison at the end of this fold declines on its
++    // own.
++    unsigned NumRecordsBits = ST->has45BitNumRecordsBufferResource() ? 45 : 32;
++    APInt Extent = NumRecords->getValue();
++
++    // Decline on the extremes of the field. A zero extent marks the resource
++    // unbound, and an all-ones extent is the idiom for one whose size is not
++    // tracked. Targets differ in whether an access past either is still
++    // performed, so neither is worth folding.
++    if (Extent.isZero() || Extent == APInt::getAllOnes(NumRecordsBits).zext(64))
++      break;
++
++    // llvm.amdgcn.raw.ptr.buffer.store documents soffset as excluded from
++    // bounds checking, but the targets that instead compare against
++    // NumRecords - soffset only tighten the bound, so a store at or past
++    // NumRecords is out of bounds on those too. The exception is an soffset
++    // past NumRecords, where that subtraction underflows and widens the bound
++    // instead, so require an soffset that cannot underflow it. The largest
++    // value decides, in contrast to the offset bound below, because the fold
++    // has to rule the underflow out for every soffset rather than prove
++    // something about one of them. getMaxValue() treats every bit that is not
++    // known zero as one, so an soffset that cannot be analysed compares as
++    // UINT32_MAX and stops the fold for any extent a 32-bit offset can reach.
++    KnownBits SOffsetKnown = IC.computeKnownBits(II.getArgOperand(3), &II);
++    if (SOffsetKnown.getMaxValue().zext(64).ugt(Extent))
++      break;
++
++    // Targets differ in whether they test the offset alone against NumRecords
++    // or add the size of the transfer first. Ignoring the transfer size keeps
++    // the fold correct on both, at the cost of not folding a store that only
++    // straddles the end of the resource.
++    // The store has to be discarded for every offset it can take, so the
++    // smallest one decides. An offset that cannot be analysed has a
++    // getMinValue() of zero, which is below the extent rejected as zero above,
++    // so it stops the fold here without needing a separate test.
++    KnownBits OffsetKnown = IC.computeKnownBits(II.getArgOperand(2), &II);
++    if (OffsetKnown.getMinValue().zext(64).ult(Extent))
++      break;
++
++    return IC.eraseInstFromFunction(II);
++  }
+   case Intrinsic::amdgcn_raw_buffer_store_format:
+   case Intrinsic::amdgcn_struct_buffer_store_format:
+   case Intrinsic::amdgcn_raw_tbuffer_store:
+diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+index 2333d2906552..6acbfe1d9956 100644
+--- a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
++++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+@@ -9870,9 +9870,9 @@ uint64_t SIInstrInfo::getDefaultRsrcDataFormat() const {
+     int64_t Format = ST.getGeneration() >= AMDGPUSubtarget::GFX11
+                          ? (int64_t)AMDGPU::UfmtGFX11::UFMT_32_FLOAT
+                          : (int64_t)AMDGPU::UfmtGFX10::UFMT_32_FLOAT;
+-    return (Format << 44) |
+-           (1ULL << 56) | // RESOURCE_LEVEL = 1
+-           (3ULL << 60); // OOB_SELECT = 3
++    // RESOURCE_LEVEL = 1, OOB_SELECT = 3.
++    return (Format << 44) | (1ULL << 56) |
++           (3ULL << AMDGPU::RSRC_OOB_SELECT_SHIFT);
+   }
+ 
+   uint64_t RsrcDataFormat = AMDGPU::RSRC_DATA_FORMAT;
+diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.h b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
+index f5658021df95..a0097f807228 100644
+--- a/llvm/lib/Target/AMDGPU/SIInstrInfo.h
++++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
+@@ -1905,6 +1905,11 @@ namespace AMDGPU {
+   const uint64_t RSRC_ELEMENT_SIZE_SHIFT = (32 + 19);
+   const uint64_t RSRC_INDEX_STRIDE_SHIFT = (32 + 21);
+   const uint64_t RSRC_TID_ENABLE = UINT64_C(1) << (32 + 23);
++  // OOB_SELECT occupies descriptor bits [125:124] on GFX10+. Values are 0 for
++  // structured, 1 for an index check, 2 for no check and 3 for a raw check
++  // against the offset.
++  const uint64_t RSRC_OOB_SELECT_SHIFT = (32 + 28);
++  const uint64_t RSRC_OOB_SELECT_MASK = 0x3;
+ 
+ } // end namespace AMDGPU
+ 
+diff --git a/llvm/test/Transforms/InstCombine/AMDGPU/raw-ptr-buffer-store-oob.ll b/llvm/test/Transforms/InstCombine/AMDGPU/raw-ptr-buffer-store-oob.ll
+new file mode 100644
+index 000000000000..750a7c953da7
+--- /dev/null
++++ b/llvm/test/Transforms/InstCombine/AMDGPU/raw-ptr-buffer-store-oob.ll
+@@ -0,0 +1,823 @@
++; NOTE: Assertions have been autogenerated by utils/update_test_checks.py
++; RUN: opt -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1200 -passes=instcombine -S < %s | FileCheck %s --check-prefix=GFX12
++; RUN: opt -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -passes=instcombine -S < %s | FileCheck %s --check-prefix=GFX11
++; RUN: opt -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1030 -passes=instcombine -S < %s | FileCheck %s --check-prefix=GFX10
++; RUN: opt -mtriple=amdgcn-amd-amdhsa -mcpu=gfx942 -passes=instcombine -S < %s | FileCheck %s --check-prefix=GFX9
++; RUN: opt -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1250 -passes=instcombine -S < %s | FileCheck %s --check-prefix=GFX1250
++
++; A raw buffer store whose offset is at or past the resource's NumRecords is
++; discarded by the hardware and can be deleted.
++;
++; The flags operand below is 0x31027000: UFMT_32_FLOAT, RESOURCE_LEVEL=1 and
++; OOB_SELECT=3, i.e. what GFX10+ frontends emit. Its low four bits are zero, so
++; on GFX1250 (where only those bits survive into the descriptor) it means no
++; swizzling and a buffer type.
++
++define void @store_past_num_records(ptr addrspace(1) %p, i32 %x) {
++; GFX12-LABEL: @store_past_num_records(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_past_num_records(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_past_num_records(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_past_num_records(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_past_num_records(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  %v = trunc i32 %x to i8
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 100, i32 0, i32 0)
++  ret void
++}
++
++; The canonical branchless-predication idiom: NumRecords is INT_MAX-1 and
++; masked-off lanes select INT_MAX+1 as their offset.
++define void @store_int_min_offset(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_int_min_offset(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_int_min_offset(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_int_min_offset(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_int_min_offset(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_int_min_offset(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 2147483646, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 -2147483648, i32 0, i32 0)
++  ret void
++}
++
++; A dynamic soffset could be past NumRecords, which would widen the bound on
++; the targets that subtract it, so it must be constant.
++define void @store_dynamic_soffset(ptr addrspace(1) %p, i8 %v, i32 %soffset) {
++; GFX12-LABEL: @store_dynamic_soffset(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[SOFFSET:%.*]], i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_dynamic_soffset(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[SOFFSET:%.*]], i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_dynamic_soffset(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[SOFFSET:%.*]], i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_dynamic_soffset(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[SOFFSET:%.*]], i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_dynamic_soffset(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[SOFFSET:%.*]], i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 %soffset, i32 0)
++  ret void
++}
++
++; soffset is not added to the compared offset: targets without OOB_SELECT
++; exclude it from the bounds check, so this store is in bounds there even
++; though offset + soffset is past NumRecords.
++define void @store_soffset_does_not_extend_offset(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_soffset_does_not_extend_offset(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 60, i32 60, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_soffset_does_not_extend_offset(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 60, i32 60, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_soffset_does_not_extend_offset(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 60, i32 60, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_soffset_does_not_extend_offset(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 60, i32 60, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_soffset_does_not_extend_offset(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 60, i32 60, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 60, i32 60, i32 0)
++  ret void
++}
++
++; A dynamic soffset masked below NumRecords is known not to underflow the
++; reduced bound, so it does not block the fold.
++define void @store_dynamic_soffset_known_bounded(ptr addrspace(1) %p, i8 %v, i32 %soffset) {
++; GFX12-LABEL: @store_dynamic_soffset_known_bounded(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_dynamic_soffset_known_bounded(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_dynamic_soffset_known_bounded(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_dynamic_soffset_known_bounded(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_dynamic_soffset_known_bounded(
++; GFX1250-NEXT:    ret void
++;
++  %masked = and i32 %soffset, 63
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 %masked, i32 0)
++  ret void
++}
++
++; The same mask, but wide enough to exceed NumRecords, is not.
++define void @store_dynamic_soffset_known_too_large(ptr addrspace(1) %p, i8 %v, i32 %soffset) {
++; GFX12-LABEL: @store_dynamic_soffset_known_too_large(
++; GFX12-NEXT:    [[MASKED:%.*]] = and i32 [[SOFFSET:%.*]], 255
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[MASKED]], i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_dynamic_soffset_known_too_large(
++; GFX11-NEXT:    [[MASKED:%.*]] = and i32 [[SOFFSET:%.*]], 255
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[MASKED]], i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_dynamic_soffset_known_too_large(
++; GFX10-NEXT:    [[MASKED:%.*]] = and i32 [[SOFFSET:%.*]], 255
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[MASKED]], i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_dynamic_soffset_known_too_large(
++; GFX9-NEXT:    [[MASKED:%.*]] = and i32 [[SOFFSET:%.*]], 255
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[MASKED]], i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_dynamic_soffset_known_too_large(
++; GFX1250-NEXT:    [[MASKED:%.*]] = and i32 [[SOFFSET:%.*]], 255
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 [[MASKED]], i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %masked = and i32 %soffset, 255
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 %masked, i32 0)
++  ret void
++}
++
++; A soffset within NumRecords cannot underflow the reduced bound, so an offset
++; past NumRecords is still discarded.
++define void @store_soffset_within_num_records(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_soffset_within_num_records(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_soffset_within_num_records(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_soffset_within_num_records(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_soffset_within_num_records(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_soffset_within_num_records(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 50, i32 0)
++  ret void
++}
++
++; A soffset past NumRecords underflows the bound where OOB_SELECT=3 subtracts
++; it, which can bring the access back into range.
++define void @store_soffset_past_num_records(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_soffset_past_num_records(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 -2147483648, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_soffset_past_num_records(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 -2147483648, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_soffset_past_num_records(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 -2147483648, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_soffset_past_num_records(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 -2147483648, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_soffset_past_num_records(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 -2147483648, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 -2147483648, i32 0)
++  ret void
++}
++
++; Flags bit 23 is add_tid_enable, which makes a buffer accessed without an
++; index a private buffer with no range checking at all. It does not reach the
++; GFX1250 descriptor, so it only blocks the fold elsewhere.
++define void @store_add_tid_enable(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_add_tid_enable(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 830631936)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_add_tid_enable(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 830631936)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_add_tid_enable(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 830631936)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_add_tid_enable(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 830631936)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_add_tid_enable(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 830631936)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; An in-bounds offset must be preserved.
++define void @store_in_bounds(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_in_bounds(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 99, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_in_bounds(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 99, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_in_bounds(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 99, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_in_bounds(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 99, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_in_bounds(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 99, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 99, i32 0, i32 0)
++  ret void
++}
++
++; A non-constant offset cannot be proven out of bounds.
++define void @store_dynamic_offset(ptr addrspace(1) %p, i8 %v, i32 %offset) {
++; GFX12-LABEL: @store_dynamic_offset(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET:%.*]], i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_dynamic_offset(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET:%.*]], i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_dynamic_offset(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET:%.*]], i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_dynamic_offset(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET:%.*]], i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_dynamic_offset(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET:%.*]], i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 %offset, i32 0, i32 0)
++  ret void
++}
++
++; A non-zero stride selects structured addressing, where the bounds check is
++; not a plain offset comparison.
++define void @store_nonzero_stride(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_nonzero_stride(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 4, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_nonzero_stride(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 4, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_nonzero_stride(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 4, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_nonzero_stride(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 4, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_nonzero_stride(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 4, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 4, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; A volatile store (aux bit 31) is left alone.
++define void @store_volatile(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_volatile(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 -2147483648)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_volatile(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 -2147483648)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_volatile(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 -2147483648)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_volatile(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 -2147483648)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_volatile(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 -2147483648)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 -2147483648)
++  ret void
++}
++
++; 0x11027000 is the same descriptor with OOB_SELECT=1, which checks the index
++; rather than the offset. GFX10+ must not fold it. GFX9 has no OOB_SELECT
++; field, and on GFX1250 the low four bits are unchanged, so both still fold.
++define void @store_oob_select_one(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_oob_select_one(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 285372416)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_oob_select_one(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 285372416)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_oob_select_one(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 285372416)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_oob_select_one(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_oob_select_one(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 285372416)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; NumRecords wider than the 32-bit descriptor field reaches the hardware
++; truncated, here to 100, which would make this store out of bounds. The fold
++; compares against the untruncated value and so deliberately declines.
++define void @store_num_records_over_32_bits(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_num_records_over_32_bits(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967396, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_num_records_over_32_bits(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967396, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_num_records_over_32_bits(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967396, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_num_records_over_32_bits(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967396, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_num_records_over_32_bits(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967396, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 4294967396, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; Flags bit 0 is GFX1250's swizzle_enable, which changes how the offset is
++; formed. Elsewhere it is a dst_sel bit these intrinsics ignore.
++define void @store_gfx1250_swizzle_enable(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_gfx1250_swizzle_enable(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_gfx1250_swizzle_enable(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_gfx1250_swizzle_enable(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_gfx1250_swizzle_enable(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_gfx1250_swizzle_enable(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243329)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243329)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; Flags bits [3:2] are GFX1250's descriptor type, which must be zero for a
++; buffer. Elsewhere they are dst_sel bits these intrinsics ignore.
++define void @store_gfx1250_nonzero_type(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_gfx1250_nonzero_type(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_gfx1250_nonzero_type(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_gfx1250_nonzero_type(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_gfx1250_nonzero_type(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_gfx1250_nonzero_type(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243340)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243340)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; An all-ones NumRecords disables bounds checking, so the store is performed
++; however large the offset is. All ones in the 32-bit field.
++define void @store_num_records_all_ones_32(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_num_records_all_ones_32(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967295, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_num_records_all_ones_32(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967295, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_num_records_all_ones_32(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967295, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_num_records_all_ones_32(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 4294967295, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_num_records_all_ones_32(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 4294967295, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 -1, i32 0, i32 0)
++  ret void
++}
++
++; All ones in GFX1250's wider 45-bit field. On the other targets this does not
++; fit the 32-bit field at all, so it is left alone there too.
++define void @store_num_records_all_ones_45(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_num_records_all_ones_45(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 35184372088831, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_num_records_all_ones_45(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 35184372088831, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_num_records_all_ones_45(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 35184372088831, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_num_records_all_ones_45(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 35184372088831, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_num_records_all_ones_45(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 35184372088831, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 -1, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 35184372088831, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 -1, i32 0, i32 0)
++  ret void
++}
++
++; A zero NumRecords marks the resource unbound, which is described separately
++; from the bounds check, so do not assume the store is discarded.
++define void @store_num_records_zero(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_num_records_zero(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 0, i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_num_records_zero(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 0, i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_num_records_zero(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 0, i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_num_records_zero(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 0, i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_num_records_zero(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 0, i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 0, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; OOB_SELECT=2 disables bounds checking, so the store is performed however
++; large the offset is. The field does not exist before GFX10 and does not
++; reach the GFX1250 descriptor.
++define void @store_oob_select_none(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_oob_select_none(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 553807872)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_oob_select_none(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 553807872)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_oob_select_none(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 553807872)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_oob_select_none(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_oob_select_none(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 553807872)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; OOB_SELECT=0 is the structured check, which compares the index rather than
++; the byte offset.
++define void @store_oob_select_structured(ptr addrspace(1) %p, i8 %v) {
++; GFX12-LABEL: @store_oob_select_structured(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 16936960)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_oob_select_structured(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 16936960)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_oob_select_structured(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 16936960)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_oob_select_structured(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_oob_select_structured(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 16936960)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; A resource that is not built by make.buffer.rsrc exposes no descriptor
++; fields to reason about.
++define void @store_opaque_rsrc(ptr addrspace(8) %rsrc, i8 %v) {
++; GFX12-LABEL: @store_opaque_rsrc(
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC:%.*]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_opaque_rsrc(
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC:%.*]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_opaque_rsrc(
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC:%.*]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_opaque_rsrc(
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC:%.*]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_opaque_rsrc(
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC:%.*]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; A dynamic NumRecords gives no bound to compare against.
++define void @store_dynamic_num_records(ptr addrspace(1) %p, i8 %v, i64 %n) {
++; GFX12-LABEL: @store_dynamic_num_records(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 [[N:%.*]], i32 822243328)
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_dynamic_num_records(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 [[N:%.*]], i32 822243328)
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_dynamic_num_records(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 [[N:%.*]], i32 822243328)
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_dynamic_num_records(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 [[N:%.*]], i32 822243328)
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_dynamic_num_records(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 [[N:%.*]], i32 822243328)
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 200, i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 %n, i32 822243328)
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 200, i32 0, i32 0)
++  ret void
++}
++
++; The offset need not be a constant, only known to be at least NumRecords for
++; every value it can take. Setting bit 8 puts it at 256 or above.
++define void @store_offset_known_past_num_records(ptr addrspace(1) %p, i8 %v, i32 %x) {
++; GFX12-LABEL: @store_offset_known_past_num_records(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_offset_known_past_num_records(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_offset_known_past_num_records(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_offset_known_past_num_records(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_offset_known_past_num_records(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  %offset = or i32 %x, 256
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 %offset, i32 0, i32 0)
++  ret void
++}
++
++; The shape a branchlessly predicated store takes: both arms of the select are
++; past NumRecords, so the store is discarded whichever is chosen.
++define void @store_selected_offset_both_past_num_records(ptr addrspace(1) %p, i8 %v, i1 %c) {
++; GFX12-LABEL: @store_selected_offset_both_past_num_records(
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_selected_offset_both_past_num_records(
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_selected_offset_both_past_num_records(
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_selected_offset_both_past_num_records(
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_selected_offset_both_past_num_records(
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  %offset = select i1 %c, i32 200, i32 201
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 %offset, i32 0, i32 0)
++  ret void
++}
++
++; Only one arm of the select is past NumRecords, so the store must be kept.
++define void @store_selected_offset_one_in_bounds(ptr addrspace(1) %p, i8 %v, i1 %c) {
++; GFX12-LABEL: @store_selected_offset_one_in_bounds(
++; GFX12-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX12-NEXT:    [[OFFSET:%.*]] = select i1 [[C:%.*]], i32 200, i32 8
++; GFX12-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET]], i32 0, i32 0)
++; GFX12-NEXT:    ret void
++;
++; GFX11-LABEL: @store_selected_offset_one_in_bounds(
++; GFX11-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX11-NEXT:    [[OFFSET:%.*]] = select i1 [[C:%.*]], i32 200, i32 8
++; GFX11-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET]], i32 0, i32 0)
++; GFX11-NEXT:    ret void
++;
++; GFX10-LABEL: @store_selected_offset_one_in_bounds(
++; GFX10-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX10-NEXT:    [[OFFSET:%.*]] = select i1 [[C:%.*]], i32 200, i32 8
++; GFX10-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET]], i32 0, i32 0)
++; GFX10-NEXT:    ret void
++;
++; GFX9-LABEL: @store_selected_offset_one_in_bounds(
++; GFX9-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX9-NEXT:    [[OFFSET:%.*]] = select i1 [[C:%.*]], i32 200, i32 8
++; GFX9-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET]], i32 0, i32 0)
++; GFX9-NEXT:    ret void
++;
++; GFX1250-LABEL: @store_selected_offset_one_in_bounds(
++; GFX1250-NEXT:    [[RSRC:%.*]] = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) [[P:%.*]], i16 0, i64 100, i32 822243328)
++; GFX1250-NEXT:    [[OFFSET:%.*]] = select i1 [[C:%.*]], i32 200, i32 8
++; GFX1250-NEXT:    call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 [[V:%.*]], ptr addrspace(8) [[RSRC]], i32 [[OFFSET]], i32 0, i32 0)
++; GFX1250-NEXT:    ret void
++;
++  %rsrc = call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) %p, i16 0, i64 100, i32 822243328)
++  %offset = select i1 %c, i32 200, i32 8
++  call void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8 %v, ptr addrspace(8) %rsrc, i32 %offset, i32 0, i32 0)
++  ret void
++}
++
++declare ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) readnone, i16, i64, i32)
++declare void @llvm.amdgcn.raw.ptr.buffer.store.i8(i8, ptr addrspace(8) writeonly, i32, i32, i32 immarg)
