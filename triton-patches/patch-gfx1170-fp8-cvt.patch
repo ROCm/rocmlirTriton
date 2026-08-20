@@ -1,0 +1,796 @@
+diff --git a/test/Conversion/amd/fp_to_fp_gfx1170.mlir b/test/Conversion/amd/fp_to_fp_gfx1170.mlir
+deleted file mode 100644
+index 05ca4e6b37..0000000000
+--- a/test/Conversion/amd/fp_to_fp_gfx1170.mlir
++++ /dev/null
+@@ -1,97 +0,0 @@
+-// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
+-
+-// gfx1170 floating-point conversions.
+-//
+-// Standard fp16/bf16 <-> fp32 casts use the scalar LLVM path, identical to the
+-// other AMD targets covered by fp_to_fp.mlir.
+-//
+-// The OCP fp8 conversions (f8E5M2 / f8E4M3FN) are the interesting part: gfx1170
+-// does NOT use hardware fp8 cvt instructions for them. Unlike gfx950
+-// (rocdl.cvt.scalef32.pk.*) or gfx942 (rocdl.cvt.pk.{fp8,bf8}.*), the gfx1170
+-// lowering falls back to *software* emulation (bit manipulation: llvm.trunc to
+-// i8, llvm.select, llvm.lshr, ...). These tests lock that fallback in so a
+-// future switch to hardware fp8 cvt on gfx1170 is a deliberate, reviewed change.
+-
+-// CHECK-LABEL: f16_to_f32
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @f16_to_f32(%arg0: tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // CHECK-COUNT-8: llvm.fpext %{{.+}} : f16 to f32
+-    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+-
+-// -----
+-
+-// CHECK-LABEL: f32_to_f16
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @f32_to_f16(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // rtne: scalar fptrunc (same as gfx942, not gfx950's packed vector fptrunc).
+-    // CHECK-COUNT-8: llvm.fptrunc %{{.+}} : f32 to f16
+-    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    // rtz: packed round-to-zero conversion.
+-    // CHECK-COUNT-4: rocdl.cvt.pkrtz
+-    %1 = tt.fp_to_fp %arg0, rounding = rtz : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+-
+-// -----
+-
+-// CHECK-LABEL: downcast_f32_to_ocp_f8
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @downcast_f32_to_ocp_f8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // f32 -> f8E4M3FN: software emulation, no hardware fp8 cvt.
+-    // CHECK-NOT: rocdl.cvt
+-    // CHECK: llvm.trunc %{{.+}} : i32 to i8
+-    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+-
+-// -----
+-
+-// CHECK-LABEL: downcast_f32_to_ocp_bf8
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @downcast_f32_to_ocp_bf8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // f32 -> f8E5M2: software emulation, no hardware fp8 cvt.
+-    // CHECK-NOT: rocdl.cvt
+-    // CHECK: llvm.trunc %{{.+}} : i32 to i8
+-    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+-
+-// -----
+-
+-// CHECK-LABEL: upcast_ocp_f8_to_f32
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @upcast_ocp_f8_to_f32(%arg0: tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // f8E4M3FN -> f32: software emulation, no hardware fp8 cvt.
+-    // CHECK-NOT: rocdl.cvt
+-    // CHECK: llvm.select
+-    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+-
+-// -----
+-
+-// CHECK-LABEL: upcast_ocp_bf8_to_f32
+-#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+-  tt.func @upcast_ocp_bf8_to_f32(%arg0: tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
+-    // f8E5M2 -> f32: software emulation, no hardware fp8 cvt. E5M2 shares f16's
+-    // exponent layout, so the upcast is a bit-shift into f16 then fpext (no
+-    // llvm.select, unlike the E4M3FN path).
+-    // CHECK-NOT: rocdl.cvt
+-    // CHECK: llvm.fpext
+-    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+-    tt.return
+-  }
+-}
+diff --git a/test/Conversion/amd/ocp_fp8_cvt_lowering.mlir b/test/Conversion/amd/ocp_fp8_cvt_lowering.mlir
+new file mode 100644
+index 0000000000..ff2c679a30
+--- /dev/null
++++ b/test/Conversion/amd/ocp_fp8_cvt_lowering.mlir
+@@ -0,0 +1,285 @@
++// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck --check-prefixes=COMMON,HWCVT %s
++// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck --check-prefixes=COMMON,NOHW %s
++// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck --check-prefixes=COMMON,NOHW %s
++
++// Whether OCP fp8 (f8E4M3FN / f8E5M2) casts lower to the hardware cvt
++// instructions or to the software bit-manipulation fallback, per target. COMMON
++// covers the fp16/bf16 <-> fp32 casts, which take the same scalar LLVM path
++// everywhere.
++//
++// HWCVT (gfx1170) has the *plain* v_cvt_pk_{f32_fp8,f32_bf8,fp8_f32,bf8_f32}
++// ops, which encode OCP on that target, but not the scaled ops gfx950 and
++// gfx1250 use: expect rocdl.cvt.pk.*, not rocdl.cvt.scalef32.pk.*. There is no
++// plain 16-bit-source op, so f16/bf16 casts hop through f32; both hops are
++// lossless here, leaving the hardware op as the only rounding site.
++//
++// NOHW keeps the software fallback, so the hardware path cannot leak onto a
++// target that fails to run it. gfx1100/RDNA3 lacks the instructions outright;
++// gfx1200/RDNA4 has them, but its packed upcast prints without the .l/.h suffix
++// the assembler needs in gfx12's default real-true16 mode (LCOMPILER-2609).
++
++// COMMON-LABEL: f16_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @f16_to_f32(%arg0: tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // COMMON-COUNT-8: llvm.fpext %{{.+}} : f16 to f32
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// COMMON-LABEL: f32_to_f16
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @f32_to_f16(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // rtne: scalar fptrunc.
++    // COMMON-COUNT-8: llvm.fptrunc %{{.+}} : f32 to f16
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    // rtz: packed round-to-zero conversion.
++    // COMMON-COUNT-4: rocdl.cvt.pkrtz
++    %1 = tt.fp_to_fp %arg0, rounding = rtz : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// f32 -> OCP fp8/bf8, RTNE. Each group of 4 elements becomes two packed
++// converts, chained through the `old` operand so the second call fills the
++// other half of the same dword. 8 elements per thread => 4 converts.
++
++// COMMON-LABEL: downcast_f32_to_ocp_f8
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_f32_to_ocp_f8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // HWCVT: %[[P0:.*]] = rocdl.cvt.pk.fp8.f32 %{{.*}}, %{{.*}} -> %{{.*}}[false]
++    // HWCVT: rocdl.cvt.pk.fp8.f32 %{{.*}}, %{{.*}} -> %[[P0]][true]
++    // HWCVT: %[[P1:.*]] = rocdl.cvt.pk.fp8.f32 %{{.*}}, %{{.*}} -> %{{.*}}[false]
++    // HWCVT: rocdl.cvt.pk.fp8.f32 %{{.*}}, %{{.*}} -> %[[P1]][true]
++    // NOHW-NOT: rocdl.cvt.pk.fp8.f32
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// COMMON-LABEL: downcast_f32_to_ocp_bf8
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_f32_to_ocp_bf8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // HWCVT: %[[P0:.*]] = rocdl.cvt.pk.bf8.f32 %{{.*}}, %{{.*}} -> %{{.*}}[false]
++    // HWCVT: rocdl.cvt.pk.bf8.f32 %{{.*}}, %{{.*}} -> %[[P0]][true]
++    // HWCVT: %[[P1:.*]] = rocdl.cvt.pk.bf8.f32 %{{.*}}, %{{.*}} -> %{{.*}}[false]
++    // HWCVT: rocdl.cvt.pk.bf8.f32 %{{.*}}, %{{.*}} -> %[[P1]][true]
++    // NOHW-NOT: rocdl.cvt.pk.bf8.f32
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// f16/bf16 -> OCP fp8/bf8, RTNE. No plain 16-bit-source op exists, so these
++// widen to f32 first and then use the same packed downcast.
++
++// COMMON-LABEL: downcast_16bit_to_ocp_f8
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_16bit_to_ocp_f8(%arg0: tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>,
++                                  %arg1: tensor<8x8xbf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // Converters run one group of 4 elements at a time, so the widening and the
++    // packed converts interleave per group rather than being hoisted.
++    // HWCVT-COUNT-4: llvm.fpext %{{.+}} : f16 to f32
++    // HWCVT-COUNT-2: rocdl.cvt.pk.fp8.f32
++    // HWCVT-COUNT-4: llvm.fpext %{{.+}} : f16 to f32
++    // HWCVT-COUNT-2: rocdl.cvt.pk.fp8.f32
++    // NOHW-NOT: rocdl.cvt.pk.fp8.f32
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.bf8.f32
++    // NOHW-NOT: rocdl.cvt.pk.bf8.f32
++    %1 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.fp8.f32
++    // NOHW-NOT: rocdl.cvt.pk.fp8.f32
++    %2 = tt.fp_to_fp %arg1, rounding = rtne : tensor<8x8xbf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.bf8.f32
++    // NOHW-NOT: rocdl.cvt.pk.bf8.f32
++    %3 = tt.fp_to_fp %arg1, rounding = rtne : tensor<8x8xbf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// OCP fp8/bf8 -> f32. Two packed upcasts per group of 4, both reading the same
++// source dword and selecting opposite halves via wordSel.
++
++// COMMON-LABEL: upcast_ocp_f8_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @upcast_ocp_f8_to_f32(%arg0: tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // HWCVT: rocdl.cvt.pk.f32.fp8 %[[V0:.*]][false]
++    // HWCVT: rocdl.cvt.pk.f32.fp8 %[[V0]][true]
++    // HWCVT: rocdl.cvt.pk.f32.fp8 %[[V1:.*]][false]
++    // HWCVT: rocdl.cvt.pk.f32.fp8 %[[V1]][true]
++    // NOHW-NOT: rocdl.cvt.pk.f32.fp8
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// COMMON-LABEL: upcast_ocp_bf8_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @upcast_ocp_bf8_to_f32(%arg0: tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // HWCVT: rocdl.cvt.pk.f32.bf8 %[[V0:.*]][false]
++    // HWCVT: rocdl.cvt.pk.f32.bf8 %[[V0]][true]
++    // HWCVT: rocdl.cvt.pk.f32.bf8 %[[V1:.*]][false]
++    // HWCVT: rocdl.cvt.pk.f32.bf8 %[[V1]][true]
++    // NOHW-NOT: rocdl.cvt.pk.f32.bf8
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// OCP fp8/bf8 -> f16/bf16. Packed upcast to f32, then narrow. Every OCP fp8
++// value is exactly representable in both f16 and bf16, so the narrowing step
++// cannot introduce error.
++
++// COMMON-LABEL: upcast_ocp_f8_to_16bit
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @upcast_ocp_f8_to_16bit(%arg0: tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>,
++                                  %arg1: tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // Per group of 4: two packed upcasts, then four narrowing truncs.
++    // HWCVT-COUNT-2: rocdl.cvt.pk.f32.fp8
++    // HWCVT-COUNT-4: llvm.fptrunc %{{.+}} : f32 to f16
++    // HWCVT-COUNT-2: rocdl.cvt.pk.f32.fp8
++    // HWCVT-COUNT-4: llvm.fptrunc %{{.+}} : f32 to f16
++    // NOHW-NOT: rocdl.cvt.pk.f32.fp8
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.f32.bf8
++    // NOHW-NOT: rocdl.cvt.pk.f32.bf8
++    %1 = tt.fp_to_fp %arg1 : tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.f32.fp8
++    // NOHW-NOT: rocdl.cvt.pk.f32.fp8
++    %2 = tt.fp_to_fp %arg0 : tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xbf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++
++    // HWCVT-COUNT-4: rocdl.cvt.pk.f32.bf8
++    // NOHW-NOT: rocdl.cvt.pk.f32.bf8
++    %3 = tt.fp_to_fp %arg1 : tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xbf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// The plain hardware downcast is round-to-nearest-even only, so RTZ requests
++// must stay on the software path even on HWCVT targets. Guards against a future
++// change wiring RTZ to the RTNE instruction.
++
++// COMMON-LABEL: downcast_rtz_stays_software
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_rtz_stays_software(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>,
++                                       %arg1: tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // COMMON-NOT: rocdl.cvt.pk.bf8.f32
++    // COMMON-COUNT-4: rocdl.cvt.pkrtz
++    %0 = tt.fp_to_fp %arg0, rounding = rtz : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    // COMMON-NOT: rocdl.cvt.pk.bf8.f32
++    %1 = tt.fp_to_fp %arg1, rounding = rtz : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// A layout that leaves a single fp8 value per thread upcasts with the scalar
++// converter rather than the packed one. The packed op would need the value
++// padded out with undef and would discard three quarters of its result.
++
++// COMMON-LABEL: single_element_upcast_is_scalar
++#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @single_element_upcast_is_scalar(%arg0: tensor<128xf8E4M3FN, #blocked>,
++                                           %arg1: tensor<128xf8E5M2, #blocked>) {
++    // HWCVT-COUNT-1: rocdl.cvt.f32.fp8
++    // HWCVT-NOT: rocdl.cvt.pk.f32.fp8
++    // NOHW-NOT: rocdl.cvt.f32.fp8
++    %0 = tt.fp_to_fp %arg0 : tensor<128xf8E4M3FN, #blocked> -> tensor<128xf32, #blocked>
++
++    // HWCVT-COUNT-1: rocdl.cvt.f32.bf8
++    // HWCVT-NOT: rocdl.cvt.pk.f32.bf8
++    // NOHW-NOT: rocdl.cvt.f32.bf8
++    %1 = tt.fp_to_fp %arg1 : tensor<128xf8E5M2, #blocked> -> tensor<128xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// Two values per thread still use the packed converter: only the single-value
++// case is special-cased, so this pins the boundary.
++
++// COMMON-LABEL: two_element_upcast_stays_packed
++#blocked = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @two_element_upcast_stays_packed(%arg0: tensor<256xf8E4M3FN, #blocked>) {
++    // HWCVT-NOT: rocdl.cvt.f32.fp8
++    // HWCVT-COUNT-2: rocdl.cvt.pk.f32.fp8
++    %0 = tt.fp_to_fp %arg0 : tensor<256xf8E4M3FN, #blocked> -> tensor<256xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// The scalar converter is used only for an f32 destination. A single fp8 value
++// headed for f16/bf16 keeps the packed upcast, which here still discards three
++// quarters of its result: there is no plain op landing directly in 16 bits, so
++// the f32 intermediate is needed either way.
++
++// COMMON-LABEL: single_element_upcast_to_16bit_stays_packed
++#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @single_element_upcast_to_16bit_stays_packed(%arg0: tensor<128xf8E4M3FN, #blocked>,
++                                                      %arg1: tensor<128xf8E5M2, #blocked>) {
++    // HWCVT-NOT: rocdl.cvt.f32.fp8
++    // HWCVT-COUNT-2: rocdl.cvt.pk.f32.fp8
++    %0 = tt.fp_to_fp %arg0 : tensor<128xf8E4M3FN, #blocked> -> tensor<128xf16, #blocked>
++
++    // HWCVT-NOT: rocdl.cvt.f32.bf8
++    // HWCVT-COUNT-2: rocdl.cvt.pk.f32.bf8
++    %1 = tt.fp_to_fp %arg1 : tensor<128xf8E5M2, #blocked> -> tensor<128xbf16, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// FNUZ fp8 is the gfx942 encoding. These targets have no FNUZ hardware, so the
++// plain ops must not be selected for it even though the mnemonics match.
++
++// COMMON-LABEL: fnuz_stays_software
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @fnuz_stays_software(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>,
++                               %arg1: tensor<8x8xf8E4M3FNUZ, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // COMMON-NOT: rocdl.cvt.pk.fp8.f32
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FNUZ, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    // COMMON-NOT: rocdl.cvt.pk.f32.fp8
++    %1 = tt.fp_to_fp %arg1 : tensor<8x8xf8E4M3FNUZ, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
+index 1d20342ca9..b708bdc564 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
+@@ -41,24 +41,13 @@ bool isCDNA4(ISAFamily family) { return family == ISAFamily::CDNA4; }
+ bool isCDNA4OrHigher(ISAFamily family) {
+   return family == ISAFamily::CDNA4 || family == ISAFamily::GFX1250;
+ }
+-
+-// TODO(gfx1170): use hardware OCP fp8/bf8 cvt instructions on
+-// gfx1170/RDNA4. gfx1170 and RDNA4 (gfx1200/1201) have
+-// FeatureFP8ConversionInsts, i.e. the plain v_cvt_f32_fp8/bf8,
+-// v_cvt_pk_f32_fp8/bf8, v_cvt_pk_fp8/bf8_f32 and v_cvt_sr_fp8/bf8_f32 ops
+-// (assembler-confirmed; RDNA3/gfx1100 lacks them). Today these families are
+-// excluded from isCDNA4OrHigher(), so every OCP fp8 conversion falls back to
+-// the software bit-manipulation path. It can't simply be enabled because:
+-//   - the CDNA4 OCP HW converters use the *scaled* ops (ROCDL::CvtScaleF32Pk*,
+-//     v_cvt_scalef32_pk_*) which gfx1170 does NOT have; and
+-//   - the plain ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op ops (which gfx1170 does
+-//     have) are currently only wired into the CDNA3 FNUZ ("nanoo") converters,
+-//     the wrong fp8 flavor for gfx1170's OCP E4M3FN/E5M2.
+-// Enabling this needs new OCP fp8<->f32 HW converters built on the plain
+-// ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op/CvtSrFp8F32Op (with an f32 hop for
+-// f16/bf16), gated on a new {GFX1170, RDNA4} capability, plus HW numeric
+-// validation. Latent perf gap, not a correctness bug: results are already
+-// correct via the software path.
++// List of architectures that have hardware support for OCP fp8 formats via the
++// *plain* cvt instructions.
++// TODO(LCOMPILER-2609): add RDNA4 once the LLVM bug is fixed. RDNA4 has the
++// instructions, but v_cvt_pk_f32_fp8/bf8 is selected as its fake16 form and
++// printed without a .l/.h suffix, which the assembler rejects in the
++// real-true16 mode gfx12 defaults to.
++bool hasPlainOcpFp8HW(ISAFamily family) { return family == ISAFamily::GFX1170; }
+ 
+ // List of architectures that have hardware support for FNUZ fp8 formats. On
+ // those architectures we will use the HW instructions to do the conversion
+@@ -143,6 +132,10 @@ namespace {
+ // forward declaration of a downcast functions
+ Value Fp32ToFp16rtneOneValue(Location loc, RewriterBase &rewriter,
+                              const Value &v);
++template <typename ConvertOp>
++SmallVector<Value> Pk4Fp32ToF8(Location loc,
++                               ConversionPatternRewriter &rewriter,
++                               const SmallVector<Value> &v);
+ 
+ //===----------------------------------------------------------------------===//
+ // Data type conversion utility functions
+@@ -450,7 +443,7 @@ SmallVector<Value> scalePk8UpcastFromFp8(Location loc,
+   return ret;
+ }
+ 
+-// Convert Bf8/Fp8 to Fp32 on CDNA3
++// Convert four packed 8-bit floating-point values to four Fp32 values
+ template <typename ConvertOp>
+ SmallVector<Value> PkF4ToFp32(Location loc, ConversionPatternRewriter &rewriter,
+                               const SmallVector<Value> &v) {
+@@ -483,28 +476,108 @@ SmallVector<Value> PkF4ToFp32(Location loc, ConversionPatternRewriter &rewriter,
+   return ret;
+ }
+ 
+-// Convert OCP Fp8 to Fp32 on CDNA4+
+-SmallVector<Value> Fp8E4M3fnToFp32(Location loc,
+-                                   ConversionPatternRewriter &rewriter,
+-                                   const SmallVector<Value> &v) {
+-  if (v.size() == 8) {
+-    return scalePk8UpcastFromFp8<ROCDL::CvtPkScalePk8F32Fp8Op>(loc, rewriter,
+-                                                               v);
++// Convert a single Bf8/Fp8 value to Fp32
++// The packed converter would work too, but its second result would come from an
++// undefined byte.
++template <typename ConvertOp>
++SmallVector<Value> ScalarF8ToFp32(Location loc,
++                                  ConversionPatternRewriter &rewriter,
++                                  const SmallVector<Value> &v) {
++  assert(v.size() == 1);
++  auto b = TritonLLVMOpBuilder(loc, rewriter);
++  auto fp8x4VecTy = vec_ty(i8_ty, 4);
++  Value fp8x4Vec = b.undef(fp8x4VecTy);
++  fp8x4Vec = b.insert_element(fp8x4VecTy, fp8x4Vec, v[0], b.i32_val(0));
++  Value i32v = b.bitcast(fp8x4Vec, i32_ty);
++  return {ConvertOp::create(rewriter, loc, f32_ty, i32v, /*byteSel=*/0)};
++}
++
++// Convert OCP Fp8/Bf8 to Fp32/Fp16/Bf16 on gfx1170/RDNA4
++// The plain ops only land in Fp32, so Fp16/Bf16 narrow afterwards; Fp8 is exact
++// in Fp32, leaving that narrowing as the only rounding site.
++template <typename DstFPType, typename PackedConvertOp,
++          typename ScalarConvertOp = void>
++SmallVector<Value> plainHWUpcastFromFp8(Location loc,
++                                        ConversionPatternRewriter &rewriter,
++                                        const SmallVector<Value> &v) {
++  static_assert(std::is_same_v<DstFPType, Float32Type> ||
++                    std::is_same_v<DstFPType, Float16Type> ||
++                    std::is_same_v<DstFPType, BFloat16Type>,
++                "plain fp8 upcast only lands in f32, f16 or bf16");
++  if constexpr (std::is_same_v<DstFPType, Float32Type>) {
++    static_assert(!std::is_void_v<ScalarConvertOp>,
++                  "an f32 destination needs the scalar cvt op");
++    // A lone value has no partner to fill the other half of a packed result.
++    if (v.size() == 1)
++      return ScalarF8ToFp32<ScalarConvertOp>(loc, rewriter, v);
+   }
+   assert(v.size() == 4);
+-  return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF32Fp8Op>(loc, rewriter, v);
++  SmallVector<Value> ret = PkF4ToFp32<PackedConvertOp>(loc, rewriter, v);
++  if constexpr (std::is_same_v<DstFPType, Float16Type>) {
++    // The FP32 values came from FP8 and are exactly representable in FP16,
++    // so this narrowing conversion is lossless.
++    for (Value &val : ret)
++      val = Fp32ToFp16rtneOneValue(loc, rewriter, val);
++  } else if constexpr (std::is_same_v<DstFPType, BFloat16Type>) {
++    for (Value &val : ret)
++      val = AMD::convertFp32ToBf16(loc, rewriter, val, RoundingMode::RTZ);
++  }
++  return ret;
+ }
+ 
+-// Convert OCP Bf8 to Fp32 on CDNA4+
+-SmallVector<Value> Fp8E5M2ToFp32(Location loc,
+-                                 ConversionPatternRewriter &rewriter,
+-                                 const SmallVector<Value> &v) {
+-  if (v.size() == 8) {
+-    return scalePk8UpcastFromFp8<ROCDL::CvtPkScalePk8F32Bf8Op>(loc, rewriter,
+-                                                               v);
+-  }
++// Convert OCP Fp8/Bf8 to Fp32 on CDNA4+
++template <typename Pk8ConvertOp, typename Pk4ConvertOp>
++SmallVector<Value> scaledHWUpcastFromFp8(Location loc,
++                                         ConversionPatternRewriter &rewriter,
++                                         const SmallVector<Value> &v) {
++  if (v.size() == 8)
++    return scalePk8UpcastFromFp8<Pk8ConvertOp>(loc, rewriter, v);
+   assert(v.size() == 4);
+-  return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF32Bf8Op>(loc, rewriter, v);
++  return scalePk4UpcastFromFp8<Pk4ConvertOp>(loc, rewriter, v);
++}
++
++// Convert Fp32/Fp16/Bf16 to OCP Fp8/Bf8 on gfx1170/RDNA4
++// The plain ops only read Fp32, so Fp16/Bf16 widen first; both widenings are
++// exact, which keeps the rounding to Fp8 in the hardware instruction.
++template <typename SrcFPType, typename PackedConvertOp>
++SmallVector<Value> plainHWDowncastToFp8(Location loc,
++                                        ConversionPatternRewriter &rewriter,
++                                        const SmallVector<Value> &v) {
++  static_assert(std::is_same_v<SrcFPType, Float32Type> ||
++                    std::is_same_v<SrcFPType, Float16Type> ||
++                    std::is_same_v<SrcFPType, BFloat16Type>,
++                "plain fp8 downcast only starts from f32, f16 or bf16");
++  assert(v.size() == 4);
++  if constexpr (std::is_same_v<SrcFPType, Float32Type>) {
++    return Pk4Fp32ToF8<PackedConvertOp>(loc, rewriter, v);
++  } else {
++    SmallVector<Value> f32Vec(4);
++    for (size_t i = 0; i < 4; i++) {
++      if constexpr (std::is_same_v<SrcFPType, Float16Type>)
++        f32Vec[i] = Fp16ToFp32OneValue(loc, rewriter, v[i]);
++      else
++        f32Vec[i] = AMD::convertBf16ToFp32(loc, rewriter, v[i]);
++    }
++    return Pk4Fp32ToF8<PackedConvertOp>(loc, rewriter, f32Vec);
++  }
++}
++
++// Architectures without either instruction set never reach this converter:
++// createDestOps routes them through an f16 intermediate instead.
++ConverterT Fp8E4M3fnToFp32(ISAFamily isaFamily) {
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<Float32Type, ROCDL::CvtPkF32Fp8Op,
++                                ROCDL::CvtF32Fp8Op>;
++  return scaledHWUpcastFromFp8<ROCDL::CvtPkScalePk8F32Fp8Op,
++                               ROCDL::CvtScaleF32PkF32Fp8Op>;
++}
++
++ConverterT Fp8E5M2ToFp32(ISAFamily isaFamily) {
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<Float32Type, ROCDL::CvtPkF32Bf8Op,
++                                ROCDL::CvtF32Bf8Op>;
++  return scaledHWUpcastFromFp8<ROCDL::CvtPkScalePk8F32Bf8Op,
++                               ROCDL::CvtScaleF32PkF32Bf8Op>;
+ }
+ 
+ // Nanoo Bf8 -> Fp32 on CDNA3+
+@@ -587,7 +660,11 @@ SmallVector<Value> Fp8E4M3fnToFp16HW(Location loc,
+ }
+ 
+ ConverterT Fp8E4M3fnToFp16(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp8E4M3fnToFp16HW : Fp8E4M3fnToFp16SW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp8E4M3fnToFp16HW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<Float16Type, ROCDL::CvtPkF32Fp8Op>;
++  return Fp8E4M3fnToFp16SW;
+ }
+ 
+ // Ocp Bf8->Fp16
+@@ -631,7 +708,11 @@ SmallVector<Value> Fp8E5M2ToFp16HW(Location loc,
+ }
+ 
+ ConverterT Fp8E5M2ToFp16(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp8E5M2ToFp16HW : Fp8E5M2ToFp16SW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp8E5M2ToFp16HW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<Float16Type, ROCDL::CvtPkF32Bf8Op>;
++  return Fp8E5M2ToFp16SW;
+ }
+ 
+ Value Fp8E5M2fnuzToFp16OneValue(Location loc,
+@@ -791,7 +872,11 @@ SmallVector<Value> Fp8E5M2ToBf16HW(Location loc,
+ }
+ 
+ ConverterT Fp8E5M2ToBf16(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp8E5M2ToBf16HW : Fp8E5M2ToBf16SW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp8E5M2ToBf16HW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<BFloat16Type, ROCDL::CvtPkF32Bf8Op>;
++  return Fp8E5M2ToBf16SW;
+ }
+ 
+ // fp8e4m3fn to bf16
+@@ -813,7 +898,11 @@ SmallVector<Value> Fp8E4M3fnToBf16HW(Location loc,
+ }
+ 
+ ConverterT Fp8E4M3fnToBf16(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp8E4M3fnToBf16HW : Fp8E4M3fnToBf16SW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp8E4M3fnToBf16HW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWUpcastFromFp8<BFloat16Type, ROCDL::CvtPkF32Fp8Op>;
++  return Fp8E4M3fnToBf16SW;
+ }
+ 
+ // fp8e4m3fnuz to bf16
+@@ -1157,7 +1246,11 @@ SmallVector<Value> Fp16ToFp8E5M2rtneHW(Location loc,
+ }
+ 
+ ConverterT Fp16ToFp8E5M2rtne(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp16ToFp8E5M2rtneHW : Fp16ToFp8E5M2rtneSW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp16ToFp8E5M2rtneHW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<Float16Type, ROCDL::CvtPkBf8F32Op>;
++  return Fp16ToFp8E5M2rtneSW;
+ }
+ 
+ // Fp16 -> OCP Bf8 (RTZ)
+@@ -1375,8 +1468,11 @@ SmallVector<Value> Fp16ToFp8E4M3fnRtneHW(Location loc,
+ }
+ 
+ ConverterT Fp16ToFp8E4M3fnRtne(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp16ToFp8E4M3fnRtneHW
+-                                    : Fp16ToFp8E4M3fnRtneSW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp16ToFp8E4M3fnRtneHW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<Float16Type, ROCDL::CvtPkFp8F32Op>;
++  return Fp16ToFp8E4M3fnRtneSW;
+ }
+ 
+ // Fp16 -> Fp32
+@@ -1387,7 +1483,8 @@ Value Fp16ToFp32OneValue(Location loc, ConversionPatternRewriter &rewriter,
+   return b.fpext(f32_ty, v);
+ }
+ 
+-// Convert Fp32 to Bf8/Fp8 on CDNA3
++// Convert four Fp32 values to four packed 8-bit floating-point values
++// ConvertOp chooses Fp8 versus Bf8; target dispatch chooses OCP versus FNUZ.
+ template <typename ConvertOp>
+ SmallVector<Value> Pk4Fp32ToF8(Location loc,
+                                ConversionPatternRewriter &rewriter,
+@@ -1434,8 +1531,11 @@ SmallVector<Value> Fp32ToFp8E4M3fnRtneHW(Location loc,
+ }
+ 
+ ConverterT Fp32ToFp8E4M3fnRtne(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp32ToFp8E4M3fnRtneHW
+-                                    : Fp32ToFp8E4M3fnRtneSW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp32ToFp8E4M3fnRtneHW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<Float32Type, ROCDL::CvtPkFp8F32Op>;
++  return Fp32ToFp8E4M3fnRtneSW;
+ }
+ 
+ // Fp32 -> OCP Bf8 (RTNE)
+@@ -1529,7 +1629,11 @@ SmallVector<Value> Fp32ToFp8E5M2rtneHW(Location loc,
+ }
+ 
+ ConverterT Fp32ToFp8E5M2rtne(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Fp32ToFp8E5M2rtneHW : Fp32ToFp8E5M2rtneSW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Fp32ToFp8E5M2rtneHW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<Float32Type, ROCDL::CvtPkBf8F32Op>;
++  return Fp32ToFp8E5M2rtneSW;
+ }
+ 
+ // Fp32 -> Nanoo Bf8 on CDNA3
+@@ -1753,7 +1857,11 @@ SmallVector<Value> Bf16ToFp8E5M2HW(Location loc,
+ }
+ 
+ ConverterT Bf16ToFp8E5M2(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Bf16ToFp8E5M2HW : Bf16ToFp8E5M2SW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Bf16ToFp8E5M2HW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<BFloat16Type, ROCDL::CvtPkBf8F32Op>;
++  return Bf16ToFp8E5M2SW;
+ }
+ 
+ // Bf16 -> OCP Fp8 using RTNE
+@@ -1780,8 +1888,11 @@ SmallVector<Value> Bf16ToFp8E4M3fnRtneHW(Location loc,
+ }
+ 
+ ConverterT Bf16ToFp8E4M3fn(ISAFamily isaFamily) {
+-  return isCDNA4OrHigher(isaFamily) ? Bf16ToFp8E4M3fnRtneHW
+-                                    : Bf16ToFp8E4M3fnRtneSW;
++  if (isCDNA4OrHigher(isaFamily))
++    return Bf16ToFp8E4M3fnRtneHW;
++  if (hasPlainOcpFp8HW(isaFamily))
++    return plainHWDowncastToFp8<BFloat16Type, ROCDL::CvtPkFp8F32Op>;
++  return Bf16ToFp8E4M3fnRtneSW;
+ }
+ 
+ // bf16 to fp8e4m3fnuz
+@@ -1932,8 +2043,8 @@ struct FpToFpOpConversion
+         {{F32TyID, F8E5M2TyID, RoundingMode::RTZ}, Fp32ToFp8E5M2rtz},
+         {{F8E4M3FNUZTyID, F32TyID, undefRounding}, Fp8E4M3fnuzToFp32},
+         {{F8E5M2FNUZTyID, F32TyID, undefRounding}, Fp8E5M2fnuzToFp32},
+-        {{F8E4M3FNTyID, F32TyID, undefRounding}, Fp8E4M3fnToFp32},
+-        {{F8E5M2TyID, F32TyID, undefRounding}, Fp8E5M2ToFp32},
++        {{F8E4M3FNTyID, F32TyID, undefRounding}, Fp8E4M3fnToFp32(isaFamily)},
++        {{F8E5M2TyID, F32TyID, undefRounding}, Fp8E5M2ToFp32(isaFamily)},
+         // F32 -> F16 with RTZ
+         {{F32TyID, F16TyID, RoundingMode::RTZ}, convertFp32ToFp16rtz},
+     };
+@@ -1946,12 +2057,21 @@ struct FpToFpOpConversion
+     return srcMap.lookup(key);
+   }
+ 
+-  int getNumElements(
+-      Type srcElementType, Type dstElementType,
+-      std::optional<::mlir::triton::RoundingMode> roundingMode) const {
++  int getNumElements(Type srcElementType, Type dstElementType,
++                     std::optional<::mlir::triton::RoundingMode> roundingMode,
++                     size_t availableElements) const {
+     const bool isRTZ = roundingMode == RoundingMode::RTZ;
+     const bool isRTNE = roundingMode == RoundingMode::RTNE;
+ 
++    // A lone ocp fp8/bf8 value upcasts in one scalar hardware step. Asking for
++    // a packed group here would pad it with undef and throw away three quarters
++    // of the result.
++    if (availableElements == 1 && hasPlainOcpFp8HW(isaFamily) &&
++        isa<Float8E4M3FNType, Float8E5M2Type>(srcElementType) &&
++        isa<Float32Type>(dstElementType)) {
++      return 1;
++    }
++
+     // numElements = 2 for :
+     // fp32 -> fp16 with RTZ
+     // fp32/fp16 -> nanoo fp8/bf8
+@@ -2025,16 +2145,17 @@ struct FpToFpOpConversion
+                                      RoundingMode::RTZ)};
+     }
+ 
+-    size_t numElements =
+-        getNumElements(srcElementType, dstElementType, roundingMode);
++    size_t numElements = getNumElements(srcElementType, dstElementType,
++                                        roundingMode, operands.size());
+ 
+     // fp32 -> fp8 with rtne can be done in two steps:
+     // - fp32 -> fp16 with rtne and
+     // - fp16 -> fp8 with rtne
+-    // with the following exceptions:
+-    // 1. fp32 -> ocp fp8/bf8 on CDNA4: has hardware support
+-    // 2. fp32 -> nanoo fp8/bf8 on CDNA3: has hardware support
+-    // 3. fp32 -> ocp fp8/bf8 on non-CDNA4: has software support
++    // with the following exceptions, which all convert straight from fp32:
++    // 1. fp32 -> ocp fp8/bf8 on CDNA4+: scaled cvt hardware support
++    // 2. fp32 -> nanoo fp8/bf8 on CDNA3: plain cvt hardware support
++    // 3. fp32 -> ocp fp8/bf8 on non-CDNA4: plain cvt hardware support on
++    //    gfx1170/RDNA4, software support elsewhere
+     bool useFP16IntermediateSrc =
+         srcElementType.isF32() && !dstElementType.isF16() &&
+         !(isCDNA4OrHigher(isaFamily) &&
+@@ -2046,12 +2167,13 @@ struct FpToFpOpConversion
+         !(!isCDNA4OrHigher(isaFamily) &&
+           (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(dstElementType)));
+ 
+-    // fp8/bf8->f32, if neither nanoo fp8/bf8 on CDNA3 nor ocp fp8/bf8 on CDNA4,
+-    // is done in two steps: fp8/bf8->fp16 and fp16->fp32
++    // fp8/bf8->f32 is done in two steps, fp8/bf8->fp16 and fp16->fp32, unless
++    // the target can upcast to fp32 in one hardware step: ocp fp8/bf8 on CDNA4+
++    // (scaled cvt) or on gfx1170/RDNA4 (plain cvt), and nanoo fp8/bf8 on CDNA3.
+     bool isDstFP32 = dstElementType.isF32();
+     bool useFP16IntermediateDst =
+         (isDstFP32 &&
+-         !(isCDNA4OrHigher(isaFamily) &&
++         !((isCDNA4OrHigher(isaFamily) || hasPlainOcpFp8HW(isaFamily)) &&
+            (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(srcElementType))) &&
+          !(isaFamily == ISAFamily::CDNA3 &&
+            (llvm::isa<Float8E4M3FNUZType, Float8E5M2FNUZType>(
