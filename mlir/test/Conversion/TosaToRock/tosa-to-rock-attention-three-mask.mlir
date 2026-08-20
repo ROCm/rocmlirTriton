@@ -4,16 +4,16 @@
 // nested `select(mask, -inf, scores)` ops must all be folded into a single
 // rock.attention. The masks are, from inner to outer:
 //   1. prefix-causal   (row index + prefixOffset vs. column index) -> arg0
-//   2. KV-cache        (column index vs. currentSeqLen)            -> arg4
-//   3. sliding window   (column index vs. currentSeqLen - window)   -> arg4
-// currentSeqLen, prefixOffset, causal, and slidingWindowSize must all survive.
+//   2. KV-cache        (column index vs. lastValidKVIndex)         -> arg4
+//   3. sliding window  (column index vs. P - look-back)            -> arg4
+// lastValidKVIndex, prefixOffset, causal, and slidingWindowLookBack must survive.
 
 // CHECK-LABEL: func @attention_three_mask
 // CHECK: rock.attention
-// CHECK-DAG: currentSeqLen = (%{{.*}}
+// CHECK-DAG: lastValidKVIndex = (%{{.*}}
 // CHECK-DAG: prefixOffset = (%{{.*}}
 // CHECK-DAG: causal
-// CHECK-DAG: slidingWindowSize = 3
+// CHECK-DAG: slidingWindowLookBack = 3
 
 module {
   func.func @attention_three_mask(%arg0: tensor<1xi32>, %arg1: tensor<9216xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>, %arg4: tensor<2xi32>) -> (tensor<7168xf16>) attributes {rock.kernel} {
@@ -30,7 +30,7 @@ module {
     %10 = "tosa.const"() <{values = dense<1> : tensor<4x1xi32>}> : () -> tensor<4x1xi32>
     %11 = "tosa.const"() <{values = dense<1> : tensor<2x8xi32>}> : () -> tensor<2x8xi32>
     %12 = "tosa.const"() <{values = dense<[[0], [1], [2], [3]]> : tensor<4x1xi32>}> : () -> tensor<4x1xi32>
-    // Negative window offset (-slidingWindowSize) for the sliding-window mask.
+    // Negative look-back offset for the sliding-window mask.
     %swoff = "tosa.const"() <{values = dense<-3> : tensor<1x1xi32>}> : () -> tensor<1x1xi32>
     %expanded = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [2, 4, 18, 64] : tensor<9216xf16> into tensor<2x4x18x64xf16>
     %13 = tosa.transpose %expanded {perms = array<i32: 0, 2, 1, 3>} : (tensor<2x4x18x64xf16>) -> tensor<2x18x4x64xf16>
@@ -52,7 +52,7 @@ module {
     %26 = tosa.cast %25 : (tensor<2x8xi32>) -> tensor<2x8xi8>
     %expanded_3 = tensor.expand_shape %26 [[0, 1, 2], [3]] output_shape [2, 1, 1, 8] : tensor<2x8xi8> into tensor<2x1x1x8xi8>
     %27 = tosa.mul %expanded_3, %6, %8 : (tensor<2x1x1x8xi8>, tensor<2x14x4x8xi8>, tensor<1xi8>) -> tensor<2x14x4x8xi8>
-    // Sliding-window mask: greater(currentSeqLen - window, columnIndex).
+    // Sliding-window mask: greater(lastValidKVIndex - lookBack, columnIndex).
     %sw0 = tosa.add %expanded_2, %swoff : (tensor<2x1xi32>, tensor<1x1xi32>) -> tensor<2x1xi32>
     %sw1 = tosa.mul %sw0, %11, %8 : (tensor<2x1xi32>, tensor<2x8xi32>, tensor<1xi8>) -> tensor<2x8xi32>
     %sw2 = tosa.greater %sw1, %22 : (tensor<2x8xi32>, tensor<2x8xi32>) -> tensor<2x8xi1>
