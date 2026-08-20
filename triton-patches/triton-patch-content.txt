@@ -277,13 +277,10 @@ patch-free-var-mask-register-dim-name.patch
   Every consumer used "reg", so on tensors the lookup missed and
   MapVector::operator[] default-inserted 0, making isCanonicalIndex() always
   true and leaving every redundant-element guard as dead code. Fixed here for
-  the producer, the AMD store, atomic RMW and CAS conversions, AMD's
-  isRedundantThreadPredWarpUniform, and GSan's instrumentation.
-
-  The NVIDIA backend is deliberately left on "reg", keeping its guards dead as
-  upstream, to hold this patch to the paths this tree builds and tests. Its
-  lookups now also miss for scalars and read 0 rather than -1, which changes
-  nothing: a scalar has one element, and index 0 is canonical under any mask.
+  the producer and for every consumer: the AMD and NVIDIA store, atomic RMW and
+  CAS conversions, AMD's isRedundantThreadPredWarpUniform, and GSan's
+  instrumentation. Scalars read the same all-redundant mask as before, so only
+  tensor layouts change behaviour.
 
   It matters for layouts that broadcast across registers: gfx11 WMMA duplicates
   its result rather than offsetting it, so a depthwise convolution tuned to
