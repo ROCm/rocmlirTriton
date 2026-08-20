@@ -5,6 +5,7 @@ This directory holds downstream patch records against the vendored Triton tree
 (external/triton/).
 
 ----------------------------------------------------------------------
+patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
@@ -220,6 +221,31 @@ patch11118.patch
 
   Drop this patch on the next Triton bump that includes upstream merge commit
   9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
+
+patch-free-var-mask-register-dim-name.patch
+  Names the register dimension "register" everywhere free-variable masks are
+  produced and consumed, so the redundant-register guards actually fire.
+
+  getFreeVariableMasks(Type) keyed that dimension "reg" for scalars but
+  "register" for tensors, since LinearLayout keys by its input dimension names.
+  Every consumer used "reg", so on tensors the lookup missed and
+  MapVector::operator[] default-inserted 0, making isCanonicalIndex() always
+  true and leaving every redundant-element guard as dead code. Fixed here for
+  the producer, the AMD store, atomic RMW and CAS conversions, AMD's
+  isRedundantThreadPredWarpUniform, and GSan's instrumentation.
+
+  The NVIDIA backend is deliberately left on "reg", keeping its guards dead as
+  upstream, to hold this patch to the paths this tree builds and tests. Its
+  lookups now also miss for scalars and read 0 rather than -1, which changes
+  nothing: a scalar has one element, and index 0 is canonical under any mask.
+
+  It matters for layouts that broadcast across registers: gfx11 WMMA duplicates
+  its result rather than offsetting it, so a depthwise convolution tuned to
+  mPerBlock = 1 stored the same element from all 8 registers of a lane. On the
+  yolov10n depthwise shapes gfx1100 emitted 32 stores and 32 exp2 calls instead
+  of 4 and 4, measuring 1.12x-2.00x slower.
+
+  Not filed upstream yet; upstream Triton has the same defect.
 
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
