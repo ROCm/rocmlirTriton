@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2023 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //===----------------------------------------------------------------------===//
 //
 // Declares the passes for remapping `arith.extf` on fp8 types to a table lookup
