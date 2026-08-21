@@ -88,8 +88,13 @@
 // drops, regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0
 // in-cap). A non-zero nPerBlockG1 shrinks the gemm1 N dim, so those tiled
 // gemm0NPerBlock=256 combos can fit and are allowed; only the untiled 256
-// combos (`nPerBlockG0=256,nPerBlockG1=0`) must be excluded.
+// combos (`nPerBlockG0=256,nPerBlockG1=0`) must be excluded from the
+// brute-force range. Full and exhaustive spaces also include the
+// architecture-specific quick list, so remove that list before checking the
+// brute-force invariant.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=quick > %t.quick 2>&1
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
 // RUN:       --implicit-check-not='nPerBlockG0=256,nPerBlockG1=0,'
 // CHECK-TENSOR-CAP-ATTN-V: attn:mPerBlockG0=16,nPerBlockG0=128,
@@ -99,7 +104,9 @@
 // getTransposedC() (matching PopulateParamsGemmGemm::getGemm1Params). The cap
 // behaviour must be identical -- every gemm0NPerBlock=256 combo still drops for
 // head_dim_v=8192.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=quick > %t.transo.quick 2>&1
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.transo.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
 // RUN:       --implicit-check-not='nPerBlockG0=256,nPerBlockG1=0,'
 // CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:mPerBlockG0=16,nPerBlockG0=128,
@@ -157,7 +164,9 @@
 // f32 on gfx1100 (RDNA3) has no matrix-accel instruction (WMMA has no f32
 // mode), so this exercises the non-accel (FMA) path. Negative half: K tile is
 // one of {4,8,16}, no kPack, no matrix-accel instruction.
+// RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=quick > %t.navi.quick 2>&1
 // RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
+// RUN:   | grep -Fvx -f %t.navi.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI \
 // RUN:       --implicit-check-not='{{kPerBlock=(32|64|128|256|512),}}' \
 // RUN:       --implicit-check-not='kpack=2,' \
@@ -228,7 +237,9 @@
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
 // so this exercises the non-accel `getRangeGemmGemm` path.
+// RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=quick > %t.navi-attn.quick 2>&1
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.navi-attn.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
 // RUN:       --implicit-check-not='kpack=2,' \
 // RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}' \
