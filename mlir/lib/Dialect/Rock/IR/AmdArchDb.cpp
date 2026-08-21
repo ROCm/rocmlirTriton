@@ -247,21 +247,22 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch,
-                                        RockGemmWrapperInterface gemmOp,
-                                        uint32_t instrNonKDim) {
-  MatrixAccelKind accelKind = getMatrixAccelKind(arch, gemmOp);
+int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                         Type inputTypeB, uint32_t instrNonKDim,
+                                         Type scaleAType, Type scaleBType) {
+  MatrixAccelKind accelKind =
+      getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
   if (accelKind == MatrixAccelKind::None)
     return 0;
 
-  Type elemA = getElementTypeOrSelf(gemmOp.getAType());
-  Type elemB = getElementTypeOrSelf(gemmOp.getBType());
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
   Type elemOut = rock::getAccType(elemA, elemB);
   auto [isaFamily, _] = getArch(arch);
 
-  // Both selectFor()s walk their candidates widest-K first and then fall through
-  // to "the only / smallest-K intrinsic", so an input K of zero skips every
-  // candidate and lands on exactly the one we are asking for.
+  // Both selectFor()s walk their candidates widest-K first and then fall
+  // through to "the only / smallest-K intrinsic", so an input K of zero skips
+  // every candidate and lands on exactly the one we are asking for.
   constexpr unsigned narrowest = 0;
 
   if (accelKind == MatrixAccelKind::WMMA ||
@@ -281,6 +282,14 @@ int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch,
       /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
       /*useTF32=*/false);
   return succeeded(instr) ? instr->kDim : 0;
+}
+
+int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch,
+                                         RockGemmWrapperInterface gemmOp,
+                                         uint32_t instrNonKDim) {
+  return getAccelInstrMinKDim(arch, gemmOp.getAType(), gemmOp.getBType(),
+                              instrNonKDim, gemmOp.getScaleAType(),
+                              gemmOp.getScaleBType());
 }
 
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
