@@ -385,6 +385,158 @@ TEST(IsIdentityOnShapeTest, EmptyShape) {
 }
 
 //===----------------------------------------------------------------------===//
+// getLowerSubDimensions Tests
+//===----------------------------------------------------------------------===//
+
+// Callers use getLowerSubDimensions to decide whether an upper dimension can
+// move the underlying address at all, which is the case exactly when some lower
+// sub-dimension spans more than one value.
+static bool movesTheAddress(
+    const llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>> &subDims) {
+  for (const auto &[lowerDim, infos] : subDims)
+    for (const SubDimInfo &info : infos)
+      if (info.size > 1)
+        return true;
+  return false;
+}
+
+// A dimension that a Broadcast{1} collapses reaches a single address, and
+// splitting it into block and iteration halves first does not change that.
+TEST(GetLowerSubDimensionsTest, BroadcastedTileAxisReachesOneAddress) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder addDim(b, {"m"}, {4}, loc);
+  addDim.passThrough("m");
+  addDim.addDim("n", 1, 1);
+  TransformMapAttr addDimAttr = addDim.get();
+
+  BottomUpTMBuilder bcast = BottomUpTMBuilder::above(addDim, addDimAttr);
+  bcast.passThrough("m");
+  bcast.broadcast({1}, {16});
+  TransformMapAttr bcastAttr = bcast.get();
+
+  BottomUpTMBuilder tile = BottomUpTMBuilder::above(bcast, bcastAttr);
+  tile.passThrough("m");
+  tile.unmerge({"n_block", "n_iter"}, {1, 2}, "n", {2, 8});
+  TransformMapAttr tileAttr = tile.get();
+
+  // getLowerSubDimensions walks top to bottom, the order untransform returns.
+  ArrayAttr transforms = b.getArrayAttr({tileAttr, bcastAttr, addDimAttr});
+
+  auto nIter = getLowerSubDimensions(b, transforms, /*dim=*/2);
+  ASSERT_TRUE(succeeded(nIter));
+  EXPECT_FALSE(movesTheAddress(*nIter));
+
+  auto m = getLowerSubDimensions(b, transforms, /*dim=*/0);
+  ASSERT_TRUE(succeeded(m));
+  EXPECT_TRUE(movesTheAddress(*m));
+}
+
+// Slice only shifts a coordinate by a constant, so it is tracked like a
+// PassThrough. This matters because rock-decompose-nonpow2-tiles introduces
+// slices above the tiling views.
+TEST(GetLowerSubDimensionsTest, SliceKeepsTrackingTheDimension) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder addDim(b, {"m"}, {4}, loc);
+  addDim.passThrough("m");
+  addDim.addDim("n", 1, 1);
+  TransformMapAttr addDimAttr = addDim.get();
+
+  BottomUpTMBuilder bcast = BottomUpTMBuilder::above(addDim, addDimAttr);
+  bcast.passThrough("m");
+  bcast.broadcast({1}, {16});
+  TransformMapAttr bcastAttr = bcast.get();
+
+  BottomUpTMBuilder slice = BottomUpTMBuilder::above(bcast, bcastAttr);
+  slice.passThrough("m");
+  slice.slice({"n_slice"}, {"n"}, {0}, {8});
+  TransformMapAttr sliceAttr = slice.get();
+
+  ArrayAttr transforms = b.getArrayAttr({sliceAttr, bcastAttr, addDimAttr});
+
+  auto nSlice = getLowerSubDimensions(b, transforms, /*dim=*/1);
+  ASSERT_TRUE(succeeded(nSlice));
+  EXPECT_FALSE(movesTheAddress(*nSlice));
+
+  auto m = getLowerSubDimensions(b, transforms, /*dim=*/0);
+  ASSERT_TRUE(succeeded(m));
+  EXPECT_TRUE(movesTheAddress(*m));
+}
+
+// One Broadcast attribute can cover several dimensions. Each has its own
+// modulus, so all of them must be tracked; skipping any would make a dimension
+// that does move the address look invariant.
+TEST(GetLowerSubDimensionsTest, MultiDimBroadcastTracksEveryDimension) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder bcast(b, {"m", "n"}, {1, 4}, loc);
+  bcast.broadcast({0, 1}, {8, 256});
+  TransformMapAttr bcastAttr = bcast.get();
+
+  ArrayAttr transforms = b.getArrayAttr({bcastAttr});
+
+  // "m" is replicated from a single element, so it reaches one address.
+  auto m = getLowerSubDimensions(b, transforms, /*dim=*/0);
+  ASSERT_TRUE(succeeded(m));
+  EXPECT_FALSE(movesTheAddress(*m));
+
+  // "n" cycles through four distinct elements, despite sharing the attribute.
+  auto n = getLowerSubDimensions(b, transforms, /*dim=*/1);
+  ASSERT_TRUE(succeeded(n));
+  EXPECT_TRUE(movesTheAddress(*n));
+}
+
+// Repartitioning a contiguous 16-element tile axis into groups of 10 crosses a
+// group boundary. Broadcasting away the within-group coordinate must not also
+// erase that group dependency.
+TEST(GetLowerSubDimensionsTest, MisalignedMergeKeepsAddressDependency) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder bcast(b, {"group", "channel"}, {32, 1}, loc);
+  bcast.passThrough("group");
+  bcast.broadcast({1}, {10});
+  TransformMapAttr bcastAttr = bcast.get();
+
+  BottomUpTMBuilder merge = BottomUpTMBuilder::above(bcast, bcastAttr);
+  merge.merge("flat", 0, {"group", "channel"});
+  TransformMapAttr mergeAttr = merge.get();
+
+  BottomUpTMBuilder tile = BottomUpTMBuilder::above(merge, mergeAttr);
+  tile.unmerge({"row", "column"}, {0, 1}, "flat", {20, 16});
+  TransformMapAttr tileAttr = tile.get();
+
+  ArrayAttr transforms = b.getArrayAttr({tileAttr, mergeAttr, bcastAttr});
+  auto column = getLowerSubDimensions(b, transforms, /*dim=*/1);
+  ASSERT_TRUE(succeeded(column));
+  EXPECT_TRUE(movesTheAddress(*column));
+}
+
+// Pad is not modelled, so the analysis reports failure instead of a wrong
+// answer, and callers proving invariance must read that as "cannot prove".
+TEST(GetLowerSubDimensionsTest, PadIsUnsupported) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  BottomUpTMBuilder pad(b, {"m", "n"}, {64, 200}, loc);
+  pad.passThrough("m");
+  pad.pad("nPad", "n", 0, 56);
+  TransformMapAttr padAttr = pad.get();
+
+  ArrayAttr transforms = b.getArrayAttr({padAttr});
+  EXPECT_TRUE(failed(getLowerSubDimensions(b, transforms, /*dim=*/1)));
+}
+
+//===----------------------------------------------------------------------===//
 // transformChainDependsOnAnyDim Tests
 //===----------------------------------------------------------------------===//
 

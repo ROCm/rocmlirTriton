@@ -97,6 +97,28 @@ func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi
 
 // -----
 
+// A rank-1 reduction produces a scalar tt.reduce result. It is wrapped in a
+// rank-0 tensor so it can feed the corresponding rank-0 atomic store.
+// CHECK-LABEL: @test_reduce_rank1_atomic_add_store
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<256xf32>, %[[PTRS:.*]]: tensor<i32>, %[[MASK:.*]]: tensor<i1>)
+//      CHECK:   %[[SCALAR:.*]] = "tt.reduce"(%[[INPUT]]) <{axis = 0 : i32}>
+//      CHECK:   ^bb0(%[[LHS:.*]]: f32, %[[RHS:.*]]: f32):
+//      CHECK:     %[[SUM:.*]] = arith.addf %[[LHS]], %[[RHS]] : f32
+//      CHECK:     tt.reduce.return %[[SUM]] : f32
+//      CHECK:   }) : (tensor<256xf32>) -> f32
+//      CHECK:   %[[REDUCED:.*]] = tt.splat %[[SCALAR]] : f32 -> tensor<f32>
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<i32> -> tensor<!tt.ptr<f32>>
+//      CHECK:   tt.atomic_rmw fadd, relaxed, gpu, %[[PTR_TENSOR]], %[[REDUCED]], %[[MASK]]
+//  CHECK-NOT:   rock.blockwise_reduce
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_reduce_rank1_atomic_add_store(%arg0: tensor<256xf32>, %arg1: tensor<i32>, %arg2: tensor<i1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_reduce sum %arg0 {axis = 0 : index} : tensor<256xf32> -> tensor<f32>
+  rock.blockwise_store_ptr %0 -> %arg1(%arg2) by atomic_add : tensor<f32> -> tensor<i32>(tensor<i1>)
+  return
+}
+
+// -----
+
 // CHECK-LABEL: @test_atomic_max_store
 // CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xi32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<i32>>

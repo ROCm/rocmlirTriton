@@ -137,8 +137,20 @@ struct RockBlockwiseReduceOpRewritePattern
     
     // Create reduce.return
     triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
-    
-    rewriter.replaceOp(op, reduceOp.getResults());
+
+    rewriter.setInsertionPointAfter(reduceOp);
+    Value replacement = reduceOp->getResult(0);
+    // Reducing a rank-1 tensor produces a scalar in Triton, while
+    // rock.blockwise_reduce represents the same result as a rank-0 tensor.
+    // Wrap the scalar in that tensor representation to preserve the Rock type.
+    if (replacement.getType() != op.getResult().getType()) {
+      assert(inputType.getRank() == 1 &&
+             "only rank-1 reductions should produce a scalar");
+      replacement = triton::SplatOp::create(
+          rewriter, loc, op.getResult().getType(), replacement);
+    }
+
+    rewriter.replaceOp(op, replacement);
     return success();
   }
 };
