@@ -299,26 +299,8 @@ static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
 // sizes. Ignored on WMMA, whose instructions are all 16x16.
 static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 
-// The value a kPerBlock must be a multiple of to keep the matrix accelerator
-// fed, i.e. the narrowest K any instruction reachable from this tuning space
-// can consume. A kPerBlock that is not a multiple of it wastes the
-// accelerator. 1 on a non-accel (FMA) op, which consumes one element at a time
-// and so constrains kPerBlock not at all.
-//
-// decomposePow2 peels a non-pow2 kPerBlock into pow2 segments, and a segment
-// narrower than an instruction's K cannot fill one. Segments and instruction
-// widths are both powers of two, and Triton selects the widest instruction no
-// wider than the segment, so "every segment fills an instruction" is exactly
-// "kPerBlock is a multiple of the narrowest one". Falling short is not a
-// miscompile, just waste: MFMA drops off its layout (the inputKSize % kDim
-// check in AccelerateAMDMatmul.cpp) while WMMA zero-pads up to kDim
-// (computeKPadding in DotOpToLLVM/WMMA.cpp). kPerBlock=126 peels into
-// 64+32+16+8+4+2, so on WMMA it issues ten instructions to do less work than
-// kPerBlock=128 does in eight.
-//
-// MFMA's kDim halves as matrixInstrNonkdim goes from 16 to 32, and that knob is
-// swept outside the K axis, so take the narrowest over the whole sweep rather
-// than pruning a tile that one of its settings could still use.
+// The narrowest K any matrix instruction reachable from this tuning space can
+// consume, or 1 if the op has no accel path.
 static int64_t accelInstrKAlignment(StringRef arch,
                                     RockGemmWrapperInterface gemmOp) {
   std::optional<int64_t> narrowest;
