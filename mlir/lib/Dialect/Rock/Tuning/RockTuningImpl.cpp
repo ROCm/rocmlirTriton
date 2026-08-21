@@ -14,6 +14,7 @@
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
@@ -264,6 +265,94 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
   return candidates;
 }
 
+// K tiles that keep a forward convolution's K loop free of coordinate carries.
+//
+// A forward convolution's `gemmK` is a single Merge of the input's channel and
+// filter-spatial dims, listed in the input tensor's own dim order (see
+// `matchUnderlyingOrder` in ConvToGemm.cpp): channels-first inputs give
+// Merge(c, y, x), channels-last ones Merge(y, x, c). Advancing gemmK by a tile
+// moves only the merge's outermost dim when the tile is a multiple of the
+// *trailing* extents; otherwise an inner coordinate moves every K iteration.
+// The flat-K -> per-dim decomposition then needs runtime carry arithmetic, and
+// because the filter-spatial coordinates also feed the padding bound checks,
+// the per-element validity mask has to be rebuilt inside the loop. That leaves
+// rock-transforms-invariant-code-motion with only its Carry form, whose
+// coordinates are carried as full distributed tiles, costing one VALU op per
+// element per thread every iteration. A multiple of the trailing extents keeps
+// every element's filter coordinates fixed across iterations, which makes the
+// offset affine in the induction variable and the mask loop-invariant, so both
+// hoist out of the loop.
+//
+// Example: a 3x3 conv over C=256 has gemmK = Merge(c, y, x) with extents
+// (256, 3, 3) and a trailing product of 9. None of its power-of-two tiles are
+// multiples of 9; moving kPerBlock from 128 to 144 took an i8 3x3 conv on
+// gfx1100 from 47 to 8 VALU per WMMA. A channels-last input needs no such tile:
+// its trailing product spans the channel dim, so a K tile smaller than C leaves
+// the filter coordinates uniform across the whole tile and the mask is already
+// loop-invariant.
+//
+// Only tiles of the form trailingProduct * 2^j are emitted, which adds at most
+// log2(maxK / trailingProduct) + 1 candidates per tile. Candidates must divide
+// K, so a filter whose trailing product does not fit K adds nothing.
+static SmallVector<uint32_t, 3>
+mergeAlignedKPerBlock(RockGemmWrapperInterface gemmOp, int64_t gemmK,
+                      uint32_t minK, uint32_t maxK) {
+  SmallVector<uint32_t, 3> candidates;
+  if (gemmOp.getKernelType() != KernelType::Conv)
+    return candidates;
+
+  Operation *op = gemmOp.getOperation();
+  auto inputLayout = op->getAttrOfType<ArrayAttr>("input_layout");
+  if (!inputLayout)
+    return candidates;
+
+  ConvolutionDims convDims = ConvolutionDims::fromOp(op);
+  // Walking the input layout in order collects the gemmK-merged dims in the
+  // same order the merge lists them in, so the first entry is the merge's
+  // outermost dim.
+  SmallVector<int64_t> mergedExtents;
+  for (unsigned pos = 0, e = inputLayout.size(); pos < e; ++pos) {
+    StringRef name = cast<StringAttr>(inputLayout[pos]).getValue();
+    if (name == "ci") {
+      mergedExtents.push_back(convDims.c);
+      continue;
+    }
+    for (auto [i, filLen] : llvm::enumerate(convDims.fil)) {
+      SmallString<4> spatial;
+      (Twine(i) + "i").toVector(spatial);
+      // "hi"/"wi" are the legacy spellings of "0i"/"1i".
+      bool isLegacy = (i == 0 && name == "hi") || (i == 1 && name == "wi");
+      if (name == spatial || isLegacy)
+        mergedExtents.push_back(filLen);
+    }
+  }
+  if (mergedExtents.size() != convDims.fil.size() + 1)
+    return candidates;
+
+  // Only the outermost dim advances without a carry, so the tile has to be a
+  // multiple of everything below it.
+  int64_t trailing = 1;
+  for (int64_t len : llvm::drop_begin(mergedExtents))
+    trailing *= len;
+  // A power-of-two trailing product is already aligned by every pow2 K tile.
+  if (trailing <= 1 || llvm::isPowerOf2_64(trailing))
+    return candidates;
+
+  // Every pow2 sub-tile has to be a whole number of matrix instructions:
+  // rock-decompose-nonpow2-tiles cuts one sub-tile per set bit, and a sub-tile
+  // narrower than the instruction's K is padded up to it, so the tile issues
+  // more instructions than its K warrants. For the 3x3 conv above, 36 issues 3
+  // WMMA for 36 K and 72 issues 5 for 72, while 144 issues 9 for 144. Requiring
+  // a multiple of the instruction's K is exactly that condition, and it also
+  // subsumes the integer-GEMM rule that every segment be at least 4 wide. This
+  // is conservative for the MFMA variants whose K is below 16.
+  constexpr int64_t kAccelKPerInstr = 16;
+  for (int64_t tile = trailing; tile <= maxK; tile *= 2)
+    if (tile >= minK && tile % kAccelKPerInstr == 0 && gemmK % tile == 0)
+      candidates.push_back(static_cast<uint32_t>(tile));
+  return candidates;
+}
+
 static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                                               TuningParamSetKind kind,
                                               uint32_t mPerBlock,
@@ -311,6 +400,14 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
       if (!llvm::is_contained(kList, d))
         kList.push_back(d);
     }
+    // Carry-free conv K tiles are added for every (m,n) tile: unlike
+    // windowDividingKPerBlock's LDS/occupancy window, their benefit comes from
+    // the K decomposition alone and so does not scale with the M/N tile. They
+    // are already multiples of 16, so the integer-GEMM segment rule is met.
+    for (uint32_t d : mergeAlignedKPerBlock(gemmOp, k, baseMinK,
+                                           /*maxK=*/256))
+      if (!llvm::is_contained(kList, d))
+        kList.push_back(d);
     llvm::sort(kList);
   }
   return kList;

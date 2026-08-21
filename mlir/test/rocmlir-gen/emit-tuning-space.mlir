@@ -275,3 +275,52 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-POW2K \
 // RUN:       --implicit-check-not='{{kPerBlock=(36|48|72|96|144|192),}}'
 // CHECK-WMMA-POW2K: gemm:{{.*kPerBlock=(32|64|128),kpack=1,}}
+
+//===----------------------------------------------------------------------===//
+// Carry-free convolution kPerBlock candidates
+//===----------------------------------------------------------------------===//
+
+// A forward conv's gemmK is a single Merge of the input's channel and
+// filter-spatial dims, listed in input-tensor order, and only that merge's
+// outermost dim advances without a carry. A channels-first (ngc01) 3x3 conv
+// gives Merge(c, y, x), so a K tile has to be a multiple of fil_h*fil_w = 9 to
+// leave every element's y/x fixed across iterations; otherwise the flat-K
+// decomposition needs runtime carry arithmetic and the per-element padding mask
+// is rebuilt on each iteration. No pow2 tile is a multiple of 9, so 144
+// (= 16*9, and K = 256*9 = 2304 divides by it) is added.
+//
+// Only multiples of the 16-wide matrix instruction are offered: the aligned
+// family also holds 36 and 72, whose narrow sub-tile (36 = 32+4, 72 = 64+8)
+// would be padded up to a whole instruction, so 72 must stay absent. 36 is not
+// a usable witness for that rule here -- windowDividingKPerBlock reaches it
+// independently through its min(m,n)=64 window.
+// RUN: rocmlir-gen --arch gfx1100 --operation=conv -t i8 --groupsize=1 --batchsize=1 --in_channels=256 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --fil_layout=gkc01 --in_layout=ngc01 --out_layout=ngk01 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-CONV-CARRY-FREE \
+// RUN:       --implicit-check-not='kPerBlock=72,'
+// CHECK-CONV-CARRY-FREE: gemm:{{.*kPerBlock=144,kpack=1,}}
+
+// A channels-last (nhwgc) input reorders the same merge to Merge(y, x, c),
+// whose trailing product is fil_w*C = 768 -- past the 256 tile bound, so no
+// aligned candidate is added. That layout does not need one: a K tile narrower
+// than C leaves y/x uniform across the whole tile, which already makes the
+// padding mask loop-invariant.
+// RUN: rocmlir-gen --arch gfx1100 --operation=conv -t i8 --groupsize=1 --batchsize=1 --in_channels=256 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --fil_layout=gkyxc --in_layout=nhwgc --out_layout=nhwgk --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-CONV-CHANNELS-LAST \
+// RUN:       --implicit-check-not='kPerBlock=144,'
+// CHECK-CONV-CHANNELS-LAST: gemm:{{.*kPerBlock=48,kpack=1,}}
+
+// A 1x1 filter leaves a trailing product of 1, which every pow2 tile already
+// divides, so the conv contributes no non-pow2 candidate at all (K = 256 here,
+// which the window rule cannot add to either).
+// RUN: rocmlir-gen --arch gfx1100 --operation=conv -t i8 --groupsize=1 --batchsize=1 --in_channels=256 --in_h=20 --in_w=20 --out_channels=64 --fil_h=1 --fil_w=1 --padding_h=0 --padding_w=0 --fil_layout=gkc01 --in_layout=ngc01 --out_layout=ngk01 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-CONV-POW2-FILTER \
+// RUN:       --implicit-check-not='{{kPerBlock=(36|48|144),}}'
+// CHECK-CONV-POW2-FILTER: gemm:{{.*kPerBlock=(32|64|128|256),kpack=1,}}
+
+// gfx950 opts out of non-pow2 K tiles altogether
+// (rock::supportsNonPow2KPerBlock), and the aligned candidates sit behind that
+// same gate, so the identical conv gains nothing there.
+// RUN: rocmlir-gen --arch gfx950 --num_cu 256 --operation=conv -t i8 --groupsize=1 --batchsize=1 --in_channels=256 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --fil_layout=gkc01 --in_layout=ngc01 --out_layout=ngk01 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-CONV-NONPOW2-OPTOUT \
+// RUN:       --implicit-check-not='{{kPerBlock=(36|48|144),}}'
+// CHECK-CONV-NONPOW2-OPTOUT: gemm:{{.*kPerBlock=64,kpack=1,}}
