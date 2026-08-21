@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <numeric>
 #include <random>
 #include <set>
 
@@ -307,6 +308,38 @@ static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
 static constexpr uint32_t kNonAccelRelaxedMaxKPerBlock = 64;
 static constexpr uint32_t kAccelRelaxedMaxKPerBlock = 128;
 
+// The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
+// sizes. Ignored on WMMA, whose instructions are all 16x16.
+static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
+
+// The narrowest K any matrix instruction reachable from this tuning space can
+// consume, or 0 if the op has no accel path. A kPerBlock that is not a multiple
+// of it wastes the accelerator.
+//
+// decomposePow2 peels a non-pow2 kPerBlock into pow2 segments, and a segment
+// narrower than an instruction's K cannot fill one. Segments and instruction
+// widths are both powers of two, and Triton selects the widest instruction no
+// wider than the segment, so "every segment fills an instruction" is exactly
+// "kPerBlock is a multiple of the narrowest one". Falling short is not a
+// miscompile, just waste: MFMA drops off its layout (the inputKSize % kDim check
+// in AccelerateAMDMatmul.cpp) while WMMA zero-pads up to kDim (computeKPadding
+// in DotOpToLLVM/WMMA.cpp). kPerBlock=126 peels into 64+32+16+8+4+2, so on WMMA
+// it issues ten instructions to do less work than kPerBlock=128 does in eight.
+//
+// MFMA's kDim halves as matrixInstrNonkdim goes from 16 to 32, and that knob is
+// swept outside the K axis, so take the narrowest over the whole sweep rather
+// than pruning a tile that one of its settings could still use.
+static int64_t minAccelInstrKDim(StringRef arch,
+                                 RockGemmWrapperInterface gemmOp) {
+  int64_t minKDim = 0;
+  for (uint32_t instrNonKDim : kMatrixInstrNonkdims) {
+    int64_t kDim = rock::getAccelInstrMinKDim(arch, gemmOp, instrNonKDim);
+    if (kDim != 0)
+      minKDim = minKDim ? std::min(minKDim, kDim) : kDim;
+  }
+  return minKDim;
+}
+
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK, uint32_t relaxedMaxK,
@@ -394,6 +427,13 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // simple, so the widened range offers just those. This is a no-op
     // wherever K carries no such structure.
     int64_t alignTo = kPerBlockAlignmentFactor(gemmOp);
+    // On an accel path every peeled segment must also fill a matrix
+    // instruction, so the two requirements combine. Where they cannot both hold
+    // inside the range -- a 3x3 conv on WMMA needs a multiple of
+    // lcm(9, 16) = 144, past the bound -- the widened range admits nothing and
+    // costs no tuning time.
+    if (int64_t instrKDim = minAccelInstrKDim(arch, gemmOp))
+      alignTo = std::lcm(alignTo, instrKDim);
     for (uint32_t d :
          windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK,
                                  relaxedMaxK, alignTo)) {
@@ -441,7 +481,8 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       nPerBlock,         // N/block
       {1},               // kPackList
       numWavesRange,     // numWaves
-      {16, 32},          // matrixInstrNonkdim
+      {std::begin(kMatrixInstrNonkdims),
+       std::end(kMatrixInstrNonkdims)}, // matrixInstrNonkdim
       {1, 2, 3},         // numStages
       wavesPerEUList,    // wavesPerEU
       gridGroupSizeList, // gridGroupSize

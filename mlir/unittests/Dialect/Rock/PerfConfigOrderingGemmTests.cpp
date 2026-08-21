@@ -502,7 +502,9 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnFmaForAwkwardK) {
 
 // The relaxation is not restricted to the FMA path, and its range runs further
 // there: an accelerated path stages its operands through LDS rather than
-// registers, so it is not held to the non-accel register ceiling of 64.
+// registers, so it is not held to the non-accel register ceiling of 64. In
+// exchange, a WMMA tile must be a multiple of the 16-wide matrix instruction, so
+// that every segment it peels into fills one.
 TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnWmmaForAwkwardK) {
   // K = 3024 = 336 * 3 * 3, from the f16 half of the same conv set. Neither of
   // WMMA's pow2 tiles {32, 64} divides it. f16 on gfx1101 (RDNA3) drives WMMA.
@@ -512,12 +514,16 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnWmmaForAwkwardK) {
   std::set<int64_t> kValues =
       e.collectAndCheckKPerBlocks(K, /*relaxed=*/true, /*relaxedMax=*/128);
 
-  // 126 = 64+32+16+8+4+2 divides K and sits above the non-accel ceiling of 64,
-  // which an accelerated path is not bound by. It peels into six segments and
-  // falls outside every window, so only the widened range reaches it.
-  EXPECT_TRUE(kValues.count(126)) << "expected relaxed kPerBlock=126 in space";
-  // 189 divides K but sits above the accelerated range's own high bound.
-  EXPECT_FALSE(kValues.count(189)) << "kPerBlock=189 is above the flat range";
+  // 112 = 64+32+16 divides K and sits above the non-accel ceiling of 64, which
+  // an accelerated path is not bound by. It peels into three segments and falls
+  // outside every window, so only the widened range reaches it.
+  EXPECT_TRUE(kValues.count(112)) << "expected relaxed kPerBlock=112 in space";
+  // 126 divides K and lands in the range too, but peels into 64+32+16+8+4+2,
+  // whose last three segments are narrower than a WMMA instruction's K.
+  EXPECT_FALSE(kValues.count(126))
+      << "kPerBlock=126 does not fill a WMMA instruction";
+  // 192 is a multiple of 16 and divides K, but sits above the range's own bound.
+  EXPECT_FALSE(kValues.count(192)) << "kPerBlock=192 is above the flat range";
   // 27 divides K and the non-accel range would offer it, but WMMA's smallest
   // pow2 tile of 32 clamps the range from below.
   EXPECT_FALSE(kValues.count(27))

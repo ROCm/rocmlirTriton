@@ -80,6 +80,15 @@ getMatrixAccelKind(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
 /// Same as above but for gemm+gemm
 bool hasAccel(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
 
+/// The K extent of the narrowest matrix instruction this arch offers for the
+/// operation's operand types, at an instruction tile of `instrNonKDim` x
+/// `instrNonKDim`. Returns 0 when the arch has no matrix instruction for them.
+///
+/// `instrNonKDim` is the `matrixInstrNonkdim` perf-config field, and is ignored
+/// on WMMA, whose instructions are all 16x16.
+int64_t getAccelInstrMinKDim(StringRef arch, RockGemmWrapperInterface gemmOp,
+                             uint32_t instrNonKDim);
+
 /// Get minimum number of CUs per arch
 int64_t getMinNumCU(StringRef arch);
 

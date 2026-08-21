@@ -247,6 +247,42 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
+int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch,
+                                        RockGemmWrapperInterface gemmOp,
+                                        uint32_t instrNonKDim) {
+  MatrixAccelKind accelKind = getMatrixAccelKind(arch, gemmOp);
+  if (accelKind == MatrixAccelKind::None)
+    return 0;
+
+  Type elemA = getElementTypeOrSelf(gemmOp.getAType());
+  Type elemB = getElementTypeOrSelf(gemmOp.getBType());
+  Type elemOut = rock::getAccType(elemA, elemB);
+  auto [isaFamily, _] = getArch(arch);
+
+  // Both selectFor()s walk their candidates widest-K first and then fall through
+  // to "the only / smallest-K intrinsic", so an input K of zero skips every
+  // candidate and lands on exactly the one we are asking for.
+  constexpr unsigned narrowest = 0;
+
+  if (accelKind == MatrixAccelKind::WMMA ||
+      accelKind == MatrixAccelKind::ScaledWMMA) {
+    // All WMMA intrinsics are 16x16, so instrNonKDim does not apply (the perf
+    // config carries 0 there).
+    auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
+                                          /*mDim=*/16, /*nDim=*/16, narrowest,
+                                          elemA, elemB, elemOut);
+    return succeeded(instr) ? instr->kDim : 0;
+  }
+
+  MLIRContext *ctx = elemA.getContext();
+  auto instr = MfmaIntrinsic::selectFor(
+      UnknownLoc::get(ctx), rock::getMfmaVersion(isaFamily), instrNonKDim,
+      instrNonKDim, narrowest, elemA, elemB,
+      /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
+      /*useTF32=*/false);
+  return succeeded(instr) ? instr->kDim : 0;
+}
+
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   // Hardware-capability check via the underlying MFMA / WMMA version tables.
   // We deliberately do NOT probe through getMatrixAccelKind here, because

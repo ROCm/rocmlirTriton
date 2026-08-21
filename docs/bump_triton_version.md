@@ -358,6 +358,7 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | Function | What to check |
 |----------|---------------|
 | `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
+| `getAccelInstrMinKDim()` | Reads the narrowest instruction K straight out of the intrinsic tables, so a new arch needs nothing here. It assumes only that `selectFor()` still falls through to the smallest-K candidate when asked for an input K of 0; check that if either `selectFor()` is restructured. |
 | `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
 | `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |
