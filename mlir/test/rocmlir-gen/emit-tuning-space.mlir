@@ -286,3 +286,28 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-POW2K \
 // RUN:       --implicit-check-not='{{kPerBlock=(36|48|72|96|144|192),}}'
 // CHECK-WMMA-POW2K: gemm:{{.*kPerBlock=(32|64|128),kpack=1,}}
+
+//===----------------------------------------------------------------------===//
+// Widened kPerBlock range for a K no pow2 tile divides
+//===----------------------------------------------------------------------===//
+
+// When no power-of-two tile divides K, every reachable config masks a K
+// remainder on each iteration, so the divisors of K in (16, 64] are offered as
+// well -- bypassing the two-segment and window rules that would otherwise keep
+// them out. K = 3483 = 387*3*3 is odd, so nothing in the non-accel {1,4,8,16}
+// divides it. 43 (= 32+8+2+1) peels into four segments and falls outside every
+// window, so only the widened range reaches it.
+// RUN: rocmlir-gen --arch gfx1101 --operation=gemm -t f32 -g 1 -m 128 -k 3483 -n 128 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-GEMM
+// CHECK-NAVI-WIDEN-GEMM: gemm:{{.*kPerBlock=43,kpack=1,}}
+
+// A convolution's K is C * fil_h * fil_w, and only a kPerBlock that is a
+// multiple of fil_h*fil_w spans whole filter windows -- which is what keeps the
+// im2col address arithmetic foldable. The widened range is restricted to those,
+// so the same K = 3483 (C=387, 3x3) offers 27 = 3*(3*3) but not the 43 that the
+// plain GEMM above does. Every tile exhaustive tuning picked from the widened
+// range on the AIROCMLIR-1182 convs was such a multiple.
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=387 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV \
+// RUN:       --implicit-check-not='kPerBlock=43,'
+// CHECK-NAVI-WIDEN-CONV: gemm:{{.*kPerBlock=27,kpack=1,}}

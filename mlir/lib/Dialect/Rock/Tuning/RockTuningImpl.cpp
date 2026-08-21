@@ -119,15 +119,41 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
          "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
-// Whether any power-of-two kPerBlock candidate tiles K without a remainder. A
-// kPerBlock of 1 always divides K but degenerates the K loop into one iteration
-// per K element, so it does not count as a usable tiling. When this is false
-// every reachable configuration masks a K remainder on each iteration, which is
-// what makes it worth widening the non-pow2 search (see
-// windowDividingKPerBlock's relaxed mode).
+// Whether any kPerBlock candidate divides K evenly. We skip kPerBlock of 1,
+// since it always divides K, but degenerates the K loop into one iteration
+// per K element, so it does not count as a usable tiling.
 static bool pow2KPerBlockDividesK(ArrayRef<uint32_t> kPerBlockList, int64_t k) {
   return llvm::any_of(kPerBlockList,
                       [&](uint32_t v) { return v > 1 && k % v == 0; });
+}
+
+// The factor a kPerBlock should be a multiple of for the GEMM's K index computation
+// to be cheap to advance. Returns 1 when K carries no such structure.
+static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
+  // Only forward convs supported for now.
+  if (gemmOp.getKernelType() != KernelType::Conv)
+    return 1;
+
+  Operation *op = gemmOp.getOperation();
+  auto convIF = dyn_cast<RockConvInterface>(op);
+  if (!convIF)
+    return 1;
+  auto layout = op->getAttrOfType<ArrayAttr>("filter_layout");
+  if (!layout)
+    return 1;
+  ArrayRef<int64_t> filterShape =
+      cast<ShapedType>(convIF.getConvFilter().getType()).getShape();
+  if (layout.size() != filterShape.size())
+    return 1;
+  int64_t size = 1;
+  for (auto [dim, nameAttr] : llvm::zip_equal(filterShape, layout)) {
+    // The spatial filter dimensions are the ones named "0", "1", ...; the
+    // others are "g", "k" and "c".
+    StringRef name = cast<StringAttr>(nameAttr).getValue();
+    if (name.size() == 1 && llvm::isDigit(name[0]))
+      size *= dim;
+  }
+  return size > 0 ? size : 1;
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -275,7 +301,8 @@ static constexpr uint32_t kRelaxedMaxKPerBlock = 64;
 
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
-                        uint32_t minBaseK, uint32_t maxK, bool relaxed) {
+                        uint32_t minBaseK, uint32_t maxK, bool relaxed,
+                        int64_t relaxedMultipleOf) {
   SmallVector<uint32_t, 8> candidates;
   assert(gemmK > 0 && "gemmK must be greater than 0");
 
@@ -295,6 +322,8 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
   uint32_t relaxedHi = std::min<uint32_t>(maxK, kRelaxedMaxKPerBlock + 1);
   for (uint32_t d = relaxedLo;
        d < relaxedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (d % relaxedMultipleOf != 0)
+      continue;
     if (gemmK % d == 0 && !llvm::is_contained(candidates, d))
       candidates.push_back(d);
   }
@@ -346,8 +375,13 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // per-path, since kList is: the accel lists bottom out at 16 (MFMA) or 32
     // (WMMA), so the gate opens for them on more shapes than for {1,4,8,16}.
     bool relaxed = !pow2KPerBlockDividesK(kList, k);
+    // A forward conv's K is C * (X * Y), and only the tiles that
+    // are a multiple of that spatial size keep the im2col address arithmetic
+    // simple, so the widened range offers just those. This is a no-op
+    // wherever K carries no such structure.
+    int64_t alignTo = kPerBlockAlignmentFactor(gemmOp);
     for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              /*maxK=*/256, relaxed)) {
+                                              /*maxK=*/256, relaxed, alignTo)) {
       if (isIntegerGemm && d % 4 != 0)
         continue;
       if (!llvm::is_contained(kList, d))
