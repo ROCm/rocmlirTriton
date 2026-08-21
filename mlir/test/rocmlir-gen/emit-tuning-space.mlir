@@ -328,13 +328,13 @@
 // RUN:       --implicit-check-not='kPerBlock=192,'
 // CHECK-WMMA-WIDEN-GEMM: gemm:{{.*kPerBlock=112,kpack=1,}}
 
-// On a convolution the two requirements combine, and for a 3x3 filter they
-// cannot both hold: a tile must be a multiple of both fil_h*fil_w and the WMMA
-// instruction's 16, hence of lcm(9,16) = 144, which is past the range's bound.
-// So the widened range admits nothing here and the space is exactly what the
-// pow2 list and rule (3)'s window give -- which is the point, since a tile that
-// cannot fill an instruction is not worth the tuning time. 144 itself is still
-// offered, by the window.
+// On a convolution the two requirements combine: a tile must be a multiple of
+// both fil_h*fil_w and the WMMA instruction's 16, so a 3x3 filter admits only
+// multiples of lcm(9,16) = 144. That is past the accel ceiling of 128, and the
+// range runs to it anyway, since stopping short would open the range and then
+// admit nothing from it. 144 is therefore the whole of the widened range here,
+// and the 108 and 126 that divide K are out because they cannot fill
+// instructions.
 // RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f16 --groupsize=1 --batchsize=1 --in_channels=336 --in_h=24 --in_w=24 --out_channels=336 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDEN-CONV \
 // RUN:       --implicit-check-not='kPerBlock=108,' \
@@ -378,3 +378,15 @@
 // RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f8E4M3FN -g 1 -m 256 -k 840 -n 256 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-FP8-OCP
 // CHECK-MFMA-WIDEN-FP8-OCP: gemm:{{.*kPerBlock=56,kpack=1,}}
+
+// Dividing K evenly is not on its own enough to call a tile good on a conv. An
+// int8 3x3 conv over C=256 has K = 2304, which 32 divides exactly, so the pow2
+// list does offer a remainder-free tile -- but 32 spans three and a half filter
+// windows, so every iteration still straddles one. The gate therefore opens on
+// the alignment as well as the division, and 144 = lcm(9,16) is offered. It
+// cannot come from rule (3) here: M is out_channels = 64, so no tile is wide
+// enough for a window that reaches 144.
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t i8 --groupsize=1 --batchsize=1 --in_channels=256 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-ALIGN-GATE \
+// RUN:       --implicit-check-not='{{kPerBlock=(96|108|126|192),}}'
+// CHECK-WMMA-ALIGN-GATE: gemm:{{.*kPerBlock=144,kpack=1,}}
