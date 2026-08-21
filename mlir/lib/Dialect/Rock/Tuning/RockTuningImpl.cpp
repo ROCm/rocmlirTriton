@@ -373,23 +373,20 @@ static int64_t minAccelInstrKDim(StringRef arch,
 // The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
 // 22500).
 //
-// The widened range is bounded differently. Unlike rule (3) it does not mention
-// min(mPerBlock,nPerBlock), so each candidate it admits attaches to every
-// enumerated tile rather than only to the ones whose window it lands in. What
-// keeps that affordable is the alignment: a conv admits only multiples of
+// +---------------------------------+
+// | WIDENING (when widenedMaxK > 0) |
+// +---------------------------------+
+// The widened range is bounded differently. Unlike rule (3) it does not use
+// min(mPerBlock,nPerBlock).
+// What keeps it affordable is the alignment: a conv admits only multiples of
 // lcm(trailing product, instruction K), usually a single value inside the
-// range, so the space grows about as much as rule (3) does:
+// range, so the space grows about as much as rule (3) does. For example:
 //
 //   i8 3x3 conv over C=256, WMMA:  372 -> 462 configs (+24%), adding 144
 //   f32 3x3 conv over C=387, FMA:  756 -> 927 configs (+23%), adding 27
 //
-// A plain GEMM has no trailing product, so only the instruction K filters and
-// several more values get through, which is why the caller keeps the widened
-// range off for those (see the TODO in computeKPerBlock):
-//
-//   f16 GEMM, K=3024, WMMA:        560 -> 854 configs (+52%), adding 48, 112
-//   f16 GEMM, K=840, MFMA:        6120 -> 10800 configs (+76%), adding
-//                                 24, 40, 56, 120
+// Note that it does not affect GEMMs or 1x1 convs since they are skipped
+// for the widening.
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK, uint32_t widenedMaxK,
