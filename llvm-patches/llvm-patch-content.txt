@@ -597,9 +597,7 @@ The attention epilogue is exactly that shape. A wide FLAT store needs a
 are adjacent with no padding, so v2 is overwritten while the store is still
 reading its source vgprs. Wave64 stores read data in lane groups, so only the
 last lane groups lose their bytes -- hence the partial, patterned corruption
-rather than a wholesale wrong result. Inserting a single s_waitcnt vmcnt(0)
-between those two instructions by hand made the test pass with everything else
-unchanged.
+rather than a wholesale wrong result.
 
 CI coverage
 -----------

@@ -161,10 +161,24 @@ module @perop_tests {
     return %0 : f32
   }
 
+  // Combiners nested in a `tt.reduce` region are added by RockToTTIR. Make sure
+  // that they can get the proper flags added.
+  // CHECK-LABEL: func.func @reduce_combiner_is_reached
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  func.func @reduce_combiner_is_reached(%arg0: tensor<64x64xf32>) -> tensor<64xf32>
+      attributes {rock.kernel} {
+    %0 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %1 = arith.addf %lhs, %rhs : f32
+      "tt.reduce.return"(%1) : (f32) -> ()
+    }) : (tensor<64x64xf32>) -> tensor<64xf32>
+    return %0 : tensor<64xf32>
+  }
+
   // A func without `rock.kernel` is left exactly as it came in, even for the two
   // ops the kernels above get the most aggressive flags on. This is what the CPU
   // reference relies on: it is still in the module when the pass runs, and it
-  // has to keep its IEEE division and its NaN-clamping maxnumf to be worth
+  // has to keep its IEEE division and its NaN-clamping maxnum  f to be worth
   // comparing the kernel against.
   // CHECK-LABEL: func.func @no_kernel_attr_is_untouched
   // CHECK: arith.divf %{{[^ ]+}}, %{{[^ ]+}} : f32

@@ -28,7 +28,7 @@
 
 // GFX1200-COUNT-8: call{{.*}}@llvm.amdgcn.wmma
 // GFX1200-NOT: call{{.*}}@llvm.amdgcn.wmma
-// GFX1200-COUNT-4: call{{.*}}@llvm.exp2
+// GFX1200-COUNT-16: call{{.*}}@llvm.exp2
 // GFX1200-NOT: call{{.*}}@llvm.exp2
 // GFX1200-COUNT-2: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX1200-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store
@@ -42,14 +42,14 @@
 
 // GFX942-COUNT-4: call{{.*}}@llvm.amdgcn.mfma
 // GFX942-NOT: call{{.*}}@llvm.amdgcn.mfma
-// GFX942-COUNT-2: call{{.*}}@llvm.exp2
+// GFX942-COUNT-8: call{{.*}}@llvm.exp2
 // GFX942-NOT: call{{.*}}@llvm.exp2
 // GFX942-COUNT-2: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX942-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store
 
 // GFX950-COUNT-2: call{{.*}}@llvm.amdgcn.mfma
 // GFX950-NOT: call{{.*}}@llvm.amdgcn.mfma
-// GFX950-COUNT-2: call{{.*}}@llvm.exp2
+// GFX950-COUNT-8: call{{.*}}@llvm.exp2
 // GFX950-NOT: call{{.*}}@llvm.exp2
 // GFX950-COUNT-2: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX950-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store

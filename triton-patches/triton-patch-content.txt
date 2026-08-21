@@ -16,6 +16,7 @@ patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
+patch-elementwise-fastmath-flags.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -348,4 +349,28 @@ patch11295.patch
 
   Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
   the pinned Triton revision includes that change.
+
+patch-elementwise-fastmath-flags.patch
+  Carries fast-math flags across the dialect boundary in the elementwise
+  lowering, which otherwise drops them. arith and math declare `fastmath` as
+  an inherent attribute, so it lives in the operation's properties and is
+  absent from the dictionary an adaptor forwards; LLVM spells the same flags
+  as `fastmathFlags`, so even an explicit copy would land inert.
+  Adds getArithFastmathFlags / getLLVMFastmathFlags /
+  propagateFastMathFlags to ElementwiseOpToLLVMBase.h (hence the new
+  MLIRArithAttrToLLVMConversion link dependency), calls
+  propagateFastMathFlags from the generic ElementwiseOpConversion, and
+  threads the translated attribute through the AMD add/sub/mul/div
+  conversions -- including the bf16 pairs routed via
+  EmitDualBF16ElementwiseOp -- and the exp expansion.
+
+  This is inert for upstream Triton, whose frontend never sets fast-math
+  flags: every helper returns a null attribute and each destination operation
+  is built exactly as before. It matters downstream because
+  `rock-allow-fast-math-flags` tags arith and math ops before they cross into
+  Triton, and losing the flags at the boundary costs real code quality -- most
+  visibly `arith.divf`, which without `arcp` lowers to the IEEE division fixup
+  sequence rather than a bare reciprocal.
+
+  Not yet proposed upstream. Keep until Triton forwards these flags itself.
 
