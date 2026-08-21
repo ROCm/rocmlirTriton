@@ -262,55 +262,6 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   return {1, 3, 4};
 }
 
-// Non-power-of-two kPerBlock heuristic. 3 ideas:
-//
-//   (1) It must divide K evenly
-//   (2) It must generate exactly two power-of-two K segments
-//   (3) kPerBlock must be within [min(mPerBlock,nPerBlock)/2,
-//                                 min(mPerBlock,nPerBlock))
-//
-// Empirically, this gives a small amount of candidates and always
-// captures the best kPerBlock candidate (i.e., we dont need to consider all
-// possible kPerBlock candidates) for the convolutions reported in
-// https://github.com/ROCm/rocmlirTriton/pull/340. We might want to retune this
-// heuristic in the future.
-//
-// Intuition behind each rule:
-//   (1) We avoid a remainder iteration and K padding/masking.
-//
-//   (2) Having more than 2 usually involves having really small segments (i.e.,
-//   8, 4, 2), which must be compiled to FMA (non-accel), so they will very
-//   likely perform worse compared to 2 segment decompositions.
-//
-//   (3) LDS used per K-iteration is kPerBlock*(mPerBlock+nPerBlock), so
-//   kPerBlock trades loop/sync overhead (small K -> many iterations) against
-//   LDS pressure/occupancy (large K -> fewer resident workgroups). The useful
-//   range is at the block's own scale: after min(mPerBlock,nPerBlock) the K
-//   tile dominates LDS and occupancy drops, so a bigger K stops helping, hence
-//   the upper bound. The lower bound min(mPerBlock,nPerBlock)/2 is just the
-//   next pow2 down: the only non-pow2 K that is worth adding are the ones
-//   between the largest pow2 gap; smaller K is already sampled by the pow2
-//   list.
-//
-// Its real strength is that it barely grows the search space. It is evaluated
-// per (mPerBlock,nPerBlock) tile and returns only the two-segment divisors of
-// K that fall in that tile's window (in the worst case, 2 values per tile).
-// A power-of-two K is valid for every tile, but a non-pow2 K attaches only
-// to the tiles whose window it lands in, so it does not increase search space
-// significantly.
-//
-// For example, for K=1728:
-//
-// Each enumerated tile gains exactly 2 candidates, and the union across all
-// tiles is {18,24,36,48,72,96,144,192}. I.e.,
-// {18,24} attach to min(mPerBlock,nPerBlock)=32
-// {36,48} attach to min(mPerBlock,nPerBlock)=64
-// {72,96} attach to min(mPerBlock,nPerBlock)=128
-// {144,192} attach to min(mPerBlock,nPerBlock)=256
-//
-// The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
-// 22500).
-
 // Bounds of the flat range relaxed mode adds on top of rule (3)'s window.
 //
 // The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
@@ -364,6 +315,54 @@ static int64_t minAccelInstrKDim(StringRef arch,
   return minKDim;
 }
 
+// Non-power-of-two kPerBlock heuristic. 3 ideas:
+//
+//   (1) It must divide K evenly
+//   (2) It must generate exactly two power-of-two K segments
+//   (3) kPerBlock must be within [min(mPerBlock,nPerBlock)/2,
+//                                 min(mPerBlock,nPerBlock))
+//
+// Empirically, this gives a small amount of candidates and always
+// captures the best kPerBlock candidate (i.e., we dont need to consider all
+// possible kPerBlock candidates) for the convolutions reported in
+// https://github.com/ROCm/rocmlirTriton/pull/340. We might want to retune this
+// heuristic in the future.
+//
+// Intuition behind each rule:
+//   (1) We avoid a remainder iteration and K padding/masking.
+//
+//   (2) Having more than 2 usually involves having really small segments (i.e.,
+//   8, 4, 2), which must be compiled to FMA (non-accel), so they will very
+//   likely perform worse compared to 2 segment decompositions.
+//
+//   (3) LDS used per K-iteration is kPerBlock*(mPerBlock+nPerBlock), so
+//   kPerBlock trades loop/sync overhead (small K -> many iterations) against
+//   LDS pressure/occupancy (large K -> fewer resident workgroups). The useful
+//   range is at the block's own scale: after min(mPerBlock,nPerBlock) the K
+//   tile dominates LDS and occupancy drops, so a bigger K stops helping, hence
+//   the upper bound. The lower bound min(mPerBlock,nPerBlock)/2 is just the
+//   next pow2 down: the only non-pow2 K that is worth adding are the ones
+//   between the largest pow2 gap; smaller K is already sampled by the pow2
+//   list.
+//
+// Its real strength is that it barely grows the search space. It is evaluated
+// per (mPerBlock,nPerBlock) tile and returns only the two-segment divisors of
+// K that fall in that tile's window (in the worst case, 2 values per tile).
+// A power-of-two K is valid for every tile, but a non-pow2 K attaches only
+// to the tiles whose window it lands in, so it does not increase search space
+// significantly.
+//
+// For example, for K=1728:
+//
+// Each enumerated tile gains exactly 2 candidates, and the union across all
+// tiles is {18,24,36,48,72,96,144,192}. I.e.,
+// {18,24} attach to min(mPerBlock,nPerBlock)=32
+// {36,48} attach to min(mPerBlock,nPerBlock)=64
+// {72,96} attach to min(mPerBlock,nPerBlock)=128
+// {144,192} attach to min(mPerBlock,nPerBlock)=256
+//
+// The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
+// 22500).
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK, uint32_t relaxedMaxK,
