@@ -162,7 +162,7 @@ class SplitKTuningKeyTest(unittest.TestCase):
     def test_rocmlir_gen_disables_split_k_when_problem_key_does(self):
         _, raw = SAMPLES[1]
         capable = GemmConfiguration.from_command_line(f"{raw} -supportsSplitK true".split(), ARCH,
-                                                    NUM_CU, NUM_CHIPLETS)
+                                                      NUM_CU, NUM_CHIPLETS)
         incapable = GemmConfiguration.from_command_line(f"{raw} -supportsSplitK false".split(),
                                                         ARCH, NUM_CU, NUM_CHIPLETS)
         attention = AttentionConfiguration.from_command_line(SAMPLES[-1][1].split(), ARCH, NUM_CU,
