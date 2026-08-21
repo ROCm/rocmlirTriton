@@ -461,11 +461,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
-  // We run this pass after lower-stores to catch redundant casts that cannot be
-  // flagged earlier due to loads/stores that sit between truncf/extf pairs.
-  if (!options.disableFastMath)
-    addWithDCE(rock::createRockAllowFastMathFlagsPass());
-
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
@@ -526,6 +521,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   rock::RockToTTIRPassOptions rockToTTIROpts;
   rockToTTIROpts.disableFastMath = options.disableFastMath;
   funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
+  // RockToTTIR synthesizes float ops of its own (the reduction combiners), so
+  // this run needs to come after RockToTTIR.
+  if (!options.disableFastMath)
+    addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());

@@ -244,6 +244,10 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
+`TritonToHsaco.cpp::setKernelAttributes()` deliberately diverges from upstream
+on **`allow_flush_denorm`**: stamp the `denormal_fpenv` enum attribute, not
+upstream's legacy `"denormal-fp-math-f32"` string (see section 8.1).
+
 ### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a
@@ -454,6 +458,7 @@ On a bump, review the upstream diff and propagate any default/semantic changes:
 | `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
 | `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
 | `knobs.amd.use_expert_scheduling`                 | (not in perfConfig -- debug-only)     | `BackendOptions::useExpertScheduling` -> `TritonToHsacoOptions::useExpertScheduling` (backend/HSACO stage, not the Triton MLIR pipeline) |
+| `HIPOptions.allow_flush_denorm`                   | (not in perfConfig)                   | `BackendOptions::allowFlushDenorm` -> `TritonToHsacoOptions::allowFlushDenorm` and `RockPrepareLLVMPassOptions::allowFlushDenorm` |
 
 `knobs.amd.use_expert_scheduling` deliberately diverges from upstream Triton's
 implementation at the final LLVM codegen step. Upstream appends
@@ -465,6 +470,21 @@ attribute `amdgpu-expert-scheduling-mode=true/false` on every defined function.
 LLVM's AMDGPU backend reads this attribute when no process command-line
 occurrence of the global option exists; do not replace it with the upstream
 global-option path during a Triton bump.
+
+`HIPOptions.allow_flush_denorm` deliberately diverges from upstream at the
+final LLVM codegen step. Upstream `compiler.py` stamps the legacy
+`"denormal-fp-math-f32"` string attribute (`"preserve-sign"` when
+`allow_flush_denorm` is true, `"ieee"` otherwise). LLVM has since moved
+denormal controls to the `denormal_fpenv` enum attribute and only
+auto-upgrades the string spelling when a module is **parsed** from IR text.
+`TritonToHsaco.cpp` builds the LLVM module in memory, so copying upstream's
+string attribute would leave it inert: f32 denormals would stay unflushed and
+the AMDGPU backend would insert denormal range guards around every
+`llvm.exp2`/`llvm.log2`. Instead, `setKernelAttributes()` stamps
+`denormal_fpenv(float: preservesign)` when `allowFlushDenorm` is true (the
+rocmlir default) and IEEE otherwise. Do not replace this with upstream's
+string attribute during a Triton bump. Regression coverage:
+`mlir/test/Dialect/Rock/triton-to-hsaco-denormal-mode.mlir`.
 
 If upstream adds a new `knobs.amd.*` switch around an existing pass we
 already replicate, decide whether it's a *tuner* knob (per-arch defaults
@@ -635,6 +655,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
+- [ ] Preserve `TritonToHsaco.cpp::setKernelAttributes()` denormal stamping via `denormal_fpenv` enum (do not copy upstream `"denormal-fp-math-f32"` string; see section 8.1)
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed

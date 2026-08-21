@@ -146,6 +146,20 @@ module @perop_tests {
     return %0 : f32
   }
 
+  // Combiners nested in a `tt.reduce` region are added by RockToTTIR. Make sure
+  // that they can get the proper flags added.
+  // CHECK-LABEL: func.func @reduce_combiner_is_reached
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  func.func @reduce_combiner_is_reached(%arg0: tensor<64x64xf32>) -> tensor<64xf32>
+      attributes {rock.kernel} {
+    %0 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %1 = arith.addf %lhs, %rhs : f32
+      "tt.reduce.return"(%1) : (f32) -> ()
+    }) : (tensor<64x64xf32>) -> tensor<64xf32>
+    return %0 : tensor<64xf32>
+  }
+
   // Sanity check that the pass leaves non-kernel funcs alone (the `rock.kernel`
   // gate is what makes the per-op tests above meaningful).
   // CHECK-LABEL: func.func @non_kernel_is_skipped
