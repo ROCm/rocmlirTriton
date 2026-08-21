@@ -121,13 +121,18 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
          "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
 }
 
-// Whether any kPerBlock candidate tiles K cleanly, i.e. divides it evenly and
-// is a multiple of `alignTo` (see kPerBlockAlignmentFactor). We skip kPerBlock
-// of 1, since it always divides K, but degenerates the K loop into one iteration
-// per K element, so it does not count as a usable tiling.
-static bool pow2KPerBlockTilesK(ArrayRef<uint32_t> kPerBlockList, int64_t k,
-                                int64_t alignTo) {
-  return llvm::any_of(kPerBlockList, [&](uint32_t v) {
+// Whether no pow2 kPerBlock candidate tiles K cleanly, which is when widening
+// the range is worth it. "Cleanly" is two requirements at once:
+//
+//   - the candidate divides K evenly, so no iteration masks a K remainder;
+//   - the candidate is a multiple of `alignTo`, so advancing K moves no inner
+//     coordinate (see kPerBlockAlignmentFactor).
+//
+// We skip kPerBlock of 1, since it always divides K, but degenerates the K loop
+// into one iteration per K element, so it does not count as a usable tiling.
+static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
+                                       int64_t k, int64_t alignTo) {
+  return llvm::none_of(kPerBlockList, [&](uint32_t v) {
     return v > 1 && k % v == 0 && v % alignTo == 0;
   });
 }
@@ -262,7 +267,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   return {1, 3, 4};
 }
 
-// Bounds of the flat range relaxed mode adds on top of rule (3)'s window.
+// Bounds of the flat range the widened range adds on top of rule (3)'s window.
 //
 // The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
 // at or below it the pow2 list {1,4,8,16} already samples K densely, and the
@@ -270,7 +275,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 // 32-wide tile. It only ever bites on the non-accel path, since the caller
 // clamps the range from below by the path's own smallest pow2 tile, which is
 // already above it on an accel path: 17 for MFMA and 32 for WMMA.
-static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
+static constexpr uint32_t kWidenedMinExclusiveKPerBlock = 16;
 
 // The high bound depends on accel / non-accel, because the resource that
 // caps kPerBlock is different for each.
@@ -280,8 +285,8 @@ static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
 //
 // - Accel path: It holds its operands through LDS, so it is not bound by
 // that ceiling, and it needs a higher one to be useful at all.
-static constexpr uint32_t kNonAccelRelaxedMaxKPerBlock = 64;
-static constexpr uint32_t kAccelRelaxedMaxKPerBlock = 128;
+static constexpr uint32_t kNonAccelWidenedMaxKPerBlock = 64;
+static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
 
 // The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
 // sizes. Ignored on WMMA, whose instructions are all 16x16.
@@ -365,8 +370,8 @@ static int64_t minAccelInstrKDim(StringRef arch,
 // 22500).
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
-                        uint32_t minBaseK, uint32_t maxK, uint32_t relaxedMaxK,
-                        int64_t relaxedMultipleOf) {
+                        uint32_t minBaseK, uint32_t maxK, uint32_t widenedMaxK,
+                        int64_t widenedMultipleOf) {
   SmallVector<uint32_t, 8> candidates;
   assert(gemmK > 0 && "gemmK must be greater than 0");
 
@@ -377,16 +382,16 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
     if (gemmK % d == 0 && llvm::popcount(d) == 2)
       candidates.push_back(d);
   }
-  if (relaxedMaxK == 0)
+  if (widenedMaxK == 0)
     return candidates;
 
-  // Relaxed mode only ever adds to the window's candidates, so that enabling it
+  // The widened range only ever adds to the window's candidates, so enabling it
   // cannot take a kPerBlock away from a shape that the default rules do serve.
-  uint32_t relaxedLo = std::max(minBaseK, kRelaxedMinExclusiveKPerBlock + 1);
-  uint32_t relaxedHi = std::min<uint32_t>(maxK, relaxedMaxK) + 1;
-  for (uint32_t d = relaxedLo;
-       d < relaxedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
-    if (d % relaxedMultipleOf != 0)
+  uint32_t widenedLo = std::max(minBaseK, kWidenedMinExclusiveKPerBlock + 1);
+  uint32_t widenedHi = std::min<uint32_t>(maxK, widenedMaxK) + 1;
+  for (uint32_t d = widenedLo;
+       d < widenedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (d % widenedMultipleOf != 0)
       continue;
     if (gemmK % d == 0 && !llvm::is_contained(candidates, d))
       candidates.push_back(d);
@@ -434,40 +439,37 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     bool isIntegerGemm = isa<IntegerType>(gemmOp.getAType()) &&
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
-    // A forward conv advances its K index without a coordinate carry only on
-    // tiles that are a multiple of its merged trailing extents, which is what
-    // keeps the address arithmetic affine and the padding mask hoistable. This
-    // is a no-op wherever K carries no such structure.
+
+    // Tiling the loop with this value will generate efficient im2col code,
+    // so we want to tune for a kPerBlock that is multiple of this value.
     int64_t alignTo = kPerBlockAlignmentFactor(gemmOp);
-    // On an accel path every peeled segment must also fill a matrix
-    // instruction, so the two requirements combine: a 3x3 conv on WMMA wants a
-    // multiple of lcm(9, 16) = 144.
+
+    // We only tune for a kPerBlock that is multiple of the K dimension of the
+    // MFMA/WMMA instruction. For example, a 3x3 conv on WMMA wants a multiple
+    // of 16. So: lcm(9, 16) = 144.
+    //
+    // Non-accel (FMA) has no such instruction, so minAccelInstrKDim returns 0
+    // and alignTo is left alone.
     if (int64_t instrKDim = minAccelInstrKDim(arch, gemmOp))
       alignTo = std::lcm(alignTo, instrKDim);
+
     // A K that the default space cannot tile cleanly has no good kPerBlock
-    // there, so widen the search for it. Both halves of "cleanly" bite: a
-    // channels-first 3x3 conv over C=256 has K = 2304, which 32 divides evenly,
-    // but 32 spans two and a half filter windows, so every iteration still
-    // straddles one. Since no power of two is a multiple of an odd trailing
-    // product, this opens for every such conv. What counts as clean is per-path,
-    // since kList is: the accel lists bottom out at 16 (MFMA) or 32 (WMMA), so
-    // the gate opens for them on more shapes than for {1,4,8,16}.
-    constexpr uint32_t maxK = 256;
-    uint32_t relaxedMaxK = 0;
-    if (!pow2KPerBlockTilesK(kList, k, alignTo))
-      // How far the widened range runs is per-path; see
-      // kNonAccelRelaxedMaxKPerBlock. It always runs at least to the smallest
-      // tile that can satisfy alignTo at all, since a lower ceiling would open
-      // the range and then admit nothing from it. maxK still caps that, so a
-      // filter too large to align inside the space at all -- 5x5 on WMMA wants
-      // a multiple of lcm(25, 16) = 400 -- costs no tuning time.
-      relaxedMaxK = std::max<uint32_t>((isMfma || isWmma)
-                                           ? kAccelRelaxedMaxKPerBlock
-                                           : kNonAccelRelaxedMaxKPerBlock,
+    // there, so widen the search for it.
+    uint32_t widenedMaxK = 0;
+
+    // If widening is needed, we add more non-pow2 kPerBlock candidates to the
+    // search space that are very likely to improve performance according to
+    // our heuristic.
+    if (needsWidenedKPerBlockRange(kList, k, alignTo)) {
+      widenedMaxK = std::max<uint32_t>((isMfma || isWmma)
+                                           ? kAccelWidenedMaxKPerBlock
+                                           : kNonAccelWidenedMaxKPerBlock,
                                        alignTo);
+    }
+
     for (uint32_t d :
-         windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK,
-                                 relaxedMaxK, alignTo)) {
+         windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
+                                 /*maxK=*/256, widenedMaxK, alignTo)) {
       if (isIntegerGemm && d % 4 != 0)
         continue;
       if (!llvm::is_contained(kList, d))
