@@ -294,21 +294,14 @@
 // When no power-of-two tile divides K, every reachable config masks a K
 // remainder on each iteration, so the divisors of K in (16, 64] are offered as
 // well -- bypassing the two-segment and window rules that would otherwise keep
-// them out. K = 3483 = 387*3*3 is odd, so nothing in the non-accel {1,4,8,16}
-// divides it. 43 (= 32+8+2+1) peels into four segments and falls outside every
-// window, so only the widened range reaches it.
-// RUN: rocmlir-gen --arch gfx1101 --operation=gemm -t f32 -g 1 -m 128 -k 3483 -n 128 --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-GEMM
-// CHECK-NAVI-WIDEN-GEMM: gemm:{{.*kPerBlock=43,kpack=1,}}
-
-// A convolution's K is a single Merge of the input's channel and filter-spatial
-// dims, and only a kPerBlock that is a multiple of the merge's trailing extents
-// advances it without a coordinate carry -- which is what keeps the address
-// arithmetic affine and the padding mask hoistable. The widened range is
-// restricted to those, so a channels-first (ngc01) K = 3483 (C=387, 3x3) has a
-// trailing product of 3*3 and offers 27 = 3*(3*3), but not the 43 that the plain
-// GEMM above does. Every tile exhaustive tuning picked from the widened range on
-// the AIROCMLIR-1182 convs was such a multiple.
+// them out. A convolution's K is a single Merge of the input's channel and
+// filter-spatial dims, and only a kPerBlock that is a multiple of the merge's
+// trailing extents advances it without a coordinate carry -- which is what keeps
+// the address arithmetic affine and the padding mask hoistable. So for a
+// channels-first (ngc01) K = 3483 (C=387, 3x3), whose trailing product is 3*3,
+// the range offers 27 = 3*(3*3) but not 43 (= 32+8+2+1). Every tile exhaustive
+// tuning picked from the widened range on the AIROCMLIR-1182 convs was such a
+// multiple.
 // RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=387 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV \
 // RUN:       --implicit-check-not='kPerBlock=43,'
@@ -326,29 +319,30 @@
 // RUN:       --implicit-check-not='{{kPerBlock=(27|43),}}'
 // CHECK-NAVI-WIDEN-CONV-NHWC: gemm:{{.*kPerBlock=9,kpack=1,}}
 
+// A plain GEMM has no such merge, so there is no alignment to narrow the range
+// and it stays shut for now, awaiting speedup numbers to weigh its growth
+// against (see the TODO in computeKPerBlock). The same K = 3483 as a GEMM
+// therefore offers neither the conv's aligned 27 nor the 43 that only the
+// unfiltered range would reach; 9 stays, being window-reachable.
+// RUN: rocmlir-gen --arch gfx1101 --operation=gemm -t f32 -g 1 -m 128 -k 3483 -n 128 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-NO-WIDEN-GEMM \
+// RUN:       --implicit-check-not='{{kPerBlock=(27|43),}}'
+// CHECK-NAVI-NO-WIDEN-GEMM: gemm:{{.*kPerBlock=9,kpack=1,}}
+
 // The widened range runs further on an accelerated path, which stages its
 // operands through LDS rather than registers and so is not held to the non-accel
 // register ceiling of 64. It has to: WMMA's pow2 tiles are only {32,64}, so a
 // bound of 64 would leave the range entirely inside the tiles it already has.
-// f16 on gfx1101 (RDNA3) drives WMMA, and neither 32 nor 64 divides K = 3024, so
-// the gate opens. 112 = 64+32+16 is a multiple of the 16-wide WMMA instruction,
-// so each segment it peels into fills one; it falls outside every window, so
-// only the widened range reaches it. 126 divides K and lands in the range too,
-// but peels into 64+32+16+8+4+2, whose last three segments would each be padded
-// up to a full instruction. 192 fills instructions but is above the bound.
-// RUN: rocmlir-gen --arch gfx1101 --operation=gemm -t f16 -g 1 -m 256 -k 3024 -n 256 --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDEN-GEMM \
-// RUN:       --implicit-check-not='kPerBlock=126,' \
-// RUN:       --implicit-check-not='kPerBlock=192,'
-// CHECK-WMMA-WIDEN-GEMM: gemm:{{.*kPerBlock=112,kpack=1,}}
-
-// On a convolution the two requirements combine: a tile must be a multiple of
-// both the merge's trailing product and the WMMA instruction's 16, so a
-// channels-first 3x3 filter admits only multiples of lcm(9,16) = 144. That is past the accel ceiling of 128, and the
-// range runs to it anyway, since stopping short would open the range and then
-// admit nothing from it. 144 is therefore the whole of the widened range here,
-// and the 108 and 126 that divide K are out because they cannot fill
-// instructions.
+// In exchange, a tile there must fill the matrix instruction, so on WMMA the two
+// requirements combine: a multiple of both the merge's trailing product and the
+// instruction's 16, which for a channels-first 3x3 filter means multiples of
+// lcm(9,16) = 144. That is past the accel bound of 128, and the range runs to it
+// anyway, since stopping short would open the range and then admit nothing from
+// it. So with f16 on gfx1101 (RDNA3), where neither 32 nor 64 divides K = 3024,
+// 144 is the whole of the widened range: 108 and 126 divide K and land in the
+// range but cannot fill instructions (126 peels into 64+32+16+8+4+2, whose last
+// three segments would each be padded up to a full instruction), and the
+// unaligned 112 is out even though it does fill them.
 // RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f16 --groupsize=1 --batchsize=1 --in_channels=336 --in_h=24 --in_w=24 --out_channels=336 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDEN-CONV \
 // RUN:       --implicit-check-not='kPerBlock=108,' \
@@ -359,19 +353,10 @@
 // MFMA is held to the same rule, but its instruction is narrower: f16 consumes
 // 8 at matrixInstrNonkdim=32, and since that knob is swept outside the tuning
 // space's K axis a tile is kept when either setting could use it. So the bar
-// here is a multiple of 8. K = 840 = 8*105 is divisible by no pow2 tile, so the
-// gate opens; 56 and 120 clear the bar and fall outside every window, while 28
-// divides K and lands in the range but would peel a 4-wide segment that no MFMA
-// can fill.
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -g 1 -m 256 -k 840 -n 256 --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-GEMM \
-// RUN:       --implicit-check-not='kPerBlock=28,'
-// CHECK-MFMA-WIDEN-GEMM: gemm:{{.*kPerBlock=56,kpack=1,}}
-
-// The trailing-product restriction combines with it just as it does on WMMA, but
-// lcm(9, 8) = 72 still fits under the bound where WMMA's 144 does not. So for a
-// 3x3 conv over C = 72 (K = 648) the widened range keeps 72 and drops 27, 54
-// and 108, which divide K and land in the range but cannot fill instructions.
+// here is 8, and lcm(9, 8) = 72 still fits under the bound where WMMA's 144 does
+// not. For a 3x3 conv over C = 72 (K = 648) the widened range therefore keeps 72
+// and drops 27, 54 and 108, which divide K and land in the range but cannot fill
+// instructions.
 // RUN: rocmlir-gen --arch gfx942 --operation=conv -t f16 --groupsize=1 --batchsize=1 --in_channels=72 --in_h=384 --in_w=384 --out_channels=72 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-CONV \
 // RUN:       --implicit-check-not='{{kPerBlock=(27|54|108),}}'
@@ -379,19 +364,23 @@
 
 // The bar is read out of Triton's own instruction tables rather than mirrored
 // here, which matters wherever they disagree with what the arch would suggest.
-// gfx942 has native fp8 MFMA whose narrowest K is 16, and no multiple of 16
-// divides K = 840, so the widened range is empty for the FNUZ spelling. Triton
-// has no intrinsic for the OCP spelling before CDNA4 though, and quietly
-// substitutes f16 (composeMfmaKeyFor in MfmaGroup.cpp), so the bar there is
-// f16's 8 and the same arch and K do offer 56 and 120.
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f8E4M3FNUZ -g 1 -m 256 -k 840 -n 256 --emit-tuning-space=full 2>&1 \
+// gfx942 has native fp8 MFMA whose narrowest K is 16, so a 3x3 conv in the FNUZ
+// spelling aligns to lcm(9,16) = 144, exactly as f16 does on WMMA. Triton has no
+// intrinsic for the OCP spelling before CDNA4 though, and quietly substitutes
+// f16 (composeMfmaKeyFor in MfmaGroup.cpp), so the bar there is f16's 8 and the
+// same arch and shape align to lcm(9,8) = 72 instead. Over C = 32 (K = 288) both
+// are divisors of K, and each spelling offers only its own: 144 is past the OCP
+// alignment's bound of 128, and 72 is not a multiple of the FNUZ one. Neither is
+// window-reachable, since M = out_channels = 64 caps every window at 64.
+// RUN: rocmlir-gen --arch gfx942 --operation=conv -t f8E4M3FNUZ --groupsize=1 --batchsize=1 --in_channels=32 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-FP8 \
-// RUN:       --implicit-check-not='{{kPerBlock=(56|120),}}'
-// CHECK-MFMA-WIDEN-FP8: gemm:{{.*kPerBlock=40,kpack=1,}}
+// RUN:       --implicit-check-not='kPerBlock=72,'
+// CHECK-MFMA-WIDEN-FP8: gemm:{{.*kPerBlock=144,}}
 
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f8E4M3FN -g 1 -m 256 -k 840 -n 256 --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-FP8-OCP
-// CHECK-MFMA-WIDEN-FP8-OCP: gemm:{{.*kPerBlock=56,kpack=1,}}
+// RUN: rocmlir-gen --arch gfx942 --operation=conv -t f8E4M3FN --groupsize=1 --batchsize=1 --in_channels=32 --in_h=20 --in_w=20 --out_channels=64 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-WIDEN-FP8-OCP \
+// RUN:       --implicit-check-not='kPerBlock=144,'
+// CHECK-MFMA-WIDEN-FP8-OCP: gemm:{{.*kPerBlock=72,}}
 
 // Dividing K evenly is not on its own enough to call a tile good on a conv. An
 // int8 3x3 conv over C=256 has K = 2304, which 32 divides exactly, so the pow2

@@ -139,12 +139,15 @@ static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
 
 // The factor a kPerBlock should be a multiple of for the GEMM's K index
 // computation to be cheap to advance. Returns 1 when K carries no such
-// structure.
+// structure, i.e. on a plain GEMM or a 1x1 conv.
 //
-// We only look for forward convolutions that are NCHW, since NHWC does not
-// need kPerBlock to be divisible in order to generate efficient im2col code, since
-// in that layout X and Y are constants inside the loop. So we only extend
-// search space for NCHW convolutions.
+// A forward conv merges the input's channel and spatial dims into gemmK, in the
+// order the input layout lists them, so only the merge's outermost dim advances
+// without carrying into the ones below it. The tile therefore has to be a
+// multiple of the product of everything below the outermost: Y*X for a
+// channels-first input (Merge(c, y, x)), X*C for a channels-last one
+// (Merge(y, x, c)). The latter is normally too large to reach, which matches
+// the fact that channels-last needs no such tile to emit efficient im2col code.
 static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
   // Only forward convs supported for now.
   if (gemmOp.getKernelType() != KernelType::Conv)
@@ -301,10 +304,11 @@ static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 // widths are both powers of two, and Triton selects the widest instruction no
 // wider than the segment, so "every segment fills an instruction" is exactly
 // "kPerBlock is a multiple of the narrowest one". Falling short is not a
-// miscompile, just waste: MFMA drops off its layout (the inputKSize % kDim check
-// in AccelerateAMDMatmul.cpp) while WMMA zero-pads up to kDim (computeKPadding
-// in DotOpToLLVM/WMMA.cpp). kPerBlock=126 peels into 64+32+16+8+4+2, so on WMMA
-// it issues ten instructions to do less work than kPerBlock=128 does in eight.
+// miscompile, just waste: MFMA drops off its layout (the inputKSize % kDim
+// check in AccelerateAMDMatmul.cpp) while WMMA zero-pads up to kDim
+// (computeKPadding in DotOpToLLVM/WMMA.cpp). kPerBlock=126 peels into
+// 64+32+16+8+4+2, so on WMMA it issues ten instructions to do less work than
+// kPerBlock=128 does in eight.
 //
 // MFMA's kDim halves as matrixInstrNonkdim goes from 16 to 32, and that knob is
 // swept outside the K axis, so take the narrowest over the whole sweep rather
@@ -368,6 +372,24 @@ static int64_t minAccelInstrKDim(StringRef arch,
 //
 // The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
 // 22500).
+//
+// The widened range is bounded differently. Unlike rule (3) it does not mention
+// min(mPerBlock,nPerBlock), so each candidate it admits attaches to every
+// enumerated tile rather than only to the ones whose window it lands in. What
+// keeps that affordable is the alignment: a conv admits only multiples of
+// lcm(trailing product, instruction K), usually a single value inside the
+// range, so the space grows about as much as rule (3) does:
+//
+//   i8 3x3 conv over C=256, WMMA:  372 -> 462 configs (+24%), adding 144
+//   f32 3x3 conv over C=387, FMA:  756 -> 927 configs (+23%), adding 27
+//
+// A plain GEMM has no trailing product, so only the instruction K filters and
+// several more values get through, which is why the caller keeps the widened
+// range off for those (see the TODO in computeKPerBlock):
+//
+//   f16 GEMM, K=3024, WMMA:        560 -> 854 configs (+52%), adding 48, 112
+//   f16 GEMM, K=840, MFMA:        6120 -> 10800 configs (+76%), adding
+//                                 24, 40, 56, 120
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
                         uint32_t minBaseK, uint32_t maxK, uint32_t widenedMaxK,

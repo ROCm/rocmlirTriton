@@ -107,13 +107,10 @@ struct TuningSpaceGemmEnv {
 
   // Builds the full tuning space and checks that every non-power-of-two
   // kPerBlock candidate obeys the `windowDividingKPerBlock` heuristic. Returns
-  // the set of kPerBlock values the space offers. Set `widened` for a K that no
-  // pow2 tile divides, where the heuristic also offers the divisors of K in a
-  // flat range, bypassing its two-segment and window rules; `widenedMax` is
-  // that range's high bound, which is the register ceiling on the non-accel
-  // path and twice WMMA's largest tile on an accelerated one.
-  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k, bool widened = false,
-                                              int64_t widenedMax = 64) {
+  // the set of kPerBlock values the space offers. Every op built here is a
+  // plain gemm, which never opens the widened range, so the window rules hold
+  // for all of them.
+  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k) {
     std::unique_ptr<TuningParamSet> space(
         createTunableParamSpace(*module, TuningParamSetKind::Full));
     std::set<int64_t> kValues;
@@ -131,10 +128,6 @@ struct TuningSpaceGemmEnv {
         continue;
       EXPECT_EQ(k % kPerBlock, 0) << "non-pow2 kPerBlock=" << kPerBlock
                                   << " must evenly divide K=" << k;
-      // The widened range adds the divisors of K in (16, widenedMax] to the
-      // window's candidates, so a candidate may satisfy either rule set.
-      if (widened && kPerBlock > 16 && kPerBlock <= widenedMax)
-        continue;
       EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(kPerBlock)), 2)
           << "non-pow2 kPerBlock=" << kPerBlock
           << " must peel into two pow2 segments";
@@ -474,66 +467,52 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisorsOnFma) {
 }
 
 // A K that no power-of-two tile divides has no remainder-free kPerBlock in the
-// default space, so the non-accel range additionally offers every divisor of K
-// in (16, 64], bypassing the two-segment and window rules.
-TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnFmaForAwkwardK) {
-  // K = 4635 = 515 * 3 * 3, from the AIROCMLIR-1182 convs. It is odd, so none
-  // of the non-accel pow2 tiles {4, 8, 16} divides it. f32 on gfx1101 (RDNA3)
-  // has no matrix-accelerator instruction, so this takes the FMA path.
+// default space, which is what the widened range exists to reach. It stays shut
+// on a plain gemm though: without a conv's merge alignment to narrow it, it
+// admits several tiles rather than one, and we have no gemm speedup numbers to
+// weigh that growth against (see the TODO in computeKPerBlock).
+TEST(PerfConfigOrderingGemmTest, TuningSpaceKeepsWidenedRangeOffOnFmaGemm) {
+  // K = 4635 = 515 * 3 * 3, from the AIROCMLIR-1182 convs but here as a plain
+  // gemm. It is odd, so none of the non-accel pow2 tiles {4, 8, 16} divides it.
+  // f32 on gfx1101 (RDNA3) has no matrix-accelerator instruction, so this takes
+  // the FMA path.
   const int64_t K = 4635;
   TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF32Type(); },
                        /*m=*/128, /*n=*/128, K, "gfx1101");
-  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K, /*widened=*/true);
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
 
-  // 45 is the candidate that motivates the relaxation: it is measurably the
-  // best kPerBlock for this conv, yet it falls outside every tile's window and
-  // peels into four segments (45 = 32 + 8 + 4 + 1), so both rules reject it.
-  EXPECT_TRUE(kValues.count(45)) << "expected widened kPerBlock=45 in space";
+  // 45 is what the widened range would add: it is measurably the best kPerBlock
+  // for the conv this K comes from, yet it falls outside every tile's window
+  // and peels into four segments (45 = 32 + 8 + 4 + 1), so both rules reject
+  // it.
+  EXPECT_FALSE(kValues.count(45))
+      << "kPerBlock=45 is reachable only through the widened range";
   // The window still contributes what it always did: 9 divides K, peels into
   // two segments and lands in the [8,16) window of a 16-wide tile.
   EXPECT_TRUE(kValues.count(9)) << "expected windowed kPerBlock=9 in space";
-  // 103 divides K too but sits above the range, where the dot operands spill.
-  EXPECT_FALSE(kValues.count(103)) << "kPerBlock=103 is above the flat range";
-  // 5 and 15 divide K but sit at or below the largest pow2 candidate, which the
-  // base list and the window already sample.
-  EXPECT_FALSE(kValues.count(5)) << "kPerBlock=5 is below the flat range";
-  EXPECT_FALSE(kValues.count(15)) << "kPerBlock=15 is below the flat range";
 }
 
-// The relaxation is not restricted to the FMA path, and its range runs further
-// there: an accelerated path stages its operands through LDS rather than
-// registers, so it is not held to the non-accel register ceiling of 64. In
-// exchange, a WMMA tile must be a multiple of the 16-wide matrix instruction, so
-// that every segment it peels into fills one.
-TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnWmmaForAwkwardK) {
+// The restriction is on the shape, not the path, so an accelerated gemm with an
+// equally awkward K keeps the default rules too.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceKeepsWidenedRangeOffOnWmmaGemm) {
   // K = 3024 = 336 * 3 * 3, from the f16 half of the same conv set. Neither of
   // WMMA's pow2 tiles {32, 64} divides it. f16 on gfx1101 (RDNA3) drives WMMA.
   const int64_t K = 3024;
   TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF16Type(); },
                        /*m=*/256, /*n=*/256, K, "gfx1101");
-  std::set<int64_t> kValues =
-      e.collectAndCheckKPerBlocks(K, /*widened=*/true, /*widenedMax=*/128);
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
 
-  // 112 = 64+32+16 divides K and sits above the non-accel ceiling of 64, which
-  // an accelerated path is not bound by. It peels into three segments and falls
-  // outside every window, so only the widened range reaches it.
-  EXPECT_TRUE(kValues.count(112)) << "expected widened kPerBlock=112 in space";
-  // 126 divides K and lands in the range too, but peels into 64+32+16+8+4+2,
-  // whose last three segments are narrower than a WMMA instruction's K.
-  EXPECT_FALSE(kValues.count(126))
-      << "kPerBlock=126 does not fill a WMMA instruction";
-  // 192 is a multiple of 16 and divides K, but sits above the range's own bound.
-  EXPECT_FALSE(kValues.count(192)) << "kPerBlock=192 is above the flat range";
-  // 27 divides K and the non-accel range would offer it, but WMMA's smallest
-  // pow2 tile of 32 clamps the range from below.
-  EXPECT_FALSE(kValues.count(27))
-      << "kPerBlock=27 is below the WMMA base kPerBlock";
+  // 112 = 64+32+16 divides K and is a multiple of the 16-wide WMMA instruction,
+  // so the widened range would take it, but it peels into three segments and
+  // falls outside every window.
+  EXPECT_FALSE(kValues.count(112))
+      << "kPerBlock=112 is reachable only through the widened range";
   // A pow2 tile from the base list is still present, remainder or not.
   EXPECT_TRUE(kValues.count(32)) << "expected base pow2 kPerBlock=32 in space";
 }
 
 // A K that a pow2 tile does divide keeps the default two-segment/window rules,
-// so the relaxation cannot grow the search space of a well-behaved shape.
+// so the widened range cannot grow the search space of a well-behaved shape.
 TEST(PerfConfigOrderingGemmTest, TuningSpaceKeepsWindowOnFmaForPow2DivisibleK) {
   // K = 432 = 48 * 3 * 3, from the same conv set. 16 divides it, so the gate
   // must not fire.
