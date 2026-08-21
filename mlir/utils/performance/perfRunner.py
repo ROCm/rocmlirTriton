@@ -556,6 +556,13 @@ class PerfConfiguration:
     def tuning_key_metadata(self) -> str:
         return f"-supportsSplitK {str(self.supports_split_k).lower()}"
 
+    def merge_rocmlir_gen_flags(self, rocmlir_gen_flags: str) -> str:
+        """Append -disable-split-k-for-tuning when the problem key says split-K is illegal."""
+        flags = rocmlir_gen_flags.split() if rocmlir_gen_flags else []
+        if not self.supports_split_k and '-disable-split-k-for-tuning' not in flags:
+            flags.append('-disable-split-k-for-tuning')
+        return ' '.join(flags)
+
     def compute_tflops(self, ns: int) -> float:
         raise NotImplementedError()
 
@@ -702,6 +709,7 @@ class ConvConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
         direction = {'fwd': '--operation conv', 'bwd': '--operation conv_bwd_data'}[self.direction]
 
         # Pick symmetric or asymmetric padding cmdline form per axis.
@@ -1262,6 +1270,7 @@ class GemmConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
         result = ' '.join([
             '-operation', 'gemm', '-t', self.datatype, '-out_datatype', self.out_dtype, '--arch',
             self.arch, '--num_cu',
@@ -1554,6 +1563,7 @@ class ConvGemmConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
         result = ' '.join([
             '-operation', 'conv_gemm', '-t', self.datatype, '--arch', self.arch,
             f'--num_cu={self.num_cu}', f'--num_chiplets={self.num_chiplets}',
@@ -1760,6 +1770,7 @@ class GemmGemmConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
         result = ' '.join([
             '-operation', 'gemm_gemm', '-t', self.datatype, '--arch', self.arch, '--num_cu',
             str(self.num_cu), '--num_chiplets',
@@ -1983,6 +1994,7 @@ class AttentionConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
         result = ' '.join([
             '-operation', 'attention', '-t', self.datatype, '--arch', self.arch, '--num_cu',
             str(self.num_cu), '--num_chiplets',

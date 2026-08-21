@@ -159,6 +159,26 @@ class SplitKTuningKeyTest(unittest.TestCase):
         self.assertEqual(tuning_db[ARCH, split_k_key], "perf_split_k")
         self.assertEqual(tuning_db[ARCH, no_split_k_key], "perf_no_split_k")
 
+    def test_rocmlir_gen_disables_split_k_when_problem_key_does(self):
+        _, raw = SAMPLES[1]
+        capable = GemmConfiguration.from_command_line(f"{raw} -supportsSplitK true".split(), ARCH,
+                                                    NUM_CU, NUM_CHIPLETS)
+        incapable = GemmConfiguration.from_command_line(f"{raw} -supportsSplitK false".split(),
+                                                        ARCH, NUM_CU, NUM_CHIPLETS)
+        attention = AttentionConfiguration.from_command_line(SAMPLES[-1][1].split(), ARCH, NUM_CU,
+                                                             NUM_CHIPLETS)
+
+        capable_cmd = capable.generate_mlir_driver_commandline('')
+        incapable_cmd = incapable.generate_mlir_driver_commandline('')
+        attention_cmd = attention.generate_mlir_driver_commandline('')
+
+        self.assertNotIn('-disable-split-k-for-tuning', capable_cmd.split())
+        self.assertIn('-disable-split-k-for-tuning', incapable_cmd.split())
+        self.assertIn('-disable-split-k-for-tuning', attention_cmd.split())
+
+        merged = incapable.merge_rocmlir_gen_flags('-disable-split-k-for-tuning')
+        self.assertEqual(merged.split().count('-disable-split-k-for-tuning'), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
