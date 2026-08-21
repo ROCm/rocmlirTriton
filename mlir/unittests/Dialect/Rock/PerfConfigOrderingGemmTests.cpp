@@ -109,8 +109,11 @@ struct TuningSpaceGemmEnv {
   // kPerBlock candidate obeys the `windowDividingKPerBlock` heuristic. Returns
   // the set of kPerBlock values the space offers. Set `relaxed` for a K that no
   // pow2 tile divides, where the heuristic also offers the divisors of K in a
-  // flat range, bypassing its two-segment and window rules.
-  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k, bool relaxed = false) {
+  // flat range, bypassing its two-segment and window rules; `relaxedMax` is that
+  // range's high bound, which is the register ceiling on the non-accel path and
+  // twice WMMA's largest tile on an accelerated one.
+  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k, bool relaxed = false,
+                                              int64_t relaxedMax = 64) {
     std::unique_ptr<TuningParamSet> space(
         createTunableParamSpace(*module, TuningParamSetKind::Full));
     std::set<int64_t> kValues;
@@ -128,9 +131,9 @@ struct TuningSpaceGemmEnv {
         continue;
       EXPECT_EQ(k % kPerBlock, 0) << "non-pow2 kPerBlock=" << kPerBlock
                                   << " must evenly divide K=" << k;
-      // Relaxed mode adds the divisors of K in (16, 64] to the window's
+      // Relaxed mode adds the divisors of K in (16, relaxedMax] to the window's
       // candidates, so a candidate may satisfy either rule set.
-      if (relaxed && kPerBlock > 16 && kPerBlock <= 64)
+      if (relaxed && kPerBlock > 16 && kPerBlock <= relaxedMax)
         continue;
       EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(kPerBlock)), 2)
           << "non-pow2 kPerBlock=" << kPerBlock
@@ -495,6 +498,32 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnFmaForAwkwardK) {
   // base list and the window already sample.
   EXPECT_FALSE(kValues.count(5)) << "kPerBlock=5 is below the flat range";
   EXPECT_FALSE(kValues.count(15)) << "kPerBlock=15 is below the flat range";
+}
+
+// The relaxation is not restricted to the FMA path, and its range runs further
+// there: an accelerated path stages its operands through LDS rather than
+// registers, so it is not held to the non-accel register ceiling of 64.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceRelaxesNonPow2KOnWmmaForAwkwardK) {
+  // K = 3024 = 336 * 3 * 3, from the f16 half of the same conv set. Neither of
+  // WMMA's pow2 tiles {32, 64} divides it. f16 on gfx1101 (RDNA3) drives WMMA.
+  const int64_t K = 3024;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF16Type(); },
+                       /*m=*/256, /*n=*/256, K, "gfx1101");
+  std::set<int64_t> kValues =
+      e.collectAndCheckKPerBlocks(K, /*relaxed=*/true, /*relaxedMax=*/128);
+
+  // 126 = 64+32+16+8+4+2 divides K and sits above the non-accel ceiling of 64,
+  // which an accelerated path is not bound by. It peels into six segments and
+  // falls outside every window, so only the widened range reaches it.
+  EXPECT_TRUE(kValues.count(126)) << "expected relaxed kPerBlock=126 in space";
+  // 189 divides K but sits above the accelerated range's own high bound.
+  EXPECT_FALSE(kValues.count(189)) << "kPerBlock=189 is above the flat range";
+  // 27 divides K and the non-accel range would offer it, but WMMA's smallest
+  // pow2 tile of 32 clamps the range from below.
+  EXPECT_FALSE(kValues.count(27))
+      << "kPerBlock=27 is below the WMMA base kPerBlock";
+  // A pow2 tile from the base list is still present, remainder or not.
+  EXPECT_TRUE(kValues.count(32)) << "expected base pow2 kPerBlock=32 in space";
 }
 
 // A K that a pow2 tile does divide keeps the default two-segment/window rules,
