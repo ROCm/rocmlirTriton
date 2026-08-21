@@ -45,6 +45,7 @@
 #include <array>
 #include <cstdint>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -298,9 +299,11 @@ static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
 // sizes. Ignored on WMMA, whose instructions are all 16x16.
 static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 
-// The narrowest K any matrix instruction reachable from this tuning space can
-// consume, failing if the op has no accel path. A kPerBlock that is not a
-// multiple of it wastes the accelerator.
+// The value a kPerBlock must be a multiple of to keep the matrix accelerator
+// fed, i.e. the narrowest K any instruction reachable from this tuning space
+// can consume. A kPerBlock that is not a multiple of it wastes the
+// accelerator. 1 on a non-accel (FMA) op, which consumes one element at a time
+// and so constrains kPerBlock not at all.
 //
 // decomposePow2 peels a non-pow2 kPerBlock into pow2 segments, and a segment
 // narrower than an instruction's K cannot fill one. Segments and instruction
@@ -316,16 +319,16 @@ static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 // MFMA's kDim halves as matrixInstrNonkdim goes from 16 to 32, and that knob is
 // swept outside the K axis, so take the narrowest over the whole sweep rather
 // than pruning a tile that one of its settings could still use.
-static FailureOr<int64_t> minAccelInstrKDim(StringRef arch,
-                                           RockGemmWrapperInterface gemmOp) {
-  FailureOr<int64_t> minKDim = failure();
+static int64_t accelInstrKAlignment(StringRef arch,
+                                    RockGemmWrapperInterface gemmOp) {
+  std::optional<int64_t> narrowest;
   for (uint32_t instrNonKDim : kMatrixInstrNonkdims) {
     FailureOr<int64_t> kDim =
         rock::getAccelInstrMinKDim(arch, gemmOp, instrNonKDim);
     if (succeeded(kDim))
-      minKDim = succeeded(minKDim) ? std::min(*minKDim, *kDim) : *kDim;
+      narrowest = narrowest ? std::min(*narrowest, *kDim) : *kDim;
   }
-  return minKDim;
+  return narrowest.value_or(1);
 }
 
 // Non-power-of-two kPerBlock heuristic. 3 ideas:
@@ -467,17 +470,13 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // so we want to tune for a kPerBlock that is multiple of this value. It is
     // 1 when there is no such requirement, i.e. on a plain GEMM or a 1x1 conv.
     int64_t trailingProduct = kPerBlockAlignmentFactor(gemmOp);
-    int64_t alignTo = trailingProduct;
 
     // We only tune for a kPerBlock that is multiple of the K dimension of the
     // MFMA/WMMA instruction. For example, a 3x3 conv on WMMA wants a multiple
-    // of 16. So: lcm(9, 16) = 144.
-    //
-    // Non-accel (FMA) has no such instruction, so minAccelInstrKDim fails and
-    // alignTo is left alone.
-    if (FailureOr<int64_t> instrKDim = minAccelInstrKDim(arch, gemmOp);
-        succeeded(instrKDim))
-      alignTo = std::lcm(alignTo, *instrKDim);
+    // of 16. So: lcm(9, 16) = 144. A non-accel (FMA) op contributes 1, leaving
+    // the conv requirement on its own.
+    int64_t alignTo =
+        std::lcm(trailingProduct, accelInstrKAlignment(arch, gemmOp));
 
     // A K that the default space cannot tile cleanly has no good kPerBlock
     // there, so widen the search for it.
