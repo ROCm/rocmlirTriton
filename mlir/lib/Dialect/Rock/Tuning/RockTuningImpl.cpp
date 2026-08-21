@@ -291,17 +291,25 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
 // The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
 // at or below it the pow2 list {1,4,8,16} already samples K densely, and the
 // window itself reaches the small two-segment divisors (9, 12) on a 16- or
-// 32-wide tile. On an accel path the caller's own minimum clamps the range
-// further, to [17,64] for MFMA and [32,64] for WMMA. Above the high bound the
-// dot operands spill -- at 64x16, kPerBlock=45 already compiles to 256 VGPRs
-// with 7 spills, against 95 and none at kPerBlock=9. No divisor outside these
-// bounds won on any conv measured.
+// 32-wide tile. It only ever bites on the non-accel path, since the caller
+// clamps the range from below by the path's own smallest pow2 tile, which is
+// already above it on an accel path: 17 for MFMA and 32 for WMMA.
 static constexpr uint32_t kRelaxedMinExclusiveKPerBlock = 16;
-static constexpr uint32_t kRelaxedMaxKPerBlock = 64;
+
+// The high bound depends on accel / non-accel, because the resource that
+// caps kPerBlock is different for each.
+//
+// - Non-accel: The dot operands live in registers, so kPerBlock affects
+// VGPR pressure directly. Higher values become inefficient very quickly.
+//
+// - Accel path: It holds its operands through LDS, so it is not bound by
+// that ceiling, and it needs a higher one to be useful at all.
+static constexpr uint32_t kNonAccelRelaxedMaxKPerBlock = 64;
+static constexpr uint32_t kAccelRelaxedMaxKPerBlock = 128;
 
 static SmallVector<uint32_t, 8>
 windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
-                        uint32_t minBaseK, uint32_t maxK, bool relaxed,
+                        uint32_t minBaseK, uint32_t maxK, uint32_t relaxedMaxK,
                         int64_t relaxedMultipleOf) {
   SmallVector<uint32_t, 8> candidates;
   assert(gemmK > 0 && "gemmK must be greater than 0");
@@ -313,13 +321,13 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
     if (gemmK % d == 0 && llvm::popcount(d) == 2)
       candidates.push_back(d);
   }
-  if (!relaxed)
+  if (relaxedMaxK == 0)
     return candidates;
 
   // Relaxed mode only ever adds to the window's candidates, so that enabling it
   // cannot take a kPerBlock away from a shape that the default rules do serve.
   uint32_t relaxedLo = std::max(minBaseK, kRelaxedMinExclusiveKPerBlock + 1);
-  uint32_t relaxedHi = std::min<uint32_t>(maxK, kRelaxedMaxKPerBlock + 1);
+  uint32_t relaxedHi = std::min<uint32_t>(maxK, relaxedMaxK) + 1;
   for (uint32_t d = relaxedLo;
        d < relaxedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
     if (d % relaxedMultipleOf != 0)
@@ -374,14 +382,21 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // the default space, so widen the search for it. What counts as such a K is
     // per-path, since kList is: the accel lists bottom out at 16 (MFMA) or 32
     // (WMMA), so the gate opens for them on more shapes than for {1,4,8,16}.
-    bool relaxed = !pow2KPerBlockDividesK(kList, k);
+    // How far the widened range runs is per-path too; see
+    // kNonAccelRelaxedMaxKPerBlock.
+    constexpr uint32_t maxK = 256;
+    uint32_t relaxedMaxK = 0;
+    if (!pow2KPerBlockDividesK(kList, k))
+      relaxedMaxK = (isMfma || isWmma) ? kAccelRelaxedMaxKPerBlock
+                                       : kNonAccelRelaxedMaxKPerBlock;
     // A forward conv's K is C * (X * Y), and only the tiles that
     // are a multiple of that spatial size keep the im2col address arithmetic
     // simple, so the widened range offers just those. This is a no-op
     // wherever K carries no such structure.
     int64_t alignTo = kPerBlockAlignmentFactor(gemmOp);
-    for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              /*maxK=*/256, relaxed, alignTo)) {
+    for (uint32_t d :
+         windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK,
+                                 relaxedMaxK, alignTo)) {
       if (isIntegerGemm && d % 4 != 0)
         continue;
       if (!llvm::is_contained(kList, d))

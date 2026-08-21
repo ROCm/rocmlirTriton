@@ -311,3 +311,26 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV \
 // RUN:       --implicit-check-not='kPerBlock=43,'
 // CHECK-NAVI-WIDEN-CONV: gemm:{{.*kPerBlock=27,kpack=1,}}
+
+// The widened range runs further on an accelerated path, which stages its
+// operands through LDS rather than registers and so is not held to the non-accel
+// register ceiling of 64. It has to: WMMA's pow2 tiles are only {32,64}, so a
+// bound of 64 would leave the range entirely inside the tiles it already has.
+// f16 on gfx1101 (RDNA3) drives WMMA, and neither 32 nor 64 divides
+// K = 3024 = 336*3*3, so the gate opens. 126 = 64+32+16+8+4+2 is a multiple of
+// fil_h*fil_w, peels into six segments and falls outside every window, so only
+// the widened range reaches it; 189 divides K and is aligned too, but sits above
+// the accelerated bound.
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f16 --groupsize=1 --batchsize=1 --in_channels=336 --in_h=24 --in_w=24 --out_channels=336 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDEN-CONV \
+// RUN:       --implicit-check-not='kPerBlock=189,' \
+// RUN:       --implicit-check-not='kPerBlock=112,'
+// CHECK-WMMA-WIDEN-CONV: gemm:{{.*kPerBlock=126,kpack=1,}}
+
+// The alignment restriction applies on the accelerated path too: 112 divides the
+// same K = 3024 and lands inside the widened range, but is not a multiple of
+// fil_h*fil_w (112 = 12*9 + 4), so the conv above must not offer it. A plain
+// GEMM of the same K carries no filter structure and does.
+// RUN: rocmlir-gen --arch gfx1101 --operation=gemm -t f16 -g 1 -m 256 -k 3024 -n 256 --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-WIDEN-GEMM
+// CHECK-WMMA-WIDEN-GEMM: gemm:{{.*kPerBlock=112,kpack=1,}}
