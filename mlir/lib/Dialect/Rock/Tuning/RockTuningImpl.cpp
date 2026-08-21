@@ -524,16 +524,16 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
     numCTAsList.push_back(n);
 
   std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      mPerBlock,         // M/block
-      nPerBlock,         // N/block
-      {1},               // kPackList
-      numWavesRange,     // numWaves
+      mPerBlock,     // M/block
+      nPerBlock,     // N/block
+      {1},           // kPackList
+      numWavesRange, // numWaves
       {std::begin(kMatrixInstrNonkdims),
        std::end(kMatrixInstrNonkdims)}, // matrixInstrNonkdim
-      {1, 2, 3},         // numStages
-      wavesPerEUList,    // wavesPerEU
-      gridGroupSizeList, // gridGroupSize
-      numCTAsList        // numCTAs
+      {1, 2, 3},                        // numStages
+      wavesPerEUList,                   // wavesPerEU
+      gridGroupSizeList,                // gridGroupSize
+      numCTAsList                       // numCTAs
   };
 
   // WMMA (RDNA) parameters

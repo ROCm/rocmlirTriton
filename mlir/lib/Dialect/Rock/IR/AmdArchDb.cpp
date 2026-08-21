@@ -253,9 +253,10 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
-    StringRef arch, Type inputTypeA, Type inputTypeB, uint32_t instrNonKDim,
-    Type scaleAType, Type scaleBType) {
+FailureOr<int64_t>
+mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                 Type inputTypeB, uint32_t instrNonKDim,
+                                 Type scaleAType, Type scaleBType) {
   MatrixAccelKind accelKind =
       getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
   if (accelKind == MatrixAccelKind::None)

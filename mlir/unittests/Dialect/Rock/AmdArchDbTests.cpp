@@ -413,8 +413,7 @@ TEST(AmdArchDbTest, AccelInstrMinKDimMfma) {
   EXPECT_EQ(minKDim("gfx908", e.f16, e.f16, 16), 16);
   EXPECT_EQ(minKDim("gfx90a", e.f16, e.f16, 32), 8);
   // A triple-prefixed arch string resolves identically.
-  EXPECT_EQ(minKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32),
-            8);
+  EXPECT_EQ(minKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32), 8);
 }
 
 // CDNA4 lists two intrinsics per (tile, type) -- a wide one and the CDNA3-era
