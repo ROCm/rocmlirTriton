@@ -45,14 +45,14 @@
 // Baseline: a small head_dim_v keeps the second GEMM untiled (nPerBlockG1 == 0),
 // so the nPerBlockG1 knob contributes only a single value.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-UNTILED
-// CHECK-ATTN-SPACE-UNTILED: {{^ *900$}}
+// CHECK-ATTN-SPACE-UNTILED: {{^ *911$}}
 //
 // Same shape but a large head_dim_v (512) sweeps the second-GEMM N tile
-// nPerBlockG1 over {0,64,128,256} (the untiled case plus 3 more),
-// growing the space 4x. This is the knob added by the second-GEMM N
-// (nPerBlockG1) head-dim tiling; varying only head_dim_v isolates its effect.
+// nPerBlockG1 over {0,64,128,256} (the untiled case plus 3 more). The
+// brute-force portion grows 4x; unioning in unique quick-tuning entries gives
+// the totals below. Varying only head_dim_v isolates the tiling knob's effect.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-TILED
-// CHECK-ATTN-SPACE-TILED: {{^ *3600$}}
+// CHECK-ATTN-SPACE-TILED: {{^ *3612$}}
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \

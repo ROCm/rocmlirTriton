@@ -761,7 +761,7 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                               /*useReductionLayout=*/kKnobDefault,
                               /*useOptimizeEpilogue=*/kKnobDefault,
                               /*useBf16x3ForF32=*/kKnobDefault);
-                          newSpace->tuningRange.push_back(
+                          newSpace->tuningRange.insert(
                               cast<RockTuningParamAttrInterface>(
                                   gemmGemmParams));
                         }
@@ -955,7 +955,7 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             failed(tuningInfo->couldBePerformant(info,
                                                                  gemmParams)))
                           continue;
-                        newSpace->tuningRange.push_back(
+                        newSpace->tuningRange.insert(
                             cast<RockTuningParamAttrInterface>(gemmParams));
                       }
                     }
@@ -981,7 +981,7 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            info.quantBlockSize, info.aScaleType, info.bScaleType)) {
-    newSpace->tuningRange.push_back(cast<RockTuningParamAttrInterface>(param));
+    newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
 }
 
@@ -993,7 +993,7 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   // config to the front of the list.
   for (GemmGemmParamsAttr params :
        PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
-    newSpace->tuningRange.push_back(cast<RockTuningParamAttrInterface>(params));
+    newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));
   }
 }
 
@@ -1008,7 +1008,9 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
         case TuningParamSetKind::Full:
         case TuningParamSetKind::Exhaustive:
           createGemmTuningRangeBF(newSpace, op, kind);
-          break;
+          // Full and exhaustive tuning must include every quick-tuning config
+          // so they cannot produce a worse search space than quick tuning.
+          [[fallthrough]];
         case TuningParamSetKind::Quick:
           createGemmTuningRangeQuick(newSpace, op);
           break;
@@ -1022,9 +1024,12 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
         case TuningParamSetKind::Full:
         case TuningParamSetKind::Exhaustive:
           createGemmGemmTuningRangeBF(newSpace, op, kind);
-          break;
+          // Full and exhaustive tuning must include every quick-tuning config
+          // so they cannot produce a worse search space than quick tuning.
+          [[fallthrough]];
         case TuningParamSetKind::Quick:
           createGemmGemmTuningRangeQuick(newSpace, op);
+          break;
         }
         return WalkResult::interrupt();
       });
