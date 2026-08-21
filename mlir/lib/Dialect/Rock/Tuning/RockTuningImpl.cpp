@@ -1739,6 +1739,10 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
     if (!func)
       return failure();
 
+    // MIGraphX calls mlirRockTuningGetKey, which routes here. Append split-K
+    // fusion legality so the same GEMM problem gets distinct tuning keys when
+    // the surrounding fusion does or does not allow split-K (this allows for
+    // MIGraphX to avoid runing into tuning DB lookup issues)
     llvm::raw_svector_ostream problemOS(out);
     problemOS << " -supportsSplitK "
               << (succeeded(rock::testFusionLegalitySplitK(func)) ? "true"
