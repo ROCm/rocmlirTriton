@@ -299,8 +299,8 @@ static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
 static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 
 // The narrowest K any matrix instruction reachable from this tuning space can
-// consume, or 0 if the op has no accel path. A kPerBlock that is not a multiple
-// of it wastes the accelerator.
+// consume, failing if the op has no accel path. A kPerBlock that is not a
+// multiple of it wastes the accelerator.
 //
 // decomposePow2 peels a non-pow2 kPerBlock into pow2 segments, and a segment
 // narrower than an instruction's K cannot fill one. Segments and instruction
@@ -316,13 +316,14 @@ static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 // MFMA's kDim halves as matrixInstrNonkdim goes from 16 to 32, and that knob is
 // swept outside the K axis, so take the narrowest over the whole sweep rather
 // than pruning a tile that one of its settings could still use.
-static int64_t minAccelInstrKDim(StringRef arch,
-                                 RockGemmWrapperInterface gemmOp) {
-  int64_t minKDim = 0;
+static FailureOr<int64_t> minAccelInstrKDim(StringRef arch,
+                                           RockGemmWrapperInterface gemmOp) {
+  FailureOr<int64_t> minKDim = failure();
   for (uint32_t instrNonKDim : kMatrixInstrNonkdims) {
-    int64_t kDim = rock::getAccelInstrMinKDim(arch, gemmOp, instrNonKDim);
-    if (kDim != 0)
-      minKDim = minKDim ? std::min(minKDim, kDim) : kDim;
+    FailureOr<int64_t> kDim =
+        rock::getAccelInstrMinKDim(arch, gemmOp, instrNonKDim);
+    if (succeeded(kDim))
+      minKDim = succeeded(minKDim) ? std::min(*minKDim, *kDim) : *kDim;
   }
   return minKDim;
 }
@@ -472,10 +473,11 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // MFMA/WMMA instruction. For example, a 3x3 conv on WMMA wants a multiple
     // of 16. So: lcm(9, 16) = 144.
     //
-    // Non-accel (FMA) has no such instruction, so minAccelInstrKDim returns 0
-    // and alignTo is left alone.
-    if (int64_t instrKDim = minAccelInstrKDim(arch, gemmOp))
-      alignTo = std::lcm(alignTo, instrKDim);
+    // Non-accel (FMA) has no such instruction, so minAccelInstrKDim fails and
+    // alignTo is left alone.
+    if (FailureOr<int64_t> instrKDim = minAccelInstrKDim(arch, gemmOp);
+        succeeded(instrKDim))
+      alignTo = std::lcm(alignTo, *instrKDim);
 
     // A K that the default space cannot tile cleanly has no good kPerBlock
     // there, so widen the search for it.

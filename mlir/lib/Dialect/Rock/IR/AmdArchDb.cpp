@@ -253,13 +253,13 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
-                                         Type inputTypeB, uint32_t instrNonKDim,
-                                         Type scaleAType, Type scaleBType) {
+FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
+    StringRef arch, Type inputTypeA, Type inputTypeB, uint32_t instrNonKDim,
+    Type scaleAType, Type scaleBType) {
   MatrixAccelKind accelKind =
       getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
   if (accelKind == MatrixAccelKind::None)
-    return 0;
+    return failure();
 
   Type elemA = getElementTypeOrSelf(inputTypeA);
   Type elemB = getElementTypeOrSelf(inputTypeB);
@@ -278,7 +278,9 @@ int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
                                           elemA, elemB, elemOut);
 
     assert(succeeded(instr) && "WMMA arch has no intrinsic for its own types");
-    return succeeded(instr) ? instr->kDim : 0;
+    if (failed(instr))
+      return failure();
+    return instr->kDim;
   }
 
   MLIRContext *ctx = elemA.getContext();
@@ -287,12 +289,13 @@ int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
       instrNonKDim, narrowest, elemA, elemB,
       /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
       /*useTF32=*/false);
-  return succeeded(instr) ? instr->kDim : 0;
+  if (failed(instr))
+    return failure();
+  return instr->kDim;
 }
 
-int64_t mlir::rock::getAccelInstrMinKDim(StringRef arch,
-                                         RockGemmWrapperInterface gemmOp,
-                                         uint32_t instrNonKDim) {
+FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
+    StringRef arch, RockGemmWrapperInterface gemmOp, uint32_t instrNonKDim) {
   return getAccelInstrMinKDim(arch, gemmOp.getAType(), gemmOp.getBType(),
                               instrNonKDim, gemmOp.getScaleAType(),
                               gemmOp.getScaleBType());
