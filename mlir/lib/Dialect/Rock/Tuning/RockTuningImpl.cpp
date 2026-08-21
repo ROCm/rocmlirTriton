@@ -361,10 +361,22 @@ static int64_t accelInstrKAlignment(StringRef arch,
 //
 // The space grows from 4500 to 5460 configs (+21%) instead of 5x (4500 ->
 // 22500).
-//
-// +---------------------------------+
-// | WIDENING (when widenedMaxK > 0) |
-// +---------------------------------+
+static SmallVector<uint32_t, 2>
+windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
+                        uint32_t minBaseK, uint32_t maxK) {
+  SmallVector<uint32_t, 2> candidates;
+  assert(gemmK > 0 && "gemmK must be greater than 0");
+
+  uint32_t minMN = std::min(mPerBlock, nPerBlock);
+  uint32_t lo = std::max(minBaseK, minMN / 2);
+  uint32_t hi = std::min<uint32_t>(maxK, minMN);
+  for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (gemmK % d == 0 && llvm::popcount(d) == 2)
+      candidates.push_back(d);
+  }
+  return candidates;
+}
+
 // The widened range is bounded differently. Unlike rule (3) it does not use
 // min(mPerBlock,nPerBlock).
 // What keeps it affordable is the alignment: a conv admits only multiples of
@@ -377,31 +389,15 @@ static int64_t accelInstrKAlignment(StringRef arch,
 // Note that it does not affect GEMMs or 1x1 convs since they are skipped
 // for the widening.
 static SmallVector<uint32_t, 8>
-windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
-                        uint32_t minBaseK, uint32_t maxK, uint32_t widenedMaxK,
-                        int64_t widenedMultipleOf) {
+alignedDividingKPerBlock(int64_t gemmK, uint32_t minBaseK, uint32_t maxK,
+                         uint32_t maxWidenedK, int64_t multipleOf) {
   SmallVector<uint32_t, 8> candidates;
   assert(gemmK > 0 && "gemmK must be greater than 0");
 
-  uint32_t minMN = std::min(mPerBlock, nPerBlock);
-  uint32_t lo = std::max(minBaseK, minMN / 2);
-  uint32_t hi = std::min<uint32_t>(maxK, minMN);
+  uint32_t lo = std::max(minBaseK, kWidenedMinExclusiveKPerBlock + 1);
+  uint32_t hi = std::min<uint32_t>(maxK, maxWidenedK) + 1;
   for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= gemmK; ++d) {
-    if (gemmK % d == 0 && llvm::popcount(d) == 2)
-      candidates.push_back(d);
-  }
-  if (widenedMaxK == 0)
-    return candidates;
-
-  // The widened range only ever adds to the window's candidates, so enabling it
-  // cannot take a kPerBlock away from a shape that the default rules do serve.
-  uint32_t widenedLo = std::max(minBaseK, kWidenedMinExclusiveKPerBlock + 1);
-  uint32_t widenedHi = std::min<uint32_t>(maxK, widenedMaxK) + 1;
-  for (uint32_t d = widenedLo;
-       d < widenedHi && static_cast<int64_t>(d) <= gemmK; ++d) {
-    if (d % widenedMultipleOf != 0)
-      continue;
-    if (gemmK % d == 0 && !llvm::is_contained(candidates, d))
+    if (d % multipleOf == 0 && gemmK % d == 0)
       candidates.push_back(d);
   }
   return candidates;
@@ -460,34 +456,40 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     int64_t alignTo =
         std::lcm(trailingProduct, accelInstrKAlignment(arch, gemmOp));
 
+    constexpr uint32_t maxK = 256;
+
+    // Answered against the pow2 kList, i.e. before either heuristic contributes
+    // to it: the question is whether the *default* space serves this K.
+    bool needsWidening =
+        trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo);
+
+    auto addCandidates = [&](ArrayRef<uint32_t> candidates) {
+      for (uint32_t d : candidates) {
+        if (isIntegerGemm && d % 4 != 0)
+          continue;
+        if (!llvm::is_contained(kList, d))
+          kList.push_back(d);
+      }
+    };
+
+    addCandidates(
+        windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK));
+
     // A K that the default space cannot tile cleanly has no good kPerBlock
-    // there, so widen the search for it.
-    uint32_t widenedMaxK = 0;
-
-    // If widening is needed, we add more non-pow2 kPerBlock candidates to the
-    // search space that are very likely to improve performance according to
-    // our heuristic.
-    //
-    // trailingProduct > 1 skips the widening on GEMMs and 1x1 convs, which has
-    // not proven yet any speedup. It is the conv part of `alignTo` on its own,
-    // since `alignTo` also carries the instruction K, which every op has.
+    // there, so widen the search for it. trailingProduct > 1 leaves out GEMMs
+    // and 1x1 convs, where widening has not proven any speedup yet; it is the
+    // conv part of `alignTo` on its own, since `alignTo` also carries the
+    // instruction K, which every op has.
     // TODO: Extend to GEMM and 1x1 convs if proven to be worthwhile.
-    if (trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
-      widenedMaxK = (isMfma || isWmma) ? kAccelWidenedMaxKPerBlock
-                                       : kNonAccelWidenedMaxKPerBlock;
-      // We will extend to alignTo if it's larger than the current widenedMaxK.
-      // Reason is that we want to widen to multiples of `alignTo`, so a smaller
-      // value than `alignTo` would yield no new candidates.
-      widenedMaxK = std::max<uint32_t>(widenedMaxK, alignTo);
-    }
-
-    for (uint32_t d :
-         windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                 /*maxK=*/256, widenedMaxK, alignTo)) {
-      if (isIntegerGemm && d % 4 != 0)
-        continue;
-      if (!llvm::is_contained(kList, d))
-        kList.push_back(d);
+    if (needsWidening) {
+      // Widen at least as far as `alignTo`: every candidate is a multiple of
+      // it, so a bound below it would admit nothing.
+      uint32_t maxWidenedK =
+          std::max<uint32_t>((isMfma || isWmma) ? kAccelWidenedMaxKPerBlock
+                                                : kNonAccelWidenedMaxKPerBlock,
+                             alignTo);
+      addCandidates(
+          alignedDividingKPerBlock(k, baseMinK, maxK, maxWidenedK, alignTo));
     }
     llvm::sort(kList);
   }
