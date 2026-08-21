@@ -64,6 +64,10 @@ enum class GemmMNDim { M, N };
 // Largest per-block K tile size we tune for.
 #define MAX_K_PER_BLOCK 512
 
+// The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
+// sizes. Ignored on WMMA, whose instructions are all 16x16.
+static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
+
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
 // round the remainder up to the next pow2. e.g. 77 = 64 + 13 -> 64 + 16 = 80.
@@ -143,12 +147,17 @@ static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
 // structure, i.e. on a plain GEMM or a 1x1 conv.
 //
 // A forward conv merges the input's channel and spatial dims into gemmK, in the
-// order the input layout lists them, so only the merge's outermost dim advances
-// without carrying into the ones below it. The tile therefore has to be a
-// multiple of the product of everything below the outermost: Y*X for a
-// channels-first input (Merge(c, y, x)), X*C for a channels-last one
-// (Merge(y, x, c)). The latter is normally too large to reach, which matches
-// the fact that channels-last needs no such tile to emit efficient im2col code.
+// order the input layout lists them, and only the merge's outermost dim
+// advances without carrying into the ones below it. Of those carries, only one
+// into a spatial dim costs anything: it moves the padded input window, leaving
+// the validity mask dependent on the K loop's induction variable. A carry into
+// the channel dim is just a uniform address step.
+//
+// So the factor exists only for a channels-first input (Merge(c, y, x)), where
+// pinning the spatial dims takes a multiple of Y*X. Any other order puts a
+// spatial dim outermost -- channels-last Merge(y, x, c), interleaved
+// Merge(y, c, x) -- and then a spatial dim moves on every step whatever the
+// tile size, so no alignment can buy anything.
 static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
   // Only forward convs supported for now.
   if (gemmOp.getKernelType() != KernelType::Conv)
@@ -164,9 +173,11 @@ static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
   // same order the merge lists them in, so the first entry is the merge's
   // outermost dim.
   SmallVector<int64_t> mergedExtents;
+  bool channelIsOutermost = false;
   for (Attribute nameAttr : inputLayout) {
     StringRef name = cast<StringAttr>(nameAttr).getValue();
     if (name == "ci") {
+      channelIsOutermost = mergedExtents.empty();
       mergedExtents.push_back(convDims.c);
       continue;
     }
@@ -180,6 +191,12 @@ static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
     }
   }
   if (mergedExtents.size() != convDims.fil.size() + 1)
+    return 1;
+
+  // The spatial dims have to be the fastest changing ones, i.e. the channel dim
+  // has to be the merge's outermost. Otherwise a spatial dim sits above another
+  // merged dim and moves as soon as that one wraps.
+  if (!channelIsOutermost)
     return 1;
 
   // Only the outermost dim advances without a carry, so the tile has to be a
@@ -292,12 +309,8 @@ static constexpr uint32_t kWidenedMinExclusiveKPerBlock = 16;
 //
 // This is where the range stops as long as the alignment fits under it; the
 // caller extends it when the alignment's smallest multiple lies past it.
-static constexpr uint32_t kNonAccelWidenedMaxKPerBlock = 64;
-static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
-
-// The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
-// sizes. Ignored on WMMA, whose instructions are all 16x16.
-static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
+static constexpr uint32_t kNonAccelWidenedRangeEnd = 64;
+static constexpr uint32_t kAccelWidenedRangeEnd = 128;
 
 // The narrowest K any matrix instruction reachable from this tuning space can
 // consume, or 1 if the op has no accel path.
@@ -386,8 +399,8 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
 //   i8 3x3 conv over C=256, WMMA:  372 -> 462 configs (+24%), adding 144
 //   f32 3x3 conv over C=387, FMA:  756 -> 927 configs (+23%), adding 27
 //
-// Note that it does not affect GEMMs or 1x1 convs since they are skipped
-// for the widening.
+// Note that it only affects convs (we skip 1x1 convs, since they are
+// essentially GEMMs).
 static SmallVector<uint32_t, 8>
 alignedDividingKPerBlock(int64_t gemmK, uint32_t minBaseK, uint32_t maxK,
                          uint32_t maxWidenedK, int64_t multipleOf) {
@@ -444,6 +457,18 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
 
+    constexpr uint32_t maxK = 256;
+
+    auto addCandidates = [&](ArrayRef<uint32_t> candidates) {
+      for (uint32_t d : candidates) {
+        // Drop tiles the integer GEMM rule would reject.
+        if (isIntegerGemm && d % kMinIntegerKSegment != 0)
+          continue;
+        if (!llvm::is_contained(kList, d))
+          kList.push_back(d);
+      }
+    };
+
     // Tiling the loop with this value will generate efficient im2col code,
     // so we want to tune for a kPerBlock that is multiple of this value. It is
     // 1 when there is no such requirement, i.e. on a plain GEMM or a 1x1 conv.
@@ -456,40 +481,27 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     int64_t alignTo =
         std::lcm(trailingProduct, accelInstrKAlignment(arch, gemmOp));
 
-    constexpr uint32_t maxK = 256;
-
-    // Answered against the pow2 kList, i.e. before either heuristic contributes
-    // to it: the question is whether the *default* space serves this K.
-    bool needsWidening =
-        trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo);
-
-    auto addCandidates = [&](ArrayRef<uint32_t> candidates) {
-      for (uint32_t d : candidates) {
-        if (isIntegerGemm && d % 4 != 0)
-          continue;
-        if (!llvm::is_contained(kList, d))
-          kList.push_back(d);
-      }
-    };
-
-    addCandidates(
-        windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK));
-
     // A K that the default space cannot tile cleanly has no good kPerBlock
     // there, so widen the search for it. trailingProduct > 1 leaves out GEMMs
     // and 1x1 convs, where widening has not proven any speedup yet; it is the
     // conv part of `alignTo` on its own, since `alignTo` also carries the
     // instruction K, which every op has.
-    if (needsWidening) {
+    //
+    // Answered against the pow2 kList, i.e. before either heuristic contributes
+    // to it: the question is whether the *default* space serves this K.
+    if (trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
       // Widen at least as far as `alignTo`: every candidate is a multiple of
       // it, so a bound below it would admit nothing.
-      uint32_t maxWidenedK =
-          std::max<uint32_t>((isMfma || isWmma) ? kAccelWidenedMaxKPerBlock
-                                                : kNonAccelWidenedMaxKPerBlock,
-                             alignTo);
+      uint32_t maxWidenedK = std::max<uint32_t>(
+          (isMfma || isWmma) ? kAccelWidenedRangeEnd : kNonAccelWidenedRangeEnd,
+          alignTo);
       addCandidates(
           alignedDividingKPerBlock(k, baseMinK, maxK, maxWidenedK, alignTo));
     }
+
+    addCandidates(
+        windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK));
+
     llvm::sort(kList);
   }
   return kList;

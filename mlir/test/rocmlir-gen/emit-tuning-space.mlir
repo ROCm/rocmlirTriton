@@ -307,17 +307,32 @@
 // RUN:       --implicit-check-not='kPerBlock=43,'
 // CHECK-NAVI-WIDEN-CONV: gemm:{{.*kPerBlock=27,kpack=1,}}
 
-// A channels-last (nhwgc) input reorders that same merge to Merge(y, x, c), so
-// the trailing product spans the channel dim: 3*387 = 1161, which no tile in the
-// space can be a multiple of, so nothing is added. That layout needs no aligned
-// tile anyway -- a K tile narrower than C leaves y/x uniform across the whole
-// tile, so the mask is already loop-invariant. 27 is the witness, since it is
-// reachable only through the widened range; 9 stays because rule (3)'s window
-// admits it independently (9 = 8+1 lands in the 16-wide tile's window).
+// A channels-last (nhwgc) input reorders that same merge to Merge(y, x, c),
+// which leaves a spatial dim outermost: y then moves on every step whatever the
+// tile size, so there is no aligned tile to look for and nothing is added. 27
+// is the witness, since it is reachable only through the widened range; 9 stays
+// because rule (3)'s window admits it independently (9 = 8+1 lands in the
+// 16-wide tile's window).
 // RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=387 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --fil_layout=gkyxc --in_layout=nhwgc --out_layout=nhwgk --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NHWC \
 // RUN:       --implicit-check-not='{{kPerBlock=(27|43),}}'
 // CHECK-NAVI-WIDEN-CONV-NHWC: gemm:{{.*kPerBlock=9,kpack=1,}}
+
+// Same for an interleaved (nghcw) input, Merge(y, c, x): a tile aligned to the
+// dims below y, C*X, pins c and x but still advances y, so it buys nothing. The
+// witness is 42 on a K = 42 (C=2, 3x7 filter): a multiple of that C*X = 14, a
+// divisor of K, and out of rule (3)'s reach, which takes two-segment tiles only
+// (42 = 32+8+2). Channels-first does widen on the same shape, where the factor
+// is Y*X = 21, so 42 and 21 = 1*(3*7) both land. kPerBlock=16 is just an anchor
+// for the negative run; nothing else this K admits survives rule (2).
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=2 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=nghcw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-NO-WIDEN-CONV-NGHCW \
+// RUN:       --implicit-check-not='{{kPerBlock=(21|42),}}'
+// CHECK-NAVI-NO-WIDEN-CONV-NGHCW: gemm:{{.*kPerBlock=16,kpack=1,}}
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=2 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=ngchw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NGCHW
+// CHECK-NAVI-WIDEN-CONV-NGCHW-DAG: gemm:{{.*kPerBlock=21,kpack=1,}}
+// CHECK-NAVI-WIDEN-CONV-NGCHW-DAG: gemm:{{.*kPerBlock=42,kpack=1,}}
 
 // A plain GEMM has no such merge, so there is no alignment to narrow the range
 // and it stays shut for now, awaiting speedup numbers to weigh its growth
