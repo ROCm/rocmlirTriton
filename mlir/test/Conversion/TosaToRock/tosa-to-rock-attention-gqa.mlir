@@ -66,7 +66,7 @@ func.func @attention_gqa_8_32(%arg0: tensor<6144xf16>, %arg1: tensor<65536xf16>,
 
 // CHECK-LABEL: func @attention_gqa_2_14
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%{{.*}} : tensor<28xi32>)
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<28xi32>)
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
 func.func @attention_gqa_2_14(%arg0: tensor<1xi32>, %arg1: tensor<9216xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>) -> (tensor<7168xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[[[0, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]]]]> : tensor<1x1x4x8xi8>}> : () -> tensor<1x1x4x8xi8>

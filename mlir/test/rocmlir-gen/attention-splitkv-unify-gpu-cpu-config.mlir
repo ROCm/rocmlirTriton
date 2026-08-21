@@ -11,11 +11,11 @@
 // CPU side: the reference split-KV partition is derived from gemm0's
 // nPerBlockG0. nPerBlockG0=32 -> valid split mask [8, 1, 5, 3, 5]. The buggy
 // nPerBlockG0=64 would instead give [4, 1, 5, 2, 5].
-// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --current_seq_len=255,18,268,69,317 -pv | rocmlir-opt | FileCheck %s --check-prefix=CPU-CONFIG
+// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --last_valid_kv_index=255,18,268,69,317 -pv | rocmlir-opt | FileCheck %s --check-prefix=CPU-CONFIG
 
 // GPU side: the config the compiler actually assigns to the kernel's gemm0
 // (params0) must have the same nPerBlock=32 that the CPU mask above assumes.
-// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --current_seq_len=255,18,268,69,317 -pv | rocmlir-opt --rock-affix-params | FileCheck %s --check-prefix=GPU-CONFIG
+// RUN: rocmlir-gen --arch gfx942 --operation attention -t f16 -g 5 -seq_len_q 1 -seq_len_k 331 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 69 -head_dim_v 208 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=True -transO=False -causal=False -return_lse=True -split_kv=8 --last_valid_kv_index=255,18,268,69,317 -pv | rocmlir-opt --rock-affix-params | FileCheck %s --check-prefix=GPU-CONFIG
 
 // CPU-CONFIG-LABEL: func.func @rock_attention_gpu
 // CPU-CONFIG: "tosa.const"() <{values = dense<{{\[+}}8{{\]+}}, {{\[+}}1{{\]+}}, {{\[+}}5{{\]+}}, {{\[+}}3{{\]+}}, {{\[+}}5{{\]+}}> : tensor<5x1x1x1xi32>}>

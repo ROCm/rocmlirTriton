@@ -2,7 +2,7 @@
 
 // CHECK-LABEL: func @mlir_attention
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%arg3 : tensor<32xi32>)
 func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
@@ -50,14 +50,14 @@ func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, 
 // -----
 
 // CHECK-LABEL: func @mlir_attention_clipped
-// CHECK-DAG: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1024> : tensor<32xi32>}> : () -> tensor<32xi32>
+// CHECK-DAG: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1023> : tensor<32xi32>}> : () -> tensor<32xi32>
 // CHECK-DAG: %[[LOWER:.*]] = "tosa.const"() <{values = dense<16> : tensor<32xi32>}> : () -> tensor<32xi32>
 // CHECK: %[[HEAD_BROADCAST:.*]] = rock.transform %arg3 {{.*}} : tensor<1x1xi32> to tensor<1x32xi32>
 // CHECK: %[[FLAT:.*]] = tensor.collapse_shape %[[HEAD_BROADCAST]]
 // CHECK: %[[MAX:.*]] = tosa.maximum %[[FLAT]], %[[LOWER]] : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
 // CHECK: %[[CLIPPED:.*]] = tosa.minimum %[[MAX]], %[[UPPER]] : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%[[CLIPPED]] : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%[[CLIPPED]] : tensor<32xi32>)
 func.func @mlir_attention_clipped(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<1x1xi32>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_1 = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [1, 96, 1, 128] : tensor<12288xf16> into tensor<1x96x1x128xf16>
@@ -79,7 +79,7 @@ func.func @mlir_attention_clipped(%arg0: tensor<12288xf16>, %arg1: tensor<419430
   %7 = tosa.mul %cst, %6, %shift : (tensor<1x1x1x1024xi32>, tensor<1x32x1x1024xi32>, tensor<1xi8>) -> tensor<1x32x1x1024xi32>
   %expanded_5 = tensor.expand_shape %arg3 [[0], [1, 2, 3]] output_shape [1, 1, 1, 1] : tensor<1x1xi32> into tensor<1x1x1x1xi32>
   %clip_min = "tosa.const"() <{values = dense<16> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
-  %clip_max = "tosa.const"() <{values = dense<1024> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
+  %clip_max = "tosa.const"() <{values = dense<1023> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %clip_broadcast_ones = "tosa.const"() <{values = dense<1> : tensor<1x32x1x1xi32>}> : () -> tensor<1x32x1x1xi32>
   // Exercise commuted clip operands; the reconstructed clip is canonicalized.
   %clamped = tosa.maximum %clip_min, %expanded_5 : (tensor<1x1x1x1xi32>, tensor<1x1x1x1xi32>) -> tensor<1x1x1x1xi32>
@@ -112,7 +112,7 @@ func.func @mlir_attention_clipped(%arg0: tensor<12288xf16>, %arg1: tensor<419430
 
 // CHECK-LABEL: func @mlir_attention_bias
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%arg3 : tensor<32xi32>)
 func.func @mlir_attention_bias(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
@@ -161,7 +161,7 @@ func.func @mlir_attention_bias(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf
 
 // CHECK-LABEL: func @mlir_attention_scale
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%arg3 : tensor<32xi32>)
 func.func @mlir_attention_scale(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
@@ -210,7 +210,7 @@ func.func @mlir_attention_scale(%arg0: tensor<12288xf16>, %arg1: tensor<4194304x
 
 // CHECK-LABEL: func @mlir_attention_scale_bias
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%arg3 : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%arg3 : tensor<32xi32>)
 func.func @mlir_attention_scale_bias(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, %arg2: tensor<4194304xf16>, %arg3: tensor<32xi32>, %arg4: tensor<32768xf16>, %arg5: tensor<32768xf16>) -> (tensor<4096xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3]] output_shape [1, 32, 1024, 128] : tensor<4194304xf16> into tensor<1x32x1024x128xf16>
   %expanded_0 = tensor.expand_shape %arg3 [[0, 1]] output_shape [1, 32] : tensor<32xi32> into tensor<1x32xi32>
@@ -261,7 +261,7 @@ func.func @mlir_attention_scale_bias(%arg0: tensor<12288xf16>, %arg1: tensor<419
 
 // CHECK-LABEL: func @mlir_causal_attention_nokvcache_wrongtype
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen = 
+// CHECK-NOT: lastValidKVIndex =
 // CHECK-NOT: causal
 func.func @mlir_causal_attention_nokvcache_wrongtype(%arg0: tensor<24576xf16>, %arg1: tensor<262144xf16>, %arg2: tensor<262144xf16>, %arg3: tensor<1xf32>) -> tensor<8192xf16> attributes {rock.arch = "gfx942:sramecc+:xnack-", rock.kernel = "mixr"} {
   %cst = arith.constant dense<[[[[0.000000e+00], [1.000000e+00]]]]> : tensor<1x1x2x1xf32>
@@ -316,7 +316,7 @@ func.func @mlir_causal_attention_nokvcache_wrongtype(%arg0: tensor<24576xf16>, %
 
 // CHECK-LABEL: func @mlir_causal_attention_nokvcache_noblockarg
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen = 
+// CHECK-NOT: lastValidKVIndex =
 // CHECK-NOT: causal
 func.func @mlir_causal_attention_nokvcache_noblockarg(%arg0: tensor<24576xf16>, %arg1: tensor<262144xf16>, %arg2: tensor<262144xf16>) -> tensor<8192xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %cst = arith.constant dense<[[[[0], [1]]]]> : tensor<1x1x2x1xi32>
@@ -372,7 +372,7 @@ func.func @mlir_causal_attention_nokvcache_noblockarg(%arg0: tensor<24576xf16>, 
 
 // CHECK-LABEL: func @mlir_causal_attention_nokvcache_wrongbroadcast
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen = 
+// CHECK-NOT: lastValidKVIndex =
 // CHECK-NOT: causal
 func.func @mlir_causal_attention_nokvcache_wrongbroadcast(%arg0: tensor<24576xf16>, %arg1: tensor<262144xf16>, %arg2: tensor<262144xf16>, %arg3: tensor<64xi32>) -> tensor<8192xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %cst = arith.constant dense<[[[[0], [1]]]]> : tensor<1x1x2x1xi32>
@@ -424,7 +424,7 @@ func.func @mlir_causal_attention_nokvcache_wrongbroadcast(%arg0: tensor<24576xf1
 
 // CHECK-LABEL: func @mlir_causal_attention_nokvcache_wrongrange
 // CHECK: rock.attention
-// CHECK-NOT: currentSeqLen = 
+// CHECK-NOT: lastValidKVIndex =
 // CHECK-NOT: causal
 func.func @mlir_causal_attention_nokvcache_wrongrange(%arg0: tensor<24576xf16>, %arg1: tensor<262144xf16>, %arg2: tensor<262144xf16>, %arg3: tensor<64xi32>) -> tensor<8192xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %cst = arith.constant dense<[[[[0], [1]]]]> : tensor<1x1x2x1xi32>
