@@ -480,7 +480,6 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // and 1x1 convs, where widening has not proven any speedup yet; it is the
     // conv part of `alignTo` on its own, since `alignTo` also carries the
     // instruction K, which every op has.
-    // TODO: Extend to GEMM and 1x1 convs if proven to be worthwhile.
     if (needsWidening) {
       // Widen at least as far as `alignTo`: every candidate is a multiple of
       // it, so a bound below it would admit nothing.

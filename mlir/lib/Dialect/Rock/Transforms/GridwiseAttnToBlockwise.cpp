@@ -452,8 +452,8 @@ struct GridwiseAttentionRewritePattern
           auto splatType = RankedTensorType::get(
               cast<ShapedType>(mIndex.getType()).getShape(),
               lastValidKVIndex.getType());
-          Value lastValidKVIndexSplat =
-              triton::SplatOp::create(rewriter, loc, splatType, lastValidKVIndex);
+          Value lastValidKVIndexSplat = triton::SplatOp::create(
+              rewriter, loc, splatType, lastValidKVIndex);
           // pointerTensor is mIndex
           isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
                                             nIndex, lastValidKVIndexSplat);
