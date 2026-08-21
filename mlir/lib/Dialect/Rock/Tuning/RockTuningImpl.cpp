@@ -14,6 +14,7 @@
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
@@ -131,33 +132,53 @@ static bool pow2KPerBlockTilesK(ArrayRef<uint32_t> kPerBlockList, int64_t k,
   });
 }
 
-// The factor a kPerBlock should be a multiple of for the GEMM's K index computation
-// to be cheap to advance. Returns 1 when K carries no such structure.
+// The factor a kPerBlock should be a multiple of for the GEMM's K index
+// computation to be cheap to advance. Returns 1 when K carries no such
+// structure.
+//
+// We only look for forward convolutions that are NCHW, since NHWC does not
+// need kPerBlock to be divisible in order to generate efficient im2col code, since
+// in that layout X and Y are constants inside the loop. So we only extend
+// search space for NCHW convolutions.
 static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
   // Only forward convs supported for now.
   if (gemmOp.getKernelType() != KernelType::Conv)
     return 1;
 
   Operation *op = gemmOp.getOperation();
-  auto convIF = dyn_cast<RockConvInterface>(op);
-  if (!convIF)
+  auto inputLayout = op->getAttrOfType<ArrayAttr>("input_layout");
+  if (!inputLayout)
     return 1;
-  auto layout = op->getAttrOfType<ArrayAttr>("filter_layout");
-  if (!layout)
-    return 1;
-  ArrayRef<int64_t> filterShape =
-      cast<ShapedType>(convIF.getConvFilter().getType()).getShape();
-  if (layout.size() != filterShape.size())
-    return 1;
-  int64_t size = 1;
-  for (auto [dim, nameAttr] : llvm::zip_equal(filterShape, layout)) {
-    // The spatial filter dimensions are the ones named "0", "1", ...; the
-    // others are "g", "k" and "c".
+
+  ConvolutionDims convDims = ConvolutionDims::fromOp(op);
+  // Walking the input layout in order collects the gemmK-merged dims in the
+  // same order the merge lists them in, so the first entry is the merge's
+  // outermost dim.
+  SmallVector<int64_t> mergedExtents;
+  for (Attribute nameAttr : inputLayout) {
     StringRef name = cast<StringAttr>(nameAttr).getValue();
-    if (name.size() == 1 && llvm::isDigit(name[0]))
-      size *= dim;
+    if (name == "ci") {
+      mergedExtents.push_back(convDims.c);
+      continue;
+    }
+    for (auto [i, filLen] : llvm::enumerate(convDims.fil)) {
+      SmallString<4> spatial;
+      (Twine(i) + "i").toVector(spatial);
+      // "hi"/"wi" are the legacy spellings of "0i"/"1i".
+      bool isLegacy = (i == 0 && name == "hi") || (i == 1 && name == "wi");
+      if (name == spatial || isLegacy)
+        mergedExtents.push_back(filLen);
+    }
   }
-  return size > 0 ? size : 1;
+  if (mergedExtents.size() != convDims.fil.size() + 1)
+    return 1;
+
+  // Only the outermost dim advances without a carry, so the tile has to be a
+  // multiple of everything below it.
+  int64_t trailing = 1;
+  for (int64_t len : llvm::drop_begin(mergedExtents))
+    trailing *= len;
+  return trailing > 0 ? trailing : 1;
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -414,9 +435,10 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     bool isIntegerGemm = isa<IntegerType>(gemmOp.getAType()) &&
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
-    // A forward conv's K is C * (X * Y), and only the tiles that are a multiple
-    // of that spatial size keep the im2col address arithmetic simple. This is a
-    // no-op wherever K carries no such structure.
+    // A forward conv advances its K index without a coordinate carry only on
+    // tiles that are a multiple of its merged trailing extents, which is what
+    // keeps the address arithmetic affine and the padding mask hoistable. This
+    // is a no-op wherever K carries no such structure.
     int64_t alignTo = kPerBlockAlignmentFactor(gemmOp);
     // On an accel path every peeled segment must also fill a matrix
     // instruction, so the two requirements combine: a 3x3 conv on WMMA wants a
@@ -424,13 +446,13 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     if (int64_t instrKDim = minAccelInstrKDim(arch, gemmOp))
       alignTo = std::lcm(alignTo, instrKDim);
     // A K that the default space cannot tile cleanly has no good kPerBlock
-    // there, so widen the search for it. Both halves of "cleanly" bite: a 3x3
-    // conv over C=256 has K = 2304, which 32 divides evenly, but 32 spans two
-    // and a half filter windows, so every iteration still straddles one. Since
-    // no power of two is a multiple of an odd X*Y, this opens for every such
-    // conv. What counts as clean is per-path, since kList is: the accel lists
-    // bottom out at 16 (MFMA) or 32 (WMMA), so the gate opens for them on more
-    // shapes than for {1,4,8,16}.
+    // there, so widen the search for it. Both halves of "cleanly" bite: a
+    // channels-first 3x3 conv over C=256 has K = 2304, which 32 divides evenly,
+    // but 32 spans two and a half filter windows, so every iteration still
+    // straddles one. Since no power of two is a multiple of an odd trailing
+    // product, this opens for every such conv. What counts as clean is per-path,
+    // since kList is: the accel lists bottom out at 16 (MFMA) or 32 (WMMA), so
+    // the gate opens for them on more shapes than for {1,4,8,16}.
     constexpr uint32_t maxK = 256;
     uint32_t relaxedMaxK = 0;
     if (!pow2KPerBlockTilesK(kList, k, alignTo))

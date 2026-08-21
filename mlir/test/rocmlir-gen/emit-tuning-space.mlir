@@ -301,16 +301,30 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-GEMM
 // CHECK-NAVI-WIDEN-GEMM: gemm:{{.*kPerBlock=43,kpack=1,}}
 
-// A convolution's K is C * fil_h * fil_w, and only a kPerBlock that is a
-// multiple of fil_h*fil_w spans whole filter windows -- which is what keeps the
-// im2col address arithmetic foldable. The widened range is restricted to those,
-// so the same K = 3483 (C=387, 3x3) offers 27 = 3*(3*3) but not the 43 that the
-// plain GEMM above does. Every tile exhaustive tuning picked from the widened
-// range on the AIROCMLIR-1182 convs was such a multiple.
+// A convolution's K is a single Merge of the input's channel and filter-spatial
+// dims, and only a kPerBlock that is a multiple of the merge's trailing extents
+// advances it without a coordinate carry -- which is what keeps the address
+// arithmetic affine and the padding mask hoistable. The widened range is
+// restricted to those, so a channels-first (ngc01) K = 3483 (C=387, 3x3) has a
+// trailing product of 3*3 and offers 27 = 3*(3*3), but not the 43 that the plain
+// GEMM above does. Every tile exhaustive tuning picked from the widened range on
+// the AIROCMLIR-1182 convs was such a multiple.
 // RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=387 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV \
 // RUN:       --implicit-check-not='kPerBlock=43,'
 // CHECK-NAVI-WIDEN-CONV: gemm:{{.*kPerBlock=27,kpack=1,}}
+
+// A channels-last (nhwgc) input reorders that same merge to Merge(y, x, c), so
+// the trailing product spans the channel dim: 3*387 = 1161, which no tile in the
+// space can be a multiple of, so nothing is added. That layout needs no aligned
+// tile anyway -- a K tile narrower than C leaves y/x uniform across the whole
+// tile, so the mask is already loop-invariant. 27 is the witness, since it is
+// reachable only through the widened range; 9 stays because rule (3)'s window
+// admits it independently (9 = 8+1 lands in the 16-wide tile's window).
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=387 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=3 --padding_h=1 --padding_w=1 --fil_layout=gkyxc --in_layout=nhwgc --out_layout=nhwgk --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NHWC \
+// RUN:       --implicit-check-not='{{kPerBlock=(27|43),}}'
+// CHECK-NAVI-WIDEN-CONV-NHWC: gemm:{{.*kPerBlock=9,kpack=1,}}
 
 // The widened range runs further on an accelerated path, which stages its
 // operands through LDS rather than registers and so is not held to the non-accel
@@ -329,8 +343,8 @@
 // CHECK-WMMA-WIDEN-GEMM: gemm:{{.*kPerBlock=112,kpack=1,}}
 
 // On a convolution the two requirements combine: a tile must be a multiple of
-// both fil_h*fil_w and the WMMA instruction's 16, so a 3x3 filter admits only
-// multiples of lcm(9,16) = 144. That is past the accel ceiling of 128, and the
+// both the merge's trailing product and the WMMA instruction's 16, so a
+// channels-first 3x3 filter admits only multiples of lcm(9,16) = 144. That is past the accel ceiling of 128, and the
 // range runs to it anyway, since stopping short would open the range and then
 // admit nothing from it. 144 is therefore the whole of the widened range here,
 // and the 108 and 126 that divide K are out because they cannot fill
@@ -354,7 +368,7 @@
 // RUN:       --implicit-check-not='kPerBlock=28,'
 // CHECK-MFMA-WIDEN-GEMM: gemm:{{.*kPerBlock=56,kpack=1,}}
 
-// The filter-window restriction combines with it just as it does on WMMA, but
+// The trailing-product restriction combines with it just as it does on WMMA, but
 // lcm(9, 8) = 72 still fits under the bound where WMMA's 144 does not. So for a
 // 3x3 conv over C = 72 (K = 648) the widened range keeps 72 and drops 27, 54
 // and 108, which divide K and land in the range but cannot fill instructions.
