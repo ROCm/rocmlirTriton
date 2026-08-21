@@ -1,6 +1,6 @@
 // RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand_min_int 0 -rand_max_int 1024 -rand_type_int_for_inputs=3 -rand 1 -rand_type float -fut mlir_attention  --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
-// Exercise an out-of-contract current sequence length twice the 1024-row K/V
-// cache size. The KV-cache N-loop must clamp reads to the static allocation.
+// Exercise an out-of-contract last-valid K/V index twice the 1024-row K/V cache
+// size. The KV-cache N-loop must clamp reads to the static allocation.
 // RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand_min_int 2048 -rand_max_int 2048 -rand_type_int_for_inputs=3 -rand 1 -rand_type float -fut mlir_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 module {

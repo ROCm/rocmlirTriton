@@ -1,4 +1,4 @@
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -current_seq_len=33 -return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -last_valid_kv_index=33 -return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1024 -seq_len_k 1024 -head_dim_qk 32 -head_dim_v 32 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}
 
@@ -6,21 +6,21 @@
 // CHECK-SAME: (%[[queriesRaw:.*0]]: tensor<131072xf32>,
 // CHECK-SAME: %[[keysRaw:.*1]]: tensor<65536xf32>,
 // CHECK-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
-// CHECK-SAME: %[[currentSeqLenRaw:.*3]]: tensor<1xi32>,
+// CHECK-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK-SAME: %[[lseRaw:.*4]]: tensor<4096xf32>,
 // CHECK-SAME: %[[outputRaw:.*5]]: tensor<131072xf32>)
 // CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
 // CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
-// CHECK-NEXT: %[[currentSeqLen:.*]] = rock.transform %[[currentSeqLenRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
-// CHECK-NEXT: %[[currentSeqLenAddDim:.*]] = rock.transform %[[currentSeqLen]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
-// CHECK-NEXT: %[[currentSeqLenBroadcast:.*]] = rock.transform %[[currentSeqLenAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
-// CHECK-NEXT: %[[currentSeqLenMerge:.*]] = rock.transform %[[currentSeqLenBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
+// CHECK-NEXT: %[[lastValidKVIndex:.*]] = rock.transform %[[lastValidKVIndexRaw]] {{.*}} : tensor<1xi32> to tensor<1xi32>
+// CHECK-NEXT: %[[lastValidKVIndexAddDim:.*]] = rock.transform %[[lastValidKVIndex]] {{.*}} : tensor<1xi32> to tensor<1x1xi32>
+// CHECK-NEXT: %[[lastValidKVIndexBroadcast:.*]] = rock.transform %[[lastValidKVIndexAddDim]] {{.*}} : tensor<1x1xi32> to tensor<1x4xi32>
+// CHECK-NEXT: %[[lastValidKVIndexMerge:.*]] = rock.transform %[[lastValidKVIndexBroadcast]] {{.*}} : tensor<1x4xi32> to tensor<4xi32>
 
 // CHECK-NEXT: rock.attention
 // CHECK-NEXT: qk = %[[queries]] * %[[keys]]
-// CHECK-NEXT: currentSeqLen = (%[[currentSeqLenMerge]] : tensor<4xi32>)
+// CHECK-NEXT: lastValidKVIndex = (%[[lastValidKVIndexMerge]] : tensor<4xi32>)
 // CHECK: softmax(qk) * %[[values]]
 // CHECK-NEXT: numHeadsKV = 2 : i32, numHeadsQ = 4 : i32
 // CHECK: %[[flatOutput:.*]] = rock.transform %{{.*}} {{.*}}
@@ -39,16 +39,16 @@
 // CHECK: %[[qkTensorOrig:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor:.*]], %{{.*}}, %{{.*}} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[squareShape:tensor<.*>]]
 
 // CHECK-DAG: %[[qkTensorCast:.*]] = tosa.cast %[[qkTensorOrig]] : (tensor<4x1024x1024xf32>) -> tensor<4x1024x1024xf32>
-// CHECK-DAG: %[[currSeqLenTensorDumbReshaped:.*]] = tosa.reshape %[[currSeqLenTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
-// CHECK-DAG: %[[currSeqLenTensorReshaped:.*]] = tosa.reshape %[[currSeqLenTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
+// CHECK-DAG: %[[lastValidKVIndexTensorDumbReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensor:.*]], %{{.*}} : (tensor<1xi32>, !tosa.shape<1>) -> tensor<1xi32>
+// CHECK-DAG: %[[lastValidKVIndexTensorReshaped:.*]] = tosa.reshape %[[lastValidKVIndexTensorDumbReshaped]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
 // CHECK-DAG: %[[qkTensorReshaped:.*]] = tosa.reshape %[[qkTensorCast]], %{{.*}} : (tensor<4x1024x1024xf32>, !tosa.shape<4>) -> tensor<1x4x1024x1024xf32>
 // CHECK-DAG: %[[range:.*]] = "tosa.const"() <{values = {{.*}} : tensor<1024xi32>}> : () -> tensor<1024xi32>
 // CHECK-DAG: %[[rangeReshaped:.*]] = tosa.reshape %[[range]], %{{.*}} : (tensor<1024xi32>, !tosa.shape<4>) -> tensor<1x1x1x1024xi32>
 // CHECK-DAG: %[[one:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
 // CHECK-DAG: %[[rangeBroadcast:.*]] = tosa.mul %[[rangeReshaped]], %[[one]], %{{.*}} : (tensor<1x1x1x1024xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
 // CHECK-DAG: %[[one2:.*]] = "tosa.const"() <{values = dense<1> : tensor<1x4x1024x1024xi32>}> : () -> tensor<1x4x1024x1024xi32>
-// CHECK-DAG: %[[currSeqLenTensorBroadcast:.*]] = tosa.mul %[[currSeqLenTensorReshaped]], %[[one2]], %{{.*}}: (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
-// CHECK-DAG: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[currSeqLenTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
+// CHECK-DAG: %[[lastValidKVIndexTensorBroadcast:.*]] = tosa.mul %[[lastValidKVIndexTensorReshaped]], %[[one2]], %{{.*}}: (tensor<1x1x1x1xi32>, tensor<1x4x1024x1024xi32>, tensor<1xi8>) -> tensor<1x4x1024x1024xi32>
+// CHECK-DAG: %[[mask:.*]] = tosa.greater %[[rangeBroadcast]], %[[lastValidKVIndexTensorBroadcast]] : (tensor<1x4x1024x1024xi32>, tensor<1x4x1024x1024xi32>) -> tensor<1x4x1024x1024xi1>
 // CHECK-DAG: %[[negInf:.*]] = "tosa.const"() <{values = dense<0xFF800000> : tensor<1x4x1024x1024xf32>}> : () -> tensor<1x4x1024x1024xf32>
 // CHECK-DAG: %[[qkTensorBeforeReshape:.*]] = tosa.select %[[mask]], %[[negInf]], %[[qkTensorReshaped]] : (tensor<1x4x1024x1024xi1>, tensor<1x4x1024x1024xf32>, tensor<1x4x1024x1024xf32>) -> tensor<1x4x1024x1024xf32>
 // CHECK-DAG: %[[qkTensor:.*]] = tosa.reshape %[[qkTensorBeforeReshape]], %{{.*}} : (tensor<1x4x1024x1024xf32>, !tosa.shape<3>) -> tensor<4x1024x1024xf32>
