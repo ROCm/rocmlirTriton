@@ -377,31 +377,43 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
             MatrixAccelKind::WMMA);
 }
 
-// Tests for getAccelInstrMinKDim 
+// Tests for getAccelInstrMinKDim
+
+// Unwraps the query so the expected K extents below stay readable. Only for
+// cases that must succeed; the failing ones are checked with failed() directly.
+static int64_t minKDim(StringRef arch, Type inputTypeA, Type inputTypeB,
+                       uint32_t instrNonKDim) {
+  FailureOr<int64_t> kDim =
+      getAccelInstrMinKDim(arch, inputTypeA, inputTypeB, instrNonKDim);
+  EXPECT_TRUE(succeeded(kDim)) << arch << " has no matrix instruction at "
+                               << instrNonKDim << "x" << instrNonKDim;
+  return succeeded(kDim) ? *kDim : 0;
+}
+
 TEST(AmdArchDbTest, AccelInstrMinKDimMfma) {
   ArchTestEnv e;
   // CDNA3 f16: mfma_f32_16x16x16f16 at a 16x16 instruction tile,
   // mfma_f32_32x32x8f16 at 32x32. The tuner sweeps matrixInstrNonkdim over
   // {16,32} and keeps the smaller of the two, so 8 is the bar a kPerBlock has
   // to clear for an f16 GEMM on gfx942.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f16, e.f16, 16), 16);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f16, e.f16, 32), 8);
+  EXPECT_EQ(minKDim("gfx942", e.f16, e.f16, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.f16, e.f16, 32), 8);
   // bf16 selects the _1k intrinsics on CDNA3, which have the same K extents.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.bf16, e.bf16, 16), 16);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.bf16, e.bf16, 32), 8);
+  EXPECT_EQ(minKDim("gfx942", e.bf16, e.bf16, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.bf16, e.bf16, 32), 8);
   // i8 consumes twice the K of f16 at both tiles (mfma_i32_16x16x32_i8 /
   // mfma_i32_32x32x16_i8).
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.i8, e.i8, 16), 32);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.i8, e.i8, 32), 16);
+  EXPECT_EQ(minKDim("gfx942", e.i8, e.i8, 16), 32);
+  EXPECT_EQ(minKDim("gfx942", e.i8, e.i8, 32), 16);
   // The f32 MFMAs are very narrow (mfma_f32_16x16x4f32 / mfma_f32_32x32x2f32),
   // so they barely constrain kPerBlock at all.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f32, e.f32, 16), 4);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f32, e.f32, 32), 2);
+  EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 16), 4);
+  EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 32), 2);
   // CDNA1 / CDNA2 carry the same f16 intrinsics as CDNA3.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx908", e.f16, e.f16, 16), 16);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx90a", e.f16, e.f16, 32), 8);
+  EXPECT_EQ(minKDim("gfx908", e.f16, e.f16, 16), 16);
+  EXPECT_EQ(minKDim("gfx90a", e.f16, e.f16, 32), 8);
   // A triple-prefixed arch string resolves identically.
-  EXPECT_EQ(getAccelInstrMinKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32),
+  EXPECT_EQ(minKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32),
             8);
 }
 
@@ -415,40 +427,40 @@ TEST(AmdArchDbTest, AccelInstrMinKDimMfma) {
 TEST(AmdArchDbTest, AccelInstrMinKDimMfmaFallsThroughToNarrowest) {
   ArchTestEnv e;
   // f16 at 16x16: {mfma_f32_16x16x32_f16 (K=32), mfma_f32_16x16x16f16 (K=16)}.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.f16, e.f16, 16), 16);
+  EXPECT_EQ(minKDim("gfx950", e.f16, e.f16, 16), 16);
   // f16 at 32x32: {mfma_f32_32x32x16_f16 (K=16), mfma_f32_32x32x8f16 (K=8)}.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.f16, e.f16, 32), 8);
+  EXPECT_EQ(minKDim("gfx950", e.f16, e.f16, 32), 8);
   // i8 at 16x16: {mfma_i32_16x16x64_i8 (K=64), mfma_i32_16x16x32_i8 (K=32)}.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.i8, e.i8, 16), 32);
+  EXPECT_EQ(minKDim("gfx950", e.i8, e.i8, 16), 32);
   // i8 at 32x32: {mfma_i32_32x32x32_i8 (K=32), mfma_i32_32x32x16_i8 (K=16)}.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.i8, e.i8, 32), 16);
+  EXPECT_EQ(minKDim("gfx950", e.i8, e.i8, 32), 16);
 }
 
 TEST(AmdArchDbTest, AccelInstrMinKDimWmma) {
   ArchTestEnv e;
   // All WMMA instructions are 16x16, so instrNonKDim makes no difference.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1100", e.f16, e.f16, 16), 16); // RDNA3
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1100", e.f16, e.f16, 32), 16); // RDNA3
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1170", e.f16, e.f16, 16), 16); // WMMA v2
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1200", e.f16, e.f16, 16), 16); // RDNA4
+  EXPECT_EQ(minKDim("gfx1100", e.f16, e.f16, 16), 16); // RDNA3
+  EXPECT_EQ(minKDim("gfx1100", e.f16, e.f16, 32), 16); // RDNA3
+  EXPECT_EQ(minKDim("gfx1170", e.f16, e.f16, 16), 16); // WMMA v2
+  EXPECT_EQ(minKDim("gfx1200", e.f16, e.f16, 16), 16); // RDNA4
   // gfx1250 doubles the f16 instruction to wmma_f32_16x16x32_f16.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1250", e.f16, e.f16, 16), 32);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1100", e.i8, e.i8, 16), 16); // iu8 16
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1250", e.i8, e.i8, 16), 64); // iu8 64
+  EXPECT_EQ(minKDim("gfx1250", e.f16, e.f16, 16), 32);
+  EXPECT_EQ(minKDim("gfx1100", e.i8, e.i8, 16), 16); // iu8 16
+  EXPECT_EQ(minKDim("gfx1250", e.i8, e.i8, 16), 64); // iu8 64
   // gfx1250 is the only arch with an f32 WMMA input path
   // (wmma_f32_16x16x4_f32).
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1250", e.f32, e.f32, 16), 4);
+  EXPECT_EQ(minKDim("gfx1250", e.f32, e.f32, 16), 4);
 }
 
 TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {
   ArchTestEnv e;
   // No matrix core at all.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx906", e.f16, e.f16, 16), 0);  // GCN5_1
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1010", e.f16, e.f16, 16), 0); // RDNA1
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx906", e.f16, e.f16, 16)));
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx1010", e.f16, e.f16, 16)));
   // A matrix core that has no instruction for these inputs: RDNA3 WMMA takes no
   // f32 operands. This is the FMA path, which the widened kPerBlock range
   // treats as having no instruction-alignment requirement.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx1100", e.f32, e.f32, 16), 0);
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx1100", e.f32, e.f32, 16)));
 }
 
 // Triton's composeMfmaKeyFor silently rewrites OCP FP8 (E4M3FN / E5M2) inputs
@@ -458,14 +470,14 @@ TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {
 TEST(AmdArchDbTest, AccelInstrMinKDimOcpFp8EmulatedAsF16OnCdna3) {
   ArchTestEnv e;
   // Native FNUZ fp8: mfma_f32_16x16x32_fp8_fp8 / mfma_f32_32x32x16_fp8_fp8.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 16), 32);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 32), 16);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 16), 32);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 32), 16);
   // Same arch, OCP spelling: emulated with f16, so it reports f16's extents.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 16), 16);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 32), 8);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 32), 8);
   // CDNA4 has native OCP fp8, so no substitution happens there.
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 16), 32);
-  EXPECT_EQ(getAccelInstrMinKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 32), 16);
+  EXPECT_EQ(minKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 16), 32);
+  EXPECT_EQ(minKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 32), 16);
 }
 
 // --- supportsTDM ---

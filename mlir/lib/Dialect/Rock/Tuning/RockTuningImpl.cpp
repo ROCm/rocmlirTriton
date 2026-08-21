@@ -466,8 +466,8 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // Tiling the loop with this value will generate efficient im2col code,
     // so we want to tune for a kPerBlock that is multiple of this value. It is
     // 1 when there is no such requirement, i.e. on a plain GEMM or a 1x1 conv.
-    int64_t convAlignTo = kPerBlockAlignmentFactor(gemmOp);
-    int64_t alignTo = convAlignTo;
+    int64_t trailingProduct = kPerBlockAlignmentFactor(gemmOp);
+    int64_t alignTo = trailingProduct;
 
     // We only tune for a kPerBlock that is multiple of the K dimension of the
     // MFMA/WMMA instruction. For example, a 3x3 conv on WMMA wants a multiple
@@ -487,10 +487,11 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // search space that are very likely to improve performance according to
     // our heuristic.
     //
-    // convAlignTo > 1 skips the widening on GEMMs and 1x1 convs, which has
-    // not proven yet any speedup.
+    // trailingProduct > 1 skips the widening on GEMMs and 1x1 convs, which has
+    // not proven yet any speedup. It is the conv part of `alignTo` on its own,
+    // since `alignTo` also carries the instruction K, which every op has.
     // TODO: Extend to GEMM and 1x1 convs if proven to be worthwhile.
-    if (convAlignTo > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
+    if (trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
       widenedMaxK = (isMfma || isWmma) ? kAccelWidenedMaxKPerBlock
                                        : kNonAccelWidenedMaxKPerBlock;
       // We will extend to alignTo if it's larger than the current widenedMaxK.
