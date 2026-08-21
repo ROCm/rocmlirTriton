@@ -241,11 +241,9 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
 /// Rewrites `store` to blockwise-reduce one tile axis before storing, when that
 /// is provably equivalent to the per-element atomics it replaces.
 ///
-/// Transform chains that affect validity are unsupported (currently nontrivial
-/// Pad and potentially invalid Embed transforms). Address invariance must also
-/// be proven by getLowerSubDimensions, which supports PassThrough, Slice,
-/// Merge, Unmerge, Broadcast, AddDim, and ConstDim. Pad and Embed are not
-/// modeled, and ambiguous merge boundaries are conservatively treated as
+/// Pad and Embed transforms are unsupported. Address invariance must be proven
+/// through PassThrough, Slice, Merge, Unmerge, Broadcast, AddDim, and ConstDim
+/// transforms. Ambiguous merge boundaries are conservatively treated as
 /// address-dependent.
 static void tryReduceStore(OpBuilder &b, BlockwiseStoreOp store) {
   StoreMethod storeMethod = store.getStoreMethod();
