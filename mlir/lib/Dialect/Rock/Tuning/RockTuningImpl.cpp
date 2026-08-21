@@ -288,6 +288,9 @@ static constexpr uint32_t kWidenedMinExclusiveKPerBlock = 16;
 //
 // - Accel path: It holds its operands through LDS, so it is not bound by
 // that ceiling, and it needs a higher one to be useful at all.
+//
+// This is where the range stops as long as the alignment fits under it; the
+// caller extends it when the alignment's smallest multiple lies past it.
 static constexpr uint32_t kNonAccelWidenedMaxKPerBlock = 64;
 static constexpr uint32_t kAccelWidenedMaxKPerBlock = 128;
 
@@ -486,10 +489,12 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     // not proven yet any speedup.
     // TODO: Extend to GEMM and 1x1 convs if proven to be worthwhile.
     if (convAlignTo > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
-      widenedMaxK = std::max<uint32_t>((isMfma || isWmma)
-                                           ? kAccelWidenedMaxKPerBlock
-                                           : kNonAccelWidenedMaxKPerBlock,
-                                       alignTo);
+      widenedMaxK = (isMfma || isWmma) ? kAccelWidenedMaxKPerBlock
+                                       : kNonAccelWidenedMaxKPerBlock;
+      // We will extend to alignTo if it's larger than the current widenedMaxK.
+      // Reason is that we want to widen to multiples of `alignTo`, so a smaller
+      // value than `alignTo` would yield no new candidates.
+      widenedMaxK = std::max<uint32_t>(widenedMaxK, alignTo);
     }
 
     for (uint32_t d :
