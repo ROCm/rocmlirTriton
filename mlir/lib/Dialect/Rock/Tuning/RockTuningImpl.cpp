@@ -518,6 +518,7 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
 // - `useOptimizeEpilogue`              (set to kKnobDefault)
+// - `useBf16x3ForF32`                        (set to kKnobDefault)
 static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                                         RockGemmGemmWrapperInterface gemmGemmOp,
                                         TuningParamSetKind kind) {
@@ -577,7 +578,8 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                               /*useBufferOps=*/kKnobDefault,
                               /*useBufferAtomics=*/kKnobDefault,
                               /*useReductionLayout=*/kKnobDefault,
-                              /*useOptimizeEpilogue=*/kKnobDefault);
+                              /*useOptimizeEpilogue=*/kKnobDefault,
+                              /*useBf16x3ForF32=*/kKnobDefault);
                           newSpace->tuningRange.push_back(
                               cast<RockTuningParamAttrInterface>(
                                   gemmGemmParams));
@@ -697,6 +699,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useBufferAtomics`                 (set to kKnobDefault)
 // - `useReductionLayout`               (set to kKnobDefault)
 // - `useOptimizeEpilogue`              (set to kKnobDefault)
+// - `useBf16x3ForF32`                        (set to kKnobDefault)
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -765,7 +768,8 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBufferOps=*/kKnobDefault,
                             /*useBufferAtomics=*/kKnobDefault,
                             /*useReductionLayout=*/kKnobDefault,
-                            /*useOptimizeEpilogue=*/kKnobDefault);
+                            /*useOptimizeEpilogue=*/kKnobDefault,
+                            /*useBf16x3ForF32=*/kKnobDefault);
                         if (kind == TuningParamSetKind::Full &&
                             failed(tuningInfo->couldBePerformant(info,
                                                                  gemmParams)))

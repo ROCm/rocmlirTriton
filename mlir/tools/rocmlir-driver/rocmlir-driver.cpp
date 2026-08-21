@@ -128,7 +128,10 @@ static cl::opt<bool> disableFastMath(
     "disable-fast-math", cl::init(false),
     cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
              "(by default the pass tags float ops with fastmath flags like "
-             "arcp/contract/nsz/afn)"));
+             "arcp/contract/nsz/afn), and keep every f32 tt.dot at IEEE "
+             "precision. Expect a perf drop larger than the relaxations "
+             "themselves are worth: the quick tuning list is tuned with the "
+             "3xBF16 dot decomposition enabled on gfx950"));
 
 namespace test {
 void registerTestDialect(DialectRegistry &);
