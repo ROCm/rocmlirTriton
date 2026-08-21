@@ -101,7 +101,9 @@
 // GPU-NEXT:remove-dead-values{{.*}},
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// GPU-NEXT:rock-to-ttir{disable-fast-math=false}),
+// GPU-NEXT:rock-to-ttir{disable-fast-math=false},
+// GPU-NEXT:rock-allow-fast-math-flags,
+// GPU-NEXT:remove-dead-values{{.*}}),
 // GPU-NEXT:rock-tensor-to-triton-ptr,
 // GPU-NEXT:tt.func(canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))

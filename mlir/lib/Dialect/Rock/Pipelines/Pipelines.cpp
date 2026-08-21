@@ -488,8 +488,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
-  // We run this pass after lower-stores to catch redundant casts that cannot be
-  // flagged earlier due to loads/stores that sit between truncf/extf pairs.
+  // Must run after lower-stores to catch redundant casts that cannot be
+  // flagged earlier due to loads/stores that sit between truncf/extf pairs,
+  // and before RockToTTIR, whose clamp fold only matches a minnumf/maxnumf
+  // pair that already carries `nnan`.
   if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
 
@@ -553,6 +555,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   rock::RockToTTIRPassOptions rockToTTIROpts;
   rockToTTIROpts.disableFastMath = options.disableFastMath;
   funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
+  // A second run, for the float ops RockToTTIR synthesizes itself (the
+  // reduction combiners), which did not exist yet at the run above. Ops that
+  // run already flagged are left alone, so the repeat costs nothing.
+  if (!options.disableFastMath)
+    addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());
