@@ -394,7 +394,7 @@ def _kill_proc(proc):
         pass
 
 
-def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
+def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None, capture_stderr=True):
     """Run a shell-style pipeline: commands[0] | commands[1] | ... | commands[-1].
 
     This is the single implementation of pipeline spawning shared across the
@@ -403,6 +403,11 @@ def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
 
     ``timeout`` is one shared budget for spawning and waiting for the complete
     pipeline, not a fresh allowance for each stage.
+
+    When ``capture_stderr`` is False the last stage's stderr is inherited from
+    the parent instead of being redirected, so it streams live to the terminal.
+    This is used by the --compile-only path so the tuning driver's progress bar
+    is visible; the returned stderr is then empty.
 
     All pipes are drained so no stage can deadlock on a full OS pipe buffer:
       * Each stage's stderr goes to its own temp file, so a chatty stage can
@@ -434,8 +439,9 @@ def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
         return remaining
 
     try:
-        for cmd in commands:
-            errf = tempfile.TemporaryFile()
+        for i, cmd in enumerate(commands):
+            is_last = i == len(commands) - 1
+            errf = None if (is_last and not capture_stderr) else tempfile.TemporaryFile()
             stderr_files.append(errf)
             proc = subprocess.Popen(
                 cmd,
@@ -472,14 +478,21 @@ def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
                 break
 
         err_idx = failing_idx if failing_idx is not None else len(stderr_files) - 1
-        stderr_files[err_idx].seek(0)
-        err = stderr_files[err_idx].read()
+        errf = stderr_files[err_idx]
+        # An inherited stderr (capture_stderr=False) was never redirected into a
+        # temp file, so there is nothing to read back for that stage.
+        if errf is None:
+            err = b""
+        else:
+            errf.seek(0)
+            err = errf.read()
         return rc, out, err
     finally:
         for proc in procs:
             _kill_proc(proc)
         for errf in stderr_files:
-            errf.close()
+            if errf is not None:
+                errf.close()
 
 
 def run_pipeline(proc_specs):
