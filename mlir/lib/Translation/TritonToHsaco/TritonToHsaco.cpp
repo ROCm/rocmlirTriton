@@ -255,6 +255,30 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
 
   kernelFn->addFnAttr("uniform-work-group-size", "true");
 
+  // Work around an AMDGPU register-allocator miscompile that corrupts SGPRs
+  // spilled into VGPR lanes.
+  //
+  // Under enough register pressure, SILowerSGPRSpills parks SGPRs in individual
+  // lanes of a VGPR (SI_SPILL_S32_TO_VGPR, i.e. v_writelane/v_readlane) and
+  // flags the holder WWM. If pressure keeps climbing, RegAllocGreedy then spills
+  // those holders to scratch -- and emits a reload of a WWM slot with no
+  // matching store, so every scalar living in that holder's lanes comes back as
+  // whatever the previous process left in scratch. Observed on gfx90a, gfx942
+  // and gfx950 in fp16 and int8 convolutions: the corrupted value was a buffer
+  // descriptor base, giving a null-pointer global load and a GPU memory fault;
+  // when it lands on a loop bound instead, the kernel hangs, and when it lands
+  // on an index it would silently compute the wrong answer.
+  //
+  // SIPreAllocateWWMRegs honors this attribute by assigning and reserving the
+  // lane holders before allocation, so the allocator can neither reuse nor spill
+  // them and the faulty path is never reached. It is self-limiting: the pass
+  // body only acts on SI_SPILL_S32_TO_VGPR, so a kernel that never spills SGPRs
+  // into lanes is unaffected.
+  //
+  // This is containment, not a fix; the allocator defect still needs repairing
+  // upstream. Drop this once that lands.
+  kernelFn->addFnAttr("amdgpu-prealloc-sgpr-spill-vgprs");
+
   if (wavesPerEU > 0) {
     std::string wavesStr =
         std::to_string(wavesPerEU) + ", " + std::to_string(wavesPerEU);
