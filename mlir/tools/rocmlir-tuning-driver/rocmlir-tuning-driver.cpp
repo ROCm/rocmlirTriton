@@ -46,6 +46,7 @@
 
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/Errc.h"
@@ -287,6 +288,20 @@ static llvm::cl::opt<unsigned> gpuRunTimeout(
         "state and advances to the next problem config."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
+static llvm::cl::opt<std::string> skipPerfConfigsFile(
+    "skip-perf-configs",
+    llvm::cl::desc(
+        "Path to a file listing perf configs to leave un-benchmarked, one per "
+        "line ('#' comments and blank lines ignored). A listed config is never "
+        "compiled or launched and is reported as N/A, so a sweep can get past "
+        "configs that are known to be miscompiled or so heavily spilled that "
+        "they can never win. Honored both when enumerating the tuning space "
+        "and when replaying a bundle with --benchmark-artifacts, so an existing "
+        "bundle does not have to be rebuilt. Deliberately not a built-in list: "
+        "the same perf config is legitimate on other problem shapes, so the "
+        "skip set belongs with the sweep, not in the driver."),
+    llvm::cl::value_desc("file"), llvm::cl::init(""));
+
 static llvm::cl::opt<std::string> compileOnlyDir(
     "compile-only",
     llvm::cl::desc(
@@ -410,6 +425,38 @@ static benchmark::DataType getDataType(Type inputType) {
     llvm::errs() << "Unknown data type: " << inputType << "\n";
     llvm_unreachable("Kernels only accept ints or floats");
   }
+}
+
+// Perf configs named by --skip-perf-configs. Populated once in main() before
+// any worker starts, then only read, so the concurrent compile threads can
+// query it without synchronization.
+static llvm::StringSet<> skipPerfConfigs;
+
+static bool isSkippedPerfConfig(StringRef perfConfig) {
+  return skipPerfConfigs.contains(perfConfig);
+}
+
+static LogicalResult loadSkipPerfConfigs(StringRef path) {
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(path);
+  if (!buffer) {
+    llvm::errs() << "error: cannot read --skip-perf-configs file '" << path
+                 << "': " << buffer.getError().message() << "\n";
+    return failure();
+  }
+
+  SmallVector<StringRef> lines;
+  (*buffer)->getBuffer().split(lines, '\n', /*MaxSplit=*/-1,
+                               /*KeepEmpty=*/false);
+  for (StringRef line : lines) {
+    line = line.substr(0, line.find('#')).trim();
+    if (!line.empty())
+      skipPerfConfigs.insert(line);
+  }
+
+  llvm::errs() << "note: will skip " << skipPerfConfigs.size()
+               << " perf config(s) listed in " << path << "\n";
+  return success();
 }
 
 using SteadyTimePoint = std::chrono::steady_clock::time_point;
@@ -1734,7 +1781,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
             break;
 
           CompilationResult result;
-          if (!configIsFusible[idx]) {
+          if (!configIsFusible[idx] || isSkippedPerfConfig(configs[idx])) {
             result.perfConfig = configs[idx];
             result.status = CompilationStatus::NotApplicable;
           } else {
@@ -1851,6 +1898,13 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
     return failure();
   }
 
+  // Demote skipped configs instead of dropping them, so the reported config
+  // count still matches the bundle and each one is accounted for as N/A.
+  for (CompilationResult &result : results) {
+    if (isSkippedPerfConfig(result.perfConfig))
+      result.status = CompilationStatus::NotApplicable;
+  }
+
   // Runtime-version guardrail (warn only; an incompatible code object will fail
   // hipModuleLoadData anyway, so this just makes that failure actionable).
   int runtimeVersion = 0;
@@ -1936,6 +1990,10 @@ int main(int argc, char **argv) {
     llvm::errs() << "coarse-warmup-floor-ms must not exceed warmup\n";
     return EXIT_FAILURE;
   }
+
+  if (!skipPerfConfigsFile.empty() &&
+      failed(loadSkipPerfConfigs(skipPerfConfigsFile)))
+    return EXIT_FAILURE;
 
   // --compile-only wins over --benchmark-artifacts: it is the CPU-only phase,
   // so honoring it stays valid even on the GPU-less hosts where the compile

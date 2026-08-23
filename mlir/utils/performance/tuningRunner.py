@@ -235,6 +235,7 @@ class Options:
     compile_only_dir: Optional[str] = None
     benchmark_artifacts_dir: Optional[str] = None
     allow_commit_mismatch: bool = False
+    skip_perf_configs: Optional[str] = None
 
 
 @dataclass
@@ -1411,6 +1412,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         f"--gpu-run-timeout={options.gpu_run_timeout}",
         f"--two-stage-topk={options.two_stage_topk}",
     ]
+    if options.skip_perf_configs:
+        tuning_driver_args.append(f"--skip-perf-configs={options.skip_perf_configs}")
     if options.two_stage_topk > 0:
         tuning_driver_args += [
             f"--coarse-rep-iters={options.coarse_rep_iters}",
@@ -1805,6 +1808,8 @@ def run_compile_only(ctx: TuningContext) -> bool:
         ]
         if options.num_cpus:
             td_cmd.append(f"--num-compile-threads={options.num_cpus}")
+        if options.skip_perf_configs:
+            td_cmd.append(f"--skip-perf-configs={options.skip_perf_configs}")
         pipeline = " | ".join(" ".join(cmd) for cmd in [gen_cmd, td_cmd])
 
         logger.info(f"Compiling problem {problem_idx}/{total_problems}: {problem_hash}")
@@ -2189,6 +2194,8 @@ def run_benchmark_artifacts(ctx: TuningContext, status_only: bool = False) -> bo
     ]
     if options.flush_last_level_cache:
         timing_args.append("--flush-last-level-cache")
+    if options.skip_perf_configs:
+        timing_args.append(f"--skip-perf-configs={options.skip_perf_configs}")
 
     def execute(pending_configs, _num_workers, start_task, handle_result):
         for test_vector in pending_configs:
@@ -2593,6 +2600,17 @@ def parse_arguments(args=None) -> argparse.Namespace:
         "marked 'gpu_timed_out' and tuning advances to the next problem config "
         "(retry with '--retry gpu_timed_out').")
 
+    parser.add_argument(
+        "--skip-perf-configs",
+        default=None,
+        metavar='FILE',
+        help="File listing perf configs to leave un-benchmarked, one per line "
+        "('#' comments allowed). Listed configs are reported as N/A instead of being "
+        "compiled or launched, which lets a sweep get past a config that faults the GPU "
+        "or spills so heavily it can never win. Forwarded to the tuning driver in all "
+        "phases, including --benchmark-artifacts replays, so an existing artifact bundle "
+        "does not have to be rebuilt.")
+
     parser.add_argument("--rep",
                         type=int,
                         default=TUNE_REP_MS,
@@ -2839,7 +2857,8 @@ def main(args=None):
                       coarse_min_rep_iters=resolved_coarse_min_rep_iters,
                       compile_only_dir=compile_only_dir,
                       benchmark_artifacts_dir=benchmark_artifacts_dir,
-                      allow_commit_mismatch=parsed_args.allow_commit_mismatch)
+                      allow_commit_mismatch=parsed_args.allow_commit_mismatch,
+                      skip_perf_configs=parsed_args.skip_perf_configs)
 
     ctx = TuningContext(configs=configs,
                         conf_class=conf_class,
