@@ -10,6 +10,10 @@
 # File extensions to be ignored anywhere in the tree.
 #==============================================================================#
 # Temp files created by most text editors.
+MEDUSA-artifacts/
+convolution_tuning_benchmark_first-10-08/
+attention_tuning_benchmark/
+GEMM_tuning_benchmark/
 *~
 # Merge files created by git.
 *.orig
