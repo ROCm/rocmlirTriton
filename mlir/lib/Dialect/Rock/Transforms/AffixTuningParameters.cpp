@@ -373,6 +373,30 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Set attributes on the function.
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
+
+  // Record the accumulator this gemm needs, in 32-bit register lanes per
+  // thread: an mPerBlock x nPerBlock tile of the accumulation type, the buffer
+  // GridwiseGemmToBlockwise is about to create, spread over the block. The
+  // register-pressure screen in TritonToHsaco holds carried pressure against
+  // it.
+  //
+  // It has to be recorded here, from the tile the perf config actually asked
+  // for, because both decompositions downstream destroy the evidence and do so
+  // in opposite directions: a non-pow2 M/N tile becomes several pow2 sub-gemms
+  // whose accumulators coexist in one fused loop, so no single one of them is
+  // the accumulator, while a non-pow2 kPerBlock becomes several K segments that
+  // all thread the same accumulator, so counting them separately would multiply
+  // it. Neither is recoverable from the dots afterwards.
+  Type accType = rock::getAccType(info.gemmAType, info.gemmBType);
+  if (accType.isIntOrFloat()) {
+    uint64_t accLanes = llvm::divideCeil(
+        static_cast<uint64_t>(gemmParams.getMPerBlock()) *
+            gemmParams.getNPerBlock() * accType.getIntOrFloatBitWidth(),
+        32 * static_cast<uint64_t>(blockSize));
+    getOperation()->setAttr("rock.accumulator_lanes",
+                            b.getI64IntegerAttr(accLanes));
+  }
+
   getOperation()->setAttr(
       rock::UseOptimizeEpilogueAttr::getMnemonic(),
       b.getI64IntegerAttr(gemmParams.getUseOptimizeEpilogue()));
@@ -452,6 +476,24 @@ void AffixTuningParameters::affixTuningParametersImpl(
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
+
+  // Record what this attention kernel carries across its loop, in 32-bit
+  // register lanes per thread, the same way the gemm path does.
+  //
+  // What survives an iteration here is not the first gemm's QK tile, which is
+  // consumed by the softmax and dies within the iteration, but the second
+  // gemm's output tile -- the running weighted sum over V -- together with the
+  // softmax's running maximum and sum, one of each per row of the M tile. Both
+  // accumulate in 32 bits, whether the kernel is f16 or i8.
+  uint64_t attnLanes =
+      llvm::divideCeil(static_cast<uint64_t>(params1.getMPerBlock()) *
+                           params1.getNPerBlock(),
+                       static_cast<uint64_t>(blockSize)) +
+      llvm::divideCeil(2 * static_cast<uint64_t>(params1.getMPerBlock()),
+                       static_cast<uint64_t>(blockSize));
+  getOperation()->setAttr("rock.accumulator_lanes",
+                          builder.getI64IntegerAttr(attnLanes));
+
   getOperation()->setAttr(
       rock::UseOptimizeEpilogueAttr::getMnemonic(),
       builder.getI64IntegerAttr(attnPerfConfig.getUseOptimizeEpilogue()));

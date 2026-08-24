@@ -622,11 +622,51 @@ static uint64_t carriedRegisterLanes(const llvm::Function &fn,
   return lanes;
 }
 
+/// Register lanes per thread that each kernel in `module` needs for its
+/// accumulator, the running sum a matmul keeps between k-steps, keyed by kernel
+/// name. Recorded by AffixTuningParameters from the tile the perf config asked
+/// for, which is both the last point where that tile is intact and long before
+/// this one: by here the module is LLVM dialect and the matmul is gone. Kernels
+/// whose accumulator was never recorded, which includes attention, do not
+/// appear, and carried pressure is not held against them.
+///
+/// This is the scale that says whether a carried count is ordinary or
+/// excessive. A tile that carries one accumulator carries the one thing it
+/// cannot do without; a tile that carries ten is carrying pipeline stages, and
+/// those are what the register allocator has to shuffle every iteration. It is
+/// a property of the tile rather than of the target, so unlike a fraction of
+/// the register file it means the same thing on every chip: measured across two
+/// gemm tuning spaces, on wave32 and wave64, every configuration carries its
+/// accumulator and between one and six lanes more.
+static llvm::StringMap<uint64_t> accumulatorLanes(ModuleOp module) {
+  llvm::StringMap<uint64_t> lanes;
+  module.walk([&](FunctionOpInterface func) {
+    if (auto attr = func->getAttrOfType<IntegerAttr>("rock.accumulator_lanes"))
+      lanes[func.getName()] = attr.getInt();
+  });
+  return lanes;
+}
+
+/// Calibration aid: with ROCMLIR_REGISTER_PRESSURE_REPORT set, every kernel is
+/// measured and reported and nothing is rejected, so that a sweep can record
+/// what the bounds would have decided next to what the configuration actually
+/// costs to compile. Rejecting is what hides that second number, and it is the
+/// one that says whether a rejection was deserved.
+static bool reportRegisterPressureOnly() {
+  static const bool report =
+      std::getenv("ROCMLIR_REGISTER_PRESSURE_REPORT") != nullptr;
+  return report;
+}
+
 /// Refuse the configuration if any kernel in `llvmModule` asks for more
-/// registers than a thread on `arch` can address: `peakPercent` bounds what may
-/// be live at once and `carriedPercent` what may be carried across a loop back
-/// edge, both as a percentage of the addressable file. A zero percentage skips
-/// that bound.
+/// registers than the register allocator can place without thrashing:
+/// `peakPercent` bounds what may be live at once, as a percentage of what a
+/// thread on `arch` can address. What may be carried across a loop back edge is
+/// bounded by `carriedMultiple` as a multiple of the kernel's accumulator, and
+/// only counts against a kernel that also carries more than
+/// `carriedFloorPercent` of the addressable file. Either bound is skipped when
+/// its argument is zero, as is the carried bound on a kernel whose accumulator
+/// cannot be determined.
 ///
 /// Such a kernel spills in proportion, which both makes it several times slower
 /// to run than a tile that fits and hands the register allocator a problem that
@@ -635,54 +675,89 @@ static uint64_t carriedRegisterLanes(const llvm::Function &fn,
 /// the pipeline for the diagnostic.
 ///
 /// The two bounds answer different questions and neither subsumes the other.
-/// Peak width is loose because most of what is live at the worst point can be
-/// split or rematerialized, so it only bounds the total, and it takes a
-/// multiple of the file before it means trouble. Carried width is the part that
-/// cannot be relieved, so it is held to roughly the file itself.
+/// Peak width is loose: most of what is live at the worst point can be split or
+/// rematerialized, so it only bounds the total, and it takes several times the
+/// file before it means trouble -- it is here as a cheap screen for the
+/// configurations that are absurd before optimization even runs.
+///
+/// Carried width is the part that cannot be relieved, and it takes two
+/// conditions to characterize, because either one alone misjudges a whole class
+/// of kernel. It must be disproportionate to the accumulator, which is what
+/// separates a pipelining blowup from a tile that is merely large: a fraction
+/// of the register file rejects the largest ordinary gemm tiles on a chip with
+/// a small file while accepting the same tiles on a chip with a large one,
+/// because a well-formed tile carries its accumulator and nothing more, at 1x
+/// on every chip. And it must be large next to the register file, which is what
+/// keeps the ratio honest on small tiles: a 16x16 tile has a one-lane
+/// accumulator, so the twenty-odd lanes it carries for addresses and bounds run
+/// to twenty times that and mean nothing at all. A kernel cannot thrash the
+/// allocator with less than the file's worth of carried values, however
+/// lopsided the ratio.
 ///
 /// Calibrated on a 1x512x8x8 f16 conv with a 512x512x3x3 filter, sweeping
 /// kPerBlock over a 16x64 tile on one wave, which is the family that exposed
-/// this.
-static LogicalResult checkRegisterPressure(ModuleOp module,
-                                           llvm::Module &llvmModule,
-                                           llvm::TargetMachine *tm,
-                                           StringRef arch, uint64_t peakPercent,
-                                           uint64_t carriedPercent,
-                                           StringRef stage) {
+/// this, and checked against full gemm tuning spaces on gfx1100 and gfx950.
+static LogicalResult
+checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
+                      llvm::TargetMachine *tm, StringRef arch,
+                      uint64_t peakPercent, uint64_t carriedMultiple,
+                      uint64_t carriedFloorPercent, StringRef stage) {
   const uint64_t addressable = rock::getAddressableVGPRs(arch);
   const uint64_t peakLimit = peakPercent * addressable / 100;
-  const uint64_t carriedLimit = carriedPercent * addressable / 100;
+  const uint64_t carriedFloor = carriedFloorPercent * addressable / 100;
+  llvm::StringMap<uint64_t> accumulators = accumulatorLanes(module);
   for (llvm::Function &fn : llvmModule) {
     if (fn.isDeclaration() || !fn.hasExternalLinkage())
       continue;
     llvm::TargetTransformInfo tti = tm->getTargetTransformInfo(fn);
     uint64_t peak = peakRegisterPressure(fn, tti);
     uint64_t carried = carriedRegisterLanes(fn, tti);
+    uint64_t accumulator = accumulators.lookup(fn.getName());
+    uint64_t carriedLimit = carriedMultiple * accumulator;
     LLVM_DEBUG(llvm::dbgs()
                << "[register-pressure] " << stage << " " << fn.getName() << ": "
                << peak << " lanes live (limit " << peakLimit << "), " << carried
-               << " carried (limit " << carriedLimit << ")\n");
-    const char *what = nullptr;
-    uint64_t lanes = 0, limit = 0;
-    if (peakPercent && peak > peakLimit) {
-      what = "live at once";
-      lanes = peak;
-      limit = peakLimit;
-    } else if (carriedPercent && carried > carriedLimit) {
-      what = "carried across a loop back edge";
-      lanes = carried;
-      limit = carriedLimit;
-    } else {
+               << " carried, accumulator " << accumulator << " (limit "
+               << carriedLimit << ", floor " << carriedFloor << ")\n");
+    if (reportRegisterPressureOnly()) {
+      bool overPeak = peakPercent && peak > peakLimit;
+      bool overCarried = carriedMultiple && accumulator &&
+                         carried > carriedLimit && carried > carriedFloor;
+      llvm::errs() << "[register-pressure-report] arch=" << arch
+                   << " stage=" << stage << " kernel=" << fn.getName()
+                   << " peak=" << peak << " peakLimit=" << peakLimit
+                   << " carried=" << carried << " accumulator=" << accumulator
+                   << " carriedLimit=" << carriedLimit
+                   << " carriedFloor=" << carriedFloor << " verdict="
+                   << (overPeak      ? "reject-peak"
+                       : overCarried ? "reject-carried"
+                                     : "accept")
+                   << "\n";
       continue;
     }
-    rock::markAsNotApplicable(module);
-    module.emitError() << "'" << fn.getName() << "' needs " << lanes
-                       << " 32-bit register lanes " << what << " in the "
-                       << stage << " IR, over the limit of " << limit << " for "
-                       << arch
-                       << "; the kernel would spill heavily and the register "
-                          "allocator would dominate compile time";
-    return failure();
+    if (peakPercent && peak > peakLimit) {
+      rock::markAsNotApplicable(module);
+      module.emitError()
+          << "'" << fn.getName() << "' needs " << peak
+          << " 32-bit register lanes live at once in the " << stage
+          << " IR, over the limit of " << peakLimit << " for " << arch
+          << "; the kernel would spill heavily and the register allocator "
+             "would dominate compile time";
+      return failure();
+    }
+    if (carriedMultiple && accumulator && carried > carriedLimit &&
+        carried > carriedFloor) {
+      rock::markAsNotApplicable(module);
+      module.emitError()
+          << "'" << fn.getName() << "' carries " << carried
+          << " 32-bit register lanes across a loop back edge in the " << stage
+          << " IR, " << (carried / accumulator) << " times the " << accumulator
+          << " its accumulator needs, over the limit of " << carriedMultiple
+          << "x on " << arch
+          << "; the kernel would spill heavily and the register allocator "
+             "would dominate compile time";
+      return failure();
+    }
   }
   return success();
 }
@@ -967,10 +1042,10 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // how much of it optimization removes depends on the kernel, from about half
   // for a convolution to all but a tenth for an attention, so there is no
   // bound on the unoptimized count that means the same thing for both.
-  constexpr uint64_t kPeakPercent = 700;
+  constexpr uint64_t kPeakPercent = 1300;
   if (failed(checkRegisterPressure(module, *llvmModule, tm.get(), arch,
-                                   kPeakPercent, /*carriedPercent=*/0,
-                                   "unoptimized")))
+                                   kPeakPercent, /*carriedMultiple=*/0,
+                                   /*carriedFloorPercent=*/0, "unoptimized")))
     return failure();
 
   // Set AMD-specific control constants
@@ -1112,9 +1187,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Second screen, on the optimized IR, which is the faithful measure: it is
   // what the register allocator will actually be handed, and the only point
   // where carried width can be trusted.
-  constexpr uint64_t kCarriedPercent = 150;
+  constexpr uint64_t kCarriedMultiple = 10;
+  constexpr uint64_t kCarriedFloorPercent = 100;
   if (failed(checkRegisterPressure(module, *llvmModule, tmAsm.get(), arch,
-                                   kPeakPercent, kCarriedPercent, "optimized")))
+                                   kPeakPercent, kCarriedMultiple,
+                                   kCarriedFloorPercent, "optimized")))
     return failure();
 
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
