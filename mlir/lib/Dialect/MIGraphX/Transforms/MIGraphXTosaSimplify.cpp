@@ -76,23 +76,22 @@ public:
 };
 
 // Given this pattern:
-// 
+//
 // %1 = tosa.cast %0 : (tensor<100xi1>) -> tensor<100xf16>
 // %2 = tosa.custom %1 {
-//   domain_name = "rocmlir", 
-//   implementation_attrs = "", 
+//   domain_name = "rocmlir",
+//   implementation_attrs = "",
 //   operator_name = "fp_to_int_cast"
 // } : (tensor<100xf16>) -> tensor<100xi8>
-// 
+//
 // we can rewrite it as:
-// 
+//
 // %2 = tosa.cast %0 : (tensor<100xi1>) -> tensor<100xi8>
-// 
-// Note that when widening an i1 it yields exactly 0.0 or 1.0, 
+//
+// Note that when widening an i1 it yields exactly 0.0 or 1.0,
 // so the NaN check and the range clamp is useless.
 // This pattern is frequently used by LeakyReLU ops in MIGraphX.
-class SimplifyBoolFpToIntCast final
-    : public OpRewritePattern<tosa::CustomOp> {
+class SimplifyBoolFpToIntCast final : public OpRewritePattern<tosa::CustomOp> {
 public:
   using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::CustomOp op,
