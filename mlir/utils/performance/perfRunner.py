@@ -574,7 +574,10 @@ def drop_perf_priority(argv):
 
 
 # convolution configurations.
-def get_conv_configurations(filename, arch, num_cu, num_chiplets,
+def get_conv_configurations(filename,
+                            arch,
+                            num_cu,
+                            num_chiplets,
                             target_chip: Optional[str] = None):
     configs = []
     chip = target_chip

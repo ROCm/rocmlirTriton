@@ -116,6 +116,7 @@ class TuneConfigTest(unittest.TestCase):
         return options
 
     def test_gpu_timeout_exit_code_marks_result_gpu_timed_out(self):
+
         def stub_run_pipeline(commands, env=None, timeout=None, cwd=None):
             self.assertEqual(len(commands), 2)
             self.assertEqual(commands[0][0], "rocmlir-gen")

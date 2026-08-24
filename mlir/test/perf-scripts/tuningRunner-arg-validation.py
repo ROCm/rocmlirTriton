@@ -165,9 +165,8 @@ class ParseArgumentsTest(unittest.TestCase):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
             with patch.object(tuningRunner, "get_gpu_topology", return_value=topology):
-                tuningRunner.parse_arguments([
-                    "--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--gpus", "0", "1"
-                ])
+                tuningRunner.parse_arguments(
+                    ["--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--gpus", "0", "1"])
         self.assertIn("mixed GPU models not supported", stderr.getvalue())
 
 

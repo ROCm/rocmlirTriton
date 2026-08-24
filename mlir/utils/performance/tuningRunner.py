@@ -1560,7 +1560,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         numa_lock.acquire_shared()
         try:
             rocmlir_gen_command = [paths.mlir_paths.rocmlir_gen_path]
-            tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path] + tuning_driver_args
+            tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path
+                                    ] + tuning_driver_args
 
             if not test_vector.endswith(".mlir"):
                 command_line = test_vector.split()
@@ -2112,8 +2113,7 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
                     to_verify = _successful_perfconfigs(out.splitlines())
                 try:
                     for pc in to_verify:
-                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id,
-                                                      numa_lock)
+                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id, numa_lock)
                         if np.isnan(verify_ns):
                             raise TuningError(f"Verification returned NaN for perfconfig '{pc}'")
                 except TuningError as e:
@@ -2438,13 +2438,17 @@ def load_configs(op_type: Operation,
 
     loaders = {
         Operation.CONV:
-            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path, arch, num_cu,
-                                                       num_chiplets, target_chip=target_chip),
+            lambda: perfRunner.get_conv_configurations(
+                paths.configuration_file_path, arch, num_cu, num_chiplets, target_chip=target_chip),
         Operation.GEMM:
-            lambda: perfRunner.get_gemm_configurations(
-                paths.configuration_file_path, arch, num_cu, num_chiplets,
-                *perfRunner.parse_data_types(parsed_args.data_type), parsed_args.scale_type,
-                target_chip=target_chip),
+            lambda: perfRunner.get_gemm_configurations(paths.configuration_file_path,
+                                                       arch,
+                                                       num_cu,
+                                                       num_chiplets,
+                                                       *perfRunner.parse_data_types(parsed_args.
+                                                                                    data_type),
+                                                       parsed_args.scale_type,
+                                                       target_chip=target_chip),
         Operation.ATTENTION:
             lambda: perfRunner.get_attn_configurations(paths.configuration_file_path, arch, num_cu,
                                                        num_chiplets),
@@ -2823,7 +2827,12 @@ def main(args=None):
         if op_type == Operation.FUSION:
             op_type = extract_fusion_configs(parsed_args.test_dir, paths, target_chip=chip)
 
-        configs = load_configs(op_type, parsed_args, paths, arch, num_cu, num_chiplets,
+        configs = load_configs(op_type,
+                               parsed_args,
+                               paths,
+                               arch,
+                               num_cu,
+                               num_chiplets,
                                target_chip=chip)
     finally:
         if stdin_temp_file:
