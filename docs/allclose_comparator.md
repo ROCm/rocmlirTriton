@@ -444,19 +444,22 @@ When a kernel accumulates output via `atomic_add` at the narrow dtype
 precision (rather than the f32 accumulator assumed by the K_eff atol
 model in Section 2.3), each atomic addition introduces approximately
 `eps(dtype)` relative rounding error. The allclose verifier detects
-two sources of atomic-add accumulation and boosts `rtol` accordingly:
+three sources of atomic-add accumulation and boosts `rtol` accordingly:
 
 1. **Fused reductions** (`rock.reduce(sum)`): the kernel pipeline
    converts these to `rock.store by atomic_add`. The extent is the
    reduce axis size.
-2. **SplitK accumulation**: when the `perf_config` encodes
+2. **Backward-weight K-block accumulation**: `rock.conv_bwd_weight`
+   partitions its reduction across `kBlocks` workgroups and atomically
+   merges their partial results into the filter. The extent is `kBlocks`.
+3. **SplitK accumulation**: when the `perf_config` encodes
    `splitKFactor > 1`, partial results from multiple workgroups are
    merged via `atomic_add`. The extent is the splitK factor.
 
-The boost formula uses the larger of the two extents:
+The boost formula uses the largest of the three extents:
 
 ```
-atomicExtent = max(reduce_axis_extent, splitKFactor)
+atomicExtent = max(reduce_axis_extent, bwd_weight_kBlocks, splitKFactor)
 rtol_boosted = base_rtol + sqrt(atomicExtent) * eps(dtype)
 ```
 
@@ -476,10 +479,12 @@ and introduces no rounding error.
 
 The fused-reduction scan targets `rock::ReduceOp` (still present in
 the host-side clone at the `-ph` stage) rather than `rock::StoreOp`
-(already lowered away in the GPU function). The splitK factor is
-extracted from `GemmGemmParamsAttr` or `GemmParamsAttr` via the
-`perf_config` string. Passing `-rtol=<value>` explicitly suppresses
-both boost sources.
+(already lowered away in the GPU function). Backward-weight `kBlocks`
+is read from `rock::ConvBwdWeightOp` when already affixed; otherwise the
+verifier computes it from the selected tuning parameters using the same
+utility as the affix-params pass. The splitK factor is extracted from
+`GemmGemmParamsAttr` or `GemmParamsAttr` via the `perf_config` string.
+Passing `-rtol=<value>` explicitly suppresses all three boost sources.
 
 ### 2.10 Zero-diff count output
 

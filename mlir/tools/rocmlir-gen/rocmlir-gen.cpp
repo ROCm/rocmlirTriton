@@ -5321,15 +5321,53 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
   return best;
 }
 
-// Scan the module for rock.reduce ops and return the largest axis extent.
-// Every rock.reduce(sum) eventually becomes an atomic_add in the kernel
-// pipeline, but rock.store ops are no longer visible at the -ph stage
-// (the GPU function is already fully lowered). The host-side copy still
-// retains the rock.reduce ops, so we scan those instead.
+// Return the number of backward-weight K-block partials that atomically merge
+// into each output element. Before affix-tuning-parameters runs, kBlocks is not
+// present yet, so reproduce its calculation using the same selected tuning
+// parameters and utility routine as that pass.
+static int64_t getBwdWeightAtomicExtent(rock::ConvBwdWeightOp bwdWeightOp) {
+  if (auto kBlocks = bwdWeightOp.getKBlocks())
+    return kBlocks->getZExtValue();
+
+  auto gemmOp =
+      cast<rock::RockGemmWrapperInterface>(bwdWeightOp.getOperation());
+  OpBuilder builder(bwdWeightOp.getContext());
+  rock::PopulateParams populateParams;
+  auto maybeParams = populateParams.obtainTuningParameters(builder, gemmOp);
+  if (failed(maybeParams))
+    return 0;
+
+  rock::GemmParamsAttr params = *maybeParams;
+  rock::GemmSize origGemmSize = gemmOp.getGemmSize();
+  rock::GemmSize paddedGemmSize = rock::calculatePaddedGemmSize(
+      params.getKPerBlock(), params.getMPerBlock(), params.getNPerBlock(),
+      origGemmSize);
+  bool requiredPadding = !(paddedGemmSize == origGemmSize);
+
+  rock::PopulateParamsInfo info = rock::PopulateParamsInfo::fromOp(gemmOp);
+  if (!rock::isWrWAtomicKernel(info.gemmAType, requiredPadding))
+    return 0;
+
+  int64_t kBlocks = 1;
+  if (failed(rock::calculateKBlockNum(
+          info.batchSize, paddedGemmSize, params.getMPerBlock(),
+          params.getNPerBlock(), params.getKPerBlock(), params.getKpack(),
+          info.numCu, kBlocks)))
+    return 0;
+  return kBlocks;
+}
+
+// Scan the module and return the largest number of low-precision atomic
+// additions merged into an output element. Every rock.reduce(sum) eventually
+// becomes an atomic_add in the kernel pipeline, but rock.store ops are no
+// longer visible at the -ph stage. The host-side copy still retains the
+// rock.reduce ops, so we scan those instead. Likewise, conv_bwd_weight kBlocks
+// are partial GEMM results merged with atomic_add and require the same
+// tolerance treatment as split-K GEMM.
 //
 // The axis extent equals the number of low-precision atomic additions per
 // output element. The caller uses this to boost rtol accordingly.
-static int64_t scanModuleForAtomicReduceExtent(ModuleOp module) {
+static int64_t scanModuleForAtomicAddExtent(ModuleOp module) {
   int64_t maxExtent = 0;
   module.walk([&](rock::ReduceOp reduceOp) {
     if (reduceOp.getReduceMethod() != rock::ReduceMethod::Sum)
@@ -5342,6 +5380,10 @@ static int64_t scanModuleForAtomicReduceExtent(ModuleOp module) {
       int64_t extent = inTy.getDimSize(axis);
       maxExtent = std::max(maxExtent, extent);
     }
+  });
+  module.walk([&](rock::ConvBwdWeightOp bwdWeightOp) {
+    maxExtent =
+        std::max(maxExtent, getBwdWeightAtomicExtent(bwdWeightOp));
   });
   return maxExtent;
 }
@@ -5696,16 +5738,18 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       }
 
       // Atomic-add rtol boost. When a kernel uses atomic_add for output
-      // accumulation (fused reductions via rock.reduce(sum) or splitK
-      // partial-result merging), the additions happen at the narrow dtype
-      // precision rather than the f32 accumulator assumed by the K_eff atol
-      // model. Each atomic add introduces ~eps(dtype) relative error.
+      // accumulation (fused reductions via rock.reduce(sum), splitK
+      // partial-result merging, or conv_bwd_weight K-block merging), the
+      // additions happen at the narrow dtype precision rather than the f32
+      // accumulator assumed by the K_eff atol model. Each atomic add introduces
+      // ~eps(dtype) relative error.
       // We use sqrt(extent) * eps as the boost (random-walk model, same as
       // CK/hipBLASLt). The extent is the larger of:
       //   - rock.reduce(sum) axis extent (fused reductions), and
+      //   - conv_bwd_weight kBlocks
       //   - splitK factor from the perf_config (partial-result accumulation).
       if (!rtolThreshold.getNumOccurrences()) {
-        int64_t atomicExtent = scanModuleForAtomicReduceExtent(module);
+        int64_t atomicExtent = scanModuleForAtomicAddExtent(module);
 
         if (!genParams.perfConfig.empty()) {
           auto pc = StringAttr::get(module->getContext(), genParams.perfConfig);

@@ -318,3 +318,26 @@ func.func private @mx_dot_reduce_max_fut(%arg0: !migraphx.shaped<1x256x64xf32, 1
 // rtol is the user-supplied value, NOT boosted.
 // SPLITK_RTOL_OVERRIDE-NEXT: arith.constant 5.000000e-03 : f32
 // SPLITK_RTOL_OVERRIDE:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (13) Conv backward-weight K-block rtol boost. The generated source IR does
+// not have kBlocks affixed yet, so the verifier reproduces the affix-params
+// calculation from the pinned tuning config. This gfx950 problem selects
+// kBlocks=64:
+//   K_eff = 256*28*28 = 200704
+//   atol   = 1e-5 + 200704*(1/900) ~ 223.004
+//   rtol   = 1e-3 + sqrt(64)*eps(f16) = 0.0088125
+// ============================================================================
+
+// RUN: rocmlir-gen --arch gfx950 --operation conv_bwd_weight -t f16 \
+// RUN:   -fil_layout=gkyxc -in_layout=nhwgc -out_layout=nhwgk \
+// RUN:   -batchsize=256 -groupsize=1 -in_channels=128 -in_h=28 -in_w=28 \
+// RUN:   -out_channels=512 -fil_h=1 -fil_w=1 -dilation_h=1 -dilation_w=1 \
+// RUN:   -conv_stride_h=1 -conv_stride_w=1 -padding_h=0 -padding_w=0 \
+// RUN:   -perf_config=gemm:v1:64,64,64,1,1,4,16,1,2,0,0 \
+// RUN:   -pv --comparator=allclose \
+// RUN:   | FileCheck %s --check-prefix=WRW_KBLOCK_F16
+
+// WRW_KBLOCK_F16:      arith.constant 223.004{{[0-9]*}} : f32
+// WRW_KBLOCK_F16-NEXT: arith.constant 8.8125{{[0-9]*}}e-03 : f32
+// WRW_KBLOCK_F16:      call @mcpuVerifyFloatAllclose
