@@ -1006,19 +1006,30 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
 
   // The AMDGPU register allocator dominates compile time once a kernel's live
-  // values far outrun the register file: on a 1x512x8x8 f16 conv on gfx1100 at
-  // a 16x64 tile it is 85% of a 16s compile, and 63s at kPerBlock=256. Those
-  // same tiles also run ~60x slower than a sane tile for the same problem, so
-  // there is nothing to recover by compiling them. Refuse the configuration
-  // before codegen instead and let tuning move on to one that fits.
+  // values far outrun the register file, and it degrades superlinearly. Those
+  // configurations also run far slower than a tile that fits, so there is
+  // nothing to recover by compiling them: refuse them before codegen and let
+  // tuning move on.
   //
-  // Some spilling is normal, so the limit is a multiple of what a thread can
-  // hold rather than the ceiling itself: a kernel needing twice its addressable
-  // VGPRs spills more than it keeps. On the conv above (gfx1100, 256
-  // addressable, so a 512 limit) the surviving tiles measure 102-321 and take
-  // 0.17-0.46s, while the rejected ones measure 749-2846 and take 1.6-64s, so
-  // the limit sits in an empty band roughly centred between the two.
-  constexpr uint64_t kAddressableVGPRSpillFactor = 2;
+  // Some spilling is normal, so the limit is a multiple of what one thread can
+  // hold rather than the ceiling itself. Calibrated on a 1x512x8x8 f16 conv
+  // with a 512x512x3x3 filter, sweeping kPerBlock over a 16x64 tile on one
+  // wave, which is the family that first exposed this:
+  //
+  //   gfx1100 (256 addressable): 397 lanes/0.5s, 749/1.7s and 892/6.0s are all
+  //   worth keeping -- the 892 one is the fastest config in the whole space at
+  //   420us -- while 1460/8.1s and 2846/60.6s spill thousands of times and run
+  //   4-6x slower. The limit has to land in 892..1460, i.e. a factor of
+  //   3.5..5.7.
+  //
+  //   gfx950 (512 addressable): 711 lanes/2.6s is the slowest config worth
+  //   keeping, and 2125/15.7s and 4321/123.9s are not, so the factor has to be
+  //   below 4.2.
+  //
+  // Four is the only integer those two windows share. A factor of 2 was tried
+  // first and is wrong in both directions: it rejects that 892-lane gfx1100
+  // config, the best one there is.
+  constexpr uint64_t kAddressableVGPRSpillFactor = 4;
   const uint64_t pressureLimit =
       kAddressableVGPRSpillFactor * rock::getAddressableVGPRs(arch);
   for (llvm::Function &fn : *llvmModule) {
