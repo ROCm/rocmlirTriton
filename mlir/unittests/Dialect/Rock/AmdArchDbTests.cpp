@@ -587,6 +587,16 @@ TEST(AmdArchDbTest, IsRDNA) {
   EXPECT_FALSE(isRDNA("amdgcn-amd-amdhsa:gfx942"));
 }
 
+// --- supportsScaledUpcastPk8 ---
+
+TEST(AmdArchDbTest, SupportsScaledUpcastPk8) {
+  EXPECT_FALSE(supportsScaledUpcastPk8("gfx942")); // CDNA3
+  EXPECT_FALSE(supportsScaledUpcastPk8("gfx950")); // CDNA4
+  EXPECT_TRUE(supportsScaledUpcastPk8("gfx1250")); // GFX1250
+  EXPECT_TRUE(
+      supportsScaledUpcastPk8("amdgcn-amd-amdhsa:gfx1250:sramecc+:xnack-"));
+}
+
 // --- getArch (arch-string parsing) ---
 
 TEST(AmdArchDbTest, GetArchChipParsingGfx1170) {

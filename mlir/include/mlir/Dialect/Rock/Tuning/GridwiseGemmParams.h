@@ -156,10 +156,23 @@ inline bool isGemmParamsConservativelyApplicable(
 /// in `GridwiseGemmToBlockwise`.
 inline GemmParamsAttr getConservativeDefaultGemmParams(
     MLIRContext *ctx, std::optional<int64_t> quantBlockSize = std::nullopt,
-    Type = nullptr, Type = nullptr) {
+    Type aElemType = nullptr, Type bElemType = nullptr) {
   int64_t kPerBlock = 32;
   if (quantBlockSize.has_value() && *quantBlockSize > 0)
     kPerBlock = llvm::alignTo(kPerBlock, *quantBlockSize);
+  // The fixed 32x32x32 fallback can leave an FP4 upcast with a partial
+  // per-thread group after Triton distributes the layout. Use the known
+  // conservative K tile for this fallback. This is intentionally not a
+  // general applicability rule: arbitrary tuning candidates are checked
+  // against their final distributed layouts before conversion to LLVM.
+  auto isFp4 = [](Type type) {
+    if (!type)
+      return false;
+    Type elemType = getElementTypeOrSelf(type);
+    return isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() == 4;
+  };
+  if (isFp4(aElemType) || isFp4(bElemType))
+    kPerBlock = llvm::alignTo(kPerBlock, 64);
   return GemmParamsAttr::get(ctx,
                              /*mPerBlock=*/32, /*nPerBlock=*/32,
                              /*kPerBlock=*/kPerBlock, /*kpack=*/1,

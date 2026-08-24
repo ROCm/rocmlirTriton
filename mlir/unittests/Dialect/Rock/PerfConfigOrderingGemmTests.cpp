@@ -30,7 +30,7 @@ namespace {
 struct GemmOrderingTestEnv {
   MLIRContext ctx;
   OpBuilder b;
-  Type f16, f32;
+  Type f16, f32, f4E2M1;
   // Block-scaling element types: f8E4M3FN is a typical MXFP A/B element type
   // and f8E8M0FNU is the MXFP scale type used on AMD gfx950 scaled MFMA.
   Type f8E4M3, f8E8M0;
@@ -39,6 +39,7 @@ struct GemmOrderingTestEnv {
     ctx.getOrLoadDialect<RockDialect>();
     f16 = b.getF16Type();
     f32 = b.getF32Type();
+    f4E2M1 = Float4E2M1FNType::get(&ctx);
     f8E4M3 = Float8E4M3FNType::get(&ctx);
     f8E8M0 = Float8E8M0FNUType::get(&ctx);
   }
@@ -257,6 +258,18 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsFields) {
   EXPECT_EQ(p.getGridGroupSize(), 0);
   EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
   EXPECT_EQ(p.getUseBf16x3ForF32(), kKnobDefault);
+}
+
+TEST(PerfConfigOrderingGemmTest, ConservativeDefaultFp4KPerBlock) {
+  GemmOrderingTestEnv e;
+  EXPECT_EQ(getConservativeDefaultGemmParams(
+                &e.ctx, /*quantBlockSize=*/std::nullopt, e.f4E2M1, e.f32)
+                .getKPerBlock(),
+            64);
+  EXPECT_EQ(getConservativeDefaultGemmParams(
+                &e.ctx, /*quantBlockSize=*/std::nullopt, e.f32, e.f4E2M1)
+                .getKPerBlock(),
+            64);
 }
 
 TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {
