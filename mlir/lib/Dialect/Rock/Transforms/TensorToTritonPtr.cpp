@@ -215,8 +215,21 @@ void RockTensorToTritonPtrPass::processFunction(func::FuncOp funcOp) {
       Value ptr = lhsPtr ? lhs : rhs;
       Value offset = lhsPtr ? rhs : lhs;
       rewriter.setInsertionPoint(addOp);
-      rewriter.replaceOpWithNewOp<triton::AddPtrOp>(addOp, ptr.getType(), ptr,
-                                                    offset);
+      // Preserve the vectorization hints that TransformsToPointerArith attached
+      // to the pointer-arithmetic op. AxisInfoAnalysis reads these off the
+      // tt.addptr (and the AMD CanonicalizePointers pass propagates the same
+      // list), so they must survive the arith.addi -> tt.addptr rewrite; the
+      // replaceOpWithNewOp below does not copy discardable attrs.
+      static constexpr std::array<StringRef, 3> kVectorizationHints = {
+          "tt.contiguity", "tt.divisibility", "tt.constancy"};
+      SmallVector<NamedAttribute> hints;
+      for (StringRef name : kVectorizationHints)
+        if (Attribute attr = addOp->getDiscardableAttr(name))
+          hints.emplace_back(rewriter.getStringAttr(name), attr);
+      auto addPtrOp = rewriter.replaceOpWithNewOp<triton::AddPtrOp>(
+          addOp, ptr.getType(), ptr, offset);
+      for (const NamedAttribute &hint : hints)
+        addPtrOp->setDiscardableAttr(hint.getName(), hint.getValue());
       changed = true;
     }
   }
