@@ -16,13 +16,19 @@ state transitions, so no GPU is involved.
 """
 
 import json
+import os
+import shutil
 import sys
 import unittest
 from pathlib import Path
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# perfRunner.py and tuningRunner.py are deployed together by ci-performance-scripts
+# with the compiled amd_arch_db binding they depend on.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 from perfRunner import GemmConfiguration, canonicalize_config  # noqa: E402
 from tuningRunner import (  # noqa: E402
@@ -51,7 +57,7 @@ def make_options(output, arch=ARCH, num_cu=NUM_CU, num_chiplets=NUM_CHIPLETS, tu
         verbose=False,
         tuning_space_kind=tuning_space,
         rocmlir_gen_flags="",
-        disable_verify_winning_config=True,
+        verify_winning_config=False,
         verify_all_perfconfigs=False,
         output=output,
         abort_on_error=False,
@@ -65,6 +71,15 @@ def make_options(output, arch=ARCH, num_cu=NUM_CU, num_chiplets=NUM_CHIPLETS, tu
         verify_timeout=600,
         perf_config_timeout=0,
         gpu_run_timeout=0,
+        rep_ms=100,
+        warmup_ms=100,
+        two_stage_topk=0,
+        coarse_rep_iters=200,
+        coarse_warmup_iters=0,
+        coarse_warmup_floor_ms=0,
+        coarse_rel_sem_target=0.0,
+        coarse_chunk_iters=0,
+        coarse_min_rep_iters=32,
     )
 
 

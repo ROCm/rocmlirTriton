@@ -14,15 +14,20 @@ invariants are pinned here. Pure threading, no GPU involved.
 # RUN: %python %s
 """
 
+import os
+import shutil
 import sys
 import threading
 import time
 import unittest
-from pathlib import Path
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# tuningRunner.py is deployed next to perfRunner.py under ci-performance-scripts
+# and depends on the compiled amd_arch_db binding in that directory.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 from tuningRunner import NumaNodeLock  # noqa: E402
 

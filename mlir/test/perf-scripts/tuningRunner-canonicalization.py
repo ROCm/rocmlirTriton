@@ -15,13 +15,18 @@ untouched. Pure string round-tripping, so no GPU is needed.
 # RUN: %python %s
 """
 
+import os
+import shutil
 import sys
 import unittest
-from pathlib import Path
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# perfRunner.py and tuningRunner.py are deployed together by ci-performance-scripts
+# with the compiled amd_arch_db binding they depend on.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 from perfRunner import (  # noqa: E402
     AttentionConfiguration, ConvConfiguration, ConvGemmConfiguration, GemmConfiguration,

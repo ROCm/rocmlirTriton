@@ -1287,12 +1287,8 @@ class TuningArgumentParser(argparse.ArgumentParser):
             self.error("argument --benchmark-artifacts: requires exactly one GPU; "
                        "select it with --gpus GPU_ID")
 
-        gpu_topology = get_gpu_topology()
-        if not gpu_topology.validate_homogeneity(parsed.gpus):
-            details = ", ".join(f"GPU {g}: {gpu_topology.gpus[g].sku}" for g in parsed.gpus)
-            self.error(f"argument --gpus: mixed GPU models not supported. Found: {details}")
-
         return parsed
+
 
 class UniqueValuesAction(argparse.Action):
     """Argparse action that ensures no duplicate values."""
@@ -1979,6 +1975,10 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
     paths = ctx.paths
     root = options.benchmark_artifacts_dir
     gpu_id = options.gpu_ids[0]
+    # This mode benchmarks one problem at a time on a single GPU, so nothing
+    # else contends for the node; the lock only satisfies the verifier's
+    # exclusive-hold contract.
+    numa_lock = NumaNodeLock()
 
     # These fields are inputs to _problem_hash. Check them once up front so
     # target-option mismatches do not masquerade as missing problem directories.
@@ -2094,7 +2094,7 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
             # below when requested.
             winning_config, max_tflops, entries = find_best_perfconfig(
                 out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False),
-                gpu_id)
+                gpu_id, numa_lock)
 
             if winning_config is None:
                 logger.error(f"no valid perf config for problem {problem_hash}")
@@ -2112,7 +2112,8 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
                     to_verify = _successful_perfconfigs(out.splitlines())
                 try:
                     for pc in to_verify:
-                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id)
+                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id,
+                                                      numa_lock)
                         if np.isnan(verify_ns):
                             raise TuningError(f"Verification returned NaN for perfconfig '{pc}'")
                 except TuningError as e:

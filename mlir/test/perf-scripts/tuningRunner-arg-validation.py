@@ -15,14 +15,20 @@ counterpart that actually tunes a kernel lives in ``runtime/``.
 
 import contextlib
 import io
+import os
+import shutil
 import sys
 import unittest
 from dataclasses import dataclass
-from pathlib import Path
+from unittest.mock import patch
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# tuningRunner.py is deployed next to perfRunner.py under ci-performance-scripts
+# and depends on the compiled amd_arch_db binding in that directory.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 import tuningRunner  # noqa: E402
 from tuningRunner import (  # noqa: E402
@@ -47,10 +53,17 @@ class StubGpuTopology:
     def get_numa_node(self, gpu_id: int) -> int:
         return self.gpus[gpu_id].numa_node
 
-    def validate_homogeneity(self, gpu_ids) -> bool:
-        if len(gpu_ids) <= 1:
-            return True
-        return len({self.gpus[gpu_id].sku for gpu_id in gpu_ids}) == 1
+    def select(self, gpu_ids=None):
+        if gpu_ids is None:
+            gpu_ids = sorted(self.gpus)
+        unknown = [gpu_id for gpu_id in gpu_ids if gpu_id not in self.gpus]
+        if unknown:
+            raise ValueError(f"no such GPU(s): {unknown} (available: {sorted(self.gpus)})")
+        skus = {self.gpus[gpu_id].sku for gpu_id in gpu_ids}
+        if len(skus) > 1:
+            details = ", ".join(f"GPU {g}: {self.gpus[g].sku}" for g in gpu_ids)
+            raise ValueError(f"mixed GPU models not supported. Found: {details}")
+        return gpu_ids
 
 
 class FormatErrorTest(unittest.TestCase):
@@ -92,7 +105,8 @@ class ParseArgumentsTest(unittest.TestCase):
 
     def parse(self, argv):
         topology = StubGpuTopology([(0, "gfx900")])
-        return tuningRunner.parse_arguments(topology, [0], argv)
+        with patch.object(tuningRunner, "get_gpu_topology", return_value=topology):
+            return tuningRunner.parse_arguments(argv)
 
     def assert_rejects(self, argv):
         """Assert argparse exits, returning what it wrote to stderr."""
@@ -133,6 +147,28 @@ class ParseArgumentsTest(unittest.TestCase):
         stderr = self.assert_rejects(
             ["--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--gpu-run-timeout", "-1"])
         self.assertIn("argument --gpu-run-timeout: must be non-negative", stderr)
+
+    def test_negative_perf_config_timeout_rejected(self):
+        stderr = self.assert_rejects([
+            "--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--perf-config-timeout", "-1"
+        ])
+        self.assertIn("argument --perf-config-timeout: must be non-negative", stderr)
+
+    def test_negative_verify_timeout_rejected(self):
+        stderr = self.assert_rejects(
+            ["--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--verify-timeout", "-1"])
+        self.assertIn("argument --verify-timeout: must be non-negative", stderr)
+
+    def test_mixed_gpu_models_rejected(self):
+        """Selecting GPUs of different SKUs is refused by GpuTopology.select."""
+        topology = StubGpuTopology([(0, "gfx900"), (1, "gfx942")])
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            with patch.object(tuningRunner, "get_gpu_topology", return_value=topology):
+                tuningRunner.parse_arguments([
+                    "--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--gpus", "0", "1"
+                ])
+        self.assertIn("mixed GPU models not supported", stderr.getvalue())
 
 
 class NumaTopologyParseCpuListTest(unittest.TestCase):

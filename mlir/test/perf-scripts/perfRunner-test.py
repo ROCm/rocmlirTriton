@@ -16,13 +16,20 @@ in ``runtime/``.
 
 import math
 import os
+import shutil
 import sys
 import unittest
 from pathlib import Path
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# perfRunner.py is on PATH (lit's mlir_rock_tools_dir, populated by
+# ci-performance-scripts). Import it from there rather than from the source
+# tree: it depends on the compiled amd_arch_db binding, which only exists
+# alongside the deployed scripts.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 import perfRunner  # noqa: E402
 from perfRunner import GemmConfiguration, PerfConfiguration  # noqa: E402

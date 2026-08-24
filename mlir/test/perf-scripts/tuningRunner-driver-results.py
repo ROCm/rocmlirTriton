@@ -15,14 +15,19 @@ test that really tunes a kernel.
 # RUN: %python %s
 """
 
+import os
+import shutil
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# tuningRunner.py is deployed next to perfRunner.py under ci-performance-scripts
+# and depends on the compiled amd_arch_db binding in that directory.
+_script = shutil.which('perfRunner.py')
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 import tuningRunner  # noqa: E402
 from tuningRunner import NumaNodeLock, find_best_perfconfig, tune_config  # noqa: E402
@@ -69,25 +74,6 @@ class FindBestPerfconfigTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
 
 
-class StubProcess:
-    """Stand-in for a Popen object with a fixed exit status."""
-
-    def __init__(self, returncode, stdout=b"", stderr=b""):
-        self.returncode = returncode
-        self.pid = 1234
-        self.stdout = MagicMock()
-        self._output = (stdout, stderr)
-
-    def communicate(self, timeout=None):
-        return self._output
-
-    def kill(self):
-        pass
-
-    def wait(self, timeout=None):
-        return self.returncode
-
-
 class StubConfiguration:
     """Config class whose instances only need to produce rocmlir-gen flags."""
 
@@ -114,27 +100,29 @@ class TuneConfigTest(unittest.TestCase):
         options = MagicMock()
         options.tuning_space_kind = "quick"
         options.debug = False
+        options.verbose = False
         options.wait_for_compiles = False
+        options.flush_last_level_cache = False
         options.gpu_run_timeout = 30
+        options.perf_config_timeout = 0
         options.timeout = None
         options.arch = "gfx900"
         options.num_cu = 64
         options.num_chiplets = 1
         options.rocmlir_gen_flags = ""
+        options.rep_ms = 100
+        options.warmup_ms = 100
+        options.two_stage_topk = 0
         return options
 
     def test_gpu_timeout_exit_code_marks_result_gpu_timed_out(self):
-        rocmlir_gen = StubProcess(returncode=0)
-        tuning_driver = StubProcess(returncode=tuningRunner.GPU_TIMEOUT_EXIT_CODE,
-                                    stderr=b"gpu timeout")
+        def stub_run_pipeline(commands, env=None, timeout=None, cwd=None):
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(commands[0][0], "rocmlir-gen")
+            self.assertEqual(commands[1][0], "rocmlir-tuning-driver")
+            return tuningRunner.GPU_TIMEOUT_EXIT_CODE, "", "gpu timeout"
 
-        def stub_popen(command, **kwargs):
-            if command[0] == "rocmlir-gen":
-                return rocmlir_gen
-            self.assertEqual(command[0], "rocmlir-tuning-driver")
-            return tuning_driver
-
-        with patch.object(tuningRunner.subprocess, "Popen", stub_popen):
+        with patch.object(tuningRunner, "_run_pipeline", stub_run_pipeline):
             result = tune_config("-g 1 -m 1024 -k 769 -n 512",
                                  StubConfiguration,
                                  self.make_paths(),
