@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 
 import csv
 from collections import OrderedDict
@@ -8,6 +11,7 @@ import subprocess
 import signal
 import tempfile
 import sys
+import time
 import math
 import itertools
 from datetime import date
@@ -20,13 +24,24 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 import pandas as pd
-from hip import hip
 
 import reportUtils
-from perfCommonUtils import Operation, GEMMLibrary
+from perfCommonUtils import GEMMLibrary, Operation, SPLITK_KEY, parse_perfconfig, serialize_perfconfig
 
-# Split-K parameter index in perfconfig
-SPLITK_IDX = 7
+# Hard dependency, copied next to the scripts by ci-performance-scripts.
+import amd_arch_db
+
+# Rock treats a WGP as the effective compute unit on architectures that support
+# WGP mode. Set this before importing HIP so multiProcessorCount always reports
+# WGPs there, even if the caller requested CU mode in its environment.
+if os.environ.get("GPU_ENABLE_WGP_MODE") == "0":
+    print(
+        "WARNING: GPU_ENABLE_WGP_MODE=0 is overridden to 1 because perfRunner "
+        "requires WGP mode.",
+        file=sys.stderr)
+os.environ["GPU_ENABLE_WGP_MODE"] = "1"
+
+from hip import hip  # noqa: E402
 
 # global variables.
 # Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
@@ -90,8 +105,6 @@ OUTPUT_LAYOUT_MAP = {'N': 'n', 'C': 'k', 'H': 'h', 'W': 'w', 'G': 'g', '0': '0',
 ELAPSED_TIME_RE = re.compile(r"Elapsed: ([0-9\.]*) ms")
 # Compiled regexp object used for extracting target chip from arch
 GFX_CHIP_RE = re.compile(r"gfx[0-9a-z]+")
-INFO_ARCH_NAME = re.compile(r"Name:\s*(.*)")
-INFO_ARCH_CU = re.compile(r"Compute Unit:\s*(.*)")
 
 
 def input_layouts(input_layout):
@@ -240,12 +253,16 @@ def hip_check(call_result):
     return result
 
 
-def get_arch() -> str:
-    agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
+def iter_device_props():
+    for device in range(hip_check(hip.hipGetDeviceCount())):
         props = hip.hipDeviceProp_t()
         hip_check(hip.hipGetDeviceProperties(props, device))
+        yield props
+
+
+def get_arch() -> str:
+    agents = set()
+    for props in iter_device_props():
         agent = props.gcnArchName.decode('utf-8')
         agents.add(agent)
     if (len(agents) > 1):
@@ -303,9 +320,23 @@ def get_nanoseconds(filename):
         return result
 
 
+# Architectures where rocprof hardware-counter collection (``-i <metrics>``) is
+# skipped. gfx950's counters are unsupported; on gfx1170 the counter-collection
+# path wedges rocprofv3 in an uninterruptible state (the metrics we request,
+# e.g. LDSBankConflict, are not yet wired up for this arch). These metrics are
+# diagnostic-only -- benchmark timing comes from ``--kernel-trace --stats`` -- so
+# skipping them keeps benchmarking working without the (optional) bank-conflict
+# stats.
+ROCPROF_METRICS_UNSUPPORTED_CHIPS = ["gfx950", "gfx1170"]
+
+
 def get_profiler_output_path(arch: str, base_out_path):
     chip = GFX_CHIP_RE.search(arch).group(0)
-    if (chip not in ["gfx950"]):
+    # rocprof only emits the ``pmc_1/`` subdirectory when a hardware-counter
+    # (pmc) pass runs, i.e. when metrics collection is enabled. Arches that skip
+    # metrics (see ROCPROF_METRICS_UNSUPPORTED_CHIPS) write the stats file
+    # directly, so must not look under ``pmc_1/``.
+    if (chip not in ROCPROF_METRICS_UNSUPPORTED_CHIPS):
         return os.path.join('pmc_1', base_out_path)
     return base_out_path
 
@@ -315,7 +346,7 @@ def get_metric_args_for_rocprof(arch: str):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     metrics_path = os.path.join(current_dir, ROCMLIR_INPUT_METRICS_FILE_NAME)
     metrics = []
-    if (chip not in ["gfx950"]):
+    if (chip not in ROCPROF_METRICS_UNSUPPORTED_CHIPS):
         metrics = ['-i', metrics_path]
     return metrics
 
@@ -406,10 +437,27 @@ def get_miliseconds(output):
     return float(result.group(1))
 
 
-def run_pipeline(proc_specs):
-    """Run a shell-style pipeline (stage[i] stdout -> stage[i+1] stdin).
+def _kill_proc(proc):
+    """Best-effort terminate a subprocess and reap it."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+    except Exception:
+        pass
 
-    Returns ``(stdout_of_last_stage, ok)``.
+
+def run_command_pipeline(commands, *, env=None, cwd=None, timeout=None):
+    """Run a shell-style pipeline: commands[0] | commands[1] | ... | commands[-1].
+
+    This is the single implementation of pipeline spawning shared across the
+    perf tooling; callers that want a different return shape (e.g. run_pipeline's
+    (stdout, ok) tuple, or decoded strings) wrap this.
+
+    ``timeout`` is one shared budget for spawning and waiting for the complete
+    pipeline, not a fresh allowance for each stage.
 
     All pipes are drained so no stage can deadlock on a full OS pipe buffer:
       * Each stage's stderr goes to its own temp file, so a chatty stage can
@@ -423,74 +471,94 @@ def run_pipeline(proc_specs):
         the whole chain make progress before any stage is reaped.
       * Because each intermediate read-end is closed in the parent, upstream
         stages observe EOF/SIGPIPE and exit.
-
-    Never raises: any failure to spawn or drive the pipeline is reported and
-    returned as ``(b"", False)`` so callers can rely solely on the boolean.
     """
+    if not commands:
+        raise ValueError("Pipeline must contain at least one command")
+
     procs = []
+    prev_stdout = None
     stderr_files = []
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
+    def remaining_timeout():
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(commands, timeout)
+        return remaining
+
     try:
-        for proc in proc_specs:
-            prev_stdout = procs[-1].stdout if procs else subprocess.DEVNULL
+        for cmd in commands:
             errf = tempfile.TemporaryFile()
             stderr_files.append(errf)
-            po = subprocess.Popen(proc, stdin=prev_stdout, stdout=subprocess.PIPE, stderr=errf)
-            if procs:
-                # Parent no longer needs the upstream read-end.
-                procs[-1].stdout.close()
-            procs.append(po)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=prev_stdout if prev_stdout is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=errf,
+                env=env,
+                cwd=cwd)
+            if prev_stdout is not None:
+                prev_stdout.close()
+            procs.append(proc)
+            prev_stdout = proc.stdout
 
-        # Drain the last stage's stdout concurrently; this cascades demand
-        # back through the pipeline so intermediate stages can finish writing.
-        outs, _ = procs[-1].communicate()
+        out, _ = procs[-1].communicate(timeout=remaining_timeout())
+        for proc in procs[:-1]:
+            try:
+                proc.wait(timeout=remaining_timeout())
+            except subprocess.TimeoutExpired:
+                _kill_proc(proc)
+                raise
 
-        ok = True
+        rc = 0
         failing_idx = None
-        for idx, p in enumerate(procs):
-            p.wait()
+        for idx, proc in enumerate(procs):
             # A non-final stage killed by SIGPIPE (-13) just means a downstream
             # stage exited first; the real failure (if any) is reported
             # downstream. The final stage has no downstream reader (its stdout
             # is drained here via communicate()), so a SIGPIPE there is a real
             # failure and must not be swallowed.
-            allow_sigpipe = idx < len(procs) - 1 and p.returncode == -signal.SIGPIPE
-            if p.returncode != 0 and not allow_sigpipe:
-                ok = False
-                if failing_idx is None:
-                    failing_idx = idx
+            allow_sigpipe = idx < len(procs) - 1 and proc.returncode == -signal.SIGPIPE
+            if proc.returncode != 0 and not allow_sigpipe:
+                rc = proc.returncode
+                failing_idx = idx
+                break
 
-        if not ok:
-            errf = stderr_files[failing_idx]
-            errf.seek(0)
-            err_text = errf.read().decode("utf-8", errors="replace")
-            failing = procs[failing_idx]
-            print(f"Error:  {err_text}")
-            print(f"Failing command:  {' '.join(failing.args)}")
-            print(f"Failing pipeline:  {' | '.join(' '.join(proc) for proc in proc_specs)}")
-        return outs, ok
+        err_idx = failing_idx if failing_idx is not None else len(stderr_files) - 1
+        stderr_files[err_idx].seek(0)
+        err = stderr_files[err_idx].read()
+        return rc, out, err
+    finally:
+        for proc in procs:
+            _kill_proc(proc)
+        for errf in stderr_files:
+            errf.close()
+
+
+def run_pipeline(proc_specs):
+    """Run a pipeline and return (final_stdout_bytes, ok).
+
+    Thin back-compat wrapper over run_command_pipeline for callers that only
+    need the final stdout and a success flag.
+    """
+    pipeline_str = " | ".join(" ".join(spec) for spec in proc_specs)
+    try:
+        rc, outs, errs = run_command_pipeline(proc_specs)
     except Exception as err:
         # Spawning or driving the pipeline failed (e.g. a missing executable,
         # or an error while draining). Callers key off the returned bool rather
         # than catching exceptions, so report context and fail gracefully
         # instead of crashing the whole runner.
         print(f"Error:  {err}")
-        print(f"Failing pipeline:  {' | '.join(' '.join(proc) for proc in proc_specs)}")
+        print(f"Failing pipeline:  {pipeline_str}")
         return b"", False
-    finally:
-        # Terminate any still-running stages and reap them so a partial
-        # pipeline can't leak processes or zombies, then release every stderr
-        # temp file. wait() is a cheap no-op for stages already reaped above;
-        # the timeout keeps teardown from ever hanging.
-        for p in procs:
-            if p.poll() is None:
-                p.kill()
-        for p in procs:
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        for errf in stderr_files:
-            errf.close()
+    if rc != 0:
+        print(f"Error:  {errs.decode('utf-8', 'replace')}")
+        print(f"Failing pipeline:  {pipeline_str}")
+        return outs, False
+    return outs, True
 
 
 class PerfConfiguration:
@@ -526,9 +594,25 @@ class PerfConfiguration:
         return f"{self.__class__.__name__}({attrs})"
 
 
+def drop_perf_priority(argv):
+    """Return a tokenized config without its -perf_priority flag and value.
+
+    -perf_priority records how much of a model's runtime a config was responsible
+    for, so the tuner knows what to work on first. It says nothing about the problem
+    itself, and neither getopt nor MIOpenDriver will accept it.
+    """
+    if '-perf_priority' not in argv:
+        return argv
+    idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
+    return argv[:idx] + argv[idx + 2:]
+
+
 # convolution configurations.
-def get_conv_configurations(filename):
+def get_conv_configurations(filename, target_chip: Optional[str] = None):
     configs = []
+    chip = target_chip
     if filename:
         with open(filename, 'r') as config_file:
             lines = config_file.readlines()
@@ -544,7 +628,9 @@ def get_conv_configurations(filename):
                 # Skip unsupported datatypes
                 if datatype == 'convfp8':
                     unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
-                    if get_chip() in unsupported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip in unsupported_chips:
                         continue
 
                 # Skip int8 non-fwd convolutions
@@ -693,6 +779,10 @@ class ConvConfiguration(PerfConfiguration):
         elif argv[0] == 'convbf8_bf8':
             datatype = 'bf8_bf8'
 
+        # getopt has no way to spell a single-dash long option, so -perf_priority
+        # would otherwise be read as -p with the value "erf_priority".
+        argv = drop_perf_priority(argv)
+
         try:
             # TBD:
             # implement -m ?
@@ -763,8 +853,8 @@ class ConvConfiguration(PerfConfiguration):
 
     def to_command_line(self):
         return (
-            f"conv{ {'f32':'', 'f16':'fp16', 'bf16':'bfp16', 'i8':'int8','fp8_fp8':'fp8_fp8', 'fp8': 'fp8'}[self.datatype]} "
-            + f"-F { {'fwd':1, 'bwd':2, 'wrw':4}[self.direction]} " +
+            f"conv{dict(f32='', f16='fp16', bf16='bfp16', i8='int8', fp8_fp8='fp8_fp8', fp8='fp8')[self.datatype]} "
+            + f"-F {dict(fwd=1, bwd=2, wrw=4)[self.direction]} " +
             f"-f {inverse_filter_layouts(self.filter_layout)} -I {self.input_layout.upper()} " +
             f"-O {inverse_output_layouts(self.output_layout)} " +
             f"-n {self.n} -c {self.c} -H {self.hi} -W {self.wi} -k {self.k} " +
@@ -853,6 +943,7 @@ class ConvConfiguration(PerfConfiguration):
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME))
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
+        commandline = drop_perf_priority(commandline)
         # rocMLIR configs use layout names (e.g. GNC01) that MIOpenDriver rejects.
         # Translate them to NCHW/NHWC; skip configs that have no faithful MIOpen
         # equivalent instead of forcing an unfair comparison.
@@ -888,8 +979,10 @@ class ConvConfiguration(PerfConfiguration):
 def get_gemm_configurations(filename,
                             datatypes=DATA_TYPES_GEMM,
                             out_dtype_map=OUTPUT_DATA_TYPES_MAP,
-                            scale_types=DATA_TYPES_GEMM_SCALES):
+                            scale_types=DATA_TYPES_GEMM_SCALES,
+                            target_chip: Optional[str] = None):
     configs = []
+    chip = target_chip
 
     if filename:
         with open(filename, 'r') as config_file:
@@ -910,12 +1003,16 @@ def get_gemm_configurations(filename,
                 if datatype == 'f4E2M1FN':
                     # TODO: use information from AMDArchDB when it becomes available to determine supported chips
                     supported_chips = {'gfx950'}
-                    if get_chip() not in supported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip not in supported_chips:
                         continue
 
                 if datatype == 'fp8':
                     unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
-                    if get_chip() in unsupported_chips:
+                    if chip is None:
+                        chip = get_chip()
+                    if chip in unsupported_chips:
                         continue
 
                 # We need trailing spaces here to account for the concat below
@@ -993,7 +1090,7 @@ def get_conv_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1035,7 +1132,7 @@ def get_gemm_gemm_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1085,7 +1182,7 @@ def get_attn_configurations(filename):
                 test_space = []
                 args = []
                 for arg in default_test_space.keys():
-                    """
+                    r"""
                     Next condition checks if a flag is not present in the line. Check with re.search(...)
                     ensures flags are matched exactly and not as substring.
 
@@ -1233,6 +1330,9 @@ class GemmConfiguration(PerfConfiguration):
                 trans_scale_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transScaleB"):
                 trans_scale_b = (val.lower() in ["1", "true"])
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown GEMM config argument {opt} -> {val}")
             i += 2
@@ -1501,6 +1601,9 @@ class ConvGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown conv+gemm config argument {opt} -> {val}")
         for v in [
@@ -1646,6 +1749,9 @@ class GemmGemmConfiguration(PerfConfiguration):
                 trans_o = (val.lower() in ["1", "true"])
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown gemm+gemm config argument {opt} -> {val}")
         for v in [dtype, g, m, k, n, o, trans_a, trans_b, trans_c, trans_o]:
@@ -1689,12 +1795,26 @@ class AttentionConfiguration(PerfConfiguration):
                  num_cu: int,
                  num_chiplets: int,
                  perf_config: str = '',
-                 current_seqlen: Optional[List[int]] = None,
-                 trans_bias: bool = False):
+                 last_valid_kv_index: Optional[List[int]] = None,
+                 trans_bias: bool = False,
+                 sliding_window_look_back: Optional[int] = None):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
         if trans_bias and not with_attn_bias:
             raise ValueError("--transBias requires --with-attn-bias")
+        if last_valid_kv_index is not None and len(last_valid_kv_index) != g:
+            raise ValueError(f"last_valid_kv_index must contain one value per group (expected {g}, "
+                             f"got {len(last_valid_kv_index)})")
+        if last_valid_kv_index is not None and any(
+                p < 0 or p >= seq_len_k for p in last_valid_kv_index):
+            raise ValueError("last_valid_kv_index values must satisfy 0 <= P < seq_len_k")
+        if sliding_window_look_back == -1:
+            sliding_window_look_back = None
+        if sliding_window_look_back is not None:
+            if sliding_window_look_back <= 0:
+                raise ValueError("sliding_window_look_back must be positive or -1")
+            if sliding_window_look_back > seq_len_k - 1:
+                raise ValueError("sliding_window_look_back must not exceed seq_len_k - 1")
 
         self.datatype = dtype
         self.g = g
@@ -1714,9 +1834,16 @@ class AttentionConfiguration(PerfConfiguration):
         self.causal = causal
         self.return_lse = return_lse
         self.split_kv = split_kv
-        # Only set in KV-cache mode (seq_len_q == 1). Picked up by the sweep
-        # script's test_config to add ``--current_seq_len=...`` to rocmlir-gen.
-        self.current_seqlen = current_seqlen
+        # A positive look-back L attends to [max(0, P - L), P], where P is the
+        # inclusive last-valid KV index. rocmlir-gen defaults P to seq_len_k - 1
+        # when it is absent. None (or -1) means non-sliding attention.
+        self.sliding_window_look_back = sliding_window_look_back
+        # Only set in KV-cache mode (seq_len_q == 1). Emitted as
+        # ``-last_valid_kv_index=...`` by generate_mlir_driver_commandline(), which
+        # is the single source of truth for the rocmlir-gen argv (the sweep
+        # scripts build on it rather than appending the flag themselves), while
+        # to_command_line intentionally omits it from the tuning problem identity.
+        self.last_valid_kv_index = last_valid_kv_index
 
         self.arch = arch
         self.chip = GFX_CHIP_RE.search(arch).group(0)
@@ -1753,6 +1880,7 @@ class AttentionConfiguration(PerfConfiguration):
         values = [
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.trans_q, self.trans_k,
             self.trans_v, self.trans_o, self.causal, self.return_lse, self.split_kv,
+            (-1 if self.sliding_window_look_back is None else self.sliding_window_look_back),
             self.with_attn_scale, self.with_attn_bias, self.trans_bias, self.g, self.seq_len_q,
             self.seq_len_k, self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v,
             self.perfconfig,
@@ -1782,6 +1910,10 @@ class AttentionConfiguration(PerfConfiguration):
             f"-transQ={self.trans_q}", f"-transK={self.trans_k}", f"-transV={self.trans_v}",
             f"-transO={self.trans_o}", f"-causal={self.causal}", f"-return_lse={self.return_lse}",
             f"-split_kv={self.split_kv}",
+            *([f"-sliding_window_look_back={self.sliding_window_look_back}"]
+              if self.sliding_window_look_back is not None else []),
+            *([f"-last_valid_kv_index={','.join(map(str, self.last_valid_kv_index))}"]
+              if self.last_valid_kv_index is not None else []),
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -1809,6 +1941,8 @@ class AttentionConfiguration(PerfConfiguration):
         causal = False
         return_lse = False
         split_kv = 1
+        sliding_window_look_back = None
+        last_valid_kv_index = None
         with_attn_scale = False
         with_attn_bias = False
         trans_bias = False
@@ -1852,8 +1986,15 @@ class AttentionConfiguration(PerfConfiguration):
                 return_lse = (val.lower() in ["1", "true"])
             elif opt.endswith("-split_kv"):
                 split_kv = int(val)
+            elif opt.endswith("-sliding_window_look_back"):
+                sliding_window_look_back = int(val)
+            elif opt.endswith("-last_valid_kv_index"):
+                last_valid_kv_index = [int(x) for x in val.split(",")]
             elif opt.endswith("-perf_config"):
                 perf_config = val
+            elif opt.endswith("-perf_priority"):
+                # Tuning-order metadata, not part of the problem.
+                pass
             else:
                 raise ValueError(f"Unknown Attention config argument {opt} -> {val}")
         for v in [
@@ -1885,7 +2026,9 @@ class AttentionConfiguration(PerfConfiguration):
                    num_cu,
                    num_chiplets,
                    perf_config,
-                   trans_bias=trans_bias)
+                   last_valid_kv_index=last_valid_kv_index,
+                   trans_bias=trans_bias,
+                   sliding_window_look_back=sliding_window_look_back)
 
     def to_command_line(self):
         return (
@@ -1894,7 +2037,8 @@ class AttentionConfiguration(PerfConfiguration):
             f"-transV {str(self.trans_v).lower()} -transO {str(self.trans_o).lower()} " +
             f"-causal {str(self.causal).lower()} " +
             f"-return_lse {str(self.return_lse).lower()} " + f"-split_kv {str(self.split_kv)} " +
-            f"-g {self.g} " +
+            (f"-sliding_window_look_back {str(self.sliding_window_look_back)} "
+             if self.sliding_window_look_back is not None else "") + f"-g {self.g} " +
             f"-seq_len_q {str(self.seq_len_q)} -seq_len_k {str(self.seq_len_k)} -num_heads_q {str(self.num_heads_q)} -num_heads_kv {str(self.num_heads_kv)} -head_dim_qk {str(self.head_dim_qk)} -head_dim_v {str(self.head_dim_v)} "
             + f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
             f"-with-attn-bias {str(self.with_attn_bias).lower()} " +
@@ -2266,8 +2410,8 @@ def find_run_command(filename):
 
 
 # Extract test_vector and test function name from the test file
-def get_fusion_test_info(filename, paths: Paths):
-    chip = get_chip()
+def get_fusion_test_info(filename, paths: Paths, target_chip: Optional[str] = None):
+    chip = target_chip if target_chip is not None else get_chip()
     test_entry = {}
     rocmlir_cmd, fut_name = find_run_command(filename)
     if not rocmlir_cmd:
@@ -2416,15 +2560,15 @@ def benchmark_fusion_kernels(test_dir,
 
     if tuning_db:
         # Force all split-K factors to 1, to avoid trouble because fusion
-        # and split-K aren't compatible.  Crude parser mirroring the CSV
-        # layout serialized by GemmParamsAttr::getPerfConfigStr (see
-        # RockAttrDefs.td); SPLITK_IDX must match the splitKFactor field
-        # position.
+        # and split-K aren't compatible. Parse the named
+        # ``prefix:key=value,...`` perfConfig serialized by
+        # GemmParamsAttr::getPerfConfigStr (see RockAttrDefs.td) and rewrite the
+        # splitKFactor field by name.
         for (arch, config), perfconfig in tuning_db.items():
-            split_perf = perfconfig.split(',')
-            if int(split_perf[SPLITK_IDX]) > 1:
-                split_perf[SPLITK_IDX] = '1'
-                tuning_db[arch, config] = ','.join(split_perf)
+            prefix, params = parse_perfconfig(perfconfig)
+            if int(params.get(SPLITK_KEY, 1)) > 1:
+                params[SPLITK_KEY] = 1
+                tuning_db[arch, config] = serialize_perfconfig(prefix, params)
 
     # Profile each test case
     for test in all_tests:
@@ -2540,39 +2684,12 @@ def parse_data_types(data_types):
     return datatypes, out_map
 
 
-def get_num_chiplets(chip, num_cu):
-    # TODO: use AmdArchDb python bindings
-    if "gfx942" in chip and num_cu == 304:
-        return 8
-    if "gfx942" in chip and num_cu == 80:
-        return 4
-    if "gfx950" in chip:
-        return 8
-
-    return 1
-
-
 def get_num_cu(chip):
-    try:
-        rocminfo = subprocess.check_output(f"{ROCM_PATH}/bin/rocminfo", stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(e.stderr.decode('utf-8'))
-        raise
-    except Exception as e:
-        print(f"Exception: {e}")
-        raise
-    rocminfo_lines = rocminfo.decode("utf-8").split("\n")
-    found_chip = False
-    for line in rocminfo_lines:
-        if not found_chip:
-            m = INFO_ARCH_NAME.search(line)
-            if m and chip in m.group(1).strip():
-                found_chip = True
-        if found_chip:
-            compute_unit = INFO_ARCH_CU.search(line)
-            if compute_unit:
-                return int(compute_unit.group(1))
-    assert False, f"Cannot find number of CUs for {chip}"
+    for props in iter_device_props():
+        agent = props.gcnArchName.decode('utf-8')
+        if chip in agent:
+            return int(props.multiProcessorCount)
+    raise RuntimeError(f"Cannot find number of CUs for {chip}")
 
 
 def found_external_tool(paths: Paths,
@@ -2611,7 +2728,7 @@ def main(args=None):
     arch = get_arch()
     chip = get_chip()
     num_cu = get_num_cu(chip)
-    num_chiplets = get_num_chiplets(chip, num_cu)
+    num_chiplets = amd_arch_db.infer_num_chiplets(chip, num_cu)
 
     root_dir = str(
         subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())

@@ -9,12 +9,19 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/bit.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "gtest/gtest.h"
+
+#include <algorithm>
+#include <memory>
+#include <set>
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -51,7 +58,84 @@ struct GemmOrderingTestEnv {
         /*useInThreadTranspose=*/kKnobDefault,
         /*useBufferOps=*/kKnobDefault,
         /*useBufferAtomics=*/kKnobDefault,
-        /*useReductionLayout=*/kKnobDefault);
+        /*useReductionLayout=*/kKnobDefault,
+        /*useOptimizeEpilogue=*/kKnobDefault,
+        /*useBf16x3ForF32=*/kKnobDefault);
+  }
+};
+
+// A module holding a single non-scaled `rock.gemm` of shape
+// [1,M,K]x[1,K,N] -> [1,M,N], ready to be fed to `createTunableParamSpace`.
+// `elemType` picks the A/B/C element type from the freshly created context.
+struct TuningSpaceGemmEnv {
+  MLIRContext ctx;
+  OwningOpRef<ModuleOp> module;
+
+  TuningSpaceGemmEnv(llvm::function_ref<Type(OpBuilder &)> elemType, int64_t m,
+                     int64_t n, int64_t k, StringRef arch) {
+    DialectRegistry reg;
+    reg.insert<rock::RockDialect>();
+    reg.insert<func::FuncDialect>();
+    ctx.appendDialectRegistry(reg);
+    ctx.loadAllAvailableDialects();
+    OpBuilder b(&ctx);
+    Location loc = b.getUnknownLoc();
+    Type elem = elemType(b);
+    auto aType = RankedTensorType::get({1, m, k}, elem);
+    auto bType = RankedTensorType::get({1, k, n}, elem);
+    auto cType = RankedTensorType::get({1, m, n}, elem);
+
+    module = ModuleOp::create(loc);
+    b.setInsertionPointToEnd(module->getBody());
+    auto func = func::FuncOp::create(
+        b, loc, "test", b.getFunctionType({aType, bType}, {cType}));
+    Block *body = func.addEntryBlock();
+    b.setInsertionPointToStart(body);
+    auto gemmOp = GemmOp::create(
+        b, loc, /*c=*/cType, /*a=*/body->getArgument(0),
+        /*b=*/body->getArgument(1), /*scaleA=*/Value(), /*scaleB=*/Value(),
+        /*aTransposed=*/UnitAttr{}, /*bTransposed=*/UnitAttr{},
+        /*oTransposed=*/UnitAttr{}, /*aScaleTransposed=*/UnitAttr{},
+        /*bScaleTransposed=*/UnitAttr{}, /*quantBlockSize=*/IntegerAttr{},
+        /*params=*/nullptr);
+    func::ReturnOp::create(b, loc, gemmOp.getResult());
+    // `arch` must be readable by `rock::getArchValue`, which walks up looking
+    // for the `rock.arch` attribute.
+    (*module)->setAttr(rock::ArchAttr::getMnemonic(),
+                       b.getStringAttr(Twine("amdgcn-amd-amdhsa:") + arch));
+  }
+
+  // Builds the full tuning space and checks that every non-power-of-two
+  // kPerBlock candidate obeys the `windowDividingKPerBlock` heuristic. Returns
+  // the set of kPerBlock values the space offers.
+  std::set<int64_t> collectAndCheckKPerBlocks(int64_t k) {
+    std::unique_ptr<TuningParamSet> space(
+        createTunableParamSpace(*module, TuningParamSetKind::Full));
+    std::set<int64_t> kValues;
+    if (!space || space->tuningRange.empty()) {
+      ADD_FAILURE() << "empty tuning space";
+      return kValues;
+    }
+    for (auto param : space->tuningRange) {
+      auto gemmParams = cast<GemmParamsAttr>(param);
+      int64_t minMN =
+          std::min(gemmParams.getMPerBlock(), gemmParams.getNPerBlock());
+      int64_t kPerBlock = gemmParams.getKPerBlock();
+      kValues.insert(kPerBlock);
+      if (llvm::isPowerOf2_64(static_cast<uint64_t>(kPerBlock)))
+        continue;
+      EXPECT_EQ(k % kPerBlock, 0) << "non-pow2 kPerBlock=" << kPerBlock
+                                  << " must evenly divide K=" << k;
+      EXPECT_EQ(llvm::popcount(static_cast<uint64_t>(kPerBlock)), 2)
+          << "non-pow2 kPerBlock=" << kPerBlock
+          << " must peel into two pow2 segments";
+      EXPECT_GE(kPerBlock, minMN / 2) << "non-pow2 kPerBlock=" << kPerBlock
+                                      << " below window for min(m,n)=" << minMN;
+      EXPECT_LT(kPerBlock, minMN)
+          << "non-pow2 kPerBlock=" << kPerBlock
+          << " must be the smallest tile edge for min(m,n)=" << minMN;
+    }
+    return kValues;
   }
 };
 } // namespace
@@ -169,6 +253,8 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsFields) {
   EXPECT_EQ(p.getNumStages(), 1);
   EXPECT_EQ(p.getWavesPerEU(), 0);
   EXPECT_EQ(p.getGridGroupSize(), 0);
+  EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(p.getUseBf16x3ForF32(), kKnobDefault);
 }
 
 TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {
@@ -334,4 +420,62 @@ TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(
       p, info.gemmAType, info.gemmBType, info.arch, info.quantBlockSize,
       info.aScaleType, info.bScaleType));
+}
+
+// --- non-power-of-two kPerBlock candidate generation ---
+
+// The tuning space for a plain accelerated gemm must offer non-power-of-two
+// kPerBlock values that evenly divide K (peeled into pow2 K segments
+// downstream), so the tuner can drop K padding on shapes like a conv with
+// K = C*fil_h*fil_w. Each such candidate must satisfy the window heuristic in
+// `windowDividingKPerBlock` (RockTuningImpl.cpp): it peels into exactly two
+// pow2 segments and is the smallest tile edge, i.e. in [min(m,n)/2, min(m,n)).
+TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
+  // K = 576 = 64 * 3 * 3 (a conv's C*fil_h*fil_w). Its non-pow2 divisors in the
+  // tunable range include 36, 48, 72, 96, 144. gfx1201 (RDNA4) with f16 drives
+  // the WMMA path, whose base kPerBlock list is {32, 64}.
+  const int64_t K = 576;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF16Type(); },
+                       /*m=*/256, /*n=*/256, K, "gfx1201");
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
+
+  // The target non-pow2 K tile (48 = 576/12) is offered (it lands in the
+  // [32,64) window of a min(m,n)=64 tile), ...
+  EXPECT_TRUE(kValues.count(48)) << "expected non-pow2 kPerBlock=48 in space";
+  // ... and a pow2 divisor from the base list is still present.
+  EXPECT_TRUE(kValues.count(64)) << "expected base pow2 kPerBlock=64 in space";
+}
+
+// The same heuristic must feed the non-accel (FMA) tuning range, whose pow2
+// base kPerBlock list is {1, 4, 8, 16} instead of the accelerated lists.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisorsOnFma) {
+  // f32 has no matrix-accelerator instruction on gfx1201, so this gemm takes
+  // the FMA path. K = 48 has the non-pow2 divisor 24 (= 16 + 8).
+  const int64_t K = 48;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF32Type(); },
+                       /*m=*/128, /*n=*/128, K, "gfx1201");
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
+
+  // A small pow2 tile that only the non-accel base list contains, i.e. proof
+  // this really is the FMA range and not an accelerated one.
+  EXPECT_TRUE(kValues.count(4)) << "expected non-accel base kPerBlock=4 "
+                                   "in space; is this the FMA path?";
+  // 24 lands in the [16,32) window of a min(m,n)=32 tile.
+  EXPECT_TRUE(kValues.count(24)) << "expected non-pow2 kPerBlock=24 in space";
+}
+
+// gfx950 is opted out of the non-pow2 kPerBlock candidates while the LLVM
+// backend bug that miscompiles the peeled K loop there is unfixed, so its
+// tuning space must stay purely power-of-two.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceHasNoNonPow2KDivisorsOnGfx950) {
+  // Same K = 576 as the gfx1201 case above, which does offer 36/48/72/...
+  const int64_t K = 576;
+  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF16Type(); },
+                       /*m=*/256, /*n=*/256, K, "gfx950");
+  std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
+
+  ASSERT_FALSE(kValues.empty());
+  for (int64_t kPerBlock : kValues)
+    EXPECT_TRUE(llvm::isPowerOf2_64(static_cast<uint64_t>(kPerBlock)))
+        << "gfx950 must not offer non-pow2 kPerBlock=" << kPerBlock;
 }

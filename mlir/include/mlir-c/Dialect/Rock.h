@@ -61,8 +61,14 @@ MLIR_CAPI_EXPORTED
 bool mlirRockTuningParamGet(MlirRockTuningSpace params, unsigned pos,
                             MlirRockTuningParam param);
 
-// The recommended buffer size for a parameter string.
-#define ROCMLIR_TUNING_PARAM_STRING_BUFSZ 64
+// The recommended buffer size for a parameter string. The canonical serialized
+// perfConfig form is `prefix:key=value,...` with every field spelled out (see
+// `getPerfConfigStr` in RockAttrDefs.td). The widest schema is gemm+gemm
+// (`attn:`, 19 fields -- the gemm 18 plus `nPerBlockG1`): its key names plus
+// `=`/`,`/prefix account for ~279 bytes, and adding the widest possible int64
+// value (19 digits + sign) for every field is ~659 bytes, so 1024 fits any
+// config with room to spare (typical configs are ~320 bytes).
+#define ROCMLIR_TUNING_PARAM_STRING_BUFSZ 1024
 
 // Generate the string representation of `param`. This representation will be
 // copied into `buf`, which should point to `bufLen` bytes of memory. This

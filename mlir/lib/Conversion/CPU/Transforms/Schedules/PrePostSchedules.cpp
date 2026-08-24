@@ -1,6 +1,7 @@
 //===- PrePostSchedules.cpp - Pre/Post transform schedules ----------------===//
 //
-// Copyright 2026 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

@@ -1,6 +1,7 @@
 //===- RegularizeInput.cpp - Push fusions past load_markers ---------------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,13 +38,18 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace mlir {
 namespace rock {
@@ -59,6 +65,26 @@ using namespace mlir::rock;
 
 namespace {
 
+using LeafKey = std::pair<Value, ArrayAttr>;
+
+struct AnalyzedInputPath {
+  LeafKey key;
+  ArrayAttr combinedViews;
+  SmallVector<TransformMapAttr> transforms;
+};
+
+struct NarrowLoadPlan {
+  ArrayAttr combinedViews;
+  SmallVector<int64_t> narrowShape;
+  SmallVector<Value> extraIndices;
+  unsigned removedTileAxis;
+};
+
+struct RemovableTileAxis {
+  unsigned tileAxis;
+  SmallVector<unsigned> partition;
+};
+
 /// Apply a list of TransformMapAttrs on top of `source`, creating
 /// rock.transform ops.
 static Value applyTransforms(OpBuilder &builder, Value source,
@@ -66,6 +92,223 @@ static Value applyTransforms(OpBuilder &builder, Value source,
   SmallVector<Attribute> attrs(transforms.begin(), transforms.end());
   ArrayAttr transformsAttr = builder.getArrayAttr(attrs);
   return rock::transform(builder, source, transformsAttr);
+}
+
+/// Return all top-level dimensions that form the same logical partition as
+/// `tileDim`. Tiled dimensions are represented by an Unmerge containing a
+/// block dimension and an iteration dimension. Both must be removed when the
+/// underlying input is broadcast along that logical dimension.
+static SmallVector<unsigned>
+getCompleteTilePartition(ArrayRef<TransformMapAttr> transforms,
+                         unsigned tileDim, unsigned numExtraDims) {
+  if (transforms.empty())
+    return {};
+
+  for (TransformAttr transform : transforms.front().getOps()) {
+    ArrayRef<uint32_t> upperDims = transform.getUpperDims();
+    if (!llvm::is_contained(upperDims, tileDim))
+      continue;
+
+    if (transform.getType() != TransformType::Unmerge)
+      return {tileDim};
+
+    SmallVector<unsigned> partition(upperDims.begin(), upperDims.end());
+    if (llvm::any_of(partition, [&](unsigned dim) {
+          return dim >= numExtraDims && dim != tileDim;
+        }))
+      return {};
+    return partition;
+  }
+
+  return {};
+}
+
+/// Combine the load marker's views with each path's input-specific transforms.
+/// Constants and block arguments from nested regions are not loadable function
+/// inputs, so only entry-block arguments are retained.
+static FailureOr<SmallVector<AnalyzedInputPath>>
+analyzeInputPaths(OpBuilder &builder, Value markerSource, ArrayAttr extraViews,
+                  func::FuncOp funcOp) {
+  FailureOr<SmallVector<InputFusionPath>> inputPaths =
+      collectInputFusionPaths(markerSource);
+  if (failed(inputPaths))
+    return failure();
+
+  SmallVector<AnalyzedInputPath> analyzedPaths;
+  analyzedPaths.reserve(inputPaths->size());
+  for (const InputFusionPath &path : *inputPaths) {
+    auto blockArg = dyn_cast<BlockArgument>(path.leaf);
+    if (!blockArg || blockArg.getOwner() != &funcOp.front())
+      continue;
+
+    ArrayAttr postTransformsAttr = builder.getArrayAttr(
+        SmallVector<Attribute>(path.transforms.begin(), path.transforms.end()));
+    ArrayAttr combined =
+        prependUpperViews(builder, extraViews, postTransformsAttr);
+    analyzedPaths.push_back(
+        {{path.leaf, postTransformsAttr},
+         combined,
+         llvm::to_vector(combined.getAsRange<TransformMapAttr>())});
+  }
+  return analyzedPaths;
+}
+
+/// Return true if every dimension in `partition` can be removed from `path`.
+/// A removable dimension must satisfy the three numbered conditions below.
+static bool canRemoveTilePartition(const AnalyzedInputPath &path,
+                                   ArrayRef<unsigned> partition,
+                                   unsigned tileAxis,
+                                   DenseI64ArrayAttr reductionTileAxes) {
+  // The zeros of a tile-alignment pad along an axis the consumer reduces over
+  // are summed into valid results, and an unknown consumer may reduce over any
+  // axis.
+  bool alignmentPadIsDroppable =
+      reductionTileAxes && !llvm::is_contained(reductionTileAxes.asArrayRef(),
+                                               static_cast<int64_t>(tileAxis));
+  return llvm::all_of(partition, [&](unsigned partitionDim) {
+    ArrayRef<unsigned> partitionDims(&partitionDim, 1);
+    // 1. This path's address is independent of `partitionDim`, proving the
+    //    input is broadcast along that dimension, so broadcasting a narrow
+    //    load back over it reproduces the same values.
+    if (transformChainDependsOnAnyDim(path.transforms, partitionDims))
+      return false;
+
+    // 2. No validity check belonging to the program reads `partitionDim`. The
+    //    narrowed load has no coordinate along that dimension to rebuild the
+    //    zeros such a check stands for.
+    if (validityDependsOnAnyDim(path.transforms, partitionDims,
+                                /*ignoreTileAlignmentPads=*/true))
+      return false;
+
+    // 3. Tile-alignment padding may be dropped, because the gemm lowering
+    //    masks off the output lanes it invalidates, but only away from a
+    //    reduction.
+    return !validityDependsOnAnyDim(path.transforms, partitionDims) ||
+           alignmentPadIsDroppable;
+  });
+}
+
+/// Find tile axes whose complete logical partition can be removed from `path`.
+/// Unit axes are already narrow, and incomplete Unmerge partitions are rejected
+/// by `getCompleteTilePartition`.
+static SmallVector<RemovableTileAxis>
+findRemovableTileAxes(const AnalyzedInputPath &path,
+                      ArrayRef<int64_t> fullShape, unsigned numExtraDims,
+                      DenseI64ArrayAttr reductionTileAxes) {
+  SmallVector<RemovableTileAxis> removableAxes;
+  for (unsigned tileAxis = 0; tileAxis < fullShape.size(); ++tileAxis) {
+    if (fullShape[tileAxis] <= 1)
+      continue;
+
+    unsigned topDim = numExtraDims + tileAxis;
+    SmallVector<unsigned> partition =
+        getCompleteTilePartition(path.transforms, topDim, numExtraDims);
+    if (partition.empty() ||
+        !canRemoveTilePartition(path, partition, tileAxis, reductionTileAxes))
+      continue;
+
+    removableAxes.push_back({tileAxis, std::move(partition)});
+  }
+  return removableAxes;
+}
+
+/// Build a plan for one path and one previously validated removable axis.
+/// This removes the axis's complete logical partition from the views and extra
+/// indices. The shape checks ensure that the resulting rank-1 tile still maps
+/// exactly onto the original input tensor.
+static FailureOr<NarrowLoadPlan>
+createPlanForRemovableAxis(OpBuilder &builder, const AnalyzedInputPath &path,
+                           const RemovableTileAxis &removableAxis,
+                           ValueRange extraIndices,
+                           ArrayRef<int64_t> fullTileShape) {
+  unsigned removedTileAxis = removableAxis.tileAxis;
+  llvm::SetVector<int64_t> removeDims;
+  for (unsigned dim : removableAxis.partition)
+    removeDims.insert(dim);
+
+  SmallVector<Value> narrowExtraIndices;
+  for (auto [index, value] : llvm::enumerate(extraIndices))
+    if (!removeDims.contains(index))
+      narrowExtraIndices.push_back(value);
+
+  FailureOr<ArrayAttr> narrowedViews =
+      removeUpperDims(builder, path.combinedViews, removeDims);
+  if (failed(narrowedViews) || narrowedViews->empty())
+    return failure();
+
+  auto topMap = cast<TransformMapAttr>((*narrowedViews)[0]);
+  ArrayRef<int64_t> upperBounds = topMap.getUpperBounds();
+  constexpr int64_t narrowTileRank = 1;
+  if (upperBounds.size() != narrowExtraIndices.size() + narrowTileRank)
+    return failure();
+
+  SmallVector<int64_t> expectedShape(fullTileShape);
+  expectedShape.erase(expectedShape.begin() + removedTileAxis);
+  ArrayRef<int64_t> narrowShape = upperBounds.take_back(narrowTileRank);
+  if (narrowShape != ArrayRef<int64_t>(expectedShape))
+    return failure();
+
+  auto inputType = cast<RankedTensorType>(path.key.first.getType());
+  if (getLowerShape(*narrowedViews) != inputType.getShape())
+    return failure();
+
+  return NarrowLoadPlan{*narrowedViews, llvm::to_vector(narrowShape),
+                        std::move(narrowExtraIndices), removedTileAxis};
+}
+
+/// Analyze the load marker's input-fusion DAG for rank-reducible broadcasts.
+/// This optimization currently narrows rank-2 tiles to rank 1, so each accepted
+/// path must have exactly one safely removable tile axis. Paths with no
+/// removable axis, multiple possible axes, or an invalid rewritten view are
+/// left unchanged. The result is keyed by the input leaf and its path-specific
+/// transform sequence for use while distributing the load marker.
+static DenseMap<LeafKey, NarrowLoadPlan>
+analyzeNarrowBroadcastLoads(OpBuilder &builder, LoadMarkerOp markerOp,
+                            func::FuncOp funcOp) {
+  DenseMap<LeafKey, NarrowLoadPlan> plans;
+  auto fullTileType = cast<RankedTensorType>(markerOp.getResult().getType());
+  ArrayAttr extraViews = markerOp.getExtraViews();
+  if (fullTileType.getRank() != 2 || extraViews.empty())
+    return plans;
+
+  FailureOr<SmallVector<AnalyzedInputPath>> analyzedPaths =
+      analyzeInputPaths(builder, markerOp.getSource(), extraViews, funcOp);
+  if (failed(analyzedPaths))
+    return plans;
+
+  ArrayRef<int64_t> fullShape = fullTileType.getShape();
+  ValueRange extraIndices = markerOp.getExtraIndices();
+  unsigned numExtraDims = extraIndices.size();
+  DenseI64ArrayAttr reductionTileAxes = markerOp.getReductionTileAxesAttr();
+
+  for (const AnalyzedInputPath &path : *analyzedPaths) {
+    Type leafElementType =
+        cast<ShapedType>(path.key.first.getType()).getElementType();
+
+    // Four-bit load packing traces directly from fusion ops to blockwise loads.
+    // Narrowing would insert Triton expand/broadcast ops along that path and
+    // hide the load from LegalizeFloatTypes.
+    if (leafElementType.isIntOrFloat() &&
+        leafElementType.getIntOrFloatBitWidth() == 4)
+      continue;
+
+    // Narrowing reconstructs the full tile with Triton expand/broadcast ops.
+    // Skip types outside TT_Tensor, which those ops reject.
+    if (!isTTFloat(leafElementType) && !isTTInt(leafElementType))
+      continue;
+
+    SmallVector<RemovableTileAxis> removableAxes =
+        findRemovableTileAxes(path, fullShape, numExtraDims, reductionTileAxes);
+    if (removableAxes.size() != 1)
+      continue;
+
+    FailureOr<NarrowLoadPlan> plan = createPlanForRemovableAxis(
+        builder, path, removableAxes.front(), extraIndices, fullShape);
+    if (succeeded(plan))
+      plans.insert({path.key, std::move(*plan)});
+  }
+
+  return plans;
 }
 
 /// Recursively resolve a value in the fusion DAG, returning a tile-typed
@@ -76,7 +319,9 @@ static FailureOr<Value> distributeLoadMarker(
     OpBuilder &builder, Location loc, Value originalVal,
     ArrayRef<TransformMapAttr> postTransforms, ArrayAttr extraViews,
     ValueRange extraIndices, Type tileType, CacheModifier cache,
+    DenseI64ArrayAttr reductionTileAxes,
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> &valueMapping,
+    const DenseMap<LeafKey, NarrowLoadPlan> &narrowLoadPlans,
     func::FuncOp funcOp) {
   ArrayAttr postTransformsAttr = builder.getArrayAttr(
       SmallVector<Attribute>(postTransforms.begin(), postTransforms.end()));
@@ -93,9 +338,29 @@ static FailureOr<Value> distributeLoadMarker(
     if (blockArg.getOwner() != &funcOp.front())
       return failure();
 
+    auto narrowPlan = narrowLoadPlans.find(cacheKey);
+    if (narrowPlan != narrowLoadPlans.end()) {
+      const NarrowLoadPlan &plan = narrowPlan->second;
+      auto fullTileType = cast<RankedTensorType>(tileType);
+      auto narrowTileType =
+          RankedTensorType::get(plan.narrowShape, fullTileType.getElementType(),
+                                fullTileType.getEncoding());
+      // The narrowed tile has lost an axis, so the original axis numbering no
+      // longer describes it and this marker reduces over an unknown axis.
+      auto newMarker = LoadMarkerOp::create(
+          builder, loc, narrowTileType, originalVal, plan.combinedViews,
+          plan.extraIndices, cache, /*reductionTileAxes=*/nullptr);
+      Value fullTile =
+          expandDimAndBroadcast(builder, loc, newMarker.getResult(),
+                                plan.removedTileAxis, fullTileType);
+      valueMapping.insert({cacheKey, fullTile});
+      return fullTile;
+    }
+
     Value source = applyTransforms(builder, originalVal, postTransforms);
-    auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
-                                          extraViews, extraIndices, cache);
+    auto newMarker =
+        LoadMarkerOp::create(builder, loc, tileType, source, extraViews,
+                             extraIndices, cache, reductionTileAxes);
     valueMapping.insert({cacheKey, newMarker.getResult()});
     return newMarker.getResult();
   }
@@ -108,7 +373,8 @@ static FailureOr<Value> distributeLoadMarker(
 
     FailureOr<Value> result = distributeLoadMarker(
         builder, loc, transformOp.getInput(), newPostTransforms, extraViews,
-        extraIndices, tileType, cache, valueMapping, funcOp);
+        extraIndices, tileType, cache, reductionTileAxes, valueMapping,
+        narrowLoadPlans, funcOp);
     if (succeeded(result))
       valueMapping.insert({cacheKey, result.value()});
     return result;
@@ -124,7 +390,8 @@ static FailureOr<Value> distributeLoadMarker(
       auto operandTileType = RankedTensorType::get(tileShape, operandElemType);
       FailureOr<Value> resolved = distributeLoadMarker(
           builder, loc, operand, postTransforms, extraViews, extraIndices,
-          operandTileType, cache, valueMapping, funcOp);
+          operandTileType, cache, reductionTileAxes, valueMapping,
+          narrowLoadPlans, funcOp);
       if (failed(resolved))
         return failure();
       fusionMapping.map(operand, resolved.value());
@@ -184,10 +451,13 @@ void RockRegularizeInputPass::runOnOperation() {
     auto tileType = cast<RankedTensorType>(markerOp.getResult().getType());
 
     llvm::DenseMap<std::pair<Value, ArrayAttr>, Value> valueMapping;
+    DenseMap<LeafKey, NarrowLoadPlan> narrowLoadPlans =
+        analyzeNarrowBroadcastLoads(builder, markerOp, funcOp);
     FailureOr<Value> replacement = distributeLoadMarker(
         builder, loc, markerOp.getSource(), /*postTransforms=*/{},
         markerOp.getExtraViews(), markerOp.getExtraIndices(), tileType,
-        markerOp.getCacheModifier(), valueMapping, funcOp);
+        markerOp.getCacheModifier(), markerOp.getReductionTileAxesAttr(),
+        valueMapping, narrowLoadPlans, funcOp);
 
     if (failed(replacement)) {
       markerOp->emitError("Failed to distribute load_marker past fusions");

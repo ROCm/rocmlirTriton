@@ -1,6 +1,7 @@
 //===- RockToTTIR.cpp - Convert Rock dialect to Triton IR -----------------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +22,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -51,6 +55,7 @@ using namespace mlir::arith;
 
 namespace {
 struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
+  using rock::impl::RockToTTIRPassBase<RockToTTIRPass>::RockToTTIRPassBase;
   void runOnOperation() override;
 };
 
@@ -132,8 +137,20 @@ struct RockBlockwiseReduceOpRewritePattern
     
     // Create reduce.return
     triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
-    
-    rewriter.replaceOp(op, reduceOp.getResults());
+
+    rewriter.setInsertionPointAfter(reduceOp);
+    Value replacement = reduceOp->getResult(0);
+    // Reducing a rank-1 tensor produces a scalar in Triton, while
+    // rock.blockwise_reduce represents the same result as a rank-0 tensor.
+    // Wrap the scalar in that tensor representation to preserve the Rock type.
+    if (replacement.getType() != op.getResult().getType()) {
+      assert(inputType.getRank() == 1 &&
+             "only rank-1 reductions should produce a scalar");
+      replacement = triton::SplatOp::create(
+          rewriter, loc, op.getResult().getType(), replacement);
+    }
+
+    rewriter.replaceOp(op, replacement);
     return success();
   }
 };
@@ -206,7 +223,9 @@ struct RockLoadPtrOpRewritePattern
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseGemmOp> {
-  using OpRewritePattern<rock::BlockwiseGemmOp>::OpRewritePattern;
+  RockBlockwiseGemmOpRewritePattern(MLIRContext *ctx, bool useBf16x3ForF32)
+      : OpRewritePattern<rock::BlockwiseGemmOp>(ctx),
+        useBf16x3ForF32(useBf16x3ForF32) {}
 
   LogicalResult matchAndRewrite(rock::BlockwiseGemmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -254,11 +273,16 @@ struct RockBlockwiseGemmOpRewritePattern
                                            bElemTy.value(), /*fastMath=*/false,
                                            matrixAKPack, matrixBKPack);
     } else {
+      // When the 3xBF16 decomposition is selected, route f32 dots through
+      // bf16 MFMA rather than IEEE MFMA.
+      auto inputPrecision = triton::InputPrecision::IEEE;
+      if (useBf16x3ForF32 && aTensorType.getElementType().isF32() &&
+          bTensorType.getElementType().isF32())
+        inputPrecision = triton::InputPrecision::BF16x3;
       // Create tt.dot operation
-      result =
-          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
-                                /*inputPrecision=*/triton::InputPrecision::IEEE,
-                                /*maxNumImpreciseAcc=*/0);
+      result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                     inputPrecision,
+                                     /*maxNumImpreciseAcc=*/0);
     }
 
     // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
@@ -277,6 +301,9 @@ struct RockBlockwiseGemmOpRewritePattern
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  bool useBf16x3ForF32;
 };
 
 struct RockStorePtrOpRewritePattern
@@ -422,6 +449,23 @@ struct ArithExtFToFpToFpPattern
   }
 };
 
+// Resolve the `rock.use_bf16x3_for_f32` perfConfig tri-state against the
+// per-arch default. If disableFastMath is true, disable bf16x3 for f32,
+// otherwise, use the per-arch default. Expect the resulting slowdown to exceed
+// the lost bf16x3 MFMA throughput on arches that default to it: the quick
+// tuning list was tuned with the decomposition on, so its perfConfigs are no
+// longer the best fit for the IEEE dot on gfx950.
+static bool resolveUseBf16x3ForF32(func::FuncOp funcOp, bool disableFastMath) {
+  if (disableFastMath)
+    return false;
+  auto policyAttr = funcOp->getAttrOfType<IntegerAttr>(
+      rock::UseBf16x3ForF32Attr::getMnemonic());
+  int64_t policy = policyAttr ? policyAttr.getInt() : rock::kKnobDefault;
+  if (policy == rock::kKnobDefault)
+    return rock::preferBf16x3ForF32Dot(rock::getArchValue(funcOp));
+  return policy != 0;
+}
+
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -431,6 +475,11 @@ void RockToTTIRPass::runOnOperation() {
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
     return;
   }
+
+  // Consume the tuning tri-state here: once the precision is baked into the
+  // emitted dots, the raw policy must not leak into Triton IR.
+  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp, disableFastMath);
+  funcOp->removeAttr(rock::UseBf16x3ForF32Attr::getMnemonic());
 
   ConversionTarget target(*ctx);
 
@@ -457,7 +506,7 @@ void RockToTTIRPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
-  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx, useBf16x3ForF32);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);

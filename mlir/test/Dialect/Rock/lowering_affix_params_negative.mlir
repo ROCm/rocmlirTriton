@@ -57,6 +57,25 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=SCALED-NPERBLOCK-NOT-POW2
 
+// ---- kPerBlock: positive (gemm) vs power-of-two (gemm+gemm / scaled) -------
+
+// RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
+// RUN:   --perf_config "gemm:v1:128,128,0,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=KPERBLOCK-NON-POSITIVE
+
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v1:64,64,3,1,1,1,0,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=KPERBLOCK-NOT-POW2
+
+// RUN: rocmlir-gen -t f4E2M1FN -m 80 -n 80 -k 256 -out_dtype f32 --scaledGemm \
+// RUN:   --arch gfx950 --operation gemm -p \
+// RUN:   --perf_config "gemm:v1:128,128,3,1,1,4,16,1,2,0,0" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=SCALED-KPERBLOCK-NOT-POW2
+
 // ---- validateKpack: both branches (non-positive, exceeds max) -------------
 
 // RUN: rocmlir-gen --operation gemm --arch gfx90a -p -t f16 \
@@ -149,13 +168,25 @@
 // RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
 // RUN: | FileCheck %s --check-prefix=GRIDGROUP-NEGATIVE
 
+// ---- validateNPerBlockG1: non-zero & not pow2 (gemm+gemm only) ------------
+// nPerBlockG1 is the third field of the attn:v6 perf_config; 0 means the gemm1
+// N dimension is untiled, otherwise it must be a positive power of two.
+
+// RUN: rocmlir-gen --operation attention --arch gfx90a -t f16 \
+// RUN:   -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64 -p \
+// RUN:   --perf_config "attn:v6:64,64,3,32,1,1,1,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1" \
+// RUN: | not rocmlir-opt -rock-affix-params 2>&1 \
+// RUN: | FileCheck %s --check-prefix=NPERBLOCKG1-NOT-POW2
+
 // MPERBLOCK-NON-POSITIVE: error: mPerBlock=0 must be positive
 // NPERBLOCK-NON-POSITIVE: error: nPerBlock=0 must be positive
 // MPERBLOCK-NOT-POW2:    error: mPerBlock=3 must be a positive power of two
 // NPERBLOCK-NOT-POW2:    error: nPerBlock=3 must be a positive power of two
 // SCALED-MPERBLOCK-NOT-POW2: error: mPerBlock=80 must be a positive power of two
 // SCALED-NPERBLOCK-NOT-POW2: error: nPerBlock=80 must be a positive power of two
+// KPERBLOCK-NON-POSITIVE: error: kPerBlock=0 must be positive
 // KPERBLOCK-NOT-POW2:    error: kPerBlock=3 must be a positive power of two
+// SCALED-KPERBLOCK-NOT-POW2: error: kPerBlock=3 must be a positive power of two
 // KPACK-NON-POSITIVE:    error: kpack=0 must be positive
 // KPACK-TOO-LARGE:       error: kpack=16 exceeds max (2) for amdgcn-amd-amdhsa:gfx90a
 // NUMCTAS-NON-POSITIVE:  error: numCTAs=0 must be >= 1
@@ -170,3 +201,4 @@
 // WAVESPEREU-NEGATIVE:   error: wavesPerEU=-1 must be >= 0
 // WAVESPEREU-TOO-LARGE:  error: wavesPerEU=9 exceeds max (8) for amdgcn-amd-amdhsa:gfx90a
 // GRIDGROUP-NEGATIVE:    error: gridGroupSize=-1 must be >= 0
+// NPERBLOCKG1-NOT-POW2:  error: nPerBlockG1=3 must be 0 (untiled) or a positive power of two

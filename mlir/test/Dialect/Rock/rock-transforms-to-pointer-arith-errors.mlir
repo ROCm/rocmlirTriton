@@ -17,12 +17,13 @@ func.func @test_error_bad_buffer_root(%arg0: tensor<4096xf16>) -> tensor<64x64xf
 
 // -----
 
-// Transform chain bottoms out at a 2D tensor with PassThrough transforms,
-// so the composed affine map produces 2 results instead of 1 linearized index.
+// Transform chain bottoms out at a 2D tensor with PassThrough transforms, so
+// the composed affine map produces 2 results instead of 1 linearized index and
+// the shared expansion engine reports the chain as not well formed.
 func.func @test_error_multiple_results(%arg0: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m"] at [0] -> ["m"] at [0]>, <PassThrough ["n"] at [1] -> ["n"] at [1]>] bounds = [64, 64] -> [64, 64]> : tensor<64x64xf16> to tensor<64x64xf16>
 
-  // expected-error @+2 {{'rock.transforms_to_ptr' op expected transform chain to produce a single linearized index, but got 2 results}}
+  // expected-error @+2 {{'rock.transforms_to_ptr' op Transforms are not well formed}}
   // expected-error @+1 {{failed to legalize operation 'rock.transforms_to_ptr' that was explicitly marked illegal}}
   %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
   %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>

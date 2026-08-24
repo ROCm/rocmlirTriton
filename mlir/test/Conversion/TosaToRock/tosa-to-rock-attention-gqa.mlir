@@ -66,8 +66,9 @@ func.func @attention_gqa_8_32(%arg0: tensor<6144xf16>, %arg1: tensor<65536xf16>,
 
 // CHECK-LABEL: func @attention_gqa_2_14
 // CHECK: rock.attention
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<28xi32>)
 // CHECK: numHeadsKV = 2 : i32, numHeadsQ = 14 : i32
-func.func @attention_gqa_2_14(%arg0: tensor<2xi32>, %arg1: tensor<9216xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>) -> (tensor<7168xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @attention_gqa_2_14(%arg0: tensor<1xi32>, %arg1: tensor<9216xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<2048xf16>) -> (tensor<7168xf16>) attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<[[[[0, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]]]]> : tensor<1x1x4x8xi8>}> : () -> tensor<1x1x4x8xi8>
   %1 = "tosa.const"() <{values = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi32>}> : () -> tensor<1x8xi32>
   %2 = tosa.const_shape  {values = dense<7168> : tensor<1xindex>} : () -> !tosa.shape<1>
@@ -88,14 +89,14 @@ func.func @attention_gqa_2_14(%arg0: tensor<2xi32>, %arg1: tensor<9216xf16>, %ar
   %17 = "tosa.const"() <{values = dense<1.250000e-01> : tensor<2x14x4x8xf16>}> : () -> tensor<2x14x4x8xf16>
   %18 = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %19 = "tosa.const"() <{values = dense<1> : tensor<2x8xi32>}> : () -> tensor<2x8xi32>
-  %20 = tosa.const_shape  {values = dense<[2, 1]> : tensor<2xindex>} : () -> !tosa.shape<2>
+  %20 = tosa.const_shape  {values = dense<[1, 1]> : tensor<2xindex>} : () -> !tosa.shape<2>
   %21 = tosa.const_shape  {values = dense<[2, 4, 18, 64]> : tensor<4xindex>} : () -> !tosa.shape<4>
   %expanded = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [2, 4, 18, 64] : tensor<9216xf16> into tensor<2x4x18x64xf16>
   %22 = tosa.transpose %expanded {perms = array<i32: 0, 2, 1, 3>} : (tensor<2x4x18x64xf16>) -> tensor<2x18x4x64xf16>
-  %expanded_0 = tensor.expand_shape %arg0 [[0, 1]] output_shape [2, 1] : tensor<2xi32> into tensor<2x1xi32>
+  %expanded_0 = tensor.expand_shape %arg0 [[0, 1]] output_shape [1, 1] : tensor<1xi32> into tensor<1x1xi32>
   %23 = tosa.mul %1, %19, %18 : (tensor<1x8xi32>, tensor<2x8xi32>, tensor<1xi8>) -> tensor<2x8xi32>
   %24 = tosa.mul %0, %16, %18 : (tensor<1x1x4x8xi8>, tensor<2x14x4x8xi8>, tensor<1xi8>) -> tensor<2x14x4x8xi8>
-  %25 = tosa.mul %expanded_0, %19, %18 : (tensor<2x1xi32>, tensor<2x8xi32>, tensor<1xi8>) -> tensor<2x8xi32>
+  %25 = tosa.mul %expanded_0, %19, %18 : (tensor<1x1xi32>, tensor<2x8xi32>, tensor<1xi8>) -> tensor<2x8xi32>
   %26 = tosa.greater %23, %25 : (tensor<2x8xi32>, tensor<2x8xi32>) -> tensor<2x8xi1>
   %27 = tosa.cast %26 : (tensor<2x8xi1>) -> tensor<2x8xi32>
   %28 = tosa.cast %27 : (tensor<2x8xi32>) -> tensor<2x8xi8>

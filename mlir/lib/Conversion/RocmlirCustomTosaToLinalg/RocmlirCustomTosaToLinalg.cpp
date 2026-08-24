@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2024 Advanced Micro Devices
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -36,8 +36,7 @@ struct RocmlirCustomLinalgToTosaPass
   void runOnOperation() override;
 };
 
-struct UnsignedCastLoweringPattern
-    : public OpConversionPattern<tosa::CustomOp> {
+struct UnsignedOpLoweringPattern : public OpConversionPattern<tosa::CustomOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -58,16 +57,18 @@ struct MatMulAccPromotionPattern : public OpConversionPattern<tosa::MatMulOp> {
 };
 } // end namespace
 
-LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
+LogicalResult UnsignedOpLoweringPattern::matchAndRewrite(
     tosa::CustomOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
   if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
     return rewriter.notifyMatchFailure(op, "domain isn't rocmlir");
   if (op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_CAST &&
       op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+      op.getOperatorName() != ROCK_CUSTOMOP_UNSIGNED_MAX &&
       op.getOperatorName() != ROCK_CUSTOMOP_FP_TO_INT_CAST)
-    return rewriter.notifyMatchFailure(
-        op, "isn't an unsigned_cast, unsigned_div, or fp_to_int_cast");
+    return rewriter.notifyMatchFailure(op,
+                                       "isn't an unsigned_cast, unsigned_div, "
+                                       "unsigned_max, or fp_to_int_cast");
 
   Location loc = op.getLoc();
   auto outType = cast<RankedTensorType>(op.getResults().front().getType());
@@ -116,6 +117,13 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
           assert(inputs.size() == 3);
           result =
               arith::DivUIOp::create(b, loc, outElemType, inputs[0], inputs[1]);
+        } else {
+          assert(op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_MAX);
+          assert(isa<IntegerType>(outElemType));
+          assert(isa<IntegerType>(inElemType));
+          assert(inputs.size() == 3);
+          result =
+              arith::MaxUIOp::create(b, loc, outElemType, inputs[0], inputs[1]);
         }
         linalg::YieldOp::create(b, loc, result);
       });
@@ -150,11 +158,11 @@ LogicalResult MatMulAccPromotionPattern::matchAndRewrite(
 
 void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
-  target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
-                    arith::TruncIOp, arith::DivUIOp, arith::FPToSIOp,
-                    arith::FPToUIOp, arith::UIToFPOp, arith::MaximumFOp,
-                    arith::MinimumFOp, arith::CmpFOp, arith::SelectOp,
-                    arith::ConstantOp, tensor::EmptyOp, tosa::CastOp>();
+  target.addLegalOp<
+      linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp, arith::TruncIOp,
+      arith::DivUIOp, arith::MaxUIOp, arith::FPToSIOp, arith::FPToUIOp,
+      arith::UIToFPOp, arith::MaximumFOp, arith::MinimumFOp, arith::CmpFOp,
+      arith::SelectOp, arith::ConstantOp, tensor::EmptyOp, tosa::CastOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME;
   });
@@ -169,7 +177,7 @@ void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
 
 void mlir::rock::populateRocmlirCustomTosaToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<UnsignedCastLoweringPattern, MatMulAccPromotionPattern>(
+  patterns.add<UnsignedOpLoweringPattern, MatMulAccPromotionPattern>(
       patterns.getContext());
 }
 

@@ -99,7 +99,7 @@ func.func @mlir_lse_attention_fusion(%arg0: tensor<4096xf32>, %arg1: tensor<8192
 
 // CHECK-LABEL: func @mlir_lse_attention_kvcache_fusion
 // CHECK: %{{.*}}, %[[lseOut:.*]] = rock.attention
-// CHECK: currentSeqLen = (%{{.*}} : tensor<32xi32>)
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<32xi32>)
 // CHECK: %[[lseExpanded:.*]] = tensor.expand_shape %[[lseOut]]
 // CHECK: %[[lseFusion:.*]] = tosa.add %[[lseExpanded]], %{{.*}} : (tensor<1x32x1x1xf16>, tensor<1x32x1x1xf16>) -> tensor<1x32x1x1xf16>
 // CHECK: %[[lseCollapsed:.*]] = tensor.collapse_shape %[[lseFusion]]

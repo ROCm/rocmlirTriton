@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
@@ -16,6 +19,17 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
                                                          KernelType op,
                                                          Type dataType) {
   arch = normalizeArch(arch);
+  // gfx1170 ships no tuned quick-tuning tables of its own. The generic
+  // lexicographic fallback would land on gfx1151 (RDNA3.5 APU), whose top
+  // conv f16 tile (128x256x32) does not fit the WMMA conv LDS budget on a
+  // 64 KiB arch. Reuse gfx1200's (RDNA4) tables instead -- gfx1200 owns the
+  // GEMM tables and cross-falls-back to gfx1201 for conv/attention, all of
+  // which fit. This alias is scoped to tuning-table selection only; WMMA
+  // detection, LDS sizing, and pipeline gating still use the real gfx1170.
+  // TODO(AIROCMLIR-705): Generate a proper quick-tuning table for gfx1170 and
+  // remove this alias.
+  if (arch == "gfx1170")
+    arch = "gfx1200";
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
@@ -114,8 +128,7 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
   return relatives;
 }
 
-template <typename ParamsType>
-StringRef ParamLookupTable<ParamsType>::normalizeArch(StringRef arch) {
+StringRef mlir::rock::normalizeArch(StringRef arch) {
   auto gfxPos = arch.find("gfx");
   if (gfxPos == StringRef::npos) {
     llvm_unreachable("Invalid architecture string");
@@ -126,24 +139,9 @@ StringRef ParamLookupTable<ParamsType>::normalizeArch(StringRef arch) {
   return remaining.substr(0, endPos);
 }
 
-template <typename ParamsType>
-std::string
-ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
-  switch (kernelType) {
-  case KernelType::ConvBwdData:
-  case KernelType::ConvBwdWeight:
-    // We use the same suffix for all convolution types
-    return stringifyEnum(KernelType::Conv).lower();
-  default:
-    return stringifyEnum(kernelType).lower();
-  }
-}
-
-template <typename ParamsType>
-std::string ParamLookupTable<ParamsType>::getDataTypeString(Type dataType) {
-  if (dataType.getIntOrFloatBitWidth() == 4 &&
-             isa<FloatType>(dataType)) {
-    // We usa simplified "f4" for all 4-bit float types
+std::string mlir::rock::getDataTypeString(Type dataType) {
+  if (dataType.getIntOrFloatBitWidth() == 4 && isa<FloatType>(dataType)) {
+    // We use a simplified "f4" for all 4-bit float types
     return "f4";
   } else if (dataType.getIntOrFloatBitWidth() == 8 &&
              isa<FloatType>(dataType)) {
@@ -162,6 +160,19 @@ std::string ParamLookupTable<ParamsType>::getDataTypeString(Type dataType) {
       result.erase(result.begin());
     }
     return result;
+  }
+}
+
+template <typename ParamsType>
+std::string
+ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
+  switch (kernelType) {
+  case KernelType::ConvBwdData:
+  case KernelType::ConvBwdWeight:
+    // We use the same suffix for all convolution types
+    return stringifyEnum(KernelType::Conv).lower();
+  default:
+    return stringifyEnum(kernelType).lower();
   }
 }
 

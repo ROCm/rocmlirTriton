@@ -67,6 +67,7 @@ int getWmmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
   case ISAFamily::RDNA3:
     return 1;
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
     return 2;
   case ISAFamily::GFX1250:
@@ -366,6 +367,11 @@ OperandTypesVector getOperandTypesForWmmaOp(PatternRewriter &rewriter,
       // {bf16, bf16, bf16, bf16},
       // {i4, i4, i32, i32} - are supported configurations
       // by WMMA instruction, but not supported by triton
+      // TODO(gfx1170): enable {i4, i4, i32, i32} to expose
+      // v_wmma_i32_16x16x32_iu4 (WMMA v2) / v_wmma_i32_16x16x16_iu4 (v1).
+      // The WMMA intrinsic DB and integer operand lowering already support it;
+      // this needs i4 dot-operand support validated end-to-end plus a lit test
+      // before enabling.
       // clang-format on
   };
   if (version == 2 || version == 3) {
@@ -1800,6 +1806,16 @@ public:
       return true;
     }
 
+    // Try Fp8/Bf8 x Fp8/Bf8 -> Fp32 v_dot4. Each of the four operand pairings
+    // has its own instruction, so A and B need not have the same type.
+    // if k % 4 != 0: can not use the packed 4-element V_DOT instruction
+    auto isOcpFp8 = [](Type t) { return t.isF8E4M3FN() || t.isF8E5M2(); };
+    if (targetFeatures.supportsFp8Dot4Fma() && isOcpFp8(dotTypes.a) &&
+        isOcpFp8(dotTypes.b) && dotTypes.c.isF32() && dotTypes.d.isF32() &&
+        k % 4 == 0) {
+      return true;
+    }
+
     // TODO: enable this condition, when fp32 -> fp16 cast works correctly
     // Consider this case as non legal, despite this case is covered by fp16
     // FMA. Because v_dot expected to give both better performance and
@@ -1960,6 +1976,7 @@ struct TritonAMDGPUAccelerateMatmulPass
                                         /*benefit=*/2);
       break;
     case ISAFamily::RDNA3:
+    case ISAFamily::GFX1170:
     case ISAFamily::RDNA4:
       ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
                                                   /*benefit=*/3);

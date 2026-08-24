@@ -59,6 +59,10 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
 
+/// Extract the bare gfx token from an architecture string, stripping any
+/// target-triple prefix and `:feature` suffixes.
+std::tuple<StringRef, unsigned> parseArchString(StringRef arch);
+
 /// Extract the ISAFamily and chip name from an architecture string. The chip
 /// name is the bare gfx token (e.g. "gfx1100"), with any target-triple prefix
 /// and `:feature` suffixes stripped.
@@ -82,30 +86,14 @@ int64_t getMinNumCU(StringRef arch);
 /// Get maximum number of chiplets per arch
 int64_t getMaxNumChiplets(StringRef arch);
 
+/// Infer the active chiplet count from the architecture and live CU count.
+int64_t inferNumChiplets(StringRef arch, int64_t numCUs);
+
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
 
 /// Get the SIMD VGPR file size per execution unit for this arch.
 int64_t getVGPRsPerEU(StringRef arch);
-
-/// Element type used by the out-of-MLIR (e.g. Python test binding) overloads
-/// of the per-arch dtype-dispatched queries below. Mirrors the small set of
-/// MLIR `Type`s those helpers actually switch on.
-enum class Dtype { F32, F16, BF16 };
-
-/// Whether there's fast atomic add support
-bool isFastAtomicAddSupported(StringRef arch, Type type);
-
-/// Enum-dtype overload of \ref isFastAtomicAddSupported, intended for
-/// out-of-MLIR callers (e.g. the Python test binding).
-bool isFastAtomicAddSupported(StringRef arch, Dtype dtype);
-
-/// Whether there's fast atomic max support
-bool isFastAtomicMaxSupported(StringRef arch, Type type);
-
-/// Enum-dtype overload of \ref isFastAtomicMaxSupported (currently only
-/// `Dtype::F32` is recognized as supportable on any arch).
-bool isFastAtomicMaxSupported(StringRef arch, Dtype dtype);
 
 /// Whether this architecture has any FP8 matrix-acceleration intrinsics
 /// (MFMA on CDNA3+, WMMA on RDNA4+ / GFX1250). Independent of any specific
@@ -141,6 +129,16 @@ int64_t getMaxNumCTAs(StringRef arch);
 
 /// Get the maximum supported `kpack` perf-config value for this arch.
 int64_t getMaxKpack(StringRef arch);
+
+/// Whether a non-power-of-two `kPerBlock` perf-config value may be used on this
+/// arch, i.e. whether the K loop may be peeled into power-of-two segments.
+bool supportsNonPow2KPerBlock(StringRef arch);
+
+/// Whether an f32 `tt.dot` should be emulated with the 3xBF16 trick
+/// (`InputPrecision::BF16x3`) instead of being issued as an IEEE f32 dot.
+/// This is the heuristic behind the `useBf16x3ForF32` perfConfig knob's `-1`
+/// setting; an explicit `0`/`1` in the perfConfig overrides it.
+bool preferBf16x3ForF32Dot(StringRef arch);
 
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);

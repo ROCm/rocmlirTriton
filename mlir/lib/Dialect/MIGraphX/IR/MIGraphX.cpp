@@ -313,6 +313,37 @@ LogicalResult LiteralOp::verify() {
   return success();
 }
 
+LogicalResult MaxOp::verify() {
+  MIXRShapedType inAType = getInA().getType();
+  MIXRShapedType inBType = getInB().getType();
+  MIXRShapedType outputType = getOutput().getType();
+
+  // The ODS traits verify that all logical shapes and element types match, so
+  // checking one shape and element type below covers both inputs and the
+  // result. Current TOSA and Linalg boundary conversions also require static
+  // layouts.
+  if (!inAType.hasStaticShape())
+    return emitOpError("requires static logical shapes");
+
+  auto hasDynamicStride = [](MIXRShapedType type) {
+    return llvm::any_of(type.getStrides(), [](int64_t stride) {
+      return ShapedType::isDynamic(stride);
+    });
+  };
+  if (hasDynamicStride(inAType) || hasDynamicStride(inBType) ||
+      hasDynamicStride(outputType))
+    return emitOpError("requires static strides");
+
+  if (!inAType.getElementType().isIntOrFloat())
+    return emitOpError("only supports integer or floating-point element types");
+
+  // TOSA maximum has no boolean profile; use a logical operation for i1 values.
+  if (inAType.getElementType().isInteger(1))
+    return emitOpError("does not support one-bit integer element types");
+
+  return success();
+}
+
 LogicalResult ReshapeOp::verify() {
   MIXRShapedType inputType = getInput().getType();
   MIXRShapedType outType = getOutput().getType();

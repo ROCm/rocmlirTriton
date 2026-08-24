@@ -45,6 +45,11 @@ the author can look up the rationale.
   project's confidentiality policy.) It IS fine to reference unreleased
   `gfx*` IDs only when they are already mentioned upstream (in the
   vendored Triton subtree, the LLVM AMDGPU backend, or upstream rocMLIR).
+- Internal-only hyperlinks or URLs in code, comments, commits, docs, test
+  data, or metadata, including internal Jira/OnTrack, Confluence,
+  source-control repositories, and internal network hosts. Keep non-sensitive
+  ticket identifiers as plain text when provenance is useful, but never
+  include an internal URL.
 - C++ exceptions (`throw`, `try`/`catch`); use `LogicalResult` /
   `emitOpError` / `signalPassFailure` instead. (Triton-side code
   additionally compiles with `-fno-exceptions -fno-rtti -Werror`; respect

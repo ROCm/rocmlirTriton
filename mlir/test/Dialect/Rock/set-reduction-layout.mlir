@@ -3,11 +3,14 @@
 // The pass redistributes the reduction-operand global-load #blocked layout so
 // that every warp owns a reduction (K) strip. 
 //
-// RUN: rocmlir-opt -rock-set-reduction-layout --mlir-print-local-scope --split-input-file %s | FileCheck %s
+// These tests exercise the rewrite mechanics on kernels that do not carry the
+// `rock.conv_kernel` attribute, so they force the rewrite on with
+// `use-reduction-layout=1` (the default only rewrites convolution kernels).
+// RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --mlir-print-local-scope --split-input-file %s | FileCheck %s
 //
 // The conflict path (a single load feeding dot operands with disagreeing
 // reduction dims) emits a warning to stderr; check it separately.
-// RUN: rocmlir-opt -rock-set-reduction-layout --split-input-file %s 2>&1 | FileCheck %s --check-prefix=CONFLICT
+// RUN: rocmlir-opt -rock-set-reduction-layout="use-reduction-layout=1" --split-input-file %s 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // The B / reduction operand (64x64) is loaded "gather"-style: its reduction dim
 // (dim 0) is the slowest-varying dim (order = [1, 0]). Its warpsPerCTA = [2, 2]
@@ -285,6 +288,71 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
       scf.yield %11, %12 : tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked1>
     }
     tt.return %3#0 : tensor<128x64xi32, #mma>
+  }
+}
+
+// -----
+
+// If we have a loop carried value, but its not affected by the rewrite,
+// we don't bail out and we actually run the pass on such IR.
+
+#blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_load_through_scalar_loop_iter_arg
+  // CHECK-DAG:     tt.splat {{.*}} : i32 -> tensor<64x64xi32, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     scf.for {{.*}} -> ({{.*}}, i32)
+  // CHECK-DAG:     tt.return %{{.*}}, %{{.*}}#1 : tensor<128x64xi32, {{.*}}>, i32
+  tt.func @gather_load_through_scalar_loop_iter_arg(%arg0: !tt.ptr<i8>) -> (tensor<128x64xi32, #mma>, i32) {
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c36_i32 = arith.constant 36 : i32
+    %cst = arith.constant dense<0> : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
+    %cst_0 = arith.constant dense<0> : tensor<128x64xi32, #mma>
+    %0:2 = scf.for %arg1 = %c0_i32 to %c36_i32 step %c1_i32 iter_args(%arg2 = %cst_0, %arg3 = %c0_i32) -> (tensor<128x64xi32, #mma>, i32)  : i32 {
+      %1 = tt.splat %arg3 : i32 -> tensor<64x64xi32, #blocked>
+      %2 = amdg.buffer_load %arg0[%1] : tensor<64x64xi8, #blocked>
+      %3 = ttg.convert_layout %2 : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
+      %4 = tt.dot %cst, %3, %arg2 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
+      %5 = arith.addi %arg3, %c1_i32 : i32
+      scf.yield %4, %5 : tensor<128x64xi32, #mma>, i32
+    }
+    tt.return %0#0, %0#1 : tensor<128x64xi32, #mma>, i32
+  }
+}
+
+// -----
+
+// Same structure as above, but here the loop carried value has a layout
+// (%cst_1, with the #blocked layout being rewritten) instead of a scalar.
+// Retyping it would also retype the loop result, malforming the IR,
+// so the pass bails.
+
+#blocked = #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @loop_carried_offsets_read_after_loop
+  //       CHECK:   warpsPerCTA = [2, 2]
+  //   CHECK-NOT:   warpsPerCTA = [4, 1]
+  //       CHECK:   tt.return
+  tt.func @loop_carried_offsets_read_after_loop(%arg0: !tt.ptr<i8>) -> (tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked>) {
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c36_i32 = arith.constant 36 : i32
+    %cst = arith.constant dense<0> : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
+    %cst_0 = arith.constant dense<0> : tensor<128x64xi32, #mma>
+    %cst_1 = arith.constant dense<0> : tensor<64x1xi32, #blocked>
+    %cst_2 = arith.constant dense<1> : tensor<64x1xi32, #blocked>
+    %0:2 = scf.for %arg1 = %c0_i32 to %c36_i32 step %c1_i32 iter_args(%arg2 = %cst_0, %arg3 = %cst_1) -> (tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked>)  : i32 {
+      %1 = tt.broadcast %arg3 : tensor<64x1xi32, #blocked> -> tensor<64x64xi32, #blocked>
+      %2 = amdg.buffer_load %arg0[%1] : tensor<64x64xi8, #blocked>
+      %3 = ttg.convert_layout %2 : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
+      %4 = tt.dot %cst, %3, %arg2 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
+      %5 = arith.addi %arg3, %cst_2 : tensor<64x1xi32, #blocked>
+      scf.yield %4, %5 : tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked>
+    }
+    tt.return %0#0, %0#1 : tensor<128x64xi32, #mma>, tensor<64x1xi32, #blocked>
   }
 }
 

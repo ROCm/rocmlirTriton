@@ -1,6 +1,7 @@
 //===- GemmToGridwise.cpp - Rock GEMM implementation ------------===//
 //
-// Copyright 2022 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -201,10 +202,13 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
 
-  a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
-  b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
+  a = padMatrixForTileAlignment(a, rw, loc, "gemmM", extraPad.m, "gemmK",
+                                extraPad.k);
+  b = padMatrixForTileAlignment(b, rw, loc, "gemmK", extraPad.k, "gemmN",
+                                extraPad.n);
   transformViews([&](Value v) {
-    return padMatrix(v, rw, loc, "gemmM", extraPad.m, "gemmN", extraPad.n);
+    return padMatrixForTileAlignment(v, rw, loc, "gemmM", extraPad.m, "gemmN",
+                                     extraPad.n);
   });
   if (scaleA && scaleB) {
     int64_t quantBlockSize = op.getQuantBlockSize().value();
@@ -216,10 +220,10 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     int64_t newScaleK = newK / quantBlockSize;
     int64_t padScaleK =
         newScaleK - cast<ShapedType>(scaleA.getType()).getDimSize(2);
-    scaleA =
-        padMatrix(scaleA, rw, loc, "gemmM", extraPad.m, "gemmK", padScaleK);
-    scaleB =
-        padMatrix(scaleB, rw, loc, "gemmN", extraPad.n, "gemmK", padScaleK);
+    scaleA = padMatrixForTileAlignment(scaleA, rw, loc, "gemmM", extraPad.m,
+                                       "gemmK", padScaleK);
+    scaleB = padMatrixForTileAlignment(scaleB, rw, loc, "gemmN", extraPad.n,
+                                       "gemmK", padScaleK);
   }
 
   if (failed(computeGridSize(rw, op, a, b))) {
@@ -296,15 +300,17 @@ GemmRewritePattern::arrangeSplitKTransform(
     kPad = llvm::alignTo(origK, splitKFactor) - origK;
   }
 
-  a = padMatrix(a, builder, loc, "gemmM", 0, "gemmK", kPad);
-  b = padMatrix(b, builder, loc, "gemmK", kPad, "gemmN", 0);
+  a = padMatrixForTileAlignment(a, builder, loc, "gemmM", 0, "gemmK", kPad);
+  b = padMatrixForTileAlignment(b, builder, loc, "gemmK", kPad, "gemmN", 0);
   if (scaleA && scaleB) {
     assert(kPad % blockSize == 0 &&
            "kPad must be a multiple of quantBlockSize");
     int64_t scaleKPad = kPad / blockSize;
-    scaleA = padMatrix(scaleA, builder, loc, "gemmM", 0, "gemmK", scaleKPad);
+    scaleA = padMatrixForTileAlignment(scaleA, builder, loc, "gemmM", 0,
+                                       "gemmK", scaleKPad);
     // scaleB is [G, N, K] after normalizeMatrix(scaleB, ..., "gemmN", "gemmK")
-    scaleB = padMatrix(scaleB, builder, loc, "gemmN", 0, "gemmK", scaleKPad);
+    scaleB = padMatrixForTileAlignment(scaleB, builder, loc, "gemmN", 0,
+                                       "gemmK", scaleKPad);
   }
 
   // perform coordinate transformations

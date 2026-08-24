@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Sweep random (problem-shape, perf-config) combinations for the
-``GemmGemmParamsAttr`` perf-config family (``attn:v1:``) — i.e. attention
+``GemmGemmParamsAttr`` perf-config family (``attn:``) — i.e. attention
 and gemm+elementwise+gemm — through the rocMLIR pipeline and classify each
 as PASS / NOT_APPLICABLE / FAIL. Run from the build directory.
 
@@ -76,9 +79,11 @@ def _waves_per_eu_register_budget_ok(perf_config: Sequence[int], arch: str) -> b
     ``(mPerBlock * nPerBlock) / threads <= vgprs_per_eu / effective_wpe``,
     where ``threads = numWaves * waveSize`` and ``effective_wpe`` is
     ``wavesPerEU`` itself, or ``1`` when ``wavesPerEU == 0``."""
+    # 12-field attn layout (nPerBlockG1 is field 2), so numWaves/wavesPerEU
+    # sit one slot later than in the 11-field gemm layout.
     mpb, npb = perf_config[0], perf_config[1]
-    num_waves = perf_config[5]
-    waves_per_eu = perf_config[9]
+    num_waves = perf_config[6]
+    waves_per_eu = perf_config[10]
     threads = max(1, num_waves * amd_arch_db.get_wave_size(arch))
     effective_waves_per_eu = waves_per_eu if waves_per_eu > 0 else 1
     # Integer cross-multiplication is exact; avoids any FP rounding at the
@@ -105,7 +110,11 @@ def _sampled_perf_within_vgpr_budget(rng: random.Random,
     its basic-block instruction-count cap is calibrated for conv / gemm
     and doesn't catch the regalloc thrash this predicate guards against."""
     for _ in range(_MAX_PERF_CONFIG_RETRIES):
-        perf_config = sample_perf_config(rng, arch, split_k_choices, pow2_only=pow2_only)
+        perf_config = sample_perf_config(rng,
+                                         arch,
+                                         split_k_choices,
+                                         pow2_only=pow2_only,
+                                         is_attention=True)
         if _waves_per_eu_register_budget_ok(perf_config, arch):
             return perf_config
     raise RuntimeError(
@@ -165,21 +174,14 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     split_kv = rng.choice(SPLIT_KV_OPTIONS) if return_lse else 1
 
     use_kvcache = rng.choice([True, False])
-    # KV-cache mode requires per-group ``current_seqlen[i]`` in [1, seqlen_k - 1]
-    # (see the ``current_seqlen`` block below for why), so we need at least
-    # ``seqlen_k >= 2`` whenever kvcache is enabled.
-    seqlen_k_lo = 2 if use_kvcache else 1
-    if seqlen_k_lo > max_valid_seqlen:
-        use_kvcache = False
-        seqlen_k_lo = 1
-    seqlen_k = rng.randint(seqlen_k_lo, max_valid_seqlen)
+    seqlen_k = rng.randint(1, max_valid_seqlen)
 
     # Causal masking combined with KV-cache decode (seq_len_q == 1) doesn't
     # make sense: the single query attends only to cached past keys anyway.
     causal = False if use_kvcache else rng.choice([True, False])
 
-    # KV-cache mode: a single query token per call, looking up `current_seqlen`
-    # already-cached keys/values per group. Otherwise cap seq_len_q so:
+    # KV-cache mode: a single query token per call. Each group's inclusive
+    # `last_valid_kv_index` P makes keys [0, P] valid. Otherwise cap seq_len_q so:
     #   1. The first matmul (Q @ K^T, shape seq_len_q x seq_len_k) stays under
     #      MAX_FIRST_MATMUL elements -- the dominant cost on prefill shapes.
     #   2. When causal masking is combined with split-KV, seq_len_q stays at
@@ -195,12 +197,17 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         if causal and split_kv > 1:
             max_seqlen_q = min(max_seqlen_q, n_per_block)
         seqlen_q = rng.randint(1, max_seqlen_q)
-    # rocmlir-gen.cpp (maskKVCacheTosa) asserts ``v >= 0 && v < seqlen_k``
-    # on each per-group ``current_seqlen[i]``. We additionally need ``v >= 1``
-    # because ``v == 0`` (no valid cached keys) makes the softmax denominator
-    # 0 -> nan even without causal masking. So sample in [1, seqlen_k - 1];
-    # the ``seqlen_k_lo`` block above guarantees this range is non-empty.
-    current_seqlen = ([rng.randint(1, seqlen_k - 1) for _ in range(g)] if use_kvcache else None)
+    # P is an inclusive index, not a count. In particular, P == 0 means one
+    # valid cached key. Sample the complete legal range [0, seqlen_k - 1].
+    last_valid_kv_index = ([rng.randint(0, seqlen_k - 1) for _ in range(g)]
+                           if use_kvcache else None)
+
+    # A sliding look-back L is strictly positive and bounded by seqlen_k - 1.
+    # Sweeps use explicit last-valid indices, while reconstructed tuning keys
+    # may use rocmlir-gen's full-cache default. None is the non-sliding spelling;
+    # keep that path and skip sliding when seqlen_k == 1 because no valid L exists.
+    sliding_window_look_back = (rng.randint(1, seqlen_k - 1) if use_kvcache and seqlen_k > 1 and
+                                rng.choice([True, False]) else None)
 
     num_heads_q, num_heads_kv = _sample_num_heads(rng)
 
@@ -222,7 +229,8 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         causal,
         return_lse,
         split_kv,
-        current_seqlen,
+        last_valid_kv_index,
+        sliding_window_look_back,
     )
 
 
@@ -293,7 +301,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
     shape, perf = params
     dtype, g, m, k, n, o, ta, tb, tc, to = shape
     # ``kind='attn'`` is intentional: gemm+gemm and attention share the same
-    # GemmGemmParamsAttr perf-config family (serialized as ``attn:v1:...``);
+    # GemmGemmParamsAttr perf-config family (serialized as ``attn:...``);
     # see the ``PerfConfig`` docstring and RockAttrDefs.td.
     return perfRunner.GemmGemmConfiguration(
         dtype=dtype,
@@ -316,7 +324,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
-     split_kv, current_seqlen) = shape
+     split_kv, last_valid_kv_index, sliding_window_look_back) = shape
     attn_config = perfRunner.AttentionConfiguration(
         dtype=dtype,
         g=g,
@@ -339,7 +347,8 @@ def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
         num_cu=options.num_cu,
         num_chiplets=options.num_chiplets,
         perf_config=str(PerfConfig(perf, kind='attn')),
-        current_seqlen=current_seqlen,
+        last_valid_kv_index=last_valid_kv_index,
+        sliding_window_look_back=sliding_window_look_back,
     )
     # Precision-aware rocmlir-gen flags (e.g. --pv-f64) picked up per-config
     # in parameterSweeps._build_rocmlir_gen_opts to combat CPU reference drift
@@ -355,7 +364,7 @@ def main() -> bool:
                         choices=['attention', 'gemm_gemm'],
                         help="Kind of kernel to sweep: 'attention' or 'gemm_gemm'. "
                         "The spelling matches rocmlir-gen --operation. Both share "
-                        "the GemmGemmParamsAttr (attn:v1:) perf-config family but "
+                        "the GemmGemmParamsAttr (attn:) perf-config family but "
                         "have different problem-shape spaces.")
     add_common_args(parser)
     args = parser.parse_args()

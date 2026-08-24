@@ -1,7 +1,8 @@
 //===- TensorToTritonPtr.cpp - Convert tensor semantic kernels (rock) to pointer
 // semantic kernels (triton) --===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -259,7 +260,8 @@ void RockTensorToTritonPtrPass::runOnOperation() {
     std::string kernelName = funcOp.getName().str();
     if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
             rock::GridSizeAttr::getMnemonic())) {
-      moduleOp->setAttr("rock.grid_size." + kernelName, gridAttr);
+      moduleOp->setAttr(rock::GridSizeAttr::getModuleAttrName(kernelName),
+                        gridAttr);
     }
 
     // Collect rock.prefill arg attributes.

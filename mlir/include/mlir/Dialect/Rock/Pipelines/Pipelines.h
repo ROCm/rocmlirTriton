@@ -46,13 +46,15 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
   /// When false (default), run `rock-allow-fast-math-flags` immediately
-  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass.
+  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass
+  /// and to hold `rock-to-ttir` to IEEE f32 dots.
   PassOptions::Option<bool> disableFastMath{
       *this, "disable-fast-math",
       desc("Skip `rock-allow-fast-math-flags` after split-k regularization "
            "(by default the pass runs and tags floating-point ops with "
            "fastmath flags like `arcp`/`contract`/`nsz`/`afn` for "
-           "reciprocal-style and FMA-friendly lowering)"),
+           "reciprocal-style and FMA-friendly lowering), and keep every f32 "
+           "`tt.dot` at IEEE precision"),
       init(false)};
 };
 
@@ -116,6 +118,12 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       desc("Gate the rock-set-reduction-layout pass (warp redistribution "
            "onto the reduction dim). kKnobDefault=-1 (heuristic, currently "
            "off), 0=off, 1=on. Not tuned; opt-in via the perfConfig."),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useOptimizeEpilogue{
+      *this, "useOptimizeEpilogue",
+      desc("Gate Triton's OptimizeEpilogue pass. kKnobDefault=-1 uses the "
+           "rocMLIR store-tail heuristic, 0=off, 1=unconditionally on. Not "
+           "tuned."),
       init(kKnobDefault)};
 };
 

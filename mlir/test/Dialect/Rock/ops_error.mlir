@@ -72,6 +72,124 @@ func.func @attention_prefix_offset_requires_causal(%q: tensor<1x384x64xf16>, %k:
   return %r : tensor<1x384x64xf16>
 }
 
+func.func @attention_sliding_look_back_zero(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 0 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// -1 is the driver and tuning sentinel for a disabled sliding window, which is
+// spelled in IR as an absent attribute; it must never reach the op as a value.
+func.func @attention_sliding_look_back_negative(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = -1 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+func.func @attention_sliding_look_back_requires_last_valid_kv_index(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack requires lastValidKVIndex to be set}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 128 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+func.func @attention_sliding_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be less than max sequence length}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 384 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// slidingWindowLookBack on a gemm-gemm-like op with softmax disabled is not attention.
+func.func @gridwise_attention_sliding_look_back_only_for_attention(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack only works for attention}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    enableSoftmax = false,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_zero(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 0 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_negative(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = -1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_requires_last_valid_kv_index(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack requires lastValidKVIndex to be set}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be less than max sequence length}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 384 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // gemm tests 
 // -----------------------------------------------------------------------------
@@ -1060,6 +1178,13 @@ func.func @load_marker_cache_modifier_wb(%src: tensor<256x128xf16>, %i0: i32) ->
 func.func @load_marker_cache_modifier_wt(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
   %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier wt>} : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Reduction tile axis must refer to an axis of the rank-2 loaded tile
+func.func @load_marker_reduction_tile_axis_out_of_bounds(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{reduction tile axis 2 is not an axis of the loaded tile}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 2>} : tensor<256x128xf16> -> tensor<64x128xf16>
   return %0 : tensor<64x128xf16>
 }
 

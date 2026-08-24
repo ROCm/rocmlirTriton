@@ -10,11 +10,30 @@ patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
+patch-gfx1170.patch
+patch-gfx1170-fp8-cvt.patch
+patch-optimize-epilogue-rock-metadata.patch
+patch-partitionloops-clang-cl.patch
+patch11295.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+patch11018.patch
+patch11118.patch
+
+patch-partitionloops-clang-cl.patch
+  Upstream PR: https://github.com/triton-lang/triton/pull/11114
+  Upstream title: Fix getPartition overload ambiguity with clang-cl
+  Changes
+  partitions.getPartition((int)0) to partitions.getPartition(0u) in
+  lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp.
+  `(int)0` is also a null-pointer constant, so under clang-cl the call is
+  ambiguous between getPartition(unsigned) and getPartition(Operation*); an
+  explicitly unsigned literal selects the intended getPartition(unsigned)
+  overload. No-op for GCC/Clang on Linux, which resolve the overload fine.
+  Keep until the vendored Triton revision contains the upstream fix.
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
@@ -76,6 +95,87 @@ patch-skip-subbyte-reduce-data-duplication.patch
   to i8 and truncates back to the logical element type, so introducing local
   memory here is incorrect for sub-byte element types.
 
+patch-gfx1170.patch
+  Adds gfx1170 (ISA 11.7) as its own ISAFamily::GFX1170 in the vendored Triton
+  AMD backend. gfx1170 is a gfx11/RDNA3-based core (wave32, RDNA3 memory model,
+  RDNA3 buffer/cache encoding) that ships the gfx12/RDNA4 matrix engine
+  (128-bit WMMA v2 + SWMMAC, fp8 conversion insts, IEEE min/max), so it is
+  classified before the generic gfx11 -> RDNA3 catch-all in
+  TargetFeatures::getISAFamily and then treated as RDNA3 for memory-model
+  pieces (buffer atomics, cache-modifier bits, shared ld/st tiles) but as
+  RDNA4 for the matrix engine (getWmmaVersion -> v2, supportMaximumMinimum,
+  scaled-blocked decomposition). Also wires gfx117 into compiler.py
+  is_in_thread_transpose_enabled and adds RDNA3/gfx1170 lit coverage. Carries
+  TODO(gfx1170) notes (fp8 OCP HW cvt in ConvertFpCastOpToLLVM, i4 WMMA)
+  documenting latent perf gaps that are correct via the software/upcast
+  fallback today.
+
+  Also implements the fp8 dot4 FMA path that gfx1170 and RDNA4 share.
+  TargetFeatures::supportsFp8Dot4Fma gates {GFX1170, RDNA4}, isLegalFMAForm
+  admits fp8/bf8 operand pairs with k % 4 == 0, and DotOpToLLVM/FMA selects the
+  matching llvm.amdgcn.dot4.f32.{fp8,bf8}.{fp8,bf8} for all four pairings.
+  A and B may differ, since each ordering has its own instruction.
+
+  The path is not reachable through accelerate-matmul today: BlockedToWMMA
+  claims every fp8 dot on these targets except K == 1, and K == 1 in turn fails
+  the k % 4 == 0 requirement. Unlike MFMA, which declines on
+  inputKSize % kDim != 0 and hands off to FMA, WMMA has no K-divisibility guard,
+  so the whole packed-dot FMA family (f16 fdot2, i8 sdot4, fp8 dot4) is latent
+  on WMMA targets. Coverage is therefore at the Conversion level rather than end
+  to end: test/Conversion/amd/fp8_dot4.mlir feeds blocked fp8 dots straight into
+  --convert-triton-amdgpu-to-llvm on gfx1170 and gfx1200, pinning all four
+  FP8/BF8 operand pairings.
+
+  The WMMA v2 conversion regression also covers all four OCP fp8/bf8 operand
+  combinations and their exact LLVM intrinsics.
+
+  Drop this patch on the next Triton bump that pulls gfx1170 support upstream
+  into external/triton.
+
+patch-gfx1170-fp8-cvt.patch
+  Applies on top of patch-gfx1170.patch and uses the hardware OCP fp8/bf8
+  conversion instructions on gfx1170. gfx1170 and RDNA4 have
+  FeatureFP8ConversionInsts, i.e. the *plain*
+  v_cvt_pk_f32_{fp8,bf8} / v_cvt_pk_{fp8,bf8}_f32 ops, and on them those ops
+  read and write the OCP encoding -- unlike CDNA3, where the same mnemonics
+  mean FNUZ, which is why the existing plain converters could not simply be
+  reused. They also lack the scaled v_cvt_scalef32_pk_* ops that CDNA4 and
+  gfx1250 use, so the CDNA4 OCP converters could not be reused either.
+  ConvertFpCastOpToLLVM therefore gains a hasPlainOcpFp8HW({GFX1170})
+  capability and a plain-hardware branch in each of the twelve OCP fp8
+  dispatchers, replacing the software bit-manipulation fallback. Those twelve
+  branches share two helpers, plainHWUpcastFromFp8 and plainHWDowncastToFp8,
+  parameterized by the f32/f16/bf16 type on the non-fp8 side. There is no
+  plain 16-bit-source op, so f16/bf16 casts hop through f32; both hops are
+  lossless for these value ranges, leaving the hardware op as the single
+  rounding site. createDestOps no longer forces OCP f8 -> f32 through an f16
+  intermediate on these targets, since they can now do it directly.
+  RTZ downcasts stay on the software path because the hardware op is
+  round-to-nearest-even only, and the stochastic-rounding v_cvt_sr_* ops are
+  not wired up at all: that needs an RNG operand on tt.fp_to_fp, which the
+  Triton IR contract does not currently have.
+
+  RDNA4 is deliberately left out of hasPlainOcpFp8HW even though it has the
+  instructions. Its packed upcast is selected as the fake16 form of
+  v_cvt_pk_f32_{fp8,bf8} and printed without the .l/.h suffix the assembler
+  demands in the real-true16 mode gfx12 defaults to, so the kernel fails to
+  assemble (LCOMPILER-2609). gfx11 escapes this only because make_amdgcn /
+  make_hsaco pass `-real-true16` for every gfx11 kernel, which covers gfx1170.
+  Add RDNA4 once LCOMPILER-2609 is fixed.
+
+  A lone OCP fp8/bf8 value upcasting to f32 uses the scalar v_cvt_f32_{fp8,bf8}
+  rather than the packed op. getNumElements returns 1 instead of the default 4
+  for exactly that case on hasPlainOcpFp8HW targets, which is what stops
+  createDestOps padding the value out with undef before the converter sees it;
+  ScalarF8ToFp32 then emits a single ROCDL::CvtF32{Fp8,Bf8}Op with byteSel 0.
+  Previously this emitted two packed converts and discarded three of the four
+  results. The gate is deliberately narrow -- every other type pair keeps its
+  previous element count, two-element groups still use the packed op, and
+  CDNA3's FNUZ converters are untouched despite having the same shape.
+
+  Drop this patch once gfx1170 OCP fp8/bf8 hardware conversion support is in
+  the pinned Triton revision.
+
 patch10497.patch
   Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
   coverage for f32 FMA dots on RDNA. When WMMA cannot handle the dot, the FMA
@@ -134,3 +234,61 @@ patch10928.patch
 
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
+
+patch11018.patch
+  Gates buffer atomic float min/max on native hardware support:
+  ConvertToBufferOps only rewrites tt.atomic_rmw max/min into
+  amdg.buffer_atomic_rmw when TargetFeatures::supportsBufferAtomicFMinMax
+  accepts the target/type pair (f32 on RDNA1/RDNA2/RDNA3/RDNA4m/RDNA4/GFX1250,
+  f64 on CDNA2/CDNA3/CDNA4/RDNA1/RDNA2/GFX1250); integer min/max always take the
+  generic path.
+  Buffer atomics never reach AtomicExpandPass, so a missing instruction (f32 on
+  CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
+  fallback always has a CAS expansion. That is what lets rocMLIR drop its
+  isFastAtomicMaxSupported() fusion gate.
+
+  Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
+  the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
+  already covers centrally in matchAtomicOp. Lit coverage lives in
+  amd-convert-buffer-ops-atomic-fminmax.mlir as upstream does, leaving
+  amd-convert-buffer-ops.mlir unchanged. Upstream names gfx1170 ISAFamily::RDNA4m;
+  this tree uses ISAFamily::GFX1170 (patch-gfx1170.patch) at the same list slot.
+
+  Drop on the next Triton bump that pulls PR #11018.
+
+patch11118.patch
+  Removes the AMD backend's second arith.minimumf/arith.maximumf conversion
+  registration, which shadowed its direct LLVM minimum/maximum lowering at the
+  same pattern benefit. LLVM now selects native IEEE min/max instructions where
+  available and legalizes the intrinsics otherwise.
+
+  Imports https://github.com/triton-lang/triton/pull/11118.
+
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
+
+patch-optimize-epilogue-rock-metadata.patch
+  Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
+  function marker. Marked kernels keep the paced LDS round-trip instead of
+  using BypassEpilogueSMEM's register permlane bypass. The store-tail heuristic
+  and tri-state policy resolution live in rocMLIR's rock-add-triton-metadata
+  pass; no Rock-specific performance model remains in the vendored Triton
+  implementation.
+
+patch11295.patch
+  Fixes a GFX9 direct-to-LDS miscompile that faults at runtime. The lowering
+  implements a swizzled shared encoding as a within-warp lane shuffle to
+  `laneId + swizzleLaneOffset`, assuming that lands in [0, warpSize), but a
+  wide operand swizzle can have a reach of `vec * maxPhase` larger than the
+  lanes covering the swizzled dimension, so the shuffle crosses the warp
+  boundary and issues an out-of-bounds global read.
+  Once a load passes final async-copy eligibility, createStreamOps halves the
+  candidate encoding's maxPhase until the shuffle is provably in-warp, and
+  keeps the clamp only if the load remains async-copy eligible afterward.
+  This keeps the direct-to-LDS fast path with its vectorization intact at the
+  cost of some bank-conflict avoidance, while ineligible stream copies retain
+  their original encoding.
+
+  Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
+  the pinned Triton revision includes that change.
+

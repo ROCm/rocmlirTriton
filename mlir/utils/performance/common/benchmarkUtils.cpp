@@ -4,12 +4,15 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
 #include "benchmarkUtils.h"
 #include "hip_f8_impl.h"
+
+#include "llvm/ADT/APFloat.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <cassert>
@@ -56,33 +59,12 @@ uint16_t float_to_bfloat16(float src_val) {
   return target_val.ushortvec[1];
 }
 
-// F16 conversion (does not support Inf or NaN)
-// Reference-1: https://stackoverflow.com/a/1659563/4066096
-// Reference-2: https://arxiv.org/pdf/2112.08926.pdf (page 28)
-uint16_t float_to_float16(float flt) {
-  union {
-    float f;
-    uint32_t u;
-  } x{flt};
-
-  const uint32_t b = x.u + 0x00001000;          // round-to-nearest-even
-  const uint32_t e = (b & 0x7F800000) >> 23;    // exponent
-  const uint32_t m = b & 0x007FFFFF;            // mantissa
-  const uint32_t sign = (b & 0x80000000) >> 16; // sign
-
-  if (e > 112)
-    // normalized case
-    return sign | (((e - 112) << 10) & 0x7C00) | m >> 13;
-
-  if ((e > 101) && (e < 113))
-    // denormalized case
-    return sign | ((((0x007FF000 + m) >> (125 - e)) + 1) >> 1);
-
-  if (e > 143)
-    // saturate
-    return 0x7FFF;
-
-  return sign;
+uint16_t float_to_float16(float value) {
+  llvm::APFloat converted(value);
+  bool losesInfo;
+  converted.convert(llvm::APFloat::IEEEhalf(),
+                    llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+  return static_cast<uint16_t>(converted.bitcastToAPInt().getZExtValue());
 }
 
 // Check if device uses FNUZ FP8 format
@@ -129,6 +111,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
   std::vector<uint8_t> patternFp4 = {2, 4, 8, 10};
   std::vector<uint8_t> patternF8E8M0FNU = {1, 2, 4, 8};
   std::vector<int> patternInt{1, -1, 2};
+  std::vector<int> patternInt4{1, -1, 2, -2};
   std::vector<uint8_t> res;
   switch (dataType) {
   case DataType::F32:
@@ -151,7 +134,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
     break;
   case DataType::F16:
     for (auto flt : patternFlt) {
-      ushort f16flt = float_to_float16(flt);
+      unsigned short f16flt = float_to_float16(flt);
       auto *p = reinterpret_cast<unsigned char const *>(&f16flt);
       res.push_back(p[0]);
       res.push_back(p[1]);
@@ -159,7 +142,7 @@ std::vector<uint8_t> getPattern(DataType dataType) {
     break;
   case DataType::BF16:
     for (auto flt : patternFlt) {
-      ushort bf16flt = float_to_bfloat16(flt);
+      unsigned short bf16flt = float_to_bfloat16(flt);
       auto *p = reinterpret_cast<unsigned char const *>(&bf16flt);
       res.push_back(p[0]);
       res.push_back(p[1]);
@@ -189,6 +172,15 @@ std::vector<uint8_t> getPattern(DataType dataType) {
       res.push_back(packedF4);
     }
     break;
+  case DataType::I4:
+    // Pack two signed 4-bit values into each byte.
+    assert(patternInt4.size() % 2 == 0);
+    for (size_t i = 0; i < patternInt4.size(); i += 2) {
+      uint8_t packedI4 =
+          (patternInt4[i] & 0x0F) | ((patternInt4[i + 1] & 0x0F) << 4);
+      res.push_back(packedI4);
+    }
+    break;
   case DataType::UNKNOWN:
     break;
   }
@@ -213,6 +205,8 @@ DataType strToDataType(const std::string &dataTypeStr) {
     return DataType::F8E8M0FNU;
   } else if (dataTypeStr == "f4E2M1FN") {
     return DataType::F4;
+  } else if (dataTypeStr == "i4") {
+    return DataType::I4;
   } else {
     return DataType::UNKNOWN;
   }
@@ -237,6 +231,8 @@ std::string dataTypeToStr(DataType dataType) {
     return "f8E8M0FNU";
   case DataType::F4:
     return "f4E2M1FN";
+  case DataType::I4:
+    return "i4";
   default:
     return "unknown";
   }
@@ -377,6 +373,7 @@ size_t getByteSize(DataType dataType, size_t elems) {
   case DataType::F8E8M0FNU:
     return elems;
   case DataType::F4:
+  case DataType::I4:
     return (elems + 1) / 2; // ceilDiv
   default:
     return 0;
@@ -395,9 +392,10 @@ size_t getBytesPerElement(DataType dataType) {
   case DataType::F8:
   case DataType::F8E8M0FNU:
   case DataType::F4:
+  case DataType::I4:
     return 1;
   default:
-    assert(0 && "Data type unknown");
+    llvm_unreachable("Data type unknown");
   }
 }
 
@@ -431,12 +429,12 @@ void *makeHostConstant(float flt, DataType computeDataType) {
   }
   case DataType::F16: {
     uint16_t *ret = reinterpret_cast<uint16_t *>(malloc(2));
-    *ret = float_to_bfloat16(flt);
+    *ret = float_to_float16(flt);
     return ret;
   }
   case DataType::BF16: {
     uint16_t *ret = reinterpret_cast<uint16_t *>(malloc(2));
-    *ret = float_to_float16(flt);
+    *ret = float_to_bfloat16(flt);
     return ret;
   }
   case DataType::I8: {
@@ -455,8 +453,10 @@ void *makeHostConstant(float flt, DataType computeDataType) {
     *ret = (*(reinterpret_cast<uint32_t *>(&flt)) >> 23) & 0xFF;
     return ret;
   }
-  // fp4 is not supported yet, this is used for rocMLIR benchmarking only
+  // Packed 4-bit constants are not supported yet; these types are used for
+  // rocMLIR benchmarking only.
   case DataType::F4:
+  case DataType::I4:
   default:
     return nullptr;
   }

@@ -1,6 +1,7 @@
 //===- Pipelines.cpp - Create Rock compilation pipelines ---------------===//
 //
-// Copyright 2021 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -107,6 +108,7 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
       {"useReductionLayout", options.useReductionLayout},
+      {"useOptimizeEpilogue", options.useOptimizeEpilogue},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
@@ -127,7 +129,8 @@ static bool isInThreadTransposeEnabled(StringRef arch,
   if (useInThreadTransposeOverride != rock::kKnobDefault)
     return useInThreadTransposeOverride;
   return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
-         arch.starts_with("gfx115") || arch.starts_with("gfx120");
+         arch.starts_with("gfx115") || arch.starts_with("gfx117") ||
+         arch.starts_with("gfx120");
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {
@@ -154,7 +157,6 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
-
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -175,8 +177,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   // --- rocmlirTriton pass ----
 
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
-  // TODO ROCm Check if we want to compare MI100 and greater
-  pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
+  if (options.useOptimizeEpilogue != 0)
+    pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
   pm->addPass(mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands(
       {options.arch}));
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -256,10 +258,12 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
                      int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
-  // Redistribute the layout of the reduction dimension to reduce
-  // register pressure.
-  if (useReductionLayout == 1)
-    pm->addPass(rock::createRockSetReductionLayoutPass());
+  // Redistribute the layout of the reduction dimension to reduce register
+  // pressure. Always scheduled, but the `useReductionLayout`
+  // actually controls whether it runs.
+  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+  reductionLayoutOpts.useReductionLayout = useReductionLayout;
+  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -413,6 +417,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
+  // Cannot be merged with addWithDCE: that helper runs the pass in a new
+  // func nest and the DCE at module level, whereas here both the pass and the
+  // DCE runs on the caller existing func nest.
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
@@ -488,6 +499,12 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     arith::ArithExpandOpsPassOptions expandOpts;
     expandOpts.includeF8E8M0 = true;
     expandOpts.includeF4E2M1 = true;
+    // Anything this pass expands is gone before RockToTTIR runs, so Triton's
+    // elementwise lowering never sees it. Keep floating-point and integer
+    // min/max ops intact unconditionally so Triton can lower them through the
+    // LLVM min/max intrinsics instead of inheriting compare/select chains.
+    expandOpts.includeMinMaxF = false;
+    expandOpts.includeMinMaxI = false;
     pm.addPass(arith::createArithExpandOpsPass(expandOpts));
   }
 
@@ -497,19 +514,18 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
   // chains feeding TransformsToPtrOp by collapsing contiguous merges.
-  funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
   // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
   // it, leaving the original chain dead. DCE it so TransformsToPointerArith
-  // only sees the collapsed chain. Keep this nested per-func: a module-level
-  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
-  // breaks downstream lowering ("rock.arch not found on kernel function").
-  funcPm2.addPass(createRemoveDeadValuesPass());
-  funcPm2.addPass(rock::createRockTransformsInvariantCodeMotionPass());
+  // only sees the collapsed chain.
+  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
+  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());
@@ -538,12 +554,6 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
-  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
-  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
-  // arith.extf/truncf on fp8 element types crash bufferization with
-  // unsupported builtin.unrealized_conversion_cast.
-  pm.addPass(createEmulateFp8ExtTruncPass());
-
   // CPU optimization phase.
 
   // Rewrite linalg.generic convolutions in CPU-verifier funcs into a
@@ -572,6 +582,16 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
       bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run after the
+  // CPU optimization phase above: its VectorizationSchedule vectorizes the
+  // verifier matmul into a named contraction, which it cannot do once the fp8
+  // extf has been rewritten into a memref.
+  // This pass emits memref IR (memref.get_global / memref.load), and we expect
+  // this should only happen when the IR is bufferized. Otherwise, this pass
+  // introduces memref ops while the surrounding IR is still tensor-based.
+  // Thus, it makes more sense to run this pass after bufferization.
+  pm.addPass(createEmulateFp8ExtTruncPass());
+
   // Lower to LLVM phase (after bufferization)
   cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
@@ -587,6 +607,10 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   // includeFlushDenormals stays default (false): it only legalizes the
   // `arith.flush_denormals` op (which this pipeline never produces) and is
   // unrelated to BackendOptions::allowFlushDenorm.
+  // This is the CPU reference used to verify GPU results, so keep min/max on
+  // the compare/select expansion.
+  expandOpts.includeMinMaxF = true;
+  expandOpts.includeMinMaxI = true;
   pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
   // Emulate sub-byte types (f4E2M1FN -> i4 -> packed i8) after ArithExpandOps

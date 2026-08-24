@@ -298,6 +298,19 @@ pm->addNestedPass<mlir::triton::FuncOp>(
     mlir::createTritonAMDGPUMoveUpPrologueLoads());
 ```
 
+### 5.3.2 KV-cache attention LLVM workaround
+
+`GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
+static K/V block count. This is a workaround for an LLVM AMDGPU raw-buffer
+bounds-checking bug that can make an out-of-contract `lastValidKVIndex` read
+past the K/V allocation. The LLVM issue is tracked by ROCM-28757.
+
+On every LLVM bump, check whether the new pinned LLVM revision contains the
+upstream fix and whether the workaround is still necessary. Do not remove the
+clamp based only on the revision change: also verify the behavior with
+`gridwise-attention-kvcache-clamp.mlir` and
+`mixr-attention-kvcache.mlir`.
+
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 
 Some Triton enums are hand-replicated in the Rock dialect so we can carry the
@@ -345,8 +358,6 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | Function | What to check |
 |----------|---------------|
 | `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
-| `isFastAtomicAddSupported()` | Add the new `ISAFamily` case if atomic f32/f16/bf16 adds are supported. |
-| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. |
 | `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
 | `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |
@@ -357,6 +368,16 @@ Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
 Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
 it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
+
+When a new ISA family (not just a new chip in an existing family) gains support,
+add a representative chip to `DEFAULT_ARCHES` in
+`mlir/utils/performance/generateLDSBlacklist.py`. The LDS-overflow blacklist is
+keyed per ISA family because `ttg.shared` depends on the matmul lowering (MFMA
+vs WMMA vs non-accel), so a new family with no entry gets *no* blacklist and its
+overflowing tiles are never pruned during tuning. Existing chips that fall into
+an already-listed family are covered automatically by the lookup-time fallback
+(see `LdsBlacklist.cpp`), so they do not need a new entry. After editing the
+list, regenerate the `.inc` (Step 11).
 
 **How to detect needed changes:** Triton uses exhaustive `switch` statements over
 `ISAFamily`. If a new variant is added, our switches (which use `default:`) will
@@ -420,11 +441,11 @@ The following Python features are **intentionally omitted** from the C++ impleme
 
 When reviewing diffs, **skip changes** related to these features.
 
-### Knobs that we mirror
+### 8.1 Knobs that we mirror
 
 On a bump, review the upstream diff and propagate any default/semantic changes:
 
-| Upstream (`compiler.py`)                          | perfConfig field (v3 trailing block)  | Pipeline option                                                |
+| Upstream (`compiler.py`)                          | perfConfig field                      | Pipeline option                                                |
 |---------------------------------------------------|---------------------------------------|----------------------------------------------------------------|
 | `knobs.amd.use_async_copy`                        | `useAsyncCopy`                        | `TritonOptions::useAsyncCopy`                                  |
 | `knobs.amd.use_block_pingpong`                    | `useBlockPingpong`                    | `TritonOptions::useBlockPingpong`                              |
@@ -450,18 +471,64 @@ already replicate, decide whether it's a *tuner* knob (per-arch defaults
 vary, plausibly affects perf-tunable shapes) or a *debug* knob (universal
 default, no tuning value). For a tuner knob: add a corresponding
 `Option<int>` to `TritonOptions` (use the `kKnobDefault = -1` tri-state
-sentinel), append a matching `int64_t` field to `Rock_GemmParamsAttr` /
-`Rock_GemmGemmParamsAttr` in `RockAttrDefs.td`, bump the perfConfig schema
-to the next `vN` and extend the parser in `RockDialect.cpp` (add a
-`kNumKnobFieldsVN` and keep the previous version readable for back-compat),
-and propagate the value through `compileUtils.cpp`. For a debug knob: only
-add the `TritonOptions` field (and document it like
+sentinel), add a matching perfConfig field (see section 8.2), and propagate
+the value through `compileUtils.cpp`. For a debug knob: only add the
+`TritonOptions` field (and document it like
 `bufferOpsAnalyzeSmallTensorRange`); skip the perfConfig schema entirely.
 
 `HIPOptions.schedule_hint` is intentionally not mirrored: upstream gutted
 it (the field is now a no-op default `''`, and the TTGIR/LLIR sched-hint
 passes plus the `memory-bound-attention -> amdgpu-sched-strategy=iterative-ilp`
 mapping were all removed).
+
+### 8.2 Adding or removing a perfConfig field
+
+A bump that gains or loses a knob changes the perfConfig schema, and
+perfConfig strings outlive the schema they were written against: they are
+pasted into bug reports, committed into tuning databases and quick-tuning
+lists, and saved by hand during performance investigations. A config
+written months ago must therefore still be usable after the schema moves,
+and the failure mode when it isn't must be a diagnostic and not a crash.
+
+The schema lives in a single field list per attribute in
+`mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td`: the tile fields passed
+to `Rock_PerfConfigSchema` plus the shared `kRockCommonPerfConfigFields`.
+The serializer, the key/default arrays the parser validates against, and
+the `getFromPerfConfigValues()` builder it feeds the resolved values into
+are all generated from that one list, and a TableGen assert fails the build
+if it disagrees with the attribute's `let parameters` dag. There is no
+schema version to bump: the canonical output form is the named
+`gemm:key=value,...` / `attn:key=value,...` one, and the legacy positional
+`prefix:vN:` versions are frozen read-only decoders.
+
+**Adding a field.** Add the parameter to `kRockGemmParams` /
+`kRockGemmGemmParams` and a matching
+`RockPerfConfigField<"theKey", theDefault>` in the same position. Older
+configs simply omit the key and decode to `theDefault`, so pick a default
+that reproduces the pre-change behaviour (that is why the knobs use the
+`-1` "arch default" sentinel and why `nPerBlockG1` defaults to `0`, i.e.
+untiled). Nothing else has to change for back-compat.
+
+**Removing a field.** Deleting it from the parameter dag and the schema is
+not enough: every previously saved config that still spells the key would
+then be rejected with `unknown field`, because `parseNamedPerfConfig()` in
+`mlir/lib/Dialect/Rock/IR/RockDialect.cpp` rejects keys outside the
+schema. Also add the retired key to the ignore path in that function, next
+to the `scheduleHint` case, so the entry is dropped with a warning instead
+of failing the parse. If the field was also part of a legacy positional
+version, keep that version decoding and discarding its token (see the
+`version == 2` `scheduleHint` branch and `getExpectedPerfConfigFieldCount()`);
+never renumber or shrink an existing `vN`, since strings in that form are
+already in the wild. Renaming a field is a removal plus an addition, and
+needs both halves.
+
+So, for a perfConfig saved before the change: added fields fall back to
+their defaults, removed fields are ignored with a warning, and a key that
+is in neither the current schema nor the retired set is a hard error --
+`get()` returns a null attribute and the pass that asked for the config
+fails with a diagnostic, rather than crashing. Cover the new behaviour in
+`mlir/unittests/Dialect/Rock/PerfConfigParsingTests.cpp`, which already has
+named-form and per-version positional back-compat cases to copy from.
 
 ## Step 9: Handling Pass Interface Changes
 
@@ -507,11 +574,46 @@ optional Triton components, and generated third-party CMake cache variables
 must not leave Triton's `find_package(MLIR)` pointed at a prebuilt LLVM/MLIR
 layout instead of rocmlirTriton's in-tree build.
 
-## Step 11: Run Tests
+## Step 11: Regenerate the LDS overflow blacklist
+
+The compiled-in blacklist of GEMM perf configs that overflow LDS
+(`mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc`, consumed
+via `LdsBlacklist.h`) is an *empirical* artifact: it records which tile shapes
+exceed each arch's LDS budget under the current Rock->Triton lowering. A Triton
+(or Triton-pinned LLVM) bump can change per-block shared-memory usage, so the
+table must be regenerated against the freshly built compiler — otherwise it
+drifts out of sync and the nightly drift-detection test
+(`generateLDSBlacklist.py --verify`) fails.
+
+If this bump added a new ISA family, first add a representative chip to
+`DEFAULT_ARCHES` in `generateLDSBlacklist.py` (see section 5.5) so the new family
+gets a blacklist at all.
+
+The generator is copied into `build/bin` (by the `ci-performance-scripts`
+target), so run it from there to pick up the just-built tools:
 
 ```bash
-cd build && ninja check-rocmlir
+cd build/bin
+python3 generateLDSBlacklist.py
 ```
+
+This rewrites `LdsBlacklistPerfconfigs.inc` in place for the full arch/dtype
+matrix. Because the table is compiled into the library, rebuild afterward
+(`bash cmake.sh` from the project root) and commit the regenerated `.inc`.
+
+## Step 12: Run Tests
+
+```bash
+cd build && ninja check-mlir && ninja check-rocmlir
+```
+
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
+the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
+did not regress MLIR itself. Run it before `check-rocmlir`: it is far quicker, so
+regressions surface earlier. The nightly pipeline runs it too, and there with
+`MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that lands on `develop` is covered
+even if this step is skipped.
+
 ## Checklist Summary
 
 Use this checklist to track progress:
@@ -527,6 +629,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
+- [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
@@ -537,10 +640,13 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
+- [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
+- [ ] Mirror new or dropped `knobs.amd.*` switches, and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
 - [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
-- [ ] Run tests with `cd build && ninja check-rocmlir`
+- [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
+- [ ] Run tests with `cd build && ninja check-mlir && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 
@@ -592,6 +698,8 @@ If new Triton headers are needed:
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
 | Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
+| perfConfig field list / schema | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
+| perfConfig parser | `mlir/lib/Dialect/Rock/IR/RockDialect.cpp` |
 | Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
 | Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` |
 | Triton `maxTensorNumElements` source | `external/triton/include/triton/Dialect/Triton/IR/Traits.h` |
@@ -602,3 +710,5 @@ If new Triton headers are needed:
 | Build script | `cmake.sh` |
 | Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |
+| LDS blacklist generator | `mlir/utils/performance/generateLDSBlacklist.py` |
+| LDS blacklist table | `mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc` |

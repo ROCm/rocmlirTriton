@@ -42,10 +42,8 @@ using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
 
-bool mlir::rock::isWrWAtomicKernel(StringRef arch, Type dataType,
-                                   bool requiredPadding) {
-  return isFastAtomicAddSupported(arch, dataType) &&
-         (dataType.isF32() || dataType.isF16()) && !requiredPadding;
+bool mlir::rock::isWrWAtomicKernel(Type dataType, bool requiredPadding) {
+  return (dataType.isF32() || dataType.isF16()) && !requiredPadding;
 }
 
 bool mlir::rock::is4GBMemoryType(ShapedType type) {
@@ -262,8 +260,13 @@ Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
   return TransformOp::create(b, loc, matrix, normalizeAttr);
 }
 
-Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
-                            StringRef firstDim, int64_t firstDimPad) {
+/// Apply tile-alignment padding to a vector in its `firstDim` if applicable.
+/// Use this only for padding introduced to satisfy tile alignment constraints;
+/// it marks the padding as tile alignment and must not be used for
+/// semantic/user-requested padding, such as rocmlir-gen `--padding_h N`.
+Value mlir::rock::padVectorForTileAlignment(Value vector, OpBuilder &b,
+                                            Location loc, StringRef firstDim,
+                                            int64_t firstDimPad) {
   if (firstDimPad == 0)
     return vector;
   OpBuilder::InsertionGuard guard(b);
@@ -275,14 +278,19 @@ Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
   padder.passThrough("gemmG");
   SmallString<8> paddedName;
   (firstDim + Twine("Pad")).toVector(paddedName);
-  padder.pad(paddedName, firstDim, 0, firstDimPad);
+  padder.padForTileAlignment(paddedName, firstDim, firstDimPad);
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, vector, padAttr);
 }
 
-Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
-                            StringRef firstDim, int64_t firstDimPad,
-                            StringRef secondDim, int64_t secondDimPad) {
+// This helper emits padding marked as tile alignment. Use it only for tile
+// alignment requirements, not for semantic/user-requested padding such as
+// rocmlir-gen `--padding_h N`.
+Value mlir::rock::padMatrixForTileAlignment(Value matrix, OpBuilder &b,
+                                            Location loc, StringRef firstDim,
+                                            int64_t firstDimPad,
+                                            StringRef secondDim,
+                                            int64_t secondDimPad) {
   if (firstDimPad == 0 && secondDimPad == 0)
     return matrix;
   OpBuilder::InsertionGuard guard(b);
@@ -296,14 +304,14 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
   } else {
     SmallString<8> paddedName;
     (firstDim + Twine("Pad")).toVector(paddedName);
-    padder.pad(paddedName, firstDim, 0, firstDimPad);
+    padder.padForTileAlignment(paddedName, firstDim, firstDimPad);
   }
   if (secondDimPad == 0) {
     padder.passThrough(secondDim);
   } else {
     SmallString<8> paddedName;
     (secondDim + Twine("Pad")).toVector(paddedName);
-    padder.pad(paddedName, secondDim, 0, secondDimPad);
+    padder.padForTileAlignment(paddedName, secondDim, secondDimPad);
   }
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, matrix, padAttr);
@@ -531,11 +539,15 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   // into an actual BlockwiseLoadOp by tracing back through the source chain.
   // We pass the original (un-transformed) input as source and carry the
   // tiling transforms as metadata in extraViews.
-  auto markerOp =
-      LoadMarkerOp::create(rewriter, loc, resultType, in, bufferViews,
-                           ValueRange{kIter, gridCoords.g_block,
-                                      gridCoords.m_block, gridCoords.n_block},
-                           cache);
+  //
+  // The tile's dimensions are ordered by `isKFirst`, which puts the k axis
+  // that the gemm reduces over first for matrix B and second for matrix A.
+  int64_t reductionTileAxis = isKFirst ? 0 : 1;
+  auto markerOp = LoadMarkerOp::create(
+      rewriter, loc, resultType, in, bufferViews,
+      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
+                 gridCoords.n_block},
+      cache, rewriter.getDenseI64ArrayAttr({reductionTileAxis}));
   return markerOp.getResult();
 }
 

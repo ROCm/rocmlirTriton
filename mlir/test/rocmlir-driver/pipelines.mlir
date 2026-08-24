@@ -4,6 +4,7 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1250 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_GFX1250 --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1100 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1201 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1170 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
@@ -66,16 +67,17 @@
 // GPU-NEXT:f8E5M2FNUZ,
 // GPU-NEXT:f8E5M2,
 // GPU-NEXT:f8E8M0FNU} target-type=f32},
-// GPU-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false},
+// GPU-NEXT:arith-expand{include-bf16=false include-f4e2m1=true include-f8e8m0=true include-flush-denormals=false include-min-max-f=false include-min-max-i=false},
 // GPU-NEXT:func.func(rock-analyze-memory-use,
 // GPU-NEXT:rock-lower-blockwise-to-ptr,
 // GPU-NEXT:rock-preserve-masked-load-semantics,
 // GPU-NEXT:rock-collapse-contiguous-merges,
 // GPU-NEXT:remove-dead-values{{.*}},
-// GPU-NEXT:rock-transforms-invariant-code-motion,
+// GPU-NEXT:rock-incremental-pointer-arith,
+// GPU-NEXT:remove-dead-values{{.*}},
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// GPU-NEXT:rock-to-ttir),
+// GPU-NEXT:rock-to-ttir{disable-fast-math=false}),
 // GPU-NEXT:rock-tensor-to-triton-ptr,
 // GPU-NEXT:tt.func(canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))
@@ -129,6 +131,7 @@
 // TRITON-NEXT:symbol-dce,
 // TRITON-NEXT:tritonamdgpu-update-async-wait-count{gfx-arch=gfx942},
 // TRITON-NEXT:convert-warp-pipeline{gfx-arch=gfx942},
+// TRITON-NEXT:rock-set-reduction-layout{use-reduction-layout=-1},
 // TRITON-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
 // TRITON-NEXT:convert-index-to-llvm{index-bitwidth=0},
 // TRITON-NEXT:allocate-amdgpu-shared-memory{arch=gfx942},
@@ -191,6 +194,7 @@
 // TRITON_GFX1250-NEXT:symbol-dce,
 // TRITON_GFX1250-NEXT:tritonamdgpu-update-async-wait-count{gfx-arch=gfx1250},
 // TRITON_GFX1250-NEXT:convert-warp-pipeline{gfx-arch=gfx1250},
+// TRITON_GFX1250-NEXT:rock-set-reduction-layout{use-reduction-layout=-1},
 // TRITON_GFX1250-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
 // TRITON_GFX1250-NEXT:convert-index-to-llvm{index-bitwidth=0},
 // TRITON_GFX1250-NEXT:allocate-amdgpu-shared-memory{arch=gfx1250},
@@ -207,7 +211,7 @@
 // TRITON_GFX1250-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx1250},
 // TRITON_GFX1250-NEXT:reconcile-unrealized-casts)
 
-// gfx1100 and gfx1201 run the same pipeline, so they share a single check prefix:
+// gfx1100, gfx1170, and gfx1201 run the same pipeline, so they share a single check prefix:
 // TRITON_RDNA:Kernel pipeline:
 // TRITON_RDNA-NEXT:builtin.module(inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 },
 // TRITON_RDNA-NEXT:triton-rewrite-tensor-descriptor-to-pointer,
@@ -218,16 +222,16 @@
 // TRITON_RDNA-NEXT:loop-invariant-code-motion,
 // TRITON_RDNA-NEXT:symbol-dce,
 // TRITON_RDNA-NEXT:triton-loop-unroll,
-// TRITON_RDNA-NEXT:convert-triton-to-tritongpu{enable-source-remat=false num-ctas=1 num-warps=4 target=hip:{{gfx1100|gfx1201}} threads-per-warp=32},
+// TRITON_RDNA-NEXT:convert-triton-to-tritongpu{enable-source-remat=false num-ctas=1 num-warps=4 target=hip:{{gfx1100|gfx1170|gfx1201}} threads-per-warp=32},
 // TRITON_RDNA-NEXT:tritongpu-coalesce,
 // TRITON_RDNA-NEXT:tritongpu-F32DotTC{emu-tf32=false},
 // TRITON_RDNA-NEXT:tritongpu-remove-layout-conversions,
 // TRITON_RDNA-NEXT:tritongpu-optimize-thread-locality,
-// TRITON_RDNA-NEXT:tritonamdgpu-accelerate-matmul{gfx-arch={{gfx1100|gfx1201}} kPack=1 matrix-instruction-size=16},
+// TRITON_RDNA-NEXT:tritonamdgpu-accelerate-matmul{gfx-arch={{gfx1100|gfx1170|gfx1201}} kPack=1 matrix-instruction-size=16},
 // TRITON_RDNA-NEXT:rock-set-matmul-output-transpose,
 // TRITON_RDNA-NEXT:tritongpu-remove-layout-conversions,
 // TRITON_RDNA-NEXT:tritonamdgpu-optimize-epilogue,
-// TRITON_RDNA-NEXT:tritonamdgpu-optimize-dot-operands{gfx-arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:tritonamdgpu-optimize-dot-operands{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-hoist-layout-conversions),
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-sink-layout-conversions),
 // TRITON_RDNA-NEXT:tritongpu-fuse-nested-loops,
@@ -246,7 +250,7 @@
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-move-up-prologue-loads),
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-canonicalize-pointers{enable-large-tensor-ptr-canon=false}),
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// TRITON_RDNA-NEXT:tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=false gfx-arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:tritonamdgpu-convert-buffer-ops{allow-buffer-atomics=true analyze-small-tensor-ofst=false gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-optimize-buffer-op-ptr),
 // TRITON_RDNA-NEXT:tritonamdgpu-fold-true-cmpi,
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-prepare-if-combining),
@@ -254,14 +258,15 @@
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:tritonamdgpu-annotate-buffer-op-split-safety,
 // TRITON_RDNA-NEXT:symbol-dce,
-// TRITON_RDNA-NEXT:tritonamdgpu-update-async-wait-count{gfx-arch={{gfx1100|gfx1201}}},
-// TRITON_RDNA-NEXT:convert-warp-pipeline{gfx-arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:tritonamdgpu-update-async-wait-count{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
+// TRITON_RDNA-NEXT:convert-warp-pipeline{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
+// TRITON_RDNA-NEXT:rock-set-reduction-layout{use-reduction-layout=-1},
 // TRITON_RDNA-NEXT:convert-scf-to-cf{allow-pattern-rollback=true},
 // TRITON_RDNA-NEXT:convert-index-to-llvm{index-bitwidth=0},
-// TRITON_RDNA-NEXT:allocate-amdgpu-shared-memory{arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:allocate-amdgpu-shared-memory{arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:tritongpu-global-scratch-memory-allocation,
-// TRITON_RDNA-NEXT:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1201}}},
-// TRITON_RDNA-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{gfx-arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
+// TRITON_RDNA-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:convert-cf-to-llvm{index-bitwidth=0},
@@ -269,7 +274,7 @@
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:symbol-dce,
-// TRITON_RDNA-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1201}}},
+// TRITON_RDNA-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:reconcile-unrealized-casts)
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must

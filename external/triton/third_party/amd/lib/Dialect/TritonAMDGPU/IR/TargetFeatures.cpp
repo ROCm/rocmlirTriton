@@ -88,6 +88,8 @@ ISAFamily TargetFeatures::getISAFamily() const {
   // RDNA ISA cases.
   if (major == 12 && minor == 0)
     return ISAFamily::RDNA4;
+  if (major == 11 && minor == 7)
+    return ISAFamily::GFX1170;
   if (major == 11)
     return ISAFamily::RDNA3;
   if (major == 10 && minor == 3)
@@ -257,7 +259,7 @@ bool TargetFeatures::supportsBufferAtomicRMW() const {
   return llvm::is_contained(
       {ISAFamily::GCN5_1, ISAFamily::CDNA1, ISAFamily::CDNA2, ISAFamily::CDNA3,
        ISAFamily::CDNA4, ISAFamily::RDNA1, ISAFamily::RDNA2, ISAFamily::RDNA3,
-       ISAFamily::RDNA4, ISAFamily::GFX1250},
+       ISAFamily::GFX1170, ISAFamily::RDNA4, ISAFamily::GFX1250},
       getISAFamily());
 }
 
@@ -283,6 +285,7 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
     // gfx908: BUFFER_ATOMIC_ADD_F32 and PK_ADD_F16; no F64.
     return elementType.isF32() || elementType.isF16();
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
     // gfx11: only BUFFER_ATOMIC_ADD_F32 (no F64 ADD, no PK_ADD variants).
     return elementType.isF32();
   // gfx906 / gfx101x / gfx103x have no FP buffer-atomic-add at all.
@@ -292,6 +295,23 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
   case ISAFamily::Unknown:
     return false;
   }
+}
+
+bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
+  auto isaFamily = getISAFamily();
+  if (elementType.isF32()) {
+    return llvm::is_contained({ISAFamily::RDNA1, ISAFamily::RDNA2,
+                               ISAFamily::RDNA3, ISAFamily::GFX1170,
+                               ISAFamily::RDNA4, ISAFamily::GFX1250},
+                              isaFamily);
+  }
+  if (elementType.isF64()) {
+    return llvm::is_contained({ISAFamily::CDNA2, ISAFamily::CDNA3,
+                               ISAFamily::CDNA4, ISAFamily::RDNA1,
+                               ISAFamily::RDNA2, ISAFamily::GFX1250},
+                              isaFamily);
+  }
+  return false;
 }
 
 int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
@@ -307,6 +327,7 @@ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
 
 bool TargetFeatures::supportMaximumMinimum() const {
   return getISAFamily() == ISAFamily::CDNA4 ||
+         getISAFamily() == ISAFamily::GFX1170 ||
          getISAFamily() == ISAFamily::GFX1250;
 }
 
@@ -335,6 +356,11 @@ bool TargetFeatures::supportsCvtPkScalePk8() const { return isGFX1250(); }
 bool TargetFeatures::supportsHwScaledUpcast() const {
   return getISAFamily() == ISAFamily::CDNA4 ||
          getISAFamily() == ISAFamily::GFX1250;
+}
+
+bool TargetFeatures::supportsFp8Dot4Fma() const {
+  return getISAFamily() == ISAFamily::RDNA4 ||
+         getISAFamily() == ISAFamily::GFX1170;
 }
 
 bool TargetFeatures::supportBitwidth16Elementwise() const { return true; }
@@ -369,6 +395,7 @@ bool isRDNA(ISAFamily isaFamily) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
     return true;
   default:

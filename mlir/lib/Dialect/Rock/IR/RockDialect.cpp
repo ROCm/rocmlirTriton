@@ -17,7 +17,6 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -45,12 +44,14 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
@@ -216,6 +217,9 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     }
   }
 
+  bool isTileAlignment =
+      parser.parseOptionalKeyword("tileAlignment").succeeded();
+
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
   if (parseAndGather<std::string>(parser, AsmParser::Delimiter::Square,
@@ -265,7 +269,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims);
+      upperDims, lowerNames, lowerDims, isTileAlignment);
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -278,6 +282,8 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
     llvm::interleaveComma(params, printer);
     printer << "}";
   }
+  if (getIsTileAlignment())
+    printer << " tileAlignment";
   printer << " [";
   llvm::interleaveComma(getUpperNames(), printer,
                         [&](StringRef s) { printer << "\"" << s << "\""; });
@@ -291,13 +297,41 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "]>";
 }
 
+TransformAttr TransformAttr::get(mlir::MLIRContext *context, TransformType type,
+                                 llvm::ArrayRef<int64_t> params,
+                                 llvm::ArrayRef<llvm::StringRef> upperNames,
+                                 llvm::ArrayRef<uint32_t> upperDims,
+                                 llvm::ArrayRef<llvm::StringRef> lowerNames,
+                                 llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::get(context, type, params, upperNames, upperDims,
+                            lowerNames, lowerDims,
+                            /*isTileAlignment=*/false);
+}
+
+TransformAttr TransformAttr::getChecked(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::MLIRContext *context, TransformType type,
+    llvm::ArrayRef<int64_t> params, llvm::ArrayRef<llvm::StringRef> upperNames,
+    llvm::ArrayRef<uint32_t> upperDims,
+    llvm::ArrayRef<llvm::StringRef> lowerNames,
+    llvm::ArrayRef<uint32_t> lowerDims) {
+  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
+                                   upperDims, lowerNames, lowerDims,
+                                   /*isTileAlignment=*/false);
+}
+
 LogicalResult
 TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       TransformType type, llvm::ArrayRef<int64_t> params,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims) {
+                      llvm::ArrayRef<unsigned> lowerDims,
+                      bool isTileAlignment) {
+  if (isTileAlignment && type != TransformType::Pad) {
+    return emitError() << "Only a Pad can align a gemm dimension to the tile "
+                          "size";
+  }
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -453,9 +487,11 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
+    bool isTileAlignment) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims);
+                                   upperDims, lowerNames, lowerDims,
+                                   isTileAlignment);
 }
 
 //===---------------------------------------------------------
@@ -982,9 +1018,8 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   auto kernelIds = rock::backwardDataKernelIds(strides, dilations, sizes.fil);
 
   assert(!kernelIds.empty());
-  GemmSize biggest =
-      bwdDataGemmSizeForKernelId(sizes, padding, strides, dilations,
-                                 kernelIds.front());
+  GemmSize biggest = bwdDataGemmSizeForKernelId(sizes, padding, strides,
+                                                dilations, kernelIds.front());
   for (int64_t kernelId : llvm::drop_begin(kernelIds)) {
     GemmSize single = bwdDataGemmSizeForKernelId(sizes, padding, strides,
                                                  dilations, kernelId);
@@ -1338,6 +1373,12 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
+  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
+  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
+    for (int64_t axis : *axes)
+      if (axis < 0 || axis >= resultRank)
+        return emitOpError() << "reduction tile axis " << axis
+                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),
@@ -1738,6 +1779,30 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 //===----------------------------------------------------------------------===//
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
+
+// Validate sliding-window look-back constraints common to attention-like ops.
+static LogicalResult
+verifySlidingWindowLookBack(Operation *op,
+                            std::optional<int32_t> slidingWindowLookBack,
+                            Value lastValidKVIndex, int64_t maxSeqLen) {
+  if (!slidingWindowLookBack)
+    return success();
+  int32_t lookBack = static_cast<int32_t>(*slidingWindowLookBack);
+
+  if (lookBack <= 0)
+    return op->emitError("slidingWindowLookBack must be positive");
+
+  if (!lastValidKVIndex)
+    return op->emitError(
+        "slidingWindowLookBack requires lastValidKVIndex to be set");
+
+  if (lookBack >= maxSeqLen)
+    return op->emitError(
+        "slidingWindowLookBack must be less than max sequence length");
+
+  return success();
+}
+
 LogicalResult GridwiseAttentionOp::verify() {
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1756,14 +1821,17 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError("Setting softmax type only works for attention.");
   }
 
-  if (!getEnableSoftmax() && getCurrentSeqLen())
-    return emitError("currentSeqLen only works for attention.");
+  if (!getEnableSoftmax() && getLastValidKVIndex())
+    return emitError("lastValidKVIndex only works for attention.");
 
   if (!getEnableSoftmax() && getPrefixOffset())
     return emitError("prefixOffset only works for attention.");
 
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
+
+  if (!getEnableSoftmax() && getSlidingWindowLookBack())
+    return emitError("slidingWindowLookBack only works for attention.");
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
@@ -1772,6 +1840,21 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError(
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
+
+  // Validate sliding window constraints.
+  // Keys are normalized to [G, K, N] where N (the gemm0 N dimension, last dim)
+  // is the key sequence length (max seq len). Unlike rocMLIR -- where the key
+  // sequence lives on gemm0's M dimension -- rocmlirTriton keeps the key
+  // sequence on N (matching the KV-cache/sliding-window N loop in
+  // GridwiseAttnToBlockwise), so use prePadG0N, not prePadG0M, for the
+  // pre-padding value. Fall back to the current shape when it is absent.
+  ShapedType kType = cast<ShapedType>(getKeys().getType());
+  int64_t maxSeqLen =
+      getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
+    return failure();
 
   return success();
 }
@@ -1787,8 +1870,7 @@ LogicalResult TransformsToPtrOp::verify() {
   auto ptrType = cast<RankedTensorType>(getPointers().getType());
 
   size_t idxCount = getExtraIndices().size();
-  if (idxCount + ptrType.getRank() !=
-      static_cast<size_t>(sourceType.getRank()))
+  if (idxCount + ptrType.getRank() != static_cast<size_t>(sourceType.getRank()))
     return emitOpError(
                "extraIndices.size() + pointers rank must equal source rank")
            << " (" << idxCount << " + " << ptrType.getRank()
@@ -1901,8 +1983,7 @@ LogicalResult BlockwiseReduceOp::verify() {
     if (int64_t(inDim) == axis)
       continue;
     if (outShape[outDim] != inpShape[inDim])
-      return emitError(
-          "non-reduction dimension size mismatch at output dim ")
+      return emitError("non-reduction dimension size mismatch at output dim ")
              << outDim;
     ++outDim;
   }
@@ -1980,7 +2061,7 @@ GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
 }
 
 static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
-                                              Value currentSeqLen, Value lse,
+                                              Value lastValidKVIndex, Value lse,
                                               int32_t numHeadsQ,
                                               int32_t numHeadsKV) {
   // number of heads for Q and K, V
@@ -2058,15 +2139,15 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     return op.emitError("Head dimensions do not match (V and Output)");
   }
 
-  // check currentSeqLen (KV Cache)
-  if (currentSeqLen) {
-    ShapedType seqLenType = cast<ShapedType>(currentSeqLen.getType());
-    if (seqLenType.getShape().size() != 1) {
-      return op.emitError("Number of dimensions is not one (currentSeqLen)");
+  // Check lastValidKVIndex (KV cache).
+  if (lastValidKVIndex) {
+    ShapedType indexType = cast<ShapedType>(lastValidKVIndex.getType());
+    if (indexType.getShape().size() != 1) {
+      return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
-    if (seqLenType.getShape()[0] != oBatchDim) {
+    if (indexType.getShape()[0] != oBatchDim) {
       return op.emitError(
-          "Batch dimensions do not match (currentSeqLen and Output)");
+          "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
   }
 
@@ -2120,7 +2201,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 }
 
 LogicalResult GemmElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2199,7 +2280,7 @@ GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
 }
 
 LogicalResult ConvElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2262,7 +2343,15 @@ LogicalResult AttentionOp::verify() {
         "prefixOffset requires causal to be enabled. "
         "Prefix causal attention is causal masking with an offset.");
 
-  return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
+  // Validate sliding window constraints.
+  // Max seq len is the key N dimension.
+  int64_t maxSeqLen = getGemmGemmSize().n;
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
+    return failure();
+
+  return verifyGemmPlusGemmLikeOp(*this, getLastValidKVIndex(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
 }
 
@@ -2277,21 +2366,30 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v5, add a new `kNumKnobFieldsV5`
-// constant and update the parser to expect the new number of fields.
+// NOTE: The positional form is frozen at v6; new fields are added to the named
+// `prefix:key=value,...` schema in RockAttrDefs.td instead, which needs no
+// version. These constants exist only to keep decoding strings emitted by
+// earlier releases. Knobs introduced after v6 therefore always decode to
+// `kKnobDefault` here.
 //
 // v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
-// knob block by appending `useReductionLayout` on top of v3's five knobs.
+// knob block by appending `useReductionLayout` on top of v3's five knobs. v5
+// appends `useOptimizeEpilogue`. v6 keeps v5's knob block unchanged but adds a
+// 12th tunable field, `nPerBlockG1`, for GEMM+GEMM (attention) configs only.
 constexpr size_t kNumKnobFieldsV2 = 6;
 constexpr size_t kNumKnobFieldsV3 = 5;
 constexpr size_t kNumKnobFieldsV4 = 6;
+constexpr size_t kNumKnobFieldsV5 = 7;
+constexpr size_t kNumKnobFieldsV6 = 7;
 
 // Reject invalid knob values, reusing `rock::isValidKnobBoolean`.
 LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useBlockPingpong,
                                 int64_t useInThreadTranspose,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
-                                int64_t useReductionLayout) {
+                                int64_t useReductionLayout,
+                                int64_t useOptimizeEpilogue,
+                                int64_t useBf16x3ForF32) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2299,6 +2397,8 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useBufferOps", useBufferOps},
       {"useBufferAtomics", useBufferAtomics},
       {"useReductionLayout", useReductionLayout},
+      {"useOptimizeEpilogue", useOptimizeEpilogue},
+      {"useBf16x3ForF32", useBf16x3ForF32},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2366,15 +2466,129 @@ parsePerfConfigStr(StringRef configStr, StringRef expectedPrefix = "") {
 }
 
 // Returns the expected number of comma-separated fields for a perf-config of
-// the given version (11 tunable fields plus the version's knob fields), or
-// std::nullopt if the version is unknown.
-std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
-  static constexpr size_t kNumKnobFieldsByVersion[] = {
-      0, kNumKnobFieldsV2, kNumKnobFieldsV3, kNumKnobFieldsV4};
+// the given version (the tunable fields plus the version's knob fields), or
+// std::nullopt if the version is unknown. GEMM configs always have 11 tunable
+// fields. GEMM+GEMM (attention) configs also have 11 through v5, but from v6
+// onward carry a 12th tunable field, `nPerBlockG1` (the second-GEMM head-dim
+// tile), so `isGemmGemm` must be set for those to be counted correctly.
+std::optional<size_t> getExpectedPerfConfigFieldCount(int version,
+                                                      bool isGemmGemm) {
+  static constexpr size_t kNumKnobFieldsByVersion[] = {0,
+                                                       kNumKnobFieldsV2,
+                                                       kNumKnobFieldsV3,
+                                                       kNumKnobFieldsV4,
+                                                       kNumKnobFieldsV5,
+                                                       kNumKnobFieldsV6};
   if (version < 1 ||
       version > static_cast<int>(std::size(kNumKnobFieldsByVersion)))
     return std::nullopt;
-  return 11 + kNumKnobFieldsByVersion[version - 1];
+  size_t numTunableFields = (isGemmGemm && version >= 6) ? 12 : 11;
+  return numTunableFields + kNumKnobFieldsByVersion[version - 1];
+}
+
+// Recognize the named `prefix:key=value,...` perfConfig form and return its
+// body (the text after `prefix:`) via `body`. Returns false when the `prefix:`
+// header is absent, or when the payload is a legacy positional `prefix:vN:`
+// string (detected by the absence of any `=`). An empty body (i.e. bare
+// `prefix:`) is a valid named config in which every field takes its default.
+bool isNamedPerfConfig(StringRef configStr, StringRef prefix, StringRef &body) {
+  StringRef rest = configStr;
+  if (!rest.consume_front(prefix) || !rest.consume_front(":"))
+    return false;
+  // Legacy positional strings start with `vN:` and never contain `=`.
+  if (!rest.empty() && !rest.contains('='))
+    return false;
+  body = rest;
+  return true;
+}
+
+// Parse a `key=value,...` body into `out`. Whitespace around keys and values is
+// ignored. Every value must be an integer and every key must appear in
+// `allowedKeys` at most once, except a `scheduleHint` entry which is accepted
+// and discarded (with a warning) for back-compat. Emits a diagnostic and
+// returns failure on any malformed entry, non-integer value, unknown key, or
+// repeated key. Schema (which keys are legal and their defaults) is the
+// caller's business; see `parseNamedGemmLikeConfig()`.
+LogicalResult parseNamedPerfConfig(MLIRContext *context,
+                                   StringRef perfConfigStr, StringRef body,
+                                   ArrayRef<StringRef> allowedKeys,
+                                   llvm::StringMap<int64_t> &out) {
+  if (body.trim().empty())
+    return success();
+  SmallVector<StringRef> pieces;
+  body.split(pieces, ',');
+  for (StringRef piece : pieces) {
+    if (!piece.contains('=')) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': expected `key=value` but got `" << piece.trim()
+                   << "`\n";
+      return failure();
+    }
+    auto [keyRaw, valRaw] = piece.split('=');
+    StringRef key = keyRaw.trim();
+    StringRef valStr = valRaw.trim();
+    int64_t value;
+    if (key.empty() || valStr.getAsInteger(10, value)) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr << "': field `"
+                   << key << "` must have an integer value\n";
+      return failure();
+    }
+    if (key == "scheduleHint") {
+      warnIfScheduleHintIgnored(context, perfConfigStr, value);
+      continue;
+    }
+    if (!llvm::is_contained(allowedKeys, key)) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': unknown field `" << key << "`\n";
+      return failure();
+    }
+    // A repeated key has no defensible reading: letting the last one win would
+    // silently run a config nobody asked for.
+    if (!out.try_emplace(key, value).second) {
+      llvm::errs() << "invalid perfConfig '" << perfConfigStr
+                   << "': duplicate field `" << key << "`\n";
+      return failure();
+    }
+  }
+  return success();
+}
+
+// Parse the body of a named `prefix:key=value,...` perfConfig against a schema:
+// `keys` in canonical order and the parallel `defaults` for fields the config
+// string omits. Both come from the attribute's `getPerfConfig*()` accessors,
+// which RockAttrDefs.td generates from one field list, so the schema here can
+// never disagree with the serialized form.
+//
+// Returns the field values in schema order, ready for the attribute's generated
+// `getFromPerfConfigValues()`. Emits a diagnostic and returns failure on a
+// malformed body, an unknown key, or an unsupported knob combination.
+FailureOr<SmallVector<int64_t>>
+parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
+                         StringRef body, ArrayRef<StringRef> keys,
+                         ArrayRef<int64_t> defaults) {
+  llvm::StringMap<int64_t> values;
+  if (failed(parseNamedPerfConfig(context, perfConfigStr, body, keys, values)))
+    return failure();
+
+  // Fill in the fields the config string left out, so `values` ends up holding
+  // every field of the schema.
+  SmallVector<int64_t> ordered;
+  ordered.reserve(keys.size());
+  for (auto [key, defaultValue] : llvm::zip_equal(keys, defaults))
+    ordered.push_back(values.try_emplace(key, defaultValue).first->second);
+
+  auto knob = [&](StringRef key) {
+    auto it = values.find(key);
+    assert(it != values.end() && "knob is not part of this perfConfig schema");
+    return it->second;
+  };
+  if (failed(validateKnobBlock(
+          perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
+          knob("useInThreadTranspose"), knob("useBufferOps"),
+          knob("useBufferAtomics"), knob("useReductionLayout"),
+          knob("useOptimizeEpilogue"), knob("useBf16x3ForF32"))))
+    return failure();
+  return ordered;
 }
 
 } // namespace
@@ -2384,7 +2598,25 @@ std::optional<size_t> getExpectedPerfConfigFieldCount(int version) {
 //===-----------------------------------------------------===//
 
 GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
-  auto parsed = parsePerfConfigStr(perfConfigStrAttr.strref(), "gemm");
+  MLIRContext *ctx = perfConfigStrAttr.getContext();
+  StringRef perfConfigStr = perfConfigStrAttr.strref();
+
+  // Canonical `gemm:key=value,...` form. Missing keys fall back to their
+  // defaults; unknown keys (other than the deprecated `scheduleHint`) are
+  // rejected.
+  StringRef body;
+  if (isNamedPerfConfig(perfConfigStr, GemmParamsAttr::getPerfConfigPrefix(),
+                        body)) {
+    FailureOr<SmallVector<int64_t>> values = parseNamedGemmLikeConfig(
+        ctx, perfConfigStr, body, GemmParamsAttr::getPerfConfigKeys(),
+        GemmParamsAttr::getPerfConfigDefaults());
+    if (failed(values))
+      return {};
+    return GemmParamsAttr::getFromPerfConfigValues(ctx, *values);
+  }
+
+  auto parsed =
+      parsePerfConfigStr(perfConfigStr, GemmParamsAttr::getPerfConfigPrefix());
   if (!parsed) {
     return {};
   }
@@ -2392,13 +2624,17 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
   // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
+  // v5: 11 tunable fields + 7 knob fields = 18 (v4 knobs +
+  //     useOptimizeEpilogue).
+  // v6: 11 tunable fields + 7 knob fields = 18 (identical to v5 for plain GEMM;
+  //     the extra `nPerBlockG1` tunable field is GEMM+GEMM-only).
   std::optional<size_t> expectedCount =
-      getExpectedPerfConfigFieldCount(version);
+      getExpectedPerfConfigFieldCount(version, /*isGemmGemm=*/false);
   if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
@@ -2421,6 +2657,9 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
+  int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2435,10 +2674,12 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     }
     if (version >= 4)
       useReductionLayout = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout))) {
+    if (version >= 5)
+      useOptimizeEpilogue = params[idx++];
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
@@ -2447,7 +2688,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       perfConfigStrAttr.getContext(), mPerBlock, nPerBlock, kPerBlock, kpack,
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===-----------------------------------------------------===//
@@ -2455,7 +2697,25 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
 //===-----------------------------------------------------===//
 
 GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
-  auto parsed = parsePerfConfigStr(perfConfigStrAttr.strref(), "attn");
+  MLIRContext *ctx = perfConfigStrAttr.getContext();
+  StringRef perfConfigStr = perfConfigStrAttr.strref();
+
+  // Canonical `attn:key=value,...` form. Missing keys fall back to their
+  // defaults; unknown keys (other than the deprecated `scheduleHint`) are
+  // rejected.
+  StringRef body;
+  if (isNamedPerfConfig(perfConfigStr,
+                        GemmGemmParamsAttr::getPerfConfigPrefix(), body)) {
+    FailureOr<SmallVector<int64_t>> values = parseNamedGemmLikeConfig(
+        ctx, perfConfigStr, body, GemmGemmParamsAttr::getPerfConfigKeys(),
+        GemmGemmParamsAttr::getPerfConfigDefaults());
+    if (failed(values))
+      return {};
+    return GemmGemmParamsAttr::getFromPerfConfigValues(ctx, *values);
+  }
+
+  auto parsed = parsePerfConfigStr(perfConfigStr,
+                                   GemmGemmParamsAttr::getPerfConfigPrefix());
   if (!parsed) {
     return {};
   }
@@ -2463,13 +2723,20 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int version = parsed->version;
   auto &params = parsed->params;
 
-  // v1: 11 tunable fields. The 6 knob fields default to `kKnobDefault`.
+  // GEMM+GEMM (attention) configs gain a 12th tunable field, `nPerBlockG1`
+  // (the second-GEMM head-dim tile), starting at v6. v1..v5 have 11 tunable
+  // fields and decode `nPerBlockG1` as 0 ("untiled", the historical behaviour).
+  // v1: 11 tunable fields. The 7 knob fields default to `kKnobDefault`.
   // v2: 11 tunable fields + 6 knob fields = 17 (trailing scheduleHint
   //     accepted read-only and discarded).
   // v3: 11 tunable fields + 5 knob fields = 16.
   // v4: 11 tunable fields + 6 knob fields = 17 (v3 knobs + useReductionLayout).
+  // v5: 11 tunable fields + 7 knob fields = 18 (v4 knobs +
+  //     useOptimizeEpilogue).
+  // v6: 12 tunable fields + 7 knob fields = 19 (v5 knobs plus the new
+  //     `nPerBlockG1` second-GEMM head-dim tile).
   std::optional<size_t> expectedCount =
-      getExpectedPerfConfigFieldCount(version);
+      getExpectedPerfConfigFieldCount(version, /*isGemmGemm=*/true);
   if (!expectedCount || params.size() != *expectedCount) {
     return {};
   }
@@ -2477,6 +2744,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int idx = 0;
   int64_t mPerBlockG0 = params[idx++];
   int64_t nPerBlockG0 = params[idx++];
+  int64_t nPerBlockG1 = (version >= 6) ? params[idx++] : 0;
   int64_t kPerBlock = params[idx++];
   int64_t kpack = params[idx++];
   int64_t numCTAs = params[idx++];
@@ -2492,6 +2760,9 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferOps = kKnobDefault;
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
+  int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2506,19 +2777,22 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     }
     if (version >= 4)
       useReductionLayout = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout))) {
+    if (version >= 5)
+      useOptimizeEpilogue = params[idx++];
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
 
   return GemmGemmParamsAttr::get(
-      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, kPerBlock,
-      kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
-      wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
-      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout);
+      perfConfigStrAttr.getContext(), mPerBlockG0, nPerBlockG0, nPerBlockG1,
+      kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
+      numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
+      useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===----------------------------------------------------------------------===//

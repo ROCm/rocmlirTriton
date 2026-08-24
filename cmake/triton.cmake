@@ -40,8 +40,8 @@ message(STATUS "Adding Triton-pinned LLVM/MLIR (external/llvm-project) src depen
 # LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
 # effect when LLVM processes its own CMakeLists.txt.
 set(LLVM_ENABLE_PROJECTS "mlir;lld" CACHE STRING "List of LLVM sub-projects")
-set(LLVM_ENABLE_ZSTD OFF CACHE BOOL "")
-set(LLVM_ENABLE_ZLIB OFF CACHE BOOL "")
+set(LLVM_ENABLE_ZSTD OFF CACHE STRING "")
+set(LLVM_ENABLE_ZLIB OFF CACHE STRING "")
 set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
 set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
 set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
@@ -131,18 +131,19 @@ message(STATUS "LLVM_INCLUDE_DIRS: ${LLVM_INCLUDE_DIRS}")
 
 #===----------------------------------------------------------------------===//
 # ROCm Configuration
+#
+# ROCM_PATH is resolved once in the top-level CMakeLists.txt before project()
+# so both the Windows toolchain and package discovery use the same root.
+# HIP package files may use the legacy hip/cmake module path or the standard
+# lib/cmake/hip package-prefix layout used by the HIP SDK and TheRock.
 #===----------------------------------------------------------------------===//
 
-if(NOT DEFINED ROCM_PATH)
-  if(NOT DEFINED ENV{ROCM_PATH})
-    set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to ROCm installation")
-  else()
-    set(ROCM_PATH $ENV{ROCM_PATH} CACHE PATH "Path to ROCm installation")
-  endif()
-endif()
 message(STATUS "ROCM_PATH: ${ROCM_PATH}")
 
-list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
+# Preserve the legacy module path where it is supported.
+if(NOT WIN32)
+  list(APPEND CMAKE_MODULE_PATH "${ROCM_PATH}/hip/cmake")
+endif()
 
 #===----------------------------------------------------------------------===//
 # Triton Build Options (matching external/triton/CMakeLists.txt)

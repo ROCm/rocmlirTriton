@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -284,6 +284,10 @@ int main(int argc, char **argv) {
   // Preliminary checks
   if (args.dataType == benchmark::DataType::F8 && args.gemmG != 1) {
     std::cerr << "CK does not support fp8 batched gemm!\n";
+    exit(1);
+  }
+  if (args.dataType == benchmark::DataType::I4) {
+    std::cerr << "CK does not support i4 gemm!\n";
     exit(1);
   }
   if (args.dataType != args.outDataType) {

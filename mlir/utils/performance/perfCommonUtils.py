@@ -1,5 +1,59 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 import enum
 import re
+
+# Tunable field order in the serialized perf-config schemas. Keep these in sync
+# with GemmParamsAttr and GemmGemmParamsAttr in RockAttrDefs.td.
+PERF_CONFIG_FIELD_NAMES = {
+    'gemm': ("mPerBlock", "nPerBlock", "kPerBlock", "kpack", "numCTAs", "numWaves",
+             "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize"),
+    'attn':
+        ("mPerBlockG0", "nPerBlockG0", "nPerBlockG1", "kPerBlock", "kpack", "numCTAs", "numWaves",
+         "matrixInstrNonkdim", "splitKFactor", "numStages", "wavesPerEU", "gridGroupSize"),
+}
+PERF_CONFIG_FIELD_INDEX = {
+    kind: dict(zip(names, range(len(names)))) for kind, names in PERF_CONFIG_FIELD_NAMES.items()
+}
+
+# Key name of the Split-K factor within serialized perf configs.
+SPLITK_KEY = "splitKFactor"
+
+
+def parse_perfconfig(perfconfig):
+    """Parse a canonical ``prefix:key=value,...`` perfconfig string.
+
+    Returns ``(prefix, params_dict)`` with integer values. Raises
+    ``ValueError`` on any other shape (e.g. the legacy positional
+    ``prefix:vN:`` form, which the tooling no longer emits). Mirrors
+    ``GemmParamsAttr::getPerfConfigStr`` in ``RockAttrDefs.td``.
+    """
+    prefix, sep, body = perfconfig.partition(":")
+    if not sep:
+        raise ValueError(f"Invalid perfconfig format: {perfconfig}")
+    params = {}
+    for piece in body.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        key, eq, value = piece.partition("=")
+        key = key.strip()
+        if not eq or not key:
+            raise ValueError(f"Invalid perfconfig format: {perfconfig}")
+        params[key] = int(value.strip())
+    return prefix, params
+
+
+def serialize_perfconfig(prefix, params):
+    """Serialize ``(prefix, params_dict)`` back to ``prefix:key=value,...``.
+
+    Uses the compact, space-free form emitted by
+    ``GemmParamsAttr::getPerfConfigStr`` so the result round-trips through
+    ``rocmlir-gen --perf_config``.
+    """
+    body = ",".join(f"{key}={value}" for key, value in params.items())
+    return f"{prefix}:{body}"
 
 
 class Operation(enum.IntEnum):
@@ -29,7 +83,7 @@ class Operation(enum.IntEnum):
             raise ValueError(f"Unknown operation type {name}")
 
 
-CORRECT_RESULT_RE = re.compile('\[1\s*1\s*1\]')
+CORRECT_RESULT_RE = re.compile(r'\[1\s*1\s*1\]')
 
 
 class GEMMLibrary(enum.IntEnum):

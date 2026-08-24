@@ -1,5 +1,5 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
-// used for private CI
+import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
 import hudson.plugins.git.extensions.impl.CheckoutOption
 import hudson.plugins.git.extensions.impl.CloneOption
@@ -13,8 +13,8 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
-// Jenkins Git plugin defaults to 10 minutes per git command.
-// Use 2h for fetches that can exceed that on slow network.
+// Jenkins Git plugin defaults to 10 minutes per command. Use 2h for fetches and
+// checkouts that can exceed that on a slow network.
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
@@ -70,7 +70,8 @@ void gitHealthCheck() {
     echo "[healthcheck] Git OK"
 }
 
-Map scmWithGitTimeout(Object baseScm = scm) {
+@NonCPS
+Map scmWithGitTimeout(Object baseScm) {
     List extensions = []
     boolean hasCloneOption = false
     boolean hasCheckoutOption = false
@@ -119,6 +120,7 @@ Map scmWithGitTimeout(Object baseScm = scm) {
     return checkoutScm
 }
 
+@NonCPS
 int gitTimeoutAtLeast(Integer timeout) {
     int currentTimeout = timeout ?: 0
     return Math.max(currentTimeout, GIT_SCM_TIMEOUT_MINUTES)
@@ -157,7 +159,7 @@ void robustScmCheckout() {
             // This inner 'try' handles the "reference is not a tree" fallback
             try {
                 echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
-                checkout(scmWithGitTimeout())
+                checkout(scmWithGitTimeout(scm))
                 echo "[SCM] Checkout successful"
                 // If checkout succeeds, exit the function immediately
                 return
@@ -479,6 +481,7 @@ void preMergeCheck(String codepath) {
     if ( (params.nightly == false) && (codepath == "mfma") ) {
         echo "Performing Static Test (preMergeCheck)"
         sh '''
+        set -eu
         if [ ! -f ./build/compile_commands.json ];  then
           echo "No compile commands, bailing."
           exit 1
@@ -486,6 +489,7 @@ void preMergeCheck(String codepath) {
         if [ ! -f ./compile_commands.json ]; then
           ln -s build/compile_commands.json compile_commands.json
         fi
+        # TableGen headers are built inside premerge-checks.py before clang-tidy.
         '''
         def targetBranch = env.CHANGE_TARGET
         if (!targetBranch) {
@@ -591,11 +595,23 @@ void setHeartbeat() {
     }
 }
 
+List<String> getEnabledMfmaArchitectures() {
+    def architectures = []
+    if (params.disable942 == false) architectures << 'gfx942'
+    if (params.disable908 == false) architectures << 'gfx908'
+    if (params.disable90a == false) architectures << 'gfx90a'
+    return architectures
+}
+
 String getLabelFromCodepath(String codepath) {
     echo "codepath is ${codepath}"
     String label = ''
     if (codepath == "mfma") {
-        label = 'mlir && (gfx942 || gfx908 || gfx90a)'
+        def architectures = getEnabledMfmaArchitectures()
+        if (architectures.isEmpty()) {
+            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+        }
+        label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
         //     label = 'mlir && linux-mi350-8'
@@ -672,14 +688,23 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-void build_fixedE2ETests() {
+// The upstream MLIR suite runs on one codepath, like the static checks do: only its
+// six Integration/GPU/ROCM tests touch the GPU, so the rest would repeat identically
+// on every row. mfma is the row that is always enabled when nightly runs.
+boolean runsCheckMlir(String codepath) {
+    return params.nightly && codepath == "mfma"
+}
+
+void build_fixedE2ETests(String codepath) {
     // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-rocmlir-build-only", """
+    buildProject("${runsCheckMlir(codepath) ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCMLIR_ENABLE_BENCHMARKS=${params.nightly ? 'hipblaslt' : ''}
+              -DMLIR_INCLUDE_INTEGRATION_TESTS=${runsCheckMlir(codepath) ? 'ON' : 'OFF'}
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
              """)
@@ -687,21 +712,18 @@ void build_fixedE2ETests() {
 
 void check_randomE2ETests() {
     int limit_lit_workers = setLitWorkerCount()
-    timeout(time: 60, activity: true, unit: 'MINUTES') {
-        dir('build') {
-            // Use cmake directly instead of buildProject/cmake.sh because
-            // cmake.sh wipes the build directory. We only need to reconfigure
-            // flags (add RANDOM_DATA_SEED=1) after build_fixedE2ETests.
-            sh """cmake .. \
-                -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0 \
-                -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1 \
-                -DROCK_E2E_TEST_ENABLED=1 \
-                -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1 \
-                -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}' \
-                -DCMAKE_EXPORT_COMPILE_COMMANDS=1"""
-            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
-        }
-    }
+    // --no-clean keeps the build directory from build_fixedE2ETests; only the
+    // lit configs change here.
+    buildProject('check-rocmlir', """
+              --no-clean
+              -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
+              -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
+              -DROCK_E2E_TEST_ENABLED=1
+              -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
+              -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=1
+             """)
 }
 
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
@@ -724,27 +746,28 @@ void runSweep(String script, String kind, int samples, String codepath) {
 
 
 boolean shouldRunFromCodepath(String codepath) {
-    // Run vanilla on public CI
+    // Run vanilla when xdlops are unavailable.
     if ((codepath == "vanilla") && (params.canXdlops == false)) {
         return true
     }
-    // Run mfma on private CI
-    if ((codepath == "mfma") && params.canXdlops) {
+    // Run mfma when xdlops are available.
+    if ((codepath == "mfma") && params.canXdlops &&
+        !getEnabledMfmaArchitectures().isEmpty()) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
         return true
     }
-    // Run navi21 on private nightly or weekly CI if it is not disabled
+    // Run navi21 during scheduled CI if it is not disabled.
     if (params.canXdlops && (params.disableNavi21 == false) && (codepath == "navi21") &&
         (params.nightly || params.weekly)) {
         return true
     }
-    // Run navi3x on private CI if it is not disabled
+    // Run navi3x if it is not disabled.
     if (params.canXdlops && (params.disableNavi3x == false) && (codepath == "navi3x")) {
         return true
     }
-    // Run navi4x on private CI if it is not disabled
+    // Run navi4x if it is not disabled.
     if (params.canXdlops && (params.disableNavi4x == false) && (codepath == "navi4x")) {  
         return true;  
     }  
@@ -795,15 +818,15 @@ void archivePerfDB() {
 */
 
 boolean shouldRunBuildAndTest(String codepath) {
-    // When default codepath is selected, we test mfma, navi21, navi3x and navi4x on
-    // private CI and vanilla on public CI
+    // When the default codepath is selected, test every codepath enabled for
+    // this runner.
     if (params.codepath == "default" && shouldRunFromCodepath(codepath))
         return true
 
-    // When a particular codepath is selected, we only test the codepath
-    // on private CI
+    // When a particular codepath is selected, test it if it is supported and
+    // enabled.
     if (params.codepath == codepath && params.canXdlops) {
-        if (params.codepath == "mfma") return true
+        if (params.codepath == "mfma") return !getEnabledMfmaArchitectures().isEmpty()
         if (params.codepath == "vanilla") return true
         if (params.codepath == "gfx950" && params.disable950 == false) return true
         if (params.codepath == "navi21" && params.disableNavi21 == false) return true
@@ -1032,6 +1055,7 @@ Map<String,String> classifyBuildFailure(String logText) {
     def stageNames = [
         'SCM Checkout',
         'Configure and build rocmlirTriton', 'Static checks', 'Run tests',
+        'Upstream MLIR: check-mlir', 'Shared Library: fixed E2E', 'Shared Library: random E2E',
         'Install MIGraphX Dependencies', 'Build and Verify MIGraphX with MLIR', 'Verify MIGraphX with MLIR',
         'MIGraphX'
     ]
@@ -1232,13 +1256,27 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests(CODEPATH)
                                                         }
                                                     }
 
                                                     stage('Static checks (clang-format & clang-tidy)') {
                                                         timeout(time: 10, activity: true, unit: 'MINUTES') {
                                                             preMergeCheck(CODEPATH)
+                                                        }
+                                                    }
+
+                                                    // Runs before the GPU suite: apart from six Integration/GPU/ROCM
+                                                    // tests it is host-only and finishes in seconds, so MLIR
+                                                    // regressions are reported early.
+                                                    if (runsCheckMlir(CODEPATH)) {
+                                                        stage('Upstream MLIR: check-mlir') {
+                                                            int limit_lit_workers = setLitWorkerCount()
+                                                            timeout(time: 15, activity: true, unit: 'MINUTES') {
+                                                                dir('build') {
+                                                                    sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-mlir"
+                                                                }
+                                                            }
                                                         }
                                                     }
 
@@ -1264,7 +1302,7 @@ pipeline {
                                                             echo "Container environment:"
                                                             showEnv()
 
-                                                            build_fixedE2ETests()
+                                                            build_fixedE2ETests("${CODEPATH}")
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                 sh 'cd build; ninja check-rocmlir'
@@ -1284,23 +1322,23 @@ pipeline {
                                                             dir('build') {
                                                                 timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                     // Tune gemms, fail if the DB is not created
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
                                                                             -o tuning_gemm.tsv
                                                                         [ -f tuning_gemm.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
                                                                             -o tuning_conv.tsv
                                                                         [ -f tuning_conv.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op attention \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-attention-configs \
                                                                             -o tuning_attention.tsv
                                                                         [ -f tuning_attention.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm --tuning-space quick \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
                                                                             -o quick_tuning_gemm.tsv
                                                                         [ -f quick_tuning_gemm.tsv ]"""
-                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv --tuning-space quick \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
                                                                             -o quick_tuning_conv.tsv
                                                                         [ -f quick_tuning_conv.tsv ]"""
@@ -1503,12 +1541,12 @@ pipeline {
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
@@ -1549,17 +1587,17 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op attention \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                     -c ${attnConfigToUse} \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op gemm --tuning-space quick \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op conv --tuning-space quick \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
@@ -1581,10 +1619,10 @@ PY
                                                     stage("Tune Fusion") {
                                                         dir('build') {
                                                             // Tune resnet50
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
 
                                                             // Tune bert
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                         sh 'rm -f build/CMakeCache.txt'
                                                     }

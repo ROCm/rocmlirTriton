@@ -132,7 +132,7 @@ if(MLIR_ENABLE_ROCM_RUNNER)
 
     conv-validation-wrappers
     mlir-runner
-    # Not strictly a test dependency, included so we don't break it during compiles
+    # Required by hardware-gated rocmlir-tuning-driver tests.
     rocmlir-tuning-driver
   )
   # Only add mlir_rocm_runtime if it exists (it won't if using pre-built LLVM without ROCm support)

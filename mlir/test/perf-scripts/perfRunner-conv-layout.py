@@ -14,13 +14,19 @@ unit tests added alongside the same change in rocMLIR (PR #2422).
 # RUN: %python %s
 """
 
-from pathlib import Path
+import os
+import shutil
 import sys
 import unittest
 
-MLIR_DIR = Path(__file__).resolve().parents[2]
-PERF_DIR = MLIR_DIR / "utils" / "performance"
-sys.path.insert(0, str(PERF_DIR))
+# perfRunner.py depends on the compiled amd_arch_db binding. Both are deployed
+# together by ci-performance-scripts, so import that copy rather than the source
+# file, where the binding is unavailable.
+_script = shutil.which("perfRunner.py")
+if _script is None:
+    sys.exit("perfRunner.py not on PATH; did you run "
+             "`ninja ci-performance-scripts`?")
+sys.path.insert(0, os.path.dirname(_script))
 
 from perfRunner import rocmlir_layout_to_miopen, conv_commandline_to_miopen_layouts  # noqa: E402
 

@@ -41,6 +41,9 @@ class PatternRewriter;
 #include "mlir/Dialect/Rock/IR/GemmGemmSize.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 
+#include <cstdint>
+#include <limits>
+
 namespace mlir {
 namespace OpTrait {
 namespace rock {
@@ -67,10 +70,17 @@ ArrayAttr getIndexArrayAttr(Builder &b, ArrayRef<int64_t> values);
 // support.
 constexpr int64_t maxHardwareWorkgroupSize = 1024;
 
+// The largest grid X dimension that an HSA dispatch packet can represent.
+constexpr int64_t maxHardwareGridSize = std::numeric_limits<uint32_t>::max();
+
 } // end namespace rock
 } // end namespace mlir
 
+#include "mlir-c/Dialect/Rock.h"
+
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
+// The generated perfConfig schema static_asserts against `kKnobDefault`.
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #define GET_ATTRDEF_CLASSES
 #include "mlir/Dialect/Rock/IR/RockAttrDefs.h.inc"
 
@@ -88,7 +98,8 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims);
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
+    bool isTileAlignment = false);
 
 TransformMapAttr getTransformMapAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,

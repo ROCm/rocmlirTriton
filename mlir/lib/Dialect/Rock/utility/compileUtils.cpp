@@ -89,7 +89,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     info.clusterSize = numCTAs;
 
     // Get grid_size from module attribute (set by RockTensorToTritonPtr)
-    std::string gridAttrName = "rock.grid_size." + info.name;
+    std::string gridAttrName = GridSizeAttr::getModuleAttrName(info.name);
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
@@ -196,6 +196,7 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   tritonOpts.useBufferOps = params.getUseBufferOps();
   tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
   tritonOpts.useReductionLayout = params.getUseReductionLayout();
+  tritonOpts.useOptimizeEpilogue = params.getUseOptimizeEpilogue();
 
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();

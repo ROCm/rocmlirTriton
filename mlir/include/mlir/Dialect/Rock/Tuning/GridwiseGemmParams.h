@@ -139,6 +139,13 @@ inline bool isGemmParamsConservativelyApplicable(
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
     return false;
+  // Scaled GEMMs require power-of-two tiles
+  if (aScaleType || bScaleType) {
+    if (!llvm::isPowerOf2_64(p.getMPerBlock()) ||
+        !llvm::isPowerOf2_64(p.getNPerBlock()) ||
+        !llvm::isPowerOf2_64(p.getKPerBlock()))
+      return false;
+  }
   // The element-type args may have been threaded from interface methods that
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);
@@ -199,7 +206,9 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*useInThreadTranspose=*/kKnobDefault,
                              /*useBufferOps=*/kKnobDefault,
                              /*useBufferAtomics=*/kKnobDefault,
-                             /*useReductionLayout=*/kKnobDefault);
+                             /*useReductionLayout=*/kKnobDefault,
+                             /*useOptimizeEpilogue=*/kKnobDefault,
+                             /*useBf16x3ForF32=*/kKnobDefault);
 }
 
 /// Bump the first param matching `isApplicable` to the front, preserving the

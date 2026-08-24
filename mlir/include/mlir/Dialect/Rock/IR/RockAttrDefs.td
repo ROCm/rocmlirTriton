@@ -182,6 +182,16 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
         ```
         where the params block may be omitted for transforms that don't take parameters.
 
+        A Pad may carry the additional marker `tileAlignment`, as in
+        ```
+          #rock.transform<Pad{0, 15} tileAlignment ["gemmNPad"] at [2] -> ["gemmN"] at [2]>
+        ```
+        recording that the gemm lowering added this padding to align a gemm
+        dimension to the tile size instead of the padding coming from the
+        kernel. The lowering masks the matching output lanes off, so this
+        padding may be discarded when a load is narrowed to the dimensions it
+        actually depends on. Regular padding may not.
+
         The available transform types are
         - PassThrough, which maps N lower dimensions to N upper dimensions
             without changing the coordinates in those dimensions
@@ -209,20 +219,37 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
           input arguments.
     }];
 
-    let parameters = (ins
-    AttrParameter<"::mlir::rock::TransformType",
-        "The type of transformation to perform">:$type,
-    ArrayRefParameter<"int64_t",
-        "The parameters to the transformation, if any">:$params,
-    ArrayRefOfStringRefParameter<
-        "The names of the upper dimensions (input arguments) of this transform">:$upperNames,
-    ArrayRefParameter<"uint32_t",
-        "The indices of the upper dimensions (input arguments) of this transform">:$upperDims,
-    ArrayRefOfStringRefParameter<
-        "The names of the lower dimensions (outputs) of this transformation">:$lowerNames,
-    ArrayRefParameter<"uint32_t",
-        "The indices of the lower dimensions (outputs) of this transformation">:$lowerDims
-    );
+    let parameters =
+        (ins AttrParameter<"::mlir::rock::TransformType",
+                           "The type of transformation to perform">:$type,
+            ArrayRefParameter<
+                "int64_t",
+                "The parameters to the transformation, if any">:$params,
+            ArrayRefOfStringRefParameter<
+                "The names of the upper dimensions (input arguments) of this "
+                "transform">:$upperNames,
+            ArrayRefParameter<"uint32_t",
+                              "The indices of the upper dimensions (input "
+                              "arguments) of this transform">:$upperDims,
+            ArrayRefOfStringRefParameter<
+                "The names of the lower dimensions (outputs) of this "
+                "transformation">:$lowerNames,
+            ArrayRefParameter<"uint32_t",
+                              "The indices of the lower dimensions (outputs) "
+                              "of this transformation">:$lowerDims,
+            DefaultValuedParameter<"bool", "false",
+                                   "Whether this Pad aligns a gemm dimension "
+                                   "to the tile size">:$isTileAlignment);
+
+    let builders = [
+        // Convenience builder for the transforms that are never tile alignment.
+        AttrBuilder<(ins "::mlir::rock::TransformType":$type,
+            "::llvm::ArrayRef<int64_t>":$params,
+            "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
+            "::llvm::ArrayRef<uint32_t>":$upperDims,
+            "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
+            "::llvm::ArrayRef<uint32_t>":$lowerDims)>,
+    ];
 
     let genVerifyDecl = 1;
     let hasCustomAssemblyFormat = 1;
@@ -262,6 +289,166 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
     let genVerifyDecl = 1;
 }
 
+//===-----------------------------------------------------===//
+// Named perfConfig schema
+//===-----------------------------------------------------===//
+
+// One field of a named `prefix:key=value,...` perfConfig: the key it is
+// serialized under, and the value `get()` falls back to when a config string
+// omits that key. The key must match the attribute parameter it describes;
+// `Rock_PerfConfigSchema` asserts that at build time.
+class RockPerfConfigField<string k, int d> {
+  string key = k;
+  int defaultValue = d;
+}
+
+// The tri-state sentinel every knob field defaults to. This is a copy of
+// `rock::kKnobDefault` (Rock/utility/KnobUtils.h) because TableGen cannot read
+// a C++ constant; `Rock_PerfConfigSchema` emits a `static_assert` that fails
+// the build if the two ever disagree.
+defvar kRockKnobDefault = -1;
+
+// An attribute parameter for one tri-state Triton knob: `kKnobDefault`
+// (arch/heuristic default), `0` (force off), or `1` (force on). ODS takes the
+// default as C++ source text, hence the cast.
+def RockKnobParameter
+    : DefaultValuedParameter<"int64_t", !cast<string>(kRockKnobDefault)>;
+
+// The perfConfig fields shared by every Rock tuning-param attribute, in
+// canonical serialization order. Each attribute prepends its own block-tile
+// fields, which are all that differ between the gemm and gemm+gemm schemas.
+defvar kRockCommonPerfConfigFields =
+    [RockPerfConfigField<"kPerBlock", 16>, RockPerfConfigField<"kpack", 1>,
+     RockPerfConfigField<"numCTAs", 1>, RockPerfConfigField<"numWaves", 4>,
+     RockPerfConfigField<"matrixInstrNonkdim", 0>,
+     RockPerfConfigField<"splitKFactor", 1>,
+     RockPerfConfigField<"numStages", 1>, RockPerfConfigField<"wavesPerEU", 0>,
+     RockPerfConfigField<"gridGroupSize", 0>,
+     RockPerfConfigField<"useAsyncCopy", kRockKnobDefault>,
+     RockPerfConfigField<"useBlockPingpong", kRockKnobDefault>,
+     RockPerfConfigField<"useInThreadTranspose", kRockKnobDefault>,
+     RockPerfConfigField<"useBufferOps", kRockKnobDefault>,
+     RockPerfConfigField<"useBufferAtomics", kRockKnobDefault>,
+     RockPerfConfigField<"useReductionLayout", kRockKnobDefault>,
+     RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>,
+     RockPerfConfigField<"useBf16x3ForF32", kRockKnobDefault>];
+
+// Derives the whole named-perfConfig surface of a tuning-param attribute from a
+// single field list: the `getPerfConfigStr()` emitter, the key/default schema
+// that `GemmParamsAttr::get(StringAttr)` in RockDialect.cpp parses against, and
+// a positional builder pairing with that schema. Adding a field to `params` and
+// giving it a default here is therefore enough to have it serialized, accepted
+// on parse, and forwarded to `get()` -- none of which can silently drift from
+// the others.
+//
+// `params` must be the same dag the attribute passes to `let parameters`, since
+// the emitter calls the accessors ODS derives from it. The assert catches a
+// parameter that was added without a matching schema entry (or vice versa),
+// which would otherwise silently drop the field from the serialized form.
+class Rock_PerfConfigSchema<string prefix, dag params,
+                            list<RockPerfConfigField> tileFields> {
+  list<RockPerfConfigField> fields =
+      !listconcat(tileFields, kRockCommonPerfConfigFields);
+
+  list<string> keys = !foreach(f, fields, f.key);
+  list<string> paramNames =
+      !foreach(i, !range(0, !size(params)), !getdagname(params, i));
+
+  assert !eq(!interleave(paramNames, ","), !interleave(keys, ",")),
+      "perfConfig schema must list exactly this attribute's parameters, in "
+      "order: schema has [" # !interleave(keys, ", ") # "], parameters are ["
+#!interleave(paramNames, ", ")#"]";
+
+  // `mPerBlock` -> `"mPerBlock=" + Twine(getMPerBlock())`, chained onto the
+  // `prefix:` header with `,` separators.
+  string emitterExpr =
+      "Twine(\"" # prefix # ":\")\n        + "
+#!interleave(!foreach(f, fields,
+                             "\"" # f.key # "=\" + Twine(get"
+#!toupper(!substr(f.key, 0, 1))
+#!substr(f.key, 1)#"())"),
+                    "\n        + \",\" + ");
+
+  string keysInit =
+      "{"#!interleave(!foreach(f, fields, "\""#f.key#"\""), ", ")#"}";
+  string defaultsInit = "{"#!interleave(
+      !foreach(f, fields, !cast<string>(f.defaultValue)), ", ")#"}";
+  string forwardArgs = !interleave(
+      !foreach(i, !range(0, !size(fields)), "v["#!cast<string>(i)#"]"), ", ");
+
+  code perfConfigDecls = [{
+    // `}]#prefix#[{:key=value,...` is the single canonical output form.
+    // Every field is emitted explicitly (defaults can change over time, so we
+    // never rely on them being reconstructed on parse). Legacy positional
+    // `}]#prefix#[{:vN:` strings remain accepted on input by `get()`.
+    //
+    // This block is generated from the field list in RockAttrDefs.td; see
+    // `Rock_PerfConfigSchema`.
+
+    // `kRockKnobDefault` in RockAttrDefs.td hand-copies the value of
+    // `rock::kKnobDefault`, which TableGen cannot read. Emitting that copy as
+    // a literal here is what lets C++ compare it against the original.
+    static_assert(}]#!cast<string>(kRockKnobDefault)#[{ ==
+                      ::mlir::rock::kKnobDefault,
+                  "kRockKnobDefault in RockAttrDefs.td is out of sync with "
+                  "kKnobDefault in Rock/utility/KnobUtils.h");
+
+    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
+        (}]#emitterExpr#[{)
+        .toVector(perfStr);
+    }
+
+    StringAttr getPerfConfigAttr() {
+        SmallVector<char, ROCMLIR_TUNING_PARAM_STRING_BUFSZ> buf;
+        getPerfConfigStr(buf);
+        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
+    }
+
+    // The header shared by the named and the legacy positional (`prefix:vN:`)
+    // forms.
+    static StringRef getPerfConfigPrefix() { return "}]#prefix#[{"; }
+
+    // The keys of the named form in canonical order, and the value each field
+    // takes when a config string omits it. Parallel arrays generated from the
+    // one field list, so they cannot disagree in length or order.
+    static ArrayRef<StringRef> getPerfConfigKeys() {
+        static constexpr StringRef keys[] = }]#keysInit#[{;
+        return keys;
+    }
+
+    static ArrayRef<int64_t> getPerfConfigDefaults() {
+        static constexpr int64_t defaults[] = }]#defaultsInit#[{;
+        return defaults;
+    }
+
+    // Builds the attribute from values ordered as `getPerfConfigKeys()`, which
+    // is the order the perfConfig parser resolves them in. The return type is
+    // deduced so that this stays independent of the attribute's C++ name.
+    static auto getFromPerfConfigValues(MLIRContext *context,
+                                        ArrayRef<int64_t> v) {
+        assert(v.size() == getPerfConfigKeys().size() &&
+               "expected one value per perfConfig field");
+        return get(context, }]#forwardArgs#[{);
+    }
+  }];
+}
+
+// Shared by `let parameters` below and the perfConfig schema, so that the
+// serialized form and the parser are both derived from this one list.
+defvar kRockGemmParams = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
+    "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
+    "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim, "int64_t":$splitKFactor,
+    "int64_t":$numStages, "int64_t":$wavesPerEU, "int64_t":$gridGroupSize,
+    RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
+    RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
+    RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
+
+def Rock_GemmParamsSchema
+    : Rock_PerfConfigSchema<"gemm", kRockGemmParams,
+                            [RockPerfConfigField<"mPerBlock", 32>,
+                             RockPerfConfigField<"nPerBlock", 32>]>;
+
 def Rock_GemmParamsAttr
     : Rock_Attr<"GemmParams", [RockTuningParamAttrInterface]> {
   let mnemonic = "gemm_params";
@@ -290,9 +477,20 @@ def Rock_GemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+    - useReductionLayout: Tri-state gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill.
+      gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
+      kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
+    - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
+      selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
+      enables it unconditionally.
+    - useBf16x3ForF32: Gate for decomposing an f32 `tt.dot` into three bf16
+      products (Triton's `InputPrecision::BF16x3`) rather than issuing an IEEE
+      f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
+      `0` forces the IEEE path, and `1` forces the decomposition. Has no effect
+      on dots whose operands are not both f32. Being a precision relaxation, the
+      decomposition additionally requires fast math: `-disable-fast-math` pins
+      the IEEE path even at `1`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -306,52 +504,13 @@ def Rock_GemmParamsAttr
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
+    - `useOptimizeEpilogue`              (set to -1)
+    - `useBf16x3ForF32`                  (set to -1)
   }];
 
-  let parameters = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
-      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
-      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
-      "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
-      "int64_t":$gridGroupSize,
-      DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
-      DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
-      DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
+  let parameters = kRockGemmParams;
 
-  let extraClassDeclaration = [{
-    // v4 is the single canonical output form (17 fields: the v3 knobs plus
-    // `useReductionLayout`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v4.
-    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("gemm:v4:"
-        + Twine(getMPerBlock()) + ","
-        + Twine(getNPerBlock()) + ","
-        + Twine(getKPerBlock()) + ","
-        + Twine(getKpack()) + ","
-        + Twine(getNumCTAs()) + ","
-        + Twine(getNumWaves()) + ","
-        + Twine(getMatrixInstrNonkdim()) + ","
-        + Twine(getSplitKFactor()) + ","
-        + Twine(getNumStages()) + ","
-        + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize()) + ","
-        + Twine(getUseAsyncCopy()) + ","
-        + Twine(getUseBlockPingpong()) + ","
-        + Twine(getUseInThreadTranspose()) + ","
-        + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()))
-        .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
-  }];
+  let extraClassDeclaration = Rock_GemmParamsSchema.perfConfigDecls;
 
   let builders = [AttrBuilderWithInferredContext<(
       ins "StringAttr":$perfConfigStr)>];
@@ -360,6 +519,26 @@ def Rock_GemmParamsAttr
     `<` struct(params) `>`
   }];
 }
+
+// Shared by `let parameters` below and the perfConfig schema, so that the
+// serialized form and the parser are both derived from this one list.
+defvar kRockGemmGemmParams = (ins "int64_t":$mPerBlockG0,
+    "int64_t":$nPerBlockG0, "int64_t":$nPerBlockG1, "int64_t":$kPerBlock,
+    "int64_t":$kpack, "int64_t":$numCTAs, "int64_t":$numWaves,
+    "int64_t":$matrixInstrNonkdim, "int64_t":$splitKFactor,
+    "int64_t":$numStages, "int64_t":$wavesPerEU, "int64_t":$gridGroupSize,
+    RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
+    RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
+    RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
+
+// `nPerBlockG1` defaults to 0 ("untiled"), matching how pre-v6 positional
+// configs, which have no such field, decode.
+def Rock_GemmGemmParamsSchema
+    : Rock_PerfConfigSchema<"attn", kRockGemmGemmParams,
+                            [RockPerfConfigField<"mPerBlockG0", 32>,
+                             RockPerfConfigField<"nPerBlockG0", 32>,
+                             RockPerfConfigField<"nPerBlockG1", 0>]>;
 
 def Rock_GemmGemmParamsAttr
     : Rock_Attr<"GemmGemmParams", [RockTuningParamAttrInterface]> {
@@ -371,6 +550,11 @@ def Rock_GemmGemmParamsAttr
       the first GEMM
     - nPerBlockG0: The number of values of n to process in each workgroup for
       the first GEMM
+    - nPerBlockG1: The number of values of n to process in each workgroup for
+      the second GEMM (i.e. the head-dim tile of the attention output). `0`
+      means "untiled": the second GEMM processes the full `gemm1N` in one shot
+      (the historical behaviour and what pre-v6 positional configs, which have
+      no `nPerBlockG1` field, decode to).
     - kPerBlock: The number of values of k to process in each workgroup
     - kpack: The number of matrix instructions we can run with one LDS load (can be 1 or 2, see AccelerateAMDMatmul.cpp)
     - numCTAs: The number CTAs
@@ -391,9 +575,20 @@ def Rock_GemmGemmParamsAttr
       pass cluster.
     - useBufferAtomics: Overrides buffer atomics in convert-to-buffer-ops (requires useBufferOps
       to be enabled).
-    - useReductionLayout: Gate for the `rock-set-reduction-layout` pass, which
+    - useReductionLayout: Tri-state gate for the `rock-set-reduction-layout` pass, which
       redistributes GPU warps onto the reduction (K) dim (in convolutions) of the global-load
-      gather operand to cut SGPR spill.
+      gather operand to cut SGPR spill. -1 (heuristic default) rewrites only convolution
+      kernels; 0 disables the rewrite entirely; 1 forces it on every kernel.
+    - useOptimizeEpilogue: Gate for Triton's `OptimizeEpilogue` pass. `-1`
+      selects the rocMLIR store-tail heuristic, `0` disables the pass, and `1`
+      enables it unconditionally.
+    - useBf16x3ForF32: Gate for decomposing an f32 `tt.dot` into three bf16
+      products (Triton's `InputPrecision::BF16x3`) rather than issuing an IEEE
+      f32 dot. `-1` follows the per-arch default (`rock::preferBf16x3ForF32Dot`),
+      `0` forces the IEEE path, and `1` forces the decomposition. Applies to
+      both GEMMs and has no effect on dots whose operands are not both f32.
+      Being a precision relaxation, the decomposition additionally requires fast
+      math: `-disable-fast-math` pins the IEEE path even at `1`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -407,52 +602,13 @@ def Rock_GemmGemmParamsAttr
     - `useBufferOps`                     (set to -1)
     - `useBufferAtomics`                 (set to -1)
     - `useReductionLayout`               (set to -1)
+    - `useOptimizeEpilogue`              (set to -1)
+    - `useBf16x3ForF32`                  (set to -1)
   }];
 
-  let parameters = (ins "int64_t":$mPerBlockG0, "int64_t":$nPerBlockG0,
-      "int64_t":$kPerBlock, "int64_t":$kpack, "int64_t":$numCTAs,
-      "int64_t":$numWaves, "int64_t":$matrixInstrNonkdim,
-      "int64_t":$splitKFactor, "int64_t":$numStages, "int64_t":$wavesPerEU,
-      "int64_t":$gridGroupSize,
-      DefaultValuedParameter<"int64_t", "-1">:$useAsyncCopy,
-      DefaultValuedParameter<"int64_t", "-1">:$useBlockPingpong,
-      DefaultValuedParameter<"int64_t", "-1">:$useInThreadTranspose,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferOps,
-      DefaultValuedParameter<"int64_t", "-1">:$useBufferAtomics,
-      DefaultValuedParameter<"int64_t", "-1">:$useReductionLayout);
+  let parameters = kRockGemmGemmParams;
 
-  let extraClassDeclaration = [{
-    // v4 is the single canonical output form (17 fields: the v3 knobs plus
-    // `useReductionLayout`). Older versions remain accepted on input by
-    // `get()`; only the serialized form is fixed to v4.
-    void getPerfConfigStr(SmallVectorImpl<char> &perfStr) {
-        ("attn:v4:"
-        + Twine(getMPerBlockG0()) + ","
-        + Twine(getNPerBlockG0()) + ","
-        + Twine(getKPerBlock()) + ","
-        + Twine(getKpack()) + ","
-        + Twine(getNumCTAs()) + ","
-        + Twine(getNumWaves()) + ","
-        + Twine(getMatrixInstrNonkdim()) + ","
-        + Twine(getSplitKFactor()) + ","
-        + Twine(getNumStages()) + ","
-        + Twine(getWavesPerEU()) + ","
-        + Twine(getGridGroupSize()) + ","
-        + Twine(getUseAsyncCopy()) + ","
-        + Twine(getUseBlockPingpong()) + ","
-        + Twine(getUseInThreadTranspose()) + ","
-        + Twine(getUseBufferOps()) + ","
-        + Twine(getUseBufferAtomics()) + ","
-        + Twine(getUseReductionLayout()))
-        .toVector(perfStr);
-    }
-
-    StringAttr getPerfConfigAttr() {
-        SmallVector<char, 64> buf;
-        getPerfConfigStr(buf);
-        return StringAttr::get(getContext(), StringRef(buf.data(), buf.size()));
-    }
-
+  let extraClassDeclaration = Rock_GemmGemmParamsSchema.perfConfigDecls#[{
     // Bridge accessors for the RockTuningParamAttrInterface so generic code
     // (e.g. perf-config validation) can treat gemm and gemm+gemm uniformly.
     int64_t getMPerBlock() const { return getMPerBlockG0(); }
@@ -492,6 +648,15 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   }];
 }
 
+def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
+  let mnemonic = "rock.conv_kernel";
+  let description = [{
+    Marker attribute indicating that a kernel function was lowered from a
+    convolution (`rock.conv`, `rock.conv_bwd_data`, `rock.conv_bwd_weight`, or
+    `rock.conv_elementwise_gemm`).
+  }];
+}
+
 def Rock_NumCU : Rock_Attr<"NumCU"> {
   let mnemonic = "rock.num_cu";
   let description = [{
@@ -513,7 +678,47 @@ def Rock_BlockSize : Rock_Attr<"BlockSize"> {
   let mnemonic = "rock.block_size";
 }
 
-def Rock_GridSize : Rock_Attr<"GridSize"> { let mnemonic = "rock.grid_size"; }
+def Rock_UseOptimizeEpilogue : Rock_Attr<"UseOptimizeEpilogue"> {
+  let mnemonic = "rock.use_optimize_epilogue";
+  let description = [{
+    Temporary function attribute carrying the perfConfig tri-state from
+    `rock-affix-params` to `rock-add-triton-metadata`. The metadata pass removes
+    it after resolving the automatic policy to `rock.prefer_lds_epilogue`, so
+    raw tuning policy does not enter Triton IR.
+  }];
+}
+
+def Rock_UseBf16x3ForF32 : Rock_Attr<"UseBf16x3ForF32"> {
+  let mnemonic = "rock.use_bf16x3_for_f32";
+  let description = [{
+    Transient function attribute carrying the perfConfig tri-state from
+    `rock-affix-params` to `rock-to-ttir`, which needs it when picking the
+    `tt.dot` input precision. The lowering pass removes it once the precision
+    is baked into the emitted dots, so raw tuning policy does not enter Triton
+    IR. It is only a request: `rock-to-ttir` ignores it under
+    `disable-fast-math`, which forbids the precision relaxation outright.
+  }];
+}
+
+def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
+  let mnemonic = "rock.prefer_lds_epilogue";
+  let description = [{
+    Marker set on a kernel function by `rock-add-triton-metadata` when the
+    store-tail heuristic prefers the paced LDS epilogue. The marker survives
+    TTIR lowering and is consumed by Triton's OptimizeEpilogue pass to retain
+    that epilogue.
+  }];
+}
+
+def Rock_GridSize : Rock_Attr<"GridSize"> {
+  let mnemonic = "rock.grid_size";
+
+  let extraClassDeclaration = [{
+    static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {
+      return (::llvm::Twine(getMnemonic()) + "." + kernelName).str();
+    }
+  }];
+}
 
 def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
   let mnemonic = "rock.cluster_size";

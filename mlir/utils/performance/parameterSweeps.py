@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Sweep random (problem-shape, perf-config) combinations through the rocMLIR
 pipeline (rocmlir-gen | rocmlir-driver -c | mlir-runner) and classify each as
 PASS / NOT_APPLICABLE / FAIL. Run from the build directory.
@@ -25,7 +28,8 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
 import perfRunner
-from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_chiplets, get_num_cu)
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES
+from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
@@ -70,34 +74,40 @@ def _decode_cmd_output(data: bytes) -> str:
 class PerfConfig:
     """Serialized perf-config for the Triton-backed rocMLIR pipeline.
 
-    The new format is a ``<kind>:v1:`` string with 11 comma-separated integer
-    fields. Two ``kind`` values exist (see RockAttrDefs.td):
+    The canonical format is a ``<kind>:key=value,...`` list. Only the tunable
+    fields are emitted here; the trailing knob fields are omitted and default to
+    -1 on parse (see ``GemmParamsAttr::get`` in RockDialect.cpp). Two ``kind``
+    values exist (see RockAttrDefs.td):
 
-    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels):
+    * ``gemm`` / GemmParamsAttr (used for gemm and conv kernels), with 11
+      fields:
         mPerBlock, nPerBlock, kPerBlock, kpack, numCTAs, numWaves,
         matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
 
-    * ``attn`` / GemmGemmParamsAttr (used for attention / gemm-gemm kernels):
-        mPerBlockG0, nPerBlockG0, kPerBlock, kpack, numCTAs, numWaves,
-        matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU, gridGroupSize
-
-    See ``parsePerfConfigStr`` in mlir/lib/Dialect/Rock/IR/RockDialect.cpp.
+    * ``attn`` / GemmGemmParamsAttr (used for attention / gemm-gemm kernels),
+      with 12 fields:
+        mPerBlockG0, nPerBlockG0, nPerBlockG1, kPerBlock, kpack, numCTAs,
+        numWaves, matrixInstrNonkdim, splitKFactor, numStages, wavesPerEU,
+        gridGroupSize
+      ``nPerBlockG1`` is the second-gemm N/head tile; ``0`` means untiled.
     """
 
-    EXPECTED_FIELDS = 11
+    _KEYS = PERF_CONFIG_FIELD_NAMES
+    _NUM_FIELDS = {kind: len(names) for kind, names in PERF_CONFIG_FIELD_NAMES.items()}
 
     def __init__(self, config: Sequence[int], kind: str = 'gemm'):
-        if kind not in ('gemm', 'attn'):
+        if kind not in self._NUM_FIELDS:
             raise ValueError(f"Invalid PerfConfig kind: {kind!r}")
-        if len(config) != self.EXPECTED_FIELDS:
-            raise ValueError(
-                f"PerfConfig expects {self.EXPECTED_FIELDS} fields, got {len(config)}: {config!r}")
+        expected = self._NUM_FIELDS[kind]
+        if len(config) != expected:
+            raise ValueError(f"PerfConfig(kind={kind!r}) expects {expected} fields, "
+                             f"got {len(config)}: {config!r}")
         self._config = tuple(config)
         self._kind = kind
 
     def __str__(self):
-        suffix = ','.join(str(v) for v in self._config)
-        return f'{self._kind}:v1:{suffix}'
+        body = ','.join(f'{k}={v}' for k, v in zip(self._KEYS[self._kind], self._config))
+        return f'{self._kind}:{body}'
 
 
 def multiline_repr(obj, num_fields=4):
@@ -111,7 +121,7 @@ def multiline_repr(obj, num_fields=4):
     fields = []
     in_quotes = False
     # Bracket depth so commas inside list/tuple/dict literals (e.g.
-    # ``current_seqlen=[51, 100, 88]``) don't split a field.
+    # ``last_valid_kv_index=[0, 100, 88]``) don't split a field.
     bracket_depth = 0
     perf_config_str = None
 
@@ -183,13 +193,11 @@ def _build_rocmlir_gen_opts(config) -> List[str]:
     per-kind flag tweaks. Used by both ``test_config`` (to actually run) and
     ``_repro_command`` (to print the failure-summary repro line) so the two
     cannot drift."""
+    # generate_mlir_driver_commandline is the single source of truth for the
+    # driver argv, so it already includes every optional flag a config needs.
+    # Building on top of it keeps the perf-run and tuning paths in sync without
+    # per-flag special-casing here.
     opts = config.generate_mlir_driver_commandline('', kernel_repeats=None).split()
-    # current_seqlen is only set on AttentionConfiguration in KV-cache
-    # mode (seq_len_q == 1); generate_mlir_driver_commandline doesn't
-    # know about it.
-    if (isinstance(config, perfRunner.AttentionConfiguration) and
-            getattr(config, "current_seqlen", None) is not None):
-        opts.append(f"--current_seq_len={','.join(map(str, config.current_seqlen))}")
     opts.append('-pv')
     # Per-config precision-aware rocmlir-gen flags (e.g. --pv-f64)
     # attached by callers such as attentionSweeps.to_attn_test to combat
@@ -516,12 +524,13 @@ async def sweep_parameters(
 # The non-power-of-two m/n_per_block entries (48, 80, 96, 160, 192) are
 # deliberately included to exercise the rock-decompose-nonpow2-tiles pass,
 # which splits a blockwise GEMM tile with non-pow2 M and/or N into a grid of
-# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32). k_per_block is
-# kept power-of-two: the contraction dim is not decomposed by that pass.
+# power-of-two sub-tiles (e.g. 80 -> 64 + 16, 96 -> 64 + 32).
+# The non-power-of-two k_per_block entries (48, 80, 96, 112, 160, 192) are
+# likewise included to exercise the non-pow2 k_per_block.
 PERF_CONFIG_OPTIONS = {
     'm_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
     'n_per_block': [16, 32, 48, 64, 80, 96, 128, 160, 192, 256],
-    'k_per_block': [16, 32, 64, 128, 256, 512],
+    'k_per_block': [16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 256, 512],
     # `kpack` is sampled via _kpack_choices(arch); see below. `kpack != 1` is
     # deprecated on gfx950 and gfx1250 (and newer); older archs still take
     # {1, 2}.
@@ -542,6 +551,13 @@ PERF_CONFIG_OPTIONS = {
     # heuristic path is also exercised.
     'waves_per_eu': [0, 1, 2, 4, 8],
     'grid_group_size': [0, 1, 2, 4, 8],
+    # attn-only second-gemm N/head tile (the attn nPerBlockG1 field). These
+    # are the non-zero (tiled) options; the untiled case (0) is sampled
+    # separately (see sample_perf_config). All powers of two so the chunk count
+    # (gemm1N / nPerBlockG1, after gemm1N is padded to a power of two in
+    # AttnToGridwise.cpp) stays a power of two -- the invariant
+    # GridwiseAttnToBlockwise.cpp's tree-concat relies on.
+    'n_per_block_g1': [16, 32, 64, 128, 256],
 }
 
 # Conv problem-shape sweep. Sizes are a mix of common CNN shapes (e.g. 224, 56,
@@ -770,8 +786,11 @@ def _is_pow2(n: int) -> bool:
 def sample_perf_config(rng: random.Random,
                        arch: str,
                        split_k_choices: Sequence[int],
-                       pow2_only: bool = False) -> Tuple[int, ...]:
-    """Returns one random 11-field perf-config tuple (gemm:v1 / attn:v1).
+                       pow2_only: bool = False,
+                       is_attention: bool = False) -> Tuple[int, ...]:
+    """Returns one random perf-config tuple: 11 fields for gemm/conv, or 12
+    fields for attention / gemm+gemm, with the ``nPerBlockG1`` second-gemm
+    N/head tile spliced in as the 3rd field.
 
     ``arch`` selects the valid ``kpack`` set (see :func:`_kpack_choices`).
     ``split_k_choices`` is the list of permissible ``splitKFactor`` values
@@ -779,21 +798,34 @@ def sample_perf_config(rng: random.Random,
     and ``[1]`` for attention (whose K-split is exposed via the separate
     ``-split_kv`` kernel arg, not via the perf-config splitK).
 
-    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock`` to powers of two.
-    PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles to exercise the
-    rock-decompose-nonpow2-tiles pass (gemm/conv only); callers whose
-    pipeline doesn't run that pass (attention / gemm+gemm, which use
-    GemmGemmParamsAttr) pass ``pow2_only=True`` to stay on the pow2 grid."""
+    ``pow2_only`` restricts ``mPerBlock``/``nPerBlock``/``kPerBlock`` to
+    powers of two. PERF_CONFIG_OPTIONS now includes non-pow2 m/n tiles (to
+    exercise the rock-decompose-nonpow2-tiles pass) and non-pow2 k tiles (to
+    exercise the non-pow2 K peeling in rock-gridwise-gemm-to-blockwise), both
+    gemm/conv only; callers whose pipeline doesn't run those passes
+    (attention / gemm+gemm, which use GemmGemmParamsAttr) pass
+    ``pow2_only=True`` to stay on the pow2 grid.
+
+    ``is_attention`` adds the attn-only ``nPerBlockG1`` field: untiled (``0``)
+    half the time, otherwise a power-of-two tile from
+    ``PERF_CONFIG_OPTIONS['n_per_block_g1']``."""
     opts = PERF_CONFIG_OPTIONS
     m_choices = opts['m_per_block']
     n_choices = opts['n_per_block']
+    k_choices = opts['k_per_block']
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
+    if pow2_only or not amd_arch_db.supports_non_pow2_k_per_block(arch):
+        k_choices = [v for v in k_choices if _is_pow2(v)]
     return (
         rng.choice(m_choices),
         rng.choice(n_choices),
-        rng.choice(opts['k_per_block']),
+        # attn inserts nPerBlockG1 here as the 3rd field; gemm omits it.
+        # Untiled (0) half the time, otherwise a power-of-two tile.
+        *([0 if rng.choice([True, False]) else rng.choice(opts['n_per_block_g1'])]
+          if is_attention else []),
+        rng.choice(k_choices),
         rng.choice(_kpack_choices(arch)),
         rng.choice(opts['num_ctas']),
         rng.choice(opts['num_waves']),
@@ -1159,7 +1191,7 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
                       arch=arch,
                       concurrent_tests=args.jobs,
                       num_cu=num_cu,
-                      num_chiplets=get_num_chiplets(chip, num_cu),
+                      num_chiplets=amd_arch_db.infer_num_chiplets(chip, num_cu),
                       test_timeout_sec=args.test_timeout_sec,
                       max_timeout_rate=args.max_timeout_rate)
     paths = perfRunner.create_paths(None, mlir_build_dir)

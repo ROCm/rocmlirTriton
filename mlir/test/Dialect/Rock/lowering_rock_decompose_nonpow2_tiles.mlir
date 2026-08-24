@@ -33,6 +33,31 @@ func.func @test_m_and_n_nonpow2(%a: tensor<1x160x64xf16>, %b: tensor<1x64x160xf1
 
 // -----
 
+#pk48 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 80, kPerBlock = 48, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// ============================================================
+// Both M and N (80, 80) and the contraction tile kPerBlock (48)
+// are non-power-of-two. This pass only peels M/N into a 2x2 grid
+// {64,16} x {64,16}; the non-pow2 kPerBlock rides along unchanged
+// on every sub-gemm (K peeling happens later in
+// gridwise-gemm-to-blockwise), so K stays 96 on each sub-view.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_m_and_n_nonpow2_with_nonpow2_k
+// CHECK-DAG: rock.gridwise_gemm{{.*}}mPerBlock = 64, nPerBlock = 64, kPerBlock = 48{{.*}} : tensor<1x128x96xf16>, tensor<1x96x128xf16> -> tensor<1x128x128xf32>
+// CHECK-DAG: rock.gridwise_gemm{{.*}}mPerBlock = 64, nPerBlock = 16, kPerBlock = 48{{.*}} -> tensor<1x128x32xf32>
+// CHECK-DAG: rock.gridwise_gemm{{.*}}mPerBlock = 16, nPerBlock = 64, kPerBlock = 48{{.*}} -> tensor<1x32x128xf32>
+// CHECK-DAG: rock.gridwise_gemm{{.*}}mPerBlock = 16, nPerBlock = 16, kPerBlock = 48{{.*}} -> tensor<1x32x32xf32>
+// CHECK-NOT: mPerBlock = 80
+// CHECK-COUNT-4: rock.store
+func.func @test_m_and_n_nonpow2_with_nonpow2_k(%a: tensor<1x160x96xf16>, %b: tensor<1x96x160xf16>, %c: tensor<1x160x160xf32>) -> tensor<1x160x160xf32> attributes {rock.kernel} {
+  %r = rock.gridwise_gemm(%a, %b) {params = #pk48} : tensor<1x160x96xf16>, tensor<1x96x160xf16> -> tensor<1x160x160xf32>
+  %out = rock.store %r to %c by set : tensor<1x160x160xf32> -> tensor<1x160x160xf32> to tensor<1x160x160xf32>
+  return %out : tensor<1x160x160xf32>
+}
+
+// -----
+
 #p80x64 = #rock.gemm_params<mPerBlock = 80, nPerBlock = 64, kPerBlock = 64, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // ============================================================
@@ -171,7 +196,7 @@ func.func @test_m_three_segments(%a: tensor<1x224x64xf16>, %b: tensor<1x64x128xf
 
 // ============================================================
 // Knob propagation: the input params opt into the reduction-layout gate
-// (useReductionLayout = 1, the v4 perfConfig knob). Every power-of-two sub-tile
+// (useReductionLayout = 1, introduced in perfConfig v4). Every power-of-two sub-tile
 // produced by the 2x2 split must carry the same knob so a tuned config is not
 // silently dropped during decomposition.
 // ============================================================

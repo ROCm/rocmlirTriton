@@ -13,11 +13,13 @@
 #ifndef MLIR_DIALECT_ROCK_ROCKTUNINGTYPE_H
 #define MLIR_DIALECT_ROCK_ROCKTUNINGTYPE_H
 
+#include "mlir-c/Dialect/Rock.h"
 #include "mlir-c/Dialect/RockEnums.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/RWMutex.h"
 
 namespace mlir {
@@ -45,24 +47,11 @@ struct ParamEntry {
 
 // Total tuning space
 struct TuningParamSet {
-  std::vector<RockTuningParamAttrInterface> tuningRange;
+  llvm::SetVector<RockTuningParamAttrInterface> tuningRange;
   KernelType primaryOpType;
 };
 
-struct TuningParamSpaceSettings {
-  unsigned iteration = 0;
-  StringRef winningConfig = "";
-};
-
-// Get the number of iterations needed for a given tuning kind
-unsigned getNumberOfIterations(TuningParamSetKind kind);
-
-// Whether the tuning kind needs to have the best of previous iteration
-bool needToUpdateBest(TuningParamSetKind kind);
-
-// Modified function signature to support multiple iterations
-TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind,
-                                        TuningParamSpaceSettings &settings);
+TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind);
 // Get a parameters from the set of tunable parameters.
 bool tuningGetParam(TuningParamSet *tuningSpace, unsigned pos,
                     ParamEntry *paramEntry);
@@ -75,7 +64,9 @@ bool tuningSetStr(ModuleOp &mod, StringRef perfConfig);
 // thread-safe.
 struct TuningTable {
   llvm::sys::SmartRWMutex<true> lock;
-  llvm::StringMap<std::pair<SmallString<64>, float>> tuningMap;
+  llvm::StringMap<
+      std::pair<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>, float>>
+      tuningMap;
 };
 
 TuningTable *tuningTableCreate();

@@ -1,6 +1,6 @@
 // RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch %s | rocmlir-driver -kernel-pipeline gpu -arch %arch | rocmlir-opt | FileCheck %s
 // Derived from https://github.com/ROCm/rocMLIR/issues/1188
-// and https://github.com/ROCm/rocMLIR-internal/issues/1098
+// and rocMLIR-internal/issues/1098
 
 // CHECK: tt.dot
 // CHECK: math.erf

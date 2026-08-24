@@ -39,89 +39,27 @@ struct ArchTestEnv {
 };
 } // namespace
 
-// --- isFastAtomicAddSupported ---
-
-TEST(AmdArchDbTest, FastAtomicAddF32) {
-  ArchTestEnv e;
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", e.f32));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f32));  // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f32));  // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f32));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.f32));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1010", e.f32)); // RDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1030", e.f32)); // RDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1100", e.f32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.f32)); // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.f32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddF16) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.f16));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", e.f16));   // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", e.f16));   // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", e.f16));   // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.f16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1010", e.f16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1030", e.f16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.f16)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.f16));  // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.f16));  // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddBf16) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.bf16));  // GCN5_1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.bf16));  // CDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.bf16));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", e.bf16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1010", e.bf16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1030", e.bf16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.bf16)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", e.bf16));  // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", e.bf16));  // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddIntUnsupported) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", e.i32));  // GCN5_1
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx90a", e.i32));  // CDNA2
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", e.i32));  // CDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx950", e.i32));  // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", e.i32)); // RDNA3
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1200", e.i32)); // RDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1250", e.i32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicAddWithTriple) {
-  ArchTestEnv e;
-  EXPECT_TRUE(isFastAtomicAddSupported("amdgcn-amd-amdhsa:gfx90a", e.f32));
-}
-
-// --- isFastAtomicMaxSupported ---
-
-TEST(AmdArchDbTest, FastAtomicMaxF32) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", e.f32)); // GCN5_1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx908", e.f32)); // CDNA1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f32)); // CDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f32)); // CDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1010", e.f32)); // RDNA1
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1030", e.f32)); // RDNA2
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", e.f32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1200", e.f32)); // RDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", e.f32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicMaxNonF32Unsupported) {
-  ArchTestEnv e;
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx90a", e.f16));  // CDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", e.f16));  // CDNA4
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1010", e.f16)); // RDNA1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1030", e.f16)); // RDNA2
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", e.f16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1200", e.f16)); // RDNA4
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", e.f16)); // GFX1250
+TEST(AmdArchDbTest, ParseArchString) {
+  {
+    auto [chip, features] = parseArchString("gfx942");
+    EXPECT_EQ(chip.str(), "gfx942");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("amdgcn-amd-amdhsa:gfx942:xnack-");
+    EXPECT_EQ(chip.str(), "gfx942");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("gfx999");
+    EXPECT_EQ(chip.str(), "gfx999");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] = parseArchString("badarch");
+    EXPECT_TRUE(chip.empty());
+    EXPECT_EQ(features, 0u);
+  }
 }
 
 // --- getMaxNumChiplets ---
@@ -135,8 +73,45 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
   EXPECT_EQ(getMaxNumChiplets("gfx1010"), 1); // RDNA1
   EXPECT_EQ(getMaxNumChiplets("gfx1030"), 1); // RDNA2
   EXPECT_EQ(getMaxNumChiplets("gfx1100"), 1); // RDNA3
+  EXPECT_EQ(getMaxNumChiplets("gfx1170"), 1); // GFX1170
   EXPECT_EQ(getMaxNumChiplets("gfx1200"), 1); // RDNA4
   EXPECT_EQ(getMaxNumChiplets("gfx1250"), 8); // GFX1250
+}
+
+// --- inferNumChiplets ---
+
+TEST(AmdArchDbTest, InferNumChiplets) {
+  EXPECT_EQ(inferNumChiplets("gfx942", 304), 8);
+  EXPECT_EQ(inferNumChiplets("gfx942", 80), 4);
+  EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
+  EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx906", 60), 1);
+  EXPECT_EQ(inferNumChiplets("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-", 304),
+            8);
+}
+
+// MI350X / MI355X compute-partition modes, whose per-partition CU counts are
+// SPX=256, DPX=128, QPX=64, CPX=32.
+TEST(AmdArchDbTest, InferNumChipletsCdna4Partitions) {
+  EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx950", 128), 4);
+  EXPECT_EQ(inferNumChiplets("gfx950", 64), 2);
+  EXPECT_EQ(inferNumChiplets("gfx950", 32), 1);
+  // An unrecognized count must fall back to 1 rather than guess an odd chiplet
+  // number: makeGroupedGridLayout and makeGxNGridLayout assert
+  // numChiplets % 2 == 0 for any count greater than 1.
+  EXPECT_EQ(inferNumChiplets("gfx950", 96), 1);
+}
+
+// gfx1250 reports 256 WGPs over 8 XCDs. No partition-mode CU counts
+// are published for this family, hence the single recognized configuration.
+TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
+  EXPECT_EQ(inferNumChiplets("gfx1250", 256), 8);
+  EXPECT_EQ(inferNumChiplets("gfx1250", 32), 1);
+  // gfx1251 (MI430X) parses into the same ISA family even though it does not
+  // share gfx1250's XCDs, so it inherits this mapping. Pinned here so that
+  // splitting the two later is a deliberate change rather than a silent one.
+  EXPECT_EQ(inferNumChiplets("gfx1251", 256), 8);
 }
 
 // --- getMinNumCU ---
@@ -150,6 +125,7 @@ TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx1010"), 30);  // RDNA1
   EXPECT_EQ(getMinNumCU("gfx1030"), 30);  // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
+  EXPECT_EQ(getMinNumCU("gfx1170"), 2);   // GFX1170
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
   EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
 }
@@ -165,6 +141,7 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
   EXPECT_EQ(getMaxWavesPerEU("gfx1010"), 16); // RDNA1
   EXPECT_EQ(getMaxWavesPerEU("gfx1030"), 16); // RDNA2
   EXPECT_EQ(getMaxWavesPerEU("gfx1100"), 16); // RDNA3
+  EXPECT_EQ(getMaxWavesPerEU("gfx1170"), 16); // GFX1170
   EXPECT_EQ(getMaxWavesPerEU("gfx1200"), 16); // RDNA4
   EXPECT_EQ(getMaxWavesPerEU("gfx1250"), 16); // GFX1250
 }
@@ -181,6 +158,7 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   EXPECT_EQ(getVGPRsPerEU("gfx1030"), 1024); // RDNA2
   EXPECT_EQ(getVGPRsPerEU("gfx1100"), 1536); // RDNA3, 1536 physical VGPRs
   EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
+  EXPECT_EQ(getVGPRsPerEU("gfx1170"), 1024); // GFX1170, no Feature1536VGPRs
   EXPECT_EQ(getVGPRsPerEU("gfx1200"), 1536); // RDNA4
   EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
 }
@@ -195,6 +173,8 @@ TEST(AmdArchDbTest, WaveSize) {
   EXPECT_EQ(getWaveSize("gfx950"), 64);  // CDNA4
   EXPECT_EQ(getWaveSize("gfx1030"), 32); // RDNA2
   EXPECT_EQ(getWaveSize("gfx1100"), 32); // RDNA3
+  EXPECT_EQ(getWaveSize("gfx1150"), 32); // RDNA3.5
+  EXPECT_EQ(getWaveSize("gfx1170"), 32); // GFX1170
   EXPECT_EQ(getWaveSize("gfx1200"), 32); // RDNA4
   EXPECT_EQ(getWaveSize("gfx1250"), 32); // GFX1250
 }
@@ -208,6 +188,7 @@ TEST(AmdArchDbTest, LDSSize) {
   EXPECT_EQ(getLDSSize("gfx950"), 163840);  // CDNA4: 160 KB
   EXPECT_EQ(getLDSSize("gfx1030"), 65536);  // RDNA2: 64 KB
   EXPECT_EQ(getLDSSize("gfx1100"), 65536);  // RDNA3: 64 KB
+  EXPECT_EQ(getLDSSize("gfx1170"), 65536);  // GFX1170: 64 KB (gfx11 core)
   EXPECT_EQ(getLDSSize("gfx1200"), 65536);  // RDNA4: 64 KB
   EXPECT_EQ(getLDSSize("gfx1250"), 327680); // GFX1250: 320 KB
 }
@@ -224,6 +205,7 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // APU L2, no MALL
   EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 64 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 256 * kMiB);
 }
@@ -274,6 +256,8 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
   ArchTestEnv e;
   EXPECT_EQ(getMatrixAccelKind("gfx1100", e.f16, e.f16),
             MatrixAccelKind::WMMA); // RDNA3
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f16, e.f16),
+            MatrixAccelKind::WMMA); // GFX1170 (WMMA v2)
   EXPECT_EQ(getMatrixAccelKind("gfx1200", e.f16, e.f16),
             MatrixAccelKind::WMMA); // RDNA4
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f16, e.f16),
@@ -282,10 +266,53 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
             MatrixAccelKind::WMMA); // GFX1250
   EXPECT_EQ(getMatrixAccelKind("gfx1100", e.i8, e.i8),
             MatrixAccelKind::WMMA); // RDNA3
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.i8, e.i8),
+            MatrixAccelKind::WMMA); // GFX1170
   EXPECT_EQ(getMatrixAccelKind("gfx1100", e.f32, e.f32),
             MatrixAccelKind::None); // RDNA3
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f32, e.f32),
+            MatrixAccelKind::None); // GFX1170 (no f32 WMMA inputs)
   EXPECT_EQ(getMatrixAccelKind("gfx1200", e.f32, e.f32),
             MatrixAccelKind::None); // RDNA4
+  // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e4m3fn),
+            MatrixAccelKind::WMMA); // GFX1170 (fp8 WMMA v2)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (fp8 x bf8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x fp8)
+  EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::WMMA); // GFX1170 (bf8 x bf8)
+}
+
+// gfx115x (gfx1150/gfx1151) is RDNA3.5: it carries a gfx11 major number just
+// like gfx117x, but unlike gfx1170 (GFX1170 / WMMA v2) it is a plain
+// RDNA3-class part. This boundary test guards against gfx115x accidentally
+// being routed into the gfx117x / RDNA4 matrix path: it must behave as RDNA3
+// (WMMA v1, no native fp8 WMMA). The getMatrixAccelKind calls also exercise
+// getArch("gfx1150"), which would llvm_unreachable if gfx115x resolved to an
+// Unknown family.
+TEST(AmdArchDbTest, MatrixAccelRdna35Gfx1150Boundary) {
+  ArchTestEnv e;
+  // RDNA3-class WMMA v1 for the classic input types (matches gfx1100 above).
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f16, e.f16),
+            MatrixAccelKind::WMMA); // RDNA3.5
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.bf16, e.bf16),
+            MatrixAccelKind::WMMA); // RDNA3.5
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.i8, e.i8),
+            MatrixAccelKind::WMMA); // RDNA3.5
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f32, e.f32),
+            MatrixAccelKind::None); // RDNA3.5 (no f32 WMMA inputs)
+  // Key boundary vs gfx1170: RDNA3(.5) has no native fp8 WMMA, so fp8 -> None,
+  // whereas gfx1170 (WMMA v2) returns WMMA for the same inputs.
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e4m3fn),
+            MatrixAccelKind::None); // RDNA3.5 (no fp8 WMMA; gfx1170 has it)
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e4m3fn, e.f8e5m2),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e4m3fn),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1150", e.f8e5m2, e.f8e5m2),
+            MatrixAccelKind::None);
 }
 
 TEST(AmdArchDbTest, MatrixAccelScaledMfma) {
@@ -360,55 +387,50 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_FALSE(supportsTDM("gfx1010")); // RDNA1
   EXPECT_FALSE(supportsTDM("gfx1030")); // RDNA2
   EXPECT_FALSE(supportsTDM("gfx1100")); // RDNA3
+  EXPECT_FALSE(supportsTDM("gfx1170")); // GFX1170
   EXPECT_FALSE(supportsTDM("gfx1200")); // RDNA4
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
 }
 
-// --- Dtype overloads of isFastAtomicAddSupported / isFastAtomicMaxSupported
-// ---
-//
-// These are thin adapters over the Type-based overloads; the tests below mirror
-// a subset of the Type-overload cases above and serve to catch regressions in
-// the internal Dtype -> mlir::Type mapping.
+// --- getArch (arch-string parsing) ---
 
-TEST(AmdArchDbTest, FastAtomicAddDtypeF32) {
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx906", Dtype::F32));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F32));  // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx90a", Dtype::F32));  // CDNA2
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F32));  // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F32));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1100", Dtype::F32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::F32)); // GFX1250
+TEST(AmdArchDbTest, GetArchChipParsingGfx1170) {
+  // The ISAFamily component of getArch() is exercised by every gfx1170 test in
+  // this file: if "gfx1170" resolved to Unknown (or the wrong family), those
+  // would llvm_unreachable or return wrong values. Here we lock the chip-name
+  // parsing for the arch-string forms that appear as rock.arch attributes.
+  EXPECT_EQ(std::get<1>(getArch("gfx1170")), "gfx1170");
+  EXPECT_EQ(std::get<1>(getArch("amdgcn-amd-amdhsa:gfx1170")), "gfx1170");
+  EXPECT_EQ(std::get<1>(getArch("amdgcn-amd-amdhsa:gfx1170:xnack-")),
+            "gfx1170");
 }
 
-TEST(AmdArchDbTest, FastAtomicAddDtypeF16) {
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx906", Dtype::F16));  // GCN5_1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx908", Dtype::F16));   // CDNA1
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx942", Dtype::F16));   // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::F16));   // CDNA4
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx1100", Dtype::F16)); // RDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::F16));  // RDNA4
+// --- supportsMultiCTALaunch / getMaxNumCTAs ---
+
+TEST(AmdArchDbTest, MultiCTALaunch) {
+  // Cluster / multi-CTA launch is gfx1250-only. gfx1170 is a gfx11-based core
+  // and does not support it (TargetFeatures::supportsMultiCTALaunch ==
+  // isGFX1250).
+  EXPECT_FALSE(supportsMultiCTALaunch("gfx1100")); // RDNA3
+  EXPECT_FALSE(supportsMultiCTALaunch("gfx1170")); // GFX1170
+  EXPECT_FALSE(supportsMultiCTALaunch("gfx1200")); // RDNA4
+  EXPECT_TRUE(supportsMultiCTALaunch("gfx1250"));  // GFX1250
+
+  EXPECT_EQ(getMaxNumCTAs("gfx1170"), 1);  // no multi-CTA -> 1
+  EXPECT_EQ(getMaxNumCTAs("gfx1250"), 16); // multi-CTA -> 16
 }
 
-TEST(AmdArchDbTest, FastAtomicAddDtypeBf16) {
-  EXPECT_FALSE(isFastAtomicAddSupported("gfx942", Dtype::BF16)); // CDNA3
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx950", Dtype::BF16));  // CDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1200", Dtype::BF16)); // RDNA4
-  EXPECT_TRUE(isFastAtomicAddSupported("gfx1250", Dtype::BF16)); // GFX1250
-}
+// --- getMaxKpack ---
 
-TEST(AmdArchDbTest, FastAtomicMaxDtypeF32) {
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx906", Dtype::F32)); // GCN5_1
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx950", Dtype::F32)); // CDNA4
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1100", Dtype::F32)); // RDNA3
-  EXPECT_TRUE(isFastAtomicMaxSupported("gfx1250", Dtype::F32)); // GFX1250
-}
-
-TEST(AmdArchDbTest, FastAtomicMaxDtypeNonF32Unsupported) {
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::F16));  // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::F16));  // GFX1250
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1100", Dtype::BF16)); // RDNA3
-  EXPECT_FALSE(isFastAtomicMaxSupported("gfx1250", Dtype::BF16)); // GFX1250
+TEST(AmdArchDbTest, MaxKpack) {
+  // kpack in {1,2} for gfx9<gfx950 and all of gfx10/gfx11/gfx12<gfx1250;
+  // kpack==1 only on gfx950+, gfx1250+. gfx1170 (0x1170) is in the gfx11 range.
+  EXPECT_EQ(getMaxKpack("gfx908"), 2);  // CDNA1
+  EXPECT_EQ(getMaxKpack("gfx950"), 1);  // CDNA4
+  EXPECT_EQ(getMaxKpack("gfx1100"), 2); // RDNA3
+  EXPECT_EQ(getMaxKpack("gfx1170"), 2); // GFX1170
+  EXPECT_EQ(getMaxKpack("gfx1200"), 2); // RDNA4
+  EXPECT_EQ(getMaxKpack("gfx1250"), 1); // GFX1250
 }
 
 // --- archSupportsAccelFp8 ---
@@ -426,6 +448,7 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
   EXPECT_FALSE(archSupportsAccelFp8("gfx1010")); // RDNA1: no WMMA at all
   EXPECT_FALSE(archSupportsAccelFp8("gfx1030")); // RDNA2: no WMMA at all
   EXPECT_FALSE(archSupportsAccelFp8("gfx1100")); // RDNA3: no fp8 WMMA
+  EXPECT_TRUE(archSupportsAccelFp8("gfx1170"));  // GFX1170 (native fp8 WMMA v2)
   EXPECT_TRUE(archSupportsAccelFp8("gfx1200"));  // RDNA4 (native fp8 WMMA)
   EXPECT_TRUE(archSupportsAccelFp8("gfx1250"));  // GFX1250 (native fp8 WMMA)
 }
@@ -450,6 +473,7 @@ TEST(AmdArchDbTest, ArchSupportsScaledGemm) {
   EXPECT_FALSE(archSupportsScaledGemm("gfx1010")); // RDNA1
   EXPECT_FALSE(archSupportsScaledGemm("gfx1030")); // RDNA2
   EXPECT_FALSE(archSupportsScaledGemm("gfx1100")); // RDNA3
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1170")); // GFX1170 (WMMA v2 < 3)
   EXPECT_FALSE(archSupportsScaledGemm("gfx1200")); // RDNA4 (no ScaledWMMA)
   EXPECT_TRUE(archSupportsScaledGemm("gfx1250"));  // GFX1250 (ScaledWMMA)
 }
@@ -486,10 +510,28 @@ TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInputWithTriple) {
 // (the kind that show up as rock.arch attributes) all parse correctly and
 // dispatch to the GCN5_1 code paths.
 TEST(AmdArchDbTest, Gfx906ArchStringForms) {
-  ArchTestEnv e;
   EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906"), 10);
   EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906:xnack-"), 10);
   EXPECT_EQ(getMaxWavesPerEU("amdgcn-amd-amdhsa:gfx906"), 8);
   EXPECT_EQ(getWaveSize("amdgcn-amd-amdhsa:gfx906"), 64);
-  EXPECT_TRUE(isFastAtomicAddSupported("amdgcn-amd-amdhsa:gfx906", e.f32));
+}
+
+// --- preferBf16x3ForF32Dot ---
+
+TEST(AmdArchDbTest, PreferBf16x3ForF32Dot) {
+  // Only CDNA4 has been measured to win from the 3xBF16 decomposition.
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx906"));  // GCN5_1
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx908"));  // CDNA1
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx90a"));  // CDNA2
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx942"));  // CDNA3
+  EXPECT_TRUE(preferBf16x3ForF32Dot("gfx950"));   // CDNA4
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1100")); // RDNA3
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1170")); // GFX1170
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1200")); // RDNA4
+  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx1250")); // GFX1250
+
+  // Full target triples resolve the same way as bare chip names.
+  EXPECT_TRUE(
+      preferBf16x3ForF32Dot("amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"));
+  EXPECT_FALSE(preferBf16x3ForF32Dot("amdgcn-amd-amdhsa:gfx942"));
 }

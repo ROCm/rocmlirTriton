@@ -19,6 +19,7 @@ enum class ISAFamily {
   RDNA1,
   RDNA2,
   RDNA3,
+  GFX1170,
   RDNA4,
   GFX1250,
 };
@@ -77,6 +78,7 @@ public:
 
   bool supportsBufferAtomicRMW() const;
   bool supportsBufferAtomicFadd(Type elementType) const;
+  bool supportsBufferAtomicFMinMax(Type elementType) const;
   int32_t getBufferAtomicCachePolicy(bool hasUsers) const;
 
   bool supportMaximumMinimum() const;
@@ -84,6 +86,7 @@ public:
   bool supportsPermlaneSwap() const;
   bool supportsCvtPkScalePk8() const;
   bool supportsHwScaledUpcast() const;
+  bool supportsFp8Dot4Fma() const;
 
   bool supportBitwidth16Elementwise() const;
   bool supportBitwidth32Elementwise() const;
