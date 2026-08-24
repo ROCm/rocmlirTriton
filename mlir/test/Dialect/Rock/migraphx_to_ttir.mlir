@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch -o /dev/null --mlir-print-ir-after=rock-func-to-triton-func 2>&1 | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch -o /dev/null --mlir-print-ir-after=rock-tensor-to-triton-ptr 2>&1 | FileCheck %s
 
 // CHECK-LABEL: tt.func @mlir_transpose_reshape_unpack_int4
 // CHECK: tt.load {{.*}} : tensor<{{.*}}x!tt.ptr<i8>>

@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Attention companion to ``parameterSweeps-conv.py``: same harness, also
 # exercises the host-highlevel pre-pipeline (tosa.* lowering for ``-pv``)
 # that gemm/conv don't hit.

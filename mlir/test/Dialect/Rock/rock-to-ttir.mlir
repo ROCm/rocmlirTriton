@@ -1,4 +1,5 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file -mlir-print-op-generic | FileCheck %s --check-prefix=IEEE
 
 // CHECK-LABEL: @test_load_conversion
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
@@ -8,7 +9,20 @@
 //      CHECK:   return %[[RESULT]] : tensor<64x64xf16>
 //  CHECK-NOT:   rock.blockwise_load_ptr
 func.func @test_load_conversion(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_load_ptr %arg0[%arg1] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// -----
+
+// Cache modifier propagation: a blockwise_load_ptr with a non-default cache
+// modifier (cs) lowers to a tt.load carrying the corresponding triton cache
+// modifier.
+// CHECK-LABEL: @test_load_cache_modifier
+// CHECK: tt.load
+// CHECK-SAME: cacheModifier = cs
+func.func @test_load_cache_modifier(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier cs>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -22,6 +36,38 @@ func.func @test_load_conversion(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1
 //  CHECK-NOT:   rock.blockwise_store_ptr
 func.func @test_store_conversion(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
+}
+
+// -----
+
+// A blockwise_load_ptr with a 64-bit offset tensor (emitted for large/padded
+// index domains) lowers just like the i32 case: the i64 offset tensor is cast
+// to a pointer tensor and consumed by tt.load.
+// CHECK-LABEL: @test_load_conversion_i64
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi64>, %[[MASK:.*]]: tensor<64x64xi1>)
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[ARG0]] : tensor<64x64xi64> -> tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64x64xf16>
+//      CHECK:   %[[RESULT:.*]] = tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<64x64x!tt.ptr<f16>>
+//      CHECK:   return %[[RESULT]] : tensor<64x64xf16>
+//  CHECK-NOT:   rock.blockwise_load_ptr
+func.func @test_load_conversion_i64(%arg0: tensor<64x64xi64>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi64>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// -----
+
+// As above, but for stores: a 64-bit offset tensor lowers to a pointer-tensor
+// cast feeding tt.store.
+// CHECK-LABEL: @test_store_conversion_i64
+// CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi64>, %[[MASK:.*]]: tensor<64x64xi1>)
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi64> -> tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   tt.store %[[PTR_TENSOR]], %[[VALUE]], %[[MASK]] : tensor<64x64x!tt.ptr<f32>>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_store_conversion_i64(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi64>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by set : tensor<64x64xf32> -> tensor<64x64xi64>(tensor<64x64xi1>)
   return
 }
 
@@ -46,6 +92,28 @@ func.func @test_gemm_conversion(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf1
 //  CHECK-NOT:   rock.blockwise_store_ptr
 func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
+}
+
+// -----
+
+// A rank-1 reduction produces a scalar tt.reduce result. It is wrapped in a
+// rank-0 tensor so it can feed the corresponding rank-0 atomic store.
+// CHECK-LABEL: @test_reduce_rank1_atomic_add_store
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<256xf32>, %[[PTRS:.*]]: tensor<i32>, %[[MASK:.*]]: tensor<i1>)
+//      CHECK:   %[[SCALAR:.*]] = "tt.reduce"(%[[INPUT]]) <{axis = 0 : i32}>
+//      CHECK:   ^bb0(%[[LHS:.*]]: f32, %[[RHS:.*]]: f32):
+//      CHECK:     %[[SUM:.*]] = arith.addf %[[LHS]], %[[RHS]] : f32
+//      CHECK:     tt.reduce.return %[[SUM]] : f32
+//      CHECK:   }) : (tensor<256xf32>) -> f32
+//      CHECK:   %[[REDUCED:.*]] = tt.splat %[[SCALAR]] : f32 -> tensor<f32>
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<i32> -> tensor<!tt.ptr<f32>>
+//      CHECK:   tt.atomic_rmw fadd, relaxed, gpu, %[[PTR_TENSOR]], %[[REDUCED]], %[[MASK]]
+//  CHECK-NOT:   rock.blockwise_reduce
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_reduce_rank1_atomic_add_store(%arg0: tensor<256xf32>, %arg1: tensor<i32>, %arg2: tensor<i1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_reduce sum %arg0 {axis = 0 : index} : tensor<256xf32> -> tensor<f32>
+  rock.blockwise_store_ptr %0 -> %arg1(%arg2) by atomic_add : tensor<f32> -> tensor<i32>(tensor<i1>)
   return
 }
 
@@ -128,7 +196,7 @@ func.func @test_reduce_max_int(%arg0: tensor<64x64xi32>) -> tensor<64xi32> attri
 //      CHECK:   tt.load %[[PTR_TENSOR]], %[[MASK]], %[[ZERO]] : tensor<32x128x!tt.ptr<f32>>
 //  CHECK-NOT:   rock.blockwise_load_ptr
 func.func @test_load_f32(%arg0: tensor<32x128xi32>, %arg1: tensor<32x128xi1>) -> tensor<32x128xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_load_ptr %arg0[%arg1] : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf32>
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>} : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf32>
   return %0 : tensor<32x128xf32>
 }
 
@@ -153,8 +221,8 @@ func.func @test_inside_scf_for(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi32
   %cst = arith.constant dense<0.000000e+00> : tensor<64x64xf32>
 
   %result = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %cst) -> tensor<64x64xf32> {
-    %a = rock.blockwise_load_ptr %arg0[%arg2] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
-    %b = rock.blockwise_load_ptr %arg1[%arg2] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %a = rock.blockwise_load_ptr %arg0[%arg2] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %b = rock.blockwise_load_ptr %arg1[%arg2] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     %c = rock.blockwise_gemm(%a, %b, %acc) : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
     scf.yield %c : tensor<64x64xf32>
   }
@@ -212,7 +280,7 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
     %32 = tt.splat %2 : i32 -> tensor<64x64xi32>
     %33 = arith.addi %32, %31 : tensor<64x64xi32>
     %34 = tt.broadcast %27 : tensor<1x64xi1> -> tensor<64x64xi1>
-    %35 = rock.blockwise_load_ptr %33[%34] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %35 = rock.blockwise_load_ptr %33[%34] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     %36 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
     %37 = tt.expand_dims %36 {axis = 1 : i32} : tensor<64xi32> -> tensor<64x1xi32>
     %38 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
@@ -228,7 +296,7 @@ func.func @rock_gemm(%arg0: tensor<1024xf16>, %arg1: tensor<1024xf16>, %arg2: te
     %48 = tt.splat %1 : i32 -> tensor<64x64xi32>
     %49 = arith.addi %48, %47 : tensor<64x64xi32>
     %50 = tt.broadcast %43 : tensor<64x1xi1> -> tensor<64x64xi1>
-    %51 = rock.blockwise_load_ptr %49[%50] : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+    %51 = rock.blockwise_load_ptr %49[%50] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
     %52 = rock.blockwise_gemm(%51, %35, %arg4) : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
     scf.yield %52 : tensor<64x64xf32>
   }
@@ -314,7 +382,8 @@ func.func @test_unscaled_gemm_f8(
 
 // -----
 
-// Test: f32 GEMM lowers to tt.dot.
+// Test: f32 GEMM lowers to tt.dot with the default IEEE input precision on an
+// arch that does not prefer the 3xBF16 decomposition.
 
 // CHECK-LABEL: @test_gemm_f32
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
@@ -324,9 +393,91 @@ func.func @test_unscaled_gemm_f8(
 func.func @test_gemm_f32(
     %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
     %c: tensor<64x64xf32>) -> tensor<64x64xf32>
-    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel} {
   %result = rock.blockwise_gemm(%a, %b, %c)
     : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: on gfx950 an f32 GEMM asks for the 3xBF16 decomposition, which
+// TritonGPUF32DotTC later expands into dense bf16 MFMAs. Absent
+// `rock.use_bf16x3_for_f32`, the arch default decides.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]], inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx950(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 0` in the perfConfig forces the IEEE path even on gfx950,
+// where the arch default would decompose. The tri-state is consumed here, so
+// the bridge attribute must not survive into Triton IR.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950_bf16x3_off
+//  CHECK-NOT:   rock.use_bf16x3_for_f32
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}} : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+// IEEE-LABEL:   sym_name = "test_gemm_f32_gfx950_bf16x3_off"
+// IEEE:         "tt.dot"({{.*}}) <{inputPrecision = 2 : i32,
+func.func @test_gemm_f32_gfx950_bf16x3_off(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel,
+                rock.use_bf16x3_for_f32 = 0 : i64} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 1` forces the decomposition on an arch whose default is
+// the IEEE path.
+
+// CHECK-LABEL: @test_gemm_f32_gfx942_bf16x3_on
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}}, inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx942_bf16x3_on(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel,
+                rock.use_bf16x3_for_f32 = 1 : i64} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: the 3xBF16 decomposition is f32-only -- an f16 GEMM on gfx950 keeps the
+// default IEEE input precision (which tt.dot ignores for non-f32 operands).
+
+// CHECK-LABEL: @test_gemm_f16_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf16>, %[[B:.*]]: tensor<64x64xf16>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f16_gfx950(
+    %a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
@@ -533,5 +684,46 @@ func.func @test_truncf_f32_to_f16_unchanged(%arg0: tensor<64xf32>) -> tensor<64x
 func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = arith.extf %arg0 : tensor<64xf16> to tensor<64xf32>
   return %0 : tensor<64xf32>
+}
+
+// -----
+
+// Test: discardable rock metadata (rock.o_transposed) set on rock.blockwise_gemm
+// is carried onto the lowered tt.dot so it survives into the Triton pipeline.
+
+// CHECK-LABEL: @test_gemm_carries_otransposed
+//      CHECK:   tt.dot
+// CHECK-SAME:   rock.o_transposed = #rock.o_transposed<true>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_carries_otransposed(
+    %a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    {rock.o_transposed = #rock.o_transposed<true>}
+    : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: discardable rock metadata is also carried onto the lowered
+// tt.dot_scaled (scaled GEMM path).
+
+// CHECK-LABEL: @test_scaled_gemm_carries_otransposed
+//      CHECK:   tt.dot_scaled
+// CHECK-SAME:   rock.o_transposed = #rock.o_transposed<false>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_carries_otransposed(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x2xi8>, %scaleB: tensor<64x2xi8>) -> tensor<64x64xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64, rock.o_transposed = #rock.o_transposed<false>}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
 }
 

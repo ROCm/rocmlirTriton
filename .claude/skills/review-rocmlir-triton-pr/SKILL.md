@@ -1,6 +1,6 @@
 ---
 name: review-rocmlir-triton-pr
-description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the Triton submodule integration (Rock->TTIR->TTGIR->LLIR pipeline, triton-patches, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
+description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the vendored Triton and Triton-pinned LLVM integration (Rock->TTIR->TTGIR->LLIR pipeline, downstream patch records, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
 argument-hint: [PR-number]
 agent: general-purpose
 allowed-tools: Read, Grep, Glob
@@ -34,6 +34,7 @@ claude-code-action; the final JSON answer is captured as the action's
 |---|---|
 | `/tmp/pr/meta.json` | `Read('/tmp/pr/meta.json')` -- a few KB, read it whole. |
 | `/tmp/pr/diff.patch` | `Read('/tmp/pr/diff.patch')` -- can be tens of KB; use `Read` offset/limit to page through it, or `Grep` it for a specific path. |
+| `/tmp/pr/commits.json` | `Read('/tmp/pr/commits.json')` -- commit subjects, touched paths, and `diffPath` entries for commit-level checks. |
 | `/tmp/pr/checks.json` | `Read('/tmp/pr/checks.json')` then scan the array yourself for entries with `bucket == "fail"` or `bucket == "cancel"`. |
 | `/tmp/pr/prev_comments.json` | `Read('/tmp/pr/prev_comments.json')` then scan for entries authored by `rocmlir-pr-reviewer[bot]` with `in_reply_to_id == null` and the marker `<!-- claude-pr-review-marker:v1 -->` in the body. |
 | PR-head source files (any path in `meta.files`) | `Read('<path>')` directly from the working directory -- the PR head is checked out there. Use `Grep`/`Glob` to navigate. |
@@ -71,13 +72,14 @@ the workspace is on (`headRefOid` in `meta.json`):
 |------|----------|
 | `/tmp/pr/meta.json` | PR metadata: `title`, `body`, `author`, `baseRefName`, `headRefName`, plus two locally-injected fields. `headRefOid` is the SHA of the pinned checkout in the workspace (force-push defense), and `files` is an array of `{path}` objects describing the same set of changed paths that `diff.patch` covers. |
 | `/tmp/pr/diff.patch` | Unified diff between the merge-base with `baseRefName` and the pinned PR HEAD. Equivalent to GitHub's "Files changed" view for this SHA, but generated locally so it can never disagree with the workspace or with `meta.files` if a force-push lands mid-run. |
+| `/tmp/pr/commits.json` | Commit metadata for the same pinned PR range, as an array of `{sha, subject, paths, diffPath}`. Use it for commit-level rules such as `[EXTERNAL]` subject checks. Read the referenced `diffPath` file only when you need the exact diff for that commit. |
 | `/tmp/pr/checks.json` | CI status: an array of `{name, state, bucket}` covering both the modern Checks API (e.g. GitHub Actions) and the legacy Commit Statuses API (e.g. Azure and Jenkins integrations), so neither category of red CI is silently missed. `bucket` is one of `pass`, `fail`, `pending`, `skipping`, `cancel`. |
 | `/tmp/pr/prev_comments.json` | All existing inline review comments on this PR, in the order the GitHub API returns them. |
 
 The PR head is checked out in the working directory, so you can `Read` source files
 directly to see them at their PR-state line numbers.
 
-In CI mode the four files in the table above are *already populated*; the only
+In CI mode the files in the table above are *already populated*; the only
 thing you need to do is `Read` them. Concretely:
 
 - Start by `Read('/tmp/pr/meta.json')`. Scan the JSON yourself for `title`,
@@ -86,6 +88,9 @@ thing you need to do is `Read` them. Concretely:
 - `Read('/tmp/pr/diff.patch')` to see the unified diff. If the file is large
   use `Read` with an `offset`/`limit`, or use `Grep` to jump to a specific
   path within the patch.
+- `Read('/tmp/pr/commits.json')` to see commit subjects and touched paths.
+  When a rule depends on the exact contents of one commit, read the listed
+  `diffPath` for that commit instead of trying to run `git show`.
 - `Read('/tmp/pr/checks.json')` and scan the array for entries whose
   `bucket` is `"fail"` or `"cancel"`. Mention any such entries in your
   summary so the review reflects the PR's actual CI state.
@@ -94,7 +99,7 @@ thing you need to do is `Read` them. Concretely:
 
 ### Special case: changes under `.claude/`, `.github/scripts/`, `docs/PR_REVIEW_CHECKLIST.md`, or `docs/bump_triton_version.md`
 
-These three paths are the workflow's "trust perimeter": their workspace
+These paths are the workflow's "trust perimeter": their workspace
 contents have been **replaced** with the trusted default-branch versions by
 an overlay step that runs before this skill, because their semantics are
 what decide whether secrets are protected at runtime and what reviewers
@@ -120,7 +125,7 @@ If `/tmp/pr-source/<path>` does not exist while `diff.patch` shows changes
 to `<path>`, the PR has deleted that file. Use `Read` on the snapshot path
 to see the PR's proposed file content; use the workspace path only if you
 explicitly want to see the trusted runtime version for comparison. **Files
-NOT under those three paths are unaffected** -- read them directly from
+NOT under these paths are unaffected** -- read them directly from
 the workspace as usual.
 
 This special case only applies on the workflow_dispatch path; PRs that touch
@@ -187,9 +192,9 @@ Each finding must:
   `std::vector` for small local collections").
 
 Step 4 below applies the rocmlirTriton-specific sections of the same
-file (Triton-submodule bumps, `triton-patches/*.patch`, `rock::*`
-hardware-feature detection, bridge passes, fat-library + MIGraphX, and
-the rocMLIR back-port check).
+file (vendored Triton and Triton-pinned LLVM subtree updates, downstream patch records,
+`rock::*` hardware-feature detection, bridge passes, fat-library +
+MIGraphX, and the rocMLIR back-port check).
 
 ---
 
@@ -199,15 +204,17 @@ the rocMLIR back-port check).
 snapshot step and overlaid into the workspace; see Step 3) documents two
 rocmlirTriton-specific sections that don't fit the generic LLVM/MLIR tiers.
 `docs/bump_triton_version.md` is also injected and overlaid; apply it as the
-detailed source of truth when a PR changes `external/triton` or
-`triton-patches/*.patch`:
+detailed source of truth when a PR imports new upstream Triton/LLVM
+revisions or changes downstream patch records:
 
-- **`## rocmlirTriton-specific checks`** -- Triton submodule
-  (`external/triton`) bumps (delegating detailed steps to
-  `docs/bump_triton_version.md`), local `triton-patches/*.patch`, `rock::*`
-  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge passes
-  between Rock and Triton, and fat-library + downstream MIGraphX coordination.
-  Each sub-rule documents its severity inline (Major / Minor).
+- **`## rocmlirTriton-specific checks`** -- vendored Triton and Triton-pinned LLVM subtree
+  updates (delegating detailed steps to `docs/bump_triton_version.md`),
+  downstream patch records, `[EXTERNAL]` commit boundaries for
+  `external/triton` / `external/llvm-project` edits, `rock::*`
+  hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge
+  passes between Rock and Triton, and fat-library + downstream MIGraphX
+  coordination. Each sub-rule documents its severity inline (Major /
+  Minor).
 - **`## rocMLIR back-port check`** -- the path list of files shared
   with `ROCm/rocMLIR`, the rocmlirTriton-only path list, and the
   verdict logic for missing back-port notes (Major when none of
@@ -216,8 +223,22 @@ detailed source of truth when a PR changes `external/triton` or
 
 Apply both alongside Step 3. Cite the matching section heading in the
 finding body (for example: "rocmlirTriton-specific -- Triton
-submodule bumps: `librockcompiler_deps.cmake` not regenerated") so
+subtree updates: `librockcompiler_deps.cmake` not regenerated") so
 the author can look up the rationale.
+
+For vendored-subtree changes, always read `/tmp/pr/commits.json`:
+
+- A downstream commit whose `paths` includes a path under
+  `external/triton/` or `external/llvm-project/` must have a subject
+  beginning with `[EXTERNAL]`; otherwise raise a Major finding under
+  "rocmlirTriton-specific checks -- Vendored Triton / LLVM subtrees".
+  Do not flag upstream import / bump commits for lacking `[EXTERNAL]`;
+  those are covered by the Triton / LLVM subtree update checks.
+- If the PR also changes `triton-patches/*.patch` or
+  `llvm-patches/*.patch`, compare those patch-file contents with the
+  relevant downstream `[EXTERNAL]` commit's `diffPath`. A patch record
+  that does not match the corresponding `[EXTERNAL]` commit diff is a
+  Major finding.
 
 ---
 
@@ -440,6 +461,33 @@ mkdir -p /tmp/pr
 gh pr view "$ARGUMENTS" --json title,body,author,baseRefName,headRefName,headRefOid,files \
   > /tmp/pr/meta.json
 gh pr diff "$ARGUMENTS" > /tmp/pr/diff.patch
+BASE=$(jq -r .baseRefName /tmp/pr/meta.json)
+MERGE_BASE=$(git merge-base "origin/$BASE" HEAD)
+# Keep this commit-metadata generation in sync with
+# `.github/workflows/claude_auto_review.yml`.
+mkdir -p /tmp/pr/commit_diffs
+: > /tmp/pr/commits.ndjson
+while IFS= read -r sha; do
+  subject=$(git log -1 --format=%s "$sha")
+  diff_path="/tmp/pr/commit_diffs/${sha}.patch"
+  # Compare each commit against its first parent. This preserves the
+  # actual subtree-import diff for merge commits while matching the
+  # normal single-parent commit diff.
+  parent=$(git rev-parse "${sha}^1" 2>/dev/null) \
+    || parent=$(git hash-object -t tree /dev/null)
+  paths=$(git diff --name-only --no-renames "$parent" "$sha" \
+    | jq -Rn '[inputs | select(length > 0)]')
+  git diff --no-ext-diff --unified=3 "$parent" "$sha" > "$diff_path"
+  jq -n \
+    --arg sha "$sha" \
+    --arg subject "$subject" \
+    --arg diffPath "$diff_path" \
+    --argjson paths "$paths" \
+    '{sha: $sha, subject: $subject, paths: $paths, diffPath: $diffPath}' \
+    >> /tmp/pr/commits.ndjson
+done < <(git log --reverse --format='%H' "${MERGE_BASE}..HEAD")
+jq -s '.' /tmp/pr/commits.ndjson > /tmp/pr/commits.json
+rm /tmp/pr/commits.ndjson
 # Mirror the workflow's REST-API path so local dry-runs surface the same
 # {name, state, bucket} shape and survive on any gh version. `gh pr checks
 # --json` was only added in gh v2.36 and has rotated its field set since

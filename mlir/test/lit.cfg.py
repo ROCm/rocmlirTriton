@@ -1,4 +1,9 @@
 # -*- Python -*-
+# Copyright Advanced Micro Devices, Inc.
+# Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 
 import os
 import platform
@@ -39,7 +44,18 @@ config.substitutions.append(('%rocmlir_gen_flags', config.rocmlir_gen_flags))
 config.substitutions.append(('%arch', config.arch))
 config.substitutions.append(('%pv', config.populate_validation))
 
-llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
+# Expose a `bf16x3_f32_dot` lit feature for arches that lower an f32 `tt.dot`
+# as three bf16 products (CDNA4). Those start from a coarser dot result, so an
+# f32 E2E test that needs a wider tolerance there can widen it for that arch
+# alone with `%if bf16x3_f32_dot %{-rtol=...%} %else %{-rtol=...%}` rather than
+# loosening the check everywhere.
+if config.arch_prefers_bf16x3_for_f32_dot:
+    config.available_features.add('bf16x3_f32_dot')
+
+# ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
+# such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
+# relocatable SDK). lit otherwise scrubs it from the test environment.
+llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP', 'ROCM_PATH'])
 
 ##############
 # FIXME: adding a path to the environment isn't appearing to work as

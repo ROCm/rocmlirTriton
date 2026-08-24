@@ -19,7 +19,7 @@ import os
 import sys
 import re
 import subprocess
-from typing import Tuple
+from typing import List, Tuple
 import pathspec
 import unidiff
 import argparse
@@ -30,7 +30,10 @@ import git
 def get_diff(base_commit, ignore_external_files: bool) -> Tuple[bool, str]:
     command = f"git-clang-format --diff {base_commit}"
     if ignore_external_files:
-        command = f"git-clang-format --diff {base_commit} $(git diff --name-only {base_commit} | grep -v '^external/')"
+        # Restrict formatting to changed files outside the vendored external/
+        # tree.
+        command = (f"git-clang-format --diff {base_commit} -- "
+                   f"$(git diff --name-only --diff-filter=d {base_commit} | grep -v '^external/')")
     diff_run = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     is_diff_run_succesful = diff_run.returncode <= 1
     diff = diff_run.stdout.decode()
@@ -105,14 +108,72 @@ def check_third_party_file(filename: str) -> bool:
     return not re.search(regex, filename)
 
 
+def build_tablegen_headers(repo_root: str) -> bool:
+    """Generate TableGen outputs needed by clang-tidy."""
+    script = os.path.join(os.path.dirname(__file__), 'build-tablegen-for-static-checks.sh')
+    if not os.path.isfile(script):
+        print(f'Error: {script} not found.')
+        return False
+    # compile_commands.json is validated inside the script (also used standalone).
+    build_dir = os.path.join(repo_root, 'build')
+    result = subprocess.run(['bash', script, build_dir], check=False)
+    if result.returncode != 0:
+        print('TableGen header generation failed.')
+        return False
+    return True
+
+
+def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
+    """Return -extra-arg=-I... flags for source and generated include trees.
+
+    Header-only diffs have no compile command, so clang-tidy-diff interpolates
+    from a nearby .cpp and may miss include directories. Real compile lines
+    always pass both source and build roots (config/TableGen live in build;
+    llvm/... and mlir/... headers live in source).
+    """
+    include_dirs = []
+    # Source root first, then matching build root (same order as compile_commands).
+    paired_roots = [
+        os.path.join('mlir', 'include'),
+        os.path.join('external', 'llvm-project', 'mlir', 'include'),
+        os.path.join('external', 'llvm-project', 'llvm', 'include'),
+        os.path.join('external', 'triton', 'include'),
+        os.path.join('external', 'triton', 'third_party'),
+        os.path.join('external', 'triton', 'third_party', 'amd', 'include'),
+        os.path.join('external', 'triton', 'third_party', 'nvidia', 'include'),
+    ]
+    for root in paired_roots:
+        include_dirs.append(os.path.join(repo_root, root))
+        include_dirs.append(os.path.join(repo_root, 'build', root))
+    # MLIR's generated headers land under the LLVM tools build tree, not
+    # build/external/llvm-project/mlir/include.
+    include_dirs.append(
+        os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm', 'tools', 'mlir',
+                     'include'))
+
+    extra_args = ['-extra-arg=-std=c++17']
+    for inc in include_dirs:
+        if os.path.isdir(inc):
+            extra_args.append(f'-extra-arg=-I{inc}')
+    return extra_args
+
+
 def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = False):
     """Apply clang-tidy and return if no issues were found.
   Extracted from https://github.com/google/llvm-premerge-checks/blob/master/scripts/clang_tidy_report.py"""
 
-    r = subprocess.run(f'git diff -U0 --no-prefix {base_commit}',
-                       shell=True,
-                       stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+    repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
+
+    if not build_tablegen_headers(repo_root):
+        return False
+
+    # Exclude the vendored upstream trees from the diff entirely so clang-tidy
+    # is never invoked on external/ files. Without this, clang-tidy-diff.py can
+    # timeout on large diffs.
+    diff_command = f'git diff -U0 --no-prefix {base_commit}'
+    if ignore_external_files:
+        diff_command += " -- . ':!external'"
+    r = subprocess.run(diff_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     diff = r.stdout.decode("utf-8", "ignore")
     if ignore_config is not None and os.path.exists(ignore_config):
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern,
@@ -121,22 +182,10 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     else:
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, [])
     cpu_count = multiprocessing.cpu_count()
-    # clang-tidy has no compile command for header files, so for any changed
-    # header it interpolates a command from a "nearby" .cpp. This can give
-    # errors unless we add the Triton include paths to the compile command.
-    repo_root = git.Repo('.', search_parent_directories=True).working_tree_dir
-    triton_include_roots = [
-        os.path.join('external', 'triton', d) for d in ('include', 'third_party')
-    ]
-    triton_includes = []
-    for root in triton_include_roots:
-        triton_includes.append(os.path.join(repo_root, root))
-        triton_includes.append(os.path.join(repo_root, 'build', root))
-    extra_args = ['-extra-arg=-std=c++17']
-    extra_args += [f'-extra-arg=-I{inc}' for inc in triton_includes]
+    extra_args = clang_tidy_extra_include_args(repo_root)
     p = subprocess.Popen([
-        './external/triton/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py',
-        '-p0', '-quiet', '-j',
+        './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py', '-p0',
+        '-quiet', '-j',
         str(cpu_count), *extra_args
     ],
                          stdout=subprocess.PIPE,

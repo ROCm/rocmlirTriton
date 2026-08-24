@@ -15,7 +15,7 @@ module {
     %cst = arith.constant dense<[[1.0, 2.0]]> : tensor<1x2xf32>
     %sum = arith.addf %cst, %cst : tensor<1x2xf32>
     // expected-error @below {{Failed to distribute load_marker past fusions}}
-    %lm = rock.load_marker %sum views [#tmap_small] [%g, %m] : tensor<1x2xf32> -> tensor<2xf32>
+    %lm = rock.load_marker %sum views [#tmap_small] [%g, %m] {cacheModifier = #rock<CacheModifier none>} : tensor<1x2xf32> -> tensor<2xf32>
     %ut = rock.untile %lm : tensor<2xf32> -> tensor<1x2xf32>
     %fused = arith.addf %sm, %ut : tensor<1x2xf32>
     %r = rock.store %fused to %dest by set : tensor<1x2xf32> -> tensor<1x2xf32> to tensor<1x2xf32>

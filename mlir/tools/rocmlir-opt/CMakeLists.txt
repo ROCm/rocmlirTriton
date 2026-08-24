@@ -45,7 +45,16 @@ set(LIBS
   )
 
 if(MLIR_INCLUDE_TESTS)
-  list(APPEND LIBS MLIRTestIR)
+  if(TARGET MLIRTestIR)
+    list(APPEND LIBS MLIRTestIR)
+  else()
+    message(WARNING
+      "MLIR_INCLUDE_TESTS is ON but MLIRTestIR is not an imported target "
+      "(likely because MLIR is being consumed via an installed package, "
+      "which does not export test-only libraries). Skipping. "
+      "Pass -DMLIR_INCLUDE_TESTS=OFF to silence "
+      "this warning.")
+  endif()
 endif()
 
 set(disable_install "")

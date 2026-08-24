@@ -7,6 +7,8 @@
 #xldops_attn_params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 #xldops_attn_params_g1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 #xldops_attn_params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+// nPerBlock here plays the role of the tiled second-gemm N tile (nPerBlockG1).
+#xldops_attn_params_g1_npb16 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 16, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
 
 // CHECK-LABEL: func.func @rock_attention_simple
 // CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
@@ -53,14 +55,14 @@ func.func @rock_attention_tr_padded(%arg0: tensor<1x7x49xf32>, %arg1: tensor<1x7
 }
 
 // CHECK-LABEL: func.func @rock_attention_kvcache
-// CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>, %[[currentSeqLen:.*]]: tensor<1xi32>)
+// CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>, %[[lastValidKVIndex:.*]]: tensor<1xi32>)
 // CHECK-SAME: rock.block_size = 64 : i32, rock.grid_size = 32 : i32
 func.func @rock_attention_kvcache(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>, %arg4: tensor<1xi32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
   // CHECK: %[[trQ:.*]] = rock.transform %[[q]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
-  // CHECK: rock.gridwise_attention(%[[trQ]], %[[k]], %[[v]], %[[currentSeqLen]])
+  // CHECK: rock.gridwise_attention(%[[trQ]], %[[k]], %[[v]], %[[lastValidKVIndex]])
   %result = rock.attention{
     qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
-    currentSeqLen = (%arg4 : tensor<1xi32>)
+    lastValidKVIndex = (%arg4 : tensor<1xi32>)
     softmax(qk) * %arg2 : tensor<1x1024x64xf32>
   } {
     params0 = #xldops_attn_params_g0,
@@ -185,6 +187,32 @@ func.func @rock_attention_softmaxtype(%arg0: tensor<1x64x1024xf16>, %arg1: tenso
   %out = rock.store %result to %arg4 by set : tensor<1x1024x64xf16> -> tensor<1x1024x64xf16> to tensor<1x1024x64xf16>
   %lseStore = rock.store %lseOut to %arg3 by set : tensor<1x1024xf16> -> tensor<1x1024xf16> to tensor<1x1024xf16>
   return %out, %lseStore : tensor<1x1024x64xf16>, tensor<1x1024xf16>
+}
+
+// When the second gemm's N dim (head_dim_v) is tiled (nPerBlockG1 < gemm1N),
+// AttnToGridwise rounds gemm1N up to a power of two so the per-chunk outputs
+// fold back together with pairwise tt.join. Here head_dim_v = 48 is already a
+// multiple of nPerBlock (16) but not a power of two, so it is padded to 64.
+// CHECK-LABEL: func.func @rock_attention_nperblockg1_pow2_pad
+// CHECK-SAME: (%[[q:.*]]: tensor<1x64x1024xf32>, %[[k:.*]]: tensor<1x64x1024xf32>, %[[v:.*]]: tensor<1x1024x48xf32>, %[[o:.*]]: tensor<1x1024x48xf32>)
+func.func @rock_attention_nperblockg1_pow2_pad(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x48xf32>, %arg3: tensor<1x1024x48xf32>) -> tensor<1x1024x48xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // CHECK-DAG: %[[trQ:.*]] = rock.transform %[[q]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
+  // CHECK-DAG: %[[vPad:.*]] = rock.transform %[[v]] by {{.*}} : tensor<1x1024x48xf32> to tensor<1x1024x64xf32>
+  // CHECK-DAG: %[[oPad:.*]] = rock.transform %[[o]] by {{.*}} : tensor<1x1024x48xf32> to tensor<1x1024x64xf32>
+  // CHECK: %[[result:.*]] = rock.gridwise_attention(%[[trQ]], %[[k]], %[[vPad]])
+  // CHECK: rock.store %[[result]] to %[[oPad]] by set
+  %result = rock.attention{
+    qk = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
+    softmax(qk) * %arg2 : tensor<1x1024x48xf32>
+  } {
+    params0 = #xldops_attn_params_g0,
+    params1 = #xldops_attn_params_g1_npb16,
+    splitKV = 1 : i32,
+    numHeadsKV = 1 : i32,
+    numHeadsQ = 1 : i32
+  } -> tensor<1x1024x48xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x1024x48xf32> -> tensor<1x1024x48xf32> to tensor<1x1024x48xf32>
+  return %out : tensor<1x1024x48xf32>
 }
 
 // CHECK-LABEL: func.func @rock_gemmelementwisegemm_simple

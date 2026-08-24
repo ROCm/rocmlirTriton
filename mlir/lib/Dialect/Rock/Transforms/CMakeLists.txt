@@ -1,7 +1,10 @@
 add_rocmlir_dialect_library(MLIRRockTransforms
+  AddTritonMetadata.cpp
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp
   ConvToGemm.cpp
+  SetMatmulOutputTranspose.cpp
+  SetReductionLayout.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
   GemmToGridwise.cpp
@@ -9,6 +12,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
+  FuseSiblingLoops.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
@@ -17,10 +21,13 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ConvertNarrowTypeSignatures.cpp
   EmulateNarrowTypes.cpp
   PreserveMaskedLoadSemantics.cpp
+  CollapseContiguousMerges.cpp
+  PointerArithExpand.cpp
+  IncrementalPointerArith.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp
-  FuncToTritonFunc.cpp
+  TensorToTritonPtr.cpp
   ResolveKernelLaunchParams.cpp
   RockEmitGpuBinary.cpp
   SortDimensionsMemoryLayout.cpp
@@ -79,18 +86,14 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   # TritonGPUIR depends on TritonNvidiaGPUIR because it references NVIDIA types/ops
   # TritonAnalysis provides supportMMA, getReshapeDecomposition
   # TritonGPUTransforms provides inferDstEncoding, verifyBarrierType
+  # TritonAMDGPUIR defines amdgpu.in_thread_transpose and its
+  # deduceOutputLayout helper, used by rock-set-reduction-layout.
   TritonGPUTransforms
   TritonIR
   TritonGPUIR
   TritonAnalysis
+  TritonAMDGPUIR
 )
-
-# HIP needed transitively via tritonUtils.h (included by RockToTTIR.cpp)
-if (NOT WIN32)
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
-  target_link_libraries(obj.MLIRRockTransforms PUBLIC hip::host hip::amdhip64)
-endif()
 
 rocmlir_add_triton_includes(MLIRRockTransforms)
 

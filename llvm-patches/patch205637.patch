@@ -1,0 +1,64 @@
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp b/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+index fb4728609c87..4b605c8956ea 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
++++ b/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+@@ -52,7 +52,10 @@ AMDGPUSubtarget::getMaxLocalMemSizeWithWaveCount(unsigned NWaves,
+ std::pair<unsigned, unsigned> AMDGPUSubtarget::getOccupancyWithWorkGroupSizes(
+     uint32_t LDSBytes, std::pair<unsigned, unsigned> FlatWorkGroupSizes) const {
+ 
+-  // FIXME: We should take into account the LDS allocation granularity.
++  // LDS granularity accounted for by aligning the queried LDS size to the
++  // allocation block size.
++  const unsigned Granularity = std::max(LDSAllocationGranularity, 1u);
++  LDSBytes = alignTo(LDSBytes, Granularity);
+   const unsigned MaxWGsLDS = getLocalMemorySize() / std::max(LDSBytes, 1u);
+ 
+   // Queried LDS size may be larger than available on a CU, in which case we
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h b/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+index 07746c087904..6516820a2d83 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
++++ b/llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+@@ -58,6 +58,7 @@ protected:
+   unsigned MaxWavesPerEU = 10;
+   unsigned LocalMemorySize = 0;
+   unsigned AddressableLocalMemorySize = 0;
++  unsigned LDSAllocationGranularity = 0;
+   char WavefrontSizeLog2 = 0;
+   unsigned FlatOffsetBitWidth = 0;
+ 
+diff --git a/llvm/lib/Target/AMDGPU/GCNSubtarget.cpp b/llvm/lib/Target/AMDGPU/GCNSubtarget.cpp
+index 37efb3a51cb9..23c92b9095e3 100644
+--- a/llvm/lib/Target/AMDGPU/GCNSubtarget.cpp
++++ b/llvm/lib/Target/AMDGPU/GCNSubtarget.cpp
+@@ -144,6 +144,9 @@ GCNSubtarget &GCNSubtarget::initializeSubtargetDependencies(const Triple &TT,
+     FlatOffsetBitWidth = 13;
+ 
+   LocalMemorySize = AMDGPU::IsaInfo::getLocalMemorySize(*this);
++  // LDS Allocation Granularity calculated in bytes from dwords
++  LDSAllocationGranularity =
++      AMDGPU::getLdsDwGranularity(*this) * sizeof(uint32_t);
+ 
+   HasFminFmaxLegacy = getGeneration() < AMDGPUSubtarget::VOLCANIC_ISLANDS;
+   HasSMulHi = getGeneration() >= AMDGPUSubtarget::GFX9;
+diff --git a/llvm/test/CodeGen/AMDGPU/occupancy-levels.ll b/llvm/test/CodeGen/AMDGPU/occupancy-levels.ll
+index 2ede4248508e..e92503d9a106 100644
+--- a/llvm/test/CodeGen/AMDGPU/occupancy-levels.ll
++++ b/llvm/test/CodeGen/AMDGPU/occupancy-levels.ll
+@@ -460,7 +460,7 @@ define amdgpu_kernel void @used_lds_13112() {
+ ; GFX10W32:   ; Occupancy: 8{{$}}
+ ; GFX1100W64: ; Occupancy: 4{{$}}
+ ; GFX1100W32: ; Occupancy: 8{{$}}
+-; GFX1250:    ; Occupancy: 10{{$}}
++; GFX1250:    ; Occupancy: 8{{$}}
+ @lds8252 = internal addrspace(3) global [8252 x i8] poison, align 4
+ define amdgpu_kernel void @used_lds_8252_max_group_size_64() #3 {
+   store volatile i8 1, ptr addrspace(3) @lds8252
+@@ -551,7 +551,7 @@ define amdgpu_kernel void @used_lds_8252_max_group_size_1024() #9 {
+ ; GFX950:     ; Occupancy: 5{{$}}
+ ; GFX10:      ; Occupancy: 4{{$}}
+ ; GFX1100:    ; Occupancy: 4{{$}}
+-; GFX1250:    ; Occupancy: 10{{$}}
++; GFX1250:    ; Occupancy: 8{{$}}
+ define amdgpu_kernel void @used_lds_8252_max_group_size_32() #10 {
+   store volatile i8 1, ptr addrspace(3) @lds8252
+   ret void

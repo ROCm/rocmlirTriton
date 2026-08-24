@@ -1,6 +1,7 @@
 //===- Pipelines.cpp - Create Rock compilation pipelines ---------------===//
 //
-// Copyright 2021 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -76,7 +77,7 @@ using namespace mlir::triton;
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
 
-  if (rock::supportsTDM(arch)) {
+  if (!rock::supportsTDM(arch)) {
     pm->addPass(mlir::triton::createTritonRewriteTensorDescriptorToPointer());
   }
   pm->addPass(mlir::createCanonicalizerPass());
@@ -106,20 +107,12 @@ static void validateTritonOptionsKnobs(const rock::TritonOptions &options) {
       {"useBufferAtomics", options.useBufferAtomics},
       {"bufferOpsAnalyzeSmallTensorRange",
        options.bufferOpsAnalyzeSmallTensorRange},
+      {"useReductionLayout", options.useReductionLayout},
+      {"useOptimizeEpilogue", options.useOptimizeEpilogue},
   };
   for (auto [name, value] : boolKnobs) {
     if (!rock::isValidKnobBoolean(value))
       reject(name, value);
-  }
-  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
-    llvm::report_fatal_error(
-        Twine("invalid `--pass-pipeline=triton{scheduleHint=") +
-            Twine(options.scheduleHint) + "}`; expected " +
-            Twine(rock::kKnobDefault) +
-            " (arch default) or a subset of bitmask " +
-            Twine(rock::kAllScheduleHintBits) +
-            " (bit 0 = attention, bit 1 = memory-bound-attention)",
-        /*GenCrashDiag=*/false);
   }
 }
 
@@ -136,7 +129,8 @@ static bool isInThreadTransposeEnabled(StringRef arch,
   if (useInThreadTransposeOverride != rock::kKnobDefault)
     return useInThreadTransposeOverride;
   return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
-         arch.starts_with("gfx115") || arch.starts_with("gfx120");
+         arch.starts_with("gfx115") || arch.starts_with("gfx117") ||
+         arch.starts_with("gfx120");
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {
@@ -163,7 +157,6 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
-
 // Based on make_ttgir() in
 // @triton//:third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
@@ -177,9 +170,15 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeThreadLocality());
   pm->addPass(mlir::createTritonAMDGPUAccelerateMatmul(
       {options.arch, options.matrixInstrNonkdim, options.kpack}));
+  // --- rocmlirTriton pass ----
+  // Must run after accelerate-matmul (consumes the accelerator dot) and before
+  // remove-layout-conversions (folds away the convert_layout ops it inserts).
+  pm->addPass(rock::createRockSetMatmulOutputTransposePass());
+  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
-  // TODO ROCm Check if we want to compare MI100 and greater
-  pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
+  if (options.useOptimizeEpilogue != 0)
+    pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
   pm->addPass(mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands(
       {options.arch}));
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -205,35 +204,6 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   }
   pm->addPass(mlir::createTritonAMDGPUConvertToTensorOps());
   pm->addPass(mlir::createCanonicalizerPass());
-
-  // Mirror upstream Triton's compiler.py make_ttgir():
-  //   if options.schedule_hint.lower() != "none":
-  //       for hint in options.schedule_hint.split(","):
-  //           amd.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
-  // We carry `scheduleHint` as a bitfield (see KnobUtils.h); the
-  // expansion helper iterates set bits in stable order and yields the
-  // variant names in the same order upstream's `split(",")` does.
-  // LLIR-only variants (e.g. memory-bound-attention) are emitted by
-  // this pass too; they're harmless until lowered in makeLLIR /
-  // TritonToHsaco.
-  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
-    llvm::errs() << "ignoring invalid scheduleHint bitfield "
-                 << options.scheduleHint << " in TTGIR pipeline.\n";
-  } else if (options.scheduleHint != rock::kKnobDefault &&
-             options.scheduleHint != rock::kScheduleHintNone) {
-    llvm::SmallVector<std::string, 2> hints;
-
-    assert(succeeded(
-               rock::expandScheduleHintBitfield(options.scheduleHint, hints)) &&
-           "isValidScheduleHintBitfield accepted a value that "
-           "expandScheduleHintBitfield rejected; the two helpers must agree");
-
-    for (const std::string &hint : hints) {
-      pm->addPass(
-          mlir::triton::createTritonAMDGPUInsertInstructionSchedHintsPass(
-              {hint}));
-    }
-  }
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUReduceDataDuplication());
   if (isInThreadTransposeEnabled(options.arch, options.useInThreadTranspose)) {
@@ -247,7 +217,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     pm->addPass(mlir::createTritonAMDGPUBlockPingpong({options.numStages}));
   }
 
-  if (isBufferOpsEnabled(options.useBufferOps)) {
+  bool useBufferOps = isBufferOpsEnabled(options.useBufferOps);
+  if (useBufferOps) {
     pm->addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonAMDGPUCanonicalizePointers());
     pm->addPass(mlir::createCanonicalizerPass());
@@ -264,7 +235,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
-  if (isBufferOpsEnabled(options.useBufferOps)) {
+  if (useBufferOps) {
     // Run after CSE so matching assume and loop-bound expressions share SSA,
     // letting range analysis prove both non-negative.
     pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
@@ -284,9 +255,15 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int numStages, int64_t scheduleHint) {
+                     int64_t useReductionLayout) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+  // Redistribute the layout of the reduction dimension to reduce register
+  // pressure. Always scheduled, but the `useReductionLayout`
+  // actually controls whether it runs.
+  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+  reductionLayoutOpts.useReductionLayout = useReductionLayout;
+  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -323,22 +300,11 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createSymbolDCEPass());
 
-  // Mirror upstream Triton's compiler.py make_llir():
-  //   if options.schedule_hint.lower() != "none":
-  //       amd.passes.ttgpuir.lower_instruction_sched_hints(...)
-  // Upstream emits a single lowering pass that walks all hint ops left
-  // by make_ttgir, so we follow suit. `kKnobDefault` resolves to "no
-  // hint" today, same as `kScheduleHintNone`.
-  if (scheduleHint != rock::kKnobDefault &&
-      scheduleHint != rock::kScheduleHintNone) {
-    pm->addPass(mlir::triton::createTritonAMDGPULowerInstructionSchedHintsPass(
-        arch, numStages));
-  }
-
   // TODO: add_di_scope
 
   pm->addPass(
       mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
+  pm->addPass(mlir::createReconcileUnrealizedCastsPass());
 
   // IMPORTANT:
   //
@@ -451,7 +417,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
-
+  // Cannot be merged with addWithDCE: that helper runs the pass in a new
+  // func nest and the DCE at module level, whereas here both the pass and the
+  // DCE runs on the caller existing func nest.
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
@@ -460,19 +432,39 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());
+
+  // Must run after AttnToGridwise and before GridwiseGemmToBlockwise.
+  addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
+
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
+  // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
+  // CSE after deduplicates the now-co-located shared operand loads.
+  addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
+
+  // Must run after lower-stores (needs the rock.blockwise_store) and before
+  // lower-blockwise-to-ptr (which lowers it away).
+  addWithDCE(rock::createRockAddTritonMetadataPass());
+
+  // Legalize math ops on narrow floats before they are converted to integer
+  // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
+  {
+    math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    // TODO: Gfx1250 has support for some bf16 math operations. Therefore this
+    // pass should pass through those supported opertions for bf16 on gfx1250.
+    mathExtendOptions.extraTypeStrs = {"f16"};
+    mathExtendOptions.targetTypeStr = "f32";
+    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
+  }
+
   // We run this pass after lower-stores to catch redundant casts that cannot be
   // flagged earlier due to loads/stores that sit between truncf/extf pairs.
   if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
-
-  // Must run after LowerStores and before the Triton layouts are produced.
-  addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
 
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
@@ -507,6 +499,12 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     arith::ArithExpandOpsPassOptions expandOpts;
     expandOpts.includeF8E8M0 = true;
     expandOpts.includeF4E2M1 = true;
+    // Anything this pass expands is gone before RockToTTIR runs, so Triton's
+    // elementwise lowering never sees it. Keep floating-point and integer
+    // min/max ops intact unconditionally so Triton can lower them through the
+    // LLVM min/max intrinsics instead of inheriting compare/select chains.
+    expandOpts.includeMinMaxF = false;
+    expandOpts.includeMinMaxI = false;
     pm.addPass(arith::createArithExpandOpsPass(expandOpts));
   }
 
@@ -514,14 +512,23 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
   funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
+  // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
+  // chains feeding TransformsToPtrOp by collapsing contiguous merges.
+  // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
+  // it, leaving the original chain dead. DCE it so TransformsToPointerArith
+  // only sees the collapsed chain.
+  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
+  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
-  // RockFuncToTritonFuncPass operates on ModuleOp (converts func.func to
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
+  // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
-  pm.addPass(rock::createRockFuncToTritonFuncPass());
+  pm.addPass(rock::createRockTensorToTritonPtrPass());
   // After this point, function is triton::FuncOp
   auto &ttFuncPm = pm.nest<triton::FuncOp>();
   ttFuncPm.addPass(createCanonicalizerPass());
@@ -539,7 +546,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.numStages, options.scheduleHint);
+  makeLLIR(&pm, arch, options.useReductionLayout);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
@@ -547,12 +554,6 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 // (rocMLIR)
 void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
                                      StringRef dumpCpuSchedules) {
-  // Lower FP8 extf/truncf to memref-based table lookups. Must run BEFORE
-  // OneShotBufferize / CpuLowerVerifier below — otherwise stray
-  // arith.extf/truncf on fp8 element types crash bufferization with
-  // unsupported builtin.unrealized_conversion_cast.
-  pm.addPass(createEmulateFp8ExtTruncPass());
-
   // CPU optimization phase.
 
   // Rewrite linalg.generic convolutions in CPU-verifier funcs into a
@@ -581,6 +582,16 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
       bufferization::LayoutMapOption::IdentityLayoutMap;
   pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
+  // Lower FP8 extf/truncf to memref-based table lookups. Must run after the
+  // CPU optimization phase above: its VectorizationSchedule vectorizes the
+  // verifier matmul into a named contraction, which it cannot do once the fp8
+  // extf has been rewritten into a memref.
+  // This pass emits memref IR (memref.get_global / memref.load), and we expect
+  // this should only happen when the IR is bufferized. Otherwise, this pass
+  // introduces memref ops while the surrounding IR is still tensor-based.
+  // Thus, it makes more sense to run this pass after bufferization.
+  pm.addPass(createEmulateFp8ExtTruncPass());
+
   // Lower to LLVM phase (after bufferization)
   cpuOpts.phase = cpu::CPU_PHASE_LOWERTOLLVM;
   pm.addPass(cpu::createCpuLowerVerifierPass(cpuOpts));
@@ -593,6 +604,13 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
   arith::ArithExpandOpsPassOptions expandOpts;
   expandOpts.includeF8E8M0 = true;
   expandOpts.includeF4E2M1 = true;
+  // includeFlushDenormals stays default (false): it only legalizes the
+  // `arith.flush_denormals` op (which this pipeline never produces) and is
+  // unrelated to BackendOptions::allowFlushDenorm.
+  // This is the CPU reference used to verify GPU results, so keep min/max on
+  // the compare/select expansion.
+  expandOpts.includeMinMaxF = true;
+  expandOpts.includeMinMaxI = true;
   pm.addPass(arith::createArithExpandOpsPass(expandOpts));
 
   // Emulate sub-byte types (f4E2M1FN -> i4 -> packed i8) after ArithExpandOps
@@ -663,17 +681,6 @@ void rock::buildHostLoweringPipeline(mlir::OpPassManager &pm,
 // Build GPU lowering pipeline
 void rock::buildBackendPipeline(OpPassManager &pm,
                                 const rock::BackendOptions &options) {
-  if (!rock::isValidScheduleHintBitfield(options.scheduleHint)) {
-    llvm::report_fatal_error(
-        Twine("invalid `--pass-pipeline=backend{scheduleHint=") +
-            Twine(options.scheduleHint) + "}`; expected " +
-            Twine(rock::kKnobDefault) +
-            " (arch default) or a subset of bitmask " +
-            Twine(rock::kAllScheduleHintBits) +
-            " (bit 0 = attention, bit 1 = memory-bound-attention)",
-        /*GenCrashDiag=*/false);
-  }
-
   std::string arch = options.chip;
 
   // Validate LDS usage against the hardware limit, convert dynamic shared
@@ -708,13 +715,13 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.wavesPerEU = options.wavesPerEU;
     hsacoOpts.enableFpFusion = options.enableFpFusion;
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
-    hsacoOpts.scheduleHint = options.scheduleHint;
     hsacoOpts.llvmFnAttrs = options.llvmFnAttrs;
+    hsacoOpts.useExpertScheduling = options.useExpertScheduling;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 
   // Emit gpu.binary from HSACO, restore host functions (main, wrapper) if
-  // serialized during RockFuncToTritonFuncPass, and convert func.call @kernel
+  // serialized during RockTensorToTritonPtrPass, and convert func.call @kernel
   // to gpu.launch_func when applicable.
   rock::RockEmitGpuBinaryPassOptions emitGpuBinaryOpts;
   emitGpuBinaryOpts.triple = options.triple;

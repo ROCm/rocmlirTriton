@@ -26,9 +26,12 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -278,10 +281,9 @@ using ContiguousMergesMap =
     llvm::DenseMap<std::pair<TransformMapAttr, TransformAttr>,
                    llvm::EquivalenceClasses<uint32_t>>;
 
-void findCountiguousGroupsUnmerge(const ArrayRef<uint32_t> upperDims,
-                                  const ArrayRef<int64_t> params,
-                                  DimToMergeMap &dimToMerge,
-                                  ContiguousMergesMap &contiguousGroups) {
+static void findCountiguousGroupsUnmerge(
+    const ArrayRef<uint32_t> upperDims, const ArrayRef<int64_t> params,
+    DimToMergeMap &dimToMerge, ContiguousMergesMap &contiguousGroups) {
 
   size_t i = 0;
   while (i < upperDims.size()) {
@@ -381,7 +383,7 @@ void findCountiguousGroupsUnmerge(const ArrayRef<uint32_t> upperDims,
 // [[0] [2,3]]. This information will be used by the vectorizer. E.g., the
 // vectorizer can fulfill a vectorization by 4, since 8*3=24 is a multiple of 4.
 // In other words, every group of dimensions is treated as a single group
-ContiguousMergesMap findContiguousGroups(Value transformed) {
+static ContiguousMergesMap findContiguousGroups(Value transformed) {
   // Transform table. Will be overwritten after processing each transform_map
   DimToMergeMap dimToMerge;
   ContiguousMergesMap contiguousGroups;
@@ -801,30 +803,24 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   Value currentVal = transformed;
   auto contiguousMerges = findContiguousGroups(transformed);
 
-  // Advance to the next operation to analyze, updating any vectorization
-  // analysis state as needed. This function must update currentVal, and may
-  // update other variables. This advances to the next rock.transform operation.
-  auto advance = [&]() -> bool {
-    Operation *definingOp = currentVal.getDefiningOp();
-    if (!definingOp)
-      return false;
-    if (auto trOp = dyn_cast<TransformOp>(definingOp)) {
-      currentVal = trOp.getInput();
-      return true;
+  // This analysis is called after the Rock regularization passes have made the
+  // view a pure rock.transform chain rooted at a block argument. Any other
+  // defining op means the IR does not satisfy that contract.
+  while (Operation *definingOp = currentVal.getDefiningOp()) {
+    auto trOp = dyn_cast<TransformOp>(definingOp);
+    if (!trOp) {
+      definingOp->emitError()
+          << "expected only rock.transform ops in transform chain after "
+             "regularization";
+      llvm::report_fatal_error("Malformed transform chain");
     }
-    definingOp->emitError("Unexpected op\n");
-    return false;
-  };
-
-  do {
-    if (auto trOp = currentVal.getDefiningOp<TransformOp>()) {
-      TransformMapAttr transformMap = trOp.getTransform();
-      LLVM_DEBUG(llvm::dbgs() << "Max vectorization data: ");
-      data.debugPrint();
-      LLVM_DEBUG(llvm::dbgs() << "Processing: " << transformMap << "\n");
-      data = propagateVectorizationInfo(transformMap, data, contiguousMerges);
-    }
-  } while (advance());
+    TransformMapAttr transformMap = trOp.getTransform();
+    LLVM_DEBUG(llvm::dbgs() << "Max vectorization data: ");
+    data.debugPrint();
+    LLVM_DEBUG(llvm::dbgs() << "Processing: " << transformMap << "\n");
+    data = propagateVectorizationInfo(transformMap, data, contiguousMerges);
+    currentVal = trOp.getInput();
+  }
   LLVM_DEBUG(llvm::dbgs() << "Final max vectorization data: ");
   data.debugPrint();
 
@@ -861,68 +857,196 @@ mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
   return VectorizationResult{/*max=*/result, /*bufferVectorSize=*/1};
 }
 
+// Outcome of tracing a single (upper) dimension of `op` one step toward memory.
+namespace {
+enum class TraceKind { Abort, Consumed, Continue };
+struct TraceStep {
+  TraceKind kind;
+  uint32_t lowerDim = 0; // valid only when kind == Continue
+};
+} // namespace
+
+// Follow upper dimension `upperDim` of `op` to the matching lower dimension.
+// A contiguous-group member may only travel through size-preserving transforms
+// (PassThrough / zero Pad) and must ultimately be recombined by an Unmerge.
+// Anything else (Embed, Merge, AddDim, Slice, Broadcast, ConstDim, or non-zero
+// padding) means we cannot safely resize the dimension, so we abort.
+static TraceStep traceDownOneDim(TransformOp op, uint32_t upperDim) {
+  TransformMapAttr map = op.getTransform();
+  for (TransformAttr t : map.getOps()) {
+    ArrayRef<uint32_t> upperDims = t.getUpperDims();
+    const auto *it = llvm::find(upperDims, upperDim);
+    if (it == upperDims.end())
+      continue;
+    size_t pos = std::distance(upperDims.begin(), it);
+    switch (t.getType()) {
+    case TransformType::PassThrough:
+      return {TraceKind::Continue, t.getLowerDims()[pos]};
+    case TransformType::Pad: {
+      ArrayRef<int64_t> params = t.getParams();
+      if (params[2 * pos] != 0 || params[2 * pos + 1] != 0)
+        return {TraceKind::Abort};
+      return {TraceKind::Continue, t.getLowerDims()[pos]};
+    }
+    case TransformType::Unmerge:
+      // The group is recombined here; its size now lives in this Unmerge's
+      // upper bounds and the lower (memory) extent is unchanged.
+      return {TraceKind::Consumed};
+    default:
+      return {TraceKind::Abort};
+    }
+  }
+  return {TraceKind::Abort};
+}
+
 void mlir::rock::collapseContiguousMerges(Value transformed) {
   ContiguousMergesMap contiguousMerges = findContiguousGroups(transformed);
   SmallVector<TransformOp> transformOps;
-  std::tie(std::ignore, std::ignore) = untransform(transformed, transformOps);
-  for (TransformOp trOp : llvm::reverse(transformOps)) {
-    assert((trOp->hasOneUse() || trOp->use_empty()) &&
-           "Transform ops whose merges will be collapsed must be isolated to "
-           "ensure other IR doesn't break");
-    bool changed = false;
-    TransformMapAttr map = trOp.getTransform();
-    SmallVector<TransformAttr> ops;
-    ops.reserve(map.getOps().size());
-    for (TransformAttr op : map.getOps()) {
-      if (op.getType() != TransformType::Merge) {
-        ops.push_back(op);
-        continue;
-      }
-      auto mergeData = contiguousMerges.find({map, op});
-      if (mergeData == contiguousMerges.end()) {
-        ops.push_back(op);
-        continue;
-      }
-      const llvm::EquivalenceClasses<uint32_t> &groups = mergeData->getSecond();
-      SmallVector<int64_t> newLengths(op.getParams());
-      ArrayRef<uint32_t> lowerDims = op.getLowerDims();
-      uint32_t currentRep = lowerDims.back();
-      size_t currentRepPos = lowerDims.size() - 1;
-      // Don't process the fastest merge output twice.
-      bool hadConcat = false;
-      for (ssize_t idx = lowerDims.size() - 2; idx >= 0; --idx) {
-        uint32_t dim = lowerDims[idx];
-        if (groups.isEquivalent(dim, currentRep)) {
-          hadConcat = true;
-          newLengths[currentRepPos] *= newLengths[idx];
-          newLengths[idx] = 1;
-        } else {
-          currentRep = dim;
-          currentRepPos = idx;
-        }
-      }
-      if (!hadConcat) { // we went through all this trouble for nothing
-        ops.push_back(op);
-        continue;
-      }
-      LLVM_DEBUG({
-        llvm::dbgs() << "[collapseContiguousMerges] Updating: " << op << " to ";
-        llvm::interleaveComma(newLengths, llvm::dbgs());
-        llvm::dbgs() << "\n";
-      });
-      auto newMerge = TransformAttr::get(
-          op.getContext(), TransformType::Merge, newLengths, op.getUpperNames(),
-          op.getUpperDims(), op.getLowerNames(), op.getLowerDims());
-      ops.push_back(newMerge);
-      changed = true;
-    }
-    TransformMapAttr newMap = map;
-    if (changed) {
-      newMap = TransformMapAttr::get(ops, map.getUpperBounds(),
-                                     map.getLowerBounds());
-      trOp.setTransformAttr(newMap);
+  Value root;
+  std::tie(root, std::ignore) = untransform(transformed, transformOps);
+  if (transformOps.empty())
+    return;
+  size_t n = transformOps.size();
+
+  // shapes[k] is the coordinate-space size vector between transformOps[k-1]
+  // (above) and transformOps[k] (below): shapes[0] is the topmost upper space,
+  // shapes[n] is the underlying memory. transformOps[k] maps shapes[k] (upper)
+  // to shapes[k+1] (lower).
+  SmallVector<SmallVector<int64_t>> shapes(n + 1);
+  {
+    ArrayRef<int64_t> topUpper =
+        transformOps[0].getTransform().getUpperBounds();
+    shapes[0].assign(topUpper.begin(), topUpper.end());
+    for (size_t k = 0; k < n; ++k) {
+      ArrayRef<int64_t> lower = transformOps[k].getTransform().getLowerBounds();
+      shapes[k + 1].assign(lower.begin(), lower.end());
     }
   }
+
+  bool changed = false;
+
+  // For each Merge that births a contiguous group of size > 1, redistribute the
+  // group's lengths to [1, ..., product] (product on the fastest member) and
+  // propagate that resize down the chain to the Unmerge that recombines it.
+  for (size_t mergeLevel = 0; mergeLevel < n; ++mergeLevel) {
+    TransformMapAttr map = transformOps[mergeLevel].getTransform();
+    for (TransformAttr t : map.getOps()) {
+      if (t.getType() != TransformType::Merge)
+        continue;
+      auto groupsIt = contiguousMerges.find({map, t});
+      if (groupsIt == contiguousMerges.end())
+        continue;
+      const llvm::EquivalenceClasses<uint32_t> &groups = groupsIt->getSecond();
+      ArrayRef<uint32_t> lowerDims = t.getLowerDims();
+
+      // Position of each lower dim within the merge (fastest == last).
+      llvm::SmallDenseMap<uint32_t, size_t> posInMerge;
+      for (auto [pos, dim] : llvm::enumerate(lowerDims))
+        posInMerge[dim] = pos;
+
+      for (auto leaderIt = groups.begin(), leaderEnd = groups.end();
+           leaderIt != leaderEnd; ++leaderIt) {
+        if (!(*leaderIt)->isLeader())
+          continue;
+        SmallVector<uint32_t> members;
+        for (auto mi = groups.member_begin(**leaderIt);
+             mi != groups.member_end(); ++mi)
+          if (posInMerge.count(*mi))
+            members.push_back(*mi);
+        if (members.size() < 2)
+          continue;
+
+        // Representative = fastest member (largest position in the merge).
+        uint32_t rep = members[0];
+        for (uint32_t m : members)
+          if (posInMerge[m] > posInMerge[rep])
+            rep = m;
+
+        // Work on a scratch copy so a failed trace leaves `shapes` untouched.
+        SmallVector<SmallVector<int64_t>> scratch = shapes;
+        int64_t product = 1;
+        for (uint32_t m : members)
+          product *= scratch[mergeLevel + 1][m];
+
+        // active maps a dim in the current lower space to its target size.
+        llvm::SmallDenseMap<uint32_t, int64_t> active;
+        for (uint32_t m : members) {
+          int64_t sz = (m == rep) ? product : 1;
+          scratch[mergeLevel + 1][m] = sz;
+          active[m] = sz;
+        }
+
+        bool aborted = false;
+        for (size_t level = mergeLevel + 1; level < n && !active.empty();
+             ++level) {
+          llvm::SmallDenseMap<uint32_t, int64_t> next;
+          for (auto [dim, sz] : active) {
+            TraceStep step = traceDownOneDim(transformOps[level], dim);
+            if (step.kind == TraceKind::Abort) {
+              aborted = true;
+              break;
+            }
+            if (step.kind == TraceKind::Consumed)
+              continue;
+            scratch[level + 1][step.lowerDim] = sz;
+            next[step.lowerDim] = sz;
+          }
+          if (aborted)
+            break;
+          active = std::move(next);
+        }
+        // If any member reached memory without being recombined, resizing it
+        // would change the underlying buffer shape: not allowed.
+        if (aborted || !active.empty())
+          continue;
+
+        shapes = std::move(scratch);
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed)
+    return;
+
+  // Rebuild the chain bottom-up with the resized coordinate spaces. Merge and
+  // Unmerge parameters are re-derived from the (possibly resized) bounds; the
+  // affine map of each TransformMapAttr is recomputed from the new bounds.
+  OpBuilder b(transformOps.front());
+  Value ret = root;
+  for (size_t k = n; k-- > 0;) {
+    TransformOp op = transformOps[k];
+    ArrayRef<int64_t> newUpper = shapes[k];
+    ArrayRef<int64_t> newLower = shapes[k + 1];
+    SmallVector<TransformAttr> newOps;
+    for (TransformAttr t : op.getTransform().getOps()) {
+      SmallVector<int64_t> params(t.getParams());
+      switch (t.getType()) {
+      case TransformType::Merge:
+        params.clear();
+        for (uint32_t d : t.getLowerDims())
+          params.push_back(newLower[d]);
+        break;
+      case TransformType::Unmerge:
+        params.clear();
+        for (uint32_t d : t.getUpperDims())
+          params.push_back(newUpper[d]);
+        break;
+      case TransformType::AddDim:
+        params = {newUpper[t.getUpperDims()[0]]};
+        break;
+      default:
+        break;
+      }
+      newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
+                                          t.getUpperNames(), t.getUpperDims(),
+                                          t.getLowerNames(), t.getLowerDims(),
+                                          t.getIsTileAlignment()));
+    }
+    TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
+    ret = TransformOp::create(b, op.getLoc(), ret, newMap);
+  }
+  transformed.replaceAllUsesWith(ret);
 }
 
 /// Embed operations can create some scenarios that lead to the need to
@@ -943,21 +1067,31 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
                       });
 }
 
-bool mlir::rock::mapImpactsValidity(TransformMapAttr map) {
-  bool result = false;
+SmallVector<unsigned>
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
+                                       bool ignoreTileAlignmentPads) {
+  SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
-    ArrayRef<int64_t> params = op.getParams();
     if (type == TransformType::Pad) {
-      for (size_t i = 0, e = params.size(); i < e; i += 2) {
-        // Trivial padding doesn't impact validity
-        result |= (params[i] != 0 || params[i + 1] != 0);
-      }
+      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
+        continue;
+      ArrayRef<int64_t> params = op.getParams();
+      ArrayRef<uint32_t> upper = op.getUpperDims();
+      for (size_t i = 0, e = upper.size(); i < e; ++i)
+        // Trivial padding doesn't impact validity.
+        if (params[2 * i] != 0 || params[2 * i + 1] != 0)
+          dims.push_back(upper[i]);
     } else if (type == TransformType::Embed) {
-      result |= embedCanBeInvalid(map, op);
+      if (embedCanBeInvalid(map, op))
+        llvm::append_range(dims, op.getUpperDims());
     }
   }
-  return result;
+  return dims;
+}
+
+bool mlir::rock::mapImpactsValidity(TransformMapAttr map) {
+  return !validityImpactingUpperDims(map).empty();
 }
 
 AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
@@ -970,6 +1104,62 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
       result = map;
   }
   return result;
+}
+
+bool mlir::rock::transformChainDependsOnAnyDim(
+    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
+  if (dims.empty())
+    return false;
+
+  // An empty chain passes its coordinates through unchanged, so the lower
+  // coordinates depend on every upper dim. It also has no domain to check
+  // `dims` against.
+  AffineMap composed = composeTransforms(transforms);
+  if (!composed)
+    return true;
+
+  assert(llvm::all_of(
+             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
+         "queried dim is not an upper coordinate of the transform chain");
+
+  return llvm::any_of(
+      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
+}
+
+bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
+                                         ArrayRef<unsigned> dims,
+                                         bool ignoreTileAlignmentPads) {
+  // An empty chain generates no validity checks, and has no upper coordinate
+  // space to check `dims` against.
+  if (dims.empty() || transforms.empty())
+    return false;
+
+  assert(llvm::all_of(
+             dims,
+             [&](unsigned dim) {
+               return dim <
+                      transforms.front().getMap().getAffineMap().getNumDims();
+             }) &&
+         "queried dim is not an upper coordinate of the transform chain");
+
+  for (auto [index, transform] : llvm::enumerate(transforms)) {
+    SmallVector<unsigned> upperDims =
+        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
+    if (upperDims.empty())
+      continue;
+
+    AffineMap above = composeTransforms(transforms.take_front(index));
+    for (unsigned upperDim : upperDims) {
+      AffineExpr coordinate =
+          above ? above.getResult(upperDim)
+                : getAffineDimExpr(upperDim, transform.getContext());
+      if (llvm::any_of(dims, [&](unsigned dim) {
+            return coordinate.isFunctionOfDim(dim);
+          }))
+        return true;
+    }
+  }
+  return false;
 }
 
 bool mlir::rock::isIdentityOnShape(AffineMap map, ArrayRef<int64_t> shape) {
@@ -1416,9 +1606,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
-                                          t.getUpperNames(), upperDims,
-                                          t.getLowerNames(), lowerDims));
+      newOps.push_back(TransformAttr::get(
+          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
+          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
     }
 
     // Add the passthrough transforms
@@ -1472,6 +1662,7 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
+  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1491,7 +1682,7 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
 }
 
 template <DimType Type>
-SmallVector<uint32_t>
+static SmallVector<uint32_t>
 getPreservedIndices(rock::TransformAttr tr,
                     const SetVector<int64_t> &globalRemoveIndicesSet) {
   SmallVector<uint32_t> preservedIndices;
@@ -1505,7 +1696,7 @@ getPreservedIndices(rock::TransformAttr tr,
   return preservedIndices;
 }
 
-SetVector<uint32_t>
+static SetVector<uint32_t>
 getRemovedIndicesInTr(rock::TransformAttr tr, DimType type,
                       const SetVector<int64_t> &globalRemoveIndicesSet) {
   SetVector<uint32_t> removedDimsInThisTr;
@@ -1520,7 +1711,8 @@ getRemovedIndicesInTr(rock::TransformAttr tr, DimType type,
 }
 
 template <DimType Type>
-void populatePreservedNames(rock::TransformAttr tr, TransformAttrArgs &args) {
+static void populatePreservedNames(rock::TransformAttr tr,
+                                   TransformAttrArgs &args) {
   const auto &preservedDims = std::get<Type>(args.preservedDims);
   auto names = Type == DimType::Upper ? tr.getUpperNames() : tr.getLowerNames();
   auto dims = Type == DimType::Upper ? tr.getUpperDims() : tr.getLowerDims();
@@ -1536,8 +1728,8 @@ void populatePreservedNames(rock::TransformAttr tr, TransformAttrArgs &args) {
 }
 
 template <DimType Type>
-SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
-                                    TransformAttrArgs &args) {
+static SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
+                                           TransformAttrArgs &args) {
   SmallVector<uint32_t> difference;
   auto dims = Type == DimType::Upper ? tr.getUpperDims() : tr.getLowerDims();
   const auto &preserved = std::get<Type>(args.preservedDims);
@@ -1550,9 +1742,9 @@ SmallVector<uint32_t> getDifference(rock::TransformAttr tr,
 }
 
 template <DimType Type>
-void remapDims(std::vector<TransformAttrArgs> &argsVector,
-               const std::pair<SetVector<unsigned int>, SetVector<unsigned int>>
-                   &preservedDims) {
+static void remapDims(std::vector<TransformAttrArgs> &argsVector,
+                      const std::pair<SetVector<unsigned int>,
+                                      SetVector<unsigned int>> &preservedDims) {
   SmallVector<uint32_t> preservedDimsVec =
       to_vector(std::get<Type>(preservedDims));
   llvm::sort(preservedDimsVec);
@@ -1616,6 +1808,7 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
+    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -1636,7 +1829,8 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     case TransformType::Broadcast:
     case TransformType::Pad:
     case TransformType::Merge: {
-      assert(!mustBeModified && "must be preserved or removed completely");
+      if (mustBeModified)
+        return failure();
       [[fallthrough]];
     }
     case TransformType::Unmerge: {
@@ -1936,12 +2130,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr =
-        TransformAttr::get(b.getContext(), args.type, args.params,
-                           std::get<DimType::Upper>(args.preservedNames),
-                           std::get<DimType::Upper>(args.preservedDims),
-                           std::get<DimType::Lower>(args.preservedNames),
-                           std::get<DimType::Lower>(args.preservedDims));
+    auto newTr = TransformAttr::get(
+        b.getContext(), args.type, args.params,
+        std::get<DimType::Upper>(args.preservedNames),
+        std::get<DimType::Upper>(args.preservedDims),
+        std::get<DimType::Lower>(args.preservedNames),
+        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
     newOps.push_back(newTr);
   }
 
@@ -2027,7 +2221,7 @@ mlir::rock::removeUpperDims(OpBuilder &b, ArrayAttr transformAttrs,
   return b.getArrayAttr(results);
 }
 
-SetVector<int64_t>
+static SetVector<int64_t>
 convertDimNamesToIndices(const ArrayAttr trAttrs,
                          const StringSet<> &removeDimNamesSet) {
   SetVector<int64_t> indices = {};
@@ -2123,37 +2317,68 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
                    trAttr.getLowerDims(), subDimStrides, trAttr.getParams())) {
             if (currSubDimInfo.contains(upperDim)) {
               for (const SubDimInfo &sdInfo : currSubDimInfo.at(upperDim)) {
-                if (sdInfo.stride > subDimStride * param) {
-                  LLVM_DEBUG(llvm::dbgs()
-                             << "No overlap: stride of analyzed dim is larger "
-                                "than new subdim stride.\n");
-                } else if (sdInfo.stride * sdInfo.size < subDimStride) {
-                  LLVM_DEBUG(llvm::dbgs()
-                             << "No overlap: stride of new subdim stride is "
-                                "larger than the analyzed dim.\n");
+                int64_t annotatedExtent = sdInfo.stride * sdInfo.size;
+                int64_t lowerDimExtent = subDimStride * param;
+                auto addConservativeSubDim = [&](int64_t dim, int64_t size) {
+                  if (size > 1) {
+                    nextSubDimInfo[dim].push_back({size, 1});
+                    LLVM_DEBUG(
+                        llvm::dbgs()
+                        << "non-aligned merge boundaries; conservatively "
+                           "creating subDim of <size="
+                        << size << ",stride=1> @ " << dim << "\n");
+                  }
+                };
+
+                if (sdInfo.stride >= lowerDimExtent) {
+                  if (sdInfo.stride % lowerDimExtent != 0) {
+                    addConservativeSubDim(lowDim, param);
+                  } else {
+                    LLVM_DEBUG(
+                        llvm::dbgs()
+                        << "No overlap: stride of analyzed dim is larger "
+                           "than new subdim stride.\n");
+                  }
+                } else if (annotatedExtent <= subDimStride) {
+                  if (subDimStride % annotatedExtent != 0) {
+                    addConservativeSubDim(lowDim, param);
+                  } else {
+                    LLVM_DEBUG(llvm::dbgs()
+                               << "No overlap: stride of new subdim stride is "
+                                  "larger than the analyzed dim.\n");
+                  }
                 } else {
                   // New sizes and strides for newly annotated subdims
                   int64_t newSize;
                   int64_t newStride;
-                  int64_t maxStrideSubDim = subDimStride * param;
+                  int64_t maxStrideSubDim = lowerDimExtent;
                   // Overlap on the right side of annotated subdim
-                  if (sdInfo.stride * sdInfo.size >= maxStrideSubDim) {
+                  if (annotatedExtent >= maxStrideSubDim) {
                     int64_t rhsBoundForAnnotate =
                         std::max(sdInfo.stride, subDimStride);
+                    if (maxStrideSubDim % rhsBoundForAnnotate != 0 ||
+                        rhsBoundForAnnotate % subDimStride != 0) {
+                      addConservativeSubDim(lowDim, param);
+                      continue;
+                    }
                     newSize = maxStrideSubDim / rhsBoundForAnnotate;
                     newStride = rhsBoundForAnnotate / subDimStride;
                   }
                   // The whole of annotatedSubDim is within the newly created
                   // lowDim
                   else if (sdInfo.stride >= subDimStride) {
+                    if (sdInfo.stride % subDimStride != 0) {
+                      addConservativeSubDim(lowDim, param);
+                      continue;
+                    }
                     newSize = sdInfo.size;
                     newStride = sdInfo.stride / subDimStride;
                   }
                   // Overlap on the left side of annotated subdim
                   else {
-                    int64_t maxStrideRemovedSubDim =
-                        sdInfo.stride * sdInfo.size;
-                    newSize = maxStrideRemovedSubDim / subDimStride;
+                    // Round up so that a partial crossing of a lower-dimension
+                    // boundary is retained as an address dependency.
+                    newSize = llvm::divideCeil(annotatedExtent, subDimStride);
                     newStride = 1;
                   }
                   LLVM_DEBUG(llvm::dbgs() << "creating subDim of <size="
@@ -2189,18 +2414,20 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
           }
         } break;
         case TransformType::Broadcast: {
-          auto newSize = trAttr.getParams()[0];
-          int64_t lowDim = trAttr.getLowerDims()[0];
-          int64_t upperDim = trAttr.getUpperDims()[0];
-          if (currSubDimInfo.contains(upperDim)) {
-            // size is not used for reduction output (broadcast not supported),
-            // so we can skip this for now
-            // TODO: fix this
-            if (currSubDimInfo.at(upperDim).size() > 1)
-              LLVM_DEBUG(llvm::dbgs()
-                         << "broadcast size info will be incorrect, make sure "
-                            "to fix this if it's ever used for anything\n");
-
+          // A single Broadcast attribute can cover several dimensions, so every
+          // triple has to be walked; missing one would drop a tracked dimension
+          // and make it look like the lower coordinate does not depend on it.
+          for (auto [upperDim, lowDim, newSize] :
+               llvm::zip_equal(trAttr.getUpperDims(), trAttr.getLowerDims(),
+                               trAttr.getParams())) {
+            if (!currSubDimInfo.contains(upperDim))
+              continue;
+            // Broadcast maps the coordinate to `upper % newSize`, so the image
+            // holds at most `newSize` distinct values whatever arrived here.
+            // Reporting `newSize` for each incoming sub-dimension can therefore
+            // overstate the spread but never understate it, which is the safe
+            // direction for callers proving that a dimension does not move the
+            // address.
             for (const SubDimInfo &sdInfo : currSubDimInfo.at(upperDim)) {
               nextSubDimInfo[lowDim].push_back({newSize, sdInfo.stride});
               LLVM_DEBUG(llvm::dbgs() << "broadcast from size " << sdInfo.size
@@ -2267,37 +2494,112 @@ getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
   return cast<ShapedType>(biggestTensor.getType()).getElementType();
 }
 
-FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
-  SmallVector<BlockArgument> kernelArgs;
-  SmallVector<Value> worklist;
-  DenseSet<Value> visited;
-  worklist.push_back(value);
-  visited.insert(value);
-
-  while (!worklist.empty()) {
-    Value currValue = worklist.pop_back_val();
-    if (auto maybeBlockArg = dyn_cast<BlockArgument>(currValue)) {
-      kernelArgs.push_back(maybeBlockArg);
-    } else if (auto viewOp =
-                   dyn_cast<ViewLikeOpInterface>(currValue.getDefiningOp())) {
-      Value src = viewOp.getViewSource();
-      if (visited.insert(src).second)
-        worklist.push_back(src);
-    } else if (isFusionOp(currValue.getDefiningOp())) {
-      for (auto operand : currValue.getDefiningOp()->getOperands()) {
-        if (visited.insert(operand).second)
-          worklist.push_back(operand);
+// Returns true if `map` contains a non-injective ("reload") transform, i.e. one
+// where distinct upper (iteration) coordinates can map to the same lower
+// (memory) element, so that element is read more than once:
+//   - Embed: treated conservatively as a reload (e.g. overlapping conv im2col);
+//     proving a particular Embed injective would require analyzing
+//     coefficients, and over-reporting only costs a missed optimization whereas
+//     under- reporting risks streaming cache-reliant data.
+//   - AddDim: adds an upper dim with no lower correspondent, so iterating it
+//     re-reads the same element -- but only when that dim has size > 1 (a
+//     size-1 AddDim is just a unit axis, e.g. <4096> -> <1x1x4096>).
+//   - Broadcast{modulus}: lower = upper % modulus, a reload only when the upper
+//     dim is larger than the modulus (size-1 lower replicated to many).
+static bool hasReloadTransform(TransformMapAttr map) {
+  ArrayRef<int64_t> upperBounds = map.getUpperBounds();
+  for (TransformAttr transform : map.getOps()) {
+    ArrayRef<uint32_t> upperDims = transform.getUpperDims();
+    ArrayRef<int64_t> params = transform.getParams();
+    switch (transform.getType()) {
+    case TransformType::Embed:
+      return true;
+    case TransformType::AddDim:
+      for (uint32_t d : upperDims) {
+        assert(d < upperBounds.size() && "upper dim out of bounds");
+        if (upperBounds[d] > 1)
+          return true;
       }
-    } else if (isa<arith::ConstantOp>(currValue.getDefiningOp())) {
-      // nothing to do with constants, just skip them
-      continue;
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "getInputFusionElementType: Found unexpected op = "
-                 << currValue.getDefiningOp() << "\n");
-      return failure();
+      break;
+    case TransformType::Broadcast:
+      for (auto [d, modulus] : llvm::zip(upperDims, params)) {
+        assert(d < upperBounds.size() && "upper dim out of bounds");
+        if (upperBounds[d] > modulus)
+          return true;
+      }
+      break;
+    default:
+      break;
     }
   }
+  return false;
+}
+
+static LogicalResult
+collectInputFusionPathsImpl(Value value, ArrayAttr transforms,
+                            SmallVectorImpl<InputFusionPath> &paths,
+                            DenseSet<std::pair<Value, ArrayAttr>> &visited) {
+  // A value the walk reaches again under the same transforms would contribute
+  // the paths its first visit already appended. Fusion DAGs where a value feeds
+  // several ops that later merge have a number of such routes exponential in
+  // the number of merges.
+  if (!visited.insert({value, transforms}).second)
+    return success();
+
+  if (isa<BlockArgument>(value) || value.getDefiningOp<arith::ConstantOp>()) {
+    paths.push_back(
+        {value, llvm::to_vector(transforms.getAsRange<TransformMapAttr>())});
+    return success();
+  }
+
+  Operation *defOp = value.getDefiningOp();
+  if (auto transformOp = dyn_cast_or_null<TransformOp>(defOp)) {
+    SmallVector<Attribute> nextTransforms(transforms.begin(), transforms.end());
+    nextTransforms.push_back(transformOp.getTransform());
+    return collectInputFusionPathsImpl(
+        transformOp.getInput(),
+        ArrayAttr::get(value.getContext(), nextTransforms), paths, visited);
+  }
+
+  if (isFusionOp(defOp)) {
+    for (Value operand : defOp->getOperands())
+      if (failed(
+              collectInputFusionPathsImpl(operand, transforms, paths, visited)))
+        return failure();
+    return success();
+  }
+
+  // Give up rather than skip past this op. A view-like op that is not a
+  // rock.transform lands here deliberately: it contributes no TransformMapAttr,
+  // so continuing to its source would drop part of the coordinate mapping the
+  // collected path is meant to describe.
+  LLVM_DEBUG(llvm::dbgs()
+             << "collectInputFusionPaths: no path representation for op = "
+             << *defOp << "\n");
+  return failure();
+}
+
+FailureOr<SmallVector<InputFusionPath>>
+mlir::rock::collectInputFusionPaths(Value value) {
+  SmallVector<InputFusionPath> paths;
+  DenseSet<std::pair<Value, ArrayAttr>> visited;
+  if (failed(collectInputFusionPathsImpl(
+          value, ArrayAttr::get(value.getContext(), ArrayRef<Attribute>{}),
+          paths, visited)))
+    return failure();
+  return paths;
+}
+
+FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
+    return failure();
+
+  SmallVector<BlockArgument> kernelArgs;
+  for (const InputFusionPath &path : *paths)
+    if (auto blockArg = dyn_cast<BlockArgument>(path.leaf))
+      kernelArgs.push_back(blockArg);
 
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
@@ -2305,6 +2607,17 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
     return failure();
 
   return maybeElemType.value();
+}
+
+FailureOr<bool> mlir::rock::isInputNonInjective(Value value) {
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(value);
+  if (failed(paths))
+    return failure();
+
+  return llvm::any_of(*paths, [](const InputFusionPath &path) {
+    return llvm::any_of(path.transforms, hasReloadTransform);
+  });
 }
 
 FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {
@@ -2331,4 +2644,124 @@ FailureOr<Type> mlir::rock::getOutputFusionElementType(Value value) {
     return failure();
 
   return maybeElemType.value();
+}
+
+//===----------------------------------------------------------------------===//
+// Non-power-of-two tile peeling
+//===----------------------------------------------------------------------===//
+
+SmallVector<Pow2Segment> mlir::rock::decomposePow2(int64_t n) {
+  SmallVector<Pow2Segment> segs;
+  int64_t off = 0;
+  for (int64_t rem = n; rem > 0;) {
+    int64_t seg = static_cast<int64_t>(llvm::bit_floor<uint64_t>(rem));
+    segs.push_back({off, seg});
+    off += seg;
+    rem -= seg;
+  }
+  return segs;
+}
+
+Value mlir::rock::sliceBlockedDims(OpBuilder &b, Location loc, Value view,
+                                   ArrayRef<unsigned> sliceDims,
+                                   ArrayRef<int64_t> blocks,
+                                   ArrayRef<int64_t> tiles,
+                                   ArrayRef<Pow2Segment> segs) {
+  // If no segment actually narrows its tile, no slicing is needed.
+  bool allFull = llvm::all_of(llvm::seq<size_t>(0, segs.size()), [&](size_t k) {
+    return segs[k].offset == 0 && segs[k].length == tiles[k];
+  });
+  if (allFull)
+    return view;
+
+  auto type = cast<RankedTensorType>(view.getType());
+  ArrayRef<int64_t> shape = type.getShape();
+  unsigned rank = shape.size();
+
+  auto sliceIdx = [&](unsigned d) -> int {
+    for (auto [k, dd] : llvm::enumerate(sliceDims))
+      if (dd == d)
+        return static_cast<int>(k);
+    return -1;
+  };
+
+  SmallVector<std::string> baseStore, blkStore, itStore;
+  for (unsigned i = 0; i < rank; ++i) {
+    baseStore.push_back(("d" + Twine(i)).str());
+    blkStore.push_back(("d" + Twine(i) + "b").str());
+    itStore.push_back(("d" + Twine(i) + "i").str());
+  }
+  SmallVector<StringRef> baseNames(baseStore.begin(), baseStore.end());
+
+  // Layer 1: restructure each sliced dim into (block, iter).
+  BottomUpTMBuilder l1(b, baseNames, shape, loc);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      int k = sliceIdx(i);
+      if (k >= 0) {
+        l1.unmerge({StringRef(blkStore[i]), StringRef(itStore[i])},
+                   {up, up + 1}, StringRef(baseStore[i]),
+                   {blocks[k], tiles[k]});
+        up += 2;
+      } else {
+        l1.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+        up += 1;
+      }
+    }
+  }
+  TransformMapAttr a1 = l1.get();
+
+  // Layer 2: slice only the iter sub-dims that are actually narrowed; every
+  // other dim (including iter sub-dims whose segment already covers the whole
+  // tile) passes through unchanged, so the Slice transform lists just the dims
+  // it really shrinks instead of all of them.
+  BottomUpTMBuilder l2 = BottomUpTMBuilder::above(l1, a1);
+  SmallVector<StringRef> names2;
+  l2.getStartNames(names2);
+
+  llvm::SmallDenseSet<StringRef> slicedNames;
+  SmallVector<StringRef> sliceNames;
+  SmallVector<int64_t> begins, ends;
+  for (unsigned i = 0; i < rank; ++i) {
+    int k = sliceIdx(i);
+    if (k < 0 || (segs[k].offset == 0 && segs[k].length == tiles[k]))
+      continue;
+    StringRef nm(itStore[i]);
+    slicedNames.insert(nm);
+    sliceNames.push_back(nm);
+    begins.push_back(segs[k].offset);
+    ends.push_back(segs[k].offset + segs[k].length);
+  }
+
+  SmallVector<StringRef> passNames;
+  for (StringRef nm : names2)
+    if (!slicedNames.contains(nm))
+      passNames.push_back(nm);
+  if (!passNames.empty())
+    l2.passThrough(passNames);
+  if (!sliceNames.empty())
+    l2.slice(sliceNames, sliceNames, begins, ends);
+  TransformMapAttr a2 = l2.get();
+
+  // Layer 3: re-merge (block, iter) back into the original dimension.
+  BottomUpTMBuilder l3 = BottomUpTMBuilder::above(l2, a2);
+  {
+    unsigned up = 0;
+    for (unsigned i = 0; i < rank; ++i) {
+      int k = sliceIdx(i);
+      if (k >= 0) {
+        l3.merge(StringRef(baseStore[i]), up,
+                 {StringRef(blkStore[i]), StringRef(itStore[i])});
+      } else {
+        l3.passThrough({StringRef(baseStore[i])}, {up},
+                       {StringRef(baseStore[i])});
+      }
+      up += 1;
+    }
+  }
+  TransformMapAttr a3 = l3.get();
+
+  return rock::transform(b, view, b.getArrayAttr({a3, a2, a1}));
 }

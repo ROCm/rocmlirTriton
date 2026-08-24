@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Generator/ConvGenerator.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -818,7 +821,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
   Value flatStoreDest = func.getArgument(storeDestIdx);
   Value storedVal = rock::StoreOp::create(
       builder, builder.getUnknownLoc(), resultFlatType, flatResult,
-      flatStoreDest,
+      flatStoreDest, /*resultAlias=*/Value(),
       builder.getAttr<rock::StoreMethodAttr>(rock::StoreMethod::Set));
 
   func::ReturnOp::create(builder, builder.getUnknownLoc(), storedVal);

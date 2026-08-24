@@ -1,6 +1,7 @@
 //===- LowerBlockwiseToPtr.cpp - Lower blockwise ops to pointer form ------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +25,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -68,39 +72,33 @@ struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
     Value maskTensor = transformsToPtrOp.getMask();
 
     auto loadOp = BlockwiseLoadPtrOp::create(b, loc, op.getResult().getType(),
-                                             pointerTensor, maskTensor);
+                                             pointerTensor, maskTensor,
+                                             op.getCacheModifier());
 
     b.replaceOp(op, loadOp.getResult());
     return success();
   }
 };
 
-//===----------------------------------------------------------------------===//
-// BlockwiseStoreOp lowering.
-//===----------------------------------------------------------------------===//
-struct BlockwiseStoreRewritePattern
-    : public OpRewritePattern<BlockwiseStoreOp> {
-  using OpRewritePattern<BlockwiseStoreOp>::OpRewritePattern;
+static void lowerBlockwiseStore(BlockwiseStoreOp op) {
+  OpBuilder b(op);
+  Location loc = op.getLoc();
 
-  LogicalResult matchAndRewrite(BlockwiseStoreOp op,
-                                PatternRewriter &b) const override {
-    Location loc = op.getLoc();
+  Value source = op.getSource();
+  Value dest = op.getDest();
+  auto extraIndices = op.getExtraIndices();
+  auto storeMethod = op.getStoreMethod();
 
-    Value source = op.getSource();
-    Value dest = op.getDest();
-    auto extraIndices = op.getExtraIndices();
-    auto storeMethod = op.getStoreMethod();
+  op.getResult().replaceAllUsesWith(op.getResultAliasOrDest());
 
-    auto transformsToPtrOp =
-        TransformsToPtrOp::create(b, loc, dest, extraIndices);
-    Value pointerTensor = transformsToPtrOp.getPointers();
-    Value maskTensor = transformsToPtrOp.getMask();
-    BlockwiseStorePtrOp::create(b, loc, pointerTensor, maskTensor, source,
-                                storeMethod);
-    b.eraseOp(op);
-    return success();
-  }
-};
+  auto transformsToPtrOp =
+      TransformsToPtrOp::create(b, loc, dest, extraIndices);
+  Value pointerTensor = transformsToPtrOp.getPointers();
+  Value maskTensor = transformsToPtrOp.getMask();
+  BlockwiseStorePtrOp::create(b, loc, pointerTensor, maskTensor, source,
+                              storeMethod);
+  op.erase();
+}
 
 //===----------------------------------------------------------------------===//
 // ReturnOpRewritePattern - Update return ops to return nothing and update
@@ -162,14 +160,22 @@ void RockLowerBlockwiseToPtrPass::runOnOperation() {
     }
   }
 
-  // Step 2: lower blockwise_load/store to their pointer-based variants.
+  // Step 2: lower blockwise_store to its pointer-based variant in reverse
+  // program order. Store results can be threaded through later stores via
+  // resultAlias, so rewrite users only after their consuming stores are gone.
+  SmallVector<BlockwiseStoreOp> storeOps;
+  funcOp.walk([&](BlockwiseStoreOp storeOp) { storeOps.push_back(storeOp); });
+  for (BlockwiseStoreOp storeOp : llvm::reverse(storeOps))
+    lowerBlockwiseStore(storeOp);
+
+  // Step 3: lower blockwise_load to its pointer-based variant.
   ConversionTarget target(*ctx);
   target.addIllegalOp<BlockwiseLoadOp, BlockwiseStoreOp>();
   target
       .addLegalOp<BlockwiseLoadPtrOp, BlockwiseStorePtrOp, TransformsToPtrOp>();
 
   RewritePatternSet patterns(ctx);
-  patterns.add<BlockwiseLoadRewritePattern, BlockwiseStoreRewritePattern>(ctx);
+  patterns.add<BlockwiseLoadRewritePattern>(ctx);
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
     signalPassFailure();

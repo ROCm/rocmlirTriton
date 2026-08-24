@@ -59,7 +59,7 @@ module {
       %dest: tensor<1x256x128xf32>,
       %g: i32, %m: i32, %n: i32) -> tensor<1x256x128xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
-    %bl = rock.blockwise_load %bias_tile : tensor<64x64xf32> -> tensor<64x64xf32>
+    %bl = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
     %ut = rock.untile %bl : tensor<64x64xf32> -> tensor<1x256x128xf32>
     %add = arith.addf %sm, %ut : tensor<1x256x128xf32>
     %r = rock.store %add to %dest by set : tensor<1x256x128xf32> -> tensor<1x256x128xf32> to tensor<1x256x128xf32>
@@ -87,10 +87,10 @@ module {
       %dest: tensor<1x256x128xf16>,
       %g: i32, %m: i32, %n: i32) -> tensor<1x256x128xf16> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf16> -> tensor<1x256x128xf16>
-    %bl1 = rock.blockwise_load %bias_tile : tensor<64x64xf16> -> tensor<64x64xf16>
+    %bl1 = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf16> -> tensor<64x64xf16>
     %ut1 = rock.untile %bl1 : tensor<64x64xf16> -> tensor<1x256x128xf16>
     %add = arith.addf %sm, %ut1 : tensor<1x256x128xf16>
-    %bl2 = rock.blockwise_load %scale_tile : tensor<64x64xf16> -> tensor<64x64xf16>
+    %bl2 = rock.blockwise_load %scale_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf16> -> tensor<64x64xf16>
     %ut2 = rock.untile %bl2 : tensor<64x64xf16> -> tensor<1x256x128xf16>
     %mul = arith.mulf %add, %ut2 : tensor<1x256x128xf16>
     %r = rock.store %mul to %dest by set : tensor<1x256x128xf16> -> tensor<1x256x128xf16> to tensor<1x256x128xf16>
@@ -136,7 +136,7 @@ module {
       %dest: tensor<1x256x128xf32>,
       %g: i32, %m: i32, %n: i32) -> tensor<1x256x128xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf16> -> tensor<1x256x128xf16>
-    %bl = rock.blockwise_load %bias_tile : tensor<64x64xf16> -> tensor<64x64xf16>
+    %bl = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf16> -> tensor<64x64xf16>
     %ut = rock.untile %bl : tensor<64x64xf16> -> tensor<1x256x128xf16>
     %add = arith.addf %sm, %ut : tensor<1x256x128xf16>
     %ext = arith.extf %add : tensor<1x256x128xf16> to tensor<1x256x128xf32>
@@ -193,7 +193,7 @@ module {
       %dest_raw: tensor<32768xf32>,
       %g: i32, %m: i32, %n: i32) -> tensor<32768xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
-    %bl = rock.blockwise_load %bias_tile : tensor<64x64xf32> -> tensor<64x64xf32>
+    %bl = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
     %ut = rock.untile %bl : tensor<64x64xf32> -> tensor<1x256x128xf32>
     %add = arith.addf %sm, %ut : tensor<1x256x128xf32>
     %dest = rock.transform %dest_raw by #tmap_dest : tensor<32768xf32> to tensor<1x256x128xf32>
@@ -236,7 +236,7 @@ module {
       %dest: tensor<1x256x128xf32>,
       %g: i32, %m: i32, %n: i32) -> tensor<1x256x128xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
-    %bl = rock.blockwise_load %bias_tile : tensor<64x64xf32> -> tensor<64x64xf32>
+    %bl = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
     %ut = rock.untile %bl : tensor<64x64xf32> -> tensor<1x256x128xf32>
     %add = arith.addf %sm, %ut : tensor<1x256x128xf32>
     %r = rock.store %add to %dest by atomic_add : tensor<1x256x128xf32> -> tensor<1x256x128xf32> to tensor<1x256x128xf32>
@@ -250,7 +250,7 @@ module {
 
   // CHECK-LABEL: func.func @test_fusion_with_constant
   // CHECK: %[[CST:.*]] = arith.constant dense<2.000000e+00> : tensor<64x64xf32>
-  // CHECK: %[[BL:.*]] = rock.blockwise_load %[[CST]] : tensor<64x64xf32> -> tensor<64x64xf32>
+  // CHECK: %[[BL:.*]] = rock.blockwise_load %[[CST]] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
   // CHECK: %[[ADD:.*]] = arith.addf %{{.*}}, %[[BL]] : tensor<64x64xf32>
   // CHECK-NOT: rock.store {{.*}} to {{.*}} by
   // CHECK: rock.blockwise_store %[[ADD]] -> %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}] by {{.*}}set
@@ -260,7 +260,7 @@ module {
       %g: i32, %m: i32, %n: i32) -> tensor<1x256x128xf32> attributes {rock.kernel} {
     %cst = arith.constant dense<2.0> : tensor<64x64xf32>
     %sm = rock.store_marker %tile views [#tmap] [%g, %m, %n] : tensor<64x64xf32> -> tensor<1x256x128xf32>
-    %bl = rock.blockwise_load %cst : tensor<64x64xf32> -> tensor<64x64xf32>
+    %bl = rock.blockwise_load %cst {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
     %ut = rock.untile %bl : tensor<64x64xf32> -> tensor<1x256x128xf32>
     %add = arith.addf %sm, %ut : tensor<1x256x128xf32>
     %r = rock.store %add to %dest by set : tensor<1x256x128xf32> -> tensor<1x256x128xf32> to tensor<1x256x128xf32>
@@ -305,7 +305,7 @@ module {
       %bias_tile: tensor<64x64xf32>,
       %dest: tensor<64x64xf32>) -> tensor<64x64xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [] : tensor<64x64xf32> -> tensor<64x64xf32>
-    %bl = rock.blockwise_load %bias_tile : tensor<64x64xf32> -> tensor<64x64xf32>
+    %bl = rock.blockwise_load %bias_tile {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32> -> tensor<64x64xf32>
     %ut = rock.untile %bl : tensor<64x64xf32> -> tensor<64x64xf32>
     %add = arith.addf %sm, %ut : tensor<64x64xf32>
     %r = rock.store %add to %dest by set : tensor<64x64xf32> -> tensor<64x64xf32> to tensor<64x64xf32>

@@ -89,6 +89,20 @@ backend the full extent of valid memory behind the pointer.
 | `tt.divisibility` | 16 | Pointers are 16-byte aligned (128-bit), enabling maximum-width vector loads/stores. |
 | `tt.pointer_range` | 32 | Set when tensor size < 2 GB; tells Triton's `ConvertToBufferOps` pass that the tensor fits in a 32-bit offset range, enabling buffer instructions. |
 
+### 1.10 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
+
+Rock kernels never call device-side `malloc`/`free`/`new` (nor the
+`__ockl_dm_*` allocator family), so they never touch the rocclr device heap.
+`RockPrepareLLVM` therefore marks every kernel `amdgpu-no-heap-ptr` (via the
+LLVM-dialect `passthrough` attribute), which drops the `hidden_heap_v1` implicit
+kernel argument from the ABI. Without that argument the HIP runtime skips the
+one-time `__amd_rocclr_initHeap` setup kernel it would otherwise launch at module
+load.
+
+This is unconditional: it relies on the invariant that the Rock lowering never
+emits a device-side allocation. If that ever changes (e.g. a future op lowers to
+`malloc`), this assumption — and the unconditional marking — must be revisited.
+
 ---
 
 ## 2. External Assumptions (Requirements on the Caller)
@@ -108,6 +122,11 @@ This assumption is encoded as `rocdl.no_fine_grained_memory` on every
 atomic operation. Without it, LLVM cannot emit native hardware atomics
 on architectures like RDNA3 (gfx1100) and CDNA2 (gfx90a), falling back
 to expensive CAS loops instead.
+
+The downstream Triton `TargetFeatures::supportsBufferAtomicRMW` patch
+also relies on this contract: it enables buffer atomic RMW on older ISA
+families where the hardware hazard applies only to fine-grained pinned
+host memory, which rocmlirTriton does not support.
 
 ### 2.2 No remote/peer memory (`no_remote_memory`)
 
@@ -181,30 +200,31 @@ hardware LDS limit and causing a launch failure.
 
 Attention kernels with KV-cache support use **statically-shaped** K and V
 tensors (compiled to a maximum sequence length `maxSeqLen`) but accept a
-per-batch runtime scalar `currentSeqLen` that gives the **last valid key
-index** (0-based, inclusive — so `currentSeqLen + 1` tokens are
+per-batch runtime scalar `lastValidKVIndex` that gives the **last valid key
+index** (0-based and inclusive, so `lastValidKVIndex + 1` tokens are
 meaningful).
 
-The kernel shortens its N-loop to `ceil((currentSeqLen + 1) /
+The kernel shortens its N-loop to `ceil((lastValidKVIndex + 1) /
 NPerBlock)` tiles and masks logits for key positions past
-`currentSeqLen` to `-inf` on the last iteration, so they do not affect
+`lastValidKVIndex` to `-inf` on the last iteration, so they do not affect
 the softmax result.
 
 **Caller requirements:**
 
 - K and V buffers must be valid for at least
-  `ceil((currentSeqLen + 1) / NPerBlock) * NPerBlock` elements along
-  the sequence axis (i.e. `currentSeqLen` rounded up to the next tile
-  boundary). Padding values beyond `currentSeqLen` are irrelevant
+  `ceil((lastValidKVIndex + 1) / NPerBlock) * NPerBlock` elements along
+  the sequence axis (i.e. `lastValidKVIndex + 1` rounded up to the next tile
+  boundary). Padding values beyond `lastValidKVIndex` are irrelevant
   (masked to `-inf`), but the memory must be mapped and accessible.
   Note: `llvm.dereferenceable` is set to the full static `maxSeqLen`
   byte size, so strictly speaking the safest option is to allocate the
   full `maxSeqLen` extent; in practice the kernel only accesses the
   tile-rounded region.
-- `currentSeqLen` must satisfy `0 <= currentSeqLen <= maxSeqLen - 1`.
+- `lastValidKVIndex` must satisfy
+  `0 <= lastValidKVIndex <= maxSeqLen - 1`.
   A value >= `maxSeqLen` can drive the N-loop past the static tensor
   extent, causing out-of-bounds loads.
-- `currentSeqLen` is a 1-D tensor with one element per batch, matching
+- `lastValidKVIndex` is a 1-D tensor with one element per batch, matching
   the output batch dimension.
 
 ---
@@ -222,6 +242,7 @@ the softmax result.
 | Relaxed atomics | Internal | `monotonic`, `agent-one-as` |
 | Dereferenceable extent | Internal | `dereferenceable` |
 | Vectorization hints | Internal | `tt.divisibility`, `tt.pointer_range` |
+| No device heap (skips initHeap) | Internal | `amdgpu-no-heap-ptr` |
 | Coarse-grained memory | **External** | `rocdl.no_fine_grained_memory` |
 | Device-local memory | **External** | `rocdl.no_remote_memory` |
 | Denormal flushing allowed | **External** | `rocdl.ignore_denormal_mode` |
@@ -230,4 +251,4 @@ the softmax result.
 | Valid pointers | **External** | `nonnull`, `dereferenceable` |
 | No concurrent external writes | **External** | `agent-one-as`, `invariant` |
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
-| KV-cache: full allocation required | **External** | Static tensor shape; runtime `currentSeqLen` bounds N-loop |
+| KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |

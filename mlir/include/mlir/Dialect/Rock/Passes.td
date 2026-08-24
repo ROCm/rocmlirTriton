@@ -198,33 +198,55 @@ def RockLowerBlockwiseToPtrPass
 
 def RockDecomposeNonPow2TilesPass
     : Pass<"rock-decompose-nonpow2-tiles", "::mlir::func::FuncOp"> {
-  let summary = "Split non-power-of-two blockwise tiles into power-of-two "
-                "sub-tiles (M/N peeling)";
+  let summary = "Split non-power-of-two gridwise GEMM tiles into power-of-two "
+                "sub-gridwise_gemms (M/N peeling)";
   let description = [{
-    Rock tensors may legally carry non-power-of-two dimensions (e.g. an
-    mPerBlock/nPerBlock of 80), but the Triton layouts produced by RockToTTIR
-    require power-of-two shapes. Running after LowerStores and before
-    LowerBlockwiseToPtr, this pass splits every blockwise_gemm whose result tile
-    has a non-power-of-two M or N into a grid of power-of-two sub-tile GEMMs:
+    Rock tuning params may legally carry non-power-of-two tiles (e.g. an
+    mPerBlock/nPerBlock of 80), but the Triton layouts later produced by
+    RockToTTIR require power-of-two shapes. This pass splits every
+    rock.gridwise_gemm whose mPerBlock or nPerBlock is not a power of two into a
+    grid of power-of-two-tile sub-gridwise_gemms.
 
-    1. M and N are decomposed into minimal power-of-two segments (80 -> {64, 16}),
-       giving an (m-segment, n-segment) grid of cells.
-    2. A (M x K) is sliced into M-segments and B (K x N) into N-segments; cell
-       (i, j) multiplies A-segment i by B-segment j, so each A-segment is reused
-       across a row of cells and each B-segment down a column. One blockwise_gemm
-       and one accumulator init are emitted per cell. The split recurses through
-       the input/output fusion DAGs (loads, splat constants, elementwise ops,
-       stores), slicing destinations per cell.
+    Runs after GemmToGridwise/AttnToGridwise (so it sees canonical
+    rock.gridwise_gemm ops with tuning params and the func grid_size) and before
+    GridwiseGemmToBlockwise (so the IR is still full-tensor gridwise ops, with no
+    loops, blockwise ops, or Triton ops to reason about).
 
-    The K-loop form (accumulator carried as the scf.for iter_arg) is rebuilt with
-    one iter_arg per cell; the loopless single-K-step form emits the per-cell
-    GEMMs directly.
+    1. mPerBlock/nPerBlock are decomposed into minimal power-of-two segments
+       (80 -> {64, 16}), giving an (m-segment, n-segment) grid of cells.
+    2. Per cell, A (G x M x K) is sliced to its M-segment and B (G x K x N) to
+       its N-segment (reusing each A-segment across a row of cells and each
+       B-segment down a column), and a sub-gridwise_gemm with a pow2 tile is
+       emitted. The output fusion chain and stores are replicated per cell, with
+       extra fusion inputs sliced to match. Input fusion needs no handling: it
+       rides on the sliced A/B views and is tiled (pow2) downstream.
 
-    The segments exactly cover the original extent (64 + 16 = 80), so every
-    element computed and stored is live; no padding is introduced.
+    Every sub-op keeps the same mBlocks/nBlocks/grid_size, so the grid layout is
+    unchanged. The segments exactly cover the original extent (64 + 16 = 80), so
+    no padding is introduced. Each sub-op lowers to its own K-loop downstream;
+    merging those sibling loops is a separate follow-up.
   }];
-  let dependentDialects = ["rock::RockDialect", "scf::SCFDialect",
-                           "arith::ArithDialect"];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
+}
+
+def RockFuseSiblingLoopsPass
+    : Pass<"rock-fuse-sibling-loops", "::mlir::func::FuncOp"> {
+  let summary =
+      "Fuse independent sibling scf.for K-loops with identical bounds";
+  let description = [{
+    DecomposeNonPow2Tiles splits one non-power-of-two rock.gridwise_gemm into
+    several power-of-two sub-gemms, each of which GridwiseGemmToBlockwise lowers
+    to its own scf.for K-loop with identical bounds (K/kPerBlock, step 1). These
+    sibling loops reload the shared operand (B for an M-split, A for an N-split).
+
+    This pass fuses sibling scf.for loops that live in the same block and have
+    numerically identical lower/upper bounds and step into a single loop, as
+    long as they are mutually independent (neither loop transitively uses the
+    other's results). Bounds are compared by constant value rather than SSA
+    identity, because each sub-gemm builds its own bound constants. Running CSE
+    afterwards deduplicates the now-co-located shared operand loads.
+  }];
+  let dependentDialects = ["rock::RockDialect", "scf::SCFDialect"];
 }
 
 def RockConvertNarrowTypeSignaturesPass
@@ -281,6 +303,79 @@ def RockPreserveMaskedLoadSemanticsPass
                            "arith::ArithDialect"];
 }
 
+def RockCollapseContiguousMergesPass
+    : Pass<"rock-collapse-contiguous-merges", "::mlir::func::FuncOp"> {
+  let summary = "Collapse contiguous merges in rock.transform chains";
+  let description = [{
+    This pass runs BEFORE TransformsToPointerArith.
+
+    When a `Merge` splits a dimension whose lower dimensions are actually
+    contiguous in memory, it fuses them back into a single wider dimension
+    (see `collapseContiguousMerges`).
+
+    Why this matters: each element's memory offset is computed from the
+    dimension index. We say the dimension is "stride-1" when stepping the index
+    by 1 moves the offset by exactly 1, i.e. neighboring elements sit at
+    neighboring addresses. Triton looks for this stride-1 pattern to prove the
+    access is contiguous and read many elements in one wide load instead of many
+    small ones.
+
+    If the contiguous dimension is split apart and rebuilt (as in an im2col-style
+    transform), the offset is no longer stride-1: the step is +1 within each
+    piece but jumps when one piece wraps into the next. Triton can no longer
+    recognize the contiguity and falls back to small per-element loads. Keeping
+    the dimension intact preserves the stride-1 offset and the wide loads that
+    the split form prevents.
+
+    Example: a buffer viewed as `Unmerge{2, 3, 8}` ["block", "a", "b"] with a
+    `Merge{3, 8}` ["tile"] -> ["a", "b"] tile dimension. Here "a" (stride 8) and
+    "b" (stride 1, size 8) are adjacent in memory, so the {a, b} tile is one
+    contiguous run of 24 elements. The pass collapses it to `Merge{1, 24}` and
+    widens the view to `Unmerge{2, 1, 24}`, exposing the stride-1 run of 24.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockIncrementalPointerArithPass
+    : Pass<"rock-incremental-pointer-arith", "::mlir::func::FuncOp"> {
+  let summary = "Make loop address/mask arithmetic computed incrementally";
+  let description = [{
+    Computes the address and mask arithmetic of `rock.transforms_to_ptr` ops
+    inside loops incrementally. Currently limited to convolution kernels.
+
+    TransformsToPointerArith would lower the address and masks such that they
+    are re-computed from scratch for every iteration of the loop. This can be
+    very inefficient, flooding VALU units with expensive computations. This
+    pass instead rewrites the address and mask computations as an update of the
+    previous iteration's values.
+
+    Two rewrites are available. The affine path is preferred since it is more
+    efficient, but the carry is applicable in cases where the affine is not:
+
+    1. Affine. When the offset advances by a single compile-time constant per
+       iteration and the mask does not depend on the induction variable, the
+       pointer becomes `base + (iv - lb) * stride`.
+
+    2. Carry. When the induction variable goes through a `Merge` whose lower
+       dimensions are not contiguous in the buffer, so the per-element
+       increment is position-dependent, and/or a Pad/Embed decides validity
+       from a coordinate that moves with the induction variable: this means
+       that the set of valid elements differs every iteration.
+
+       This path decomposes the merged dimension into its lower coordinates and
+       carries them as loop iter_args, advancing them with add, compare, select
+       ops (no div/mod, what the IR looks like before this pass runs). The mask
+       is rebuilt each iteration from the carried coordinates, while the offset
+       is accumulated rather than re-linearized from coordinates each iteration.
+
+    Both paths are conservative: any construct that cannot be proven to admit a
+    constant-arithmetic recurrence leaves the op untouched.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "scf::SCFDialect", "arith::ArithDialect",
+                           "triton::TritonDialect"];
+}
+
 def RockTransformsToPointerArithPass
     : Pass<"rock-transforms-to-pointer-arith", "::mlir::func::FuncOp"> {
   let summary =
@@ -293,6 +388,8 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect", "triton::TritonDialect"];
+  let options = [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+                        "Disable fast-math dependent lowering choices">];
 }
 
 def RockSortDimensionsMemoryLayoutPass
@@ -347,20 +444,19 @@ def RockSerializeHostFuncsPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
-def RockFuncToTritonFuncPass
-    : Pass<"rock-func-to-triton-func", "::mlir::ModuleOp"> {
-  let summary =
-      "Convert func.func kernels to tt.func with Triton pointer arguments";
+def RockTensorToTritonPtrPass
+    : Pass<"rock-tensor-to-triton-ptr", "::mlir::ModuleOp"> {
+  let summary = "Convert tensor semantic kernels (rock) to pointer semantic "
+                "kernels (triton)";
   let description = [{
-    This pass transforms Rock kernel functions from the standard `func.func` dialect
-    to Triton's `tt.func` dialect, preparing them for the Triton compilation pipeline.
+    This pass transforms kernels from tensor semantic to pointer semantic.
 
     Key transformations:
-    1. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
+    1. Converts `arith.addi` on pointer tensors to `tt.addptr`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
     3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
-    4. Converts `arith.addi` on pointer tensors to `tt.addptr`
-    5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    4. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    5. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
     6. Stores host functions (wrappers, main) as module attributes for later restoration
     7. Preserves grid size as module attributes for gpu.launch_func
   }];
@@ -387,6 +483,10 @@ def ResolveKernelLaunchParamsPass
     2. **Unused workspace arguments** — Triton appends global-scratch and
        profile-scratch pointer arguments to every kernel.  If they are unused
        in the IR, this pass strips them from the function signature.
+
+    The pass rejects kernel launches whose total workitems are beyond what is
+    supported by the runtime's limit of the AMDGPU dispatch packet. Such
+    launches are marked not applicable so tuning can skip the configuration.
 
     The pass also validates that `ttg.shared` does not exceed the hardware LDS
     limit for the target architecture (read from the `rock.arch` attribute on
@@ -429,15 +529,14 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "Allow flushing denormal numbers">,
        Option<"scalarizePackedFops", "scalarize-packed-fops", "bool", "false",
               "Scalarize packed float operations">,
-       Option<"scheduleHint", "schedule-hint", "int64_t", "-1",
-              "Scheduling hint ordinal (-1=arch default, 0=none, "
-              "1=attention, 2=memory-bound-attention). See "
-              "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding.">,
        Option<"llvmFnAttrs", "llvm-fn-attrs", "std::string", "\"\"",
               "Debug-only: comma-separated LLVM function attributes (name or "
               "name=value) applied to the kernel after Triton's attributes. "
               "Mirrors the experimental llvm_fn_attrs HIPOption in "
-              "compiler.py.">];
+              "compiler.py.">,
+       Option<"useExpertScheduling", "use-expert-scheduling", "int", "-1",
+              "Tri-state override of the AMDGPU expert-scheduling codegen flag "
+              "(-1=arch default (on for gfx1250), 0=off, 1=on).">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
@@ -447,7 +546,7 @@ def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {
     After Triton lowers kernels to LLVM IR and `TritonToHsacoPass` produces
     HSACO, this pass materializes a `gpu.binary` from that HSACO (with kernel
     metadata), marks the module as a GPU container, and when host functions
-    were serialized by `RockFuncToTritonFuncPass`, restores them from
+    were serialized by `RockTensorToTritonPtrPass`, restores them from
     `rock.host_functions` and rewrites `func.call` to `gpu.launch_func`.
 
     The `gpu.binary` is emitted whenever kernels and HSACO are present, even if
@@ -549,7 +648,8 @@ def RockRegularizeInputPass
         %res = arith.addf %A0, %A1
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "math::MathDialect"];
+                           "arith::ArithDialect", "math::MathDialect",
+                           "triton::TritonDialect"];
 }
 
 def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
@@ -640,6 +740,95 @@ def RockLowerStoresPass : Pass<"rock-lower-stores", "::mlir::func::FuncOp"> {
                            "arith::ArithDialect", "math::MathDialect"];
 }
 
+def RockAddTritonMetadataPass
+    : Pass<"rock-add-triton-metadata", "::mlir::func::FuncOp"> {
+  let summary = "Attach Triton-bound metadata to rock ops before RockToTTIR";
+  let description = [{
+    Central place to attach metadata that needs to be computed at the rock
+    level but consumed later in the Triton pipeline. The pass runs after
+    `rock-lower-stores`, while rock ops still carry the structural information
+    (transformed views, store destinations, etc.) that gets lost once the IR is
+    lowered to TTIR. Each piece of metadata is recorded as a discardable
+    attribute so that `RockToTTIR` can forward it onto the corresponding Triton
+    op and downstream passes can query it.
+
+    Metadata currently produced:
+
+    - `rock.o_transposed` (output orientation): for every
+      `rock.blockwise_gemm` consumed by a store, the pass inspects the store
+      destination's vectorization (via `getMaxVectorization` on the fast M and
+      N output dimensions) to determine whether the output is row-major (N
+      fast) or "transposed"/column-major (M fast), and records the result on
+      the `rock.blockwise_gemm`. `RockToTTIR` copies it onto the resulting
+      `tt.dot` / `tt.dot_scaled`, and `rock-set-matmul-output-transpose` later
+      uses it to select the accelerator result layout so the epilogue store
+      coalesces. GEMMs with no reachable store (e.g. a chained-dot head) are
+      left untouched so the downstream default layout is kept.
+
+    - `rock.prefer_lds_epilogue` (OptimizeEpilogue automatic policy): for
+      16-bit output stores, the pass compares each thread's dwordx4 store burst
+      with the enclosing constant reduction-loop depth. If the exposure is at
+      least two, it marks the kernel so Triton's OptimizeEpilogue pass retains
+      the paced LDS round-trip. An unknown reduction depth keeps the register
+      bypass.
+
+    Additional kinds of Triton-bound metadata can be added here as the pipeline
+    grows.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockSetMatmulOutputTransposePass
+    : Pass<"rock-set-matmul-output-transpose", "::mlir::ModuleOp"> {
+  let summary = "Select the matmul accelerator result layout from "
+                "rock.o_transposed";
+  let description = [{
+    Runs immediately after Triton's `tritonamdgpu-accelerate-matmul`, which
+    rewrites `tt.dot` into an accelerator-encoded dot (e.g. WMMA) using a fixed
+    default result transposition.
+
+    For each accelerator dot that carries the `rock.o_transposed` metadata (set
+    by `rock-add-triton-metadata` and preserved across the accelerate-matmul
+    rewrite), this pass overrides the result layout's transposition so the
+    consuming epilogue store can be vectorized/coalesced.  The orientation is
+    chosen from the `rock.o_transposed` attribute computed at the rock level,
+    instead of walking forward to the store.
+
+    Currently only the WMMA (`ttg.amd_wmma`) result layout is adjusted; other
+    accelerator layouts keep their default. The version-dependent mapping is:
+      row-major output (oTransposed = false): isTransposed = (version > 1)
+      col-major output (oTransposed = true):  isTransposed = (version == 1)
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
+                           "triton::gpu::TritonGPUDialect"];
+}
+
+def RockSetReductionLayoutPass
+    : Pass<"rock-set-reduction-layout", "::mlir::ModuleOp"> {
+  let summary = "Redistribute the reduction-operand load layout onto the "
+                "reduction dim";
+  let description = [{
+    Redistribute the reduction-operand global-load `#blocked`
+    layout so that each warp owns a full reduction (K) strip. Moving
+    the load's `warpsPerCTA` off the free/N dim and onto the reduction/K dim
+    can potentially reduce SGPR spill on convolution kernels.
+
+    This only applies to `tt.load`/`amdgpu.buffer_load` staged through an
+    `amdgpu.in_thread_transpose`, whose re-layout decouples the read
+    distribution from the LDS layout the dot consumes; direct-to-LDS and TDM
+    loads have no such stage and are out of scope.
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
+                           "triton::amdgpu::TritonAMDGPUDialect",
+                           "arith::ArithDialect"];
+  let options = [Option<
+      "useReductionLayout", "use-reduction-layout", "int64_t", /*default=*/"-1",
+      "Tri-state gate: -1 (default / heuristic) rewrites only convolution "
+      "kernels (those carrying the `rock.conv_kernel` attribute); 0 disables "
+      "the rewrite entirely (no kernel is touched); 1 forces the rewrite on "
+      "every kernel.">];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";
@@ -699,6 +888,11 @@ def RockPrepareLLVMPass
     3. Annotates atomic RMW operations with `no_fine_grained_memory`,
        `no_remote_memory`, and `ignore_denormal_mode` metadata to enable
        native hardware atomic instructions instead of CAS fallbacks.
+    4. Marks every kernel `amdgpu-no-heap-ptr`. Rock kernels never call a
+       device allocator (`malloc`/`free`/`__ockl_dm_*`), so they can never
+       reach the rocclr device heap; dropping the hidden heap implicit arg
+       stops the runtime from launching the one-time `__amd_rocclr_initHeap`
+       setup kernel at module load.
   }];
   let options = [Option<"allowFlushDenorm", "allow-flush-denorm", "bool",
                         /*default=*/"true",

@@ -1,6 +1,7 @@
 //===- RockPrepareLLVM.cpp - prepares the generated code for LLVM       ---===//
 //
-// Copyright 2026 AMD
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +20,10 @@
 //   1. GEP inbounds flags
 //   2. Invariant loads + alias scope metadata (AMDGPU backend workaround)
 //   3. Atomic RMW metadata for native hardware atomics
+//   4. amdgpu-no-heap-ptr (drops the unused device-heap implicit arg, which
+//      otherwise makes the runtime launch a one-time __amd_rocclr_initHeap).
+//      Always added: Rock kernels never call a device-side allocator
+//      (malloc/free/__ockl_dm_*), so they can never reach the rocclr heap.
 //
 // IMPORTANT: the set of attributes/metadata produced here is part of the
 // rocmlirTriton kernel ABI documented in `docs/kernel_memory_assumptions.md`.
@@ -40,6 +45,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
 namespace mlir {
@@ -161,8 +167,8 @@ static void annotateMemoryAccesses(LLVM::LLVMFuncOp func, OpBuilder &b) {
     return b.getArrayAttr(mergedScopes);
   };
 
-  // TODO: figure out if it's worth using "nontemporal" (see rocMLIR's
-  // AnalyzeMemoryUse.cpp comments), ticket AIROCMLIR-802
+  // TODO(AIROCMLIR-802): Consider whether "nontemporal" is useful here (see
+  // rocMLIR's AnalyzeMemoryUse.cpp comments).
   func.walk([&](LLVM::AliasAnalysisOpInterface aliasIface) {
     Operation *aliasOp = aliasIface.getOperation();
     Value ptrArg;
@@ -230,6 +236,27 @@ static void relaxAtomics(LLVM::LLVMFuncOp func, OpBuilder &b,
   });
 }
 
+// Mark the kernel `amdgpu-no-heap-ptr` via the LLVM-dialect `passthrough`
+// attribute. Dropping the hidden_heap_v1 implicit argument from the kernel
+// ABI stops the HIP runtime from launching the  __amd_rocclr_initHeap setup
+// kernel at module load. This is always sound for Rock kernels: they never
+// call a device-side allocator (malloc/free/__ockl_dm_*), so they can never
+// reach the rocclr device heap.
+static void dropDeviceHeapArg(LLVM::LLVMFuncOp func) {
+  StringRef attrName = "amdgpu-no-heap-ptr";
+  SmallVector<Attribute> passthrough;
+  if (ArrayAttr existing = func.getPassthroughAttr()) {
+    for (Attribute attr : existing) {
+      if (auto str = dyn_cast<StringAttr>(attr);
+          str && str.getValue() == attrName)
+        return;
+      passthrough.push_back(attr);
+    }
+  }
+  passthrough.push_back(StringAttr::get(func.getContext(), attrName));
+  func.setPassthroughAttr(ArrayAttr::get(func.getContext(), passthrough));
+}
+
 void RockPrepareLLVMPass::runOnOperation() {
   LLVM::LLVMFuncOp func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -242,4 +269,5 @@ void RockPrepareLLVMPass::runOnOperation() {
   markGEPsInbounds(func);
   annotateMemoryAccesses(func, b);
   relaxAtomics(func, b, allowFlushDenorm);
+  dropDeviceHeapArg(func);
 }

@@ -1,91 +1,535 @@
 llvm-patches/ -- downstream LLVM cherry-picks
 =============================================
 
-This directory holds patches against the LLVM checkout that Triton pins
-(external/triton/llvm-project).
+This directory holds downstream patch records against the Triton-pinned LLVM
+tree (external/llvm-project).
 
 ----------------------------------------------------------------------
-patch193499.patch
+patch200945.patch
 ----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/193499
-- Upstream commit : 81d618b6bc1e71cda79fe7bf9cbab63933dd5975
-- Upstream title  : [AMDGPU][SIInsertWaitcnts] Fix iota_range assertion
-                    when OtherMarks is empty in mergeAsyncMarks()
-- File Fixed      : llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+- Upstream commit : 6359dd3b2a11316cc58c6a50807be1f2d964a3a3
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/200945
+- Upstream title  : [MachineScheduler] Rework dag-maps-huge-region
+- File Fixed      : llvm/include/llvm/CodeGen/ScheduleDAGInstrs.h
+                    llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/AArch64/dag-maps-huge-region.ll (new)
+                    llvm/test/CodeGen/AMDGPU/gfx-callable-return-types.ll
+                    llvm/test/CodeGen/AMDGPU/memintrinsic-unroll.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-load-i64-stride-8.ll
+                    llvm/test/CodeGen/X86/vector-interleaved-store-i64-stride-8.ll
+- Contents        : Reworks MachineScheduler's dag-maps-huge-region handling
+                    so large scheduling regions periodically create a barrier
+                    chain and clear the memory dependency maps after a fixed
+                    number of memory operations. Lowers the default threshold
+                    to 500, removes the separate reduction-size option and
+                    map-reduction machinery, and updates the affected LIT
+                    expectations.
 
 Symptom without the patch
 -------------------------
-rocmlir-driver -c aborts during code generation with:
-
-  Assertion `Begin <= End && "Begin must be less or equal to End."' failed.
-  Stack frame: WaitcntBrackets::mergeAsyncMarks ->
-               seq_inclusive<unsigned>(1, 0) -> iota_range ctor
-
-The bug fires at a CFG join where one predecessor has pending async
-memory operations (ASYNCMARK / WAIT_ASYNCMARK pushed onto AsyncMarks)
-and the other does not. MergeCount becomes min(0, N) = 0 and the loop
-`for (auto Idx : seq_inclusive<unsigned>(1, MergeCount))` violates
-Begin <= End. The fix adds an early `return StrictDom` when
-MergeCount == 0.
-
-Regression test that guards this patch
---------------------------------------
-mlir/test/fusion/nightly-misc-e2e/attention-i8-SIInsertWantcnts.mlir
-
-  Compile-only. Cross-compiles attention -t i8  and pipes through 
-  `rocmlir-driver -c`. FileCheck pattern `CHECK: triton.hsaco` requires 
-  successful codegen; reverting this patch makes rocmlir-driver abort and 
-  FileCheck's stdin is empty.
-
-----------------------------------------------------------------------
-patch198508.patch
-----------------------------------------------------------------------
-- Upstream PR     : https://github.com/llvm/llvm-project/pull/198508
-- Upstream commit : ace44dc5a2a48e5d024bc5c015f69a67cd9be909
-- Upstream title  : [AMDGPU] Gate `S_LSHL[1-4]_ADD_U32` patterns on uniform
-                    results
-- File Fixed      : llvm/lib/Target/AMDGPU/SOPInstructions.td
-- Contents        : SOPInstructions.td fix plus the 13
-                    llvm/test/CodeGen/AMDGPU/*.ll LIT test updates
-                    (CHECK-line-only; no logic). All hunks verified to apply
-                    cleanly against the pinned LLVM (87717bf9).
-
-Symptom without the patch
--------------------------
-On gfx1201 (RDNA4, wave32), grouped convolution with split-K > 1 (packed
-f16 atomics) produces incorrect output: ~6 of every 8 consecutive output
-channels are zeroed. The miscompile only appears at LLVM middle-end
-opt level >= 2 (rocmlir-driver --gO>=2, i.e. the default); --gO=1 was the
-prior workaround.
+Large scheduling regions with many memory operations can spend excessive
+compile time and memory in ScheduleDAGInstrs dependency-map maintenance. In the
+problem cases upstream investigated, addChainDependencies() could dominate the
+CodeGen pipeline even after the old huge-region reduction kicked in.
 
 Root cause
 ----------
-The s_lshlN_add_u32 selection patterns added by upstream PR#167032
-("Generate s_lshl?_add_u32", commit 125b6b591741, present in the pinned
-LLVM) are not gated on uniformity. At -O2, GVN + InstCombine reassociate
-the per-lane output-channel offset into a `(workitem.id-derived << 2) +
-base` shape that matches the scalar S_LSHL2_ADD_U32 pattern even though
-the value is divergent (IR UniformityAnalysis correctly marks the whole
-chain divergent). SIFixSGPRCopies then satisfies the SALU operand by
-inserting `v_readfirstlane_b32` on the divergent channel, collapsing every
-lane to lane 0's channel index -> the per-lane packed-f16 atomic stores
-all target the same channel, dropping the rest.
+The old reduction waited until the load/store maps reached the huge-region
+limit, sorted the accumulated SUnit node numbers, inserted a barrier around the
+middle of the current set, and kept processing the remaining half of the maps.
+That still left large live dependency maps and repeated reduction work. The new
+scheme treats dag-maps-huge-region as a memory-operation interval: when the
+interval is reached, the current SUnit becomes the barrier chain, all memory
+dependency maps are cleared behind it, and subsequent memory operations depend
+on the barrier instead of retaining the full history.
 
-The companion SDAG divergence-tracking fix (PR#147560, commit
-9293b65a616b) that would have caught this was reverted in the pinned LLVM
-by PR#152548 (commit c7c022948031), so the missing UniformBinFrag gate is
-the actionable fix.
-
-The fix wraps each pattern in `UniformBinFrag<shlN_add>` (matching the
-other SOP2 scalar patterns in the file) so divergent shl/add chains select
-the vector `V_LSHL_ADD_U32` instead. Drop this patch on the next Triton
-bump that pulls commit ace44dc5a2a4 into the pinned LLVM (it lands after
-the current pin 87717bf9, dated 2026-04-08; the fix merged 2026-05-19).
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+6359dd3b2a11316cc58c6a50807be1f2d964a3a3.
 
 ----------------------------------------------------------------------
-patch1.patch
-patch2.patch
-patch3.patch
-patch4.patch
+patch202743.patch
 ----------------------------------------------------------------------
-TODO: Add missing patch descriptions
+- Upstream commit : 253b574758902662cf2c9e1a9d5f62535325b827
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/202743
+- Upstream title  : [MachineScheduler] Check we don't add self dependency
+                    edge when adding barrier
+- File Fixed      : llvm/lib/CodeGen/ScheduleDAGInstrs.cpp
+                    llvm/test/CodeGen/X86/dag-maps-huge-region-crash.ll (new)
+- Contents        : Avoids adding a barrier dependency from an SUnit to
+                    itself when the same instruction becomes BarrierChain
+                    through FP-exception huge-region handling and then reaches
+                    memory-operation barrier handling. Adds an X86 regression
+                    test that forces dag-maps-huge-region=1.
+
+Symptom without the patch
+-------------------------
+With a very small dag-maps-huge-region threshold, an instruction that both may
+raise FP exceptions and performs a memory operation can first become the
+BarrierChain while clearing the FPExceptions map, then immediately try to add a
+memory dependency edge from that BarrierChain to itself. This can trip scheduler
+dependency assertions or crash during DAG construction.
+
+Root cause
+----------
+The follow-up to #200945 allowed both the FP-exception and memory-operation
+huge-region paths to run for the same SUnit. The FP-exception path sets
+BarrierChain to the current SUnit. The memory path then unconditionally added a
+predecessor barrier through BarrierChain, creating a self dependency when
+BarrierChain == SU. The fix skips that edge in the self case.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+253b574758902662cf2c9e1a9d5f62535325b827 or an equivalent mainline commit for
+#202743.
+
+----------------------------------------------------------------------
+patch-rocm-runtime-dllexport.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/213046
+- Upstream title  : [MLIR][ROCm] Export runtime wrappers on Windows
+- File Fixed      : mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+- Contents        : Adds an MLIR_ROCM_RUNTIME_EXPORT macro
+                    (__declspec(dllexport) on _WIN32, empty elsewhere) and
+                    prefixes it onto the mgpu* runtime entry points, mirroring
+                    SyclRuntimeWrappers.cpp.
+
+Symptom without the patch
+-------------------------
+On Windows, clang-cl / lld-link hide every symbol by default, so the ORC JIT
+that dlopen-loads libmlir_rocm_runtime cannot resolve the mgpu* entry points;
+mlir-runner --shared-libs execution then fails at runtime. Linux is unaffected
+because default visibility already exports the symbols.
+
+This is an independent Windows concern from patch205651 (STANDALONE linkage);
+it touches the same file but has a different lifecycle. Keep it even after
+patch205651 is dropped, until the vendored LLVM revision contains the upstream
+fix.
+
+----------------------------------------------------------------------
+patch205637.patch
+----------------------------------------------------------------------
+- Upstream commit : 8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/205637
+- Upstream title  : [AMDGPU] Align to LDS granularity in occupancy calculation
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+                    llvm/lib/Target/AMDGPU/GCNSubtarget.cpp
+                    llvm/test/CodeGen/AMDGPU/occupancy-levels.ll
+- Contents        : Adds an LDSAllocationGranularity field to AMDGPUSubtarget,
+                    initializes it from AMDGPU::getLdsDwGranularity(*this),
+                    and rounds queried per-workgroup LDS bytes up to that
+                    allocation granularity before computing LDS-limited
+                    occupancy in getOccupancyWithWorkGroupSizes.
+
+Symptom without the patch
+-------------------------
+For gfx950 attention kernels whose static LDS usage is not already aligned to
+the hardware allocation block, occupancy can be overestimated. The backend may
+then schedule/codegen under an occupancy assumption that does not match the
+actual allocated LDS footprint, producing numerically incorrect results in the
+i8 attention repro:
+
+  -operation attention -t i8 --arch gfx950:sramecc+:xnack- ... \
+  -seq_len_q 381 -seq_len_k 78 -num_heads_q 64 -num_heads_kv 4 \
+  -head_dim_qk 68 -head_dim_v 94 -split_kv=2 \
+  --perf_config=attn:v1:256,16,128,1,1,2,0,1,3,4,8
+
+Root cause
+----------
+getOccupancyWithWorkGroupSizes divided total LDS capacity by the raw queried
+LDS byte count. Hardware allocates LDS in target-specific blocks, so unaligned
+LDS sizes consume more LDS than the raw byte count implies. Rounding the query
+up to LDSAllocationGranularity makes the occupancy calculation match allocation
+granularity and prevents the overestimated occupancy.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+8f123ccd9ff556ba13c4b965f17c4b1ca500ee7c.
+
+----------------------------------------------------------------------
+patch208045.patch
+----------------------------------------------------------------------
+- Upstream commit : 0a015cc516abb7f54bcdd94763f44219b6298bd9
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208045
+- Upstream title  : [AMDGPU] Replace zext pattern from reg_sequence to
+                    cvt_u32_u16
+- File Fixed      : llvm/lib/Target/AMDGPU/SIInstructions.td
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/*
+                    llvm/test/CodeGen/AMDGPU/* (46 generated-check files)
+- Contents        : Replaces the real-true16 i16-to-i32 zero-extension
+                    REG_SEQUENCE patterns with V_CVT_U32_U16. The i16-to-i64
+                    pattern now builds its low half from the conversion and
+                    its high half from S_MOV_B32 zero. Imports every upstream
+                    generated CodeGen expectation update whose check block
+                    exists in the pinned LLVM tree, with the waterfall atomic
+                    checks refreshed for the pinned scheduler output. The five
+                    llvm.amdgcn.reduce.* i16 functions and the four GFX13
+                    atomic check blocks changed upstream were introduced after
+                    the pinned revision, so there is no corresponding local
+                    test content to update. The downstream gfx1201 convolution
+                    regression is also covered by rocmlirTriton's nightly E2E
+                    suite (rock-conv-i8-true16-zext.mlir).
+
+Symptom without the patch
+-------------------------
+Compilation of the pinned gfx1201 i8 convolution succeeds, but executing the
+generated binary with rocm-run causes a memory-related runtime crash. The
+nightly regression uses the original 64x1536x7x7 input and 2048x1536x1x1 filter
+with its pinned v4 perf config, then executes the binary and validates its
+output.
+
+Root cause
+----------
+The true16 zero-extension patterns assembled a 32-bit value from the i16 source
+and a separately materialized zero in the high half. Register coalescing could
+join the repeated copies of that shared zero into the same virtual register,
+turning subsequent low-half writes into a long chain of WAR dependencies. This
+caused pathological machine-scheduler behavior and increased register pressure.
+Using V_CVT_U32_U16 produces the zero-extended value directly and avoids the
+problematic REG_SEQUENCE/copy structure.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 0a015cc516abb7f54bcdd94763f44219b6298bd9.
+
+----------------------------------------------------------------------
+patch208280.patch
+----------------------------------------------------------------------
+- Upstream commit : 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208280
+- Upstream title  : Revert "[AMDGPU] Use wavefront scope for single-wave
+                    workgroup synchronization (#187673)"
+- File Fixed      : llvm/docs/AMDGPUUsage.rst
+                    llvm/lib/Target/AMDGPU/AMDGPULowerIntrinsics.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPUSubtarget.h
+                    llvm/lib/Target/AMDGPU/SIMemoryLegalizer.cpp
+                    llvm/test/CodeGen/AMDGPU/flat-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/global-saddr-atomics.ll
+                    llvm/test/CodeGen/AMDGPU/llvm.amdgcn.load.monitor.gfx1250.ll
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-fence-mmra-local.ll (deleted)
+                    llvm/test/CodeGen/AMDGPU/memory-legalizer-single-wave-workgroup-memops.ll (deleted)
+- Contents        : Reverts upstream #187673's single-wave WORKGROUP ->
+                    WAVEFRONT scope demotion for workgroup-scope fences and
+                    non-relaxed atomics. Removes AMDGPUSubtarget::
+                    isSingleWavefrontWorkgroup() and the SIMemoryLegalizer
+                    demotion plumbing, restores the affected atomic wait/test
+                    expectations, and deletes the now-invalid single-wave
+                    memory-legalizer coverage, including the downstream-only
+                    #207473 fence/MMRA test. The remaining barrier lowering
+                    optimization computes the single-wave condition locally.
+
+Symptom without the patch
+-------------------------
+#187673 demotes workgroup-scoped fences and non-relaxed workgroup atomics to
+wavefront scope when the kernel's workgroup fits in a single wave. That
+demotion can drop ordering that is still required within a single wave, notably
+for asynchronous DMA/VMEM-to-LDS behavior and LDS ordering against later
+global/GDS accesses. The narrower downstream fix in #207473 preserved the
+missing LDS waits, but upstream instead reverted the demotion wholesale in
+#208280.
+
+Root cause
+----------
+The single-wave WORKGROUP -> WAVEFRONT equivalence was too broad for backend
+memory legalization. Workgroup-scope synchronization can carry ordering
+requirements that are not merely cross-wave synchronization, so lowering it to
+wavefront scope before SIMemoryLegalizer runs loses required waits/scopes.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d.
+
+----------------------------------------------------------------------
+patch205651.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/205651
+- Upstream title  : [MLIR][ROCm] Build mlir_rocm_runtime STANDALONE
+- File Fixed      : mlir/lib/ExecutionEngine/CMakeLists.txt
+                    mlir/lib/ExecutionEngine/RocmRuntimeWrappers.cpp
+- Contents        : Marks mlir_rocm_runtime STANDALONE so it no longer links
+                    LLVMSupport, mirroring mlir_cuda_runtime, and replaces
+                    the remaining SmallVector/ArrayRef use in
+                    mgpuMemHostRegisterMemRef with plain C++ pointer/stride
+                    logic.
+
+Symptom without the patch
+-------------------------
+Loading libmlir_rocm_runtime.so in a process that also reaches ROCm's
+libLLVM.so aborts during dynamic initialization with:
+
+  SmallPtrSet.h:301: Assertion `Bucket < End' failed.
+
+This fires whenever the runtime is dlopen-ed (mlir-runner --shared-libs, or
+the Python lit harness) in an environment whose ROCm comes from the
+_rocm_sdk_devel (TheRock) pip package: libmlir_rocm_runtime.so's DT_NEEDED
+chain libamdhip64 -> libamd_comgr -> libLLVM.so loads a second LLVM, and
+comgr's bundled libLLVM happens to share the exact 23.0git soname.
+
+Root cause
+----------
+libmlir_rocm_runtime.so was not built STANDALONE, so add_mlir_library linked
+LLVMSupport into it, exporting default-visibility llvm::* symbols
+(llvm::cl::SubCommand, ManagedStatic, CommandLine, ...). With both LLVMs in
+the process the dynamic linker interposes these data symbols, so the two
+instances share LLVM's cl::opt / pass-registry singletons and one tears the
+other's SmallPtrSet apart during static init.
+
+Why STANDALONE
+--------------
+RocmRuntimeWrappers.cpp's only LLVM use was SmallVector/ArrayRef in
+mgpuMemHostRegisterMemRef. Replacing it with plain pointer/stride logic lets
+the library drop LLVMSupport entirely (STANDALONE), so there are no LLVM
+symbols left to clash. This matches the intent of upstream commit 351ae0ca550c
+("[MLIR][CMake] Fix runtime libraries with PCH"), which made the other
+dlopen-ed runtimes STANDALONE but left mlir_rocm_runtime on a
+DISABLE_PCH_REUSE workaround because it still used LLVM ADTs. See
+ROCm/TheRock#4981.
+
+Drop this patch on the next LLVM/Triton bump that pulls the upstream PR into
+the pinned LLVM.
+
+----------------------------------------------------------------------
+patch167347.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/167347
+- Upstream title  : [AMDGPU] Verify dominance when rewriting spills to
+                    registers
+- JIRA case       : LCOMPILER-2224
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.cpp
+                    llvm/lib/Target/AMDGPU/AMDGPURewriteAGPRCopyMFMA.h (new)
+- Contents        : Requires a MachineDominatorTree in the AGPR-copy-MFMA
+                    rewrite pass and, before eliminating a VGPR spill slot,
+                    verifies via the new
+                    AMDGPU::checkAGPRCopyMFMAJointDominance() helper that
+                    every reachable reload of the slot is jointly dominated
+                    by stores to that same slot; slots with no reachable
+                    store, or with a reload some store-free path can reach,
+                    are skipped. The helper is split into the new
+                    AMDGPURewriteAGPRCopyMFMA.h so it can be unit-tested.
+
+Symptom without the patch
+-------------------------
+AMDGPURewriteAGPRCopyMFMA::eliminateSpillsOfReassignedVGPRs() can collapse a
+VGPR spill slot into a single virtual register even when a reload of that
+slot is not dominated by the slot's stores. Replacing all references with
+one vreg then yields invalid MIR -- a vreg use not dominated by its def --
+which trips the machine verifier / crashes the backend.
+
+Root cause
+----------
+Spill save/restore goes through stack memory, which (unlike SSA values) has
+no dominance guarantee: a slot can have stores in several blocks that do not
+jointly dominate all of its reloads (e.g. a poison/undef incoming value on
+some control-flow path). Folding the slot back into one register imposes an
+SSA def->use dominance that the original spill never had.
+
+Downstream divergence from the upstream PR
+------------------------------------------
+Upstream #167347 (by Austin Kerbow) checks only that each reload is
+dominated by *some* single store. Reviewers (jayfoad, ruiling) pointed out
+that the correct, weaker requirement is *joint* dominance -- every path from
+entry to a reload must pass through a store block. This patch implements
+that stronger/more-correct joint-dominance check instead, and factors it
+into checkAGPRCopyMFMAJointDominance() for unit testing.
+
+As of this bump #167347 is still open upstream (unmerged). Drop or reconcile
+this patch once it -- or a successor such as #198472
+("[AMDGPU] Fixed crash due to virtual register defs not dominating uses") --
+lands in the pinned LLVM with an equivalent or stronger dominance check.
+
+----------------------------------------------------------------------
+patch204648.patch
+----------------------------------------------------------------------
+- Upstream commit : 237fbfd (merge of d0f1670)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/204648
+- Upstream title  : [CodeGen] Join live range segments after dead def move
+- File Fixed      : llvm/include/llvm/CodeGen/LiveInterval.h
+                    llvm/lib/CodeGen/LiveInterval.cpp
+                    llvm/lib/CodeGen/LiveIntervals.cpp
+- Contents        : Adds a shared LiveRange::mergeAdjacentSegments() helper that
+                    merges a segment with either touching neighbor that shares
+                    its value number. Uses it in MergeValueNumberInto() (replacing
+                    the inline forward/backward merge) and in
+                    LiveIntervals::HMEditor::handleMoveUp(), where the segments
+                    shifted down after a dead def is moved upward are retagged to
+                    the moved def's value number and then joined as we go
+                    (iterating by slot index up to the original end, since merging
+                    can erase segments). The upstream AMDGPU machine-scheduler
+                    regression test is omitted from this downstream record.
+
+Symptom without the patch
+-------------------------
+Moving a dead subregister def upward during machine scheduling
+(handleMoveUp) retags a following live-range segment to the same value
+number as the previous segment but leaves the two adjacent same-value
+segments unmerged. Live range verification rejects adjacent segments with
+the same value number, so with an asserts build the scheduler aborts (e.g.
+gfx950 attention kernels under -verify-misched); without asserts it produces
+malformed live ranges feeding register allocation.
+
+Root cause
+----------
+The retag loop in handleMoveUp only reassigned valno on the shifted-down
+segments and never joined any segment it made adjacent-and-equal to its
+neighbor, violating the LiveRange invariant that touching segments must not
+share a value number.
+
+CI coverage
+-----------
+mlir/test/rocmlir-driver/attention-i8-gfx950-sched-dead-def-join.mlir is a
+compile-only regression that pins the i8 gfx950 attention shape + perf_config
+which triggers this crash. With an asserts build lacking this patch,
+`rocmlir-driver -c` aborts in the machine scheduler
+(LiveIntervals::HMEditor::updateRange, `Assertion 'LR.verify()' failed`); with
+the patch it emits triton.hsaco. This lets a future LLVM bump catch the
+regression in normal CI instead of only during tuning.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 237fbfd.
+
+----------------------------------------------------------------------
+patch211809.patch
+----------------------------------------------------------------------
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/211809
+- Upstream title  : [InlineSpiller] Avoid spill hoisting interference
+- File Fixed      : llvm/lib/CodeGen/InlineSpiller.cpp
+- Contents        : In InlineSpiller::hoistSpillInsideBB, moves the
+                    computation of the store insertion point (MBB/MII) ahead
+                    of the stack-slot merge and redundant-spill elimination,
+                    and adds an interference guard for PHI-defined sources.
+                    When the def is a PHI and the source has an assigned
+                    physical register, the segment ending at the copy may need
+                    to be extended forward to the store insertion point (which
+                    SkipPHIsLabelsAndDebug can push past the prologue). Before
+                    hoisting, check the LiveRegMatrix for interference on that
+                    physical register between the segment end and the insertion
+                    index; if extending the source's live range would overlap an
+                    interval already assigned to the same register, bail out of
+                    the hoist and spill at the original copy instead. The
+                    upstream AMDGPU lit test
+                    (llvm/test/CodeGen/AMDGPU/regalloc-hoist-spill-live-range-interference.mir)
+                    is omitted from this downstream record.
+
+Symptom without the patch
+-------------------------
+InlineSpiller hoists the spill of a value by storing its PHI-defined sibling
+after the basic block prologue. Extending that PHI-defined source's live
+interval to the insertion point can overlap an interval already assigned to
+the same physical register, producing an inconsistent live interval that trips
+register-allocation verification (-verify-regalloc) or yields malformed live
+ranges feeding downstream register allocation.
+
+Root cause
+----------
+hoistSpillInsideBB unconditionally hoisted and later extended the source's
+segment up to the store, without checking whether the physical register
+assigned to the source is free between the segment end and the (post-prologue)
+insertion point. When it is not free, the extension introduces interference on
+an already-assigned register.
+
+As of this bump #211809 is still open upstream (unmerged). Drop or reconcile
+this patch once it lands in the pinned LLVM.
+
+----------------------------------------------------------------------
+patch211884.patch
+----------------------------------------------------------------------
+- Upstream commit : 9e43e04108dddff6476152d0fff672fb4c577925
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/211884
+- Upstream title  : [mlir][arith] Gate min/max expansion in arith-expand
+                    behind include-min-max
+- File Fixed      : mlir/include/mlir/Dialect/Arith/Transforms/Passes.h
+                    mlir/include/mlir/Dialect/Arith/Transforms/Passes.td
+                    mlir/lib/Dialect/Arith/Transforms/ExpandOps.cpp
+                    mlir/test/Dialect/Arith/expand-ops-min-max.mlir (new)
+                    mlir/test/Dialect/Arith/expand-ops.mlir
+                    mlir/test/Dialect/EmitC/arith/ops.mlir
+- Contents        : Splits the min/max converters out of
+                    populateArithExpandOpsPatterns into the new
+                    populateExpandMinMaxFPatterns (maximumf/minimumf/maxnumf/
+                    minnumf), populateExpandMinMaxIPatterns (maxsi/maxui/minsi/
+                    minui) and an umbrella populateExpandMinMaxPatterns, and
+                    gates them in the arith-expand pass behind two new options,
+                    include-min-max-f and include-min-max-i (both default
+                    false). The ceil/floor-div and scaling ext/trunc expansions,
+                    which have no arith-to-llvm lowering, always run. The
+                    matching addIllegalOp sets move under the same conditions so
+                    the ops stay legal when not expanded.
+
+Reason for the patch
+--------------------
+Passing arith.minimumf/arith.maximumf unchanged to rock-to-ttir and through
+LLVM is more efficient than expanding them early into compare/select
+sequences.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 9e43e04108dddff6476152d0fff672fb4c577925.
+
+----------------------------------------------------------------------
+patch209704.patch
+----------------------------------------------------------------------
+- Upstream commit : 9d10180
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/209704
+- Upstream title  : [RegAlloc] Avoid split past block-prologue interference
+- File Fixed      : llvm/lib/CodeGen/RegAllocGreedy.cpp
+- Contents        : In RAGreedy::addThroughConstraints, computes the real
+                    live-in insertion point for the split candidate by
+                    skipping PHIs, labels and debug instructions
+                    (MBB->SkipPHIsLabelsAndDebug) for the interval's parent
+                    register, and derives its SlotIndex (falling back to the
+                    MBB end index when the block is otherwise empty). The
+                    live-in interference test now marks the block entry as
+                    MustSpill not only when interference starts at/before the
+                    MBB start, but also when it starts before that
+                    post-prologue insertion point. The upstream AMDGPU lit
+                    test (llvm/test/CodeGen/AMDGPU/greedy-wwm-copy-prologue-assert.mir)
+                    is omitted because it depends on features newer than the
+                    pinned LLVM (the 'amdgpu9.00-amd-amdhsa' canonical triple
+                    spelling and the 'lr-split' MIR opcode)
+
+Symptom without the patch
+-------------------------
+When a greedy split candidate has its first interference inside a block's
+target-specific prologue (e.g. a pre-existing WWM_COPY occupying the same
+physical register), the allocator can still choose to split into that block.
+SplitKit's leaveIntvAtTop skips the prologue when picking the insertion point,
+so the interval is left after the interfering prologue instruction. On an
+asserts build this trips the SplitKit interference assertion in
+'leaveIntvAtTop' / splitLiveThroughBlock; without asserts it yields malformed
+live ranges feeding register allocation.
+
+Root cause
+----------
+addThroughConstraints only checked whether interference began at or before the
+MBB start index when deciding MustSpill vs PrefSpill for the block entry. It
+did not account for the fact that the actual live-in insertion point is placed
+after the block prologue (via SkipPHIsLabelsAndDebug). Interference located
+within the prologue -- after the MBB start but before that insertion point --
+was therefore treated as only PrefSpill, allowing a split that cannot legally
+be realized. Extending the check to also require MustSpill when interference
+precedes the post-prologue insertion point forces spilling instead of an
+illegal split.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+9d10180.
+
+----------------------------------------------------------------------
+patch-gfx1170-ocp-fp8.patch
+----------------------------------------------------------------------
+- Upstream status : Downstream fix; submit to LLVM before the next bump
+- Upstream title  : [mlir][AMDGPU] Recognize gfx117x OCP FP8 formats
+- File Fixed      : mlir/include/mlir/Dialect/AMDGPU/Utils/Chipset.h
+                    mlir/unittests/Dialect/AMDGPU/AMDGPUUtilsTest.cpp
+- Contents        : Marks gfx117x as OCP FP8-capable in MLIR's shared chipset
+                    utility and adds positive gfx117x plus negative gfx115x
+                    boundary coverage.
+
+Symptom without the patch
+-------------------------
+The public fp8/bf8 aliases resolve to FNUZ formats on gfx117x, preventing Rock
+from selecting the OCP FP8 WMMA instructions that Triton and LLVM already
+support. Explicit OCP types work, but the normal generator interface does not.
+
+Root cause
+----------
+MLIR's shared hasOcpFp8 predicate only recognizes gfx950 and gfx12+, omitting
+gfx117x even though it has the 128-bit WMMA v2 engine with OCP FP8 operands.
+
+Drop this patch on the next LLVM/Triton bump that includes equivalent upstream
+gfx117x OCP FP8 classification.

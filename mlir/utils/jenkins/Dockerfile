@@ -1,14 +1,18 @@
-FROM ubuntu:22.04
-MAINTAINER Christopher Austen <chausten@amd.com>
+FROM ubuntu:24.04
+LABEL maintainer="ROCm Dev Support <rocm-dev.support@amd.com>"
 
-ARG ROCM_VERSION=7.0
+ARG ROCM_VERSION=7.2.4
 ARG ROCM_DEB_REPO=http://repo.radeon.com/rocm/apt/${ROCM_VERSION}
 ARG GRAPHICS_DEB_REPO=https://repo.radeon.com/graphics/${ROCM_VERSION}/ubuntu
-ARG ROCM_BUILD_NAME=jammy
+ARG ROCM_BUILD_NAME=noble
 ARG ROCM_BUILD_NUM=main
 ARG ROCM_PATH=/opt/rocm-${ROCM_VERSION}
 
 ENV DEBIAN_FRONTEND noninteractive
+# Ubuntu 24.04 ships pip with PEP 668 enabled, which blocks system-wide
+# installs. Our CI image intentionally installs Python deps into the system
+# interpreter, so opt out of the externally-managed-environment guard.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN apt-get clean all
 
@@ -76,9 +80,8 @@ ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8
 
-# Install python dependencies for the scripts. ADD will check contents of a file for changes.
-# TODO: that should be done during the build as it will pull this repo anyway and will have latest version.
-ADD "https://raw.githubusercontent.com/google/llvm-premerge-checks/master/scripts/requirements.txt" llvm-requirements.txt
+# Python dependencies for static-checks/premerge-checks.py.
+COPY static-checks/requirements.txt llvm-requirements.txt
 
 ADD "https://raw.githubusercontent.com/ROCm/rocMLIR/develop/pip_requirements.txt" requirements.txt
 
@@ -91,11 +94,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
            python3-venv \
     && apt upgrade -y \
-    && python3 -m pip install --upgrade pip \
+    && python3 -m pip install --upgrade --ignore-installed pip \
     && pip3 install -r llvm-requirements.txt \
     && pip3 install -r requirements.txt
     # ^ pip install pandas... is needed to output performance tests and regenerate test suites
     # Has a copy of the requirements.txt install bit for the new python version
+
+# hip-python provides the `hip` module that perfRunner.py / tuningRunner.py
+# import to query devices and run tuning on the GPU.
+RUN pip3 install --index-url https://test.pypi.org/simple/ hip-python
 
 # Need "render" group because some CI hosts have /dev/kfd under it.
 RUN groupadd -f render
@@ -133,21 +140,6 @@ RUN apt-get update && \
   netcat-openbsd \
   libdrm-amdgpu-dev \
   libsqlite3-dev \
-  parallel \
-  libaio1 && \
+  parallel && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
-
-# mysql setup for tuna
-# Latest "generic" version.  (Must have libaio1 installed already.)
-RUN wget https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.34-linux-glibc2.28-x86_64.tar.gz && \
-    tar xf mysql-8.0.34-linux-glibc2.28-x86_64.tar.gz && \
-    mv mysql-8.0.34-linux-glibc2.28-x86_64 /usr/mysql
-
-# python setup for tuna
-# --ignore-installed because of problems upgrading PyYAML.  See also -U.
-ADD "https://raw.githubusercontent.com/ROCm/MITuna/pf-tuna-rocmlir-3/requirements.txt" tuna-requirements.txt
-RUN python3 -m venv /tuna-venv && . /tuna-venv/bin/activate && \
-    python3 -m pip install -r tuna-requirements.txt --ignore-installed && \
-    python3 -m pip install -r llvm-requirements.txt --ignore-installed && \
-    python3 -m pip install -r requirements.txt --ignore-installed

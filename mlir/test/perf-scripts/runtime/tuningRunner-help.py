@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Smoke test: ``tuningRunner.py --help`` parses cleanly and advertises the
 # op + tuning-space lists. Lives under ``runtime/`` because
 # tuningRunner.main() calls ``get_arch()`` before argparse, so even
@@ -7,6 +10,7 @@
 #
 # CHECK: usage: rocmlirTriton tuning runner
 # CHECK-DAG: --op {{.*}}{conv,gemm,fusion,attention,gemm_gemm,conv_gemm}
-# CHECK-DAG: --tuning-space {quick,full,greedy,exhaustive}
+# CHECK-DAG: --tuning-space {quick,full,exhaustive}
 # CHECK-DAG: --configs_file
 # CHECK-DAG: --mlir-build-dir
+# CHECK-DAG: -DLLVM_ENABLE_ZSTD=FORCE_ON

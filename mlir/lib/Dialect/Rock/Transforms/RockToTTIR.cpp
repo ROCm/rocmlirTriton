@@ -1,6 +1,7 @@
 //===- RockToTTIR.cpp - Convert Rock dialect to Triton IR -----------------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +22,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -51,8 +55,31 @@ using namespace mlir::arith;
 
 namespace {
 struct RockToTTIRPass : public rock::impl::RockToTTIRPassBase<RockToTTIRPass> {
+  using rock::impl::RockToTTIRPassBase<RockToTTIRPass>::RockToTTIRPassBase;
   void runOnOperation() override;
 };
+
+// Map a rock cache modifier onto its triton counterpart. The two enums mirror
+// each other one-to-one (see RockAttrDefs.td / TritonAttrDefs.td).
+static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
+  switch (cache) {
+  case rock::CacheModifier::NONE:
+    return triton::CacheModifier::NONE;
+  case rock::CacheModifier::CA:
+    return triton::CacheModifier::CA;
+  case rock::CacheModifier::CG:
+    return triton::CacheModifier::CG;
+  case rock::CacheModifier::WB:
+    return triton::CacheModifier::WB;
+  case rock::CacheModifier::CS:
+    return triton::CacheModifier::CS;
+  case rock::CacheModifier::WT:
+    return triton::CacheModifier::WT;
+  case rock::CacheModifier::CV:
+    return triton::CacheModifier::CV;
+  }
+  llvm_unreachable("unknown rock::CacheModifier");
+}
 
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
@@ -110,8 +137,20 @@ struct RockBlockwiseReduceOpRewritePattern
     
     // Create reduce.return
     triton::ReduceReturnOp::create(rewriter, loc, ValueRange{result});
-    
-    rewriter.replaceOp(op, reduceOp.getResults());
+
+    rewriter.setInsertionPointAfter(reduceOp);
+    Value replacement = reduceOp->getResult(0);
+    // Reducing a rank-1 tensor produces a scalar in Triton, while
+    // rock.blockwise_reduce represents the same result as a rank-0 tensor.
+    // Wrap the scalar in that tensor representation to preserve the Rock type.
+    if (replacement.getType() != op.getResult().getType()) {
+      assert(inputType.getRank() == 1 &&
+             "only rank-1 reductions should produce a scalar");
+      replacement = triton::SplatOp::create(
+          rewriter, loc, op.getResult().getType(), replacement);
+    }
+
+    rewriter.replaceOp(op, replacement);
     return success();
   }
 };
@@ -136,19 +175,9 @@ struct RockLoadPtrOpRewritePattern
     auto resultTensorType = cast<RankedTensorType>(op.getResult().getType());
     Type elementType = resultTensorType.getElementType();
 
-    // Verify pointerTensor is a tensor of i32
-    auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
-      return failure();
-    }
-
-    // Verify maskTensor is a tensor of i1
-    auto maskTensorType = dyn_cast<RankedTensorType>(maskTensor.getType());
-    if (!maskTensorType || !maskTensorType.getElementType().isInteger(1)) {
-      LLVM_DEBUG(llvm::dbgs() << "Mask tensor is not a tensor of i1\n");
-      return failure();
-    }
+    // pointerTensor (tensor of i32/i64) and maskTensor (tensor of i1) element
+    // types and shapes are guaranteed by the op verifier.
+    auto ptrTensorType = cast<RankedTensorType>(pointerTensor.getType());
 
     // Create pointer type: !tt.ptr<elementType>
     // Use address space 1 (global) as default for Triton
@@ -159,7 +188,7 @@ struct RockLoadPtrOpRewritePattern
         RankedTensorType::get(ptrTensorType.getShape(), ptrType,
                               ptrTensorType.getEncoding());
 
-    // Convert tensor of i32 to tensor of pointers
+    // Convert tensor of i32/i64 to tensor of pointers
     Value ptrTensorOfPtrs =
         rock::CastToPtrOp::create(rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
@@ -167,7 +196,7 @@ struct RockLoadPtrOpRewritePattern
     // LoadOp takes: ptr, mask (optional), other (optional), cache, evict,
     // isVolatile.
     auto cacheAttr = triton::CacheModifierAttr::get(
-        rewriter.getContext(), triton::CacheModifier::NONE);
+        rewriter.getContext(), toTritonCacheModifier(op.getCacheModifier()));
     auto evictAttr = triton::EvictionPolicyAttr::get(
         rewriter.getContext(), triton::EvictionPolicy::NORMAL);
     auto isVolatileAttr = rewriter.getBoolAttr(false);
@@ -194,7 +223,9 @@ struct RockLoadPtrOpRewritePattern
 //===----------------------------------------------------------------------===//
 struct RockBlockwiseGemmOpRewritePattern
     : public OpRewritePattern<rock::BlockwiseGemmOp> {
-  using OpRewritePattern<rock::BlockwiseGemmOp>::OpRewritePattern;
+  RockBlockwiseGemmOpRewritePattern(MLIRContext *ctx, bool useBf16x3ForF32)
+      : OpRewritePattern<rock::BlockwiseGemmOp>(ctx),
+        useBf16x3ForF32(useBf16x3ForF32) {}
 
   LogicalResult matchAndRewrite(rock::BlockwiseGemmOp op,
                                 PatternRewriter &rewriter) const override {
@@ -242,15 +273,37 @@ struct RockBlockwiseGemmOpRewritePattern
                                            bElemTy.value(), /*fastMath=*/false,
                                            matrixAKPack, matrixBKPack);
     } else {
+      // When the 3xBF16 decomposition is selected, route f32 dots through
+      // bf16 MFMA rather than IEEE MFMA.
+      auto inputPrecision = triton::InputPrecision::IEEE;
+      if (useBf16x3ForF32 && aTensorType.getElementType().isF32() &&
+          bTensorType.getElementType().isF32())
+        inputPrecision = triton::InputPrecision::BF16x3;
       // Create tt.dot operation
-      result =
-          triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
-                                /*inputPrecision=*/triton::InputPrecision::IEEE,
-                                /*maxNumImpreciseAcc=*/0);
+      result = triton::DotOp::create(rewriter, loc, cTensorType, a, b, c,
+                                     inputPrecision,
+                                     /*maxNumImpreciseAcc=*/0);
     }
+
+    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
+    // survives into the Triton pipeline. Only forward rock.*-prefixed
+    // discardable attrs: copying unrelated attrs that rock does not own could
+    // trip another dialect's verifier downstream.
+    if (Operation *dotOp = result.getDefiningOp()) {
+      std::string rockPrefix =
+          (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
+      for (NamedAttribute attr : op->getDiscardableAttrs()) {
+        if (attr.getName().getValue().starts_with(rockPrefix))
+          dotOp->setDiscardableAttr(attr.getName(), attr.getValue());
+      }
+    }
+
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  bool useBf16x3ForF32;
 };
 
 struct RockStorePtrOpRewritePattern
@@ -270,21 +323,12 @@ struct RockStorePtrOpRewritePattern
     // of fusion ops (e.g., arith.addf) rather than the raw GEMM result.
     Value valueToStore = op.getSource();
 
-    // 2. Verify pointer tensor is a tensor of i32
-    auto ptrTensorType = dyn_cast<RankedTensorType>(pointerTensor.getType());
-    if (!ptrTensorType || !ptrTensorType.getElementType().isInteger(32)) {
-      LLVM_DEBUG(llvm::dbgs() << "Pointer tensor is not a tensor of i32\n");
-      return failure();
-    }
+    // 2. pointerTensor (tensor of i32/i64) and maskTensor (tensor of i1)
+    // element types and shapes are guaranteed by the op verifier.
+    auto ptrTensorType = cast<RankedTensorType>(pointerTensor.getType());
 
-    // 3. Verify mask tensor is a tensor of i1
-    auto maskTensorType = dyn_cast<RankedTensorType>(maskTensor.getType());
-    if (!maskTensorType || !maskTensorType.getElementType().isInteger(1)) {
-      LLVM_DEBUG(llvm::dbgs() << "Mask tensor is not a tensor of i1\n");
-      return failure();
-    }
-
-    // 4. Convert the pointer tensor (tensor of i32) to tensor of triton pointers
+    // 3. Convert the pointer tensor (tensor of i32/i64) to tensor of triton
+    // pointers
     // Get element type from the value to store
     auto valueType = cast<RankedTensorType>(valueToStore.getType());
     Type elementType = valueType.getElementType();
@@ -300,7 +344,7 @@ struct RockStorePtrOpRewritePattern
     Value ptrTensorOfPtrs = rock::CastToPtrOp::create(
         rewriter, loc, ptrTensorOfPtrsType, pointerTensor);
 
-    // 5. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
+    // 4. Create triton::StoreOp or triton::AtomicRMWOp depending on storeMethod
     auto storeMethod = op.getStoreMethod();
     if (storeMethod == rock::StoreMethod::AtomicAdd) {
       // Use FADD for floating point, ADD for integer
@@ -405,6 +449,23 @@ struct ArithExtFToFpToFpPattern
   }
 };
 
+// Resolve the `rock.use_bf16x3_for_f32` perfConfig tri-state against the
+// per-arch default. If disableFastMath is true, disable bf16x3 for f32,
+// otherwise, use the per-arch default. Expect the resulting slowdown to exceed
+// the lost bf16x3 MFMA throughput on arches that default to it: the quick
+// tuning list was tuned with the decomposition on, so its perfConfigs are no
+// longer the best fit for the IEEE dot on gfx950.
+static bool resolveUseBf16x3ForF32(func::FuncOp funcOp, bool disableFastMath) {
+  if (disableFastMath)
+    return false;
+  auto policyAttr = funcOp->getAttrOfType<IntegerAttr>(
+      rock::UseBf16x3ForF32Attr::getMnemonic());
+  int64_t policy = policyAttr ? policyAttr.getInt() : rock::kKnobDefault;
+  if (policy == rock::kKnobDefault)
+    return rock::preferBf16x3ForF32Dot(rock::getArchValue(funcOp));
+  return policy != 0;
+}
+
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -414,6 +475,11 @@ void RockToTTIRPass::runOnOperation() {
   if (!funcOp->hasAttr(rock::KernelAttr::getMnemonic())) {
     return;
   }
+
+  // Consume the tuning tri-state here: once the precision is baked into the
+  // emitted dots, the raw policy must not leak into Triton IR.
+  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp, disableFastMath);
+  funcOp->removeAttr(rock::UseBf16x3ForF32Attr::getMnemonic());
 
   ConversionTarget target(*ctx);
 
@@ -440,7 +506,7 @@ void RockToTTIRPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
-  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx);
+  patterns.add<RockBlockwiseGemmOpRewritePattern>(ctx, useBf16x3ForF32);
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);

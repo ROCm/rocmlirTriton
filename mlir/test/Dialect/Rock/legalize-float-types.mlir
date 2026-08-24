@@ -125,7 +125,7 @@ func.func @test_f4_packing(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [4, 1, 1, 2, 64, 64] -> [1, 256, 128]>
     : tensor<1x256x128xf4E2M1FN> to tensor<4x1x1x2x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x2x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // matrixA chain: 1D -> 3D -> 6D -> blockwise_load
@@ -142,7 +142,7 @@ func.func @test_f4_packing(
         <AddDim{2} ["n_block"] at [3] -> [] at []>]
     bounds = [4, 1, 1, 2, 64, 64] -> [1, 64, 256]>
     : tensor<1x64x256xf4E2M1FN> to tensor<4x1x1x2x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x2x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // scaleB chain: 3D -> passthrough -> 6D -> load
@@ -157,7 +157,7 @@ func.func @test_f4_packing(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [4, 1, 1, 2, 64, 2] -> [1, 128, 8]>
     : tensor<1x128x8xf8E8M0FNU> to tensor<4x1x1x2x64x2xf8E8M0FNU>
-  %sb_tile = rock.blockwise_load %sb_6d[%c0, %c0, %c0, %c0]
+  %sb_tile = rock.blockwise_load %sb_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x2x64x2xf8E8M0FNU> -> tensor<64x2xf8E8M0FNU>
 
   // scaleA chain: 3D -> passthrough -> 6D -> load
@@ -172,7 +172,7 @@ func.func @test_f4_packing(
         <AddDim{2} ["n_block"] at [3] -> [] at []>]
     bounds = [4, 1, 1, 2, 64, 2] -> [1, 64, 8]>
     : tensor<1x64x8xf8E8M0FNU> to tensor<4x1x1x2x64x2xf8E8M0FNU>
-  %sa_tile = rock.blockwise_load %sa_6d[%c0, %c0, %c0, %c0]
+  %sa_tile = rock.blockwise_load %sa_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x2x64x2xf8E8M0FNU> -> tensor<64x2xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -230,7 +230,7 @@ func.func @test_f4_pad(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // B: simple chain (K=64, N=64, N is stride-1)
@@ -246,12 +246,12 @@ func.func @test_f4_pad(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile = rock.blockwise_load %arg2[]
+  %sa_tile = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile = rock.blockwise_load %arg3[]
+  %sb_tile = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -309,7 +309,7 @@ func.func @test_f4_slice(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // B: simple chain (K=64, N=64, N is stride-1)
@@ -325,12 +325,12 @@ func.func @test_f4_slice(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile = rock.blockwise_load %arg2[]
+  %sa_tile = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile = rock.blockwise_load %arg3[]
+  %sb_tile = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -388,7 +388,7 @@ func.func @test_f4_merge(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [4, 1, 1, 1, 64, 64] -> [1, 64, 256]>
     : tensor<1x64x256xf4E2M1FN> to tensor<4x1x1x1x64x64xf4E2M1FN>
-  %a_tile_m = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile_m = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // B: simple chain (K=64, N=64, N is stride-1)
@@ -404,12 +404,12 @@ func.func @test_f4_merge(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile_m = rock.blockwise_load %b_6d_m[%c0, %c0, %c0, %c0]
+  %b_tile_m = rock.blockwise_load %b_6d_m[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile_m = rock.blockwise_load %arg2[]
+  %sa_tile_m = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile_m = rock.blockwise_load %arg3[]
+  %sb_tile_m = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst_m = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -465,7 +465,7 @@ func.func @test_f4_passthrough_on_k(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile_pt = rock.blockwise_load %a_6d_pt[%c0, %c0, %c0, %c0]
+  %a_tile_pt = rock.blockwise_load %a_6d_pt[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // B: simple chain (K=64, N=64, N is stride-1)
@@ -481,12 +481,12 @@ func.func @test_f4_passthrough_on_k(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile_pt = rock.blockwise_load %b_6d_pt[%c0, %c0, %c0, %c0]
+  %b_tile_pt = rock.blockwise_load %b_6d_pt[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile_pt = rock.blockwise_load %arg2[]
+  %sa_tile_pt = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile_pt = rock.blockwise_load %arg3[]
+  %sb_tile_pt = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst_pt = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -568,7 +568,7 @@ func.func @test_f4_merge_passthrough_chain(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [4, 1, 1, 1, 64, 64] -> [1, 64, 256]>
     : tensor<1x64x256xf4E2M1FN> to tensor<4x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<4x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // B: simple chain (K=64, N=64, N is stride-1)
@@ -584,12 +584,12 @@ func.func @test_f4_merge_passthrough_chain(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile = rock.blockwise_load %arg2[]
+  %sa_tile = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile = rock.blockwise_load %arg3[]
+  %sb_tile = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -653,7 +653,7 @@ func.func @test_f4_fusion(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   %fused = arith.addf %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
@@ -670,12 +670,12 @@ func.func @test_f4_fusion(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
-  %sa_tile = rock.blockwise_load %arg2[]
+  %sa_tile = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
-  %sb_tile = rock.blockwise_load %arg3[]
+  %sb_tile = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -730,14 +730,14 @@ func.func @test_f4_fusion_with_f8_scale_convert(
         <AddDim{1} ["n_block"] at [3] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0]
+  %a_tile = rock.blockwise_load %a_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // Fusion on A: addf on f4
   %fused = arith.addf %a_tile, %a_tile : tensor<64x64xf4E2M1FN>
 
   // Scale A: load f32, convert to f8E8M0FNU
-  %sa_tile_f32 = rock.blockwise_load %arg2[]
+  %sa_tile_f32 = rock.blockwise_load %arg2[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf32> -> tensor<64x1xf32>
   %sa_tile = arith.truncf %sa_tile_f32 : tensor<64x1xf32> to tensor<64x1xf8E8M0FNU>
 
@@ -754,11 +754,11 @@ func.func @test_f4_fusion_with_f8_scale_convert(
         <AddDim{1} ["m_block"] at [2] -> [] at []>]
     bounds = [1, 1, 1, 1, 64, 64] -> [1, 64, 64]>
     : tensor<1x64x64xf4E2M1FN> to tensor<1x1x1x1x64x64xf4E2M1FN>
-  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0]
+  %b_tile = rock.blockwise_load %b_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>}
     : tensor<1x1x1x1x64x64xf4E2M1FN> -> tensor<64x64xf4E2M1FN>
 
   // Scale B: already f8E8M0FNU
-  %sb_tile = rock.blockwise_load %arg3[]
+  %sb_tile = rock.blockwise_load %arg3[] {cacheModifier = #rock<CacheModifier none>}
     : tensor<64x1xf8E8M0FNU> -> tensor<64x1xf8E8M0FNU>
 
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
@@ -768,4 +768,34 @@ func.func @test_f4_fusion_with_f8_scale_convert(
       tensor<64x64xf4E2M1FN> scaled by tensor<64x1xf8E8M0FNU>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: An i4 dequant chain with a two-element K tile can be packed. The pass
+// halves k_iter from 2 to 1, loads one i8 per pair of i4 values, and unpacks
+// the nibbles before the conversion to f16.
+
+// CHECK-LABEL: func.func @test_i4_two_element_k_tile
+// CHECK-SAME: (%[[DATA:.*]]: tensor<8xi8>, %{{.*}}: tensor<16xf32>)
+// CHECK: rock.transform %[[DATA]] by <{{.*}}Unmerge{4, 2}
+// CHECK: rock.transform {{.*}}Unmerge{2, 1}{{.*}}["k_loop", "k_iter"]
+// CHECK: rock.blockwise_load {{.*}} : tensor<2x1x1x1x1x4xi8> -> tensor<1x4xi8>
+// CHECK: arith.andi {{.*}} : tensor<1x4xi8>
+// CHECK: tt.join
+// CHECK: arith.uitofp {{.*}} : tensor<2x4xi8> to tensor<2x4xf16>
+func.func @test_i4_two_element_k_tile(
+    %data: tensor<16xi4>, %out: tensor<16xf32>) -> tensor<16xf32>
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+  %c0 = arith.constant 0 : i32
+  %data_2d = rock.transform %data by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{4, 4} ["n", "k"] at [0, 1] -> ["raw"] at [0]>] bounds = [4, 4] -> [16]> : tensor<16xi4> to tensor<4x4xi4>
+  %data_3d = rock.transform %data_2d by <affine_map<(d0, d1, d2) -> (d2, d1)> by [<AddDim{1} ["g"] at [0] -> [] at []>, <PassThrough ["k"] at [1] -> ["k"] at [1]>, <PassThrough ["n"] at [2] -> ["n"] at [0]>] bounds = [1, 4, 4] -> [4, 4]> : tensor<4x4xi4> to tensor<1x4x4xi4>
+  %data_6d = rock.transform %data_3d by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["g"] at [0]>, <Unmerge{2, 2} ["k_loop", "k_iter"] at [0, 4] -> ["k"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["n"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [2, 1, 1, 1, 2, 4] -> [1, 4, 4]> : tensor<1x4x4xi4> to tensor<2x1x1x1x2x4xi4>
+  %data_tile = rock.blockwise_load %data_6d[%c0, %c0, %c0, %c0] {cacheModifier = #rock<CacheModifier none>} : tensor<2x1x1x1x2x4xi4> -> tensor<2x4xi4>
+  %ext = arith.extui %data_tile : tensor<2x4xi4> to tensor<2x4xi8>
+  %dequant = arith.uitofp %ext : tensor<2x4xi8> to tensor<2x4xf16>
+  %a = arith.constant dense<1.0> : tensor<4x2xf16>
+  %cst = arith.constant dense<0.0> : tensor<4x4xf32>
+  %result = rock.blockwise_gemm(%a, %dequant, %cst) : tensor<4x2xf16>, tensor<2x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
+  return %out : tensor<16xf32>
 }

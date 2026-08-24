@@ -1,6 +1,7 @@
 //===- GridwiseGemmToBlockwise - MLIR Rock ops lowering passes -----===//
 //
-// Copyright 2020 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -60,6 +61,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/MathExtras.h"
 #include <cstdint>
 #include <optional>
 #include <tuple>
@@ -86,6 +88,10 @@ struct RockGridwiseGemmToBlockwisePass
 
 } // end anonymous namespace
 
+static bool isSubByte(Type t) {
+  return t.isIntOrFloat() && t.getIntOrFloatBitWidth() < 8;
+}
+
 static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
                                  Value end, ValueRange iterArgs) {
   Value one = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -97,9 +103,45 @@ static scf::ForOp createMainLoop(PatternRewriter &rewriter, Location loc,
   return loopOp;
 }
 
-//===----------------------------------------------------------------------===//
-// GridwiseGemm lowering.
-//===----------------------------------------------------------------------===//
+// Pick cache modifiers for the A and B GEMM operand loads based on reuse: A is
+// reused nBlocks times, B mBlocks times. If a dimension is skinny (one block),
+// the operand along the *other* dimension has no reuse, so stream it (CS) to
+// avoid evicting the reused operand -- but only under cache pressure (both
+// operands don't fit in the LLC), otherwise nothing is evicted anyway.
+//
+// An operand whose load reloads data (non-injective view: conv im2col, a
+// broadcast, ...) relies on caching for its repeated reads, so it is never
+// streamed regardless of skinniness (aReloads/bReloads).
+//
+// NOTE: This runs at the load_marker stage and assumes a single A and B. Once
+// fusion is involved there may be several inputs; consider moving this
+// heuristic after LowerLoads (which materializes the actual blockwise loads).
+static std::pair<rock::CacheModifier, rock::CacheModifier>
+chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
+                             int64_t G, int64_t M, int64_t N, int64_t K,
+                             int64_t mBlocks, int64_t nBlocks, bool aReloads,
+                             bool bReloads) {
+  const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
+  auto bytesOf = [](int64_t numElems, Type elemType) -> int64_t {
+    return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
+  };
+  const int64_t aBytes = bytesOf(G * M * K, aElemType);
+  const int64_t bBytes = bytesOf(G * N * K, bElemType);
+
+  constexpr int64_t kSkinnyBlockThreshold = 2;
+  const bool cachePressure = (aBytes + bBytes) > llcBytes;
+
+  rock::CacheModifier cacheA = rock::CacheModifier::NONE;
+  rock::CacheModifier cacheB = rock::CacheModifier::NONE;
+  if (cachePressure) {
+    if (mBlocks < kSkinnyBlockThreshold && !bReloads) // M skinny -> stream B
+      cacheB = rock::CacheModifier::CS;
+    if (nBlocks < kSkinnyBlockThreshold && !aReloads) // N skinny -> stream A
+      cacheA = rock::CacheModifier::CS;
+  }
+
+  return {cacheA, cacheB};
+}
 
 namespace {
 
@@ -202,18 +244,32 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     int64_t numWaves = tuningParams.getNumWaves();
     int64_t numCTAs = tuningParams.getNumCTAs();
 
-    LLVM_DEBUG(llvm::dbgs() << "M: " << M << "\n"
-                            << "N: " << N << "\n"
-                            << "K: " << K << "\n"
-                            << "G: " << G << "\n"
-                            << "mPerBlock: " << mPerBlock << "\n"
-                            << "nPerBlock: " << nPerBlock << "\n"
-                            << "kPerBlock: " << kPerBlock << "\n"
-                            << "kpack: " << kpack << "\n"
-                            << "mBlocks = M / mPerBlock: " << mBlocks << "\n"
-                            << "nBlocks = N / nPerBlock: " << nBlocks << "\n"
-                            << "numWaves: " << numWaves << "\n"
-                            << "numCTAs: " << numCTAs << "\n");
+    // Whether an operand's load reloads data (non-injective view: conv im2col,
+    // broadcast, ...). Such operands rely on caching and are never streamed.
+    FailureOr<bool> maybeAReloads = rock::isInputNonInjective(matA);
+    FailureOr<bool> maybeBReloads = rock::isInputNonInjective(matB);
+    if (failed(maybeAReloads))
+      return op->emitOpError("could not trace A to determine load injectivity");
+    if (failed(maybeBReloads))
+      return op->emitOpError("could not trace B to determine load injectivity");
+    bool aReloads = maybeAReloads.value();
+    bool bReloads = maybeBReloads.value();
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "M: " << M << "\n"
+               << "N: " << N << "\n"
+               << "K: " << K << "\n"
+               << "G: " << G << "\n"
+               << "mPerBlock: " << mPerBlock << "\n"
+               << "nPerBlock: " << nPerBlock << "\n"
+               << "kPerBlock: " << kPerBlock << "\n"
+               << "kpack: " << kpack << "\n"
+               << "mBlocks = M / mPerBlock: " << mBlocks << "\n"
+               << "nBlocks = N / nPerBlock: " << nBlocks << "\n"
+               << "numWaves: " << numWaves << "\n"
+               << "numCTAs: " << numCTAs << "\n"
+               << "aReloads: " << (aReloads ? "yes" : "no") << "\n"
+               << "bReloads: " << (bReloads ? "yes" : "no") << "\n");
 
     Type accType = rock::getAccType(elementTypeA, elementTypeB);
     Value initAcc =
@@ -224,6 +280,59 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value nIterations =
         ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
 
+    // If needed, decompose a non-power-of-two kPerBlock into power-of-two
+    // segments (e.g. kPerBlock = 48 -> {32, 16}).
+    SmallVector<Pow2Segment> kSegs = decomposePow2(kPerBlock);
+    bool decomposeK = kSegs.size() > 1;
+    if (decomposeK && isScaledGemm) {
+      return op->emitOpError(
+          "non-power-of-two kPerBlock is not supported for "
+          "scaled gemm (should have been rejected by affix)");
+    }
+
+    // Decomposing does not work with sub-byte operands due to limitations in
+    // LegalizeFloatTypes.
+    if (decomposeK &&
+        (isSubByte(elementTypeA) || isSubByte(elementTypeB) ||
+         isSubByte(elementTypeALoad) || isSubByte(elementTypeBLoad))) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "sub-byte operands");
+    }
+
+    // An integer GEMM accumulates in i32 (rock::getAccType). A segment
+    // narrower than `minIntKSegment` matches neither an MFMA k-dimension nor
+    // v_dot4's `k % 4 == 0`, so Triton legalizes that dot as f32 and routes
+    // the i32 accumulator through sitofp/fptosi once per K iteration. That
+    // round trip is lossy past f32's exact-integer range (2^24), silently
+    // returning wrong sums, so refuse the tile instead. Float operands are
+    // unaffected: they accumulate in f32 to begin with.
+    constexpr int64_t minIntKSegment = 4;
+    if (decomposeK && isa<IntegerType>(elementTypeA) &&
+        isa<IntegerType>(elementTypeB) &&
+        llvm::any_of(kSegs, [](const Pow2Segment &seg) {
+          return seg.length < minIntKSegment;
+        })) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("non-power-of-two kPerBlock is not supported for "
+                             "integer operands when it decomposes into K "
+                             "segments narrower than ")
+             << minIntKSegment;
+    }
+
+    // Build the operand views for each K segment. sliceBlockedDims returns
+    // the operand unchanged when the segment covers the full tile (pow2 case),
+    // so no special-casing is needed.
+    SmallVector<Value> segMatA, segMatB;
+    for (Pow2Segment seg : kSegs) {
+      segMatA.push_back(sliceBlockedDims(b, loc, matA, /*sliceDims=*/{2},
+                                         /*blocks=*/{kIterations},
+                                         /*tiles=*/{kPerBlock}, {seg}));
+      segMatB.push_back(sliceBlockedDims(b, loc, matB, /*sliceDims=*/{1},
+                                         /*blocks=*/{kIterations},
+                                         /*tiles=*/{kPerBlock}, {seg}));
+    }
+
     scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
     Value loopResult;
     {
@@ -232,37 +341,53 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       Value iv = loopOp.getInductionVar();
       Value accArg = loopOp.getRegionIterArg(0);
 
-      // Load from global memory to registers
-      Value loadedB =
-          rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-                         nPerBlock, /*isKFirst=*/true, bidGridLengths);
-      Value loadedA =
-          rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-                         mPerBlock, /*isKFirst=*/false, bidGridLengths);
+      // Choose cache modifiers for the operands based on data reuse: a skinny
+      // GEMM streams the large (low-reuse) operand to avoid evicting the one
+      // that is actually reused across workgroups.
+      auto [cacheA, cacheB] = chooseGemmLoadCacheModifiers(
+          arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
+          nBlocks, aReloads, bReloads);
 
-      Value loadedScaleA, loadedScaleB;
-      if (isScaledGemm) {
-        // Note we load with dName="m" here because the shape of scaleB is [B,
-        // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
-        // scaleB transposed
-        loadedScaleB = rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n",
-                                      gridCoords, quantKPerBlock, nPerBlock,
-                                      /*isKFirst=*/false, bidGridLengths);
-        loadedScaleA = rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m",
-                                      gridCoords, quantKPerBlock, mPerBlock,
-                                      /*isKFirst=*/false, bidGridLengths);
+      // Contract each power-of-two K segment in turn, threading the accumulator
+      // so every segment of this K-loop iteration reduces into the same tile.
+      Value acc = accArg;
+      for (auto [segIdx, seg] : llvm::enumerate(kSegs)) {
+        // Load from global memory to registers
+        Value loadedB = rock::loadTile(
+            b, loc, segMatB[segIdx], /*kiter=*/iv, "n", gridCoords, seg.length,
+            nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
+        Value loadedA = rock::loadTile(
+            b, loc, segMatA[segIdx], /*kiter=*/iv, "m", gridCoords, seg.length,
+            mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
+
+        Value loadedScaleA, loadedScaleB;
+        if (isScaledGemm) {
+          // Note we load with dName="m" here because the shape of scaleB is [B,
+          // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
+          // scaleB transposed
+          // Scales share the reuse pattern of the operand they scale, so reuse
+          // the same cache modifier chosen for A/B above.
+          loadedScaleB =
+              rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
+                             quantKPerBlock, nPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheB);
+          loadedScaleA =
+              rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
+                             quantKPerBlock, mPerBlock,
+                             /*isKFirst=*/false, bidGridLengths, cacheA);
+        }
+
+        // Emit blockwise GEMM. This will load data from LDS (or registers) and
+        // compute the MMA at the same time
+        acc = BlockwiseGemmOp::create(
+            b, loc, loadedA, loadedB, acc, loadedScaleA, loadedScaleB,
+            op.getQuantBlockSizeAttr(),
+            /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+            /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
       }
 
-      // Emit blockwise GEMM. This will load data from LDS (or registers) and
-      // compute the MMA at the same time
-      Value newAcc = BlockwiseGemmOp::create(
-          b, loc, loadedA, loadedB, accArg, loadedScaleA, loadedScaleB,
-          op.getQuantBlockSizeAttr(),
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
       // Yield the new accumulator
-      scf::YieldOp::create(b, loc, ValueRange{newAcc});
+      scf::YieldOp::create(b, loc, ValueRange{acc});
       loopResult = loopOp.getResult(0);
     }
 

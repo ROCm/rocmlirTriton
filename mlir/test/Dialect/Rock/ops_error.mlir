@@ -72,6 +72,124 @@ func.func @attention_prefix_offset_requires_causal(%q: tensor<1x384x64xf16>, %k:
   return %r : tensor<1x384x64xf16>
 }
 
+func.func @attention_sliding_look_back_zero(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 0 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// -1 is the driver and tuning sentinel for a disabled sliding window, which is
+// spelled in IR as an absent attribute; it must never reach the op as a value.
+func.func @attention_sliding_look_back_negative(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = -1 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+func.func @attention_sliding_look_back_requires_last_valid_kv_index(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack requires lastValidKVIndex to be set}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 128 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+func.func @attention_sliding_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be less than max sequence length}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 384 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// slidingWindowLookBack on a gemm-gemm-like op with softmax disabled is not attention.
+func.func @gridwise_attention_sliding_look_back_only_for_attention(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack only works for attention}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    enableSoftmax = false,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_zero(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 0 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_negative(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be positive}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = -1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_requires_last_valid_kv_index(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack requires lastValidKVIndex to be set}}
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+func.func @gridwise_attention_sliding_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{slidingWindowLookBack must be less than max sequence length}}
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    slidingWindowLookBack = 384 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // gemm tests 
 // -----------------------------------------------------------------------------
@@ -613,16 +731,58 @@ func.func @store_shape_mismatch(
 // Result used by a non-return op
 func.func @store_result_not_returned(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   %neg = arith.negf %out : tensor<4x4xf32>
   return %neg : tensor<4x4xf32>
 }
 
+// Result used as another store's source
+func.func @store_result_used_as_store_source(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %out2 = rock.store %out to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Result used directly as another store's dest
+func.func @store_result_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %out2 = rock.store %source to %out by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Result used through a view as another store's dest
+func.func @store_result_view_used_as_store_dest(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  %view = rock.transform %out by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+  %out2 = rock.store %source to %view by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
+  return %out2 : tensor<4x4xf32>
+}
+
+// Dest rooted at a non-entry block argument
+func.func @store_dest_rooted_at_loop_block_arg(
+    %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> tensor<4x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<4x4xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [4, 4] -> [4, 4]> : tensor<4x4xf32> to tensor<4x4xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.store %source to %view alias %iter_dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32> alias tensor<4x4xf32>
+    scf.yield %stored : tensor<4x4xf32>
+  }
+  return %out : tensor<4x4xf32>
+}
+
 // Result has multiple uses
 func.func @store_result_multiple_uses(
     %source: tensor<4x4xf32>, %dest: tensor<4x4xf32>) -> (tensor<4x4xf32>, tensor<4x4xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
+  // expected-error @+1 {{result may be returned at most once}}
   %out = rock.store %source to %dest by set : tensor<4x4xf32> -> tensor<4x4xf32> to tensor<4x4xf32>
   return %out, %out : tensor<4x4xf32>, tensor<4x4xf32>
 }
@@ -633,7 +793,7 @@ func.func @store_result_multiple_uses(
 
 // Source is not i32
 func.func @cast_to_ptr_src_not_i32(%src: tensor<64x64xf32>) -> tensor<64x64x!tt.ptr<f16>> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %0 = rock.cast_to_ptr %src : tensor<64x64xf32> -> tensor<64x64x!tt.ptr<f16>>
   return %0 : tensor<64x64x!tt.ptr<f16>>
 }
@@ -662,6 +822,15 @@ func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes 
   // expected-error @+1 {{source must be a block argument}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
+}
+
+// -----
+
+// Result must be an i32 or i64 placeholder
+func.func @extract_ptr_bad_result_type(%src: tensor<64x64xf32>) -> i16 attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result #0 must be 32-bit signless integer or 64-bit signless integer}}
+  %0 = rock.extract_ptr %src : tensor<64x64xf32> -> i16
+  return %0 : i16
 }
 
 // =============================================================================
@@ -702,7 +871,7 @@ func.func @blockwise_reduce_elem_type_mismatch(%input: tensor<64x64xf32>) -> ten
 
 // Pointers element type not i32
 func.func @transforms_to_ptr_ptr_not_i32(%src: tensor<64x64xf32>) -> (tensor<64x64xf16>, tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{result #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   %ptrs, %mask = rock.transforms_to_ptr %src : tensor<64x64xf32> -> tensor<64x64xf16>, tensor<64x64xi1>
   return %ptrs, %mask : tensor<64x64xf16>, tensor<64x64xi1>
 }
@@ -764,21 +933,72 @@ func.func @blockwise_store_rank_mismatch(
 // Result not used by return
 func.func @blockwise_store_not_returned(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must be used directly by a func.return}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+    %alias: tensor<768xf32>, %i0: i32) -> tensor<768xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest alias %alias [%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> alias tensor<768xf32> -> tensor<768xf32>
   %neg = arith.negf %0 : tensor<768xf32>
   return %neg : tensor<768xf32>
+}
+
+// Result used as another blockwise_store's source
+func.func @blockwise_store_result_used_as_store_source(
+    %src: tensor<768xf32>, %dest0: tensor<3x768xf32>,
+    %dest1: tensor<3x2304xf32>, %alias0: tensor<2304xf32>,
+    %alias1: tensor<6912xf32>, %i0: i32) -> tensor<6912xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest0 alias %alias0 [%i0] by set
+    : tensor<768xf32> -> tensor<3x768xf32> alias tensor<2304xf32> -> tensor<2304xf32>
+  %1 = rock.blockwise_store %0 -> %dest1 alias %alias1 [%i0] by set
+    : tensor<2304xf32> -> tensor<3x2304xf32> alias tensor<6912xf32> -> tensor<6912xf32>
+  return %1 : tensor<6912xf32>
+}
+
+// Result used directly as another blockwise_store's dest
+func.func @blockwise_store_result_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result must be used directly by a func.return, view-like op, or resultAlias operand of another same-kind store}}
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %1 = rock.blockwise_store %src -> %0 by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
+}
+
+// Result used through a view as another blockwise_store's dest
+func.func @blockwise_store_result_view_used_as_store_dest(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.blockwise_store %src -> %dest by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  %view = rock.transform %0 by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+  // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+  %1 = rock.blockwise_store %src -> %view by set
+    : tensor<16x16xf32> -> tensor<16x16xf32> -> tensor<16x16xf32>
+  return %1 : tensor<16x16xf32>
+}
+
+// Dest rooted at a non-entry block argument
+func.func @blockwise_store_dest_rooted_at_loop_block_arg(
+    %src: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%iter_dest = %dest) -> (tensor<16x16xf32>) {
+    %view = rock.transform %iter_dest by <affine_map<(d0, d1) -> (d0, d1)> by [<PassThrough ["m", "n"] at [0, 1] -> ["m", "n"] at [0, 1]>] bounds = [16, 16] -> [16, 16]> : tensor<16x16xf32> to tensor<16x16xf32>
+    // expected-error @+1 {{dest transform chain root must be a function entry block argument}}
+    %stored = rock.blockwise_store %src -> %view alias %iter_dest by set
+      : tensor<16x16xf32> -> tensor<16x16xf32> alias tensor<16x16xf32> -> tensor<16x16xf32>
+    scf.yield %stored : tensor<16x16xf32>
+  }
+  return %out : tensor<16x16xf32>
 }
 
 // Result has multiple uses
 func.func @blockwise_store_multiple_uses(
     %src: tensor<16x16xf32>, %dest: tensor<3x16x16xf32>,
-    %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{result must have at most one use (a func.return)}}
-  %0 = rock.blockwise_store %src -> %dest[%i0] by set
-    : tensor<16x16xf32> -> tensor<3x16x16xf32> -> tensor<768xf32>
+    %alias: tensor<768xf32>, %i0: i32) -> (tensor<768xf32>, tensor<768xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{result may be returned at most once}}
+  %0 = rock.blockwise_store %src -> %dest alias %alias [%i0] by set
+    : tensor<16x16xf32> -> tensor<3x16x16xf32> alias tensor<768xf32> -> tensor<768xf32>
   return %0, %0 : tensor<768xf32>, tensor<768xf32>
 }
 
@@ -800,7 +1020,7 @@ func.func @blockwise_store_shape_mismatch(
 func.func @blockwise_load_elem_type_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf32>
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf32>
   return %0 : tensor<64x64xf32>
 }
 
@@ -808,7 +1028,7 @@ func.func @blockwise_load_elem_type_mismatch(
 func.func @blockwise_load_rank_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{sourceIndices.size() + result rank must equal source rank}}
-  %0 = rock.blockwise_load %src[%i0] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load %src[%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -816,8 +1036,24 @@ func.func @blockwise_load_rank_mismatch(
 func.func @blockwise_load_shape_mismatch(
     %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x32xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Input last dimensions must match with result shape}}
-  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] : tensor<4x1x1x2x64x64xf16> -> tensor<64x32xf16>
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier none>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x32xf16>
   return %0 : tensor<64x32xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @blockwise_load_cache_modifier_wb(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier wb>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @blockwise_load_cache_modifier_wt(
+    %src: tensor<4x1x1x2x64x64xf16>, %i0: i32, %i1: i32, %i2: i32, %i3: i32) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load %src[%i0, %i1, %i2, %i3] {cacheModifier = #rock<CacheModifier wt>} : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
 }
 
 // =============================================================================
@@ -827,8 +1063,8 @@ func.func @blockwise_load_shape_mismatch(
 // Pointer tensor element type not i32
 func.func @blockwise_load_ptr_ptr_not_i32(
     %ptrs: tensor<64x64xf32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -836,7 +1072,7 @@ func.func @blockwise_load_ptr_ptr_not_i32(
 func.func @blockwise_load_ptr_mask_not_i1(
     %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi32>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{operand #1 must be ranked tensor of 1-bit signless integer values}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<64x64xi32>, tensor<64x64xi32> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi32> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -844,7 +1080,23 @@ func.func @blockwise_load_ptr_mask_not_i1(
 func.func @blockwise_load_ptr_shape_mismatch(
     %ptrs: tensor<32x32xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {pointerTensor, maskTensor, result} have same shape}}
-  %0 = rock.blockwise_load_ptr %ptrs[%mask] : tensor<32x32xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @blockwise_load_ptr_cache_modifier_wb(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier wb>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @blockwise_load_ptr_cache_modifier_wt(
+    %ptrs: tensor<64x64xi32>, %mask: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.blockwise_load_ptr %ptrs[%mask] {cacheModifier = #rock<CacheModifier wt>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 
@@ -855,7 +1107,7 @@ func.func @blockwise_load_ptr_shape_mismatch(
 // Pointer tensor element type not i32
 func.func @blockwise_store_ptr_ptr_not_i32(
     %src: tensor<64x64xf32>, %ptrs: tensor<64x64xf16>, %mask: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer values}}
+  // expected-error @+1 {{operand #0 must be ranked tensor of 32-bit signless integer or 64-bit signless integer values}}
   rock.blockwise_store_ptr %src -> %ptrs(%mask) by set
     : tensor<64x64xf32> -> tensor<64x64xf16>(tensor<64x64xi1>)
   return
@@ -888,14 +1140,14 @@ func.func @blockwise_store_ptr_shape_mismatch(
 // Element type mismatch between source and result
 func.func @load_marker_elem_type_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{failed to verify that all of {source, result} have same element type}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<64x128xf32>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<64x128xf32>
   return %0 : tensor<64x128xf32>
 }
 
 // Upper dims != result rank + extraIndices count
 func.func @load_marker_rank_mismatch(%src: tensor<256x128xf16>, %i0: i32, %i1: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{upper bounds must equal tensor rank + extraIndices count}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0, %i1] : tensor<256x128xf16> -> tensor<64x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0, %i1] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<64x128xf16>
   return %0 : tensor<64x128xf16>
 }
 
@@ -903,7 +1155,7 @@ func.func @load_marker_rank_mismatch(%src: tensor<256x128xf16>, %i0: i32, %i1: i
 // #load_marker_tmap upper bounds = [4, 64, 128], result rank 2 → take_back(2) = [64, 128]
 func.func @load_marker_upper_shape_mismatch(%src: tensor<256x128xf16>, %i0: i32) -> tensor<32x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Upper bounds last dimensions must match with result shape}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<256x128xf16> -> tensor<32x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<256x128xf16> -> tensor<32x128xf16>
   return %0 : tensor<32x128xf16>
 }
 
@@ -911,7 +1163,28 @@ func.func @load_marker_upper_shape_mismatch(%src: tensor<256x128xf16>, %i0: i32)
 // #load_marker_tmap lower bounds = [256, 128], source is [128, 128]
 func.func @load_marker_lower_shape_mismatch(%src: tensor<128x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{Lower bounds must match with input shape}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] : tensor<128x128xf16> -> tensor<64x128xf16>
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>} : tensor<128x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Store-only cache modifier 'wb' is not allowed on a load
+func.func @load_marker_cache_modifier_wb(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wb' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier wb>} : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Store-only cache modifier 'wt' is not allowed on a load
+func.func @load_marker_cache_modifier_wt(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{cache modifier 'wt' is a store-only modifier and cannot be used on a load}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier wt>} : tensor<256x128xf16> -> tensor<64x128xf16>
+  return %0 : tensor<64x128xf16>
+}
+
+// Reduction tile axis must refer to an axis of the rank-2 loaded tile
+func.func @load_marker_reduction_tile_axis_out_of_bounds(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{reduction tile axis 2 is not an axis of the loaded tile}}
+  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 2>} : tensor<256x128xf16> -> tensor<64x128xf16>
   return %0 : tensor<64x128xf16>
 }
 
@@ -993,9 +1266,10 @@ func.func @transform_output_shape_mismatch(%arg0: tensor<256x128xf16>) -> tensor
 // Pre-second-GEMM body verification tests
 //
 // `verifyGemmPlusGemmLikeOp` requires that, when the pre-second-GEMM region is
-// non-empty, it contains a single block with at least one block argument whose
-// terminator is a `rock.yield` that yields exactly one value. The same verifier
-// is shared by `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
+// non-empty, it contains a single block whose arguments are the first-GEMM
+// result followed by one argument per elementwise input and whose terminator is
+// a `rock.yield` that yields exactly one value. The same verifier is shared by
+// `rock.gemm_elementwise_gemm`, `rock.conv_elementwise_gemm` and
 // `rock.attention`.
 // =============================================================================
 
@@ -1031,19 +1305,38 @@ func.func @gemm_elementwise_gemm_body_multi_block(
   return %r : tensor<1x4x2xf32>
 }
 
-// Zero block arguments: the body's entry block must accept at least the
-// running first-GEMM result as a block argument.
+// Zero block arguments: the body's entry block must accept the running
+// first-GEMM result as a block argument.
 func.func @gemm_elementwise_gemm_body_no_block_args(
     %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
     -> tensor<1x4x2xf32>
     attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  // expected-error @+1 {{pre-second-GEMM body must have at least one block argument}}
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 1 (the first-GEMM result plus one per elementwise input), but is 0}}
   %r = rock.gemm_elementwise_gemm{
    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
    ab = elementwise {
    ^bb0:
      %cst = arith.constant dense<0.0> : tensor<1x4x4xf32>
      rock.yield %cst : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
+// Non-zero but still wrong block argument count: when there are elementwise
+// inputs, the entry block must accept one block argument for each of them.
+func.func @gemm_elementwise_gemm_body_missing_elemwise_arg(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>,
+    %bias: tensor<1x4x4xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body argument count must be 2 (the first-GEMM result plus one per elementwise input), but is 1}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise otherIns(%bias : tensor<1x4x4xf32>) {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     rock.yield %qk : tensor<1x4x4xf32>
    }
    out = ab * %c : tensor<1x4x2xf32>
   } -> tensor<1x4x2xf32>

@@ -32,10 +32,3 @@ add_rocmlir_dialect_library(MLIRRockUtility
 
 # Triton include directories needed by tritonUtils.cpp.
 rocmlir_add_triton_includes(MLIRRockUtility)
-
-# HIP needed by tritonUtils.cpp (launchKernel)
-if (NOT WIN32)
-  find_package(hip REQUIRED PATHS ${ROCM_PATH})
-  target_link_libraries(MLIRRockUtility PUBLIC hip::host hip::amdhip64)
-  target_link_libraries(obj.MLIRRockUtility PUBLIC hip::host hip::amdhip64)
-endif()

@@ -1,3 +1,4 @@
+// REQUIRES: non_k_packed_scaled_input
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_quant_dot_fp4 %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | LLVM_IR_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefixes=ASSEMBLY
 // ASSEMBLY: llvm.amdgcn.mfma.scale.f32.32x32x64.f8f6f4
 

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
@@ -158,22 +161,39 @@ static LogicalResult validateGridGroupSize(Operation *op,
   return success();
 }
 
+// 0 means "untiled": gemm1 keeps a single N tile spanning the whole head
+// dimension. Any other value tiles gemm1's N dimension and must be a positive
+// power of two.
+static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
+  if (nPerBlockG1 != 0 && !isPositivePowerOfTwo(nPerBlockG1))
+    return op->emitError() << "nPerBlockG1=" << nPerBlockG1
+                           << " must be 0 (untiled) or a positive power of two";
+  return success();
+}
+
 // Single entry point: run all per-field checks via
 // `RockTuningParamAttrInterface` (implemented by both `GemmParamsAttr` and
 // `GemmGemmParamsAttr`). `requirePow2MN` controls whether mPerBlock/nPerBlock
 // must be powers of two: gemm+gemm requires it, plain gemm only requires them
 // to be positive since rock-decompose-nonpow2-tiles handles non-pow2 M/N.
+// `requirePow2K` likewise controls kPerBlock: plain gemm allows non-pow2 K
+// (rock-gridwise-gemm-to-blockwise decomposes it into power-of-two segments),
+// while gemm+gemm and scaled gemm still require a power-of-two K tile.
 static LogicalResult validatePerfConfig(Operation *op,
                                         RockTuningParamAttrInterface params,
-                                        bool requirePow2MN) {
+                                        bool requirePow2MN, bool requirePow2K) {
   auto validateMN =
       requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
   if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
     return failure();
   if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
     return failure();
-  if (failed(
-          validatePositivePowerOfTwo(op, "kPerBlock", params.getKPerBlock())))
+  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+      return failure();
+  auto validateK =
+      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
     return failure();
   if (failed(validateKpack(op, params.getKpack())))
     return failure();
@@ -217,9 +237,11 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       EnableSplitKForTuningAttr::getMnemonic(),
       ArchAttr::getMnemonic(),
       KernelAttr::getMnemonic(),
+      ConvKernelAttr::getMnemonic(),
       NumCUAttr::getMnemonic(),
       NumChipletsAttr::getMnemonic(),
       BlockSizeAttr::getMnemonic(),
+      UseOptimizeEpilogueAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
   };
@@ -305,11 +327,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
   LLVM_DEBUG(llvm::dbgs() << "affixTuningParametersImpl: perfConfig: "
                           << perfConfigAttr << "\n");
 
-  // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles, so keep
-  // the power-of-two M/N requirement for them; plain GEMMs allow non-pow2 M/N.
+  // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles (M/N) nor
+  // by the K decomposition in rock-gridwise-gemm-to-blockwise, so keep the
+  // power-of-two M/N and K requirements for them; plain GEMMs allow both to be
+  // non-pow2. Arches where the peeled K loop miscompiles keep the power-of-two
+  // K requirement as well (see rock::supportsNonPow2KPerBlock).
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
-  if (failed(
-          validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm)))
+  bool requirePow2K =
+      isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
+  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
+                                /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
 
   auto origGemmSize = op.getGemmSize();
@@ -321,8 +348,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   int64_t gemmKBlocks = 1;
   PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
   auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-  if (maybeWrwOp && isWrWAtomicKernel(rock::getArchValue(op), info.gemmAType,
-                                      requiredPadding)) {
+  if (maybeWrwOp && isWrWAtomicKernel(info.gemmAType, requiredPadding)) {
     auto res = calculateKBlockNum(
         info.batchSize, paddedGemmSize, gemmParams.getMPerBlock(),
         gemmParams.getNPerBlock(), gemmParams.getKPerBlock(),
@@ -347,15 +373,16 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Set attributes on the function.
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           b.getI32IntegerAttr(blockSize));
+  getOperation()->setAttr(
+      rock::UseOptimizeEpilogueAttr::getMnemonic(),
+      b.getI64IntegerAttr(gemmParams.getUseOptimizeEpilogue()));
+  getOperation()->setAttr(rock::UseBf16x3ForF32Attr::getMnemonic(),
+                          b.getI64IntegerAttr(gemmParams.getUseBf16x3ForF32()));
 
   // Check fusion legality. These checks should happen after perfConfig is
   // picked either through heuristics or user provided.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
@@ -385,7 +412,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true)))
+  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
+                                /*requirePow2K=*/true)))
     return signalPassFailure();
 
   auto params =
@@ -397,10 +425,6 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Check fusion legality.
   auto fusionInfo = rock::collectFusionInfo(op->getResult(0));
   if (!fusionInfo.fusionOps.empty()) {
-    if (failed(testFusionLegalityReduce(funcParent))) {
-      op->emitError() << "Fusion with reduce ops is not legal on this target";
-      return signalPassFailure();
-    }
     if (failed(testFusionLegalityBwdDataConv(funcParent))) {
       op->emitError() << "Fusion with backward data convolution is not legal";
       return signalPassFailure();
@@ -428,4 +452,10 @@ void AffixTuningParameters::affixTuningParametersImpl(
   assert(blockSize > 0);
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
+  getOperation()->setAttr(
+      rock::UseOptimizeEpilogueAttr::getMnemonic(),
+      builder.getI64IntegerAttr(attnPerfConfig.getUseOptimizeEpilogue()));
+  getOperation()->setAttr(
+      rock::UseBf16x3ForF32Attr::getMnemonic(),
+      builder.getI64IntegerAttr(attnPerfConfig.getUseBf16x3ForF32()));
 }

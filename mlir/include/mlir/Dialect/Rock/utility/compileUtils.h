@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #ifndef MLIR_DIALECT_ROCK_UTILITY_COMPILEUTILS_H
 #define MLIR_DIALECT_ROCK_UTILITY_COMPILEUTILS_H
 
@@ -22,6 +25,12 @@ namespace rock {
 /// it to distinguish "config refused" from "compilation failed". Must be
 /// non-zero and distinct from EXIT_FAILURE.
 constexpr int kExitNotApplicable = 2;
+
+/// Process exit code signalling that a perf-config's GPU run exceeded the
+/// per-config run-timeout budget (--gpu-run-timeout) and the kernel is
+/// presumed hung. Must be non-zero and distinct from EXIT_FAILURE
+/// and kExitNotApplicable.
+constexpr int kExitGpuTimeout = 3;
 
 /// A kernel argument that must be pre-initialized before launch.
 struct PrefillInfo {

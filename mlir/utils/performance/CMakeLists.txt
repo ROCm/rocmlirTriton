@@ -10,15 +10,18 @@ set(PERFORMANCE_SCRIPTS
   convertRocBlasToPerfRunner.py
   createFusionPerformanceReports.py
   createPerformanceReports.py
+  crossCompile.py
   perfCommonUtils.py
   perfRunner.py
   parameterSweeps.py
   attentionSweeps.py
   perfRegressionReport.py
   reportUtils.py
+  tuningArgumentUtils.py
   tuningRunner.py
   rocmlir_metrics.txt
   handleNewConfigs.py
+  generateLDSBlacklist.py
 )
 
 list(TRANSFORM PERFORMANCE_SCRIPTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")

@@ -2,6 +2,7 @@ add_rocmlir_dialect_library(MLIRRockTuning
   ConvContext.cpp
   GridwiseGemmParams.cpp
   GridwiseGemmGemmParams.cpp
+  LdsBlacklist.cpp
   RockTuningImpl.cpp
   ParamLookupTable.cpp
 
@@ -19,3 +20,6 @@ target_link_libraries(MLIRRockTuning
   MLIRRockUtility
   MLIRIR
 )
+
+# RockTuningImpl.cpp includes Triton's TargetFeatures.h for the ISAFamily enum
+rocmlir_add_triton_includes(MLIRRockTuning)

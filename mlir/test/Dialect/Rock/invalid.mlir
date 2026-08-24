@@ -37,3 +37,9 @@ func.func @gridwise_gemm_n_too_big(%a: tensor<1x1x1xf32>,
   : tensor<1x1x1xf32>, tensor<1x1x2147483648xf32> -> tensor<1x1x2147483648xf32>
   func.return
 }
+
+// -----
+
+// Only Pad transforms may be marked as tile-alignment padding.
+// expected-error @+1 {{Only a Pad can align a gemm dimension to the tile size}}
+#invalid_tile_alignment = #rock.transform<PassThrough tileAlignment ["m"] at [0] -> ["m"] at [0]>

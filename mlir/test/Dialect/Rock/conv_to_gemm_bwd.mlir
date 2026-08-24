@@ -110,19 +110,29 @@ func.func @bwd_data_dilated(%arg0: tensor<144xf32>, %arg1: tensor<128xf32>, %arg
 // Sibling of conv_to_gemm_bwd_data_empty_filter_slice.mlir, which exercises
 // the divide-ceil bug fix for phases whose dotslice is *empty*; here we lock
 // in the count for a "fully populated" stride>1 case.
+//
+// `rock.store` is `Pure`, so each per-phase store result must be kept alive
+// in the SSA chain. The first generated store starts the chain, then the
+// BwdData branch in `RockConvToGemmPass` threads resultAlias through later
+// stores and returns only the final store result.
 // ============================================================================
 // CHECK-LABEL: @bwd_data_strided_multi_kernel
+// CHECK-SAME: -> tensor<512xf32>
 // CHECK-NOT: rock.conv_bwd_data
 // CHECK: rock.gemm tr
-// CHECK: rock.store {{.*}} by set
+// CHECK: %[[STORE0:.*]] = rock.store {{.*}} to {{%[^ ]+}} by set :
+// CHECK-NOT: rock.transform %[[STORE0]]
 // CHECK: rock.gemm tr
-// CHECK: rock.store {{.*}} by set
+// CHECK: %[[STORE1:.*]] = rock.store {{.*}} alias %[[STORE0]] by set :
+// CHECK-NOT: rock.transform %[[STORE1]]
 // CHECK: rock.gemm tr
-// CHECK: rock.store {{.*}} by set
+// CHECK: %[[STORE2:.*]] = rock.store {{.*}} alias %[[STORE1]] by set :
+// CHECK-NOT: rock.transform %[[STORE2]]
 // CHECK: rock.gemm tr
-// CHECK: rock.store {{.*}} by set
+// CHECK: %[[STORE3:.*]] = rock.store {{.*}} alias %[[STORE2]] by set :
 // CHECK-NOT: rock.gemm
 // CHECK-NOT: rock.store
+// CHECK: return %[[STORE3]]
 func.func @bwd_data_strided_multi_kernel(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.block_size = 128 : i32, rock.kernel} {
   %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{4, 4, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4, 4, 3, 3] -> [144]> : tensor<144xf32> to tensor<1x4x4x3x3xf32>
   %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{2, 4, 3, 3} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [2, 1, 4, 3, 3] -> [72]> : tensor<72xf32> to tensor<2x1x4x3x3xf32>
@@ -130,6 +140,38 @@ func.func @bwd_data_strided_multi_kernel(%arg0: tensor<144xf32>, %arg1: tensor<7
   %3 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 8 + d3) * 8 + d4)> by [<Unmerge{2, 4, 8, 8} ["ni", "ci", "0i", "1i"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [2, 1, 4, 8, 8] -> [512]> : tensor<512xf32> to tensor<2x1x4x8x8xf32>
   %4 = rock.store %2 to %3 by set : tensor<2x1x4x8x8xf32> -> tensor<512xf32> to tensor<2x1x4x8x8xf32>
   return %4 : tensor<512xf32>
+}
+
+// -----
+
+// ============================================================================
+// @bwd_data_multi_kernel_with_caller
+// Same multi-kernel BwdData shape as @bwd_data_strided_multi_kernel (stride
+// 2, 3x3 filter, 2x1x4x8x8 input grad, 4 phases), but the kernel is paired
+// with a non-kernel host `func.call` site. The kernel ABI stays unchanged.
+// ============================================================================
+// CHECK-LABEL: @bwd_data_kernel_with_caller
+// CHECK-SAME: -> tensor<512xf32>
+// CHECK-NOT: rock.conv_bwd_data
+//
+// CHECK-LABEL: @bwd_data_host_caller
+// CHECK-SAME: (%[[A0:.*]]: tensor<144xf32>, %[[A1:.*]]: tensor<72xf32>, %[[A2:.*]]: tensor<512xf32>)
+// CHECK-SAME: -> tensor<512xf32>
+// CHECK: %[[CALL:.*]] = call @bwd_data_kernel_with_caller(%[[A0]], %[[A1]], %[[A2]])
+// CHECK-SAME: : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> tensor<512xf32>
+// CHECK: return %[[CALL]] : tensor<512xf32>
+func.func @bwd_data_kernel_with_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.block_size = 128 : i32, rock.kernel} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{4, 4, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 4, 4, 3, 3] -> [144]> : tensor<144xf32> to tensor<1x4x4x3x3xf32>
+  %1 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{2, 4, 3, 3} ["no", "ko", "0o", "1o"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["go"] at [1] -> [] at []>] bounds = [2, 1, 4, 3, 3] -> [72]> : tensor<72xf32> to tensor<2x1x4x3x3xf32>
+  %2 = rock.conv_bwd_data(%0, %1) {dilations = [1 : index, 1 : index], filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], output_layout = ["no", "go", "ko", "0o", "1o"], padding = [0 : index, 0 : index, 0 : index, 0 : index], params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>, strides = [2 : index, 2 : index]} : tensor<1x4x4x3x3xf32>, tensor<2x1x4x3x3xf32> -> tensor<2x1x4x8x8xf32>
+  %3 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3, d4) -> (((d0 * 4 + d2) * 8 + d3) * 8 + d4)> by [<Unmerge{2, 4, 8, 8} ["ni", "ci", "0i", "1i"] at [0, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [2, 1, 4, 8, 8] -> [512]> : tensor<512xf32> to tensor<2x1x4x8x8xf32>
+  %4 = rock.store %2 to %3 by set : tensor<2x1x4x8x8xf32> -> tensor<512xf32> to tensor<2x1x4x8x8xf32>
+  return %4 : tensor<512xf32>
+}
+
+func.func @bwd_data_host_caller(%arg0: tensor<144xf32>, %arg1: tensor<72xf32>, %arg2: tensor<512xf32>) -> tensor<512xf32> {
+  %0 = func.call @bwd_data_kernel_with_caller(%arg0, %arg1, %arg2) : (tensor<144xf32>, tensor<72xf32>, tensor<512xf32>) -> tensor<512xf32>
+  return %0 : tensor<512xf32>
 }
 
 // -----
@@ -167,9 +209,8 @@ func.func @bwd_weight_non_atomic(%arg0: tensor<512xf32>, %arg1: tensor<288xf32>,
 // ============================================================================
 // @bwd_weight_atomic
 // Backward weight on gfx908 with larger shapes (N=128, K=C=64, 14x14 ->
-// 12x12 with 3x3 filter). isFastAtomicAddSupported(gfx908, f32) is true and
-// affix-params picked kBlocks = 32, so the pass takes the
-// `backwardWeightAtomicAdd` path:
+// 12x12 with 3x3 filter). affix-params picked kBlocks = 32, so the pass takes
+// the `backwardWeightAtomicAdd` path:
 //   - filter destination carries `rock.prefill = 0.000000e+00`
 //   - filter gets an extra AddDim{32} ["kBlock"] dimension that becomes part
 //     of gemmG (1 * 32 = 32)
@@ -204,8 +245,7 @@ func.func @bwd_weight_atomic(%arg0: tensor<1605632xf32>, %arg1: tensor<1179648xf
 // @bwd_weight_atomic but with f16 instead of f32. After removing the
 // historic fp32 workspace + cast-kernel pair, fp16 BwdWeight uses a single
 // kernel that atomic-adds partial sums directly into the f16 filter buffer.
-// `isFastAtomicAddSupported(gfx942, f16)` is true, so the atomic path runs;
-// the lowering must NOT materialize any f32 workspace tensor.
+// The lowering must NOT materialize any f32 workspace tensor.
 // ============================================================================
 // CHECK-LABEL: @bwd_weight_atomic_fp16
 // CHECK-SAME: tensor<{{[0-9]+}}xf16> {rock.prefill = 0.000000e+00 : f16}

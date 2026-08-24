@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Pure-plumbing pybind11 binding over the arch-string + `Dtype` enum helpers
-// in `mlir/Dialect/Rock/IR/AmdArchDb.h`. Per-arch semantics live there.
+// Pure-plumbing pybind11 binding over the arch-string helpers in
+// `mlir/Dialect/Rock/IR/AmdArchDb.h`. Per-arch semantics live there.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,6 +17,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
 #include <string>
 #include <tuple>
 
@@ -25,11 +26,6 @@ namespace py = pybind11;
 PYBIND11_MODULE(amd_arch_db, m) {
   m.doc() = "rocmlirTriton AmdArchDb bindings (in-tree test helper). "
             "See mlir/Dialect/Rock/IR/AmdArchDb.h for per-function semantics.";
-
-  py::enum_<mlir::rock::Dtype>(m, "Dtype")
-      .value("F32", mlir::rock::Dtype::F32)
-      .value("F16", mlir::rock::Dtype::F16)
-      .value("BF16", mlir::rock::Dtype::BF16);
 
   using mlir::triton::amdgpu::ISAFamily;
   py::enum_<ISAFamily>(m, "ISAFamily")
@@ -42,6 +38,7 @@ PYBIND11_MODULE(amd_arch_db, m) {
       .value("RDNA1", ISAFamily::RDNA1)
       .value("RDNA2", ISAFamily::RDNA2)
       .value("RDNA3", ISAFamily::RDNA3)
+      .value("GFX1170", ISAFamily::GFX1170)
       .value("RDNA4", ISAFamily::RDNA4)
       .value("GFX1250", ISAFamily::GFX1250);
 
@@ -51,20 +48,6 @@ PYBIND11_MODULE(amd_arch_db, m) {
         return std::get<0>(mlir::rock::getArch(arch));
       },
       py::arg("arch"));
-
-  m.def(
-      "is_fast_atomic_add_supported",
-      [](const std::string &arch, mlir::rock::Dtype dtype) {
-        return mlir::rock::isFastAtomicAddSupported(arch, dtype);
-      },
-      py::arg("arch"), py::arg("dtype"));
-
-  m.def(
-      "is_fast_atomic_max_supported",
-      [](const std::string &arch, mlir::rock::Dtype dtype) {
-        return mlir::rock::isFastAtomicMaxSupported(arch, dtype);
-      },
-      py::arg("arch"), py::arg("dtype"));
 
   m.def(
       "arch_supports_accel_fp8",
@@ -77,6 +60,20 @@ PYBIND11_MODULE(amd_arch_db, m) {
       "arch_supports_scaled_gemm",
       [](const std::string &arch) {
         return mlir::rock::archSupportsScaledGemm(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
+      "arch_supports_non_k_packed_scaled_input",
+      [](const std::string &arch) {
+        return mlir::rock::archSupportsNonKPackedScaledInput(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
+      "prefer_bf16x3_for_f32_dot",
+      [](const std::string &arch) {
+        return mlir::rock::preferBf16x3ForF32Dot(arch);
       },
       py::arg("arch"));
 
@@ -94,4 +91,18 @@ PYBIND11_MODULE(amd_arch_db, m) {
       "get_max_kpack",
       [](const std::string &arch) { return mlir::rock::getMaxKpack(arch); },
       py::arg("arch"));
+
+  m.def(
+      "supports_non_pow2_k_per_block",
+      [](const std::string &arch) {
+        return mlir::rock::supportsNonPow2KPerBlock(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
+      "infer_num_chiplets",
+      [](const std::string &arch, int64_t numCUs) {
+        return mlir::rock::inferNumChiplets(arch, numCUs);
+      },
+      py::arg("arch"), py::arg("num_cus"));
 }

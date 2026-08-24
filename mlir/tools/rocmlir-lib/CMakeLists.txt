@@ -1,7 +1,9 @@
 llvm_canonicalize_cmake_booleans(BUILD_FAT_LIBROCKCOMPILER)
 # Static library target, enabled only when building static libs
 if(BUILD_FAT_LIBROCKCOMPILER)
-  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS /opt/rocm)
+  # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
+  # /opt/rocm stays as the Linux fallback.
+  find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -12,6 +14,14 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   set(PACKAGE_NAME ${CMAKE_PROJECT_NAME_LOWER})
 
   set(LIBRARY_NAME rockCompiler)
+
+  # The fat-library package must ship rocmlirTriton's own public headers so
+  # downstream consumers (MIGraphX) can resolve rocmlir_INCLUDE_DIR.
+  # This is deliberately independent of LLVM_INSTALL_TOOLCHAIN_ONLY, which is
+  # forced ON in cmake/triton.cmake solely to stop the in-tree LLVM/MLIR from
+  # installing its own toolchain and exporting MLIRTargets.
+  option(ROCMLIR_INSTALL_PACKAGE_HEADERS
+         "Install rocmlirTriton public headers as part of the fat-library package" ON)
 
   include(librockcompiler_deps.cmake)
   set(__rocmlir_targets ${__rocmlir_libs})
@@ -26,6 +36,10 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   add_library(${LIBRARY_NAME} INTERFACE)
 
   if (WIN32)
+    # Triton builds as separate static libraries on Windows, so propagate its
+    # registered targets through the fat-library interface and package.
+    get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
+
     add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets})
 
     foreach(__library ${__mlir_libs})
@@ -44,14 +58,28 @@ if(BUILD_FAT_LIBROCKCOMPILER)
               $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library}.lib>)
     endforeach()
 
+    add_dependencies(${LIBRARY_NAME} ${__triton_libs})
+    foreach(__library ${__triton_libs})
+      list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+      target_link_libraries(${LIBRARY_NAME}
+          INTERFACE
+              $<BUILD_INTERFACE:${__library}>
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+    endforeach()
+
     rocm_install(FILES ${__mlir_libraries}
             DESTINATION lib/llvm)
 
     rocm_install(FILES ${__rocmlir_libraries}
             DESTINATION lib)
 
+    rocm_install(FILES ${__triton_libraries}
+            DESTINATION lib/llvm)
+
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
+    unset(__triton_libs)
+    unset(__triton_libraries)
 
     # Linux compatibility custom target
     add_custom_target(lib${LIBRARY_NAME} ALL DEPENDS ${LIBRARY_NAME})
@@ -84,7 +112,6 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     add_custom_target(__generate_fat_library DEPENDS ${full_output_path})
     add_dependencies(${LIBRARY_NAME} __generate_fat_library)
 
-    target_link_libraries(${LIBRARY_NAME} INTERFACE hsa-runtime64::hsa-runtime64)
     target_link_libraries(${LIBRARY_NAME}
         INTERFACE
             $<BUILD_INTERFACE:${full_output_path}>
@@ -150,22 +177,17 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       INCLUDES DESTINATION include/${package_name} ${ARG_EXTRA_INCLUDES}
     )
 
-    if(NOT WIN32)
-        set(DEPENDS_HSA DEPENDS hsa-runtime64)
-    endif()
-
     # Generate package config and version file
     rocm_export_targets(
       NAMESPACE ${CMAKE_PROJECT_NAME}::
       NAME ${package_name}
       TARGETS ${package_name}
       COMPATIBILITY AnyNewerVersion
-      ${DEPENDS_HSA}
       )
 
   endfunction()
 
-  if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+  if (ROCMLIR_INSTALL_PACKAGE_HEADERS)
     rocm_install(DIRECTORY
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir-c
@@ -216,7 +238,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   rocm_create_package(
     NAME ${CMAKE_PROJECT_NAME}
     DESCRIPTION "MLIR packages"
-    MAINTAINER "rocMLIR Dev Team dl.dl-mlir@amd.com"
+    MAINTAINER "ROCm Dev Support <rocm-dev.support@amd.com>"
     HEADER_ONLY
   )
 endif()

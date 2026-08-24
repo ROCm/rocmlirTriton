@@ -1,6 +1,6 @@
 //===- rocmlir-tuning-driver.cpp - rocMLIR tuning driver -------------===//
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 // Part of the rocMLIR project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
@@ -29,7 +29,6 @@
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/tritonUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -46,26 +45,46 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compression.h"
+#include "llvm/Support/Errc.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#endif
 
 // Utilities to allocate buffers
 #include "../utils/performance/common/benchmarkUtils.h"
+#include "ArtifactIO.h"
 #include "CacheFlush.h"
 
 #include <hip/hip_runtime.h>
@@ -95,6 +114,77 @@ void pArgs(const std::tuple<Ts...> &formals, void **_vargs) {
 
 using namespace mlir;
 using namespace rocmlir::tuningdriver;
+
+#define HIPCHECK_WITH_CONTEXT(expr, context)                                   \
+  do {                                                                         \
+    hipError_t _status = (expr);                                               \
+    if (hipSuccess != _status) {                                               \
+      llvm::errs() << __FILE__ << ":" << __LINE__ << ": HIP error in "         \
+                   << #expr << ": " << hipGetErrorString(_status) << context   \
+                   << "\n";                                                    \
+      return failure();                                                        \
+    }                                                                          \
+  } while (0)
+
+#define HIPCHECK(expr) HIPCHECK_WITH_CONTEXT(expr, "")
+
+// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
+// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
+// Note: hipEventRecord is handled by callers, not by this function.
+// Do not move this to tritonUtils.cpp: that utility library is linked into the
+// Rock library set, which must stay free of HIP runtime dependencies. Keeping
+// the wrapper in this tool confines HIP linking to the tuning driver.
+static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
+                                  uint32_t blockSize, uint32_t shared_memory,
+                                  uint32_t num_ctas, hipStream_t stream,
+                                  void **params) {
+  if (gridX == 0)
+    return success();
+  if (num_ctas > 1) {
+    // ResolveKernelLaunchParams has already verified that the expanded launch
+    // dimensions fit in the dispatch packet.
+    uint32_t gridBlocks = gridX * num_ctas;
+
+    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
+    // it loads HIP symbols via dlsym. We link directly, so no check needed.
+    // Zero-init so the unused bytes of the 64-byte hipLaunchAttributeValue
+    // union are well-defined rather than indeterminate padding.
+    hipLaunchAttribute attributes[2] = {};
+    // Attribute0: Cluster dimensions. HIP's hipLaunchAttributeID enum does not
+    // expose this attribute by name (it mirrors CUDA's
+    // CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4), so use the raw value, as
+    // upstream driver.c does.
+    constexpr auto kHipLaunchAttributeClusterDimension =
+        static_cast<hipLaunchAttributeID>(4);
+    attributes[0].id = kHipLaunchAttributeClusterDimension;
+    int *cluster_dims = reinterpret_cast<int *>(attributes[0].val.pad);
+    cluster_dims[0] = num_ctas;
+    cluster_dims[1] = 1;
+    cluster_dims[2] = 1;
+    // Attribute1: Cooperative launch
+    attributes[1].id = hipLaunchAttributeCooperative;
+    attributes[1].val.cooperative = 0;
+
+    HIP_LAUNCH_CONFIG config = {
+        gridBlocks,    1,      1,            // Grid size
+        blockSize,     1,      1,            // Block size
+        shared_memory, stream, attributes, 2 // Number of attributes
+    };
+    HIPCHECK_WITH_CONTEXT(hipDrvLaunchKernelEx(&config, function, params, 0),
+                          " (grid=" << gridBlocks << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
+  } else {
+    HIPCHECK_WITH_CONTEXT(hipModuleLaunchKernel(function, gridX, 1, 1,
+                                                blockSize, 1, 1, shared_memory,
+                                                stream, params, nullptr),
+                          " (grid=" << gridX << "x1x1, block=" << blockSize
+                                    << "x1x1, shared-memory=" << shared_memory
+                                    << " bytes, num-ctas=" << num_ctas << ")");
+  }
+  return success();
+}
 
 static llvm::cl::opt<std::string> inputFilename{
     llvm::cl::Positional, llvm::cl::desc("<input file>"), llvm::cl::init("-")};
@@ -181,6 +271,106 @@ static llvm::cl::opt<unsigned> perfConfigTimeout(
         "continues with the remaining configs for the problem)."),
     llvm::cl::value_desc("seconds"), llvm::cl::init(0));
 
+static llvm::cl::opt<unsigned> gpuRunTimeout(
+    "gpu-run-timeout",
+    llvm::cl::desc(
+        "Per-perf-config GPU-run timeout in seconds. 0 (default) disables the "
+        "timeout. This does not include compilation; use --perf-config-timeout "
+        "for that. When > 0, timed stream synchronization bounds the "
+        "wall-clock "
+        "time spent benchmarking each config; a run that exceeds this budget "
+        "is "
+        "presumed hung and the process is force-exited with a distinct exit "
+        "code "
+        "(rock::kExitGpuTimeout). tuningRunner.py maps it to a 'gpu timed out' "
+        "state and advances to the next problem config."),
+    llvm::cl::value_desc("seconds"), llvm::cl::init(0));
+
+static llvm::cl::opt<std::string> compileOnlyDir(
+    "compile-only",
+    llvm::cl::desc(
+        "Compile every perf config and write a kernel bundle "
+        "(manifest + compressed HSACO blobs) into <dir> instead of "
+        "benchmarking. Performs no GPU work. <dir> is the per-problem "
+        "directory; the orchestrator owns index.json."),
+    llvm::cl::value_desc("dir"), llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> benchmarkArtifactsDir(
+    "benchmark-artifacts",
+    llvm::cl::desc(
+        "Benchmark the configs in the kernel bundle at <dir> "
+        "(written by --compile-only) without recompiling. Decompresses "
+        "each HSACO just-in-time. Ignored with a warning if --compile-only "
+        "is also given."),
+    llvm::cl::value_desc("dir"), llvm::cl::init(""));
+
+// ------------------------------------------------------------
+// Two-stage topK tuning options
+// ------------------------------------------------------------
+// See docs/adaptive_tuning_budget.md for more details.
+static llvm::cl::opt<unsigned> twoStageTopK(
+    "two-stage-topk",
+    llvm::cl::desc(
+        "Enable two-stage tuning (enabled when > 0): every config is "
+        "benchmarked at a \"cheap\" budget, then we re-benchmark the top K "
+        "configs "
+        "at the full budget (--rep/--warmup) from their "
+        "already-compiled binaries (no recompilation) to pick the winner. "
+        "The cheap budget uses an adaptive measurement budget, which runs a "
+        "dynamic number of iterations (instead of a fixed amount of time, like "
+        "the full budget)."),
+    llvm::cl::value_desc("topK size"), llvm::cl::init(0));
+
+static llvm::cl::opt<unsigned> coarseRepIters(
+    "coarse-rep-iters",
+    llvm::cl::desc("Max number of iterations to measure in the coarse pass."),
+    llvm::cl::value_desc("coarse benchmark iterations"), llvm::cl::init(200));
+
+static llvm::cl::opt<unsigned> coarseMinRepIters(
+    "coarse-min-rep-iters",
+    llvm::cl::desc("Min number of iterations to measure in the coarse pass."),
+    llvm::cl::value_desc("minimum coarse measurement iterations"),
+    llvm::cl::init(32));
+
+static llvm::cl::opt<double> coarseRelSemTarget(
+    "coarse-rel-sem-target",
+    llvm::cl::desc("The relative standard error of the mean (SEM) target. "
+                   "The coarse pass will stop measuring when the SEM is less "
+                   "than this target."),
+    llvm::cl::value_desc("relative SEM fraction"), llvm::cl::init(0.005));
+
+static llvm::cl::opt<unsigned> coarseChunkIters(
+    "coarse-chunk-iters",
+    llvm::cl::desc(
+        "Coarse-pass measurement chunk size. "
+        "The relative SEM is recomputed after each "
+        "chunk of this many measured iterations, i.e. AdaTune-style "
+        "micro-batching (AdaTune uses batches of ~50). Smaller chunks check "
+        "more often (finer granularity) at the cost of more synchronizations."),
+    llvm::cl::value_desc("iterations per SEM check"), llvm::cl::init(32));
+
+static llvm::cl::opt<unsigned> coarseWarmupIters(
+    "coarse-warmup-iters",
+    llvm::cl::desc(
+        "Coarse-pass warmup iteration count. "
+        "The actual warmup is "
+        "max(this, --coarse-warmup-floor-ms worth of iterations), capped at "
+        "the number of warmup iterations --warmup affords for the kernel being "
+        "measured, so the coarse pass never warms up longer than the precise "
+        "pass it feeds."),
+    llvm::cl::value_desc("coarse warmup iterations"), llvm::cl::init(50));
+
+static llvm::cl::opt<unsigned> coarseWarmupFloorMs(
+    "coarse-warmup-floor-ms",
+    llvm::cl::desc("Minimum coarse-pass warmup time in milliseconds. Must not "
+                   "exceed --warmup, which caps the coarse warmup."),
+    llvm::cl::value_desc("coarse warmup floor milliseconds"),
+    llvm::cl::init(5));
+
+// ------------------------------------------------------------
+// end of two-stage topK tuning options
+// ------------------------------------------------------------
+
 // Ripped out of JitRunner.cpp
 static OwningOpRef<ModuleOp> parseMLIRInput(StringRef filename,
                                             MLIRContext *context) {
@@ -208,6 +398,8 @@ static benchmark::DataType getDataType(Type inputType) {
     return benchmark::DataType::BF16;
   } else if (inputType.isInteger(8)) {
     return benchmark::DataType::I8;
+  } else if (inputType.isInteger(4)) {
+    return benchmark::DataType::I4;
   } else if (isa<Float8E4M3FNUZType, Float8E4M3FNType, Float8E5M2Type,
                  Float8E5M2FNUZType>(inputType)) {
     return benchmark::DataType::F8;
@@ -221,16 +413,62 @@ static benchmark::DataType getDataType(Type inputType) {
   }
 }
 
-// intentionally leaky macro
-#define HIPCHECK(expr)                                                         \
-  do {                                                                         \
-    hipError_t _status = (expr);                                               \
-    if (hipSuccess != _status) {                                               \
-      llvm::errs() << "HIP error at " << __FILE__ << ":" << __LINE__ << " - "  \
-                   << hipGetErrorString(_status) << "\n";                      \
-      return failure();                                                        \
-    }                                                                          \
-  } while (0)
+using SteadyTimePoint = std::chrono::steady_clock::time_point;
+
+static std::optional<SteadyTimePoint> makeTimeoutDeadline(unsigned timeoutSec) {
+  if (timeoutSec == 0)
+    return std::nullopt;
+  return std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+}
+
+static bool hasTimedOut(const std::optional<SteadyTimePoint> &deadline) {
+  return deadline && std::chrono::steady_clock::now() >= *deadline;
+}
+
+static LogicalResult synchronizeStreamWithTimeout(
+    hipStream_t stream, const std::optional<SteadyTimePoint> &gpuRunDeadline,
+    unsigned timeoutSec, StringRef perfConfig, StringRef phase) {
+  // Preserve the historical behavior when no GPU-run timeout was requested:
+  // block until all previously queued work on this stream completes.
+  if (!gpuRunDeadline) {
+    HIPCHECK(hipStreamSynchronize(stream));
+    return success();
+  }
+
+  // With a timeout enabled, avoid hipStreamSynchronize because it can block
+  // forever when a kernel wedges. Instead, poll the same stream with
+  // hipStreamQuery.
+  while (true) {
+    hipError_t status = hipStreamQuery(stream);
+    if (status == hipSuccess)
+      return success();
+
+    // hipErrorNotReady is the normal "still running" result for an incomplete
+    // stream. Any other status is a real HIP failure rather than a timeout.
+    if (status != hipErrorNotReady) {
+      llvm::errs() << "HIP error while synchronizing stream during " << phase
+                   << " for config: " << perfConfig << " - "
+                   << hipGetErrorString(status) << "\n";
+      return failure();
+    }
+
+    // Once the per-config budget is exceeded, treat the current GPU run as
+    // hung. We intentionally terminate the process instead of returning
+    // failure: after a presumed GPU hang, the in-process HIP context is not
+    // trustworthy.
+    if (hasTimedOut(gpuRunDeadline)) {
+      llvm::errs() << "GPU run timed out after " << timeoutSec << "s during "
+                   << phase << " for config: " << perfConfig
+                   << " (kernel presumed hung)\n";
+      llvm::errs().flush();
+      std::_Exit(rock::kExitGpuTimeout);
+    }
+
+    // Keep the polling interval short enough to notice hangs promptly while
+    // avoiding a hot spin on long-running but healthy kernels.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
 
 static double computeMedian(const std::vector<double> &values) {
   if (values.empty())
@@ -272,6 +510,39 @@ static double computeStdDev(const std::vector<double> &values, double mean) {
   return std::sqrt(sumSquares / values.size());
 }
 
+// Compute relative standard error of the mean (SEM):
+//
+//   SEM = s / (sqrt(N) * mean),
+//
+// where s is the standard deviation (divides by N-1, as the benchmarking
+// literature does; cf. Georges et al. OOPSLA'07 and Hoefler & Belli SC'15).
+//
+// This measures how precise our current mean estimate is, and it shrinks
+// ~1/sqrt(N) as we take more samples: so we use this as the quantity to
+// threshold when deciding we have measured a config enough to rank it.
+//
+// It differs from the coefficient of variation (s/mean), which measures a
+// kernel's intrinsic jitter and does NOT shrink with N. Returns +infinity when
+// it cannot be computed yet (fewer than two samples, or a non-positive mean) so
+// callers keep measuring.
+static double computeRelSem(const std::vector<double> &values) {
+  size_t n = values.size();
+  if (n < 2)
+    return std::numeric_limits<double>::infinity();
+
+  double mean = computeMean(values);
+  if (!(mean > 0.0))
+    return std::numeric_limits<double>::infinity();
+
+  double sumSquares = 0.0;
+  for (double val : values) {
+    double diff = val - mean;
+    sumSquares += diff * diff;
+  }
+  double sampleStdDev = std::sqrt(sumSquares / (n - 1));
+  return sampleStdDev / (std::sqrt(static_cast<double>(n)) * mean);
+}
+
 static std::vector<double> trimValues(const std::vector<double> &values,
                                       unsigned trimPct) {
   if (values.empty() || trimPct == 0)
@@ -300,25 +571,47 @@ struct BenchmarkParams {
   bool showStats;
   bool showAllMeasurements;
   rock::TuningParamSetKind tuningSpaceKind;
-  const unsigned numCompileThreads;
+  unsigned numCompileThreads;
   std::string benchmarkConfig;
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
+  unsigned gpuRunTimeoutSec;
+  std::string compileOnlyDir;
+
+  // Two-stage tuning. twoStageTopK == 0 disables it.
+  unsigned twoStageTopK;
+
+  // Active per-call iteration overrides. When non-zero they take precedence
+  // over the *Ms budgets above: warmupIters/repIters fix the iteration counts
+  // directly instead of deriving them from time. 0 (default) => derive from ms,
+  // i.e. the original time-budget behavior. Used to make the coarse pass
+  // hardware-independent.
+  unsigned warmupIters = 0;
+  unsigned repIters = 0;
+  // Wall-clock floor under warmupIters, so a fast GPU still gets enough warmup
+  // time for DVFS/clock ramp to complete. Only consulted when warmupIters > 0;
+  // warmupMs stays the precise warmup budget, which caps the warmup the coarse
+  // pass is allowed to spend.
+  unsigned warmupFloorMs = 0;
+  // Active adaptive-stop overrides. When relSemTarget > 0 the measurement loop
+  // runs in chunks of chunkIters and stops once the relative SEM falls below
+  // relSemTarget, floored at minRepIters and capped at repIters. relSemTarget
+  // == 0 => fixed-iteration measurement (the precise pass leaves it 0). These
+  // mirror the warmupIters/repIters override pattern: runBenchmarkPhase sets
+  // them from the CoarseConfig for the coarse pass.
+  double relSemTarget = 0.0;
+  unsigned chunkIters = 0;
+  unsigned minRepIters = 0;
 };
 
-enum class CompilationStatus {
-  NotApplicable,     // Config not applicable for this kernel
-  CompilationFailed, // Config applicable but compilation failed
-  TimedOut,          // Compilation exceeded the per-config timeout
-  Success            // Successfully compiled
-};
-
-struct CompilationResult {
-  SmallString<64> perfConfig;
-  CompilationStatus status = CompilationStatus::NotApplicable;
-  std::string hsacoBinary; // Single HSACO binary containing all kernels
-  SmallVector<rock::KernelInfo>
-      kernels; // Info for each kernel (name, block/grid sizes)
+// Coarse-pass configuration (two-stage tuning only).
+struct CoarseConfig {
+  unsigned repIters;
+  unsigned minRepIters;
+  double relSemTarget;
+  unsigned chunkIters;
+  unsigned warmupIters;
+  unsigned warmupFloorMs;
 };
 
 // Create a fresh MLIRContext with all rocMLIR dialects registered.
@@ -400,6 +693,17 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   }
   llvm::FileRemover outputRemover(outputPath);
 
+  // Capture diagnostics without letting concurrent child processes interleave
+  // on the tuning driver's stderr. The file is only read for a fatal child
+  // failure; expected NotApplicable and TimedOut results remain silent.
+  SmallString<128> stderrPath;
+  if (llvm::sys::fs::createTemporaryFile("rocmlir-tuning-err", "log",
+                                         stderrPath)) {
+    fail("Failed to create temp stderr file for config: " + perfConfig);
+    return result;
+  }
+  llvm::FileRemover stderrRemover(stderrPath);
+
   std::string archArg = ("--arch=" + archName).str();
   std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
   SmallVector<StringRef, 8> args = {
@@ -407,39 +711,104 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
       archArg,    perfConfigArg, "-o",
       outputPath};
 
-  // Discard the child's stdout and stderr (empty path => /dev/null): stdout
-  // would corrupt the results stream, stderr would spam per-config diagnostics.
-  // The exit code already tells us what happened.
+  // Discard stdout (empty path => /dev/null) because it would corrupt the
+  // results stream. Capture stderr per child so fatal diagnostics can be
+  // reported without interleaving output from concurrent compilations.
   std::optional<StringRef> redirects[3] = {std::nullopt, StringRef(""),
-                                           StringRef("")};
+                                           StringRef(stderrPath)};
 
+  // Launch the child without waiting, then enforce the wall-clock budget from
+  // this thread. We deliberately do not use sys::ExecuteAndWait's
+  // SecondsToWait: its timeout is implemented with alarm()/SIGALRM (see
+  // llvm/lib/Support/Unix/Program.inc), which are process-global and therefore
+  // unsafe when many worker threads compile concurrently. The LLVM source
+  // documents this with FIXMEs, and concurrent alarm() calls cancel each other
+  // so the per-config timeout never reliably fires. Instead we follow the
+  // ExecuteNoWait + Wait-poll idiom from ProgramTest.cpp
+  // (TestExecuteNoWaitTimeoutPolling): poll with a non-blocking Wait and
+  // Polling=true so transient EINTR cannot make LLVM kill the child, then kill
+  // the child ourselves once the deadline passes. Each thread only ever waits
+  // on its own PID, so this is race-free across workers.
   std::string execErr;
   bool execFailed = false;
-  auto start = std::chrono::steady_clock::now();
-  int rc = llvm::sys::ExecuteAndWait(driverPath, args, /*Env=*/std::nullopt,
-                                     redirects, /*SecondsToWait=*/timeoutSec,
-                                     /*MemoryLimit=*/0, &execErr, &execFailed);
-  double elapsed =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count();
-
-  if (execFailed || rc == -1) {
+  llvm::sys::ProcessInfo procInfo = llvm::sys::ExecuteNoWait(
+      driverPath, args, /*Env=*/std::nullopt, redirects,
+      /*MemoryLimit=*/0, &execErr, &execFailed);
+  if (execFailed || procInfo.Pid == llvm::sys::ProcessInfo::InvalidPid) {
     fail("Failed to launch rocmlir-driver for config: " + perfConfig + " (" +
          execErr + ")");
     return result;
   }
 
-  // ExecuteAndWait returns -2 for both a timeout-kill and a crash. Disambiguate
-  // using the measured wall time: at/over budget => timeout. A timeout is a
+  auto killAndReap = [&]() -> std::string {
+#ifdef _WIN32
+    // A finite Wait terminates the child with TerminateProcess if it is still
+    // running after the timeout.
+    const std::optional<unsigned> secondsToWait = 1;
+#else
+    if (kill(procInfo.Pid, SIGKILL) != 0 && errno != ESRCH)
+      return std::string("failed to kill child: ") + std::strerror(errno);
+    const std::optional<unsigned> secondsToWait = std::nullopt;
+#endif
+
+    std::string reapErr;
+    llvm::sys::ProcessInfo reapResult =
+        llvm::sys::Wait(procInfo, secondsToWait, &reapErr);
+    if (reapResult.Pid != procInfo.Pid) {
+      std::string message = "failed to reap child";
+      if (!reapErr.empty())
+        message += ": " + reapErr;
+      return message;
+    }
+    return {};
+  };
+
+  const auto deadline = makeTimeoutDeadline(timeoutSec);
+  llvm::sys::ProcessInfo waitResult;
+  bool timedOut = false;
+  while (true) {
+    std::string waitErr;
+    // SecondsToWait=0 => non-blocking poll (WNOHANG). Returns Pid==0 while the
+    // child is still running, Pid==procInfo.Pid (with ReturnCode) once it
+    // exits.
+    waitResult = llvm::sys::Wait(procInfo, /*SecondsToWait=*/0, &waitErr,
+                                 /*ProcStat=*/nullptr, /*Polling=*/true);
+    if (waitResult.Pid == procInfo.Pid)
+      break; // Child finished; waitResult.ReturnCode holds its exit status.
+    if (waitResult.Pid != 0) {
+      // Neither "still running" (0) nor "our child" => a genuine wait error.
+      std::string message =
+          ("Error waiting for rocmlir-driver for config: " + perfConfig + " (" +
+           waitErr + ")")
+              .str();
+      if (std::string cleanupErr = killAndReap(); !cleanupErr.empty())
+        message += "; " + cleanupErr;
+      fail(message);
+      return result;
+    }
+    if (hasTimedOut(deadline)) {
+      timedOut = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  // Budget exceeded: terminate and reap. rocmlir-driver links in-process (no
+  // grandchildren to orphan), so cleanup returns promptly. A timeout is a
   // non-fatal skip reported as N/A, so stay silent here (tuningRunner.py parses
   // stdout/stderr and must not see extra noise).
-  if (rc == -2) {
-    if (elapsed >= static_cast<double>(timeoutSec))
-      result.status = CompilationStatus::TimedOut;
-    else
-      fail("rocmlir-driver crashed for config: " + perfConfig);
+  if (timedOut) {
+    if (std::string cleanupErr = killAndReap(); !cleanupErr.empty()) {
+      fail("Failed to clean up timed-out rocmlir-driver for config: " +
+           perfConfig + " (" + cleanupErr + ")");
+      return result;
+    }
+
+    result.status = CompilationStatus::TimedOut;
     return result;
   }
+
+  int rc = waitResult.ReturnCode;
 
   if (rc == rock::kExitNotApplicable) {
     result.status = CompilationStatus::NotApplicable;
@@ -447,8 +816,19 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
   }
 
   if (rc != 0) {
-    fail("rocmlir-driver failed (exit " + llvm::Twine(rc) +
-         ") for config: " + perfConfig);
+    std::string message = ("rocmlir-driver failed (exit " + llvm::Twine(rc) +
+                           ") for config: " + perfConfig)
+                              .str();
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> stderrBuffer =
+        llvm::MemoryBuffer::getFile(stderrPath);
+    if (!stderrBuffer) {
+      message += "\nFailed to read child diagnostics: " +
+                 stderrBuffer.getError().message();
+    } else if (StringRef diagnostics = stderrBuffer.get()->getBuffer().trim();
+               !diagnostics.empty()) {
+      message += "\n" + diagnostics.str();
+    }
+    fail(message);
     return result;
   }
 
@@ -487,7 +867,9 @@ measureKernel(unsigned iterations, hipStream_t stream,
               const std::vector<hipFunction_t> &functions,
               ArrayRef<uint32_t> blockSizes, ArrayRef<uint32_t> gridSizes,
               ArrayRef<uint32_t> numCTAsList, std::vector<void *> &argPointers,
-              std::vector<double> &measurements, bool useLastLevelCacheSize) {
+              std::vector<double> &measurements, bool useLastLevelCacheSize,
+              const std::optional<SteadyTimePoint> &gpuRunDeadline,
+              unsigned timeoutSec, StringRef perfConfig) {
   // Pre-allocate one event pair per iteration so we can record them all in a
   // tight loop and synchronize only once at the end. This matches Triton's
   // do_bench, which minimizes host-side overhead between launches (no
@@ -523,16 +905,18 @@ measureKernel(unsigned iterations, hipStream_t stream,
     HIPCHECK(hipEventRecord(startEvents[iter], stream));
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
     HIPCHECK(hipEventRecord(stopEvents[iter], stream));
   }
 
   // Single synchronization after all iterations have been queued.
-  HIPCHECK(hipStreamSynchronize(stream));
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline, timeoutSec,
+                                          perfConfig, "measurement")))
+    return failure();
 
   for (unsigned iter = 0; iter < iterations; ++iter) {
     float currentMilliseconds = 0.0;
@@ -617,6 +1001,21 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
     }
   });
 
+  // Apply one user-specified GPU-run deadline across all stream
+  // synchronization for this perf config. Compilation is not included; this
+  // begins after the config has compiled and the HIP stream/module/launch
+  // metadata are ready.
+  std::optional<SteadyTimePoint> gpuRunDeadline =
+      makeTimeoutDeadline(params.gpuRunTimeoutSec);
+
+  // Finish setup work queued before benchmarking (currently the H2D copies)
+  // using the same timeout deadline so no stream synchronization can hang
+  // indefinitely.
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline,
+                                          params.gpuRunTimeoutSec,
+                                          result.perfConfig, "setup")))
+    return failure();
+
   // Estimate the per-launch runtime so we can size warmup/benchmark iteration
   // counts from the requested time budgets (Triton do_bench style). We time a
   // handful of launches (flushing caches between them) using a single event
@@ -640,14 +1039,17 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
         return failure();
       for (auto [func, blockSize, gridSize, numCTAs] :
            llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-        if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                      /*shared_memory=*/0, numCTAs, stream,
-                                      argPointers.data())))
+        if (failed(launchKernel(func, gridSize, blockSize,
+                                /*shared_memory=*/0, numCTAs, stream,
+                                argPointers.data())))
           return failure();
       }
     }
     HIPCHECK(hipEventRecord(stopEvent, stream));
-    HIPCHECK(hipStreamSynchronize(stream));
+    if (failed(synchronizeStreamWithTimeout(
+            stream, gpuRunDeadline, params.gpuRunTimeoutSec, result.perfConfig,
+            "runtime estimation")))
+      return failure();
 
     float elapsedMs = 0.0;
     HIPCHECK(hipEventElapsedTime(&elapsedMs, startEvent, stopEvent));
@@ -663,31 +1065,84 @@ static FailureOr<double> benchmarkKernels(const CompilationResult &result,
       estimateMs = minMeasurableMs;
   }
 
-  // Derive iteration counts from the time budgets, like Triton's do_bench.
-  unsigned nWarmup = std::max<unsigned>(
-      1, static_cast<unsigned>(params.warmupMs / estimateMs));
-  unsigned iterations =
-      std::max<unsigned>(1, static_cast<unsigned>(params.repMs / estimateMs));
+  // Derive iteration counts from the time budgets, like Triton's do_bench,
+  // UNLESS explicit iteration overrides are given (params.repIters /
+  // params.warmupIters > 0). The coarse pass of two-stage tuning uses the
+  // iteration overrides so its ranking power is independent of GPU speed. When
+  // adaptive stopping is on (params.relSemTarget > 0), `iterations` is
+  // interpreted as the cap (maximum) rather than an exact count.
+  //
+  // An overridden budget is clamped to params.warmupMs so a coarse pass never
+  // costs more than the precise pass it feeds.
+  unsigned nWarmupFromMs = static_cast<unsigned>(params.warmupMs / estimateMs);
+  unsigned nWarmup;
+  if (params.warmupIters > 0) {
+    unsigned floorIters =
+        static_cast<unsigned>(params.warmupFloorMs / estimateMs);
+    nWarmup = std::max<unsigned>(
+        1, std::min(std::max(params.warmupIters, floorIters), nWarmupFromMs));
+  } else {
+    nWarmup = std::max<unsigned>(1, nWarmupFromMs);
+  }
+  // Same clamp for the measurement budget, against params.repMs. It applies to
+  // both measurement modes below, since adaptive stopping can be off
+  // (relSemTarget == 0) while the iteration override is on.
+  unsigned nItersFromMs = static_cast<unsigned>(params.repMs / estimateMs);
+  unsigned iterations = std::max<unsigned>(
+      1, params.repIters > 0 ? std::min(params.repIters, nItersFromMs)
+                             : nItersFromMs);
 
   // Warm-up (untimed): just run the kernel chain nWarmup times.
   for (unsigned iter = 0; iter < nWarmup; ++iter) {
     for (auto [func, blockSize, gridSize, numCTAs] :
          llvm::zip(functions, blockSizes, gridSizes, numCTAsList)) {
-      if (failed(rock::launchKernel(func, gridSize, blockSize,
-                                    /*shared_memory=*/0, numCTAs, stream,
-                                    argPointers.data())))
+      if (failed(launchKernel(func, gridSize, blockSize,
+                              /*shared_memory=*/0, numCTAs, stream,
+                              argPointers.data())))
         return failure();
     }
   }
-  HIPCHECK(hipStreamSynchronize(stream));
-
-  // Measure runs
-  std::vector<double> measurements;
-
-  if (failed(measureKernel(iterations, stream, functions, blockSizes, gridSizes,
-                           numCTAsList, argPointers, measurements,
-                           params.flushLastLevelCache)))
+  if (failed(synchronizeStreamWithTimeout(stream, gpuRunDeadline,
+                                          params.gpuRunTimeoutSec,
+                                          result.perfConfig, "warmup")))
     return failure();
+
+  // Measure runs. Two modes:
+  //  * Adaptive (coarse pass, params.relSemTarget > 0): measure in chunks and
+  //    stop as soon as the relative standard error of the mean is small enough
+  //    to rank this config, floored at params.minRepIters (so the variance
+  //    estimate is trustworthy) and capped at `iterations`. Noise, not a fixed
+  //    count, decides when to stop, which makes the coarse budget hardware- and
+  //    kernel-independent. This follows AdaTune's adaptive evaluator and the
+  //    measure-until-precise rule of Georges et al. / Hoefler & Belli.
+  //  * Fixed (precise pass, params.relSemTarget == 0): measure exactly
+  //    `iterations` runs (the original do_bench-style behavior).
+  std::vector<double> measurements;
+  if (params.relSemTarget > 0.0) {
+    // `iterations` is the cap here. It only binds for noisy, low-intensity
+    // kernels whose configs never reach the SEM target.
+    const unsigned chunk = std::max<unsigned>(1, params.chunkIters);
+    const unsigned minIters = std::min(params.minRepIters, iterations);
+    while (measurements.size() < iterations) {
+      unsigned remaining =
+          iterations - static_cast<unsigned>(measurements.size());
+      unsigned thisChunk = std::min(chunk, remaining);
+      if (failed(measureKernel(
+              thisChunk, stream, functions, blockSizes, gridSizes, numCTAsList,
+              argPointers, measurements, params.flushLastLevelCache,
+              gpuRunDeadline, params.gpuRunTimeoutSec, result.perfConfig)))
+        return failure();
+      if (measurements.size() >= minIters &&
+          computeRelSem(measurements) < params.relSemTarget)
+        break;
+    }
+  } else {
+    if (failed(measureKernel(iterations, stream, functions, blockSizes,
+                             gridSizes, numCTAsList, argPointers, measurements,
+                             params.flushLastLevelCache, gpuRunDeadline,
+                             params.gpuRunTimeoutSec, result.perfConfig)))
+      return failure();
+  }
 
   if (params.showAllMeasurements) {
     llvm::outs() << "[";
@@ -763,13 +1218,192 @@ static bool doesModuleHaveFusions(ModuleOp module) {
   return result.wasInterrupted();
 }
 
+// Shared timing path used by both the in-process run and --benchmark-artifacts,
+// guaranteeing identical measurement semantics. Allocates host/device buffers
+// from `layout`, then sequentially benchmarks each config that is due a precise
+// measurement, printing `perfConfig\t<ns|Discarded|N/A>`. Timed-out configs are
+// reported as N/A, like not-applicable configs. When two-stage tuning is on
+// (params.twoStageTopK > 0) a coarse pass parameterized by `coarseConfig` runs
+// first and narrows the precise pass to the K fastest configs; the rest are
+// reported as Discarded. For artifact results (empty hsacoBinary + nonempty
+// blobPath) each HSACO is decompressed just before launch and freed right
+// after. A decompression, launch, or timing failure aborts the run.
+static LogicalResult
+runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
+                  const BufferLayout &layout, const BenchmarkParams &params,
+                  const CoarseConfig &coarseConfig) {
+  std::vector<void *> hostBuffers;
+  std::vector<void *> gpuBuffers;
+  llvm::scope_exit bufferCleanup([&]() {
+    for (void *buffer : hostBuffers)
+      free(buffer);
+    for (void *buffer : gpuBuffers) {
+      if (!buffer)
+        continue;
+      hipError_t status = hipFree(buffer);
+      if (status != hipSuccess) {
+        llvm::errs() << "HIP error in hipFree(buffer): "
+                     << hipGetErrorString(status) << "\n";
+      }
+    }
+    if (failed(cleanupCacheFlushArtifacts())) {
+      llvm::errs() << "Failed to cleanup cache flush artifacts\n";
+    }
+  });
+  for (auto [byteLength, dataType] :
+       llvm::zip(layout.byteLengths, layout.dataTypes)) {
+    void *hostBuffer = benchmark::allocAndFill(dataType, byteLength);
+    void *gpuBuffer = nullptr;
+    hipError_t hipStatus = hipMalloc(&gpuBuffer, byteLength);
+    if (hipStatus != hipSuccess) {
+      free(hostBuffer);
+      llvm::errs() << "HIP error in hipMalloc(gpuBuffer): "
+                   << hipGetErrorString(hipStatus) << "\n";
+      return failure();
+    }
+    hostBuffers.push_back(hostBuffer);
+    gpuBuffers.push_back(gpuBuffer);
+  }
+
+  // Time one already-compiled config. For artifact results the HSACO is
+  // decompressed just before launch and freed right after.
+  auto timeConfig =
+      [&](CompilationResult &result,
+          const BenchmarkParams &timingParams) -> FailureOr<double> {
+    bool lazyLoaded = result.hsacoBinary.empty() && !result.blobPath.empty();
+    if (lazyLoaded) {
+      FailureOr<std::string> framed = readFileContents(result.blobPath);
+      FailureOr<std::string> raw = failure();
+      if (succeeded(framed))
+        raw = decompressFramed(*framed);
+      if (failed(raw))
+        return failure();
+      result.hsacoBinary = std::move(*raw);
+    }
+
+    FailureOr<double> timing = benchmarkKernels(
+        result, hostBuffers, gpuBuffers, layout.byteLengths, timingParams);
+
+    if (lazyLoaded) {
+      result.hsacoBinary.clear();
+      result.hsacoBinary.shrink_to_fit();
+    }
+    return timing;
+  };
+
+  // Which configs get a precise (reported) benchmark. Only Success carries a
+  // code object, so in single-pass mode that is every Success config; in
+  // two-stage mode it is narrowed to the coarse-pass shortlist below.
+  // Everything else gets a status token instead of a timing: "Discarded" for a
+  // config dropped by top-K, "N/A" for one that never became measurable
+  // (NotApplicable, CompilationFailed or TimedOut).
+  std::vector<bool> reportPrecise(results.size(), false);
+  for (size_t i = 0; i < results.size(); ++i)
+    reportPrecise[i] = results[i].status == CompilationStatus::Success;
+
+  // Two-stage tuning is only meaningful when we are searching a space; in
+  // single-config benchmark mode there is nothing to shortlist.
+  if (params.twoStageTopK > 0 && params.benchmarkConfig.empty()) {
+    // COARSE PASS: benchmark every applicable config once at the cheap budget.
+    // Stats/measurement printing is suppressed so this pass emits no stdout;
+    // only the shortlist is reported (with precise timings) below.
+    BenchmarkParams coarseParams = params;
+    // Adaptive, iteration-based coarse ranking (hardware-independent): stop
+    // once the relative SEM is below target, floored at minRepIters and capped
+    // at repIters. warmupFloorMs is the DVFS floor layered under warmupIters;
+    // warmupMs is deliberately left at the precise budget, which
+    // benchmarkKernels uses to cap the coarse warmup. A relSemTarget of 0
+    // degrades to a fixed repIters-iteration measurement.
+    coarseParams.repIters = coarseConfig.repIters;
+    coarseParams.warmupIters = coarseConfig.warmupIters;
+    coarseParams.warmupFloorMs = coarseConfig.warmupFloorMs;
+    coarseParams.relSemTarget = coarseConfig.relSemTarget;
+    coarseParams.chunkIters = coarseConfig.chunkIters;
+    coarseParams.minRepIters = coarseConfig.minRepIters;
+    coarseParams.showStats = false;
+    coarseParams.showAllMeasurements = false;
+
+    llvm::errs() << "Two-stage tuning budget: rep-iters="
+                 << coarseParams.repIters
+                 << " min-rep-iters=" << coarseParams.minRepIters
+                 << " rel-sem-target="
+                 << llvm::format("%g", coarseParams.relSemTarget)
+                 << " chunk-iters=" << coarseParams.chunkIters
+                 << " warmup-iters=" << coarseParams.warmupIters
+                 << " warmup-floor-ms=" << coarseParams.warmupFloorMs << "\n";
+
+    SmallVector<std::pair<size_t, double>> coarseTimes; // (index, ns)
+    for (size_t i = 0; i < results.size(); ++i) {
+      if (!reportPrecise[i])
+        continue;
+      FailureOr<double> timing = timeConfig(results[i], coarseParams);
+      if (failed(timing)) {
+        llvm::errs() << "Kernel execution failed (coarse pass) for config: "
+                     << results[i].perfConfig << "\n";
+        return failure();
+      }
+      coarseTimes.emplace_back(i, timing.value());
+    }
+
+    // Shortlist the K fastest (smallest ns). Everything not shortlisted is
+    // demoted to "Discarded" so the downstream winner selection (min time) can
+    // only pick a config that was re-benchmarked at the precise budget.
+    std::fill(reportPrecise.begin(), reportPrecise.end(), false);
+    unsigned k = std::min<unsigned>(params.twoStageTopK, coarseTimes.size());
+    std::partial_sort(
+        coarseTimes.begin(), coarseTimes.begin() + k, coarseTimes.end(),
+        [](const std::pair<size_t, double> &a,
+           const std::pair<size_t, double> &b) { return a.second < b.second; });
+    for (unsigned j = 0; j < k; ++j)
+      reportPrecise[coarseTimes[j].first] = true;
+  }
+
+  // PRECISE (reporting) PASS. Sequential for accurate timing. A config that
+  // compiled and ran but lost the coarse-pass shortlist is reported as
+  // "Discarded", which keeps a deliberate two-stage demotion distinguishable
+  // from a config that never produced a measurement at all ("N/A"); the sweep
+  // keeps going either way, so one bad config cannot sink the whole run.
+  // Re-benchmarking the shortlist reuses the binaries already in `results`, so
+  // there is no recompilation.
+  int64_t validResults = 0;
+  for (size_t i = 0; i < results.size(); ++i) {
+    CompilationResult &result = results[i];
+    llvm::outs() << result.perfConfig << "\t";
+
+    if (!reportPrecise[i]) {
+      llvm::outs() << (result.status == CompilationStatus::Success ? "Discarded"
+                                                                   : "N/A")
+                   << "\n";
+      continue;
+    }
+
+    FailureOr<double> timing = timeConfig(result, params);
+    if (failed(timing)) {
+      llvm::errs() << "Kernel execution failed\n";
+      return failure();
+    }
+    llvm::outs() << timing.value() << "\n";
+
+    validResults++;
+  }
+
+  if (validResults == 0) {
+    llvm::errs() << "No valid configurations found\n";
+    return failure();
+  }
+  return success();
+}
+
 static LogicalResult runTuningLoop(ModuleOp source) {
   // Verify prerequisites
   SmallVector<func::FuncOp> funcs;
   if (failed(extractFuncOps(source, funcs)))
     return failure();
 
-  SmallVector<size_t> bufferLengths;
+  // Capture per-arg buffer length AND benchmark::DataType so the benchmark
+  // host (which has no MLIR) can allocate + fill identical buffers from the
+  // manifest. byteLengths matches the existing buffer-length computation.
+  BufferLayout layout;
   ArrayRef<Type> argTypes = funcs[0].getArgumentTypes();
   for (Type argType : argTypes) {
     auto shapedTy = dyn_cast<ShapedType>(argType);
@@ -782,7 +1416,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     }
     int64_t sizeInBits =
         shapedTy.getNumElements() * shapedTy.getElementTypeBitWidth();
-    bufferLengths.push_back(llvm::divideCeil(sizeInBits, 8));
+    layout.byteLengths.push_back(llvm::divideCeil(sizeInBits, 8));
+    layout.dataTypes.push_back(getDataType(getElementTypeOrSelf(argType)));
   }
 
   // 2. Set up compilation options (shared across all threads)
@@ -796,46 +1431,15 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     return source->emitOpError("could not parse arch name: " + archName);
   kernelOpts.arch = deviceName.getChip().str();
 
-  // 3. Initialize host buffers and allocate device buffers
-  std::vector<void *> hostBuffers;
-  std::vector<void *> gpuBuffers;
-  llvm::scope_exit bufferCleanup([&]() {
-    for (void *buffer : hostBuffers)
-      free(buffer);
-    for (void *buffer : gpuBuffers) {
-      // hipFree does not allow nullptrs, so make sure to check for it first
-      if (!buffer)
-        continue;
-      hipError_t status = hipFree(buffer);
-      if (status != hipSuccess) {
-        llvm::errs() << "HIP error in hipFree(buffer): "
-                     << hipGetErrorString(status) << "\n";
-      }
-    }
-    if (failed(cleanupCacheFlushArtifacts())) {
-      llvm::errs() << "Failed to cleanup cache flush artifacts\n";
-    }
-  });
-  assert(argTypes.size() == bufferLengths.size() &&
-         "number of arguments and buffer lengths must match");
-  for (auto [argType, bufferLength] : llvm::zip(argTypes, bufferLengths)) {
-    benchmark::DataType type = getDataType(getElementTypeOrSelf(argType));
-    void *hostBuffer = benchmark::allocAndFill(type, bufferLength);
-    void *gpuBuffer = nullptr;
-    hipError_t hipStatus = hipMalloc(&gpuBuffer, bufferLength);
-    if (hipStatus != hipSuccess) {
-      free(hostBuffer);
-      llvm::errs() << "HIP error in hipMalloc(gpuBuffer): "
-                   << hipGetErrorString(hipStatus) << "\n";
-      return failure();
-    }
-    hostBuffers.push_back(hostBuffer);
-    gpuBuffers.push_back(gpuBuffer);
-  }
+  // Target identity baked into the kernels during lowering (read off the
+  // module, no HIP). Recorded in the manifest under --compile-only and checked
+  // against the live GPU under --benchmark-artifacts. This is exactly the value
+  // used to compute grid sizes.
+  int64_t numCUs = rock::getNumCUValueOnFunc(funcs[0]);
+  int64_t numChiplets = rock::getNumChipletsValueOnFunc(funcs[0]);
 
-  // 4. Multi-iteration tuning loop
-  SmallString<64> bestConfigOverall;
-  float bestTimeOverall = std::numeric_limits<float>::max();
+  // Host/device buffers are allocated inside runBenchmarkPhase (the shared
+  // timing path), so --compile-only performs no HIP work at all.
 
   // NOTE: Compilation (PassManager::run()) resets the cl opts, so we have to
   // save the values.
@@ -850,40 +1454,37 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            numCompileThreads,
                                            benchmarkConfig,
                                            flushLastLevelCache,
-                                           perfConfigTimeout};
+                                           perfConfigTimeout,
+                                           gpuRunTimeout,
+                                           compileOnlyDir,
+                                           twoStageTopK};
 
-  unsigned numTuningIterations =
-      rock::getNumberOfIterations(benchmarkParams.tuningSpaceKind);
-  if (!benchmarkParams.benchmarkConfig.empty() && numTuningIterations != 1) {
-    llvm::errs() << "benchmarking should do a single tuning iteration\n";
-    return failure();
-  }
+  const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
+                                     coarseRelSemTarget, coarseChunkIters,
+                                     coarseWarmupIters,  coarseWarmupFloorMs};
 
-  // Main iteration loop - wraps config generation, compilation, AND
-  // benchmarking
-  for (unsigned iterIdx = 0; iterIdx < numTuningIterations; ++iterIdx) {
-    // PHASE 1: Collect perf configs for this iteration
-    std::vector<SmallString<64>> configs;
+  // Main tuning pass: collect perf configs, compile, and benchmark.
+  {
+    // PHASE 1: Collect perf configs
+    std::vector<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>> configs;
 
     if (!benchmarkParams.benchmarkConfig.empty()) {
       // Benchmark mode - just one config
       configs.emplace_back(benchmarkParams.benchmarkConfig);
     } else {
       // Tuning mode - get configs from tuning space
-      rock::TuningParamSpaceSettings settings{iterIdx, bestConfigOverall};
       std::unique_ptr<rock::TuningParamSet> tuningSpace(
-          rock::createTunableParamSpace(source, benchmarkParams.tuningSpaceKind,
-                                        settings));
+          rock::createTunableParamSpace(source,
+                                        benchmarkParams.tuningSpaceKind));
 
       if (tuningSpace->tuningRange.empty()) {
-        llvm::errs() << "Tuning range is empty for iteration " << iterIdx
-                     << "\n";
+        llvm::errs() << "Tuning range is empty\n";
         return failure();
       }
 
       for (rock::RockTuningParamAttrInterface tuningAttr :
            tuningSpace->tuningRange) {
-        SmallString<64> perfConfig;
+        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
         tuningAttr.getPerfConfigStr(perfConfig);
         configs.push_back(perfConfig);
       }
@@ -899,11 +1500,29 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     // Don't create more threads than configs to compile
     numThreads = std::min(numThreads, static_cast<unsigned>(configs.size()));
 
+    // In --compile-only mode, stream each successful HSACO to disk as soon as
+    // it is compiled (freeing the in-memory copy) so peak memory is bounded by
+    // the in-flight compiles (~numThreads) rather than the entire config space,
+    // which for an exhaustive space can reach many GiB. Prepare the staging
+    // bundle up front (this also fails fast if zstd is unavailable, before any
+    // compile time is spent). Use the snapshot: PassManager::run() resets the
+    // cl::opt globals during compilation.
+    const bool streamBlobs = !benchmarkParams.compileOnlyDir.empty();
+    if (streamBlobs &&
+        failed(beginArtifactBundle(benchmarkParams.compileOnlyDir)))
+      return failure();
+
     // Serialize source module once (shared by all threads for parsing)
     std::string sourceModuleStr;
     {
       llvm::raw_string_ostream sourceOs(sourceModuleStr);
       source->print(sourceOs);
+    }
+
+    std::vector<bool> configIsFusible(configs.size(), true);
+    if (doesModuleHaveFusions(source)) {
+      for (size_t idx = 0; idx < configs.size(); ++idx)
+        configIsFusible[idx] = rock::isModuleFusible(source, configs[idx]);
     }
 
     // In subprocess mode (--perf-config-timeout > 0), materialize the shared
@@ -981,12 +1600,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
         });
         return copy;
       };
-
-      if (doesModuleHaveFusions(sourceModule.get()) &&
-          !rock::isModuleFusible(sourceModule.get(), result.perfConfig)) {
-        result.status = CompilationStatus::NotApplicable;
-        return result;
-      }
 
       // Pipeline: a single PassManager runs the full kernel + Triton + backend
       // lowering. Failures are classified post-hoc by checking whether any
@@ -1081,13 +1694,42 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           if (idx >= configs.size())
             break;
 
-          if (benchmarkParams.perfConfigTimeoutSec > 0)
-            compilationResults[idx] = compileConfigViaSubprocess(
-                configs[idx], driverPath, sharedInputPath, archName,
-                benchmarkParams.perfConfigTimeoutSec, outputMutex,
-                compilationFailed);
-          else
-            compilationResults[idx] = compileConfig(idx);
+          CompilationResult result;
+          if (!configIsFusible[idx]) {
+            result.perfConfig = configs[idx];
+            result.status = CompilationStatus::NotApplicable;
+          } else {
+            result = (benchmarkParams.perfConfigTimeoutSec > 0)
+                         ? compileConfigViaSubprocess(
+                               configs[idx], driverPath, sharedInputPath,
+                               archName, benchmarkParams.perfConfigTimeoutSec,
+                               outputMutex, compilationFailed)
+                         : compileConfig(idx);
+          }
+
+          // Stream the compiled HSACO straight to the staging bundle and drop
+          // it from memory. Without this, every Success blob would live in
+          // `compilationResults` until serialization at the end, which is the
+          // source of the OOM on large --compile-only runs.
+          if (streamBlobs && result.status == CompilationStatus::Success) {
+            FailureOr<std::string> blobRel = writeArtifactBlob(
+                benchmarkParams.compileOnlyDir, idx, result.hsacoBinary);
+            if (failed(blobRel)) {
+              {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                llvm::errs() << "Failed to write artifact blob for config: "
+                             << result.perfConfig << "\n";
+              }
+              compilationFailed.store(true, std::memory_order_relaxed);
+            } else {
+              result.blobPath = std::move(*blobRel);
+            }
+            // The blob is on disk now (or we are aborting): release the large
+            // binary so it does not accumulate across the whole config space.
+            std::string().swap(result.hsacoBinary);
+          }
+
+          compilationResults[idx] = std::move(result);
         }
       };
 
@@ -1109,49 +1751,124 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       return failure();
     }
 
-    int64_t validResults = 0;
-    // Sequential benchmarking phase (must be sequential for accurate timing)
-    // Note: Due to early exit on compilation failures, only NotApplicable,
-    // TimedOut, and Success statuses are possible here. Timed-out configs are
-    // reported identically to not-applicable ones (N/A).
-    for (const auto &result : compilationResults) {
-      llvm::outs() << result.perfConfig << "\t";
-
-      if (result.status == CompilationStatus::NotApplicable ||
-          result.status == CompilationStatus::TimedOut) {
-        llvm::outs() << "N/A\n";
-        continue;
-      }
-
-      assert(result.status == CompilationStatus::Success &&
-             "Unexpected compilation status in benchmarking phase");
-
-      FailureOr<double> timing = benchmarkKernels(result, hostBuffers, gpuBuffers,
-                                                   bufferLengths, benchmarkParams);
-
-      if (failed(timing)) {
-        llvm::errs() << "Kernel execution failed\n";
-        return failure();
-      }
-      llvm::outs() << timing.value() << "\n";
-
-      validResults++;
-      // Find best config
-      if (rock::needToUpdateBest(benchmarkParams.tuningSpaceKind)) {
-        if (timing.value() < bestTimeOverall) {
-          bestTimeOverall = timing.value();
-          bestConfigOverall = result.perfConfig;
+    // --compile-only: serialize the kernel bundle and return before any HIP
+    // call (no hipMalloc, no stream). Single-pass is asserted above, so this
+    // path runs exactly once.
+    if (!benchmarkParams.compileOnlyDir.empty()) {
+      bool hasSuccessfulConfig = false;
+      for (const CompilationResult &result : compilationResults) {
+        if (result.status == CompilationStatus::Success) {
+          hasSuccessfulConfig = true;
+          break;
         }
       }
+      if (!hasSuccessfulConfig) {
+        llvm::errs() << "No configurations compiled successfully\n";
+        return failure();
+      }
+
+      // Blobs were streamed into <dir>.tmp during compilation; finalize just
+      // writes the manifest and atomically renames the bundle into place.
+      if (failed(finalizeArtifactBundle(benchmarkParams.compileOnlyDir,
+                                        compilationResults, layout, archName,
+                                        numCUs, numChiplets)))
+        return failure();
+      return success();
     }
 
-    if (validResults == 0) {
-      llvm::errs() << "No valid configurations found\n";
+    // Sequential benchmarking phase via the shared timing path.
+    if (failed(runBenchmarkPhase(compilationResults, layout, benchmarkParams,
+                                 coarseConfig)))
       return failure();
-    }
-  } // End of iteration loop
+  } // End tuning pass
 
   return success();
+}
+
+// Benchmark a previously compiled kernel bundle (--benchmark-artifacts). Runs
+// the commit / runtime-version / target-identity guardrails, then the shared
+// timing path with just-in-time HSACO decompression and per-config crash
+// resilience.
+static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
+  std::vector<CompilationResult> results;
+  BufferLayout layout;
+  ManifestInfo info;
+  if (failed(loadArtifacts(dir, results, layout, info)))
+    return failure();
+
+  if (info.numConfigs != static_cast<int64_t>(results.size())) {
+    llvm::errs() << "error: manifest numConfigs=" << info.numConfigs
+                 << " but found " << results.size()
+                 << " config entries (truncated space?)\n";
+    return failure();
+  }
+
+  // Runtime-version guardrail (warn only; an incompatible code object will fail
+  // hipModuleLoadData anyway, so this just makes that failure actionable).
+  int runtimeVersion = 0;
+  if (hipRuntimeGetVersion(&runtimeVersion) == hipSuccess) {
+    if (static_cast<uint64_t>(runtimeVersion) != info.hipVersion) {
+      llvm::errs()
+          << "warning: artifact compiled against HIP " << info.hipVersion
+          << " but running on HIP runtime " << runtimeVersion
+          << " (code-object incompatibility may cause load failures)\n";
+    }
+  }
+
+  // Target-identity guardrail (always a hard error): arch/numCUs/numChiplets
+  // were baked into grid sizes at compile time, so any mismatch would produce
+  // wrong launch dimensions and bogus timings.
+  hipDeviceProp_t props;
+  HIPCHECK(hipGetDeviceProperties(&props, 0));
+  StringRef liveArch(props.gcnArchName);
+  int64_t liveCU = props.multiProcessorCount;
+  int64_t liveChiplets = rock::inferNumChiplets(liveArch, liveCU);
+
+  RocmDeviceName manifestDev, liveDev;
+  bool archMismatch = false;
+  if (failed(manifestDev.parse(info.arch)) || failed(liveDev.parse(liveArch))) {
+    archMismatch = true;
+  } else {
+    archMismatch =
+        manifestDev.getChip() != liveDev.getChip() ||
+        manifestDev.getFeaturesForBackend() != liveDev.getFeaturesForBackend();
+  }
+  bool cuMismatch = info.numCUs != liveCU;
+  bool chipletMismatch = info.numChiplets != liveChiplets;
+  if (archMismatch || cuMismatch || chipletMismatch) {
+    std::string detail;
+    llvm::raw_string_ostream d(detail);
+    d << "artifact target (arch='" << info.arch << "', numCUs=" << info.numCUs
+      << ", numChiplets=" << info.numChiplets << ") != live GPU (arch='"
+      << liveArch << "', numCUs=" << liveCU << ", numChiplets=" << liveChiplets
+      << ")";
+    d.flush();
+    llvm::errs() << "error: " << detail
+                 << "; grid sizes were baked at compile time, so this would "
+                    "produce wrong launches.\n";
+    return failure();
+  }
+
+  BenchmarkParams benchmarkParams{};
+  benchmarkParams.warmupMs = warmup;
+  benchmarkParams.repMs = rep;
+  benchmarkParams.useMedian = useMedian;
+  benchmarkParams.trimPercent = trimPercent;
+  benchmarkParams.sleepUs = sleepUs;
+  benchmarkParams.showStats = showStats;
+  benchmarkParams.showAllMeasurements = showAllMeasurements;
+  benchmarkParams.tuningSpaceKind = rock::TuningParamSetKind::Full;
+  benchmarkParams.numCompileThreads = numCompileThreads;
+  benchmarkParams.benchmarkConfig = benchmarkConfig;
+  benchmarkParams.flushLastLevelCache = flushLastLevelCache;
+  benchmarkParams.perfConfigTimeoutSec = 0;
+  benchmarkParams.gpuRunTimeoutSec = gpuRunTimeout;
+  benchmarkParams.compileOnlyDir = "";
+  benchmarkParams.twoStageTopK = twoStageTopK;
+  const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
+                                     coarseRelSemTarget, coarseChunkIters,
+                                     coarseWarmupIters,  coarseWarmupFloorMs};
+  return runBenchmarkPhase(results, layout, benchmarkParams, coarseConfig);
 }
 #undef HIPCHECK
 
@@ -1165,6 +1882,42 @@ int main(int argc, char **argv) {
     llvm::errs() << "trim-percent must be less than 50 to avoid trimming all "
                     "measurements\n";
     return EXIT_FAILURE;
+  }
+
+  if (twoStageTopK > 0 && coarseWarmupFloorMs > warmup) {
+    llvm::errs() << "coarse-warmup-floor-ms must not exceed warmup\n";
+    return EXIT_FAILURE;
+  }
+
+  // --compile-only wins over --benchmark-artifacts: it is the CPU-only phase,
+  // so honoring it stays valid even on the GPU-less hosts where the compile
+  // phase normally runs, whereas the artifact path needs a device.
+  bool runFromArtifacts = !benchmarkArtifactsDir.empty();
+  if (!compileOnlyDir.empty() && runFromArtifacts) {
+    llvm::errs() << "warning: ignoring --benchmark-artifacts="
+                 << benchmarkArtifactsDir
+                 << " because --compile-only takes precedence\n";
+    runFromArtifacts = false;
+  }
+
+  // Only a live artifact run enumerates its configs from the bundle. Once
+  // --compile-only has taken over, --benchmark-config is honored as the usual
+  // single-config narrowing.
+  if (runFromArtifacts && !benchmarkConfig.empty()) {
+    llvm::errs() << "--benchmark-config is incompatible with "
+                    "--benchmark-artifacts (the artifact already enumerates "
+                    "configs)\n";
+    return EXIT_FAILURE;
+  }
+
+  // --benchmark-artifacts: everything comes from the kernel bundle, so skip
+  // parsing the MLIR input and the arch walk entirely.
+  if (runFromArtifacts) {
+    if (failed(runBenchmarkFromArtifacts(benchmarkArtifactsDir))) {
+      llvm::errs() << "Benchmark from artifacts failed\n";
+      return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
   }
 
   DialectRegistry registry;

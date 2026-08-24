@@ -1,6 +1,7 @@
 //===- GridLayoutEmitter.cpp - MLIR helper that contains the layout logic -===//
 //
-// Copyright 2020 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,26 +37,44 @@ using namespace mlir::rock;
 using namespace mlir::arith;
 using namespace mlir::rock::layout;
 
+// based on
+// https://github.com/HazyResearch/HipKittens/blob/7f6986b502396aa865c0c80625121daf7caa756d/include/common/util.cuh#L78
 static Value rearrangeWorkgroupsForXCC(Location loc, PatternRewriter &b,
                                        Value bid, int64_t gridSize,
-                                       int64_t numChipletsPerGroup) {
-  Value numChipletsVal =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), numChipletsPerGroup);
-  int64_t wgsPerChiplet = (gridSize) / numChipletsPerGroup;
-  Value wgsPerChipletVal = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), wgsPerChiplet);
-  Value logicalChipletId = RemUIOp::create(b, loc, bid, numChipletsVal);
-  Value wgIdPerLogicalChiplet = DivUIOp::create(b, loc, bid, numChipletsVal);
-  Value rearrangedBid = AddIOp::create(
-      b, loc, wgIdPerLogicalChiplet,
-      MulIOp::create(b, loc, logicalChipletId, wgsPerChipletVal));
-  int64_t lastNumChipletMultiple =
-      (gridSize - 1) - (gridSize % numChipletsPerGroup);
-  Value lastNumChipletMultipleVal =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), lastNumChipletMultiple);
-  Value isBidLargerThanlastNumChipletMultiple = arith::CmpIOp::create(
-      b, loc, arith::CmpIPredicate::sgt, bid, lastNumChipletMultipleVal);
-  bid = arith::SelectOp::create(b, loc, isBidLargerThanlastNumChipletMultiple,
-                                bid, rearrangedBid);
+                                       int64_t numChiplets, int64_t chunkSize) {
+  Type i32 = b.getIntegerType(32);
+  Value numChipletsVal = b.createOrFold<ConstantIntOp>(loc, i32, numChiplets);
+  Value chunkSizeVal = b.createOrFold<ConstantIntOp>(loc, i32, chunkSize);
+
+  // Current XCD
+  Value xcd = RemUIOp::create(b, loc, bid, numChipletsVal);
+
+  // Largest full (numChiplets*chunkSize)-aligned block
+  int64_t block = numChiplets * chunkSize;
+  int64_t limit = (gridSize / block) * block;
+  Value blockVal = b.createOrFold<ConstantIntOp>(loc, i32, block);
+  Value limitVal = b.createOrFold<ConstantIntOp>(loc, i32, limit);
+
+  // Local BID (within round-robin assignment)
+  Value localBid = DivUIOp::create(b, loc, bid, numChipletsVal);
+  Value chunkIdx = DivUIOp::create(b, loc, localBid, chunkSizeVal);
+  Value posInChunk = RemUIOp::create(b, loc, localBid, chunkSizeVal);
+
+  // New BID
+  // newBid = chunkIdx * block + xcd * chunkSize + posInChunk;
+  Value newBid = AddIOp::create(
+      b, loc,
+      AddIOp::create(b, loc, MulIOp::create(b, loc, chunkIdx, blockVal),
+                     MulIOp::create(b, loc, xcd, chunkSizeVal)),
+      posInChunk);
+
+  // If bid beyond the last full block, leave unchanged
+  // if (bid > limit) return bid;
+  Value isBidLargerThanLastFullBlock =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sgt, bid, limitVal);
+  bid = arith::SelectOp::create(b, loc, isBidLargerThanLastFullBlock, bid,
+                                newBid);
+
   return bid;
 }
 
@@ -63,29 +82,14 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
                                                     Location loc, Value bid,
                                                     GridLayoutInfo info,
                                                     StringRef arch) {
-  // Currently the firmware will launch workgroups
-  // in a round-robin fashion to each chiplet. However
-  // we would want a group (>=1) of chiplets to perform
-  // a spatially local tile.
-  // Therefore, adjust bid to make every consecutive #groups of chiplets
-  // be slowest changing in the grid.
-  if (info.numChiplets > 1) {
-    // It was empirically found that two chiplets as a group
-    // computing a spatial mxn tile has better locality throughout.
-    assert(info.numChiplets % 2 == 0);
-    int64_t numChipletsPerGroup = std::ceil(info.numChiplets / 2);
-    int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
-    bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, numChipletsPerGroup);
-  }
-
   // Heuristic to compute groupSize
   // This also covers the cases where the output width is larger
   // than the input width
   int64_t bitWidthOut = info.outputType.getIntOrFloatBitWidth();
   int64_t bitWidthIn =
       std::min((int64_t)info.inputType.getIntOrFloatBitWidth(), bitWidthOut);
-  int64_t groupSize =
-      std::ceil(std::sqrt(info.numCU)) * (bitWidthOut / bitWidthIn);
+  int64_t groupSize = std::ceil(std::sqrt(info.numCU / info.numChiplets)) *
+                      (bitWidthOut / bitWidthIn);
   // use gridGroupSize if it's not zero
   if (info.gridGroupSize != 0) {
     groupSize = info.gridGroupSize;
@@ -94,6 +98,21 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   } else {
     LLVM_DEBUG(llvm::dbgs()
                << "Using heuristic to set groupSize to " << groupSize << "\n");
+  }
+
+  // Currently the firmware will launch workgroups
+  // in a round-robin fashion to each chiplet. However
+  // we would want a group (>=1) of chiplets to perform
+  // a spatially local tile.
+  // Therefore, adjust bid to make every consecutive #groups of chiplets
+  // be slowest changing in the grid.
+  if (info.numChiplets > 1) {
+    int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
+    int64_t chunkSize =
+        std::min(groupSize * groupSize,
+                 std::max(int64_t{1}, gridSize / info.numChiplets));
+    bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, info.numChiplets,
+                                    chunkSize);
   }
 
   Value mBlocksPerGroup = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSize);
@@ -131,11 +150,9 @@ AttnGridCoordinates rock::layout::makeGxNGridLayout(
   // Therefore, adjust bid to make every consecutive #groups of chiplets
   // be slowest changing in the grid.
   if (numChiplets > 1) {
-    // It was empirically found that two chiplets as a group
-    // computing a spatial mxn tile has better locality throughout.
-    assert(numChiplets % 2 == 0);
-    int64_t numChipletsPerGroup = std::ceil(numChiplets / 2);
-    bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, numChipletsPerGroup);
+    int64_t chunkSize = std::max(int64_t{1}, gridSize / numChiplets);
+    bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, numChiplets,
+                                    chunkSize);
   }
   Value g1MBlockCountVal =
       b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), mBlocks);

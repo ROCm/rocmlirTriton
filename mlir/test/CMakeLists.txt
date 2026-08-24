@@ -108,6 +108,15 @@ set(ROCMLIR_TEST_DEPENDS
   mlir-mixr-fullc-test
   mlir-mixr-split-k-test
   mlir-reduce-fusible-test
+
+  # Vendored Triton binaries. Building them as part of the check-rocmlir
+  # target allows us to catch bugs, since if we break something in the
+  # build process for them, build will fail. In the future we could also add:
+  # triton-reduce
+  # triton-lsp
+  # triton-tensor-layout
+  # triton-llvm-opt
+  triton-opt
 )
 
 list(APPEND ROCMLIR_TEST_DEPENDS
@@ -123,7 +132,7 @@ if(MLIR_ENABLE_ROCM_RUNNER)
 
     conv-validation-wrappers
     mlir-runner
-    # Not strictly a test dependency, included so we don't break it during compiles
+    # Required by hardware-gated rocmlir-tuning-driver tests.
     rocmlir-tuning-driver
   )
   # Only add mlir_rocm_runtime if it exists (it won't if using pre-built LLVM without ROCm support)

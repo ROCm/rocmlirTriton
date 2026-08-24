@@ -48,9 +48,6 @@ LLVMMC
 LLVMMCDisassembler
 LLVMMCParser
 LLVMMIRParser
-LLVMNVPTXCodeGen
-LLVMNVPTXDesc
-LLVMNVPTXInfo
 LLVMObjCARCOpts
 LLVMObject
 LLVMObjectYAML
@@ -106,7 +103,6 @@ MLIRBuiltinToLLVMIRTranslation
 MLIRBytecodeOpInterface
 MLIRBytecodeReader
 MLIRBytecodeWriter
-MLIRCAPIGPU
 MLIRCAPIIR
 MLIRCallInterfaces
 MLIRCastInterfaces
@@ -143,6 +139,7 @@ MLIRIR
 MLIRIndexDialect
 MLIRIndexToLLVM
 MLIRIndexingMapOpInterface
+MLIRInferIntDivisibilityOpInterface
 MLIRInferIntRangeCommon
 MLIRInferIntRangeInterface
 MLIRInferStridedMetadataInterface

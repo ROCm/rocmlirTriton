@@ -46,13 +46,15 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
   /// When false (default), run `rock-allow-fast-math-flags` immediately
-  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass.
+  /// after `rock-fusion-splitk-regularization`. Set to true to skip that pass
+  /// and to hold `rock-to-ttir` to IEEE f32 dots.
   PassOptions::Option<bool> disableFastMath{
       *this, "disable-fast-math",
       desc("Skip `rock-allow-fast-math-flags` after split-k regularization "
            "(by default the pass runs and tags floating-point ops with "
            "fastmath flags like `arcp`/`contract`/`nsz`/`afn` for "
-           "reciprocal-style and FMA-friendly lowering)"),
+           "reciprocal-style and FMA-friendly lowering), and keep every f32 "
+           "`tt.dot` at IEEE precision"),
       init(false)};
 };
 
@@ -111,11 +113,17 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
            "(kKnobDefault=off, 0=off, 1=on; requires useBufferOps to be on). "
            "Debug-only override; not a perfConfig knob."),
       init(kKnobDefault)};
-  PassOptions::Option<int64_t> scheduleHint{
-      *this, "scheduleHint",
-      desc("Per-kernel scheduling hint ordinal (kKnobDefault=arch default, "
-           "0=none, 1=attention, 2=memory-bound-attention). See "
-           "mlir/Dialect/Rock/utility/KnobUtils.h for the encoding."),
+  PassOptions::Option<int64_t> useReductionLayout{
+      *this, "useReductionLayout",
+      desc("Gate the rock-set-reduction-layout pass (warp redistribution "
+           "onto the reduction dim). kKnobDefault=-1 (heuristic, currently "
+           "off), 0=off, 1=on. Not tuned; opt-in via the perfConfig."),
+      init(kKnobDefault)};
+  PassOptions::Option<int64_t> useOptimizeEpilogue{
+      *this, "useOptimizeEpilogue",
+      desc("Gate Triton's OptimizeEpilogue pass. kKnobDefault=-1 uses the "
+           "rocMLIR store-tail heuristic, 0=off, 1=unconditionally on. Not "
+           "tuned."),
       init(kKnobDefault)};
 };
 
@@ -151,17 +159,18 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
   PassOptions::Option<bool> allowFlushDenorm{
       *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
       init(true)};
-  PassOptions::Option<int64_t> scheduleHint{
-      *this, "scheduleHint",
-      desc("Per-kernel scheduling hint ordinal forwarded to TritonToHsaco "
-           "(see mlir/Dialect/Rock/utility/KnobUtils.h)"),
-      init(kKnobDefault)};
   PassOptions::Option<std::string> llvmFnAttrs{
       *this, "llvmFnAttrs",
       desc("Debug-only override: comma-separated LLVM function attributes "
            "(name or name=value) applied to the kernel after Triton's "
            "attributes."),
       init("")};
+  PassOptions::Option<int> useExpertScheduling{
+      *this, "useExpertScheduling",
+      desc("Override AMDGPU expert-scheduling codegen flag "
+           "(kKnobDefault=arch default (on for gfx1250), 0=off, 1=on). "
+           "Debug-only override; not a perfConfig knob."),
+      init(kKnobDefault)};
 };
 
 /// Adds the `backend` pipeline (GPU compilation only) to the `OpPassManager`.

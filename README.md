@@ -10,7 +10,7 @@
 
 > MLIR-based GEMM, convolution, attention, GEMM+GEMM, and CONV+GEMM kernel generator for AMD GPUs, built on a Triton compilation backend.
 
-rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with Triton's bundled LLVM/MLIR (under `external/triton`) producing the final HSACO.
+rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with vendored Triton (under `external/triton`) and Triton-pinned LLVM/MLIR (under `external/llvm-project`) producing the final HSACO.
 
 It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is primarily consumed as the static `librockCompiler` library by [MIGraphX](https://github.com/ROCm/AMDMIGraphX), though it can also be driven standalone for kernel generation, validation, and performance tuning.
 
@@ -20,17 +20,21 @@ It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is
 - `clang` / `clang++` 20 (defaults to `clang-20` / `clang++-20`; override via the `C_COMPILER` / `CXX_COMPILER` environment variables).
 - `lld`, `ninja`, and CMake >= 3.20.
 - Python 3 (only needed for in-tree development scripts and the LIT test runner; not required for production builds or MIGraphX integration).
-- Git (for submodule initialization and patch application).
+- Git
 
 ## Installation
 
-The build is driven by `cmake.sh`, which initializes the Triton submodule, applies `triton-patches/` and `llvm-patches/`, builds Triton's LLVM/MLIR, and then configures and builds rocmlirTriton (including the fat `librockCompiler` static library):
+Triton and LLVM/MLIR are vendored in the repo (under `external/triton` and `external/llvm-project`), imported via `git subtree`. The build is driven by `cmake.sh`, which configures and builds LLVM/MLIR, Triton, and rocmlirTriton from those vendored trees. Patch files under `llvm-patches/` and `triton-patches/` are kept for provenance and to simplify the next upstream bump; they are not applied during CMake configure.
 
 ```sh
 git clone https://github.com/ROCm/rocmlirTriton.git
 cd rocmlirTriton
 bash cmake.sh
 ```
+
+`cmake.sh` wipes `build/` before configuring. Pass `--no-clean` to reconfigure an
+existing build directory instead, which avoids a full LLVM rebuild when you only
+want to change a few `-D` flags. Any extra arguments are forwarded to `cmake`.
 
 To install `librockCompiler` so MIGraphX can find it:
 
@@ -42,7 +46,7 @@ Additional developer documentation lives under [`docs/`](docs/).
 
 ## Usage
 
-A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the (Triton-bundled) LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
+A typical standalone pipeline generates a kernel with `rocmlir-gen`, lowers it with `rocmlir-driver -c`, and runs it via `rocm-run` -- a wrapper around `mlir-runner` that auto-locates the rocMLIR build and the Triton-pinned LLVM build directory, and links the right runtime libraries (`libmlir_rocm_runtime`, `libconv-validation-wrappers`, runner utils, etc.):
 
 ```sh
 ARCH=$(rocminfo | grep -o 'gfx[0-9a-z]*' | head -1)
@@ -88,9 +92,9 @@ See [SECURITY.md](SECURITY.md) for our responsible disclosure policy.
 
 ## Contact
 
-For questions, issues, or contributions, please reach out to the maintainers:
-
-- Chris Austen — [@causten](https://github.com/causten) · chausten@amd.com
+For questions, bug reports, or feature requests, please
+[open a GitHub issue](https://github.com/ROCm/rocmlirTriton/issues/new).
+Contributions are welcome through pull requests.
 
 See [CODEOWNERS](.github/CODEOWNERS) for the full ownership list.
 

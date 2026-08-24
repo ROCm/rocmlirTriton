@@ -1,6 +1,7 @@
 //===- LowerReduce.cpp - Lower rock.reduce to broadcast + atomic store ===//
 //
-// Copyright 2026 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -140,9 +141,9 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
 
     // Create a new store with the old store method, then update it
     // via setStoreMethodAndPrefill which sets the atomic method + prefill.
-    auto newStore =
-        StoreOp::create(rewriter, loc, storeOp.getResult().getType(),
-                        reduceInput, transformedDest, storeOp.getStoreMethod());
+    auto newStore = StoreOp::create(
+        rewriter, loc, storeOp.getResult().getType(), reduceInput,
+        transformedDest, storeOp.getResultAlias(), storeOp.getStoreMethod());
     if (failed(setStoreMethodAndPrefill(rewriter, newStore, storeMethod)))
       return storeOp.emitError("failed to set store method and prefill");
 

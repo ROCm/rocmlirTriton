@@ -1,13 +1,48 @@
 //===- tritonUtils.cpp - Triton-dependent utilities for Rock --------------===//
 //
-// Centralizes C++ replicas of Triton-internal functions that must be kept in
-// sync on every Triton version bump.  See tritonUtils.h for upstream sources.
+// Portions derived from Triton:
+// external/triton/third_party/amd/lib/TritonAMDGPUTransforms/
+// AccelerateAMDMatmul.cpp
+// external/triton/include/triton/Dialect/Triton/IR/TritonTypes.td
+//
+// Copyright 2018-2020 Philippe Tillet
+// Copyright 2020-2022 OpenAI
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// Rock-specific additions and modifications:
+// Copyright Advanced Micro Devices, Inc.
+//
+// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception AND MIT
+//
+// Centralizes Triton-dependent helpers and C++ replicas of Triton-internal
+// functions that must be kept in sync on every Triton version bump. See
+// tritonUtils.h for upstream sources.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
@@ -40,6 +75,10 @@ int getWmmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
   case ISAFamily::RDNA3:
     return 1;
+  // gfx1170 uses the gfx12/RDNA4-style 128-bit WMMA layout
+  // (FeatureWMMA128bInsts + FeatureSWMMACGfx1200Insts in LLVM), so it selects
+  // WMMA v2 like RDNA4. Keep in sync with AccelerateAMDMatmul.cpp.
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
     return 2;
   case ISAFamily::GFX1250:
@@ -55,6 +94,24 @@ bool isTTFloat(Type t) {
   return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
              Float8E5M2FNUZType, Float16Type, BFloat16Type, Float32Type,
              Float64Type>(t);
+}
+
+// Keep in sync with TT_Int in TritonTypes.td.
+bool isTTInt(Type t) {
+  auto intType = dyn_cast<IntegerType>(t);
+  if (!intType || !intType.isSignless())
+    return false;
+  switch (intType.getWidth()) {
+  case 1:
+  case 4:
+  case 8:
+  case 16:
+  case 32:
+  case 64:
+    return true;
+  default:
+    return false;
+  }
 }
 
 // Keep in sync with AccelerateAMDMatmul.cpp::mlirTypeToScaledElemType()
@@ -75,46 +132,23 @@ FailureOr<triton::ScaleDotElemType> mlirTypeToScaleDotElemType(Type type) {
       .Default([](Type) { return failure(); });
 }
 
-// Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
-// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
-// launch_cooperative_grid always 0. Returns LogicalResult instead of void.
-// Note: hipEventRecord is handled by callers, not by this function.
-LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
-                           uint32_t blockSize, uint32_t shared_memory,
-                           uint32_t num_ctas, hipStream_t stream,
-                           void **params) {
-  if (gridX == 0)
-    return success();
-  if (num_ctas > 1) {
-    // Note: driver.c checks hipSymbolTable.hipDrvLaunchKernelEx here because
-    // it loads HIP symbols via dlsym. We link directly, so no check needed.
-    hipLaunchAttribute attributes[2];
-    // Attribute0: Cluster dimensions
-    attributes[0].id = static_cast<hipLaunchAttributeID>(4);
-    int *cluster_dims = (int *)attributes[0].val.pad;
-    cluster_dims[0] = num_ctas;
-    cluster_dims[1] = 1;
-    cluster_dims[2] = 1;
-    // Attribute1: Cooperative launch
-    attributes[1].id = hipLaunchAttributeCooperative;
-    attributes[1].val.cooperative = 0;
+Value expandDimAndBroadcast(OpBuilder &builder, Location loc, Value source,
+                            int64_t axis, RankedTensorType resultType) {
+  auto sourceType = cast<RankedTensorType>(source.getType());
+  assert(axis >= 0 && axis <= sourceType.getRank() &&
+         "expanded axis must be within the source rank");
+  assert(resultType.getRank() == sourceType.getRank() + 1 &&
+         "broadcast result must have one more dimension than the source");
+  assert(resultType.getElementType() == sourceType.getElementType() &&
+         "broadcast cannot change the element type");
 
-    HIP_LAUNCH_CONFIG config = {
-        gridX * num_ctas, 1,      1,            // Grid size
-        blockSize,        1,      1,            // Block size
-        shared_memory,    stream, attributes, 2 // Number of attributes
-    };
-    hipError_t status = hipDrvLaunchKernelEx(&config, function, params, 0);
-    if (status != hipSuccess)
-      return failure();
-  } else {
-    hipError_t status =
-        hipModuleLaunchKernel(function, gridX, 1, 1, blockSize, 1, 1,
-                              shared_memory, stream, params, nullptr);
-    if (status != hipSuccess)
-      return failure();
-  }
-  return success();
+  SmallVector<int64_t> expandedShape(sourceType.getShape());
+  expandedShape.insert(expandedShape.begin() + axis, 1);
+  auto expandedType = RankedTensorType::get(
+      expandedShape, sourceType.getElementType(), sourceType.getEncoding());
+  Value expanded =
+      triton::ExpandDimsOp::create(builder, loc, expandedType, source, axis);
+  return triton::BroadcastOp::create(builder, loc, resultType, expanded);
 }
 
 } // namespace rock

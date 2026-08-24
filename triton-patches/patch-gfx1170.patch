@@ -1,0 +1,809 @@
+diff --git a/test/Conversion/amd/buffer_ops_gfx1170.mlir b/test/Conversion/amd/buffer_ops_gfx1170.mlir
+new file mode 100644
+index 0000000000..7aac75d56c
+--- /dev/null
++++ b/test/Conversion/amd/buffer_ops_gfx1170.mlir
+@@ -0,0 +1,64 @@
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
++
++// gfx1170 uses the gfx11/RDNA3 buffer encoding (it is not a gfx12 target).
++// These tests lock in the RDNA3-specific pieces of the buffer-op lowering that
++// differ from the CDNA (gfx942/gfx950) and gfx12 (gfx1250) targets covered by
++// buffer_load_store.mlir / buffer_ops_gfx1250.mlir:
++//   - the cache-modifier control bits (getCtrlBitsForCacheModifierOnRDNA3), and
++//   - the buffer-atomic cache policy (getBufferAtomicCachePolicy, no SCOPE_DEV).
++
++#blocked0 = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
++    // CHECK-LABEL: buffer_load_cs
++    tt.func @buffer_load_cs(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset : tensor<128xi32, #blocked0>{tt.divisibility=16:i32}) {
++        // The resource descriptor is built via make.buffer.rsrc (RDNA path).
++        // The exact RDNA descriptor flags word is checked in
++        // amd-buffer-cache-modifiers-rdna3.mlir; here we focus on the
++        // cache-modifier aux value and the atomic cache policy.
++        // CHECK: rocdl.make.buffer.rsrc
++        // RDNA3 cache-modifier bits for `cs`: glc|slc|dlc = 0b111 = 7.
++        // (CDNA gfx942/gfx950 encode `cs` as 3; this is the RDNA-specific value.)
++        // CHECK: %[[AUX:.*]] = llvm.mlir.constant(7 : i32) : i32
++        // CHECK: rocdl.raw.ptr.buffer.load {{.*}}, {{.*}}, {{.*}}, %[[AUX]] : f32
++        %ret = amdg.buffer_load %arg0[%offset] cacheModifier = cs : tensor<128xf32, #blocked0>
++        tt.return
++  }
++}
++
++// -----
++
++#blocked0 = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
++    // CHECK-LABEL: buffer_store_cs
++    tt.func @buffer_store_cs(%value : tensor<128xf32, #blocked0>, %arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset : tensor<128xi32, #blocked0>{tt.divisibility=16:i32}) {
++        // CHECK: rocdl.make.buffer.rsrc
++        // RDNA3 cache-modifier bits for `cs`: glc|slc|dlc = 0b111 = 7.
++        // CHECK: %[[AUX:.*]] = llvm.mlir.constant(7 : i32) : i32
++        // CHECK: rocdl.raw.ptr.buffer.store {{.*}}, {{.*}}, {{.*}}, {{.*}}, %[[AUX]] : f32
++        amdg.buffer_store %value, %arg0[%offset] cacheModifier = cs : tensor<128xf32, #blocked0>
++        tt.return
++  }
++}
++
++// -----
++
++#blocked0 = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
++    // CHECK-LABEL: buffer_atomic_rmw_fadd_f32
++    tt.func @buffer_atomic_rmw_fadd_f32(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset : tensor<128xi32, #blocked0>{tt.divisibility=16:i32}, %values : tensor<128xf32, #blocked0>) {
++        // CHECK: rocdl.make.buffer.rsrc
++        // A single release fence precedes the atomics.
++        // CHECK: llvm.fence syncscope("agent") release
++        // gfx1170 uses the RDNA/gfx11 buffer-atomic cache policy (cpol = 0 when
++        // the result is unused). It must NOT emit the gfx12 SCOPE_DEV (16) or
++        // SC0|SCOPE_DEV (17) encodings used by gfx1250.
++        // CHECK-NOT: llvm.mlir.constant(16 : i32)
++        // CHECK-NOT: llvm.mlir.constant(17 : i32)
++        // sizePerThread=4 => 4 f32 atomic fadd calls (BUFFER_ATOMIC_ADD_F32).
++        // CHECK-COUNT-4: llvm.call_intrinsic "llvm.amdgcn.raw.ptr.buffer.atomic.fadd"({{.*}}) : (f32, !llvm.ptr<8>, i32, i32, i32) -> f32
++        // A single acquire fence follows the atomics.
++        // CHECK: llvm.fence syncscope("agent") acquire
++        %ret = amdg.buffer_atomic_rmw fadd, acq_rel, gpu, %values, %arg0[%offset] : tensor<128xf32, #blocked0>
++        tt.return
++  }
++}
+diff --git a/test/Conversion/amd/fp8_dot4.mlir b/test/Conversion/amd/fp8_dot4.mlir
+new file mode 100644
+index 0000000000..8348fd6d37
+--- /dev/null
++++ b/test/Conversion/amd/fp8_dot4.mlir
+@@ -0,0 +1,70 @@
++// RUN: triton-opt %s --split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
++// RUN: triton-opt %s --split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s
++
++// gfx1170 and RDNA4 ship the Dot11Insts fp8 dot4 instructions
++// (v_dot4_f32_{fp8,bf8}_{fp8,bf8}). A blocked (non-WMMA) fp8 dot with
++// K % 4 == 0 lowers to those intrinsics instead of upcasting each element to
++// f32 and issuing scalar fmuladds.
++//
++// Note the operand form: Triton's type converter maps every fp8 type to i8, so
++// the four K-consecutive elements arrive as <4 x i8> and are bitcast to a
++// single i32. Unlike fdot2 and sdot4, these intrinsics take no trailing clamp
++// operand, so the call must have exactly three arguments.
++//
++// chooseIntrinsic() does not check the target; isLegalFMAForm() is what keeps
++// fp8 operands away from targets without the instruction, matching how the
++// fdot2 and sdot4 branches are handled.
++
++// CHECK-LABEL: v_dot_fp8_fp8
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @v_dot_fp8_fp8(%arg0: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xf32, #blocked>) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<4xi8> to i32
++    // CHECK-COUNT-8: llvm.call_intrinsic "llvm.amdgcn.dot4.f32.fp8.fp8"({{.*}}) : (i32, i32, f32) -> f32
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: v_dot_bf8_bf8
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @v_dot_bf8_bf8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xf32, #blocked>) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<4xi8> to i32
++    // CHECK-COUNT-8: llvm.call_intrinsic "llvm.amdgcn.dot4.f32.bf8.bf8"({{.*}}) : (i32, i32, f32) -> f32
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// A dot may mix the two fp8 types: DotOp::verify only requires A and B to share
++// a bit width. Each ordering has its own instruction, so the two cases below
++// must select different intrinsics.
++
++// CHECK-LABEL: v_dot_fp8_bf8
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @v_dot_fp8_bf8(%arg0: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xf32, #blocked>) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<4xi8> to i32
++    // CHECK-COUNT-8: llvm.call_intrinsic "llvm.amdgcn.dot4.f32.fp8.bf8"({{.*}}) : (i32, i32, f32) -> f32
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: v_dot_bf8_fp8
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @v_dot_bf8_fp8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>, %arg1: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>, %arg2: tensor<16x16xf32, #blocked>) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<4xi8> to i32
++    // CHECK-COUNT-8: llvm.call_intrinsic "llvm.amdgcn.dot4.f32.bf8.fp8"({{.*}}) : (i32, i32, f32) -> f32
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<16x16xf32, #blocked>
++    tt.return
++  }
++}
+diff --git a/test/Conversion/amd/fp_to_fp_gfx1170.mlir b/test/Conversion/amd/fp_to_fp_gfx1170.mlir
+new file mode 100644
+index 0000000000..05ca4e6b37
+--- /dev/null
++++ b/test/Conversion/amd/fp_to_fp_gfx1170.mlir
+@@ -0,0 +1,97 @@
++// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
++
++// gfx1170 floating-point conversions.
++//
++// Standard fp16/bf16 <-> fp32 casts use the scalar LLVM path, identical to the
++// other AMD targets covered by fp_to_fp.mlir.
++//
++// The OCP fp8 conversions (f8E5M2 / f8E4M3FN) are the interesting part: gfx1170
++// does NOT use hardware fp8 cvt instructions for them. Unlike gfx950
++// (rocdl.cvt.scalef32.pk.*) or gfx942 (rocdl.cvt.pk.{fp8,bf8}.*), the gfx1170
++// lowering falls back to *software* emulation (bit manipulation: llvm.trunc to
++// i8, llvm.select, llvm.lshr, ...). These tests lock that fallback in so a
++// future switch to hardware fp8 cvt on gfx1170 is a deliberate, reviewed change.
++
++// CHECK-LABEL: f16_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @f16_to_f32(%arg0: tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // CHECK-COUNT-8: llvm.fpext %{{.+}} : f16 to f32
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: f32_to_f16
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @f32_to_f16(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // rtne: scalar fptrunc (same as gfx942, not gfx950's packed vector fptrunc).
++    // CHECK-COUNT-8: llvm.fptrunc %{{.+}} : f32 to f16
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    // rtz: packed round-to-zero conversion.
++    // CHECK-COUNT-4: rocdl.cvt.pkrtz
++    %1 = tt.fp_to_fp %arg0, rounding = rtz : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf16, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: downcast_f32_to_ocp_f8
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_f32_to_ocp_f8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // f32 -> f8E4M3FN: software emulation, no hardware fp8 cvt.
++    // CHECK-NOT: rocdl.cvt
++    // CHECK: llvm.trunc %{{.+}} : i32 to i8
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: downcast_f32_to_ocp_bf8
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @downcast_f32_to_ocp_bf8(%arg0: tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // f32 -> f8E5M2: software emulation, no hardware fp8 cvt.
++    // CHECK-NOT: rocdl.cvt
++    // CHECK: llvm.trunc %{{.+}} : i32 to i8
++    %0 = tt.fp_to_fp %arg0, rounding = rtne : tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: upcast_ocp_f8_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @upcast_ocp_f8_to_f32(%arg0: tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // f8E4M3FN -> f32: software emulation, no hardware fp8 cvt.
++    // CHECK-NOT: rocdl.cvt
++    // CHECK: llvm.select
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
++
++// -----
++
++// CHECK-LABEL: upcast_ocp_bf8_to_f32
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
++  tt.func @upcast_ocp_bf8_to_f32(%arg0: tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>) {
++    // f8E5M2 -> f32: software emulation, no hardware fp8 cvt. E5M2 shares f16's
++    // exponent layout, so the upcast is a bit-shift into f16 then fpext (no
++    // llvm.select, unlike the E4M3FN path).
++    // CHECK-NOT: rocdl.cvt
++    // CHECK: llvm.fpext
++    %0 = tt.fp_to_fp %arg0 : tensor<8x8xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> -> tensor<8x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
++    tt.return
++  }
++}
+diff --git a/test/Conversion/amd/minmax.mlir b/test/Conversion/amd/minmax.mlir
+index dbec41fd7e..4dda6f1d49 100644
+--- a/test/Conversion/amd/minmax.mlir
++++ b/test/Conversion/amd/minmax.mlir
+@@ -1,5 +1,6 @@
+ // RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s
+ // RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950 | FileCheck %s
++// RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
+ // RUN: triton-opt %s --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s
+ 
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+diff --git a/test/Conversion/amd/tritongpu_to_llvm_rdna.mlir b/test/Conversion/amd/tritongpu_to_llvm_rdna.mlir
+index 6e9654470f..2b9d0d6759 100644
+--- a/test/Conversion/amd/tritongpu_to_llvm_rdna.mlir
++++ b/test/Conversion/amd/tritongpu_to_llvm_rdna.mlir
+@@ -1,4 +1,7 @@
+ // RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 --convert-builtin-func-to-llvm | FileCheck %s
++// gfx1170 is RDNA3-classified for warp shuffles/reductions, so it lowers these
++// to the same DPP (row_shr/row_xmask) + permlanex16 + readlane sequence.
++// RUN: triton-opt %s -split-input-file --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 --convert-builtin-func-to-llvm | FileCheck %s
+ 
+ #blocked3 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+diff --git a/test/Conversion/amd/tritongpu_wmma_dot_to_llvm.mlir b/test/Conversion/amd/tritongpu_wmma_dot_to_llvm.mlir
+index 264986ac13..1b67eb0fb6 100644
+--- a/test/Conversion/amd/tritongpu_wmma_dot_to_llvm.mlir
++++ b/test/Conversion/amd/tritongpu_wmma_dot_to_llvm.mlir
+@@ -1,5 +1,8 @@
+ // RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 --convert-builtin-func-to-llvm | FileCheck %s
+ // RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 --convert-builtin-func-to-llvm | FileCheck %s
++// gfx1170 shares the gfx11 shared-memory model with gfx1100 and the
++// WMMA v2 engine with gfx1200, so it satisfies the same default checks.
++// RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 --convert-builtin-func-to-llvm | FileCheck %s
+ // RUN: triton-opt %s --split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 --convert-builtin-func-to-llvm | FileCheck %s --check-prefixes=GFX1250
+ 
+ #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>
+@@ -217,6 +220,39 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
+     tt.return
+   }
+ 
++  //  CHECK-LABEL: wmma2_dot_fp8_bf8
++  tt.func @wmma2_dot_fp8_bf8(%arg0: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: wmma.f32.16x16x16.fp8.bf8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
++    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.return
++  }
++
++  //  CHECK-LABEL: wmma2_dot_bf8_fp8
++  tt.func @wmma2_dot_bf8_fp8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: wmma.f32.16x16x16.bf8.fp8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E4M3FN, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
++    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.return
++  }
++
++  //  CHECK-LABEL: wmma2_dot_bf8
++  tt.func @wmma2_dot_bf8(%arg0: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf32, #mma2>, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: llvm.bitcast %{{.*}} : vector<8xi8> to vector<2xi32>
++    // CHECK: wmma.f32.16x16x16.bf8.bf8{{.*}} : (vector<2xi32>, vector<2xi32>, vector<8xf32>) -> vector<8xf32>
++    %0 = tt.dot %arg0, %arg1, %arg2, inputPrecision = ieee : tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>> * tensor<16x16xf8E5M2, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>> -> tensor<16x16xf32, #mma2>
++    %ptr0 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.store %ptr0, %0 : tensor<16x16x!tt.ptr<f32>, #mma2>
++    tt.return
++  }
++
+   //  CHECK-LABEL: wmma2_dot
+   tt.func @wmma2_dot(%arg0: tensor<16x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma2, kWidth = 8}>>, %arg1: tensor<16x16xf16, #ttg.dot_op<{opIdx = 1, parent = #mma2, kWidth = 8}>>, %arg2: tensor<16x16xf16, #mma2>, %arg3: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
+     // CHECK-COUNT-8: llvm.extractvalue %{{.*}} : !llvm.struct<(f16, f16, f16, f16, f16, f16, f16, f16)>
+diff --git a/test/Conversion/amd/warp_id_to_llvm.mlir b/test/Conversion/amd/warp_id_to_llvm.mlir
+index 2227c5011d..7daa8e470b 100644
+--- a/test/Conversion/amd/warp_id_to_llvm.mlir
++++ b/test/Conversion/amd/warp_id_to_llvm.mlir
+@@ -2,6 +2,11 @@
+ // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950  | FileCheck %s --check-prefixes=CHECK,GFX9
+ // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,GFX12
+ // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,GFX12
++// gfx1170 has the gfx12 matrix engine but is a gfx11 target and does NOT expose
++// hardware wave-id (supportsWaveId is RDNA4/GFX1250 only), so it lowers
++// ttg.warp_id via the arithmetic (and/udiv) path rather than rocdl.wave.id.
++// Unlike the gfx9 path it does not append a rocdl.readfirstlane.
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s --check-prefixes=CHECK,GFX1170
+ 
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.shared = 0 : i32, "ttg.threads-per-warp" = 64 : i32} {
+ 
+@@ -14,6 +19,16 @@ tt.func public @wave_id() {
+   //  GFX9-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
+   //  GFX9-NEXT: %{{.+}} = rocdl.readfirstlane %[[DIV]] : i32
+ 
++  // gfx1170 uses the same arithmetic as gfx9 but does not emit readfirstlane
++  // and does not use rocdl.wave.id (no hardware wave-id on this gfx11 target).
++  //     GFX1170: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
++  // GFX1170-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
++  // GFX1170-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
++  // GFX1170-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
++  // GFX1170-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
++  //  GFX1170-NOT: rocdl.readfirstlane
++  //  GFX1170-NOT: rocdl.wave.id
++
+   // GFX12-NEXT: rocdl.wave.id
+   //      CHECK: scf.for
+ 
+diff --git a/test/Conversion/amd/wmma-v2-shortcut.mlir b/test/Conversion/amd/wmma-v2-shortcut.mlir
+index 1c25daba0b..0c61948bba 100644
+--- a/test/Conversion/amd/wmma-v2-shortcut.mlir
++++ b/test/Conversion/amd/wmma-v2-shortcut.mlir
+@@ -1,4 +1,7 @@
+ // RUN: triton-opt %s --tritongpu-reduce-data-duplication --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch="gfx1200" -reconcile-unrealized-casts -split-input-file | FileCheck %s
++// gfx1170 carries the gfx12 matrix engine, so it uses WMMA v2 and takes the
++// same convert_layout shortcut as gfx1200 (RDNA4).
++// RUN: triton-opt %s --tritongpu-reduce-data-duplication --allocate-shared-memory --convert-triton-amdgpu-to-llvm=gfx-arch="gfx1170" -reconcile-unrealized-casts -split-input-file | FileCheck %s
+ 
+ #wmmaTv2 = #ttg.amd_wmma<{version = 2, ctaLayout = {register = [], warp = []}, isTranspose = true}>
+ #dotop0v2 = #ttg.dot_op<{opIdx = 0, parent = #wmmaTv2, kWidth=8}>
+diff --git a/test/TritonGPU/amd/accelerate-amd-matmul-wmma-gen2.mlir b/test/TritonGPU/amd/accelerate-amd-matmul-wmma-gen2.mlir
+index a7da916690..4b6355b7ae 100644
+--- a/test/TritonGPU/amd/accelerate-amd-matmul-wmma-gen2.mlir
++++ b/test/TritonGPU/amd/accelerate-amd-matmul-wmma-gen2.mlir
+@@ -1,4 +1,7 @@
+ // RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1200 matrix-instruction-size=0" | FileCheck %s
++// gfx1170 is gfx11-based but ships the gfx12/RDNA4 128-bit WMMA engine
++// (incl. fp8/bf8 WMMA), so it must select the same WMMA v2 layout as gfx1200.
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1170 matrix-instruction-size=0" | FileCheck %s
+ 
+ // CHECK: #[[DOT_OP_PARENT:.+]] = #ttg.blocked<{{.*}}>
+ // CHECK: #[[WMMA_0:.+]] = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = {{\[\[0, 1\], \[0, 2\]\]}}}}>
+diff --git a/test/TritonGPU/amd/amd-buffer-cache-modifiers-rdna3.mlir b/test/TritonGPU/amd/amd-buffer-cache-modifiers-rdna3.mlir
+index 11d749866c..41dae65a00 100644
+--- a/test/TritonGPU/amd/amd-buffer-cache-modifiers-rdna3.mlir
++++ b/test/TritonGPU/amd/amd-buffer-cache-modifiers-rdna3.mlir
+@@ -1,4 +1,7 @@
+ // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1150 | FileCheck %s
++// gfx1170 uses the gfx11/RDNA3 buffer cache-modifier encoding
++// (getCtrlBitsForCacheModifierOnRDNA3), so it emits the same aux values.
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s
+ 
+ // Verify that RDNA3 (and 3.5) cache modifier qualifiers emit the correct cachepolicy
+ // aux values in rocdl.raw.ptr.buffer.load/store operations.
+@@ -16,6 +19,13 @@
+ // CHECK-LABEL: buffer_load_cg
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+   tt.func @buffer_load_cg(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<128xi32, #blocked> {tt.divisibility = 16 : i32}) {
++    // The resource descriptor is built by createResourceDescriptor with the
++    // RDNA-family flags word 822243328 ((7<<12)|(4<<15)|(1<<24)|(3<<28)); the
++    // CDNA path (e.g. gfx942) emits 159744 instead. This is emitted for the
++    // whole RDNA family (RDNA2/RDNA3/gfx1170/RDNA4), so both the gfx1150 and
++    // gfx1170 RUN lines above share this check.
++    // CHECK: %[[flags:.*]] = llvm.mlir.constant(822243328 : i32) : i32
++    // CHECK: rocdl.make.buffer.rsrc {{.*}}, {{.*}}, {{.*}}, %[[flags]]
+     // .cg load on RDNA3.5: aux = 1 (GLC)
+     // CHECK: %[[aux:.*]] = llvm.mlir.constant(1 : i32) : i32
+     // CHECK: rocdl.raw.ptr.buffer.load {{.*}}, {{.*}}, {{.*}}, %[[aux]]
+diff --git a/test/TritonGPU/amd/amd-convert-buffer-ops-gfx1170.mlir b/test/TritonGPU/amd/amd-convert-buffer-ops-gfx1170.mlir
+new file mode 100644
+index 0000000000..39b5e6ebb9
+--- /dev/null
++++ b/test/TritonGPU/amd/amd-convert-buffer-ops-gfx1170.mlir
+@@ -0,0 +1,111 @@
++// RUN: triton-opt %s -split-input-file --tritonamdgpu-convert-buffer-ops="gfx-arch=gfx1170 analyze-small-tensor-ofst=true" | FileCheck %s
++
++// gfx1170 buffer-atomic RMW gating (ConvertToBufferOps). gfx1170 has buffer
++// atomic RMW instructions (supportsBufferAtomicRMW) but, like gfx11/RDNA3,
++// only supports BUFFER_ATOMIC_ADD_F32 for floating-point add
++// (supportsBufferAtomicFadd == F32 only). Integer RMW is universally
++// supported. Float adds of other types (f16/bf16/f64) must not be converted to
++// a buffer atomic; they stay as global tt.atomic_rmw (lowered later via CAS).
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1170", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: atomic_add_f32
++  tt.func public @atomic_add_f32(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %vals: tensor<1024xf32, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f32>, i32
++    %4 = tt.splat %3 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f32>, #blocked>, tensor<1024xi32, #blocked>
++    // f32 fadd is supported: converted to a buffer atomic RMW.
++    // CHECK: amdg.buffer_atomic_rmw fadd
++    // CHECK-NOT: tt.atomic_rmw
++    %6 = tt.atomic_rmw fadd, acq_rel, gpu, %5, %vals : (tensor<1024x!tt.ptr<f32>, #blocked>, tensor<1024xf32, #blocked>) -> tensor<1024xf32, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1170", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: atomic_add_bf16
++  tt.func public @atomic_add_bf16(%arg0: !tt.ptr<bf16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %vals: tensor<1024xbf16, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<bf16>, i32
++    %4 = tt.splat %3 : !tt.ptr<bf16> -> tensor<1024x!tt.ptr<bf16>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<bf16>, #blocked>, tensor<1024xi32, #blocked>
++    // bf16 fadd is unsupported on gfx11 buffer atomics: not converted.
++    // CHECK-NOT: amdg.buffer_atomic_rmw
++    // CHECK: tt.atomic_rmw fadd
++    %6 = tt.atomic_rmw fadd, acq_rel, gpu, %5, %vals : (tensor<1024x!tt.ptr<bf16>, #blocked>, tensor<1024xbf16, #blocked>) -> tensor<1024xbf16, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1170", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: atomic_add_f16
++  tt.func public @atomic_add_f16(%arg0: !tt.ptr<f16> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %vals: tensor<1024xf16, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f16>, i32
++    %4 = tt.splat %3 : !tt.ptr<f16> -> tensor<1024x!tt.ptr<f16>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f16>, #blocked>, tensor<1024xi32, #blocked>
++    // f16 fadd is unsupported on gfx11 buffer atomics: not converted.
++    // CHECK-NOT: amdg.buffer_atomic_rmw
++    // CHECK: tt.atomic_rmw fadd
++    %6 = tt.atomic_rmw fadd, acq_rel, gpu, %5, %vals : (tensor<1024x!tt.ptr<f16>, #blocked>, tensor<1024xf16, #blocked>) -> tensor<1024xf16, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1170", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: atomic_add_f64
++  tt.func public @atomic_add_f64(%arg0: !tt.ptr<f64> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %vals: tensor<1024xf64, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<f64>, i32
++    %4 = tt.splat %3 : !tt.ptr<f64> -> tensor<1024x!tt.ptr<f64>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<f64>, #blocked>, tensor<1024xi32, #blocked>
++    // f64 fadd is unsupported on gfx11 buffer atomics (F32 only): not converted.
++    // CHECK-NOT: amdg.buffer_atomic_rmw
++    // CHECK: tt.atomic_rmw fadd
++    %6 = tt.atomic_rmw fadd, acq_rel, gpu, %5, %vals : (tensor<1024x!tt.ptr<f64>, #blocked>, tensor<1024xf64, #blocked>) -> tensor<1024xf64, #blocked>
++    tt.return
++  }
++}
++
++// -----
++
++#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1170", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: atomic_add_i32
++  tt.func public @atomic_add_i32(%arg0: !tt.ptr<i32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}, %vals: tensor<1024xi32, #blocked>) {
++    %c1024_i32 = arith.constant 1024 : i32
++    %0 = tt.get_program_id x : i32
++    %1 = arith.muli %0, %c1024_i32 : i32
++    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32, #blocked>
++    %3 = tt.addptr %arg0, %1 : !tt.ptr<i32>, i32
++    %4 = tt.splat %3 : !tt.ptr<i32> -> tensor<1024x!tt.ptr<i32>, #blocked>
++    %5 = tt.addptr %4, %2 : tensor<1024x!tt.ptr<i32>, #blocked>, tensor<1024xi32, #blocked>
++    // Integer RMW is universally supported: converted to a buffer atomic RMW.
++    // CHECK: amdg.buffer_atomic_rmw add
++    // CHECK-NOT: tt.atomic_rmw
++    %6 = tt.atomic_rmw add, acq_rel, gpu, %5, %vals : (tensor<1024x!tt.ptr<i32>, #blocked>, tensor<1024xi32, #blocked>) -> tensor<1024xi32, #blocked>
++    tt.return
++  }
++}
+diff --git a/third_party/amd/backend/compiler.py b/third_party/amd/backend/compiler.py
+index be31188741..0e693e99a1 100644
+--- a/third_party/amd/backend/compiler.py
++++ b/third_party/amd/backend/compiler.py
+@@ -35,7 +35,7 @@ def is_pingpong_schedule_enabled(arch, use_async_copy):
+ 
+ 
+ def is_in_thread_transpose_enabled(arch):
+-    return (arch == "gfx942" or "gfx110" in arch or "gfx115" in arch or "gfx120" in arch) \
++    return (arch == "gfx942" or "gfx11" in arch or "gfx120" in arch) \
+         if knobs.amd.use_in_thread_transpose is None else knobs.amd.use_in_thread_transpose
+ 
+ 
+diff --git a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+index e511afbd7d..a3fd002831 100644
+--- a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
++++ b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+@@ -19,6 +19,7 @@ enum class ISAFamily {
+   RDNA1,
+   RDNA2,
+   RDNA3,
++  GFX1170,
+   RDNA4,
+   GFX1250,
+ };
+@@ -84,6 +85,7 @@ public:
+   bool supportsPermlaneSwap() const;
+   bool supportsCvtPkScalePk8() const;
+   bool supportsHwScaledUpcast() const;
++  bool supportsFp8Dot4Fma() const;
+ 
+   bool supportBitwidth16Elementwise() const;
+   bool supportBitwidth32Elementwise() const;
+diff --git a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
+index 519a88d5bb..78d40fb5ed 100644
+--- a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
++++ b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
+@@ -88,6 +88,8 @@ ISAFamily TargetFeatures::getISAFamily() const {
+   // RDNA ISA cases.
+   if (major == 12 && minor == 0)
+     return ISAFamily::RDNA4;
++  if (major == 11 && minor == 7)
++    return ISAFamily::GFX1170;
+   if (major == 11)
+     return ISAFamily::RDNA3;
+   if (major == 10 && minor == 3)
+@@ -257,7 +259,7 @@ bool TargetFeatures::supportsBufferAtomicRMW() const {
+   return llvm::is_contained(
+       {ISAFamily::GCN5_1, ISAFamily::CDNA1, ISAFamily::CDNA2, ISAFamily::CDNA3,
+        ISAFamily::CDNA4, ISAFamily::RDNA1, ISAFamily::RDNA2, ISAFamily::RDNA3,
+-       ISAFamily::RDNA4, ISAFamily::GFX1250},
++       ISAFamily::GFX1170, ISAFamily::RDNA4, ISAFamily::GFX1250},
+       getISAFamily());
+ }
+ 
+@@ -283,6 +285,7 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
+     // gfx908: BUFFER_ATOMIC_ADD_F32 and PK_ADD_F16; no F64.
+     return elementType.isF32() || elementType.isF16();
+   case ISAFamily::RDNA3:
++  case ISAFamily::GFX1170:
+     // gfx11: only BUFFER_ATOMIC_ADD_F32 (no F64 ADD, no PK_ADD variants).
+     return elementType.isF32();
+   // gfx906 / gfx101x / gfx103x have no FP buffer-atomic-add at all.
+@@ -307,6 +310,7 @@ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
+ 
+ bool TargetFeatures::supportMaximumMinimum() const {
+   return getISAFamily() == ISAFamily::CDNA4 ||
++         getISAFamily() == ISAFamily::GFX1170 ||
+          getISAFamily() == ISAFamily::GFX1250;
+ }
+ 
+@@ -337,6 +341,11 @@ bool TargetFeatures::supportsHwScaledUpcast() const {
+          getISAFamily() == ISAFamily::GFX1250;
+ }
+ 
++bool TargetFeatures::supportsFp8Dot4Fma() const {
++  return getISAFamily() == ISAFamily::RDNA4 ||
++         getISAFamily() == ISAFamily::GFX1170;
++}
++
+ bool TargetFeatures::supportBitwidth16Elementwise() const { return true; }
+ 
+ bool TargetFeatures::supportBitwidth32Elementwise() const {
+@@ -369,6 +378,7 @@ bool isRDNA(ISAFamily isaFamily) {
+   case ISAFamily::RDNA1:
+   case ISAFamily::RDNA2:
+   case ISAFamily::RDNA3:
++  case ISAFamily::GFX1170:
+   case ISAFamily::RDNA4:
+     return true;
+   default:
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
+index abe7cbf747..bbc847300c 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
+@@ -80,7 +80,8 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr,
+   // The RDNA-style flags below have bits [3:0]=0, so they are effectively
+   // ignored on GFX12+ but we include GFX1250 in the check for consistency.
+   uint32_t flags = (7 << 12) | (4 << 15);
+-  if (llvm::is_contained({ISAFamily::RDNA2, ISAFamily::RDNA3, ISAFamily::RDNA4,
++  if (llvm::is_contained({ISAFamily::RDNA2, ISAFamily::RDNA3,
++                          ISAFamily::GFX1170, ISAFamily::RDNA4,
+                           ISAFamily::GFX1250},
+                          targetInfo.getISAFamily())) {
+     flags |= (1 << 24);
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
+index 9c81b08f26..1d20342ca9 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp
+@@ -42,6 +42,24 @@ bool isCDNA4OrHigher(ISAFamily family) {
+   return family == ISAFamily::CDNA4 || family == ISAFamily::GFX1250;
+ }
+ 
++// TODO(gfx1170): use hardware OCP fp8/bf8 cvt instructions on
++// gfx1170/RDNA4. gfx1170 and RDNA4 (gfx1200/1201) have
++// FeatureFP8ConversionInsts, i.e. the plain v_cvt_f32_fp8/bf8,
++// v_cvt_pk_f32_fp8/bf8, v_cvt_pk_fp8/bf8_f32 and v_cvt_sr_fp8/bf8_f32 ops
++// (assembler-confirmed; RDNA3/gfx1100 lacks them). Today these families are
++// excluded from isCDNA4OrHigher(), so every OCP fp8 conversion falls back to
++// the software bit-manipulation path. It can't simply be enabled because:
++//   - the CDNA4 OCP HW converters use the *scaled* ops (ROCDL::CvtScaleF32Pk*,
++//     v_cvt_scalef32_pk_*) which gfx1170 does NOT have; and
++//   - the plain ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op ops (which gfx1170 does
++//     have) are currently only wired into the CDNA3 FNUZ ("nanoo") converters,
++//     the wrong fp8 flavor for gfx1170's OCP E4M3FN/E5M2.
++// Enabling this needs new OCP fp8<->f32 HW converters built on the plain
++// ROCDL::CvtPkF32Fp8Op/CvtPkFp8F32Op/CvtSrFp8F32Op (with an f32 hop for
++// f16/bf16), gated on a new {GFX1170, RDNA4} capability, plus HW numeric
++// validation. Latent perf gap, not a correctness bug: results are already
++// correct via the software path.
++
+ // List of architectures that have hardware support for FNUZ fp8 formats. On
+ // those architectures we will use the HW instructions to do the conversion
+ // instead of the software fallback.
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/FMA.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/FMA.cpp
+index 03e2b16faa..3f4034ea88 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/FMA.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/DotOpToLLVM/FMA.cpp
+@@ -22,9 +22,14 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
+ 
+   DotIntrinsic chooseIntrinsic(DotOp op) {
+     auto aOpTy = cast<RankedTensorType>(op.getA().getType());
++    auto bOpTy = cast<RankedTensorType>(op.getB().getType());
+     auto aElemTy = aOpTy.getElementType();
+-    auto bElemTy = aOpTy.getElementType();
+-    assert(aElemTy == bElemTy);
++    auto bElemTy = bOpTy.getElementType();
++    // The fp8 dot4 forms are the only ones that take differing operand types.
++    assert(((aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2()) ||
++            (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN()) ||
++            aElemTy == bElemTy) &&
++           "expected matching A and B element types");
+     auto dOpTy = cast<RankedTensorType>(op.getD().getType());
+     auto dElemTy = dOpTy.getElementType();
+     DotIntrinsic chosenOp;
+@@ -45,6 +50,34 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
+       chosenOp.additionalArgs = {b.false_val()};
+       return chosenOp;
+     }
++    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
++      chosenOp.vectorSize = 4;
++      chosenOp.outElemTy = f32_ty;
++      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.fp8";
++      chosenOp.additionalArgs = {};
++      return chosenOp;
++    }
++    if (aElemTy.isF8E5M2() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
++      chosenOp.vectorSize = 4;
++      chosenOp.outElemTy = f32_ty;
++      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.bf8";
++      chosenOp.additionalArgs = {};
++      return chosenOp;
++    }
++    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
++      chosenOp.vectorSize = 4;
++      chosenOp.outElemTy = f32_ty;
++      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.bf8";
++      chosenOp.additionalArgs = {};
++      return chosenOp;
++    }
++    if (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
++      chosenOp.vectorSize = 4;
++      chosenOp.outElemTy = f32_ty;
++      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.fp8";
++      chosenOp.additionalArgs = {};
++      return chosenOp;
++    }
+     // choose one of FMA intrinsics
+     assert(aElemTy.isIntOrFloat() && !aElemTy.isIntOrIndex());
+     assert(aElemTy == dElemTy);
+@@ -75,7 +108,7 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
+       vec =
+           b.insert_element(vecTy, vec, scalarValues[elemPos], b.i32_val(elem));
+     }
+-    if (elemTy.isInteger(8)) {
++    if (elemTy.isInteger(8) || elemTy.isF8E4M3FN() || elemTy.isF8E5M2()) {
+       assert(vectorSize == 4);
+       vec = b.bitcast(vec, i32_ty);
+     }
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+index c6d7a08d3f..2092447b4c 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.cpp
+@@ -688,7 +688,8 @@ bool TargetInfo::supportBitwidth32Elementwise() const {
+ 
+ unsigned TargetInfo::getReductionTreeArity(Operation *combinerOp) const {
+   // AMD has native ternary max/min instructions: v_max3/v_min3 on all GFX9+,
+-  // and v_maximum3/v_minimum3 additionally on GFX950 and GFX1250.
++  // and v_maximum3/v_minimum3 (FeatureMinimum3Maximum3F32/F16) additionally on
++  // GFX950, GFX1170, and GFX1250.
+   // Use a ternary reduction tree so these map 1:1 to hardware.
+   if (isa<arith::MaximumFOp, arith::MinimumFOp, arith::MaxNumFOp,
+           arith::MinNumFOp>(combinerOp))
+@@ -775,6 +776,7 @@ TargetInfo::getSharedLdStTiles(int32_t vecBitwidth) const {
+   case ISAFamily::RDNA1:
+   case ISAFamily::RDNA2:
+   case ISAFamily::RDNA3:
++  case ISAFamily::GFX1170:
+     if (vecBitwidth == 128)
+       return {/*load tile*/ {{}, {0, 1, 4}}, /*store tile*/ {}};
+     break;
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/Utility.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/Utility.cpp
+index 6bfc06545d..87937242f6 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/Utility.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/Utility.cpp
+@@ -692,6 +692,9 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
+   case ISAFamily::CDNA4:
+     return getCtrlBitsForCacheModifierOn_CDNA3_CDNA4(cm, isLoad);
+   case ISAFamily::RDNA3:
++  // gfx1170 uses the gfx11/RDNA3 buffer/cache encoding (it is not a gfx12
++  // target), so cache-modifier control bits follow RDNA3.
++  case ISAFamily::GFX1170:
+     return getCtrlBitsForCacheModifierOnRDNA3(cm, isLoad);
+   case ISAFamily::RDNA4:
+     return getCtrlBitsForCacheModifierOn_GFX12(cm, isLoad, /*$ bypass*/ false);
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+index 44e2d54725..8b321d97ac 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+@@ -67,6 +67,7 @@ int getWmmaVersion(ISAFamily isaFamily) {
+   switch (isaFamily) {
+   case ISAFamily::RDNA3:
+     return 1;
++  case ISAFamily::GFX1170:
+   case ISAFamily::RDNA4:
+     return 2;
+   case ISAFamily::GFX1250:
+@@ -366,6 +367,11 @@ OperandTypesVector getOperandTypesForWmmaOp(PatternRewriter &rewriter,
+       // {bf16, bf16, bf16, bf16},
+       // {i4, i4, i32, i32} - are supported configurations
+       // by WMMA instruction, but not supported by triton
++      // TODO(gfx1170): enable {i4, i4, i32, i32} to expose
++      // v_wmma_i32_16x16x32_iu4 (WMMA v2) / v_wmma_i32_16x16x16_iu4 (v1).
++      // The WMMA intrinsic DB and integer operand lowering already support it;
++      // this needs i4 dot-operand support validated end-to-end plus a lit test
++      // before enabling.
+       // clang-format on
+   };
+   if (version == 2 || version == 3) {
+@@ -1800,6 +1806,16 @@ public:
+       return true;
+     }
+ 
++    // Try Fp8/Bf8 x Fp8/Bf8 -> Fp32 v_dot4. Each of the four operand pairings
++    // has its own instruction, so A and B need not have the same type.
++    // if k % 4 != 0: can not use the packed 4-element V_DOT instruction
++    auto isOcpFp8 = [](Type t) { return t.isF8E4M3FN() || t.isF8E5M2(); };
++    if (targetFeatures.supportsFp8Dot4Fma() && isOcpFp8(dotTypes.a) &&
++        isOcpFp8(dotTypes.b) && dotTypes.c.isF32() && dotTypes.d.isF32() &&
++        k % 4 == 0) {
++      return true;
++    }
++
+     // TODO: enable this condition, when fp32 -> fp16 cast works correctly
+     // Consider this case as non legal, despite this case is covered by fp16
+     // FMA. Because v_dot expected to give both better performance and
+@@ -1960,6 +1976,7 @@ struct TritonAMDGPUAccelerateMatmulPass
+                                         /*benefit=*/2);
+       break;
+     case ISAFamily::RDNA3:
++    case ISAFamily::GFX1170:
+     case ISAFamily::RDNA4:
+       ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
+                                                   /*benefit=*/3);

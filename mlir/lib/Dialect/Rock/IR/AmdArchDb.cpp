@@ -34,7 +34,7 @@ using namespace mlir;
 using namespace mlir::rock;
 using namespace mlir::triton::amdgpu;
 
-static std::tuple<StringRef, unsigned> parseArchString(StringRef arch) {
+std::tuple<StringRef, unsigned> mlir::rock::parseArchString(StringRef arch) {
   std::tuple<StringRef, unsigned> ret("", 0);
 
   StringRef firstPart, remainingParts;
@@ -82,7 +82,8 @@ static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
     return false;
 
   // All known MFMA tile sizes across CDNA1/CDNA2/CDNA3/CDNA4:
-  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*, mfma_scale_f32_16x16x128_f8f6f4
+  // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*,
+  // mfma_scale_f32_16x16x128_f8f6f4
   // - 32x32: mfma_f32_32x32x*, mfma_i32_32x32x*, mfma_scale_f32_32x32x64_f8f6f4
   // - 4x64/64x4: specialized shapes for certain types (not for scaled)
   // For scaled MFMA, only 16x16 and 32x32 are available.
@@ -163,7 +164,8 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   Location loc = UnknownLoc::get(ctx);
 
   // Determine if scales are provided
-  bool hasScales = static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
+  bool hasScales =
+      static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
 
   // Check MFMA support (CDNA architectures)
   int mfmaVersion = rock::getMfmaVersion(isaFamily);
@@ -186,9 +188,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   // Check WMMA support (RDNA architectures)
   int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
-    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2, E2M1)
-    // Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops.
-    // See supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
+    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2,
+    // E2M1) Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops. See
+    // supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
     bool canUseScaledWmma = hasScales && wmmaVersion >= 3 &&
                             isScaledWmmaType(elemA) && isScaledWmmaType(elemB);
 
@@ -205,8 +207,9 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   return MatrixAccelKind::None;
 }
 
-MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch,
-                                               RockGemmWrapperInterface gemmOp) {
+MatrixAccelKind
+mlir::rock::getMatrixAccelKind(StringRef arch,
+                               RockGemmWrapperInterface gemmOp) {
   Type aType = gemmOp.getAType();
   Type bType = gemmOp.getBType();
   Type scaleAType = gemmOp.getScaleAType();
@@ -244,104 +247,6 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
-  auto [isaFamily, _] = getArch(arch);
-
-  Type elem = getElementTypeOrSelf(type);
-  if (elem.isF32()) {
-    switch (isaFamily) {
-    case ISAFamily::GCN5_1:
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA1:
-    case ISAFamily::RDNA2:
-    case ISAFamily::RDNA3:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isBF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  }
-  return false;
-}
-
-bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
-  auto [isaFamily, _] = getArch(arch);
-
-  Type elem = getElementTypeOrSelf(type);
-  if (elem.isF32()) {
-    switch (isaFamily) {
-    case ISAFamily::RDNA1:
-    case ISAFamily::RDNA2:
-    case ISAFamily::RDNA3:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  }
-  return false;
-}
-
-// Enum-dtype adapters: build a real MLIR Type and dispatch to the existing
-// Type-based overload. The Type-based versions remain the single source of
-// truth for the family-vs-dtype matrix; this is just a thin convenience for
-// out-of-MLIR callers (e.g. the Python test binding) that prefer to pass a
-// dtype as an enum rather than constructing an MLIR Type themselves.
-static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
-  Builder b(&ctx);
-  switch (dtype) {
-  case Dtype::F32:
-    return b.getF32Type();
-  case Dtype::F16:
-    return b.getF16Type();
-  case Dtype::BF16:
-    return b.getBF16Type();
-  }
-  return failure();
-}
-
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Dtype dtype) {
-  MLIRContext ctx;
-  FailureOr<Type> t = dtypeToType(ctx, dtype);
-  if (failed(t))
-    return false;
-  return isFastAtomicAddSupported(arch, *t);
-}
-
-bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Dtype dtype) {
-  MLIRContext ctx;
-  FailureOr<Type> t = dtypeToType(ctx, dtype);
-  if (failed(t))
-    return false;
-  return isFastAtomicMaxSupported(arch, *t);
-}
-
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   // Hardware-capability check via the underlying MFMA / WMMA version tables.
   // We deliberately do NOT probe through getMatrixAccelKind here, because
@@ -376,6 +281,27 @@ bool mlir::rock::archSupportsScaledGemm(StringRef arch) {
   return false;
 }
 
+bool mlir::rock::archSupportsNonKPackedScaledInput(StringRef arch) {
+  // Only CDNA4 (gfx950) scaled MFMA implements that path (via
+  // ds_load_tr_b4). GFX1250 scaled WMMA supports this in hardware,
+  // but Triton does not currently support it.
+  //
+  // NOTE 1: the "K-pack" here is different from the `kpack` in the perf-config
+  // This kpack is the per-operand bool `matrixA/BKPack` (-> `lhs/rhs_k_pack` on
+  // tt.dot_scaled): for a sub-byte (fp4) operand it says whether the two 4-bit
+  // values packed into an i8 are adjacent along K (true) or along M/N (false).
+  //
+  // NOTE 2: Triton supports emulating non-K-packed scaled input in software via
+  // DecomposeScaledBlocked, but this is currently broken on gfx1250. It crashes
+  // with: error: 'ttg.convert_layout' op requires the same shape for all
+  // operands and results
+  //
+  // TODO: In the future, whenever DecomposeScaledBlocked is fixed on gfx1250,
+  // or the native path for gfx1250 is implemented, we should add gfx1250 here.
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
+}
+
 int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
@@ -388,6 +314,41 @@ int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
     return 1;
   }
   return 1;
+}
+
+int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
+  auto [isaFamily, _] = getArch(arch);
+  switch (isaFamily) {
+  case ISAFamily::CDNA3:
+    if (numCUs == 304)
+      return 8;
+    if (numCUs == 80)
+      return 4;
+    return 1;
+  case ISAFamily::CDNA4:
+    if (numCUs == 256)
+      return 8;
+    if (numCUs == 128)
+      return 4;
+    if (numCUs == 64)
+      return 2;
+    return 1;
+  case ISAFamily::GFX1250:
+    if (numCUs == 256)
+      return 8;
+    return 1;
+  case ISAFamily::Unknown:
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4:
+    return 1;
+  }
+  llvm_unreachable("unhandled ISAFamily in inferNumChiplets");
 }
 
 int64_t mlir::rock::getMinNumCU(StringRef arch) {
@@ -408,6 +369,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 30;
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
     return 2;
   case ISAFamily::RDNA4:
     return 12;
@@ -452,6 +414,8 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
+  case ISAFamily::GFX1170:
+    return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
@@ -473,6 +437,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
     return 16;
@@ -504,6 +469,8 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
     // llvm/lib/Target/AMDGPU/AMDGPU.td.
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
+    return 1024;
+  case ISAFamily::GFX1170:
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
@@ -553,6 +520,24 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
     return 2;
 
   return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
+}
+
+// A non-power-of-two kPerBlock makes rock-gridwise-gemm-to-blockwise peel the
+// K loop into several power-of-two segments. That peeled form currently
+// miscompiles on gfx950 because of an unfixed LLVM backend bug, so we neither
+// tune nor accept such a kPerBlock there.
+// TODO: Enable this on gfx950 too once the LLVM bug is fixed.
+bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
+  auto [chip, _] = parseArchString(arch);
+  return chip != "gfx950";
+}
+
+// Decomposing an f32 dot into three bf16 products trades the f32 MFMA
+// for the higher throughput bf16 ops. CDNA4 was measured to perform better
+// overall with this decomposition.
+bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {

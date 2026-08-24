@@ -1,6 +1,7 @@
 //===- ConvToGemm.cpp - MLIR Rock ops lowering passes ------------===//
 //
-// Copyright 2020 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -142,8 +144,9 @@ void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
   for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
       Type storeResultType = storeOp.getResult().getType();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
   }
@@ -1141,20 +1144,37 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
-    Value lastStoreResult;
-    for (int64_t kid : kernelIds) {
+    // Thread only the store result alias through each per-kernel store so the
+    // single returned tensor represents all disjoint bwd_data phase writes. The
+    // actual destination view stays rooted at the original destination buffer.
+    // If the original store had no explicit alias, the first generated store
+    // starts the SSA chain and later stores alias the previous store result.
+    Value currentResultAlias = originalStoreOp.getResultAlias();
+    Value finalStoreResult;
+    for (auto [idx, kid] : llvm::enumerate(kernelIds)) {
       auto maybe = backwardDataGemmForKernelId(bwdDataOp, b, kid, destBuffer);
       if (failed(maybe))
         return failure();
+
       auto [gemmResult, gemmDest] = maybe.value();
-      auto newStoreOp = StoreOp::create(b, loc, storeResultType, gemmResult,
-                                        gemmDest, storeMethod);
-      lastStoreResult = newStoreOp.getResult();
+      auto newStoreOp =
+          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
+                          currentResultAlias, storeMethod);
+      finalStoreResult = newStoreOp.getResult();
+      if (idx + 1 < kernelIds.size()) {
+        currentResultAlias = finalStoreResult;
+      }
     }
 
-    // Replace the original StoreOp with the last store result.
-    b.replaceOp(originalStoreOp, lastStoreResult);
+    // BwdData with multiple kernel IDs emits N independent gemm + store pairs,
+    // each writing a disjoint slice of the same output buffer. Since
+    // `rock.store` is Pure, each store result must be live; threading later
+    // stores through the previous store result makes the final result represent
+    // the full logical output without exposing per-phase stores in the function
+    // ABI.
+    b.replaceOp(originalStoreOp, finalStoreResult);
     b.eraseOp(bwdDataOp);
+
     return std::make_tuple(Value(), Value(), Value());
   }
   Location loc = op.getLoc();
@@ -1223,8 +1243,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     }
 
     if (ConvOpType::BwdWeight == convOpType &&
-        isWrWAtomicKernel(rock::getArchValue(op), dataType,
-                          maybeGemmExtraPad.has_value())) {
+        isWrWAtomicKernel(dataType, maybeGemmExtraPad.has_value())) {
       return backwardWeightAtomicAdd(cast<ConvBwdWeightOp>(op), b);
     }
   }
@@ -1632,9 +1651,9 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
       if (source == op.getResult())
         source = result;
       b.setInsertionPoint(storeOp);
-      auto newStoreOp = rock::StoreOp::create(b, storeOp.getLoc(),
-                                              storeOp.getResult().getType(),
-                                              source, view, storeMethod);
+      auto newStoreOp = rock::StoreOp::create(
+          b, storeOp.getLoc(), storeOp.getResult().getType(), source, view,
+          storeOp.getResultAlias(), storeMethod);
       b.replaceOp(storeOp, newStoreOp.getResult());
     }
 
@@ -1680,6 +1699,18 @@ template struct ConvRewritePattern<ConvBwdWeightOp>;
 
 void RockConvToGemmPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+  func::FuncOp func = getOperation();
+
+  // Annotate the function as a convolution kernel.
+  WalkResult convWalk = func.walk([](Operation *op) {
+    if (isa<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
+            rock::ConvElementwiseGemmOp>(op))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  if (convWalk.wasInterrupted())
+    func->setAttr(rock::ConvKernelAttr::getMnemonic(), UnitAttr::get(ctx));
+
   RewritePatternSet preConvToGemmPatterns(ctx);
   preConvToGemmPatterns.add<MatchLayoutsToInput, MatchFilterToInput>(ctx);
 
@@ -1705,7 +1736,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {
-    signalPassFailure();
+    return signalPassFailure();
   }
 }
 } // end anonymous namespace

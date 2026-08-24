@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import functools
+import hashlib
+import importlib.util
+import os
+import re
+import shutil
+import subprocess
+import sysconfig
+import tempfile
+import logging
+from pathlib import Path
+
+from types import ModuleType
+
+from .cache import get_cache_manager
+from .. import knobs
+
+if os.name == "nt":
+    from triton.windows_utils import find_msvc_winsdk, find_python, get_8dot3_short_path, normalize_path
+else:
+    normalize_path = os.path.abspath
+    get_8dot3_short_path = os.path.abspath
+
+
+@functools.lru_cache()
+def _find_compiler(language: str) -> str:
+    if language == "c":
+        cc = os.environ.get("CC")
+        if cc is not None:
+            return cc
+        # clang-cl from TheRock ROCm wheels (handles HIP C headers that mix C/C++ constructs)
+        cc = os.path.join(sysconfig.get_path("platlib"), "_rocm_sdk_core", "lib", "llvm", "bin", "clang-cl.exe")
+        if os.path.exists(cc):
+            return cc
+        if os.name == "nt":
+            # Find and check MSVC and Windows SDK from environment variables set by Launch-VsDevShell.ps1 or VsDevCmd.bat
+            cc, _, _ = find_msvc_winsdk(env_only=True)
+            if cc is not None:
+                return cc
+        # Bundled TinyCC
+        cc = os.path.join(sysconfig.get_path("platlib"), "triton", "runtime", "tcc", "tcc.exe")
+        if os.path.exists(cc):
+            return cc
+        cl = shutil.which("cl")
+        gcc = shutil.which("gcc")
+        clang = shutil.which("clang")
+        cc = cl if cl is not None else gcc if gcc is not None else clang
+        if cc is not None:
+            return cc
+        raise RuntimeError(
+            "Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.")
+
+    assert language == "c++"
+    cxx = os.environ.get("CXX")
+    if cxx is not None:
+        return cxx
+    cxx = os.path.join(sysconfig.get_path("platlib"), "_rocm_sdk_core", "lib", "llvm", "bin", "clang-cl.exe")
+    if os.path.exists(cxx):
+        return cxx
+    if os.name == "nt":
+        cxx, _, _ = find_msvc_winsdk(env_only=True)
+        if cxx is not None:
+            return cxx
+    cl = shutil.which("cl")
+    gxx = shutil.which("g++")
+    clangxx = shutil.which("clang++")
+    cxx = cl if cl is not None else gxx if gxx is not None else clangxx
+    if cxx is not None:
+        return cxx
+    raise RuntimeError(
+        "Failed to find C++ compiler. Please specify via CXX environment variable or set triton.knobs.build.impl.")
+
+
+def _language_from_filename(source_name: str) -> str:
+    ext = Path(source_name).suffix
+    if ext == ".c":
+        return "c"
+    if ext in {".cc", ".cpp", ".cxx"}:
+        return "c++"
+    print(source_name)
+    raise ValueError(f"Unrecognized file extension: {source_name}")
+
+
+def is_tcc(cc):
+    cc = os.path.basename(cc).lower()
+    return cc == "tcc" or cc == "tcc.exe"
+
+
+def is_msvc(cc):
+    cc = os.path.basename(cc).lower()
+    return cc == "cl" or cc == "cl.exe"
+
+
+def is_clang_cl(cc):
+    cc = os.path.basename(cc).lower()
+    return cc == "clang-cl" or cc == "clang-cl.exe"
+
+
+def is_clang(cc):
+    cc = os.path.basename(cc).lower()
+    return cc == "clang" or cc == "clang.exe"
+
+
+def _cc_cmd(cc: str, src: str, out: str, include_dirs: list[str], library_dirs: list[str], libraries: list[str],
+            ccflags: list[str], language: str) -> list[str]:
+    if is_msvc(cc) or is_clang_cl(cc):
+        out_base = os.path.splitext(out)[0]
+        cc_cmd = [cc, src, "/nologo", "/O2", "/LD", "/wd4819"]
+        if language == "c":
+            cc_cmd += ["/std:c11"]
+        elif language == "c++":
+            cc_cmd += ["/std:c++17"]
+        cc_cmd += [f"/I{dir}" for dir in include_dirs if dir is not None]
+        cc_cmd += [f"/Fo{out_base + '.obj'}"]
+        cc_cmd += ["/link"]
+        cc_cmd += [f"/LIBPATH:{dir}" for dir in library_dirs]
+        cc_cmd += [f"{lib}.lib" for lib in libraries]
+        cc_cmd += [f"/OUT:{out}"]
+        cc_cmd += [f"/IMPLIB:{out_base + '.lib'}"]
+        cc_cmd += [f"/PDB:{out_base + '.pdb'}"]
+    else:
+        # for -Wno-psabi, see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111047
+        cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]
+        if language == "c++":
+            cc_cmd.insert(3, "-std=c++17")
+        if not (os.name == "nt" and is_clang(cc)):
+            # Clang does not support -fPIC on Windows
+            cc_cmd += ["-fPIC"]
+        if is_tcc(cc):
+            cc_cmd += ["-D_Py_USE_GCC_BUILTIN_ATOMICS"]
+        cc_cmd += [_library_flag(lib, cc) for lib in libraries]
+        cc_cmd += [f"-L{dir}" for dir in library_dirs]
+        cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
+    cc_cmd += ccflags
+    return cc_cmd
+
+
+def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_dirs: list[str], libraries: list[str],
+           ccflags: list[str], language: str = "c") -> str:
+    if impl := knobs.build.impl:
+        return impl(name, src, srcdir, library_dirs, include_dirs, libraries)
+
+    cc = _find_compiler(language)
+    if is_msvc(cc):
+        # MSVC does not support UNC path with \\?\ prefix. We convert it to 8.3 short path.
+        src = get_8dot3_short_path(src)
+        srcdir = get_8dot3_short_path(srcdir)
+
+    suffix = sysconfig.get_config_var('EXT_SUFFIX')
+    so = os.path.join(srcdir, f'{name}{suffix}')
+    scheme = sysconfig.get_default_scheme()
+    # 'posix_local' is a custom scheme on Debian. However, starting Python 3.10, the default install
+    # path changes to include 'local'. This change is required to use triton with system-wide python.
+    if scheme == 'posix_local':
+        scheme = 'posix_prefix'
+    py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
+    custom_backend_dirs = knobs.build.backend_dirs
+    # Don't append in place
+    include_dirs = include_dirs + [srcdir, py_include_dir, *custom_backend_dirs]
+    if os.name == "nt":
+        library_dirs = library_dirs + find_python()
+        version = sysconfig.get_python_version().replace(".", "")
+        if sysconfig.get_config_var("Py_GIL_DISABLED"):
+            version += "t"
+        libraries = libraries + [f"python{version}"]
+    if is_msvc(cc) or is_clang_cl(cc):
+        _, msvc_winsdk_inc_dirs, msvc_winsdk_lib_dirs = find_msvc_winsdk()
+        include_dirs = include_dirs + msvc_winsdk_inc_dirs
+        library_dirs = library_dirs + msvc_winsdk_lib_dirs
+    cc_cmd = _cc_cmd(cc, src, so, include_dirs, library_dirs, libraries, ccflags, language)
+
+    try:
+        subprocess.check_call(cc_cmd)
+    except Exception as e:
+        print("Failed to compile. cc_cmd:", cc_cmd)
+        raise e
+
+    return so
+
+
+def _library_flag(lib: str, cc: str) -> str:
+    if os.name == "nt" and not is_tcc(cc):
+        if not lib.lower().endswith(".lib"):
+            lib = lib + ".lib"
+        return lib
+    # Match .so files with optional version numbers (e.g., .so, .so.1, .so.513.50.1)
+    if re.search(r'\.so(\.\d+)*$', lib) or lib.endswith(".a"):
+        return f"-l:{lib}"
+    return f"-l{lib}"
+
+
+@functools.lru_cache
+def platform_key() -> str:
+    from platform import machine, system, architecture
+    return ",".join([machine(), system(), *architecture()])
+
+
+def _get_file_extension(language):
+    if language == "c":
+        return ".c"
+    if language == "c++":
+        return ".cpp"
+    raise ValueError(f"Unexpected languange: {language}")
+
+
+def _load_module_from_path(name: str, path: str) -> ModuleType:
+    # Loading module with relative path may cause error. `normalize_path` normalizes to absolute path.
+    path = normalize_path(path)
+    spec = importlib.util.spec_from_file_location(name, path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"Failed to load newly compiled {name} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _get_cache_manager(src: bytes, config: dict[str, list[str] | None]):
+    digest = hashlib.sha256()
+    digest.update(src)
+    digest.update(platform_key().encode("utf-8"))
+    for k, vs in config.items():
+        if vs is None:
+            continue
+        digest.update(k.encode("utf-8"))
+        for v in vs:
+            digest.update(v.encode("utf-8"))
+            digest.update(b":")
+    key = digest.hexdigest()
+    return get_cache_manager(key)
+
+
+def _compile_so(src: bytes, src_path: str, name: str, library_dirs: list[str] | None, include_dirs: list[str] | None,
+                libraries: list[str] | None, ccflags: list[str] | None, load_module: bool, language: str):
+    config = dict(language=[language], library_dirs=library_dirs, include_dirs=include_dirs, libraries=libraries,
+                  ccflags=ccflags)
+    cache = _get_cache_manager(src, config=config)
+    suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    cache_path = cache.get_file(f"{name}{suffix}")
+    if cache_path is not None:
+        if not load_module:
+            return cache_path
+        try:
+            return _load_module_from_path(name, cache_path)
+        except (RuntimeError, ImportError):
+            log = logging.getLogger(__name__)
+            ext = ".pyd" if os.name == "nt" else ".so"
+            log.warning(f"Triton cache error: compiled module {name}{ext} could not be loaded")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = normalize_path(tmpdir)
+        so = _build(name, src_path, tmpdir, library_dirs or [], include_dirs or [], libraries or [], ccflags or [],
+                    language=language)
+        with open(so, "rb") as f:
+            cache_path = cache.put(f.read(), f"{name}{suffix}", binary=True)
+
+    return _load_module_from_path(name, cache_path) if load_module else cache_path
+
+
+def _compile_so_from_file(src_path: str, name: str, library_dirs: list[str] | None, include_dirs: list[str] | None,
+                          libraries: list[str] | None, ccflags: list[str] | None, load_module: bool):
+    src_path = normalize_path(src_path)
+    src_name = os.path.basename(src_path)
+    with open(src_path, "rb") as f:
+        src = f.read()
+
+    language = _language_from_filename(src_name)
+    return _compile_so(src=src, src_path=src_path, name=name, library_dirs=library_dirs, include_dirs=include_dirs,
+                       libraries=libraries, ccflags=ccflags, language=language, load_module=load_module)
+
+
+def _compile_so_from_src(src: str, name: str, library_dirs: list[str] | None, include_dirs: list[str] | None,
+                         libraries: list[str] | None, ccflags: list[str] | None, language, load_module: bool):
+    src_bytes = src.encode("utf-8")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = normalize_path(tmpdir)
+        src_path = os.path.join(tmpdir, f"{name}{_get_file_extension(language)}")
+        with open(src_path, "wb") as f:
+            f.write(src_bytes)
+        return _compile_so(src=src_bytes, src_path=src_path, name=name, library_dirs=library_dirs,
+                           include_dirs=include_dirs, libraries=libraries, ccflags=ccflags, language=language,
+                           load_module=load_module)
+
+
+def compile_so_from_file(src_path: str, name: str, library_dirs: list[str] | None = None,
+                         include_dirs: list[str] | None = None, libraries: list[str] | None = None,
+                         ccflags: list[str] | None = None) -> str:
+    return _compile_so_from_file(src_path, name, library_dirs, include_dirs, libraries, ccflags, load_module=False)
+
+
+def compile_so_from_src(src: str, name: str, library_dirs: list[str] | None = None,
+                        include_dirs: list[str] | None = None, libraries: list[str] | None = None,
+                        ccflags: list[str] | None = None, language="c") -> str:
+    return _compile_so_from_src(src, name, library_dirs, include_dirs, libraries, ccflags, language, load_module=False)
+
+
+def compile_module_from_file(src_path: str, name: str, library_dirs: list[str] | None = None,
+                             include_dirs: list[str] | None = None, libraries: list[str] | None = None,
+                             ccflags: list[str] | None = None) -> ModuleType:
+    return _compile_so_from_file(src_path, name, library_dirs, include_dirs, libraries, ccflags, load_module=True)
+
+
+def compile_module_from_src(src: str, name: str, library_dirs: list[str] | None = None,
+                            include_dirs: list[str] | None = None, libraries: list[str] | None = None,
+                            ccflags: list[str] | None = None, language="c") -> ModuleType:
+    return _compile_so_from_src(src, name, library_dirs, include_dirs, libraries, ccflags, language, load_module=True)

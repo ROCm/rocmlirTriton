@@ -322,6 +322,18 @@ func.func @rock_gemm_from_conv(%a : tensor<1x72x128xf32>, %b : tensor<1x72x11520
   return %out : tensor<1x128x115200xf32>
 }
 
+// CHECK-LABEL: func.func @rock_gemm_nonpow2_k
+// GRID-LABEL: rock_gemm_nonpow2_k
+func.func @rock_gemm_nonpow2_k(%a : tensor<1x128x96xf16>, %b : tensor<1x96x128xf16>, %c : tensor<1x128x128xf16>) -> tensor<1x128x128xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 48, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm{{.*}}kPerBlock = 48
+  %result = rock.gemm %a * %b {perf_config = "gemm:v1:64,64,48,1,1,4,16,1,2,0,0"}
+  : tensor<1x128x96xf16> * tensor<1x96x128xf16> -> tensor<1x128x128xf16>
+  %out = rock.store %result to %c by set : tensor<1x128x128xf16> -> tensor<1x128x128xf16> to tensor<1x128x128xf16>
+  return %out : tensor<1x128x128xf16>
+}
+
 // CHECK-LABEL: func.func @rock_gemm_from_i8_conv
 // GRID-LABEL: rock_gemm_from_i8_conv
 func.func @rock_gemm_from_i8_conv(%a : tensor<1x72x128xi8>, %b : tensor<1x72x115200xi8>, %c : tensor<1x128x115200xi32>) -> tensor<1x128x115200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
@@ -392,15 +404,15 @@ func.func @rock_gemm_xdlops_fp8_bf8_ocp(%a : tensor<1x72x128xf8E4M3FN>, %b : ten
   return %out : tensor<1x128x115200xf32>
 }
 
-// fp8 has no quick-tuning list of its own, so with no perf_config the lookup
-// falls back to the closest datatype that does (i8) and picks its first
-// applicable config.
+// gfx942 has no quick-tuning list for fp8 of its own, so with no perf_config
+// the lookup falls back to the closest architecture relative that does for the
+// same datatype (gfx950's gemm_fp8 list) and picks its first applicable config.
 // CHECK-LABEL: func.func @rock_gemm_fp8_datatype_fallback
 // GRID-LABEL: rock_gemm_fp8_datatype_fallback
 func.func @rock_gemm_fp8_datatype_fallback(%a : tensor<1x72x128xf8E4M3FNUZ>, %b : tensor<1x72x115200xf8E5M2FNUZ>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 2, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 28800
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 8, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 900
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf8E4M3FNUZ> * tensor<1x72x115200xf8E5M2FNUZ> -> tensor<1x128x115200xf32>
@@ -423,13 +435,13 @@ func.func @rock_gemm_f4_datatype_fallback(%a : tensor<1x72x128xf4E2M1FN>, %b : t
 }
 
 // gfx1150 has no quick-tuning list of its own, so with no perf_config the lookup
-// falls back to the closest architecture relative that does (gfx1100).
+// falls back to the closest architecture relative that does (gfx1151).
 // CHECK-LABEL: func.func @rock_gemm_gfx1150_arch_fallback
 // GRID-LABEL: rock_gemm_gfx1150_arch_fallback
 func.func @rock_gemm_gfx1150_arch_fallback(%a : tensor<1x72x128xf16>, %b : tensor<1x72x115200xf16>, %c : tensor<1x128x115200xf16>) -> tensor<1x128x115200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1150", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 16, nPerBlock = 64, kPerBlock = 256, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 14400
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 8, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 1800
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf16> * tensor<1x72x115200xf16> -> tensor<1x128x115200xf16>
@@ -467,6 +479,42 @@ func.func @rock_attention_large(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x
     qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
     softmax(qk) * %arg2 : tensor<1x16384x512xf32>
   } {perf_config = "attn:v1:128,128,16,1,1,4,0,1,1,0,0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
+// attn:v6 with nPerBlockG1 = 0 keeps the second gemm untiled: params1.nPerBlock
+// is the full (power-of-two) gemm1N, matching the v1 behaviour.
+// CHECK-LABEL: func.func @rock_attention_nperblockg1_zero
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_nperblockg1_zero
+func.func @rock_attention_nperblockg1_zero(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 512, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:v6:128,128,0,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
+// attn:v6 with nPerBlockG1 != 0 tiles the second gemm's N dim: params1.nPerBlock
+// is set to nPerBlockG1 (128) rather than the full gemm1N (512).
+// CHECK-LABEL: func.func @rock_attention_nperblockg1_tiled
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_nperblockg1_tiled
+func.func @rock_attention_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:v6:128,128,128,16,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
   return %out : tensor<1x16384x512xf32>
 }
@@ -805,4 +853,80 @@ func.func @mlir_dot_splitk(%arg1: tensor<1x2x1280xf32>, %arg2: tensor<1x1280x320
   %result = rock.gemm %arg1 * %arg2 {rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-", perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"} : tensor<1x2x1280xf32> * tensor<1x1280x320xf32> -> tensor<1x2x320xf32>
   %out = rock.store %result to %arg3 by set : tensor<1x2x320xf32> -> tensor<1x2x320xf32> to tensor<1x2x320xf32>
   return %out : tensor<1x2x320xf32>
+}
+
+// Named perf_config: a fully specified gemm config is parsed into the same
+// gemm_params attribute as the equivalent positional (v1) config. Knobs left at
+// -1 are the parameter defaults and are omitted from the printed attribute.
+// CHECK-LABEL: func.func @rock_gemm_named_full
+// GRID-LABEL: rock_gemm_named_full
+func.func @rock_gemm_named_full(%a : tensor<1x72x128xf32>, %b : tensor<1x72x115200xf32>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm
+  %result = rock.gemm tr %a * %b {perf_config = "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1"}
+  : tensor<1x72x128xf32> * tensor<1x72x115200xf32> -> tensor<1x128x115200xf32>
+  %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
+  return %out : tensor<1x128x115200xf32>
+}
+
+// Named perf_config: keys omitted from the config fall back to their parameter
+// defaults. Here kpack, numCTAs, numWaves, splitKFactor, wavesPerEU,
+// gridGroupSize and all knobs are omitted and take their defaults, reproducing
+// the same attribute as the fully specified config above. Whitespace around
+// keys and values is also tolerated.
+// CHECK-LABEL: func.func @rock_gemm_named_defaults
+// GRID-LABEL: rock_gemm_named_defaults
+func.func @rock_gemm_named_defaults(%a : tensor<1x72x128xf32>, %b : tensor<1x72x115200xf32>, %c : tensor<1x128x115200xf32>) -> tensor<1x128x115200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm
+  %result = rock.gemm tr %a * %b {perf_config = "gemm: mPerBlock=64, nPerBlock=64, kPerBlock=64, matrixInstrNonkdim=16, numStages=2"}
+  : tensor<1x72x128xf32> * tensor<1x72x115200xf32> -> tensor<1x128x115200xf32>
+  %out = rock.store %result to %c by set : tensor<1x128x115200xf32> -> tensor<1x128x115200xf32> to tensor<1x128x115200xf32>
+  return %out : tensor<1x128x115200xf32>
+}
+
+// Named perf_config for attention: the attn config is parsed into the same
+// pair of gemm_params attributes as the equivalent positional (v1) config.
+// CHECK-LABEL: func.func @rock_attention_named
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_named
+// GRID-SAME: rock.grid_size = 128
+func.func @rock_attention_named(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 512, kPerBlock = 128, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:mPerBlockG0=128,nPerBlockG0=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
+}
+
+// A named `nPerBlockG1` tiles the second gemm's N dim exactly as the positional
+// form does, so the named schema must carry the attn-only field rather than
+// silently dropping it. The three tile fields are deliberately all different
+// (mPerBlockG0=128, nPerBlockG0=64, nPerBlockG1=256) so that mixing any two of
+// them up changes the expected output: mPerBlockG0 lands in both params.mPerBlock,
+// nPerBlockG0 in params0.nPerBlock and params1.kPerBlock (gemm1's contraction
+// tile), and nPerBlockG1 in params1.nPerBlock -- which is also distinct from the
+// untiled gemm1N of 512, so dropping the field is caught too.
+// CHECK-LABEL: func.func @rock_attention_named_nperblockg1_tiled
+// CHECK-SAME: rock.block_size = 256
+// GRID-LABEL: func.func @rock_attention_named_nperblockg1_tiled
+// GRID-SAME: rock.grid_size = 128
+func.func @rock_attention_named_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>, %arg1: tensor<1x512x16384xf32>, %arg2: tensor<1x16384x512xf32>, %arg3: tensor<1x16384x512xf32>) -> tensor<1x16384x512xf32> attributes {rock.arch = "gfx942:sramecc+:xnack-"} {
+  // CHECK: rock.attention
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 64, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 128, nPerBlock = 256, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_attention
+  %result = rock.attention{
+    qk = %arg0 * %arg1 : tensor<1x16384x512xf32>, tensor<1x512x16384xf32>
+    softmax(qk) * %arg2 : tensor<1x16384x512xf32>
+  } {perf_config = "attn:mPerBlockG0=128,nPerBlockG0=64,nPerBlockG1=256,kPerBlock=16,numCTAs=1,numWaves=4,matrixInstrNonkdim=0", numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, splitKV = 1 : i32} -> tensor<1x16384x512xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
+  return %out : tensor<1x16384x512xf32>
 }

@@ -1,6 +1,8 @@
 // PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
-// used for private CI
+import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
+import hudson.plugins.git.extensions.impl.CheckoutOption
+import hudson.plugins.git.extensions.impl.CloneOption
 import java.util.concurrent.ConcurrentHashMap
 import org.jenkinsci.plugins.workflow.support.steps.AgentOfflineException
 
@@ -11,21 +13,25 @@ ConcurrentHashMap<String,String> DOCKER_ARGS_BY_NODE = new ConcurrentHashMap<>()
 
 @Field
 String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
+// Jenkins Git plugin defaults to 10 minutes per command. Use 2h for fetches and
+// checkouts that can exceed that on a slow network.
+@Field
+final int GIT_SCM_TIMEOUT_MINUTES = 120
 
-/* //
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
-        cmakeBuild generator: 'Ninja',\
-            buildDir: 'build',\
-            buildType: 'RelWithDebInfo',\
-            installation: 'InSearchPath',\
-            steps: [[args: target]],\
-            cmakeArgs: """-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-              -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
-              ${cmakeOpts}"""
+        // Collapse multi-line Groovy strings into a single line for cmake.sh
+        sh """
+            export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+            export C_COMPILER=/opt/rocm/llvm/bin/clang
+            bash cmake.sh ${cmakeOpts.replaceAll('\\s+', ' ').trim()}
+        """
+        dir('build') {
+            int limit_lit_workers = setLitWorkerCount()
+            sh "LIT_OPTS='-j ${limit_lit_workers}' ninja ${target}"
+        }
     }
 }
-*/
 
 // Lightweight Git probe: verifies auth + network + ref exists
 void gitHealthCheck() {
@@ -64,6 +70,87 @@ void gitHealthCheck() {
     echo "[healthcheck] Git OK"
 }
 
+@NonCPS
+Map scmWithGitTimeout(Object baseScm) {
+    List extensions = []
+    boolean hasCloneOption = false
+    boolean hasCheckoutOption = false
+
+    (baseScm.extensions ?: []).each { ext ->
+        if (ext instanceof CloneOption) {
+            extensions << [
+                $class: 'CloneOption',
+                depth: ext.depth ?: 0,
+                shallow: ext.shallow ?: false,
+                noTags: ext.noTags ?: false,
+                reference: ext.reference ?: '',
+                honorRefspec: ext.honorRefspec ?: false,
+                timeout: gitTimeoutAtLeast(ext.timeout)
+            ]
+            hasCloneOption = true
+        } else if (ext instanceof CheckoutOption) {
+            extensions << [$class: 'CheckoutOption', timeout: gitTimeoutAtLeast(ext.timeout)]
+            hasCheckoutOption = true
+        } else {
+            extensions << ext
+        }
+    }
+
+    if (!hasCloneOption) {
+        extensions << [$class: 'CloneOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+    if (!hasCheckoutOption) {
+        extensions << [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+    }
+
+    Map checkoutScm = [
+        $class: 'GitSCM',
+        branches: baseScm.branches,
+        doGenerateSubmoduleConfigurations: baseScm.doGenerateSubmoduleConfigurations ?: false,
+        extensions: extensions,
+        submoduleCfg: baseScm.submoduleCfg ?: [],
+        userRemoteConfigs: baseScm.userRemoteConfigs
+    ]
+    if (baseScm.gitTool) {
+        checkoutScm.gitTool = baseScm.gitTool
+    }
+    if (baseScm.browser) {
+        checkoutScm.browser = baseScm.browser
+    }
+    return checkoutScm
+}
+
+@NonCPS
+int gitTimeoutAtLeast(Integer timeout) {
+    int currentTimeout = timeout ?: 0
+    return Math.max(currentTimeout, GIT_SCM_TIMEOUT_MINUTES)
+}
+
+String scmCheckoutRetryContext(Object err) {
+    String msg = "${err}".toLowerCase()
+    try {
+        def logLines = currentBuild?.rawBuild?.getLog(500) ?: []
+        msg = msg + '\n' + logLines.join('\n').toLowerCase()
+    } catch (ignored) {
+        // Fall back to the exception text; retry classification should not mask the checkout failure.
+    }
+    return msg
+}
+
+boolean isRetriableScmCheckoutError(String msg) {
+    return [
+        "connection reset by peer",
+        "curl 18",
+        "transfer closed with outstanding read data remaining",
+        "bytes of body are still expected",
+        "unexpected disconnect while reading sideband packet",
+        "bad pack header",
+        "git-remote-https died of signal 15",
+        "early eof",
+        "invalid index-pack output"
+    ].any { msg.contains(it) }
+}
+
 // Retry checkout without shallow clone if GitSCM chokes on a specific SHA
 void robustScmCheckout() {
     int maxAttempts = 2
@@ -72,7 +159,7 @@ void robustScmCheckout() {
             // This inner 'try' handles the "reference is not a tree" fallback
             try {
                 echo "[SCM] Attempting checkout (${attempt}/${maxAttempts})..."
-                checkout scm
+                checkout(scmWithGitTimeout(scm))
                 echo "[SCM] Checkout successful"
                 // If checkout succeeds, exit the function immediately
                 return
@@ -90,15 +177,15 @@ void robustScmCheckout() {
                 String ref  = env.CHANGE_ID ? "refs/pull/${env.CHANGE_ID}/head"
                                           : env.BRANCH_NAME ? "refs/heads/${env.BRANCH_NAME}"
                                           : "HEAD"
-                
+
                 def deepScm = [
                     $class: 'GitSCM',
                     userRemoteConfigs: [[url: repo, credentialsId: cred, refspec: "+${ref}:${ref}"]],
                     branches: [[name: ref]],
                     doGenerateSubmoduleConfigurations: false,
                     extensions: [
-                        [$class: 'CloneOption', depth: 0, shallow: false, noTags: false, honorRefspec: true],
-                        [$class: 'CheckoutOption', timeout: 20]
+                        [$class: 'CloneOption', depth: 0, shallow: false, noTags: false, honorRefspec: true, timeout: GIT_SCM_TIMEOUT_MINUTES],
+                        [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
                     ]
                 ]
                 checkout(deepScm)
@@ -108,9 +195,9 @@ void robustScmCheckout() {
             }
         } catch (err) {
             // This outer 'catch' block is specifically for retrying network errors
-            def msg = "${err}".toLowerCase()
-            if (msg.contains("connection reset by peer") && attempt < maxAttempts) {
-                echo "[SCM] Attempt ${attempt}/${maxAttempts} failed due to a network error."
+            def msg = scmCheckoutRetryContext(err)
+            if (isRetriableScmCheckoutError(msg) && attempt < maxAttempts) {
+                echo "[SCM] Attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
                 echo "[SCM] Waiting 2 minutes before retrying..."
                 sleep(time: 2, unit: 'MINUTES')
                 // The loop will now continue to the next attempt.
@@ -119,6 +206,57 @@ void robustScmCheckout() {
                 echo "[SCM] Unrecoverable SCM error after ${attempt} attempt(s)."
                 throw err
             }
+        }
+    }
+}
+
+Map externalGitScm(String url, String ref) {
+    return [
+        $class: 'GitSCM',
+        branches: [[name: ref]],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [
+            [
+                $class: 'CloneOption',
+                depth: 0,
+                shallow: false,
+                noTags: false,
+                reference: '',
+                honorRefspec: false,
+                timeout: GIT_SCM_TIMEOUT_MINUTES
+            ],
+            [$class: 'CheckoutOption', timeout: GIT_SCM_TIMEOUT_MINUTES]
+        ],
+        submoduleCfg: [],
+        userRemoteConfigs: [[url: url]]
+    ]
+}
+
+void robustExternalCheckout(String url, String ref) {
+    int maxAttempts = 2
+    if (!ref) {
+        error "[SCM] Missing ref/branch for external checkout"
+    }
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            // Discard a partial pack before retrying the clone.
+            deleteDir()
+            checkout(
+                changelog: false,
+                poll: false,
+                scm: externalGitScm(url, ref)
+            )
+            return
+        } catch (err) {
+            String context = scmCheckoutRetryContext(err)
+            if (attempt == maxAttempts || !isRetriableScmCheckoutError(context)) {
+                throw err
+            }
+
+            echo "[SCM] External checkout attempt ${attempt}/${maxAttempts} failed due to a transient git fetch error."
+            echo "[SCM] Waiting 2 minutes before retrying..."
+            sleep(time: 2, unit: 'MINUTES')
         }
     }
 }
@@ -266,15 +404,13 @@ void buildMIGraphX(String cmakeOpts) {
 }
 
 void getAndBuildMIGraphX(String cmakeOpts) {
-    git branch: params.MIGraphXBranch, poll: false,\
-        url: 'https://github.com/ROCm/AMDMIGraphX.git'
+    robustExternalCheckout('https://github.com/ROCm/AMDMIGraphX.git', params.MIGraphXBranch)
     buildMIGraphX(cmakeOpts)
 }
 
 /*
 void getAndBuildCK(String cmakeOpts) {
-    git branch: params.CKBranch, poll: false,\
-        url: 'https://github.com/ROCm/composable_kernel.git'
+    robustExternalCheckout('https://github.com/ROCm/composable_kernel.git', params.CKBranch)
     buildCK(cmakeOpts)
 }
 */
@@ -292,20 +428,52 @@ void showEnv() {
 
 String dockerImage() {
     // If this is being changed please change Dockerfile.migraphx-ci's base image as well
-    return 'rocm/mlir:rocm7.0-latest'
+    return 'rocm/mlir:rocm7.2-latest'
 }
 
 String dockerImageCIMIGraphX() {
-    return 'rocm/mlir-migraphx-ci:rocm7.0-latest'
+    return 'rocm/mlir-migraphx-ci:rocm7.2-latest'
 }
 
-// For when the docker image is in a private repo
+def retryDockerOperation(String description, Closure operation) {
+    int attempt = 0
+    def result = null
+    retry(10) {
+        attempt += 1
+        try {
+            result = operation()
+        } catch (err) {
+            echo "[Docker retry] ${description} failed on attempt ${attempt}/10 on ${env.NODE_NAME}: ${err}"
+            if (attempt < 10) {
+                echo "[Docker retry] Waiting 5 seconds before retrying ${description}"
+                sleep(time: 5, unit: 'SECONDS')
+            }
+            throw err
+        }
+    }
+    return result
+}
+
+// For when the docker image is in a private repo, and to avoid anonymous Docker Hub pull throttling.
 void explicitDockerLogin() {
     withCredentials([usernamePassword(credentialsId: DOCKER_HUB_CREDS,
-                                      usernameVariable: 'D_USER', 
+                                      usernameVariable: 'D_USER',
                                       passwordVariable: 'D_PASS')]) {
-        sh "echo $D_PASS | docker login -u $D_USER --password-stdin"
+        retryDockerOperation('docker login to DockerHub') {
+            sh '''
+                set +x
+                printf "%s\n" "$D_PASS" | docker login -u "$D_USER" --password-stdin
+            '''
+        }
     }
+}
+
+def pullDockerImage(String imageName) {
+    def img = docker.image(imageName)
+    retryDockerOperation("docker pull ${imageName}") {
+        img?.pull()
+    }
+    return img
 }
 
 void preMergeCheck(String codepath) {
@@ -313,6 +481,7 @@ void preMergeCheck(String codepath) {
     if ( (params.nightly == false) && (codepath == "mfma") ) {
         echo "Performing Static Test (preMergeCheck)"
         sh '''
+        set -eu
         if [ ! -f ./build/compile_commands.json ];  then
           echo "No compile commands, bailing."
           exit 1
@@ -320,6 +489,7 @@ void preMergeCheck(String codepath) {
         if [ ! -f ./compile_commands.json ]; then
           ln -s build/compile_commands.json compile_commands.json
         fi
+        # TableGen headers are built inside premerge-checks.py before clang-tidy.
         '''
         def targetBranch = env.CHANGE_TARGET
         if (!targetBranch) {
@@ -425,11 +595,23 @@ void setHeartbeat() {
     }
 }
 
+List<String> getEnabledMfmaArchitectures() {
+    def architectures = []
+    if (params.disable942 == false) architectures << 'gfx942'
+    if (params.disable908 == false) architectures << 'gfx908'
+    if (params.disable90a == false) architectures << 'gfx90a'
+    return architectures
+}
+
 String getLabelFromCodepath(String codepath) {
     echo "codepath is ${codepath}"
     String label = ''
     if (codepath == "mfma") {
-        label = 'mlir && (gfx942 || gfx908 || gfx90a)'
+        def architectures = getEnabledMfmaArchitectures()
+        if (architectures.isEmpty()) {
+            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+        }
+        label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
         //     label = 'mlir && linux-mi350-8'
@@ -498,7 +680,7 @@ String getLabelFromChip(String chip) {
 int setLitWorkerCount() {
     int limit_lit_workers = 8
     def gpu_arch = get_gpu_architecture()
-    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a')) {
+    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a') || gpu_arch.contains('gfx950')) {
         limit_lit_workers = 20
     } else if (gpu_arch.contains('gfx942')) {
         limit_lit_workers = 64
@@ -506,28 +688,39 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-/*
+// The upstream MLIR suite runs on one codepath, like the static checks do: only its
+// six Integration/GPU/ROCM tests touch the GPU, so the rest would repeat identically
+// on every row. mfma is the row that is always enabled when nightly runs.
+boolean runsCheckMlir(String codepath) {
+    return params.nightly && codepath == "mfma"
+}
+
 void build_fixedE2ETests(String codepath) {
-    // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
+    // Worker count is set per-arch by setLitWorkerCount()
     int limit_lit_workers = setLitWorkerCount()
-    buildProject("check-mlir-build-only check-rocmlir-build-only${params.nightly ? ' hipblaslt-benchmark-driver' : ''}", """
+    buildProject("${runsCheckMlir(codepath) ? 'check-mlir-build-only ' : ''}check-rocmlir-build-only", """
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'}
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
               -DROCMLIR_ENABLE_BENCHMARKS=${params.nightly ? 'hipblaslt' : ''}
+              -DMLIR_INCLUDE_INTEGRATION_TESTS=${runsCheckMlir(codepath) ? 'ON' : 'OFF'}
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
              """)
 }
 
-void check_randomE2ETests(String codepath) {
-    // Limit the number of lit workers for gfx908, gfx90a to (8, 30) on CI as a workaround for issue #1845 and #1841
+void check_randomE2ETests() {
     int limit_lit_workers = setLitWorkerCount()
+    // --no-clean keeps the build directory from build_fixedE2ETests; only the
+    // lit configs change here.
     buildProject('check-rocmlir', """
+              --no-clean
               -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
               -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
               -DROCK_E2E_TEST_ENABLED=1
               -DROCMLIR_DRIVER_RANDOM_DATA_SEED=1
+              -DLLVM_ENABLE_ZSTD=FORCE_ON
               -DLLVM_LIT_ARGS='-v --time-tests --timeout=3600 --max-failures=1 -j ${limit_lit_workers}'
               -DCMAKE_EXPORT_COMPILE_COMMANDS=1
              """)
@@ -538,6 +731,9 @@ void check_randomE2ETests(String codepath) {
 // attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
 // same ``-j``/``--samples``/``--log-failures`` interface and ship in
 // <build>/bin/ via the ``ci-performance-scripts`` target.
+// Kept commented out alongside its (also commented) call sites in the
+// NIGHTLY/WEEKLY stages block; restore together when re-enabling sweeps.
+/*
 void runSweep(String script, String kind, int samples, String codepath) {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 300, activity: true, unit: 'MINUTES') {
@@ -548,28 +744,30 @@ void runSweep(String script, String kind, int samples, String codepath) {
 }
 */
 
+
 boolean shouldRunFromCodepath(String codepath) {
-    // Run vanilla on public CI
+    // Run vanilla when xdlops are unavailable.
     if ((codepath == "vanilla") && (params.canXdlops == false)) {
         return true
     }
-    // Run mfma on private CI
-    if ((codepath == "mfma") && params.canXdlops) {
+    // Run mfma when xdlops are available.
+    if ((codepath == "mfma") && params.canXdlops &&
+        !getEnabledMfmaArchitectures().isEmpty()) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
         return true
     }
-    // Run navi21 on private nightly or weekly CI if it is not disabled
+    // Run navi21 during scheduled CI if it is not disabled.
     if (params.canXdlops && (params.disableNavi21 == false) && (codepath == "navi21") &&
         (params.nightly || params.weekly)) {
         return true
     }
-    // Run navi3x on private CI if it is not disabled
+    // Run navi3x if it is not disabled.
     if (params.canXdlops && (params.disableNavi3x == false) && (codepath == "navi3x")) {
         return true
     }
-    // Run navi4x on private CI if it is not disabled
+    // Run navi4x if it is not disabled.
     if (params.canXdlops && (params.disableNavi4x == false) && (codepath == "navi4x")) {  
         return true;  
     }  
@@ -620,15 +818,15 @@ void archivePerfDB() {
 */
 
 boolean shouldRunBuildAndTest(String codepath) {
-    // When default codepath is selected, we test mfma, navi21, navi3x and navi4x on
-    // private CI and vanilla on public CI
+    // When the default codepath is selected, test every codepath enabled for
+    // this runner.
     if (params.codepath == "default" && shouldRunFromCodepath(codepath))
         return true
 
-    // When a particular codepath is selected, we only test the codepath
-    // on private CI
+    // When a particular codepath is selected, test it if it is supported and
+    // enabled.
     if (params.codepath == codepath && params.canXdlops) {
-        if (params.codepath == "mfma") return true
+        if (params.codepath == "mfma") return !getEnabledMfmaArchitectures().isEmpty()
         if (params.codepath == "vanilla") return true
         if (params.codepath == "gfx950" && params.disable950 == false) return true
         if (params.codepath == "navi21" && params.disableNavi21 == false) return true
@@ -863,6 +1061,7 @@ Map<String,String> classifyBuildFailure(String logText) {
     def stageNames = [
         'SCM Checkout',
         'Configure and build rocmlirTriton', 'Static checks', 'Run tests',
+        'Upstream MLIR: check-mlir', 'Shared Library: fixed E2E', 'Shared Library: random E2E',
         'Install MIGraphX Dependencies', 'Build and Verify MIGraphX with MLIR', 'Verify MIGraphX with MLIR',
         'MIGraphX'
     ]
@@ -1056,8 +1255,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1067,14 +1266,7 @@ pipeline {
                                                 ]) {
                                                     stage('Configure and build rocmlirTriton') {
                                                         timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                            sh """
-                                                                export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                bash cmake.sh \\
-                                                                    -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=${params.nightly ? '0' : '1'} \\
-                                                                    -DROCMLIR_DRIVER_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'} \\
-                                                                    -DROCK_E2E_TEST_ENABLED=${params.nightly ? '1' : '0'}
-                                                            """
+                                                            build_fixedE2ETests(CODEPATH)
                                                         }
                                                     }
 
@@ -1084,12 +1276,32 @@ pipeline {
                                                         }
                                                     }
 
-                                                    stage('Run tests') {
+                                                    // Runs before the GPU suite: apart from six Integration/GPU/ROCM
+                                                    // tests it is host-only and finishes in seconds, so MLIR
+                                                    // regressions are reported early.
+                                                    if (runsCheckMlir(CODEPATH)) {
+                                                        stage('Upstream MLIR: check-mlir') {
+                                                            int limit_lit_workers = setLitWorkerCount()
+                                                            timeout(time: 15, activity: true, unit: 'MINUTES') {
+                                                                dir('build') {
+                                                                    sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-mlir"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    stage('Shared Library: fixed E2E') {
+                                                        int limit_lit_workers = setLitWorkerCount()
                                                         timeout(time: 30, activity: true, unit: 'MINUTES') {
                                                             dir('build') {
-                                                                int limit_lit_workers = setLitWorkerCount()
                                                                 sh "LIT_OPTS='-j ${limit_lit_workers}' ninja check-rocmlir"
                                                             }
+                                                        }
+                                                    }
+
+                                                    if (params.nightly) {
+                                                        stage('Shared Library: random E2E') {
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 
@@ -1103,46 +1315,42 @@ pipeline {
                                                             build_fixedE2ETests("${CODEPATH}")
                                                             preMergeCheck("${CODEPATH}")
                                                             timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                                sh 'cd build; ninja check-mlir check-rocmlir'
+                                                                sh 'cd build; ninja check-rocmlir'
                                                             }
                                                         }
                                                     }
                                                     
                                                     if (params.sharedLib && params.nightly) {
                                                         stage('Shared Library: random E2E') {
-                                                            check_randomE2ETests("${CODEPATH}")
+                                                            check_randomE2ETests()
                                                         }
                                                     }
 
                                                     if (params.sharedLib && !params.nightly) {
                                                         stage('Tune selected rocMLIR configs') {
                                                             buildProject('ci-performance-scripts', '')
-                                                            // How to check out into specific directory, according to stackoverflow.
-                                                            dir('MITuna') {
-                                                                git branch: "pf-tuna-rocmlir-3", poll: false, url: 'https://github.com/ROCm/MITuna.git'
-                                                            }
                                                             dir('build') {
                                                                 timeout(time: 60, activity: true, unit: 'MINUTES') {
                                                                     // Tune gemms, fail if the DB is not created
-                                                                    sh """../mlir/utils/tuna/tuna-script.sh -o gemm \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
-                                                                            -t ${WORKSPACE}/MITuna -f tuning_gemm.tsv
+                                                                            -o tuning_gemm.tsv
                                                                         [ -f tuning_gemm.tsv ]"""
-                                                                    sh """../mlir/utils/tuna/tuna-script.sh -o convolution \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
-                                                                            -t ${WORKSPACE}/MITuna -f tuning_conv.tsv
+                                                                            -o tuning_conv.tsv
                                                                         [ -f tuning_conv.tsv ]"""
-                                                                    sh """../mlir/utils/tuna/tuna-script.sh -o attention \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-attention-configs \
-                                                                            -t ${WORKSPACE}/MITuna -f tuning_attention.tsv
+                                                                            -o tuning_attention.tsv
                                                                         [ -f tuning_attention.tsv ]"""
-                                                                    sh """../mlir/utils/tuna/tuna-script.sh -o gemm \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-gemm-configs \
-                                                                            -t ${WORKSPACE}/MITuna -f quick_tuning_gemm.tsv -s quick
+                                                                            -o quick_tuning_gemm.tsv
                                                                         [ -f quick_tuning_gemm.tsv ]"""
-                                                                    sh """../mlir/utils/tuna/tuna-script.sh -o convolution \
+                                                                    sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                             -c ../mlir/utils/jenkins/ci-configs/selected-conv-configs \
-                                                                            -t ${WORKSPACE}/MITuna -f quick_tuning_conv.tsv -s quick
+                                                                            -o quick_tuning_conv.tsv
                                                                         [ -f quick_tuning_conv.tsv ]"""
                                                                 }
                                                             }
@@ -1229,8 +1437,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1319,8 +1527,8 @@ pipeline {
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1338,22 +1546,19 @@ pipeline {
 
                                                     stage("Tune rocMLIR") {
                                                         buildProject('check-rocmlir-build-only ci-performance-scripts', '')
-                                                        dir('MITuna') {
-                                                            git branch: "pf-tuna-rocmlir-3", poll: false, url: 'https://github.com/ROCm/MITuna.git'
-                                                        }
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """../mlir/utils/tuna/tuna-script.sh -o gemm \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
-                                                                    -t ${WORKSPACE}/MITuna -f mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            sh """../mlir/utils/tuna/tuna-script.sh -o convolution \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
-                                                                    -t ${WORKSPACE}/MITuna -f mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
                                                             def attnConfig = "../mlir/utils/performance/configs/tier1-attention-configs"
                                                             def attnConfigToUse = attnConfig
@@ -1392,19 +1597,19 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            sh """../mlir/utils/tuna/tuna-script.sh -o attention \
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                     -c ${attnConfigToUse} \
-                                                                    -t ${WORKSPACE}/MITuna -f mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """../mlir/utils/tuna/tuna-script.sh -o gemm \
-                                                                    -c ../mlir/utils/performance/configs/tier1-gemm-configs -s quick \
-                                                                    -t ${WORKSPACE}/MITuna -f mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
+                                                                    -c ../mlir/utils/performance/configs/tier1-gemm-configs \
+                                                                    -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            sh """../mlir/utils/tuna/tuna-script.sh -o convolution \
-                                                                    -c ../mlir/utils/performance/configs/tier1-conv-configs -s quick \
-                                                                    -t ${WORKSPACE}/MITuna -f mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
+                                                                    -c ../mlir/utils/performance/configs/tier1-conv-configs \
+                                                                    -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             sh """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
                                                             // Check for errors in the tuning log
                                                             script {
@@ -1424,10 +1629,10 @@ PY
                                                     stage("Tune Fusion") {
                                                         dir('build') {
                                                             // Tune resnet50
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
 
                                                             // Tune bert
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                         sh 'rm -f build/CMakeCache.txt'
                                                     }
@@ -1523,8 +1728,8 @@ PY
                                                 args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                 // Check these args
                                                 echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
-                                                img = docker.image(dockerImage())
-                                                img?.pull()
+                                                explicitDockerLogin()
+                                                img = pullDockerImage(dockerImage())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1745,8 +1950,7 @@ PY
 
                                                 // Explicit docker login since this repo is private
                                                 explicitDockerLogin()
-                                                img = docker.image(dockerImageCIMIGraphX())
-                                                img?.pull()
+                                                img = pullDockerImage(dockerImageCIMIGraphX())
                                             }
                                             // Spin up ONE container and stay in it for all substages
                                             img.inside(args) {
@@ -1868,8 +2072,8 @@ PY
                                                     args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
                                                     // Check these args
                                                     echo "Running ${CODEPATH} on ${env.NODE_NAME} with: ${args}"
-                                                    img = docker.image(dockerImage())
-                                                    img?.pull()
+                                                    explicitDockerLogin()
+                                                    img = pullDockerImage(dockerImage())
                                                 }
                                                 // Spin up ONE container and stay in it for all substages
                                                 img.inside(args) {

@@ -1,6 +1,7 @@
 //===- LowerLoads.cpp - Lower rock.load_marker ops to blockwise loads -----===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,7 +56,8 @@ struct LowerLoadMarker : public OpRewritePattern<LoadMarkerOp> {
       source = rock::transform(rewriter, source, extraViews);
 
     auto loadOp = BlockwiseLoadOp::create(rewriter, markerOp.getLoc(), source,
-                                          markerOp.getExtraIndices());
+                                          markerOp.getExtraIndices(),
+                                          markerOp.getCacheModifier());
 
     rewriter.replaceOp(markerOp, loadOp);
     return success();

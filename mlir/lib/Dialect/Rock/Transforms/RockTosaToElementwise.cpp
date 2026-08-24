@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2026 Advanced Micro Devices
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -92,10 +92,10 @@ template <typename OpTy>
 static FailureOr<std::pair<Value, Value>>
 broadcastInputs(PatternRewriter &rewriter, OpTy op) {
   auto resultShape = cast<ShapedType>(op.getType()).getShape();
-  auto b1 =
-      createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(), resultShape);
-  auto b2 =
-      createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(), resultShape);
+  auto b1 = createBroadcastTransform(rewriter, op.getLoc(), op.getInput1(),
+                                     resultShape);
+  auto b2 = createBroadcastTransform(rewriter, op.getLoc(), op.getInput2(),
+                                     resultShape);
   if (failed(b1) || failed(b2))
     return failure();
   return std::make_pair(*b1, *b2);
@@ -118,6 +118,33 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
       rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
     else
       return failure();
+    return success();
+  }
+};
+
+// tosa.maximum selects the floating operation from its NaN propagation mode.
+struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::MaximumOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputs = broadcastInputs(rewriter, op);
+    if (failed(inputs))
+      return failure();
+    auto [in1, in2] = *inputs;
+    Type elemTy = cast<ShapedType>(op.getType()).getElementType();
+
+    if (isa<IntegerType>(elemTy)) {
+      rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, op.getType(), in1, in2);
+      return success();
+    }
+    if (!isa<FloatType>(elemTy))
+      return failure();
+
+    if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE)
+      rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, op.getType(), in1,
+                                                     in2);
+    else
+      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getType(), in1, in2);
     return success();
   }
 };
@@ -441,8 +468,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
           rewriter, op.getLoc(),
           DenseElementsAttr::get(srcShapedTy,
                                  rewriter.getFloatAttr(srcTy, 0.0)));
-      rewriter.replaceOpWithNewOp<arith::CmpFOp>(
-          op, arith::CmpFPredicate::UNE, op.getInput(), zero);
+      rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, arith::CmpFPredicate::UNE,
+                                                 op.getInput(), zero);
       return success();
     }
 
@@ -460,11 +487,10 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       auto srcShapedTy = cast<ShapedType>(op.getInput().getType());
       Value zero = arith::ConstantOp::create(
           rewriter, op.getLoc(),
-          DenseElementsAttr::get(
-              srcShapedTy,
-              rewriter.getIntegerAttr(srcTy, 0)));
-      rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-          op, arith::CmpIPredicate::ne, op.getInput(), zero);
+          DenseElementsAttr::get(srcShapedTy,
+                                 rewriter.getIntegerAttr(srcTy, 0)));
+      rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, arith::CmpIPredicate::ne,
+                                                 op.getInput(), zero);
       return success();
     }
 
@@ -484,13 +510,13 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
         rewriter.replaceOp(op, op.getInput());
       return success();
     }
-  
+
     return failure();
   }
 };
 
 // tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
-// and fp_to_int_cast.
+// unsigned_max, and fp_to_int_cast.
 // These are custom TOSA ops that represent operations which standard TOSA
 // doesn't support or where we need to override upstream lowering behavior.
 struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
@@ -537,6 +563,12 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
 
     if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_DIV) {
       rewriter.replaceOpWithNewOp<arith::DivUIOp>(
+          op, outType, op.getInputList()[0], op.getInputList()[1]);
+      return success();
+    }
+
+    if (op.getOperatorName() == ROCK_CUSTOMOP_UNSIGNED_MAX) {
+      rewriter.replaceOpWithNewOp<arith::MaxUIOp>(
           op, outType, op.getInputList()[0], op.getInputList()[1]);
       return success();
     }
@@ -602,6 +634,7 @@ struct RockTosaToElementwise
       StringRef name = op.getOperatorName();
       return name != ROCK_CUSTOMOP_UNSIGNED_CAST &&
              name != ROCK_CUSTOMOP_UNSIGNED_DIV &&
+             name != ROCK_CUSTOMOP_UNSIGNED_MAX &&
              name != ROCK_CUSTOMOP_FP_TO_INT_CAST;
     });
 
@@ -609,9 +642,9 @@ struct RockTosaToElementwise
     patterns.add<
         BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
         BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>,
-        BinaryConverter<tosa::MaximumOp, arith::MaximumFOp, arith::MaxSIOp>,
         BinaryConverter<tosa::MinimumOp, arith::MinimumFOp, arith::MinSIOp>>(
         ctx);
+    patterns.add<MaximumConverter>(ctx);
 
     // --- Binary float-only ---
     patterns.add<IntBinaryConverter<tosa::BitwiseAndOp, arith::AndIOp>,
@@ -671,4 +704,3 @@ struct RockTosaToElementwise
 };
 
 } // namespace
-

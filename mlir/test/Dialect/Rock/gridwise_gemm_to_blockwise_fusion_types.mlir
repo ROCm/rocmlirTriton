@@ -4,34 +4,44 @@
 // mBlocks = 64/16 = 4, nBlocks = 400/16 = 25, numCU = 256, numChiplets = 8
 //
 // makeGroupedGridLayout groupSize heuristic:
-//   bitWidthIn  = min(inputType.bitWidth, outputType.bitWidth)
 //   bitWidthOut = outputType.bitWidth
-//   groupSize   = ceil(sqrt(numCU)) * (bitWidthOut / bitWidthIn) = 16 * ratio
+//   bitWidthIn  = min(inputType.bitWidth, outputType.bitWidth)
+//   groupSize   = ceil(sqrt(numCU / numChiplets)) * (bitWidthOut / bitWidthIn)
+//               = ceil(sqrt(256 / 8)) * ratio = 6 * ratio
 //   blocksPerGroup = groupSize * nBlocks = groupSize * 25
+//   mnBlocks       = mBlocks * nBlocks = 4 * 25 = 100
 //
 // The grid layout IR emitted after tt.get_program_id follows a fixed pattern:
 //   1. XCC rearrangement (chiplet-aware reorder of bid)
-//   2. Grid coordinate computation using groupSize and blocksPerGroup
+//   2. Grid coordinate computation: g_block = bid / mnBlocks, then a grouped
+//      m_block/n_block split using groupSize, blocksPerGroup and mBlocks.
 // The CHECK lines anchor on tt.get_program_id -> arith.select (end of XCC
-// rearrangement) -> groupSize/blocksPerGroup constants -> their uses.
+// rearrangement) -> groupSize/blocksPerGroup/mBlocks/mnBlocks constants ->
+// their uses.
 
 // -----
 
 // Input fusion: arith.extf widens f16 block arg to f32 for the gemm.
 // getInputFusionElementType traces through extf to find f16.
 // inputType = f16 (16-bit), outputType = f32 (32-bit)
-// groupSize = 16 * (32 / min(16,32)) = 16 * 2 = 32
-// blocksPerGroup = 32 * 25 = 800
+// groupSize = 6 * (32 / min(16,32)) = 6 * 2 = 12
+// blocksPerGroup = 12 * 25 = 300
 // CHECK-LABEL: @gemm_input_fusion_extf
 // CHECK:       %[[BID:.*]] = tt.get_program_id x : i32
 // CHECK:       %[[ADJUSTED:.*]] = arith.select %{{.*}}, %[[BID]], %{{.*}} : i32
-// CHECK:       %[[GPSIZE:.*]] = arith.constant 32 : i32
-// CHECK:       %[[BPG:.*]] = arith.constant 800 : i32
+// CHECK:       %[[GPSIZE:.*]] = arith.constant 12 : i32
+// CHECK:       %[[BPG:.*]] = arith.constant 300 : i32
+// CHECK:       %[[MBLK:.*]] = arith.constant 4 : i32
 // CHECK:       %[[MNBLK:.*]] = arith.constant 100 : i32
 // CHECK:       arith.divui %[[ADJUSTED]], %[[MNBLK]] : i32
 // CHECK:       %[[BID_IN_G:.*]] = arith.remui %[[ADJUSTED]], %[[MNBLK]] : i32
-// CHECK:       arith.divui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.muli %{{.*}}, %[[GPSIZE]] : i32
+// CHECK:       %[[GROUPID:.*]] = arith.divui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
+// CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
+// CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_fusion_extf(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -51,18 +61,24 @@ func.func @gemm_input_fusion_extf(%arg0: tensor<51200xf16>, %arg1: tensor<320000
 // getOutputFusionElementType traces through truncf + store to find f16 dest arg.
 // inputType = f32 (32-bit), outputType = f16 (16-bit)
 // bitWidthIn = min(32,16) = 16, bitWidthOut = 16
-// groupSize = 16 * (16 / 16) = 16
-// blocksPerGroup = 16 * 25 = 400
+// groupSize = 6 * (16 / 16) = 6
+// blocksPerGroup = 6 * 25 = 150
 // CHECK-LABEL: @gemm_output_fusion_truncf
 // CHECK:       %[[BID:.*]] = tt.get_program_id x : i32
 // CHECK:       %[[ADJUSTED:.*]] = arith.select %{{.*}}, %[[BID]], %{{.*}} : i32
-// CHECK:       %[[GPSIZE:.*]] = arith.constant 16 : i32
-// CHECK:       %[[BPG:.*]] = arith.constant 400 : i32
+// CHECK:       %[[GPSIZE:.*]] = arith.constant 6 : i32
+// CHECK:       %[[BPG:.*]] = arith.constant 150 : i32
+// CHECK:       %[[MBLK:.*]] = arith.constant 4 : i32
 // CHECK:       %[[MNBLK:.*]] = arith.constant 100 : i32
 // CHECK:       arith.divui %[[ADJUSTED]], %[[MNBLK]] : i32
 // CHECK:       %[[BID_IN_G:.*]] = arith.remui %[[ADJUSTED]], %[[MNBLK]] : i32
-// CHECK:       arith.divui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.muli %{{.*}}, %[[GPSIZE]] : i32
+// CHECK:       %[[GROUPID:.*]] = arith.divui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
+// CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
+// CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_output_fusion_truncf(%arg0: tensor<51200xf32>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf16>) -> tensor<51200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -82,18 +98,24 @@ func.func @gemm_output_fusion_truncf(%arg0: tensor<51200xf32>, %arg1: tensor<320
 // f32 result truncated to f16 for storage.
 // inputType = f16 (16-bit), outputType = f16 (16-bit)
 // bitWidthIn = min(16,16) = 16, bitWidthOut = 16
-// groupSize = 16 * (16 / 16) = 16
-// blocksPerGroup = 16 * 25 = 400
+// groupSize = 6 * (16 / 16) = 6
+// blocksPerGroup = 6 * 25 = 150
 // CHECK-LABEL: @gemm_input_output_fusion
 // CHECK:       %[[BID:.*]] = tt.get_program_id x : i32
 // CHECK:       %[[ADJUSTED:.*]] = arith.select %{{.*}}, %[[BID]], %{{.*}} : i32
-// CHECK:       %[[GPSIZE:.*]] = arith.constant 16 : i32
-// CHECK:       %[[BPG:.*]] = arith.constant 400 : i32
+// CHECK:       %[[GPSIZE:.*]] = arith.constant 6 : i32
+// CHECK:       %[[BPG:.*]] = arith.constant 150 : i32
+// CHECK:       %[[MBLK:.*]] = arith.constant 4 : i32
 // CHECK:       %[[MNBLK:.*]] = arith.constant 100 : i32
 // CHECK:       arith.divui %[[ADJUSTED]], %[[MNBLK]] : i32
 // CHECK:       %[[BID_IN_G:.*]] = arith.remui %[[ADJUSTED]], %[[MNBLK]] : i32
-// CHECK:       arith.divui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.muli %{{.*}}, %[[GPSIZE]] : i32
+// CHECK:       %[[GROUPID:.*]] = arith.divui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
+// CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
+// CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_output_fusion(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf16>) -> tensor<51200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -114,20 +136,26 @@ func.func @gemm_input_output_fusion(%arg0: tensor<51200xf16>, %arg1: tensor<3200
 // sizes and types. arg0 (51200 x f16) is larger than arg_bias (400 x f32), so
 // getInputFusionElementType picks arg0's element type (f16).
 // inputType = f16 (16-bit), outputType = f32 (32-bit)
-// groupSize = 16 * (32 / min(16,32)) = 16 * 2 = 32
-// blocksPerGroup = 32 * 25 = 800
+// groupSize = 6 * (32 / min(16,32)) = 6 * 2 = 12
+// blocksPerGroup = 12 * 25 = 300
 // If the logic incorrectly chose the smaller tensor (f32), groupSize would be
-// 16 instead of 32, causing the CHECKs below to fail.
+// 6 instead of 12, causing the CHECKs below to fail.
 // CHECK-LABEL: @gemm_input_fusion_biggest_tensor
 // CHECK:       %[[BID:.*]] = tt.get_program_id x : i32
 // CHECK:       %[[ADJUSTED:.*]] = arith.select %{{.*}}, %[[BID]], %{{.*}} : i32
-// CHECK:       %[[GPSIZE:.*]] = arith.constant 32 : i32
-// CHECK:       %[[BPG:.*]] = arith.constant 800 : i32
+// CHECK:       %[[GPSIZE:.*]] = arith.constant 12 : i32
+// CHECK:       %[[BPG:.*]] = arith.constant 300 : i32
+// CHECK:       %[[MBLK:.*]] = arith.constant 4 : i32
 // CHECK:       %[[MNBLK:.*]] = arith.constant 100 : i32
 // CHECK:       arith.divui %[[ADJUSTED]], %[[MNBLK]] : i32
 // CHECK:       %[[BID_IN_G:.*]] = arith.remui %[[ADJUSTED]], %[[MNBLK]] : i32
-// CHECK:       arith.divui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.muli %{{.*}}, %[[GPSIZE]] : i32
+// CHECK:       %[[GROUPID:.*]] = arith.divui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
+// CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
+// CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
+// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_fusion_biggest_tensor(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf32>, %arg_bias: tensor<400xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {

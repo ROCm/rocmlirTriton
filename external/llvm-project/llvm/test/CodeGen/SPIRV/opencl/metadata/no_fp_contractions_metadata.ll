@@ -1,0 +1,9 @@
+; RUN: llc -O0 -mtriple=spirv64-unknown-unknown %s -o - | FileCheck %s
+; RUN: %if spirv-tools %{ llc -O0 -mtriple=spirv64-unknown-unknown %s -o - -filetype=obj | spirv-val %}
+
+; CHECK: OpEntryPoint Kernel %[[#ENTRY:]] "foo"
+; CHECK: OpExecutionMode %[[#ENTRY]] ContractionOff
+define spir_kernel void @foo() {
+entry:
+  ret void
+}

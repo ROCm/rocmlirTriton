@@ -88,12 +88,12 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     info.blockSize = tritonBlockSize;
     info.clusterSize = numCTAs;
 
-    // Get grid_size from module attribute (set by FuncToTritonFunc)
-    std::string gridAttrName = "rock.grid_size." + info.name;
+    // Get grid_size from module attribute (set by RockTensorToTritonPtr)
+    std::string gridAttrName = GridSizeAttr::getModuleAttrName(info.name);
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
-    // Get prefill arg info from module attribute (set by FuncToTritonFunc)
+    // Get prefill arg info from module attribute (set by RockTensorToTritonPtr)
     std::string prefillAttrName = "rock.prefill_args." + info.name;
     if (auto prefillArr = moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
       for (Attribute entry : prefillArr) {
@@ -195,12 +195,12 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
   tritonOpts.useInThreadTranspose = params.getUseInThreadTranspose();
   tritonOpts.useBufferOps = params.getUseBufferOps();
   tritonOpts.useBufferAtomics = params.getUseBufferAtomics();
-  tritonOpts.scheduleHint = params.getScheduleHint();
+  tritonOpts.useReductionLayout = params.getUseReductionLayout();
+  tritonOpts.useOptimizeEpilogue = params.getUseOptimizeEpilogue();
 
   backendOpts.numWarps = params.getNumWaves();
   backendOpts.numCTAs = params.getNumCTAs();
   backendOpts.wavesPerEU = params.getWavesPerEU();
-  backendOpts.scheduleHint = params.getScheduleHint();
   return success();
 }
 

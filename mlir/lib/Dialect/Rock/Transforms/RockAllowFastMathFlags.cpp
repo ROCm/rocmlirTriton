@@ -1,6 +1,7 @@
 //===- RockAllowFastMathFlags.cpp ------------===//
 //
-// Copyright 2026 Advanced Micro Devices.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -146,7 +147,8 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   // Allow mul+add to fuse into fma (v_fma_f32).
   constexpr arith::FastMathFlags fmaFlags =
       arith::FastMathFlags::contract | arith::FastMathFlags::nsz;
-  // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too.
+  // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too. This does not
+  // imply `nnan`, so maximumf continues to propagate NaNs.
   constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
   // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
   constexpr arith::FastMathFlags transcendentalFlags =
@@ -161,6 +163,7 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   patterns.add<AddFastMathFlagsPattern<arith::NegFOp>,
                AddFastMathFlagsPattern<arith::RemFOp>,
                AddFastMathFlagsPattern<arith::MaximumFOp>,
+               AddFastMathFlagsPattern<arith::MaxNumFOp>,
                AddFastMathFlagsPattern<arith::MinimumFOp>>(ctx, nszOnly);
   patterns.add<AddFastMathFlagsPattern<math::ExpOp>,
                AddFastMathFlagsPattern<math::Exp2Op>,

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -35,19 +38,22 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
                                             RockGemmGemmWrapperInterface op) {
   // Bump the first applicable config (Q + K + V LDS fit, kpack/splitK/numCTAs
   // == 1) to the front for skip-benchmarking consumers.
-  auto elemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto aElemType = cast<ShapedType>(op.getAType()).getElementType();
+  auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
+  auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), elemType);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType);
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
-        return isGemmGemmParamsConservativelyApplicable(b, p, elemType,
-                                                        elemType, arch, op);
+        return isGemmGemmParamsConservativelyApplicable(
+            b, p, aElemType, bElemType, cElemType, arch, op);
       });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
   // default.
-  if (ordered.empty() || !isGemmGemmParamsConservativelyApplicable(
-                             b, ordered.front(), elemType, elemType, arch, op))
+  if (ordered.empty() ||
+      !isGemmGemmParamsConservativelyApplicable(b, ordered.front(), aElemType,
+                                                bElemType, cElemType, arch, op))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmGemmParams(b.getContext()));
   return ordered;
@@ -88,19 +94,17 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getNumStages(), params.getWavesPerEU(), params.getGridGroupSize(),
       params.getUseAsyncCopy(), params.getUseBlockPingpong(),
       params.getUseInThreadTranspose(), params.getUseBufferOps(),
-      params.getUseBufferAtomics(), params.getScheduleHint());
+      params.getUseBufferAtomics(), params.getUseReductionLayout(),
+      params.getUseOptimizeEpilogue(), params.getUseBf16x3ForF32());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
     OpBuilder &b, RockGemmGemmWrapperInterface op, GemmGemmParamsAttr params) {
-  // Due to limitations, gemm1NPerBlock must be equal to gemm1N
-  // and gemm1NPerBlock must be a power of two.
-  auto cShape = cast<ShapedType>(op.getCType()).getShape();
-  int idx = op.getTransposedC() ? 0 : 1;
-  assert(cShape.size() == 3 || cShape.size() == 2);
-  if (cShape.size() == 3)
-    idx++;
-  int64_t gemm1NPerBlock = llvm::PowerOf2Ceil(cShape[idx]);
+  // `nPerBlockG1 == 0` keeps the second GEMM untiled (process the full gemm1N);
+  // otherwise it tiles the head dim.
+  int64_t gemm1N = llvm::PowerOf2Ceil(op.getGemmGemmSize().o);
+  int64_t gemm1NPerBlock =
+      params.getNPerBlockG1() > 0 ? params.getNPerBlockG1() : gemm1N;
   return GemmParamsAttr::get(
       b.getContext(), params.getMPerBlockG0(), gemm1NPerBlock,
       params.getNPerBlockG0(), params.getKpack(), params.getNumCTAs(),
@@ -109,5 +113,6 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
       params.getGridGroupSize(), params.getUseAsyncCopy(),
       params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
       params.getUseBufferOps(), params.getUseBufferAtomics(),
-      params.getScheduleHint());
+      params.getUseReductionLayout(), params.getUseOptimizeEpilogue(),
+      params.getUseBf16x3ForF32());
 }

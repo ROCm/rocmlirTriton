@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Quick Tuning Generator
 
 Generates QuickTuningPerfconfigs.inc from tuning data produced by tuningRunner.py.
@@ -15,7 +18,7 @@ import pandas as pd
 import pulp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from perfRunner import SPLITK_IDX  # noqa: E402
+from perfCommonUtils import SPLITK_KEY, parse_perfconfig  # noqa: E402
 
 # Column definitions for grouping problems
 GEMM_COLUMNS = ['TransA', 'TransB', 'TransO', 'G', 'M', 'K', 'N']
@@ -24,8 +27,9 @@ CONV_COLUMNS = [
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW'
 ]
 ATTENTION_COLUMNS = [
-    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'WithAttnScale',
-    'WithAttnBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
+    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV',
+    'SlidingWindowLookBack', 'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ',
+    'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
 ]
 
 # Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
@@ -68,20 +72,11 @@ def get_target_columns(op):
         raise ValueError(f"Unknown operation: {op}")
 
 
-def parse_perfconfig(perfconfig):
-    """Parse a perfconfig string into format, version, and params."""
-    parts = perfconfig.split(":")
-    if len(parts) != 3:
-        raise ValueError(f"Invalid perfconfig format: {perfconfig}")
-    return parts[0], int(parts[1][1:]), parts[2].split(",")
-
-
 def get_splitk_value(perfconfig):
-    """Extract the Split-K value from a perfconfig string."""
-    fmt, version, params = parse_perfconfig(perfconfig)
-    if SPLITK_IDX < len(params):
-        return params[SPLITK_IDX]
-    return None
+    """Extract the Split-K value (as a string) from a perfconfig string."""
+    _, params = parse_perfconfig(perfconfig)
+    value = params.get(SPLITK_KEY)
+    return None if value is None else str(value)
 
 
 # =============================================================================
@@ -119,6 +114,18 @@ def load_data(files, no_splitk):
         # Read TSV content from stdin
         print("Reading from stdin...")
         df = pd.read_csv(sys.stdin, sep='\t', index_col=None, low_memory=False)
+
+    if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
+        df['TransBias'] = False
+
+    # Sliding look-back is optional (KV-cache only) and omitted from the key when
+    # disabled, so legacy attention rows may lack the column or carry NaN after a
+    # mixed-file concat; normalize it to the disabled sentinel -1. Only attention
+    # grouping reads SlidingWindowLookBack, so defaulting it is a no-op elsewhere.
+    if 'SlidingWindowLookBack' not in df.columns:
+        df['SlidingWindowLookBack'] = -1
+    else:
+        df['SlidingWindowLookBack'] = df['SlidingWindowLookBack'].fillna(-1)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)
@@ -333,7 +340,9 @@ def update_inc_file(results, arch, op):
         class_name = get_class_name(arch, dtype, op)
         param_name, count_name = get_param_names(arch, dtype, op)
 
-        # Generate definition
+        # Generate definition. Perf configs are `prefix:key=value,...` strings
+        # containing only identifier, digit, `-`, `=`, `,` and `:` characters,
+        # so they embed directly into a C++ string literal without escaping.
         def_lines = [f"const StringRef {class_name}::{param_name}[] = {{"]
         for i, cfg in enumerate(configs):
             comma = "," if i < len(configs) - 1 else ""
