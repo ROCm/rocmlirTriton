@@ -121,13 +121,17 @@ extra_configs() {
 measure() { # measure <arch> <op> <source> <input> <config> <out.tsv>
   local arch=$1 op=$2 source=$3 input=$4 cfg=$5 out=$6
   local log; log=$(mktemp)
-  local start; start=$(date +%s.%N)
+  # Milliseconds and integer arithmetic, so that timing needs nothing beyond
+  # the shell itself.
+  local start; start=$(date +%s%3N)
   ROCMLIR_REGISTER_PRESSURE_REPORT=1 timeout "$TIMEOUT" \
       "$DRIVER" -c --arch="$(arch_triple "$arch")" --perf-config="$cfg" \
       -o /dev/null "$input" >/dev/null 2>"$log"
   local rc=$?
-  local end; end=$(date +%s.%N)
-  local secs; secs=$(echo "$end - $start" | bc)
+  local end; end=$(date +%s%3N)
+  local elapsed_ms=$((end - start))
+  local secs; secs=$(printf '%d.%02d' $((elapsed_ms / 1000)) \
+                     $(((elapsed_ms % 1000) / 10)))
 
   local status=ok
   case $rc in
@@ -137,7 +141,7 @@ measure() { # measure <arch> <op> <source> <input> <config> <out.tsv>
   esac
 
   local row
-  row=$(printf 'arch=%s\top=%s\tsource=%s\tsecs=%.2f\tstatus=%s' \
+  row=$(printf 'arch=%s\top=%s\tsource=%s\tsecs=%s\tstatus=%s' \
         "$arch" "$op" "$source" "$secs" "$status")
   local stage
   for stage in unoptimized optimized; do
