@@ -516,20 +516,20 @@ Type mlir::rock::getAccType(Type elemA, Type elemB) {
 
 // This function will process a tile of gemm input into LDS (or register)
 // buffer in a way it could be fed to blockwise_gemm op
-Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
-                           Value kIter, StringRef dName,
+Value mlir::rock::loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
+                           StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
                            int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                            SmallVector<int64_t, 3> &bidGridLengths,
                            rock::CacheModifier cache) {
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
-      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
+      b, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
   assert(succeeded(maybeBufferViews));
   ArrayAttr bufferViews = maybeBufferViews.value();
 
   // Compute the tile result type by applying the tiling transforms to
   // determine the output shape, then taking the last two dimensions.
-  Value wrappedSource = transform(rewriter, in, bufferViews);
+  Value wrappedSource = transform(b, in, bufferViews);
   auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
   auto sourceShape = sourceType.getShape();
   auto resultType = RankedTensorType::get(sourceShape.take_back(2),
@@ -543,11 +543,11 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   // The tile's dimensions are ordered by `isKFirst`, which puts the k axis
   // that the gemm reduces over first for matrix B and second for matrix A.
   int64_t reductionTileAxis = isKFirst ? 0 : 1;
-  auto markerOp = LoadMarkerOp::create(
-      rewriter, loc, resultType, in, bufferViews,
-      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
-                 gridCoords.n_block},
-      cache, rewriter.getDenseI64ArrayAttr({reductionTileAxis}));
+  auto markerOp =
+      LoadMarkerOp::create(b, loc, resultType, in, bufferViews,
+                           ValueRange{kIter, gridCoords.g_block,
+                                      gridCoords.m_block, gridCoords.n_block},
+                           cache, b.getDenseI64ArrayAttr({reductionTileAxis}));
   return markerOp.getResult();
 }
 

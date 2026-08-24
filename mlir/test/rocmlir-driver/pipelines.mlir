@@ -42,6 +42,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-gemm-to-blockwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-decompose-nonpow2-k),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-fuse-sibling-loops),
 // GPU-NEXT:cse,
 // GPU-NEXT:func.func(rock-insert-output-fusion-loads),

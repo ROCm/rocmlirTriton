@@ -692,6 +692,20 @@ def Rock_BlockwiseGemmOp
         type($matrixC)
     `->` type($result)
   }];
+  let extraClassDeclaration = [{
+    /// Index of the contraction (K) dimension.
+    static constexpr unsigned getKDimIdx(bool isA) { return isA ? 1 : 0; }
+
+    /// Index of the non-contraction dimension (M for `matrixA`, N for
+    /// `matrixB`).
+    static constexpr unsigned getDDimIdx(bool isA) { return isA ? 0 : 1; }
+
+    /// Size of this block's contraction (K) dimension.
+    int64_t getKDim() {
+      return ::llvm::cast<::mlir::ShapedType>(getMatrixA().getType())
+          .getShape()[getKDimIdx(/*isA=*/true)];
+    }
+  }];
   let hasVerifier = 1;
 }
 
