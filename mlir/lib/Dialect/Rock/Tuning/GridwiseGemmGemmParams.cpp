@@ -95,7 +95,7 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getUseAsyncCopy(), params.getUseBlockPingpong(),
       params.getUseInThreadTranspose(), params.getUseBufferOps(),
       params.getUseBufferAtomics(), params.getUseReductionLayout(),
-      params.getUseOptimizeEpilogue());
+      params.getUseOptimizeEpilogue(), params.getUseBf16x3ForF32());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
@@ -113,5 +113,6 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
       params.getGridGroupSize(), params.getUseAsyncCopy(),
       params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
       params.getUseBufferOps(), params.getUseBufferAtomics(),
-      params.getUseReductionLayout(), params.getUseOptimizeEpilogue());
+      params.getUseReductionLayout(), params.getUseOptimizeEpilogue(),
+      params.getUseBf16x3ForF32());
 }

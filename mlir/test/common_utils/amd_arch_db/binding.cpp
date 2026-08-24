@@ -71,6 +71,13 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
+      "prefer_bf16x3_for_f32_dot",
+      [](const std::string &arch) {
+        return mlir::rock::preferBf16x3ForF32Dot(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
       "get_wave_size",
       [](const std::string &arch) { return mlir::rock::getWaveSize(arch); },
       py::arg("arch"));

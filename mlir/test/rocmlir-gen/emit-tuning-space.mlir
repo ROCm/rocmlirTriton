@@ -3,34 +3,34 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: rocmlir-gen --arch gfx90a --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=104 --emit-tuning-space=full | FileCheck %s --check-prefixes=CHECK-MI
-// CHECK-MI: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-MI: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-MATRIXINSTRNONKDIM: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-SPLITKFACTOR
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-SPLITKFACTOR: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-NUMSTAGES
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-NUMSTAGES: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 // Attention emits the gemm+gemm (attn) perfConfig with the same seven default
 // knob fields, plus the second-GEMM N tile nPerBlockG1 (0 == untiled).
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 128 -num_heads_kv 128 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN
-// CHECK-EXHAUSTIVE-ATTN: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-EXHAUSTIVE-ATTN: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 // The second-GEMM N tile (nPerBlockG1) is only tuned when the head dim
 // (head_dim_v) is large; for head_dim_v=512 the space spans the untiled case
 // (0) and the power-of-two tiles {64,128,256}. Pin both the untiled and a
 // tiled (nPerBlockG1=64) config to prove the knob is swept.
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=256 --emit-tuning-space=exhaustive | FileCheck %s --check-prefixes=CHECK-EXHAUSTIVE-ATTN-G1
-// CHECK-EXHAUSTIVE-ATTN-G1: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
-// CHECK-EXHAUSTIVE-ATTN-G1: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-EXHAUSTIVE-ATTN-G1: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-EXHAUSTIVE-ATTN-G1: attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 //===----------------------------------------------------------------------===//
 // Attention tuning-space SIZE guards
@@ -45,14 +45,14 @@
 // Baseline: a small head_dim_v keeps the second GEMM untiled (nPerBlockG1 == 0),
 // so the nPerBlockG1 knob contributes only a single value.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-UNTILED
-// CHECK-ATTN-SPACE-UNTILED: {{^ *900$}}
+// CHECK-ATTN-SPACE-UNTILED: {{^ *911$}}
 //
 // Same shape but a large head_dim_v (512) sweeps the second-GEMM N tile
-// nPerBlockG1 over {0,64,128,256} (the untiled case plus 3 more),
-// growing the space 4x. This is the knob added by the second-GEMM N
-// (nPerBlockG1) head-dim tiling; varying only head_dim_v isolates its effect.
+// nPerBlockG1 over {0,64,128,256} (the untiled case plus 3 more). The
+// brute-force portion grows 4x; unioning in unique quick-tuning entries gives
+// the totals below. Varying only head_dim_v isolates the tiling knob's effect.
 // RUN: rocmlir-gen --arch gfx942 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 512 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --num_cu=304 --emit-tuning-space=full 2>/dev/null | wc -l | FileCheck %s --check-prefix=CHECK-ATTN-SPACE-TILED
-// CHECK-ATTN-SPACE-TILED: {{^ *3600$}}
+// CHECK-ATTN-SPACE-TILED: {{^ *3612$}}
 
 // RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-MFMA-GFX950-KPACK \
@@ -88,8 +88,13 @@
 // drops, regardless of gemm0's K tile (here head_dim_qk=128 keeps gemm0
 // in-cap). A non-zero nPerBlockG1 shrinks the gemm1 N dim, so those tiled
 // gemm0NPerBlock=256 combos can fit and are allowed; only the untiled 256
-// combos (`nPerBlockG0=256,nPerBlockG1=0`) must be excluded.
+// combos (`nPerBlockG0=256,nPerBlockG1=0`) must be excluded from the
+// brute-force range. Full and exhaustive spaces also include the
+// architecture-specific quick list, so remove that list before checking the
+// brute-force invariant.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=quick > %t.quick 2>&1
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V \
 // RUN:       --implicit-check-not='nPerBlockG0=256,nPerBlockG1=0,'
 // CHECK-TENSOR-CAP-ATTN-V: attn:mPerBlockG0=16,nPerBlockG0=128,
@@ -99,7 +104,9 @@
 // getTransposedC() (matching PopulateParamsGemmGemm::getGemm1Params). The cap
 // behaviour must be identical -- every gemm0NPerBlock=256 combo still drops for
 // head_dim_v=8192.
+// RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=quick > %t.transo.quick 2>&1
 // RUN: rocmlir-gen --arch gfx950 --operation=attention -t f16 -g 1 -head_dim_qk 128 -head_dim_v 8192 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 1024 -seq_len_k 1024 --num_cu=256 -transO --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.transo.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-TENSOR-CAP-ATTN-V-TRANSO \
 // RUN:       --implicit-check-not='nPerBlockG0=256,nPerBlockG1=0,'
 // CHECK-TENSOR-CAP-ATTN-V-TRANSO: attn:mPerBlockG0=16,nPerBlockG0=128,
@@ -124,7 +131,7 @@
 // table idempotently.
 // RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-NOBLACKLIST
-// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1
+// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
@@ -157,12 +164,14 @@
 // f32 on gfx1100 (RDNA3) has no matrix-accel instruction (WMMA has no f32
 // mode), so this exercises the non-accel (FMA) path. Negative half: K tile is
 // one of {4,8,16}, no kPack, no matrix-accel instruction.
+// RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=quick > %t.navi.quick 2>&1
 // RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
+// RUN:   | grep -Fvx -f %t.navi.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI \
 // RUN:       --implicit-check-not='{{kPerBlock=(32|64|128|256|512),}}' \
 // RUN:       --implicit-check-not='kpack=2,' \
 // RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}'
-// CHECK-NAVI: gemm:{{mPerBlock=(16|32|64|128|256),nPerBlock=(16|32|64|128|256),kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
+// CHECK-NAVI: gemm:{{mPerBlock=(16|32|64|128|256),nPerBlock=(16|32|64|128|256),kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
 
 // Positive half: the alternation above is a superset of the pre-AIROCMLIR-938
 // {32,64,128} space, so it alone can't prove the extension took effect. Assert
@@ -170,10 +179,10 @@
 // these fail if computeDPerBlock's non-accel extension is reverted.
 // RUN: rocmlir-gen -p --arch gfx1100 --operation=gemm --emit-tuning-space=full 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-TILES
-// CHECK-NAVI-TILES-DAG: gemm:mPerBlock=16,{{nPerBlock=[0-9]+,kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
-// CHECK-NAVI-TILES-DAG: gemm:mPerBlock=256,{{nPerBlock=[0-9]+,kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
-// CHECK-NAVI-TILES-DAG: gemm:{{mPerBlock=[0-9]+}},nPerBlock=16,{{kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
-// CHECK-NAVI-TILES-DAG: gemm:{{mPerBlock=[0-9]+}},nPerBlock=256,{{kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
+// CHECK-NAVI-TILES-DAG: gemm:mPerBlock=16,{{nPerBlock=[0-9]+,kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
+// CHECK-NAVI-TILES-DAG: gemm:mPerBlock=256,{{nPerBlock=[0-9]+,kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
+// CHECK-NAVI-TILES-DAG: gemm:{{mPerBlock=[0-9]+}},nPerBlock=16,{{kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
+// CHECK-NAVI-TILES-DAG: gemm:{{mPerBlock=[0-9]+}},nPerBlock=256,{{kPerBlock=(4|8|16),kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
 
 //===----------------------------------------------------------------------===//
 // Non-accel overwide M/N pair filter (isOverwideNonAccelMNPair)
@@ -228,13 +237,15 @@
 
 // f32 attention on gfx1100 (RDNA3) has no matrix-accel instruction either,
 // so this exercises the non-accel `getRangeGemmGemm` path.
+// RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=quick > %t.navi-attn.quick 2>&1
 // RUN: rocmlir-gen --arch gfx1100 --operation=attention -t f32 -g 1 -head_dim_qk 32 -head_dim_v 32 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | grep -Fvx -f %t.navi-attn.quick \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-ATTN \
 // RUN:       --implicit-check-not='kpack=2,' \
 // RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}' \
 // RUN:       --implicit-check-not='{{mPerBlockG0=(16|256),}}' \
 // RUN:       --implicit-check-not='{{nPerBlockG0=(16|256),}}'
-// CHECK-NAVI-ATTN: attn:{{mPerBlockG0=(32|64|128),nPerBlockG0=(32|64|128),nPerBlockG1=0,kPerBlock=[0-9]+,kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=(1|2),numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1}}
+// CHECK-NAVI-ATTN: attn:{{mPerBlockG0=(32|64|128),nPerBlockG0=(32|64|128),nPerBlockG1=0,kPerBlock=[0-9]+,kpack=1,numCTAs=[0-9]+,numWaves=[0-9]+,matrixInstrNonkdim=0,splitKFactor=(1|2),numStages=[0-9]+,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1}}
 
 //===----------------------------------------------------------------------===//
 // Non-power-of-two kPerBlock candidates that evenly divide K
