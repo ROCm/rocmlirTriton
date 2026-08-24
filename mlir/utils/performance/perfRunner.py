@@ -2120,6 +2120,12 @@ def run_config_with_mlir(config: PerfConfiguration,
     return nanoseconds
 
 
+# Parser exceptions: ValueError covers most parser errors and getopt issues; NameError covers
+# UnboundLocalError when from_command_line skips required locals; IndexError covers out-of-bounds
+# argv access; KeyError covers to_command_line dict lookups.
+PARSER_EXCEPTIONS = (ValueError, IndexError, KeyError, NameError)
+
+
 def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: int,
                         num_chiplets: int) -> str:
     """Canonicalize a config by round-tripping it through
@@ -2142,8 +2148,11 @@ def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: in
     if resolved_class is PerfConfiguration:
         resolved_class = (ConvConfiguration
                           if config_str.lstrip().startswith('conv') else GemmConfiguration)
-    config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
-    return config.to_command_line()
+    try:
+        config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
+        return config.to_command_line()
+    except PARSER_EXCEPTIONS as e:
+        raise ValueError(f"Failed to parse '{config_str}' as {resolved_class.__name__}: {e}") from e
 
 
 def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfiguration,
