@@ -598,6 +598,95 @@ static uint64_t peakRegisterPressure(const llvm::Function &fn,
   return peak;
 }
 
+/// Register width `fn` carries across its loop back edges: the total width of
+/// its phi nodes.
+///
+/// A phi is a value the loop hands to its next iteration -- an accumulator, or
+/// a buffer a pipelined loop has prefetched -- so unlike an ordinary result,
+/// which dies a few instructions after it is defined, it is live across the
+/// whole body by construction. That makes carried width the part of the
+/// pressure the register allocator cannot relieve by splitting: past the
+/// register file, every carried value spills and reloads once per iteration.
+///
+/// Peak pressure does not see this. Two configurations can hold the same amount
+/// live at their worst point and differ by an order of magnitude in how much of
+/// it they carry, and it is the carried part that decides whether allocation
+/// converges or thrashes.
+static uint64_t carriedRegisterLanes(const llvm::Function &fn,
+                                     const llvm::TargetTransformInfo &tti) {
+  const llvm::DataLayout &dl = fn.getParent()->getDataLayout();
+  uint64_t lanes = 0;
+  for (const llvm::BasicBlock &bb : fn)
+    for (const llvm::PHINode &phi : bb.phis())
+      lanes += registerLanes(phi.getType(), dl, tti);
+  return lanes;
+}
+
+/// Refuse the configuration if any kernel in `llvmModule` asks for more
+/// registers than a thread on `arch` can address: `peakPercent` bounds what may
+/// be live at once and `carriedPercent` what may be carried across a loop back
+/// edge, both as a percentage of the addressable file. A zero percentage skips
+/// that bound.
+///
+/// Such a kernel spills in proportion, which both makes it several times slower
+/// to run than a tile that fits and hands the register allocator a problem that
+/// dominates compile time. Neither is worth waiting for, so mark the module
+/// inapplicable and let tuning take the next config. `stage` names the point in
+/// the pipeline for the diagnostic.
+///
+/// The two bounds answer different questions and neither subsumes the other.
+/// Peak width is loose because most of what is live at the worst point can be
+/// split or rematerialized, so it only bounds the total, and it takes a
+/// multiple of the file before it means trouble. Carried width is the part that
+/// cannot be relieved, so it is held to roughly the file itself.
+///
+/// Calibrated on a 1x512x8x8 f16 conv with a 512x512x3x3 filter, sweeping
+/// kPerBlock over a 16x64 tile on one wave, which is the family that exposed
+/// this.
+static LogicalResult checkRegisterPressure(ModuleOp module,
+                                           llvm::Module &llvmModule,
+                                           llvm::TargetMachine *tm,
+                                           StringRef arch, uint64_t peakPercent,
+                                           uint64_t carriedPercent,
+                                           StringRef stage) {
+  const uint64_t addressable = rock::getAddressableVGPRs(arch);
+  const uint64_t peakLimit = peakPercent * addressable / 100;
+  const uint64_t carriedLimit = carriedPercent * addressable / 100;
+  for (llvm::Function &fn : llvmModule) {
+    if (fn.isDeclaration() || !fn.hasExternalLinkage())
+      continue;
+    llvm::TargetTransformInfo tti = tm->getTargetTransformInfo(fn);
+    uint64_t peak = peakRegisterPressure(fn, tti);
+    uint64_t carried = carriedRegisterLanes(fn, tti);
+    LLVM_DEBUG(llvm::dbgs()
+               << "[register-pressure] " << stage << " " << fn.getName() << ": "
+               << peak << " lanes live (limit " << peakLimit << "), " << carried
+               << " carried (limit " << carriedLimit << ")\n");
+    const char *what = nullptr;
+    uint64_t lanes = 0, limit = 0;
+    if (peakPercent && peak > peakLimit) {
+      what = "live at once";
+      lanes = peak;
+      limit = peakLimit;
+    } else if (carriedPercent && carried > carriedLimit) {
+      what = "carried across a loop back edge";
+      lanes = carried;
+      limit = carriedLimit;
+    } else {
+      continue;
+    }
+    rock::markAsNotApplicable(module);
+    module.emitError() << "'" << fn.getName() << "' needs " << lanes
+                       << " 32-bit register lanes " << what << " in the "
+                       << stage << " IR, over the limit of " << limit << " for "
+                       << arch
+                       << "; the kernel would spill heavily and the register "
+                          "allocator would dominate compile time";
+    return failure();
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // make_amdgcn - LLVM IR to AMDGCN assembly (compiler.py lines 452-473)
 // Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
@@ -870,6 +959,20 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   }
   llvmModule->setDataLayout(tm->createDataLayout());
 
+  // First screen, on the unoptimized IR. It exists because reaching the
+  // optimized module is itself expensive on exactly the configs worth
+  // rejecting: some cases spend 33s in optimizeModule() alone, so waiting
+  // until after it throws away most of what the check is meant to save.
+  // Only peak width is screened here. Carried width is not usable this early:
+  // how much of it optimization removes depends on the kernel, from about half
+  // for a convolution to all but a tenth for an attention, so there is no
+  // bound on the unoptimized count that means the same thing for both.
+  constexpr uint64_t kPeakPercent = 700;
+  if (failed(checkRegisterPressure(module, *llvmModule, tm.get(), arch,
+                                   kPeakPercent, /*carriedPercent=*/0,
+                                   "unoptimized")))
+    return failure();
+
   // Set AMD-specific control constants
   setISAVersion(*llvmModule, arch);
   setABIVersion(*llvmModule, 500);
@@ -1006,52 +1109,13 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // The AMDGPU register allocator dominates compile time once a kernel's live
-  // values far outrun the register file, and it degrades superlinearly. Those
-  // configurations also run far slower than a tile that fits, so there is
-  // nothing to recover by compiling them: refuse them before codegen and let
-  // tuning move on.
-  //
-  // Some spilling is normal, so the limit is a multiple of what one thread can
-  // hold rather than the ceiling itself. Calibrated on a 1x512x8x8 f16 conv
-  // with a 512x512x3x3 filter, sweeping kPerBlock over a 16x64 tile on one
-  // wave, which is the family that first exposed this:
-  //
-  //   gfx1100 (256 addressable): 397 lanes/0.5s, 749/1.7s and 892/6.0s are all
-  //   worth keeping -- the 892 one is the fastest config in the whole space at
-  //   420us -- while 1460/8.1s and 2846/60.6s spill thousands of times and run
-  //   4-6x slower. The limit has to land in 892..1460, i.e. a factor of
-  //   3.5..5.7.
-  //
-  //   gfx950 (512 addressable): 711 lanes/2.6s is the slowest config worth
-  //   keeping, and 2125/15.7s and 4321/123.9s are not, so the factor has to be
-  //   below 4.2.
-  //
-  // Four is the only integer those two windows share. A factor of 2 was tried
-  // first and is wrong in both directions: it rejects that 892-lane gfx1100
-  // config, the best one there is.
-  constexpr uint64_t kAddressableVGPRSpillFactor = 4;
-  const uint64_t pressureLimit =
-      kAddressableVGPRSpillFactor * rock::getAddressableVGPRs(arch);
-  for (llvm::Function &fn : *llvmModule) {
-    if (fn.isDeclaration() || !fn.hasExternalLinkage())
-      continue;
-    llvm::TargetTransformInfo tti = tmAsm->getTargetTransformInfo(fn);
-    uint64_t pressure = peakRegisterPressure(fn, tti);
-    LLVM_DEBUG(llvm::dbgs()
-               << "[register-pressure] " << fn.getName() << ": " << pressure
-               << " lanes (limit " << pressureLimit << ")\n");
-    if (pressure > pressureLimit) {
-      rock::markAsNotApplicable(module);
-      module.emitError() << "peak register pressure (" << pressure
-                         << " 32-bit lanes) in '" << fn.getName()
-                         << "' exceeds the limit of " << pressureLimit
-                         << " for " << arch
-                         << "; the register allocator would dominate compile "
-                            "time and the kernel would spill heavily";
-      return failure();
-    }
-  }
+  // Second screen, on the optimized IR, which is the faithful measure: it is
+  // what the register allocator will actually be handed, and the only point
+  // where carried width can be trusted.
+  constexpr uint64_t kCarriedPercent = 150;
+  if (failed(checkRegisterPressure(module, *llvmModule, tmAsm.get(), arch,
+                                   kPeakPercent, kCarriedPercent, "optimized")))
+    return failure();
 
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
   if (amdgcnAsm.empty()) {

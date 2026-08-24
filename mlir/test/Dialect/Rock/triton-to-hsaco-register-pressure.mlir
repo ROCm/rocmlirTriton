@@ -1,42 +1,57 @@
-// Peak register pressure gates a configuration out of the tuning space before
-// codegen runs. The arch is pinned instead of %arch-substituted because the
-// limit scales with the addressable VGPR count, so the lane counts and verdicts
-// below are gfx1100's (a limit of 4 * 256).
+// Peak register pressure gates a configuration out of the tuning space on the
+// unoptimized LLVM IR, and carried pressure gates it on the optimized IR. The
+// arch is pinned rather than %arch-substituted because both limits are
+// percentages of the addressable VGPR count, so the lane counts and verdicts
+// below are gfx1100's: 700% of 256 live at once, and 150% of 256 carried.
 //
 // This 1x512x8x8 f16 conv over a 16x64 tile on a single wave is the family that
-// motivated the gate: sweeping kPerBlock walks peak pressure from 397 lanes to
-// 2846, and compile time from 0.5s to over 60s along with it.
+// motivated the gate. Sweeping kPerBlock walks it from configs that compile in
+// half a second to ones that take a minute.
 
-// kPerBlock=256 measures 2846 lanes. Let through it takes ~60s to compile,
-// spills ~9800 times, and still runs 6x slower than the best config here.
+// kPerBlock=256 holds 4149 lanes live, so it never reaches the optimizer. It
+// used to take over 60s to compile, most of it spent getting to the optimized
+// IR and then allocating registers for it, which is why this screen runs first.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s \
 // RUN:   | not rocmlir-driver -c --arch=gfx1100 --mlir-disable-threading \
 // RUN:     --mlir-print-ir-after-failure --mlir-print-ir-module-scope \
 // RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=REJECT
+// RUN:   | FileCheck %s --check-prefix=PEAK
 
-// kPerBlock=32 measures 397 lanes, well inside the limit, and must compile.
+// kPerBlock=128 is why peak width alone is not enough. It holds 1343 lanes
+// live, within 4% of the 1300 that the kPerBlock=144 config below holds, yet it
+// takes 15s to compile where that one takes 0.9s. What separates them is what
+// they carry across the loop: 417 lanes against 33.
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s \
+// RUN:   | not rocmlir-driver -c --arch=gfx1100 \
+// RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CARRIED
+
+// kPerBlock=144 holds 1300 lanes live and carries 33, inside both limits, and
+// compiles in 0.9s. It must survive: this is the config that a peak-only bound
+// tight enough to catch kPerBlock=128 would take with it.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s \
 // RUN:   | rocmlir-driver -c --arch=gfx1100 \
-// RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
+// RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=144,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ACCEPT
 
-// kPerBlock=144 measures 892 lanes, the highest of any config worth keeping for
-// this problem: it spills nothing and is the fastest of the family at 420us.
-// It has to survive, which is what rules out a tighter limit.
+// kPerBlock=64 carries 225 lanes, the most any config here carries and still
+// compiles quickly, so it is what keeps the carried limit off 256.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s \
 // RUN:   | rocmlir-driver -c --arch=gfx1100 \
-// RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=144,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
+// RUN:     --perf-config="gemm:mPerBlock=16,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1" 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ACCEPT
 
-// The gate reports the measurement and the limit it broke, and marks the module
-// so that tuning records the config as inapplicable rather than as a failure.
-// REJECT: error: peak register pressure (2846 32-bit lanes)
-// REJECT-SAME: exceeds the limit of 1024 for gfx1100
-// REJECT: module attributes
-// REJECT-SAME: rock.not_applicable
+// The gate reports what it measured and where, and marks the module so that
+// tuning records the config as inapplicable rather than as a compiler bug.
+// PEAK: error: 'mlir_convolution' needs 4149 32-bit register lanes live at once in the unoptimized IR
+// PEAK-SAME: over the limit of 1792 for gfx1100
+// PEAK: module attributes
+// PEAK-SAME: rock.not_applicable
 
-// ACCEPT-NOT: peak register pressure
+// CARRIED: error: 'mlir_convolution' needs 417 32-bit register lanes carried across a loop back edge in the optimized IR
+// CARRIED-SAME: over the limit of 384 for gfx1100
+
+// ACCEPT-NOT: register lanes
 // ACCEPT: triton.hsaco
 
 module {
