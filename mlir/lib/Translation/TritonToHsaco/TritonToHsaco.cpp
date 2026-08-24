@@ -495,9 +495,9 @@ void disablePrintInline(llvm::Module &module) {
 
 /// Registers a value of `ty` occupies. `getRegUsageForType` is the target's own
 /// answer (the same hook the loop vectorizer weights its register-pressure
-/// estimate with), but it only accepts types the target legalizes, so aggregates
-/// and other leftovers fall back to their 32-bit lane count. Types that never
-/// live in a register contribute nothing.
+/// estimate with), but it only accepts types the target legalizes, so
+/// aggregates and other leftovers fall back to their 32-bit lane count. Types
+/// that never live in a register contribute nothing.
 static uint64_t registerLanes(llvm::Type *ty, const llvm::DataLayout &dl,
                               const llvm::TargetTransformInfo &tti) {
   if (ty->isVoidTy() || ty->isLabelTy() || ty->isMetadataTy() ||
@@ -522,8 +522,8 @@ static bool occupiesRegister(const llvm::Value *v) {
 ///
 /// LLVM has no reusable IR-level version of this. The loop vectorizer's
 /// `calculateRegisterUsageForPlan` computes the same quantity but only over a
-/// VPlan, and the AMDGPU backend's `GCNRegPressure` needs `LiveIntervals`, so it
-/// is only available inside the codegen this check exists to avoid entering.
+/// VPlan, and the AMDGPU backend's `GCNRegPressure` needs `LiveIntervals`, so
+/// it is only available inside the codegen this check exists to avoid entering.
 ///
 /// Standard backward liveness over the CFG (phi operands are attributed to the
 /// incoming edge's block, which is where they must be available), followed by a
@@ -568,7 +568,8 @@ static uint64_t peakRegisterPressure(const llvm::Function &fn,
       for (const llvm::Value *v : out)
         if (!defs[&bb].contains(v))
           in.insert(v);
-      if (in.size() != liveIn[&bb].size() || out.size() != liveOut[&bb].size()) {
+      if (in.size() != liveIn[&bb].size() ||
+          out.size() != liveOut[&bb].size()) {
         changed = true;
         liveIn[&bb] = std::move(in);
         liveOut[&bb] = std::move(out);
@@ -1037,9 +1038,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
       continue;
     llvm::TargetTransformInfo tti = tmAsm->getTargetTransformInfo(fn);
     uint64_t pressure = peakRegisterPressure(fn, tti);
-    LLVM_DEBUG(llvm::dbgs() << "[register-pressure] " << fn.getName() << ": "
-                            << pressure << " lanes (limit " << pressureLimit
-                            << ")\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[register-pressure] " << fn.getName() << ": " << pressure
+               << " lanes (limit " << pressureLimit << ")\n");
     if (pressure > pressureLimit) {
       rock::markAsNotApplicable(module);
       module.emitError() << "peak register pressure (" << pressure
