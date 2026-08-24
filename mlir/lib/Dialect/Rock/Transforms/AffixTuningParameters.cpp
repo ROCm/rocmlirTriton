@@ -339,27 +339,13 @@ void AffixTuningParameters::affixTuningParametersImpl(
                                 /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
 
-  auto origGemmSize = op.getGemmSize();
-  auto paddedGemmSize = calculatePaddedGemmSize(
-      gemmParams.getKPerBlock(), gemmParams.getMPerBlock(),
-      gemmParams.getNPerBlock(), origGemmSize);
-  const bool requiredPadding = !(paddedGemmSize == origGemmSize);
-
-  int64_t gemmKBlocks = 1;
-  PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
-  auto maybeWrwOp = (info.kernelType == KernelType::ConvBwdWeight);
-  if (maybeWrwOp && isWrWAtomicKernel(info.gemmAType, requiredPadding)) {
-    auto res = calculateKBlockNum(
-        info.batchSize, paddedGemmSize, gemmParams.getMPerBlock(),
-        gemmParams.getNPerBlock(), gemmParams.getKPerBlock(),
-        gemmParams.getKpack(), info.numCu, gemmKBlocks);
-
-    if (failed(res)) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Invalid tuning parameters for computing KBlocks.\n");
-      return signalPassFailure();
-    }
+  FailureOr<int64_t> maybeKBlocks = computeBwdWeightKBlocks(op, gemmParams);
+  if (failed(maybeKBlocks)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Invalid tuning parameters for computing KBlocks.\n");
+    return signalPassFailure();
   }
+  int64_t gemmKBlocks = *maybeKBlocks;
 
   // Set kblocks attribute only for backward weight convolutions.
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation()))

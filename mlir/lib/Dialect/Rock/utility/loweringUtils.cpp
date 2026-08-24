@@ -110,6 +110,30 @@ LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
   return success();
 }
 
+FailureOr<int64_t>
+mlir::rock::computeBwdWeightKBlocks(RockGemmWrapperInterface op,
+                                    GemmParamsAttr params) {
+  PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
+  if (info.kernelType != KernelType::ConvBwdWeight)
+    return int64_t{1};
+
+  GemmSize origGemmSize = op.getGemmSize();
+  GemmSize paddedGemmSize =
+      calculatePaddedGemmSize(params.getKPerBlock(), params.getMPerBlock(),
+                              params.getNPerBlock(), origGemmSize);
+  const bool requiredPadding = !(paddedGemmSize == origGemmSize);
+  if (!isWrWAtomicKernel(info.gemmAType, requiredPadding))
+    return int64_t{1};
+
+  int64_t kBlocks = 1;
+  if (failed(calculateKBlockNum(info.batchSize, paddedGemmSize,
+                                params.getMPerBlock(), params.getNPerBlock(),
+                                params.getKPerBlock(), params.getKpack(),
+                                info.numCu, kBlocks)))
+    return failure();
+  return kBlocks;
+}
+
 bool mlir::rock::isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
                                               ArrayRef<int64_t> dilationDims,
                                               ArrayRef<int64_t> filterDims) {

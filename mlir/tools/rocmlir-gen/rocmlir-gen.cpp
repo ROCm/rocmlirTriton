@@ -5323,8 +5323,7 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
 
 // Return the number of backward-weight K-block partials that atomically merge
 // into each output element. Before affix-tuning-parameters runs, kBlocks is not
-// present yet, so reproduce its calculation using the same selected tuning
-// parameters and utility routine as that pass.
+// present yet, so compute it with the same helper that pass uses.
 static int64_t getBwdWeightAtomicExtent(rock::ConvBwdWeightOp bwdWeightOp) {
   if (auto kBlocks = bwdWeightOp.getKBlocks())
     return kBlocks->getZExtValue();
@@ -5337,24 +5336,11 @@ static int64_t getBwdWeightAtomicExtent(rock::ConvBwdWeightOp bwdWeightOp) {
   if (failed(maybeParams))
     return 0;
 
-  rock::GemmParamsAttr params = *maybeParams;
-  rock::GemmSize origGemmSize = gemmOp.getGemmSize();
-  rock::GemmSize paddedGemmSize = rock::calculatePaddedGemmSize(
-      params.getKPerBlock(), params.getMPerBlock(), params.getNPerBlock(),
-      origGemmSize);
-  bool requiredPadding = !(paddedGemmSize == origGemmSize);
-
-  rock::PopulateParamsInfo info = rock::PopulateParamsInfo::fromOp(gemmOp);
-  if (!rock::isWrWAtomicKernel(info.gemmAType, requiredPadding))
+  FailureOr<int64_t> maybeKBlocks =
+      rock::computeBwdWeightKBlocks(gemmOp, *maybeParams);
+  if (failed(maybeKBlocks))
     return 0;
-
-  int64_t kBlocks = 1;
-  if (failed(rock::calculateKBlockNum(
-          info.batchSize, paddedGemmSize, params.getMPerBlock(),
-          params.getNPerBlock(), params.getKPerBlock(), params.getKpack(),
-          info.numCu, kBlocks)))
-    return 0;
-  return kBlocks;
+  return *maybeKBlocks;
 }
 
 // Scan the module and return the largest number of low-precision atomic
@@ -5744,10 +5730,10 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       // accumulator assumed by the K_eff atol model. Each atomic add introduces
       // ~eps(dtype) relative error.
       // We use sqrt(extent) * eps as the boost (random-walk model, same as
-      // CK/hipBLASLt). The extent is the larger of:
-      //   - rock.reduce(sum) axis extent (fused reductions), and
+      // CK/hipBLASLt). The extent is the largest of:
+      //   - rock.reduce(sum) axis extent (fused reductions)
       //   - conv_bwd_weight kBlocks
-      //   - splitK factor from the perf_config (partial-result accumulation).
+      //   - splitK factor from the perf_config (partial-result accumulation)
       if (!rtolThreshold.getNumOccurrences()) {
         int64_t atomicExtent = scanModuleForAtomicAddExtent(module);
 

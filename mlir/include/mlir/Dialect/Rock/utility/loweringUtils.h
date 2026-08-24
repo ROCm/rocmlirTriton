@@ -89,6 +89,14 @@ LogicalResult calculateKBlockNum(const int64_t batchSize,
                                  int64_t KPack, int64_t num_cu,
                                  int64_t &nKBlock);
 
+/// Compute kBlocks for a backward-weight convolution given selected GEMM
+/// params. Returns 1 when the op is not WrW-atomic (not bwd-weight, or the
+/// dtype/padding combination is ineligible). Returns failure when the params
+/// cannot yield a valid kBlocks split. Shared by AffixTuningParameters and
+/// the rocmlir-gen verifier so the two cannot diverge.
+FailureOr<int64_t> computeBwdWeightKBlocks(RockGemmWrapperInterface op,
+                                           GemmParamsAttr params);
+
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
 bool isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
