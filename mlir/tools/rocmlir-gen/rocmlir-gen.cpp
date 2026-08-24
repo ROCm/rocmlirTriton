@@ -5368,8 +5368,7 @@ static int64_t scanModuleForAtomicAddExtent(ModuleOp module) {
     }
   });
   module.walk([&](rock::ConvBwdWeightOp bwdWeightOp) {
-    maxExtent =
-        std::max(maxExtent, getBwdWeightAtomicExtent(bwdWeightOp));
+    maxExtent = std::max(maxExtent, getBwdWeightAtomicExtent(bwdWeightOp));
   });
   return maxExtent;
 }
