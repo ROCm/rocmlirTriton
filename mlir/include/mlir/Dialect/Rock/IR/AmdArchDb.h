@@ -95,6 +95,16 @@ int64_t getMaxWavesPerEU(StringRef arch);
 /// Get the SIMD VGPR file size per execution unit for this arch.
 int64_t getVGPRsPerEU(StringRef arch);
 
+/// Get the number of VGPRs a single thread can address on this arch. This is
+/// the per-thread ceiling, unlike `getVGPRsPerEU`, which is the whole SIMD file
+/// shared between the resident waves, and it is not a function of that file
+/// size: RDNA4 addresses 256 of its 1536 entries while GFX1250 addresses all
+/// 1024 of its own. Mirrors `getAddressableNumVGPRs()` in
+/// llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp: the architected limit is
+/// 256, CDNA2+ doubles it to 512 because the AGPRs are addressable too, and
+/// GFX1250 reaches 1024 via Feature1024AddressableVGPRs.
+int64_t getAddressableVGPRs(StringRef arch);
+
 /// Whether this architecture has any FP8 matrix-acceleration intrinsics
 /// (MFMA on CDNA3+, WMMA on RDNA4+ / GFX1250). Independent of any specific
 /// operation; useful for gating test suites that require an FP8 hardware

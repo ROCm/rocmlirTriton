@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -41,6 +42,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Config/Targets.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticHandler.h"
@@ -488,6 +490,114 @@ void disablePrintInline(llvm::Module &module) {
 }
 
 //===----------------------------------------------------------------------===//
+// Register-pressure gate
+//===----------------------------------------------------------------------===//
+
+/// Registers a value of `ty` occupies. `getRegUsageForType` is the target's own
+/// answer (the same hook the loop vectorizer weights its register-pressure
+/// estimate with), but it only accepts types the target legalizes, so aggregates
+/// and other leftovers fall back to their 32-bit lane count. Types that never
+/// live in a register contribute nothing.
+static uint64_t registerLanes(llvm::Type *ty, const llvm::DataLayout &dl,
+                              const llvm::TargetTransformInfo &tti) {
+  if (ty->isVoidTy() || ty->isLabelTy() || ty->isMetadataTy() ||
+      ty->isTokenTy() || !ty->isSized())
+    return 0;
+  llvm::TypeSize bits = dl.getTypeSizeInBits(ty);
+  if (bits.isScalable())
+    return 0;
+  if (ty->isFirstClassType() && !ty->isAggregateType())
+    return tti.getRegUsageForType(ty);
+  return llvm::divideCeil(bits.getFixedValue(), 32);
+}
+
+/// Only instruction results and arguments occupy a register across a program
+/// point; constants and globals are rematerialized where needed.
+static bool occupiesRegister(const llvm::Value *v) {
+  return llvm::isa<llvm::Instruction>(v) || llvm::isa<llvm::Argument>(v);
+}
+
+/// Peak register pressure in `fn`: the largest total register width of
+/// simultaneously-live SSA values at any point in the function.
+///
+/// LLVM has no reusable IR-level version of this. The loop vectorizer's
+/// `calculateRegisterUsageForPlan` computes the same quantity but only over a
+/// VPlan, and the AMDGPU backend's `GCNRegPressure` needs `LiveIntervals`, so it
+/// is only available inside the codegen this check exists to avoid entering.
+///
+/// Standard backward liveness over the CFG (phi operands are attributed to the
+/// incoming edge's block, which is where they must be available), followed by a
+/// backward scan of each block that tracks the running live width. Linear in
+/// the function per dataflow round.
+static uint64_t peakRegisterPressure(const llvm::Function &fn,
+                                     const llvm::TargetTransformInfo &tti) {
+  using ValueSet = llvm::SmallPtrSet<const llvm::Value *, 32>;
+  const llvm::DataLayout &dl = fn.getParent()->getDataLayout();
+
+  // Per-block `use` (read before written in the block) and `def` sets.
+  llvm::DenseMap<const llvm::BasicBlock *, ValueSet> uses, defs;
+  for (const llvm::BasicBlock &bb : fn) {
+    ValueSet &use = uses[&bb];
+    ValueSet &def = defs[&bb];
+    for (const llvm::Instruction &inst : bb) {
+      if (!llvm::isa<llvm::PHINode>(&inst))
+        for (const llvm::Value *op : inst.operand_values())
+          if (occupiesRegister(op) && !def.contains(op))
+            use.insert(op);
+      if (occupiesRegister(&inst))
+        def.insert(&inst);
+    }
+  }
+
+  llvm::DenseMap<const llvm::BasicBlock *, ValueSet> liveIn, liveOut;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const llvm::BasicBlock &bb : llvm::reverse(fn)) {
+      ValueSet out;
+      for (const llvm::BasicBlock *succ : llvm::successors(&bb)) {
+        out.insert_range(liveIn[succ]);
+        // A phi's incoming value must be live out of the edge it arrives on.
+        for (const llvm::PHINode &phi : succ->phis()) {
+          const llvm::Value *in = phi.getIncomingValueForBlock(&bb);
+          if (in && occupiesRegister(in))
+            out.insert(in);
+        }
+      }
+      ValueSet in = uses[&bb];
+      for (const llvm::Value *v : out)
+        if (!defs[&bb].contains(v))
+          in.insert(v);
+      if (in.size() != liveIn[&bb].size() || out.size() != liveOut[&bb].size()) {
+        changed = true;
+        liveIn[&bb] = std::move(in);
+        liveOut[&bb] = std::move(out);
+      }
+    }
+  }
+
+  uint64_t peak = 0;
+  for (const llvm::BasicBlock &bb : fn) {
+    ValueSet live = liveOut[&bb];
+    uint64_t width = 0;
+    for (const llvm::Value *v : live)
+      width += registerLanes(v->getType(), dl, tti);
+    peak = std::max(peak, width);
+    for (const llvm::Instruction &inst : llvm::reverse(bb)) {
+      if (live.erase(&inst))
+        width -= registerLanes(inst.getType(), dl, tti);
+      // Phi operands belong to the predecessor blocks, not to this point.
+      if (!llvm::isa<llvm::PHINode>(&inst))
+        for (const llvm::Value *op : inst.operand_values())
+          if (occupiesRegister(op) && live.insert(op).second)
+            width += registerLanes(op->getType(), dl, tti);
+      peak = std::max(peak, width);
+    }
+  }
+  return peak;
+}
+
+//===----------------------------------------------------------------------===//
 // make_amdgcn - LLVM IR to AMDGCN assembly (compiler.py lines 452-473)
 // Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
 //===----------------------------------------------------------------------===//
@@ -892,6 +1002,42 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
       llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
       llvmModule->print(llvm::errs(), nullptr);
       llvm::errs() << "\n";
+    }
+  }
+
+  // The AMDGPU register allocator dominates compile time once a kernel's live
+  // values far outrun the register file: on a 1x512x8x8 f16 conv on gfx1100 at
+  // a 16x64 tile it is 85% of a 16s compile, and 63s at kPerBlock=256. Those
+  // same tiles also run ~60x slower than a sane tile for the same problem, so
+  // there is nothing to recover by compiling them. Refuse the configuration
+  // before codegen instead and let tuning move on to one that fits.
+  //
+  // Some spilling is normal, so the limit is a multiple of what a thread can
+  // hold rather than the ceiling itself: a kernel needing twice its addressable
+  // VGPRs spills more than it keeps. On the conv above (gfx1100, 256
+  // addressable, so a 512 limit) the surviving tiles measure 102-321 and take
+  // 0.17-0.46s, while the rejected ones measure 749-2846 and take 1.6-64s, so
+  // the limit sits in an empty band roughly centred between the two.
+  constexpr uint64_t kAddressableVGPRSpillFactor = 2;
+  const uint64_t pressureLimit =
+      kAddressableVGPRSpillFactor * rock::getAddressableVGPRs(arch);
+  for (llvm::Function &fn : *llvmModule) {
+    if (fn.isDeclaration() || !fn.hasExternalLinkage())
+      continue;
+    llvm::TargetTransformInfo tti = tmAsm->getTargetTransformInfo(fn);
+    uint64_t pressure = peakRegisterPressure(fn, tti);
+    LLVM_DEBUG(llvm::dbgs() << "[register-pressure] " << fn.getName() << ": "
+                            << pressure << " lanes (limit " << pressureLimit
+                            << ")\n");
+    if (pressure > pressureLimit) {
+      rock::markAsNotApplicable(module);
+      module.emitError() << "peak register pressure (" << pressure
+                         << " 32-bit lanes) in '" << fn.getName()
+                         << "' exceeds the limit of " << pressureLimit
+                         << " for " << arch
+                         << "; the register allocator would dominate compile "
+                            "time and the kernel would spill heavily";
+      return failure();
     }
   }
 

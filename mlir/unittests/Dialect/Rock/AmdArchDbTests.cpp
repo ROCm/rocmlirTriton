@@ -163,6 +163,29 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
 }
 
+// --- getAddressableVGPRs ---
+
+// Expectations cross-checked against llvm::AMDGPU::IsaInfo's
+// getAddressableNumVGPRs() by resolving each processor's transitive TableGen
+// feature set: FeatureGFX90AInsts gives 512, Feature1024AddressableVGPRs on a
+// wave32 target gives 1024, everything else keeps the architected 256.
+TEST(AmdArchDbTest, AddressableVGPRs) {
+  EXPECT_EQ(getAddressableVGPRs("gfx906"), 256);   // GCN5_1
+  EXPECT_EQ(getAddressableVGPRs("gfx908"), 256);   // CDNA1, no AGPR addressing
+  EXPECT_EQ(getAddressableVGPRs("gfx90a"), 512);   // CDNA2, AGPRs addressable
+  EXPECT_EQ(getAddressableVGPRs("gfx942"), 512);   // CDNA3
+  EXPECT_EQ(getAddressableVGPRs("gfx950"), 512);   // CDNA4
+  EXPECT_EQ(getAddressableVGPRs("gfx1010"), 256);  // RDNA1
+  EXPECT_EQ(getAddressableVGPRs("gfx1030"), 256);  // RDNA2
+  EXPECT_EQ(getAddressableVGPRs("gfx1100"), 256);  // RDNA3
+  EXPECT_EQ(getAddressableVGPRs("gfx1102"), 256);  // RDNA3, cut-down file
+  EXPECT_EQ(getAddressableVGPRs("gfx1150"), 256);  // RDNA3.5
+  EXPECT_EQ(getAddressableVGPRs("gfx1170"), 256);  // GFX1170
+  EXPECT_EQ(getAddressableVGPRs("gfx1200"), 256);  // RDNA4
+  EXPECT_EQ(getAddressableVGPRs("gfx1250"), 1024); // GFX1250
+  EXPECT_EQ(getAddressableVGPRs("gfx1251"), 1024); // GFX1250 family
+}
+
 // --- getWaveSize ---
 
 TEST(AmdArchDbTest, WaveSize) {

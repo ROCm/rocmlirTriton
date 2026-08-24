@@ -481,6 +481,29 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   llvm_unreachable("unhandled ISAFamily in getVGPRsPerEU");
 }
 
+int64_t mlir::rock::getAddressableVGPRs(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  switch (isaFamily) {
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+    return 512;
+  case ISAFamily::GFX1250:
+    return 1024;
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4:
+  case ISAFamily::Unknown:
+    return 256;
+  }
+  llvm_unreachable("unhandled ISAFamily in getAddressableVGPRs");
+}
+
 bool mlir::rock::supportsMultiCTALaunch(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());
