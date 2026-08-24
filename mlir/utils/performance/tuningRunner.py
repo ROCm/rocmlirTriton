@@ -1292,9 +1292,7 @@ class TuningArgumentParser(argparse.ArgumentParser):
             details = ", ".join(f"GPU {g}: {gpu_topology.gpus[g].sku}" for g in parsed.gpus)
             self.error(f"argument --gpus: mixed GPU models not supported. Found: {details}")
 
-
         return parsed
-
 
 class UniqueValuesAction(argparse.Action):
     """Argparse action that ensures no duplicate values."""
