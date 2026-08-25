@@ -378,7 +378,7 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // thread: an mPerBlock x nPerBlock tile of the accumulation type, the buffer
   // GridwiseGemmToBlockwise is about to create, spread over the block. The
   // register-pressure screen in TritonToHsaco holds carried pressure against
-  // it.
+  // it, and screens only the kernels that carry this attribute.
   //
   // It has to be recorded here, from the tile the perf config actually asked
   // for, because both decompositions downstream destroy the evidence and do so
@@ -477,23 +477,11 @@ void AffixTuningParameters::affixTuningParametersImpl(
   getOperation()->setAttr(rock::BlockSizeAttr::getMnemonic(),
                           builder.getI32IntegerAttr(blockSize));
 
-  // Record what this attention kernel carries across its loop, in 32-bit
-  // register lanes per thread, the same way the gemm path does.
-  //
-  // What survives an iteration here is not the first gemm's QK tile, which is
-  // consumed by the softmax and dies within the iteration, but the second
-  // gemm's output tile -- the running weighted sum over V -- together with the
-  // softmax's running maximum and sum, one of each per row of the M tile. Both
-  // accumulate in 32 bits, whether the kernel is f16 or i8.
-  uint64_t attnLanes =
-      llvm::divideCeil(static_cast<uint64_t>(params1.getMPerBlock()) *
-                           params1.getNPerBlock(),
-                       static_cast<uint64_t>(blockSize)) +
-      llvm::divideCeil(2 * static_cast<uint64_t>(params1.getMPerBlock()),
-                       static_cast<uint64_t>(blockSize));
-  getOperation()->setAttr("rock.accumulator_lanes",
-                          builder.getI64IntegerAttr(attnLanes));
-
+  // No rock.accumulator_lanes is recorded here, which is what keeps the
+  // register-pressure screen in TritonToHsaco off the gemm+gemm kernels: its
+  // bounds were calibrated on plain gemm and convolution, and a kernel with two
+  // chained gemms and a softmax between them holds a different mix of values
+  // across its loop than the single accumulator those bounds assume.
   getOperation()->setAttr(
       rock::UseOptimizeEpilogueAttr::getMnemonic(),
       builder.getI64IntegerAttr(attnPerfConfig.getUseOptimizeEpilogue()));

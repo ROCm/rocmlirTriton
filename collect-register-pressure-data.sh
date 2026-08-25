@@ -12,15 +12,16 @@
 # Compile only, no GPU needed. Results are appended, so the script can be
 # interrupted and rerun: configurations already recorded are skipped.
 #
-# usage: collectRegisterPressureData.sh [--build DIR] [--out DIR]
-#                                       [--archs LIST] [--ops LIST]
-#                                       [--timeout SEC]
+# usage: collect-register-pressure-data.sh [--build DIR] [--out DIR]
+#                                          [--archs LIST] [--ops LIST]
+#                                          [--dtype f16|f32] [--timeout SEC]
 set -u
 
 BUILD=$PWD/build
 OUT=$PWD/register-pressure-data
 ARCHS=gfx1100,gfx950
-OPS=gemm,conv,conv-migraphx,attention
+OPS=gemm,conv,conv-migraphx
+DTYPE=f16
 # A configuration that needs longer than this is already too slow to be worth
 # tuning, so the exact number does not matter and waiting for it costs hours
 # across a space this size.
@@ -32,11 +33,17 @@ while [[ $# -gt 0 ]]; do
     --out)     OUT=$2; shift 2 ;;
     --archs)   ARCHS=$2; shift 2 ;;
     --ops)     OPS=$2; shift 2 ;;
+    --dtype)   DTYPE=$2; shift 2 ;;
     --timeout) TIMEOUT=$2; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# f16 keeps the plain file names the first collection run already wrote, so that
+# a run in progress stays resumable; anything else is kept beside it.
+SUFFIX=""
+[[ $DTYPE != f16 ]] && SUFFIX="-$DTYPE"
 
 GEN=$BUILD/bin/rocmlir-gen
 DRIVER=$BUILD/bin/rocmlir-driver
@@ -57,8 +64,13 @@ arch_num_chiplets() { case $1 in gfx950) echo 8 ;;   *) echo 1 ;;  esac; }
 
 # The problems. One shape per operation, run on both architectures, so that a
 # difference in the data is a difference in the target and not in the problem.
-# The convolution is the 1x512x8x8 f16 with a 512x512x3x3 filter that exposed
-# the pathological compile times in the first place.
+# The convolution is the 1x512x8x8 with a 512x512x3x3 filter that exposed the
+# pathological compile times in the first place.
+#
+# The element type matters beyond precision: f32 on an RDNA part has no matrix
+# instruction to lower to, so it takes the non-accelerator path, and whether the
+# bounds still mean anything there is a separate question from whether they work
+# for f16.
 write_problem() { # write_problem <op> <arch> <path>
   local op=$1 arch=$2 path=$3
   local triple; triple=$(arch_triple "$arch")
@@ -66,21 +78,16 @@ write_problem() { # write_problem <op> <arch> <path>
   local chiplets; chiplets=$(arch_num_chiplets "$arch")
   case $op in
     gemm)
-      "$GEN" --operation gemm -t f16 --arch "$triple" --num_cu "$cu" \
+      "$GEN" --operation gemm -t "$DTYPE" --arch "$triple" --num_cu "$cu" \
           --num_chiplets "$chiplets" -g 1 -m 2048 -k 2048 -n 2048 \
           > "$path" 2>/dev/null ;;
     conv)
-      "$GEN" --operation conv -t f16 --arch "$triple" --num_cu "$cu" \
+      "$GEN" --operation conv -t "$DTYPE" --arch "$triple" --num_cu "$cu" \
           --num_chiplets "$chiplets" --fil_layout gnc01 --in_layout ngc01 \
           --out_layout ngc01 --batchsize 1 --in_channels 512 --in_h 8 --in_w 8 \
           --out_channels 512 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 \
           --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 \
           --groupsize 1 > "$path" 2>/dev/null ;;
-    attention)
-      "$GEN" -operation attention -t f16 --arch "$triple" --num_cu "$cu" \
-          --num_chiplets "$chiplets" -g 4 -seq_len_q 1024 -seq_len_k 1024 \
-          -num_heads_q 4 -num_heads_kv 4 -head_dim_qk 64 -head_dim_v 64 \
-          > "$path" 2>/dev/null ;;
     conv-migraphx)
       # The same convolution through the migraphx entry point, which is how it
       # reached us and which is the space the worst gfx950 case lives in. The
@@ -88,9 +95,9 @@ write_problem() { # write_problem <op> <arch> <path>
       local src=$path.migraphx.mlir
       cat > "$src" <<EOF
 module {
-  func.func @mlir_convolution(%arg0: !migraphx.shaped<1x512x8x8xf16, 32768x64x8x1>, %arg1: !migraphx.shaped<512x512x3x3xf16, 4608x9x3x1>) -> !migraphx.shaped<1x512x8x8xf16, 32768x64x8x1> attributes {rock.arch = "$triple", rock.kernel = "mixr", rock.num_chiplets = $chiplets : i64, rock.num_cu = $cu : i64} {
-    %0 = migraphx.convolution %arg0, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [1, 1, 1, 1], padding_mode = 0 : i64, stride = [1, 1]} : <1x512x8x8xf16, 32768x64x8x1>, <512x512x3x3xf16, 4608x9x3x1> -> <1x512x8x8xf16, 32768x64x8x1>
-    return %0 : !migraphx.shaped<1x512x8x8xf16, 32768x64x8x1>
+  func.func @mlir_convolution(%arg0: !migraphx.shaped<1x512x8x8x$DTYPE, 32768x64x8x1>, %arg1: !migraphx.shaped<512x512x3x3x$DTYPE, 4608x9x3x1>) -> !migraphx.shaped<1x512x8x8x$DTYPE, 32768x64x8x1> attributes {rock.arch = "$triple", rock.kernel = "mixr", rock.num_chiplets = $chiplets : i64, rock.num_cu = $cu : i64} {
+    %0 = migraphx.convolution %arg0, %arg1 {dilation = [1, 1], group = 1 : i64, padding = [1, 1, 1, 1], padding_mode = 0 : i64, stride = [1, 1]} : <1x512x8x8x$DTYPE, 32768x64x8x1>, <512x512x3x3x$DTYPE, 4608x9x3x1> -> <1x512x8x8x$DTYPE, 32768x64x8x1>
+    return %0 : !migraphx.shaped<1x512x8x8x$DTYPE, 32768x64x8x1>
   }
 }
 EOF
@@ -167,14 +174,14 @@ measure() { # measure <arch> <op> <source> <input> <config> <out.tsv>
   echo "$status"
 }
 
-echo "collecting into $OUT (cap ${TIMEOUT}s per config)"
+echo "collecting $DTYPE into $OUT (cap ${TIMEOUT}s per config)"
 IFS=, read -ra arch_list <<< "$ARCHS"
 IFS=, read -ra op_list <<< "$OPS"
 
 for arch in "${arch_list[@]}"; do
   for op in "${op_list[@]}"; do
-    out=$OUT/$arch-$op.tsv
-    input=$OUT/$arch-$op.input.mlir
+    out=$OUT/$arch-$op$SUFFIX.tsv
+    input=$OUT/$arch-$op$SUFFIX.input.mlir
     if ! write_problem "$op" "$arch" "$input"; then
       echo "  $arch/$op: could not build the problem, skipping" >&2
       continue

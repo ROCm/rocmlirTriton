@@ -626,9 +626,13 @@ static uint64_t carriedRegisterLanes(const llvm::Function &fn,
 /// accumulator, the running sum a matmul keeps between k-steps, keyed by kernel
 /// name. Recorded by AffixTuningParameters from the tile the perf config asked
 /// for, which is both the last point where that tile is intact and long before
-/// this one: by here the module is LLVM dialect and the matmul is gone. Kernels
-/// whose accumulator was never recorded, which includes attention, do not
-/// appear, and carried pressure is not held against them.
+/// this one: by here the module is LLVM dialect and the matmul is gone.
+///
+/// Only plain gemm and convolution record it, so the map does double duty as
+/// the list of kernels this screen applies to at all: the gemm+gemm family --
+/// attention and its elementwise-fused relatives -- deliberately records
+/// nothing and is left alone, since the bounds below were never calibrated on a
+/// kernel that chains two gemms.
 ///
 /// This is the scale that says whether a carried count is ordinary or
 /// excessive. A tile that carries one accumulator carries the one thing it
@@ -665,8 +669,8 @@ static bool reportRegisterPressureOnly() {
 /// bounded by `carriedMultiple` as a multiple of the kernel's accumulator, and
 /// only counts against a kernel that also carries more than
 /// `carriedFloorPercent` of the addressable file. Either bound is skipped when
-/// its argument is zero, as is the carried bound on a kernel whose accumulator
-/// cannot be determined.
+/// its argument is zero, and a kernel whose accumulator was never recorded is
+/// not screened at all.
 ///
 /// Such a kernel spills in proportion, which both makes it several times slower
 /// to run than a tile that fits and hands the register allocator a problem that
@@ -720,8 +724,8 @@ checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
                << " carried, accumulator " << accumulator << " (limit "
                << carriedLimit << ", floor " << carriedFloor << ")\n");
     if (reportRegisterPressureOnly()) {
-      bool overPeak = peakPercent && peak > peakLimit;
-      bool overCarried = carriedMultiple && accumulator &&
+      bool overPeak = accumulator && peakPercent && peak > peakLimit;
+      bool overCarried = accumulator && carriedMultiple &&
                          carried > carriedLimit && carried > carriedFloor;
       llvm::errs() << "[register-pressure-report] arch=" << arch
                    << " stage=" << stage << " kernel=" << fn.getName()
@@ -729,12 +733,18 @@ checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
                    << " carried=" << carried << " accumulator=" << accumulator
                    << " carriedLimit=" << carriedLimit
                    << " carriedFloor=" << carriedFloor << " verdict="
-                   << (overPeak      ? "reject-peak"
+                   << (!accumulator  ? "not-screened"
+                       : overPeak    ? "reject-peak"
                        : overCarried ? "reject-carried"
                                      : "accept")
                    << "\n";
       continue;
     }
+    // An unrecorded accumulator is how the gemm+gemm kernels opt out: without
+    // the scale that says whether their carried width is ordinary, neither
+    // bound has been shown to mean anything for them.
+    if (!accumulator)
+      continue;
     if (peakPercent && peak > peakLimit) {
       rock::markAsNotApplicable(module);
       module.emitError()
@@ -745,8 +755,7 @@ checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
              "would dominate compile time";
       return failure();
     }
-    if (carriedMultiple && accumulator && carried > carriedLimit &&
-        carried > carriedFloor) {
+    if (carriedMultiple && carried > carriedLimit && carried > carriedFloor) {
       rock::markAsNotApplicable(module);
       module.emitError()
           << "'" << fn.getName() << "' carries " << carried
