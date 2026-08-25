@@ -80,6 +80,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Transforms/Scalar/ADCE.h"
 
 #include <array>
 #include <mutex>
@@ -457,6 +458,19 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   }
 
   mpm.addPass(pb.buildPerModuleDefaultPipeline(optLevel));
+
+  // --- rocmlirTriton pass ----
+  // Upstream's optimize_module adds nothing after the default pipeline, so keep
+  // this when reconciling with llvm.cc. The AMDGPU InstCombine erases
+  // raw.ptr.buffer.store intrinsics whose offset is provably past the
+  // descriptor's NumRecords. For a masked GEMM tail that leaves whole
+  // accumulator tiles dead, but only as phi/wmma cycles that are
+  // self-referential across the K loop, so plain DCE cannot reclaim them and
+  // the default pipeline has no ADCE run left after the folds happen.
+  if (optLevel != llvm::OptimizationLevel::O0)
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ADCEPass()));
+  // --- rocmlirTriton pass ----
+
   mpm.run(module, mam);
 }
 
