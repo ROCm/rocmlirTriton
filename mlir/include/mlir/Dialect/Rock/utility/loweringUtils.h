@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -67,6 +68,14 @@ bool is4GBMemoryType(ShapedType type);
 // dimension into (kBlocks, N / kBlocks), so violating either constraint would
 // silently truncate the tensor.
 bool isValidKBlocks(int64_t kBlocks, int64_t N);
+
+/// Validate every field shared by Rock GEMM tuning parameter attributes.
+/// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
+/// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
+/// support. Emits an error on `op` for the first invalid field.
+LogicalResult validatePerfConfig(Operation *op,
+                                 RockTuningParamAttrInterface params,
+                                 bool requirePow2MN, bool requirePow2K);
 
 // Heuristic logic to compute KBlock for backward weight atomic add kernel.
 // The logic is adopted from MIOpen.

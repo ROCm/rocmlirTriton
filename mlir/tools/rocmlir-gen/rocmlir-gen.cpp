@@ -5336,6 +5336,14 @@ static int64_t getBwdWeightAtomicExtent(rock::ConvBwdWeightOp bwdWeightOp) {
   if (failed(maybeParams))
     return 0;
 
+  bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
+  bool requirePow2K = isScaledGemm || !rock::supportsNonPow2KPerBlock(
+                                          rock::getArchValue(gemmOp));
+  if (failed(rock::validatePerfConfig(bwdWeightOp, *maybeParams,
+                                      /*requirePow2MN=*/isScaledGemm,
+                                      /*requirePow2K=*/requirePow2K)))
+    exit(1);
+
   FailureOr<int64_t> maybeKBlocks =
       rock::computeBwdWeightKBlocks(gemmOp, *maybeParams);
   if (failed(maybeKBlocks))
