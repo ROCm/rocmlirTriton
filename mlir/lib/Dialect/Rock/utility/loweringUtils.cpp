@@ -637,15 +637,11 @@ Value mlir::rock::loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
   // into an actual BlockwiseLoadOp by tracing back through the source chain.
   // We pass the original (un-transformed) input as source and carry the
   // tiling transforms as metadata in extraViews.
-  //
-  // The tile's dimensions are ordered by `isKFirst`, which puts the k axis
-  // that the gemm reduces over first for matrix B and second for matrix A.
-  int64_t reductionTileAxis = isKFirst ? 0 : 1;
   auto markerOp =
       LoadMarkerOp::create(b, loc, resultType, in, bufferViews,
                            ValueRange{kIter, gridCoords.g_block,
                                       gridCoords.m_block, gridCoords.n_block},
-                           cache, b.getDenseI64ArrayAttr({reductionTileAxis}));
+                           cache);
   return markerOp.getResult();
 }
 

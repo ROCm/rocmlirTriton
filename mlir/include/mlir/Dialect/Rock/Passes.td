@@ -673,8 +673,7 @@ def RockRegularizeInputPass
         %res = arith.addf %A0, %A1
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "math::MathDialect",
-                           "triton::TritonDialect"];
+                           "arith::ArithDialect", "math::MathDialect"];
 }
 
 def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
@@ -852,6 +851,48 @@ def RockSetReductionLayoutPass
       "kernels (those carrying the `rock.conv_kernel` attribute); 0 disables "
       "the rewrite entirely (no kernel is touched); 1 forces the rewrite on "
       "every kernel.">];
+}
+
+def RockNarrowRedundantLoadsPass
+    : Pass<"rock-narrow-redundant-loads", "::mlir::ModuleOp"> {
+  let summary = "Replace a tt.load that reads the same value along a dimension "
+                "with a narrow load plus a broadcast";
+  let description = [{
+    Runs on TTIR, before layouts are assigned. A `tt.load` whose address is
+    invariant along a tensor dimension reads the same value once per position
+    along that dimension. Left alone, the redundant copies survive into TTGIR,
+    where a layout conversion or a pipeliner stage can spill the whole tile
+    through shared memory: for a group-quantized GEMM whose per-group scale is
+    constant across a K tile, that costs a scalar `ds_write_b16`/`ds_read_u16`
+    pair per redundant copy, because the tile's blocked layout holds one element
+    per thread and so cannot be vectorized.
+
+    This pass loads only the index-0 slice along each invariant dimension and
+    rebuilds the full tile with `tt.broadcast`:
+
+      Before:
+        %ptr = tt.addptr %base, %off : tensor<32x128x!tt.ptr<f16>>  // uniform
+        %val = tt.load %ptr : tensor<32x128x!tt.ptr<f16>>           //   along
+                                                                   //   dim 0
+      After:
+        %ptr0 = tt.addptr %base0, %off0 : tensor<1x128x!tt.ptr<f16>>
+        %val0 = tt.load %ptr0 : tensor<1x128x!tt.ptr<f16>>
+        %val = tt.broadcast %val0 : tensor<1x128xf16> -> tensor<32x128xf16>
+
+    Invariance comes from Triton's alignment analysis: a dimension qualifies
+    when the load result's `constancy` equals the tensor's extent along it.
+    Because that constancy is the gcd of the address and mask constancies, one
+    query covers both. `other` is checked separately, since the analysis does
+    not account for it.
+
+    The rewrite re-materializes the address computation at the narrow shape,
+    which is value-preserving because slicing any tensor is. Only splats,
+    broadcasts, `tt.expand_dims`, `tt.make_range`, `tt.addptr` and
+    side-effect-free elementwise arithmetic are re-materialized; a load whose
+    address involves anything else is left alone.
+  }];
+  let dependentDialects = ["triton::TritonDialect", "arith::ArithDialect",
+                           "math::MathDialect"];
 }
 
 def RockAnalyzeMemoryUsePass
