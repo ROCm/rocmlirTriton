@@ -1293,12 +1293,6 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
-  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
-  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
-    for (int64_t axis : *axes)
-      if (axis < 0 || axis >= resultRank)
-        return emitOpError() << "reduction tile axis " << axis
-                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),

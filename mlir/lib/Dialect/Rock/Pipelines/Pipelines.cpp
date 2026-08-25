@@ -82,6 +82,13 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
+  // --- rocmlirTriton pass ----
+  // Must run after combine-ops, which folds chained addptrs into the single
+  // offset this pass re-materializes and turns select+load into a masked load,
+  // and before CSE and LICM, which respectively deduplicate the narrowed
+  // address computations and hoist any load narrowing made loop-invariant.
+  pm->addPass(rock::createRockNarrowRedundantLoadsPass());
+  // --- rocmlirTriton pass ----
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createLoopInvariantCodeMotionPass());

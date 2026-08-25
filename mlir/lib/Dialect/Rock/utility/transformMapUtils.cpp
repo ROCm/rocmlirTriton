@@ -1068,14 +1068,11 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 }
 
 SmallVector<unsigned>
-mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
-                                       bool ignoreTileAlignmentPads) {
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
     if (type == TransformType::Pad) {
-      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
-        continue;
       ArrayRef<int64_t> params = op.getParams();
       ArrayRef<uint32_t> upper = op.getUpperDims();
       for (size_t i = 0, e = upper.size(); i < e; ++i)
@@ -1106,29 +1103,8 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
   return result;
 }
 
-bool mlir::rock::transformChainDependsOnAnyDim(
-    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
-  if (dims.empty())
-    return false;
-
-  // An empty chain passes its coordinates through unchanged, so the lower
-  // coordinates depend on every upper dim. It also has no domain to check
-  // `dims` against.
-  AffineMap composed = composeTransforms(transforms);
-  if (!composed)
-    return true;
-
-  assert(llvm::all_of(
-             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
-         "queried dim is not an upper coordinate of the transform chain");
-
-  return llvm::any_of(
-      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
-}
-
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
-                                         ArrayRef<unsigned> dims,
-                                         bool ignoreTileAlignmentPads) {
+                                         ArrayRef<unsigned> dims) {
   // An empty chain generates no validity checks, and has no upper coordinate
   // space to check `dims` against.
   if (dims.empty() || transforms.empty())
@@ -1143,8 +1119,7 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
          "queried dim is not an upper coordinate of the transform chain");
 
   for (auto [index, transform] : llvm::enumerate(transforms)) {
-    SmallVector<unsigned> upperDims =
-        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
+    SmallVector<unsigned> upperDims = validityImpactingUpperDims(transform);
     if (upperDims.empty())
       continue;
 
@@ -1218,10 +1193,10 @@ TransformMapAttr mlir::rock::invertTransformMap(
         begins.push_back(leftPad);
         fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
       }
-      transform.slice(
-          SmallVector<StringRef>(tattr.getUpperNames()),
-          SmallVector<uint32_t>(tattr.getUpperDims()),
-          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      transform.slice(SmallVector<StringRef>(tattr.getUpperNames()),
+                      SmallVector<uint32_t>(tattr.getUpperDims()),
+                      SmallVector<StringRef>(tattr.getLowerNames()), begins,
+                      fullLowerSizes);
       break;
     }
     case rock::TransformType::Slice: {
