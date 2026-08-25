@@ -88,8 +88,8 @@ public:
 //
 // %2 = tosa.cast %0 : (tensor<100xi1>) -> tensor<100xi8>
 //
-// Note that when widening an i1 it yields exactly 0.0 or 1.0,
-// so the NaN check and the range clamp is useless.
+// Note that widening an i1 yields exactly 0.0 or 1.0,
+// so the NaN check and the range clamp are useless.
 // This pattern is frequently used by LeakyReLU ops in MIGraphX.
 class SimplifyBoolFpToIntCast final : public OpRewritePattern<tosa::CustomOp> {
 public:
