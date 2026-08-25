@@ -169,15 +169,13 @@ void AffixTuningParameters::affixTuningParametersImpl(
 
   // Set kblocks attribute only for backward weight convolutions.
   if (auto bwdOp = dyn_cast<ConvBwdWeightOp>(op.getOperation())) {
-    FailureOr<int64_t> maybeKBlocks =
-        computeBwdWeightKBlocks(op, gemmParams);
+    FailureOr<int64_t> maybeKBlocks = computeBwdWeightKBlocks(op, gemmParams);
     if (failed(maybeKBlocks)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Invalid tuning parameters for computing KBlocks.\n");
       return signalPassFailure();
     }
-    bwdOp->setAttr(bwdOp.getKBlocksAttrName(),
-                   b.getIndexAttr(*maybeKBlocks));
+    bwdOp->setAttr(bwdOp.getKBlocksAttrName(), b.getIndexAttr(*maybeKBlocks));
   }
 
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
