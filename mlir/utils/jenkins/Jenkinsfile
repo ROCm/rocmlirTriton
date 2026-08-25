@@ -1,4 +1,6 @@
-// PR CI and nightly MIGraphX stage are enabled. Other nightly/weekly stages are commented out.
+// PR CI, nightly MIGraphX, and weekly stages (Parameter sweeps, Tune MLIR kernels,
+// Archive weekly tuning perfDB) are enabled. The nightly "Benchmark and Report
+// Performance" and "Code coverage" stages remain commented out.
 import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
 import hudson.plugins.git.extensions.impl.CheckoutOption
@@ -17,6 +19,12 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 // checkouts that can exceed that on a slow network.
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
+
+// Run `script` under bash with pipefail, so a failing command is not masked by
+// the exit code of a later pipe stage such as `tee`. Plain `sh` has no pipefail.
+def shStrict(String script) {
+    sh "#!/bin/bash\nset -exo pipefail\n${script}"
+}
 
 void buildProject(String target, String cmakeOpts) {
     timeout(time: 60, activity: true, unit: 'MINUTES') {
@@ -613,11 +621,11 @@ String getLabelFromCodepath(String codepath) {
         }
         label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
-        // if (params.weekly) {
-        //     label = 'mlir && linux-mi350-8'
-        // } else {
+        if (params.weekly) {
+            label = 'mlir && linux-mi350-8'
+        } else {
             label = 'mlir && linux-mi350-1'
-        // }
+        }
     } else if (codepath == "navi21") {
         // For non-performance related testing, use both workstations (gfx1030w)
         // and server nodes (gfx1030)
@@ -644,7 +652,6 @@ String getLabelFromCodepath(String codepath) {
     return label
 }
 
-/*
 String getLabelFromChip(String chip) {
     switch (chip) {
         case "gfx906":
@@ -675,7 +682,6 @@ String getLabelFromChip(String chip) {
             return "mlir && gfx1201"
     }
 }
-*/
 
 int setLitWorkerCount() {
     int limit_lit_workers = 8
@@ -729,20 +735,19 @@ void check_randomE2ETests() {
 // Run a single sweep script (parameterSweeps.py or attentionSweeps.py) against
 // one of its operation kinds. parameterSweeps.py exposes ``conv`` and ``gemm``;
 // attentionSweeps.py exposes ``attention`` and ``gemm_gemm``. Both share the
-// same ``-j``/``--samples``/``--log-failures`` interface and ship in
-// <build>/bin/ via the ``ci-performance-scripts`` target.
-// Kept commented out alongside its (also commented) call sites in the
-// NIGHTLY/WEEKLY stages block; restore together when re-enabling sweeps.
-/*
+// same ``-j``/``--samples``/``--test-timeout-sec``/``--log-failures`` interface
+// and ship in <build>/bin/ via the ``ci-performance-scripts`` target.
+// The scripts default to a 120s per-stage timeout, which is tuned for the fast
+// per-PR lit smoke tests; override it to 600s here to match rocMLIR's weekly
+// sweep budget so large but valid configs are not miscounted as timeouts.
 void runSweep(String script, String kind, int samples, String codepath) {
     int limit_lit_workers = setLitWorkerCount()
     timeout(time: 300, activity: true, unit: 'MINUTES') {
         dir('build') {
-            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} ${kind} --log-failures"""
+            sh """python3 ./bin/${script} -j ${limit_lit_workers} --samples ${samples} --test-timeout-sec 600 ${kind} --log-failures"""
         }
     }
 }
-*/
 
 
 boolean shouldRunFromCodepath(String codepath) {
@@ -774,7 +779,6 @@ boolean shouldRunFromCodepath(String codepath) {
     return false
 }
 
-/*
 boolean shouldRunFromChip(String chip) {
     switch (chip) {
         default:
@@ -815,7 +819,6 @@ void archivePerfDB() {
     archiveArtifacts artifacts: 'build/perfDB/**',\
     onlyIfSuccessful: true
 }
-*/
 
 boolean shouldRunBuildAndTest(String codepath) {
     // When the default codepath is selected, test every codepath enabled for
@@ -1142,12 +1145,12 @@ pipeline {
         // string(name: 'CKBranch', defaultValue: 'develop',
         //     description: 'The Composable Kernel branch to be used with the job')
 
-        // // Each below control whether to run a individual stage from parallel run
-        // // They default to true or empty but developer can toggle them for debugging purpose
-        // booleanParam(name: 'sharedLib', defaultValue: true,
-        //              description: 'Run the shared library stage')
-        // booleanParam(name: 'staticLib', defaultValue: true,
-        //              description: 'Run the static library stage')
+        // Each below control whether to run a individual stage from parallel run
+        // They default to true or empty but developer can toggle them for debugging purpose
+        booleanParam(name: 'sharedLib', defaultValue: true,
+                     description: 'Run the shared library stage')
+        booleanParam(name: 'staticLib', defaultValue: true,
+                     description: 'Run the static library stage')
         booleanParam(name: 'checkMIGraphX', defaultValue: false,
                      description: 'Run the MIGraphX integration tests')
         // booleanParam(name: 'checkCK', defaultValue: true,
@@ -1180,10 +1183,10 @@ pipeline {
         booleanParam(name: 'ignoreExternalLinting', defaultValue: false,
                      description: 'Ignore linting on files in external')
 
-        // // choose the task to run in weekly
-        // choice(name: 'weeklyTasks',
-        //        choices: ['default', 'parameterSweeps', 'Tuning'],
-        //        description: 'Choose the weekly tasks')
+        // choose the task to run in weekly
+        choice(name: 'weeklyTasks',
+               choices: ['default', 'parameterSweeps', 'Tuning'],
+               description: 'Choose the weekly tasks')
     }
     stages {
         stage("Set System Property") {
@@ -1201,11 +1204,11 @@ pipeline {
             }
         }
         stage('Build and Test') {
-            // when {
-            //     beforeAgent true
-            //     // Skip this part of testing as early as possible
-            //     equals expected: false, actual: params.weekly;
-            // }
+            when {
+                beforeAgent true
+                // Skip this part of testing as early as possible
+                equals expected: false, actual: params.weekly;
+            }
             matrix {
                 axes {
                     axis {
@@ -1377,7 +1380,7 @@ pipeline {
                 }
             }
         }
-        /* // --- NIGHTLY/WEEKLY STAGES (commented out) ---
+        // --- WEEKLY STAGES (enabled) ---
         stage ("Parameter sweeps") {
             when {
                 beforeAgent true;
@@ -1538,15 +1541,15 @@ pipeline {
                                                         buildProject('check-rocmlir-build-only ci-performance-scripts', '')
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
-                                                            sh """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
+                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
@@ -1587,28 +1590,31 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
                                                                     -c ${attnConfigToUse} \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
-                                                            sh """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
+                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
                                                             // Check for errors in the tuning log
                                                             script {
                                                                 def tuneLog = readFile(tuningLog).split('\n')
-                                                                def errors = tuneLog.findAll { it =~ /(?i)error/ }
+                                                                // Find errors that are not part of a warning line
+                                                                def errors = tuneLog.findAll { it =~ /(?i)error/ && !(it =~ /(?i)\bWARNING\b.*error/) }
 
                                                                 if (errors) {
-                                                                    error("Tuning failed: Detected errors in tuning log")
                                                                     currentBuild.result = 'FAILURE'
+                                                                    echo "Detected ${errors.size()} error(s) in tuning log:"
+                                                                    errors.each { echo "ERROR LINE: ${it}" }
+                                                                    error("Tuning failed: Detected errors in tuning log")
                                                                 } else {
                                                                     echo "No errors found in tuning log"
                                                                 }
@@ -1619,10 +1625,10 @@ PY
                                                     stage("Tune Fusion") {
                                                         dir('build') {
                                                             // Tune resnet50
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test-dir ../mlir/test/fusion/resnet50-e2e/ -o tuning_fusion_${CHIP}.tsv"""
 
                                                             // Tune bert
-                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test_dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op fusion --test-dir ../mlir/test/xmir/bert-torch-tosa-e2e/ -o tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                         sh 'rm -f build/CMakeCache.txt'
                                                     }
@@ -1641,6 +1647,13 @@ PY
                                             throw e
                                         }
                                         finally {
+                                            // Publish per-arch tuning DBs as soon as this branch finishes so artifacts published without waiting for other parallel branches
+                                            try {
+                                                archiveArtifacts artifacts: "build/*.tsv",
+                                                    allowEmptyArchive: true, onlyIfSuccessful: false
+                                            } catch (Exception archiveErr) {
+                                                echo "[CI] archiveArtifacts of tuning DBs failed: ${archiveErr.message}"
+                                            }
                                             cleanWs()
                                         }
                                     }
@@ -1674,6 +1687,7 @@ PY
                 }
             }
         }
+        /* // --- NIGHTLY STAGE (commented out) ---
         stage("Benchmark and Report Performance") {
             when {
                 beforeAgent true;

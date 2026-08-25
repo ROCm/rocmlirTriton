@@ -226,6 +226,7 @@ class Options:
     timeout: Optional[int]
     perf_config_timeout: int
     gpu_run_timeout: int
+    verify_timeout: Optional[int]
     rep_ms: int
     warmup_ms: int
     two_stage_topk: int
@@ -1325,12 +1326,17 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     with tempfile.TemporaryDirectory() as tmpdir:
         env = make_isolated_gpu_env(gpu_id)
         try:
-            rc, outs, errs = _run_pipeline(verification_commands, env=env, cwd=tmpdir, timeout=600)
-        except subprocess.TimeoutExpired:
+            rc, outs, errs = _run_pipeline(verification_commands,
+                                           env=env,
+                                           cwd=tmpdir,
+                                           timeout=options.verify_timeout)
+        except subprocess.TimeoutExpired as timeout_error:
             raise TuningError(
-                format_error(f"Verification timed out for perfconfig '{perfconfig}'",
-                             command=verification_pipeline,
-                             gpu_id=gpu_id))
+                format_error(
+                    f"Verification timed out after {timeout_error.timeout}s for perfconfig "
+                    f"'{perfconfig}' (raise or disable with --verify-timeout)",
+                    command=verification_pipeline,
+                    gpu_id=gpu_id))
 
         raise_if_terminated(rc)
         if rc != 0 or not CORRECT_RESULT_RE.search(outs):
@@ -2509,6 +2515,16 @@ def parse_arguments(args=None) -> argparse.Namespace:
         "marked 'gpu_timed_out' and tuning advances to the next problem config "
         "(retry with '--retry gpu_timed_out').")
 
+    parser.add_argument(
+        "--verify-timeout",
+        type=int,
+        default=None,
+        metavar='SECONDS',
+        help="Timeout in seconds for each verification run (default: no timeout). "
+        "Verification of the winning config runs the CPU reference, whose cost grows "
+        "with the problem size, so a fixed budget rejects large but healthy configs. "
+        "GPU hangs are better bounded per run by '--gpu-run-timeout'.")
+
     parser.add_argument("--rep",
                         type=int,
                         default=TUNE_REP_MS,
@@ -2744,6 +2760,7 @@ def main(args=None):
                       timeout=parsed_args.timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
                       gpu_run_timeout=parsed_args.gpu_run_timeout,
+                      verify_timeout=parsed_args.verify_timeout,
                       rep_ms=parsed_args.rep,
                       warmup_ms=parsed_args.warmup,
                       two_stage_topk=resolved_two_stage_topk,
