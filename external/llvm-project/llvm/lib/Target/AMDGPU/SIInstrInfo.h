@@ -1905,9 +1905,8 @@ namespace AMDGPU {
   const uint64_t RSRC_ELEMENT_SIZE_SHIFT = (32 + 19);
   const uint64_t RSRC_INDEX_STRIDE_SHIFT = (32 + 21);
   const uint64_t RSRC_TID_ENABLE = UINT64_C(1) << (32 + 23);
-  // OOB_SELECT occupies descriptor bits [125:124] on GFX10+. Values are 0 for
-  // structured, 1 for an index check, 2 for no check and 3 for a raw check
-  // against the offset.
+  // GFX10+ descriptor bits [125:124]: 0 structured, 1 index check, 2 no check,
+  // 3 raw check against the offset.
   const uint64_t RSRC_OOB_SELECT_SHIFT = (32 + 28);
   const uint64_t RSRC_OOB_SELECT_MASK = 0x3;
 
