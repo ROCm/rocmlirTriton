@@ -63,7 +63,6 @@ namespace rock {
 #define DEBUG_TYPE "rock-conv-to-gemm"
 
 using namespace mlir;
-using namespace mlir::arith;
 using namespace mlir::rock;
 //===----------------------------------------------------------------------===//
 // Conv (forward, backward) lowering.
@@ -409,12 +408,12 @@ struct MatchLayoutsToInput final
                                      b.getStringAttr(Twine(i) + Twine("o")));
     }
 
-    // Only re-layout the filter/output if it's an input operand of this op,
-    // not if it's the op's own result.
-    LogicalResult didReLayoutFilter = failure();
-    if (filter.getDefiningOp() != op.getOperation())
-      didReLayoutFilter = makeToLayoutLikeFromLayoutAlong(
-          b, op, "input_layout", filter, "filter_layout", inputToFilter);
+    // The filter is an operand for every conv variant, so it can always be
+    // re-laid out.
+    LogicalResult didReLayoutFilter = makeToLayoutLikeFromLayoutAlong(
+        b, op, "input_layout", filter, "filter_layout", inputToFilter);
+    // The output is the result of a forward conv, and a result can't be
+    // re-laid out here; only do it when it's an operand (i.e. BwdData).
     LogicalResult didReLayoutOutput = failure();
     if (output.getDefiningOp() != op.getOperation())
       didReLayoutOutput = makeToLayoutLikeFromLayoutAlong(
