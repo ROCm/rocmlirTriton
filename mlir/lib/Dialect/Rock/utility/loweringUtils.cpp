@@ -65,6 +65,157 @@ bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
   return kBlocks >= 1 && N % kBlocks == 0;
 }
 
+// Per-field perf-config validators. A violation is treated as a hard
+// diagnostic; `markAsNotApplicable` is reserved for arch-feature mismatches.
+static bool isPositivePowerOfTwo(int64_t v) {
+  return v > 0 && llvm::isPowerOf2_64(static_cast<uint64_t>(v));
+}
+
+static LogicalResult validatePositivePowerOfTwo(Operation *op, StringRef name,
+                                                int64_t value) {
+  if (!isPositivePowerOfTwo(value))
+    return op->emitError() << name << "=" << value
+                           << " must be a positive power of two";
+  return success();
+}
+
+static LogicalResult validatePositiveValue(Operation *op, StringRef name,
+                                           int64_t value) {
+  if (value <= 0)
+    return op->emitError() << name << "=" << value << " must be positive";
+  return success();
+}
+
+static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
+  if (numCTAs < 1)
+    return op->emitError() << "numCTAs=" << numCTAs << " must be >= 1";
+  if (!isPositivePowerOfTwo(numCTAs))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " must be a positive power of two";
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
+  if (numCTAs > maxNumCTAs)
+    return op->emitError() << "numCTAs=" << numCTAs << " exceeds max ("
+                           << maxNumCTAs << ") for " << arch;
+  if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " but multi-CTA launch is not supported on "
+                           << arch;
+  return success();
+}
+
+static LogicalResult validateKpack(Operation *op, int64_t kpack) {
+  StringRef arch = rock::getArchValue(op);
+  if (kpack < 1)
+    return op->emitError() << "kpack=" << kpack << " must be positive";
+  int64_t maxKpack = rock::getMaxKpack(arch);
+  if (kpack > maxKpack)
+    return op->emitError() << "kpack=" << kpack << " exceeds max (" << maxKpack
+                           << ") for " << arch;
+  return success();
+}
+
+static LogicalResult validateNumWaves(Operation *op, int64_t numWaves) {
+  if (!isPositivePowerOfTwo(numWaves))
+    return op->emitError() << "numWaves=" << numWaves
+                           << " must be a positive power of two";
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
+  int64_t maxNumWaves = rock::maxHardwareWorkgroupSize / waveSize;
+  if (numWaves > maxNumWaves)
+    return op->emitError() << "numWaves=" << numWaves
+                           << " * waveSize=" << waveSize
+                           << " exceeds max workgroup size ("
+                           << rock::maxHardwareWorkgroupSize << ")";
+  return success();
+}
+
+static LogicalResult validateMatrixInstrNonkdim(Operation *op,
+                                                int64_t matrixInstrNonkdim) {
+  if (matrixInstrNonkdim != 0 && !isPositivePowerOfTwo(matrixInstrNonkdim))
+    return op->emitError()
+           << "matrixInstrNonkdim=" << matrixInstrNonkdim
+           << " must be 0 (heuristic) or a positive power of two";
+  return success();
+}
+
+static LogicalResult validateSplitKFactor(Operation *op, int64_t splitKFactor) {
+  if (splitKFactor < 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be >= 1";
+  if (isa<AttentionOp>(op) && splitKFactor != 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be 1 for attention";
+  return success();
+}
+
+static LogicalResult validateNumStages(Operation *op, int64_t numStages) {
+  if (numStages < 1)
+    return op->emitError() << "numStages=" << numStages << " must be >= 1";
+  return success();
+}
+
+static LogicalResult validateWavesPerEU(Operation *op, int64_t wavesPerEU) {
+  if (wavesPerEU < 0)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " must be >= 0";
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxWavesPerEU = rock::getMaxWavesPerEU(arch);
+  if (wavesPerEU > maxWavesPerEU)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " exceeds max ("
+                           << maxWavesPerEU << ") for " << arch;
+  return success();
+}
+
+static LogicalResult validateGridGroupSize(Operation *op,
+                                           int64_t gridGroupSize) {
+  if (gridGroupSize < 0)
+    return op->emitError() << "gridGroupSize=" << gridGroupSize
+                           << " must be >= 0";
+  return success();
+}
+
+static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
+  if (nPerBlockG1 != 0 && !isPositivePowerOfTwo(nPerBlockG1))
+    return op->emitError() << "nPerBlockG1=" << nPerBlockG1
+                           << " must be 0 (untiled) or a positive power of two";
+  return success();
+}
+
+LogicalResult
+mlir::rock::validatePerfConfig(Operation *op,
+                               RockTuningParamAttrInterface params,
+                               bool requirePow2MN, bool requirePow2K) {
+  auto validateMN =
+      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
+    return failure();
+  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+    return failure();
+  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+      return failure();
+  auto validateK =
+      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
+    return failure();
+  if (failed(validateKpack(op, params.getKpack())))
+    return failure();
+  if (failed(validateNumCTAs(op, params.getNumCTAs())))
+    return failure();
+  if (failed(validateNumWaves(op, params.getNumWaves())))
+    return failure();
+  if (failed(validateMatrixInstrNonkdim(op, params.getMatrixInstrNonkdim())))
+    return failure();
+  if (failed(validateSplitKFactor(op, params.getSplitKFactor())))
+    return failure();
+  if (failed(validateNumStages(op, params.getNumStages())))
+    return failure();
+  if (failed(validateWavesPerEU(op, params.getWavesPerEU())))
+    return failure();
+  if (failed(validateGridGroupSize(op, params.getGridGroupSize())))
+    return failure();
+  return success();
+}
+
 LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
                                              const GemmSize &gemmSize,
                                              int64_t MPerBlock,
@@ -108,6 +259,30 @@ LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
 
   nKBlock = gemmKBlock;
   return success();
+}
+
+FailureOr<int64_t>
+mlir::rock::computeBwdWeightKBlocks(RockGemmWrapperInterface op,
+                                    GemmParamsAttr params) {
+  PopulateParamsInfo info = PopulateParamsInfo::fromOp(op);
+  if (info.kernelType != KernelType::ConvBwdWeight)
+    return int64_t{1};
+
+  GemmSize origGemmSize = op.getGemmSize();
+  GemmSize paddedGemmSize =
+      calculatePaddedGemmSize(params.getKPerBlock(), params.getMPerBlock(),
+                              params.getNPerBlock(), origGemmSize);
+  const bool requiredPadding = !(paddedGemmSize == origGemmSize);
+  if (!isWrWAtomicKernel(info.gemmAType, requiredPadding))
+    return int64_t{1};
+
+  int64_t kBlocks = 1;
+  if (failed(calculateKBlockNum(info.batchSize, paddedGemmSize,
+                                params.getMPerBlock(), params.getNPerBlock(),
+                                params.getKPerBlock(), params.getKpack(),
+                                info.numCu, kBlocks)))
+    return failure();
+  return kBlocks;
 }
 
 bool mlir::rock::isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,

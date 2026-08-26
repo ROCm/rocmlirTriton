@@ -444,20 +444,27 @@ When a kernel accumulates output via `atomic_add` at the narrow dtype
 precision (rather than the f32 accumulator assumed by the K_eff atol
 model in Section 2.3), each atomic addition introduces approximately
 `eps(dtype)` relative rounding error. The allclose verifier detects
-two sources of atomic-add accumulation and boosts `rtol` accordingly:
+three sources of atomic-add accumulation and boosts `rtol` accordingly:
 
 1. **Fused reductions** (`rock.reduce(sum)`): the kernel pipeline
    converts these to `rock.store by atomic_add`. The extent is the
    reduce axis size.
-2. **SplitK accumulation**: when the `perf_config` encodes
+2. **Backward-weight K-block accumulation (WrW-atomic lowering only)**: when
+   `rock.conv_bwd_weight` is lowered via the WrW-atomic path, it partitions
+   its reduction across `kBlocks` workgroups and atomically merges their
+   partial results into the filter. The extent is `kBlocks`. Ops ineligible
+   for this path (dtype/padding) take the non-atomic lowering;
+   `computeBwdWeightKBlocks()` returns 1 for those cases, so no boost applies.
+3. **SplitK accumulation**: when the `perf_config` encodes
    `splitKFactor > 1`, partial results from multiple workgroups are
    merged via `atomic_add`. The extent is the splitK factor.
 
-The boost formula uses the larger of the two extents:
+The boost formula uses the largest of the three extents; the boost term
+applies only when that maximum exceeds 1:
 
 ```
-atomicExtent = max(reduce_axis_extent, splitKFactor)
-rtol_boosted = base_rtol + sqrt(atomicExtent) * eps(dtype)
+atomicExtent = max(reduce_axis_extent, bwd_weight_kBlocks, splitKFactor)
+rtol_boosted = base_rtol + (atomicExtent > 1 ? sqrt(atomicExtent) * eps(dtype) : 0)
 ```
 
 where:
@@ -476,10 +483,13 @@ and introduces no rounding error.
 
 The fused-reduction scan targets `rock::ReduceOp` (still present in
 the host-side clone at the `-ph` stage) rather than `rock::StoreOp`
-(already lowered away in the GPU function). The splitK factor is
-extracted from `GemmGemmParamsAttr` or `GemmParamsAttr` via the
-`perf_config` string. Passing `-rtol=<value>` explicitly suppresses
-both boost sources.
+(already lowered away in the GPU function). Backward-weight `kBlocks`
+is read from `rock::ConvBwdWeightOp` when already affixed; otherwise the
+verifier computes it via `computeBwdWeightKBlocks()` (same utility as the
+affix-params pass), which returns 1 when the op is not eligible for
+WrW-atomic lowering. The splitK factor is extracted from
+`GemmGemmParamsAttr` or `GemmParamsAttr` via the `perf_config` string.
+Passing `-rtol=<value>` explicitly suppresses all three boost sources.
 
 ### 2.10 Zero-diff count output
 
