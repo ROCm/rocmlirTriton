@@ -28,8 +28,8 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   // detection, LDS sizing, and pipeline gating still use the real gfx1170.
   // TODO(AIROCMLIR-705): Generate a proper quick-tuning table for gfx1170 and
   // remove this alias.
-  if (arch == "gfx1170")
-    arch = "gfx1200";
+  // if (arch == "gfx1170")
+  //   arch = "gfx1200";
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
