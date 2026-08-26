@@ -28,6 +28,8 @@
 // triton::AMD::TargetInfo
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
+#include <cassert>
+
 #define DEBUG_TYPE "rock-amd-arch-db"
 
 using namespace mlir;
@@ -62,6 +64,12 @@ std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
 //===----------------------------------------------------------------------===//
 // Matrix Acceleration Support Detection (using Triton APIs)
 //===----------------------------------------------------------------------===//
+
+/// The M and N extent of every WMMA intrinsic, across RDNA3/RDNA4 and both the
+/// plain and scaled flavours: only kDim varies (16, 32, 64, 128).
+/// Mirror of the `wmmaMap` entries in
+/// `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/WmmaGroup.cpp`
+static constexpr unsigned kWmmaNonKDim = 16;
 
 /// Check if MFMA is supported for the given types on the specified version.
 /// Triton's MfmaIntrinsic::selectFor() requires tile dimensions, but we only
@@ -122,21 +130,19 @@ static bool hasScaledWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
   // Use large K to match any intrinsic - gfx1250 fp8 WMMA uses kDim=128
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
 /// Check if WMMA is supported for the given types on the specified version.
-/// All WMMA intrinsics across RDNA3/RDNA4 use 16x16 tiles (only kDim varies).
 static bool hasWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
                            Type elemOut) {
-  // WMMA has consistently used 16x16 tiles across all RDNA architectures.
-  // The kDim varies (16, 32, 64, 128) but selectFor handles that internally.
+  // Use a large K so selectFor() matches whichever kDim the table offers.
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
@@ -245,6 +251,55 @@ mlir::rock::getMatrixAccelKind(StringRef arch,
 
 bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
+}
+
+FailureOr<int64_t>
+mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                 Type inputTypeB, uint32_t instrNonKDim,
+                                 Type scaleAType, Type scaleBType) {
+  MatrixAccelKind accelKind =
+      getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
+  if (accelKind == MatrixAccelKind::None)
+    return failure();
+
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
+  Type elemOut = rock::getAccType(elemA, elemB);
+  auto [isaFamily, _] = getArch(arch);
+
+  // Both selectFor()s walk their candidates widest-K first and then fall
+  // through to "the only / smallest-K intrinsic", so an input K of zero skips
+  // every candidate and lands on exactly the one we are asking for.
+  constexpr unsigned narrowest = 0;
+
+  if (accelKind == MatrixAccelKind::WMMA ||
+      accelKind == MatrixAccelKind::ScaledWMMA) {
+    auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
+                                          kWmmaNonKDim, kWmmaNonKDim, narrowest,
+                                          elemA, elemB, elemOut);
+
+    assert(succeeded(instr) && "WMMA arch has no intrinsic for its own types");
+    if (failed(instr))
+      return failure();
+    return instr->kDim;
+  }
+
+  MLIRContext *ctx = elemA.getContext();
+  auto instr = MfmaIntrinsic::selectFor(
+      UnknownLoc::get(ctx), rock::getMfmaVersion(isaFamily), instrNonKDim,
+      instrNonKDim, narrowest, elemA, elemB,
+      /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
+      /*useTF32=*/false);
+  if (failed(instr))
+    return failure();
+  return instr->kDim;
+}
+
+FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
+    StringRef arch, RockGemmWrapperInterface gemmOp, uint32_t instrNonKDim) {
+  return getAccelInstrMinKDim(arch, gemmOp.getAType(), gemmOp.getBType(),
+                              instrNonKDim, gemmOp.getScaleAType(),
+                              gemmOp.getScaleBType());
 }
 
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {

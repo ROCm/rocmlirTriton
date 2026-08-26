@@ -688,6 +688,64 @@ func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf3
 
 // -----
 
+// Test: an explicit to_nearest_even on a non-FP8 truncf keeps it in arith.
+// RTNE is already the default, so there is nothing for tt.fp_to_fp to add.
+// This matches Triton's semantic.cast, where `use_custom_rounding` is only set
+// for a requested mode that differs from RTNE.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtne_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = arith.truncf %[[INPUT]] to_nearest_even : tensor<64xf32> to tensor<64xf16>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_truncf_f32_to_f16_rtne_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 to_nearest_even : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: a non-FP8 truncf asking for toward_zero becomes tt.fp_to_fp with RTZ.
+// Triton's AMD arith.truncf lowering ignores the rounding attribute and always
+// uses RTNE for f32 -> f16/bf16, so RTZ has to leave arith to be honoured.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<64xf32> -> tensor<64xf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f16_rtz(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: the same holds for a bf16 destination.
+
+// CHECK-LABEL: @test_truncf_f32_to_bf16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<2x64xf32> -> tensor<2x64xbf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_bf16_rtz(%arg0: tensor<2x64xf32>) -> tensor<2x64xbf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<2x64xf32> to tensor<2x64xbf16>
+  return %0 : tensor<2x64xbf16>
+}
+
+// -----
+
+// Test: an FP8 destination carries the requested RTZ through rather than
+// falling back to the RTNE default used when no rounding mode is present.
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E5M2_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<4xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<4xf32> -> tensor<4xf8E5M2>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E5M2_rtz(%arg0: tensor<4xf32>) -> tensor<4xf8E5M2> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<4xf32> to tensor<4xf8E5M2>
+  return %0 : tensor<4xf8E5M2>
+}
+
+// -----
+
 // Test: discardable rock metadata (rock.o_transposed) set on rock.blockwise_gemm
 // is carried onto the lowered tt.dot so it survives into the Triton pipeline.
 
