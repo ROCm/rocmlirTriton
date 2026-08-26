@@ -220,16 +220,15 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   // This is due to a bug in Triton, reported here:
   // https://github.com/ROCm/triton/issues/958
   // TODO: Revert this once the bug is fixed.
-  constexpr int64_t minIntKSegment = 4;
   if (isa<IntegerType>(elemTypeA) && isa<IntegerType>(elemTypeB) &&
       llvm::any_of(kSegs, [](const Pow2Segment &seg) {
-        return seg.length < minIntKSegment;
+        return seg.length < kMinIntegerKSegment;
       })) {
     rock::markAsNotApplicable(gemm);
     return gemm.emitOpError("non-power-of-two K tile is not supported for "
                             "integer operands when it decomposes into K "
                             "segments narrower than ")
-           << minIntKSegment;
+           << kMinIntegerKSegment;
   }
 
   LLVM_DEBUG(llvm::dbgs() << "decomposing K tile " << recipeA.kPerBlock
