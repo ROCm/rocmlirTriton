@@ -121,26 +121,6 @@ func.func @dce_conv_bwd_data(%filter: tensor<?x?x?x?x?xf32>,
 
 // -----
 
-// CHECK-LABEL: func.func @dce_conv_bwd_weight
-// CHECK-NOT:     rock.conv_bwd_weight
-// CHECK:         return %arg2
-func.func @dce_conv_bwd_weight(%input: tensor<?x?x?x?x?xf32>,
-                               %output: tensor<?x?x?x?x?xf32>,
-                               %sink: tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32>
-    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
-  %unused = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["n", "gi", "c", "0i", "1i"],
-    output_layout = ["n", "go", "k", "0o", "1o"],
-    rock.numCU = 64 : i32,
-    dilations = [1 : index, 1 : index],
-    strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %sink : tensor<?x?x?x?x?xf32>
-}
-
-// -----
 
 // CHECK-LABEL: func.func @dce_reduce
 // CHECK-NOT:     rock.reduce

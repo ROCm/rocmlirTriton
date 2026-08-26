@@ -166,85 +166,6 @@ func.func @rock_conv_bwd_data_padMK(%filter : tensor<1x11x3x1x1xf32>, %input : t
   return %out : tensor<128x1x3x15x15xf32>
 }
 
-// CHECK-LABEL: @rock_conv_bwd_weight
-// GRID-LABEL: rock_conv_bwd_weight
-func.func @rock_conv_bwd_weight(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<1x128x8x3x3xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
-  // CHECK: rock.conv_bwd_weight
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 4
-  // GRID: rock.gridwise_gemm
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    dilations = [1 : index, 1 : index],
-    strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
-  } : tensor<128x1x8x32x32xf32>, tensor<128x1x128x30x30xf32> -> tensor<1x128x8x3x3xf32>
-  %out = rock.store %result to %filter by set : tensor<1x128x8x3x3xf32> -> tensor<1x128x8x3x3xf32> to tensor<1x128x8x3x3xf32>
-  return %out : tensor<1x128x8x3x3xf32>
-}
-
-// CHECK-LABEL: @rock_conv_bwd_weight_f16
-// GRID-LABEL: rock_conv_bwd_weight_f16
-func.func @rock_conv_bwd_weight_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x1x8x32x32xf16>, %output : tensor<128x1x128x30x30xf16>) -> tensor<1x128x8x3x3xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
-  // CHECK: rock.conv_bwd_weight
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 4
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    dilations = [1 : index, 1 : index],
-    strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
-  } : tensor<128x1x8x32x32xf16>, tensor<128x1x128x30x30xf16> -> tensor<1x128x8x3x3xf16>
-  %out = rock.store %result to %filter by set : tensor<1x128x8x3x3xf16> -> tensor<1x128x8x3x3xf16> to tensor<1x128x8x3x3xf16>
-  return %out : tensor<1x128x8x3x3xf16>
-}
-
-// CHECK-LABEL: func.func @rock_conv_bwd_weight_padALL
-// GRID-LABEL: rock_conv_bwd_weight_padALL
-func.func @rock_conv_bwd_weight_padALL(%filter : tensor<1x20x8x3x3xf32>, %input : tensor<7x1x8x32x32xf32>, %output : tensor<7x1x20x30x30xf32>) -> tensor<1x20x8x3x3xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
-  // CHECK: rock.conv_bwd_weight
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 2
-  // GRID: rock.gridwise_gemm
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    dilations = [1 : index, 1 : index],
-    strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
-  } : tensor<7x1x8x32x32xf32>, tensor<7x1x20x30x30xf32> -> tensor<1x20x8x3x3xf32>
-  %out = rock.store %result to %filter by set : tensor<1x20x8x3x3xf32> -> tensor<1x20x8x3x3xf32> to tensor<1x20x8x3x3xf32>
-  return %out : tensor<1x20x8x3x3xf32>
-}
-
-// CHECK-LABEL: @rock_conv_bwd_weight_padALL_f16
-// GRID-LABEL: rock_conv_bwd_weight_padALL_f16
-func.func @rock_conv_bwd_weight_padALL_f16(%filter : tensor<1x20x8x3x3xf16>, %input : tensor<7x1x8x32x32xf16>, %output : tensor<7x1x20x30x30xf16>) -> tensor<1x20x8x3x3xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
-  // CHECK: rock.conv_bwd_weight
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 2
-  // GRID: rock.gridwise_gemm
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    dilations = [1 : index, 1 : index],
-    strides = [1 : index, 1 : index],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
-  } : tensor<7x1x8x32x32xf16>, tensor<7x1x20x30x30xf16> -> tensor<1x20x8x3x3xf16>
-  %out = rock.store %result to %filter by set : tensor<1x20x8x3x3xf16> -> tensor<1x20x8x3x3xf16> to tensor<1x20x8x3x3xf16>
-  return %out : tensor<1x20x8x3x3xf16>
-}
-
 // CHECK-LABEL: @rock_conv_7x7_tuning
 // GRID-LABEL: @rock_conv_7x7_tuning
 func.func @rock_conv_7x7_tuning(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<256x1x64x112x112xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
@@ -289,25 +210,6 @@ func.func @rock_conv_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x23
   return %out : tensor<256x1x64x112x112xf32>
 }
 
-// CHECK-LABEL: @rock_conv_bwd_weight_7x7
-// GRID-LABEL: rock_conv_bwd_weight_7x7
-func.func @rock_conv_bwd_weight_7x7(%arg0: tensor<1x64x3x7x7xf32>, %arg1: tensor<256x1x3x230x230xf32>, %arg2: tensor<256x1x64x112x112xf32>) -> tensor<1x64x3x7x7xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
-  // CHECK: rock.conv_bwd_weight
-  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // GRID: rock.grid_size = 3
-  // GRID: rock.gridwise_gemm
-  %result = rock.conv_bwd_weight(%arg1, %arg2) {
-    dilations = [1 : index, 1 : index],
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["ni", "gi", "ci", "0i", "1i"],
-    output_layout = ["no", "go", "ko", "0o", "1o"],
-    padding = [0 : index, 0 : index, 0 : index, 0 : index],
-    strides = [2 : index, 2 : index],
-    perf_config = "gemm:v1:64,64,64,1,1,4,16,1,2,0,0"
-  } : tensor<256x1x3x230x230xf32>, tensor<256x1x64x112x112xf32> -> tensor<1x64x3x7x7xf32>
-  %out = rock.store %result to %arg0 by set : tensor<1x64x3x7x7xf32> -> tensor<1x64x3x7x7xf32> to tensor<1x64x3x7x7xf32>
-  return %out : tensor<1x64x3x7x7xf32>
-}
 
 // CHECK-LABEL: @rock_gemm_from_conv
 // GRID-LABEL: rock_gemm_from_conv

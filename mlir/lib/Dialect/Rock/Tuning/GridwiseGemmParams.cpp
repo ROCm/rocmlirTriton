@@ -4,7 +4,6 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir-c/Dialect/Rock.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
-#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -49,12 +48,6 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
-
-  if (auto convOp = dyn_cast<ConvBwdWeightOp>(*op)) {
-    auto convDims = ConvolutionDims::fromOp(op);
-    info.numCu = rock::getNumCUValue(convOp);
-    info.batchSize = convDims.n;
-  }
   func::FuncOp func = op->getParentOfType<func::FuncOp>();
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
@@ -300,12 +293,14 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   (void)dataTypeA;
   (void)dataTypeB;
 
-  /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
-  /// factor total wave count into an M×N wave grid; `nPerWave` is
-  /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
+  /// MFMA/XDL-only heuristic (rocMLIR
+  /// `PopulateParamsXDL::specificCouldBePerformant`): factor total wave count
+  /// into an M×N wave grid; `nPerWave` is `nPerBlock / nWaves`; `mnPerXdl` is
+  /// `matrixInstrNonkdim`.
 
   /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
-  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
+  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on
+  /// RDNA).
   MatrixAccelKind accelKind = getMatrixAccelKind(arch, dataTypeA, dataTypeB);
   bool isMFMA = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;

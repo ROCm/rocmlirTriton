@@ -105,8 +105,6 @@ static llvm::cl::opt<rock::KernelType> operation(
         clEnumValN(rock::KernelType::Conv, "conv", "Forward convolution"),
         clEnumValN(rock::KernelType::ConvBwdData, "conv_bwd_data",
                    "Backpropogate convolution data"),
-        clEnumValN(rock::KernelType::ConvBwdWeight, "conv_bwd_weight",
-                   "Backpropogate convolution weights"),
         clEnumValN(rock::KernelType::Gemm, "gemm", "Matrix multiplication"),
         clEnumValN(rock::KernelType::Attention, "attention",
                    "Attention operation of transformer models"),
@@ -784,12 +782,10 @@ static llvm::cl::list<int> randomTypeIntForInputs(
 
 static llvm::cl::opt<std::string> randomSide(
     "rand_side",
-    llvm::cl::desc(
-        "To populate random numbers to a specified tensor: "
-        "For conv, -rand_side filter or -rand_side input; "
-        "For conv_bwd_data, -rand_side filter or -rand_side output; "
-        "For conv_bwd_weight, -rand_side input or -rand_side output. "
-        "By default, populate random numbers to both tensors."),
+    llvm::cl::desc("To populate random numbers to a specified tensor: "
+                   "For conv, -rand_side filter or -rand_side input; "
+                   "For conv_bwd_data, -rand_side filter or -rand_side output. "
+                   "By default, populate random numbers to both tensors."),
     llvm::cl::value_desc("tensor"), llvm::cl::init("both"));
 
 // float random inputs range
@@ -994,7 +990,6 @@ void registerTestDialect(DialectRegistry &);
 static bool isConv(rock::KernelType kernelType) {
   return kernelType == rock::KernelType::Conv ||
          kernelType == rock::KernelType::ConvBwdData ||
-         kernelType == rock::KernelType::ConvBwdWeight ||
          kernelType == rock::KernelType::ConvElementwiseGemm;
 }
 
@@ -1541,8 +1536,6 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
   }
 
   // Emit kernel function call, repeating it if needed.
-  // We assume that the repeated atomic add usages in a wrw kernel will not
-  // substantially impact performance as the result becomes large
   auto emitWrappedCall = [&kernels, &gpuMem,
                           &outIndices](OpBuilder &b, Location loc,
                                        Value ignoredIv, ValueRange noArgs) {
@@ -1699,9 +1692,8 @@ static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
 
   // Map the logical tensor name from -rand_side to the argument index.
   // The kernel arg layout puts the store destination last:
-  //   Fwd:       [filter(0), input(1), output(2)]
-  //   BwdData:   [filter(0), output(1), input(2)]
-  //   BwdWeight: [input(0), output(1), filter(2)]
+  //   Fwd:     [filter(0), input(1), output(2)]
+  //   BwdData: [filter(0), output(1), input(2)]
   // Each string encodes the kernel arg order as [arg0, arg1, arg2] where
   // the characters 'f', 'i', 'o' denote filter, input, output respectively.
   // Finding the -rand_side character in the string gives its arg index.
@@ -1709,8 +1701,6 @@ static std::tuple<short, short> getRandomTestData(int idx, bool isRandFloat) {
   if (operation.getNumOccurrences() > 0) {
     if (operation.getValue() == rock::KernelType::ConvBwdData)
       argOrder = "foi";
-    else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
-      argOrder = "iof";
   }
   char side = randomSide.getValue()[0];
   size_t pos = argOrder.find(side);
@@ -2242,67 +2232,6 @@ static Value emitConvGeneric(
       .getResult(0);
 }
 
-/// Emit backward weight convolution using linalg.generic.
-/// Builds indexing maps based on actual tensor layouts - no transposes needed!
-/// Computes: filter_grad = sum_{n,oh,ow} output_grad * input
-static Value emitBwdWeightConvGeneric(
-    OpBuilder &b, Location loc, RankedTensorType resultType, Value input,
-    Value outputGrad, Value zero, const ConvTensorDimInfo &inputInfo,
-    const ConvTensorDimInfo &outputInfo, const ConvTensorDimInfo &filterInfo,
-    ArrayRef<int64_t> strides, ArrayRef<int64_t> dilations) {
-  MLIRContext *ctx = b.getContext();
-  int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
-  int64_t dim = rank - 3;
-
-  // Iteration domain for backward weight:
-  //   parallel:  group, k, c, kh_0 .. kh_{dim-1}
-  //   reduction: n, oh_0 .. oh_{dim-1}
-  int64_t totalDims = 4 + 2 * dim;
-  SmallVector<AffineExpr> d;
-  for (int64_t i = 0; i < totalDims; ++i)
-    d.push_back(getAffineDimExpr(i, ctx));
-
-  AffineExpr group = d[0], k = d[1], c = d[2];
-  AffineExpr n = d[3 + dim];
-
-  // Build input indexing map based on actual input layout
-  // ih_i = oh_i * stride + kh_i * dilation
-  SmallVector<AffineExpr> inputImageExprs;
-  for (int64_t i = 0; i < dim; ++i)
-    inputImageExprs.push_back(d[4 + dim + i] * strides[i] +
-                              d[3 + i] * dilations[i]);
-  SmallVector<AffineExpr> inputExprs = arrangeByConvLayout(
-      inputInfo, n, c, group, ArrayRef<AffineExpr>(inputImageExprs));
-
-  // Build output grad indexing map based on actual output layout
-  SmallVector<AffineExpr> outputImageExprs;
-  for (int64_t i = 0; i < dim; ++i)
-    outputImageExprs.push_back(d[4 + dim + i]);
-  SmallVector<AffineExpr> outputGradExprs = arrangeByConvLayout(
-      outputInfo, n, k, group, ArrayRef<AffineExpr>(outputImageExprs));
-
-  // Build filter grad (result) indexing map based on actual filter layout
-  SmallVector<AffineExpr> filterImageExprs;
-  for (int64_t i = 0; i < dim; ++i)
-    filterImageExprs.push_back(d[3 + i]);
-  SmallVector<AffineExpr> filterGradExprs = arrangeByConvLayout(
-      filterInfo, k, c, group, ArrayRef<AffineExpr>(filterImageExprs));
-
-  SmallVector<AffineMap> indexingMaps = {
-      AffineMap::get(totalDims, 0, inputExprs, ctx),
-      AffineMap::get(totalDims, 0, outputGradExprs, ctx),
-      AffineMap::get(totalDims, 0, filterGradExprs, ctx)};
-
-  SmallVector<utils::IteratorType> iteratorTypes(3 + dim,
-                                                 utils::IteratorType::parallel);
-  iteratorTypes.append(1 + dim, utils::IteratorType::reduction);
-
-  return linalg::GenericOp::create(
-             b, loc, resultType, ValueRange{input, outputGrad}, zero,
-             indexingMaps, iteratorTypes, convBodyBuilderF32)
-      .getResult(0);
-}
-
 /// Dilate a tensor by inserting zeros between elements in spatial dimensions.
 /// Layout-aware: uses actual spatial dimension positions from layout info.
 static Value dilateTensor(OpBuilder &b, Location loc, Value tensor,
@@ -2558,8 +2487,7 @@ static Value emitBwdDataConvGeneric(
 }
 
 /// Create a tensor-based CPU convolution kernel using linalg.generic.
-/// This function handles forward, backward data, and backward weight
-/// operations.
+/// This function handles forward and backward data operations.
 static func::FuncOp
 createCPUConvWithMLIR(ModuleOp module,
                       const rock::ConvGenerator::Config &genConfig) {
@@ -2628,11 +2556,6 @@ createCPUConvWithMLIR(ModuleOp module,
     outputFlat = block->getArgument(1);
     inputFlat = block->getArgument(2);
     break;
-  case rock::ConvOpType::BwdWeight:
-    inputFlat = block->getArgument(0);
-    outputFlat = block->getArgument(1);
-    filterFlat = block->getArgument(2);
-    break;
   }
 
   // Mirror the GPU accumulator precision via rock::getAccType: integer
@@ -2687,18 +2610,15 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Get tensor types in original layout
   auto inputType = cast<RankedTensorType>(input.getType());
-  auto filterType = cast<RankedTensorType>(filter.getType());
   auto outputType = cast<RankedTensorType>(output.getType());
 
-  // Apply padding to input for Forward and BwdWeight
+  // Apply padding to input for Forward.
   // Uses actual spatial dimension positions (no transpose needed)
-  bool needsPadding =
-      (genConfig.operation.value() == rock::ConvOpType::Fwd ||
-       genConfig.operation.value() == rock::ConvOpType::BwdWeight) &&
-      (!llvm::all_of(genConfig.paddingLeftDims,
-                     [](int64_t p) { return p == 0; }) ||
-       !llvm::all_of(genConfig.paddingRightDims,
-                     [](int64_t p) { return p == 0; }));
+  bool needsPadding = genConfig.operation.value() == rock::ConvOpType::Fwd &&
+                      (!llvm::all_of(genConfig.paddingLeftDims,
+                                     [](int64_t p) { return p == 0; }) ||
+                       !llvm::all_of(genConfig.paddingRightDims,
+                                     [](int64_t p) { return p == 0; }));
 
   if (needsPadding) {
     // Pad at actual spatial dimension positions from layout
@@ -2727,8 +2647,7 @@ createCPUConvWithMLIR(ModuleOp module,
 
   // Trim any trailing spatial slack off the (possibly padded) input so its
   // extent matches exactly what the convolution iteration space reads.
-  if (genConfig.operation.value() == rock::ConvOpType::Fwd ||
-      genConfig.operation.value() == rock::ConvOpType::BwdWeight) {
+  if (genConfig.operation.value() == rock::ConvOpType::Fwd) {
     ArrayRef<int64_t> curShape = inputType.getShape();
     SmallVector<int64_t> trimmedShape(curShape);
     for (size_t i = 0; i < nSpatialDims; ++i) {
@@ -2763,9 +2682,6 @@ createCPUConvWithMLIR(ModuleOp module,
   case rock::ConvOpType::BwdData:
     resultShape = inputType.getShape();
     break;
-  case rock::ConvOpType::BwdWeight:
-    resultShape = filterType.getShape();
-    break;
   }
 
   auto resultType = RankedTensorType::get(resultShape, computeType);
@@ -2788,11 +2704,6 @@ createCPUConvWithMLIR(ModuleOp module,
     result = emitConvGeneric(
         b, loc, resultType, input, filter, zeroResult, inputInfo, filterInfo,
         outputInfo, genConfig.strideDims, genConfig.dilationDims, bodyBuilder);
-    break;
-  case rock::ConvOpType::BwdWeight:
-    result = emitBwdWeightConvGeneric(
-        b, loc, resultType, input, output, zeroResult, inputInfo, outputInfo,
-        filterInfo, genConfig.strideDims, genConfig.dilationDims);
     break;
   case rock::ConvOpType::BwdData:
     result = emitBwdDataConvGeneric(
@@ -5321,43 +5232,11 @@ static std::optional<int64_t> scanModuleForReductionK(ModuleOp module) {
   return best;
 }
 
-// Return the number of backward-weight K-block partials that atomically merge
-// into each output element. Before affix-tuning-parameters runs, kBlocks is not
-// present yet, so compute it with the same helper that pass uses.
-static int64_t getBwdWeightAtomicExtent(rock::ConvBwdWeightOp bwdWeightOp) {
-  if (auto kBlocks = bwdWeightOp.getKBlocks())
-    return kBlocks->getZExtValue();
-
-  auto gemmOp =
-      cast<rock::RockGemmWrapperInterface>(bwdWeightOp.getOperation());
-  OpBuilder builder(bwdWeightOp.getContext());
-  rock::PopulateParams populateParams;
-  auto maybeParams = populateParams.obtainTuningParameters(builder, gemmOp);
-  if (failed(maybeParams))
-    return 0;
-
-  bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
-  bool requirePow2K = isScaledGemm || !rock::supportsNonPow2KPerBlock(
-                                          rock::getArchValue(gemmOp));
-  if (failed(rock::validatePerfConfig(bwdWeightOp, *maybeParams,
-                                      /*requirePow2MN=*/isScaledGemm,
-                                      /*requirePow2K=*/requirePow2K)))
-    exit(1);
-
-  FailureOr<int64_t> maybeKBlocks =
-      rock::computeBwdWeightKBlocks(gemmOp, *maybeParams);
-  if (failed(maybeKBlocks))
-    return 0;
-  return *maybeKBlocks;
-}
-
 // Scan the module and return the largest number of low-precision atomic
 // additions merged into an output element. Every rock.reduce(sum) eventually
 // becomes an atomic_add in the kernel pipeline, but rock.store ops are no
 // longer visible at the -ph stage. The host-side copy still retains the
-// rock.reduce ops, so we scan those instead. Likewise, conv_bwd_weight kBlocks
-// are partial GEMM results merged with atomic_add and require the same
-// tolerance treatment as split-K GEMM.
+// rock.reduce ops, so we scan those instead.
 //
 // The axis extent equals the number of low-precision atomic additions per
 // output element. The caller uses this to boost rtol accordingly.
@@ -5375,9 +5254,6 @@ static int64_t scanModuleForAtomicAddExtent(ModuleOp module) {
       maxExtent = std::max(maxExtent, extent);
     }
   });
-  module.walk([&](rock::ConvBwdWeightOp bwdWeightOp) {
-    maxExtent = std::max(maxExtent, getBwdWeightAtomicExtent(bwdWeightOp));
-  });
   return maxExtent;
 }
 
@@ -5392,9 +5268,8 @@ static float machineEpsilon(Type t) {
 // Effective reduction length for the operation under test. For GEMM this is
 // K; for attention it is head_dim_qk + seq_len_k (two cascaded reductions);
 // for conv_fwd/conv_bwd_data it is Cin * filter_volume (the im2col K);
-// for conv_bwd_weight it is N * product(output_spatial) (batch and output
-// spatial dimensions). For element-wise ops it is 1. Returns 0 if shape is
-// unknown; caller should treat as "skip scaling".
+// for element-wise ops it is 1. Returns 0 if shape is unknown; caller should
+// treat as "skip scaling".
 //
 // This mirrors how rocBLAS's testing_gemm scales `near_check` tolerance:
 //   tol = K * sum_error_tolerance<T>
@@ -5429,25 +5304,6 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
     return inputChannel * std::max<int64_t>(filterDepth, 1) * filterHeight *
            filterWidth;
   };
-  // Helper: conv backward-weight reduction K = N * product(output spatial).
-  // The bwd_weight GEMM reduces over the batch and output spatial dimensions,
-  // NOT over input channels and filter spatial (which is conv_fwd's K).
-  auto convBwdWeightK = [&]() -> int64_t {
-    if (genParams.convConfig.has_value()) {
-      int64_t k = 1;
-      const auto &dims = (*genParams.convConfig)->outputDimension;
-      const auto &layout = (*genParams.convConfig)->outputLayout;
-      assert(dims.size() == layout.size());
-      for (auto [d, l] : llvm::zip(dims, layout)) {
-        if (l == 'k' || l == 'g')
-          continue;
-        k *= d;
-      }
-      return k;
-    }
-    return batchSize * std::max<int64_t>(outputDepth, 1) * outputHeight *
-           outputWidth;
-  };
   switch (*genParams.operation) {
   case rock::KernelType::Gemm:
     return gemmK;
@@ -5458,8 +5314,6 @@ static int64_t computeReductionK(const GenParams &genParams, ModuleOp module) {
   case rock::KernelType::Conv:
   case rock::KernelType::ConvBwdData:
     return convFwdK();
-  case rock::KernelType::ConvBwdWeight:
-    return convBwdWeightK();
   case rock::KernelType::GemmElementwiseGemm:
     // Fused (A.B).C: two cascaded reductions of length K and N.
     return gemmK + gemmN;
@@ -5732,14 +5586,12 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
 
       // Atomic-add rtol boost. When a kernel uses atomic_add for output
       // accumulation (fused reductions via rock.reduce(sum), splitK
-      // partial-result merging, or conv_bwd_weight K-block merging), the
-      // additions happen at the narrow dtype precision rather than the f32
-      // accumulator assumed by the K_eff atol model. Each atomic add introduces
-      // ~eps(dtype) relative error.
+      // partial-result merging), the additions happen at the narrow dtype
+      // precision rather than the f32 accumulator assumed by the K_eff atol
+      // model. Each atomic add introduces ~eps(dtype) relative error.
       // We use sqrt(extent) * eps as the boost (random-walk model, same as
       // CK/hipBLASLt). The extent is the largest of:
       //   - rock.reduce(sum) axis extent (fused reductions)
-      //   - conv_bwd_weight kBlocks
       //   - splitK factor from the perf_config (partial-result accumulation)
       if (!rtolThreshold.getNumOccurrences()) {
         int64_t atomicExtent = scanModuleForAtomicAddExtent(module);
@@ -6122,7 +5974,6 @@ static LogicalResult populateHostHarnessLogic(
     switch (genParams.operation.value()) {
     case rock::KernelType::Conv:
     case rock::KernelType::ConvBwdData:
-    case rock::KernelType::ConvBwdWeight:
       outIndices.push_back(2);
       break;
     case rock::KernelType::Gemm:
@@ -6531,19 +6382,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
   arch = canonicalArch.str().str();
 
   LogicalResult status = success();
-  Type filterElemType = typeFromString(filterDataType.getValue(), context);
-  Type inputElemType = typeFromString(inputDataType.getValue(), context);
-  // for regular convolution it does filter * input = output
-  // for bwd data convolution it does filter * output = input
-  // for the bwd weight convolution it does output * input = filter
-  // therefore need to remap data types accordingly before calculating
-  // features
-  if (operation == rock::KernelType::ConvBwdData) {
-    // for the bwd data, input and output are flipped
-    inputElemType = typeFromString(outputDataType.getValue(), context);
-  } else if (operation == rock::KernelType::ConvBwdWeight) {
-    filterElemType = typeFromString(outputDataType.getValue(), context);
-  }
   genParams.operation = operation;
   genParams.arch = arch;
   genParams.perfConfig = perfConfig;
@@ -6682,9 +6520,6 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
       // Reorder types to match the kernel arg ordering (store dest last).
       if (operation.getValue() == rock::KernelType::ConvBwdData)
         std::swap(genParams.types[1], genParams.types[2]);
-      else if (operation.getValue() == rock::KernelType::ConvBwdWeight)
-        std::rotate(genParams.types.begin(), genParams.types.begin() + 1,
-                    genParams.types.end());
     }
     genParams.convConfig = &convGenerator.getConfig();
   }
