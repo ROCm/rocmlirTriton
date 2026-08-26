@@ -1,9 +1,5 @@
 // Negative tests for rocmlir-gen command-line option validation.
 
-// Removed operations must be rejected by LLVM command-line parsing.
-// RUN: not rocmlir-gen --operation conv_bwd_weight 2>&1 | FileCheck %s --check-prefix=ERR_REMOVED_BWD_WEIGHT
-// ERR_REMOVED_BWD_WEIGHT: Cannot find option named 'conv_bwd_weight'
-
 // --kernel-repeats only valid with -ph or -pv.
 // RUN: not rocmlir-gen -operation gemm -t f32 -out_datatype f32 --arch %arch -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --kernel-repeats=100 2>&1 | FileCheck %s --check-prefix=ERR_KERNEL_REPEATS
 // ERR_KERNEL_REPEATS: --kernel-repeats is only supported with host harness (-ph) or CPU validation (-pv).

@@ -5830,7 +5830,8 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
 // otherwise. This covers:
 //   - Output args when splitK is used (prefilled with 0.0)
 //   - Any kernel arg with a rock.prefill attribute (uses the attribute's
-//     stored init value, e.g., backward weight atomic convolutions)
+//     stored init value, e.g., backward-data convolutions that do not write
+//     every output element)
 static FailureOr<std::optional<float>>
 getPrefillValue(size_t argIdx, ArrayRef<int32_t> outIndices, bool isSplitK,
                 const SmallVector<KernelIF, 8> &kernels) {
