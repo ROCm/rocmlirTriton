@@ -425,14 +425,23 @@ static bool truncFCanHonourViaFpToFp(arith::TruncFOp op) {
   if (!mapped)
     return false;
 
-  if (hasFp8ElementType(op.getOut().getType()))
-    return true;
+  Type srcElem = getElementTypeOrSelf(op.getIn().getType());
+  Type dstElem = getElementTypeOrSelf(op.getOut().getType());
+
+  if (hasFp8ElementType(op.getOut().getType())) {
+    // Triton AMD fp_to_fp only lowers RTZ for f16/f32 -> f8E5M2. Other FP8
+    // downcasts (including f32 -> f8E4M3FN) support RTNE only; see
+    // `TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp` getConversionFunc().
+    if (*mapped != triton::RoundingMode::RTZ)
+      return false;
+    if (!isa<Float8E5M2Type>(dstElem))
+      return false;
+    return srcElem.isF32() || srcElem.isF16();
+  }
 
   if (*mapped != triton::RoundingMode::RTZ)
     return false;
 
-  Type srcElem = getElementTypeOrSelf(op.getIn().getType());
-  Type dstElem = getElementTypeOrSelf(op.getOut().getType());
   return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
 }
 

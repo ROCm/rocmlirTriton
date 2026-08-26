@@ -57,3 +57,18 @@ func.func @test_truncf_f32_to_f8E4M3FN_downward(
   %0 = arith.truncf %arg0 downward : tensor<4xf32> to tensor<4xf8E4M3FN>
   return %0 : tensor<4xf8E4M3FN>
 }
+
+// -----
+
+// Test: Triton AMD fp_to_fp has no f32 -> f8E4M3FN RTZ lowering (only RTNE),
+// so toward_zero must be rejected here rather than emitting tt.fp_to_fp that
+// fails later in TritonAMDGPUToLLVM.
+
+func.func @test_truncf_f32_to_f8E4M3FN_rtz(
+    %arg0: tensor<4xf32>) -> tensor<4xf8E4M3FN>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+2 {{arith.truncf rounding mode toward_zero cannot be honoured by Triton lowering}}
+  // expected-error @+1 {{failed to legalize operation 'arith.truncf' that was explicitly marked illegal}}
+  %0 = arith.truncf %arg0 toward_zero : tensor<4xf32> to tensor<4xf8E4M3FN>
+  return %0 : tensor<4xf8E4M3FN>
+}
