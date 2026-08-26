@@ -53,8 +53,9 @@ class Rock_Attr<string name, list<Trait> traits = []> :
 def ConvOpType : I32EnumAttrCase<"Fwd", 0, "conv">;
 def ConvOpBwdDataType : I32EnumAttrCase<"BwdData", 1, "conv_bwd_data">;
 
-def ConvOpTypes : Rock_I32Enum<"ConvOpType", "The type of a convolution operation",
-  [ConvOpType, ConvOpBwdDataType]>;
+def ConvOpTypes
+    : Rock_I32Enum<"ConvOpType", "The type of a convolution operation",
+                   [ConvOpType, ConvOpBwdDataType]>;
 
 /// Kerneltype
 def KernelTypeConv : I32EnumAttrCase<"Conv", 0>;

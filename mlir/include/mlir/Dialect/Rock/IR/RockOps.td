@@ -104,7 +104,6 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
   }];
 }
 
-
 def Rock_GemmOp
     : Rock_Op<"gemm", [Pure,
                        DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
