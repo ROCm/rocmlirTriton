@@ -14,7 +14,7 @@ The configuration files are in TOML format.  Below is an example:
     [[axis]]
     name = "operation"
     values = ["conv", "conv_bwd_data"]
-    # Note the space, unlike with other prefixes, it is required here to also hande
+    # Note the space, unlike with other prefixes, it is required here to also handle
     # the opt=value case
     prefix = "--operation "
 

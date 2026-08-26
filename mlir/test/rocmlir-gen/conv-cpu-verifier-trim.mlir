@@ -13,7 +13,6 @@
 // FWD: %[[SLICE:.+]] = tensor.extract_slice %[[IN]][0, 0, 0, 0, 0] [1, 1, 2, 2, 5] [1, 1, 1, 1, 1] : tensor<1x1x2x4x5xf32> to tensor<1x1x2x2x5xf32>
 // FWD: linalg.generic {{.*}} ins(%[[SLICE]], %{{.+}} : tensor<1x1x2x2x5xf32>, tensor<1x2x2x2x2xf32>)
 
-
 // A convolution whose input tiles evenly by the stride needs no trimming: the
 // reference must not emit any slice on the input.
 

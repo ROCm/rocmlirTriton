@@ -104,7 +104,7 @@ static llvm::cl::opt<rock::KernelType> operation(
     llvm::cl::values(
         clEnumValN(rock::KernelType::Conv, "conv", "Forward convolution"),
         clEnumValN(rock::KernelType::ConvBwdData, "conv_bwd_data",
-                   "Backpropogate convolution data"),
+                   "Backpropagate convolution data"),
         clEnumValN(rock::KernelType::Gemm, "gemm", "Matrix multiplication"),
         clEnumValN(rock::KernelType::Attention, "attention",
                    "Attention operation of transformer models"),

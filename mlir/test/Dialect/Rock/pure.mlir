@@ -121,7 +121,6 @@ func.func @dce_conv_bwd_data(%filter: tensor<?x?x?x?x?xf32>,
 
 // -----
 
-
 // CHECK-LABEL: func.func @dce_reduce
 // CHECK-NOT:     rock.reduce
 // CHECK:         return %arg1
