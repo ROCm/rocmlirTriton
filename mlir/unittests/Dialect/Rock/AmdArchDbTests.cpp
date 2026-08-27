@@ -83,6 +83,7 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
 
 TEST(AmdArchDbTest, InferNumChiplets) {
   EXPECT_EQ(inferNumChiplets("gfx942", 304), 8);
+  EXPECT_EQ(inferNumChiplets("gfx942", 228), 6); // MI300A
   EXPECT_EQ(inferNumChiplets("gfx942", 80), 4);
   EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
   EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
@@ -117,18 +118,23 @@ TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
 
 // --- getMinNumCU ---
 
+// This is a hard floor: getNumCUOnFunc rejects a smaller rock.num_cu, so a
+// family that spans APUs has to admit its smallest APU.
 TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx906"), 10);   // GCN5_1
   EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
   EXPECT_EQ(getMinNumCU("gfx950"), 256);  // CDNA4
-  EXPECT_EQ(getMinNumCU("gfx1010"), 30);  // RDNA1
-  EXPECT_EQ(getMinNumCU("gfx1030"), 30);  // RDNA2
+  EXPECT_EQ(getMinNumCU("gfx1010"), 20);  // RDNA1
+  EXPECT_EQ(getMinNumCU("gfx1030"), 2);   // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
   EXPECT_EQ(getMinNumCU("gfx1170"), 2);   // GFX1170
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
   EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
+  // The RDNA2 APUs the old family floor of 30 rejected outright.
+  EXPECT_LE(getMinNumCU("gfx1036"), 2); // 2 CUs
+  EXPECT_LE(getMinNumCU("gfx1033"), 8); // Van Gogh
 }
 
 // --- getMaxWavesPerEU ---
@@ -161,7 +167,9 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
   EXPECT_EQ(getVGPRsPerEU("gfx1170"), 1024); // GFX1170, no Feature1536VGPRs
   EXPECT_EQ(getVGPRsPerEU("gfx1200"), 1536); // RDNA4
-  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
+  // GFX1250 has Feature1024AddressableVGPRs, not Feature1536VGPRs.
+  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1024);
+  EXPECT_EQ(getVGPRsPerEU("gfx1251"), 1024);
 }
 
 // --- getWaveSize ---
@@ -206,9 +214,54 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // APU L2, no MALL
-  EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 64 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // guess, see below
+  EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 32 * kMiB);
+  // gfx125x has no Infinity Cache; its last level is 2x96 MiB of L2 on the
+  // Fabric Cache Dies.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 192 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1251"), 192 * kMiB);
+}
+
+// Within one ISA family the discrete parts differ from each other and, above
+// all, from the APUs: an APU's L2 is its last level cache unless it has a MALL.
+// Pinned per chip so that a family-wide value can never creep back in.
+TEST(AmdArchDbTest, LastLevelCacheSizePerChip) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  // RDNA1, no MALL in the family.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1012"), 2 * kMiB); // Navi 14
+  EXPECT_EQ(getLastLevelCacheSize("gfx1013"), 4 * kMiB); // Cyan Skillfish
+  // RDNA2: Infinity Cache on the discrete parts, L2 only on the APUs.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1031"), 96 * kMiB); // Navi 22
+  EXPECT_EQ(getLastLevelCacheSize("gfx1032"), 32 * kMiB); // Navi 23
+  EXPECT_EQ(getLastLevelCacheSize("gfx1034"), 16 * kMiB); // Navi 24
+  EXPECT_EQ(getLastLevelCacheSize("gfx1033"), 1 * kMiB);  // Van Gogh
+  EXPECT_EQ(getLastLevelCacheSize("gfx1035"), 2 * kMiB);  // Rembrandt
+  // 2 CU part: 256 KiB, the smallest last level cache of any target.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1036"), 256 * 1024);
+  // RDNA3 / RDNA3.5. Strix Halo is the only APU here known to have a MALL.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1101"), 64 * kMiB); // Navi 32
+  EXPECT_EQ(getLastLevelCacheSize("gfx1102"), 32 * kMiB); // Navi 33
+  EXPECT_EQ(getLastLevelCacheSize("gfx1103"), 2 * kMiB);  // Phoenix
+  EXPECT_EQ(getLastLevelCacheSize("gfx1150"), 2 * kMiB);  // Strix Point
+  EXPECT_EQ(getLastLevelCacheSize("gfx1151"), 32 * kMiB); // Strix Halo
+  EXPECT_EQ(getLastLevelCacheSize("gfx1152"), 1 * kMiB);  // Krackan Point
+  // Radeon 820M's L2 is unpublished; estimated from Krackan Point, which
+  // bounds it from above.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1153"), 1 * kMiB);
+  // RDNA4.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1201"), 64 * kMiB); // Navi 48
+}
+
+// The gfx117x caches are unpublished, so they fall back to their ISA family,
+// whose value is a guess at a bare APU L2. Pinned so that the guess is a
+// deliberate choice: if any of these turns out to carry a MALL, as the APU
+// gfx1151 does, the real value is much larger. These and gfx1153, pinned
+// above, are the only chips not on a published number.
+TEST(AmdArchDbTest, LastLevelCacheSizeUnpublishedChips) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1171"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1172"), 1 * kMiB);
 }
 
 TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
