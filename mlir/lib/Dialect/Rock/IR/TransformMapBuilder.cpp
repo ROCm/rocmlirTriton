@@ -103,7 +103,6 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       std::reverse(lowerDimStrides.begin(), lowerDimStrides.end());
 
       // Build affine transformation expressions.
-      AffineExpr remainder = b.getAffineDimExpr(upperDims[0]);
       for (uint32_t i = 0, e = lowerDims.size(); i < e; ++i) {
         // If the constant we're about to divide by is the same as the total
         // stride in the input dimension, output 0, as, if you're above
@@ -123,8 +122,12 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
           continue;
         }
         AffineExpr stride = b.getAffineConstantExpr(lowerDimStrides[i]);
-        AffineExpr thisDim = remainder.floorDiv(stride);
-        remainder = remainder % stride;
+        AffineExpr thisDim = b.getAffineDimExpr(upperDims[0]).floorDiv(stride);
+        // Only mod when needed. The coordinate is below totalStride, so the
+        // quotient stays under params[i] on its own when stride * params[i]
+        // spans the whole merge.
+        if (lowerDimStrides[i] * params[i] < totalStride)
+          thisDim = thisDim % b.getAffineConstantExpr(params[i]);
         affExprsMap.insert({lowerDims[i], thisDim});
       }
     } else if (type == TransformType::AddDim) {
