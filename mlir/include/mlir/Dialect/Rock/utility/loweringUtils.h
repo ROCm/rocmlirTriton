@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -68,6 +69,14 @@ bool is4GBMemoryType(ShapedType type);
 // silently truncate the tensor.
 bool isValidKBlocks(int64_t kBlocks, int64_t N);
 
+/// Validate every field shared by Rock GEMM tuning parameter attributes.
+/// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
+/// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
+/// support. Emits an error on `op` for the first invalid field.
+LogicalResult validatePerfConfig(Operation *op,
+                                 RockTuningParamAttrInterface params,
+                                 bool requirePow2MN, bool requirePow2K);
+
 // Heuristic logic to compute KBlock for backward weight atomic add kernel.
 // The logic is adopted from MIOpen.
 //
@@ -88,6 +97,14 @@ LogicalResult calculateKBlockNum(const int64_t batchSize,
                                  int64_t NPerBlock, int64_t KPerBlock,
                                  int64_t KPack, int64_t num_cu,
                                  int64_t &nKBlock);
+
+/// Compute kBlocks for a backward-weight convolution given selected GEMM
+/// params. Returns 1 when the op is not WrW-atomic (not bwd-weight, or the
+/// dtype/padding combination is ineligible). Returns failure when the params
+/// cannot yield a valid kBlocks split. Shared by AffixTuningParameters and
+/// the rocmlir-gen verifier so the two cannot diverge.
+FailureOr<int64_t> computeBwdWeightKBlocks(RockGemmWrapperInterface op,
+                                           GemmParamsAttr params);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
@@ -164,7 +181,7 @@ ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
 
 Type getAccType(Type elemA, Type elemB);
 
-Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
+Value loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
                StringRef dName, rock::layout::GridCoordinates gridCoords,
                int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                SmallVector<int64_t, 3> &bidGridLengths,

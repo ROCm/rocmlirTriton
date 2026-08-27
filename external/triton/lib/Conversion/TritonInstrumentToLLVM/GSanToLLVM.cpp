@@ -439,7 +439,7 @@ public:
                               maskAlign, bytesPerElem);
 
     auto ctx = op.getContext();
-    auto kReg = str_attr("reg");
+    auto kReg = str_attr("register");
     auto freeVarMasks = getFreeVariableMasks(ptrTy);
     auto threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
                                                         loc, *targetInfo);
@@ -498,7 +498,7 @@ public:
                               maskAlign, bytesPerElem);
 
     auto ctx = op.getContext();
-    auto kReg = str_attr("reg");
+    auto kReg = str_attr("register");
     auto freeVarMasks = getFreeVariableMasks(ptrTy);
     auto regMask = freeVarMasks.lookup(kReg);
     auto threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
@@ -563,7 +563,7 @@ public:
     auto freeVarMasks = getFreeVariableMasks(op.getPtr().getType());
     Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
                                                          loc, *targetInfo);
-    uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
+    uint32_t regMask = freeVarMasks.lookup(str_attr("register"));
     auto sourceLoc = materializeSourceLocation(rewriter, loc);
     auto eventStateTy = getGSanAtomicEventStateType(rewriter);
     Value eventState = LLVM::AllocaOp::create(rewriter, loc, ptr_ty(ctx),
@@ -665,7 +665,7 @@ public:
     auto freeVarMasks = getFreeVariableMasks(op.getPtr().getType());
     Value threadPred = ttg::emitRedundantThreadPredicate(freeVarMasks, rewriter,
                                                          loc, *targetInfo);
-    uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
+    uint32_t regMask = freeVarMasks.lookup(str_attr("register"));
     auto sourceLoc = materializeSourceLocation(rewriter, loc);
     auto eventStateTy = getGSanAtomicEventStateType(rewriter);
     Value eventState = LLVM::AllocaOp::create(rewriter, loc, ptr_ty(ctx),

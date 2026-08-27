@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/MIGraphX/Passes.h"
+#include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -74,13 +75,60 @@ public:
   }
 };
 
+// Given this pattern:
+//
+// %1 = tosa.cast %0 : (tensor<100xi1>) -> tensor<100xf16>
+// %2 = tosa.custom %1 {
+//   domain_name = "rocmlir",
+//   implementation_attrs = "",
+//   operator_name = "fp_to_int_cast"
+// } : (tensor<100xf16>) -> tensor<100xi8>
+//
+// we can rewrite it as:
+//
+// %2 = tosa.cast %0 : (tensor<100xi1>) -> tensor<100xi8>
+//
+// Note that widening an i1 yields exactly 0.0 or 1.0,
+// so the NaN check and the range clamp are useless.
+// This pattern is frequently used by LeakyReLU ops in MIGraphX.
+class SimplifyBoolFpToIntCast final : public OpRewritePattern<tosa::CustomOp> {
+public:
+  using OpRewritePattern<tosa::CustomOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(tosa::CustomOp op,
+                                PatternRewriter &b) const override {
+    if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
+        op.getOperatorName() != ROCK_CUSTOMOP_FP_TO_INT_CAST)
+      return failure();
+    if (op.getInputList().size() != 1 || op.getResults().size() != 1)
+      return failure();
+
+    auto widening = op.getInputList().front().getDefiningOp<tosa::CastOp>();
+    if (!widening)
+      return failure();
+
+    Value boolInput = widening.getInput();
+    if (!cast<ShapedType>(boolInput.getType()).getElementType().isInteger(1))
+      return failure();
+
+    auto outputType = cast<ShapedType>(op.getResults().front().getType());
+    Type outputElemType = outputType.getElementType();
+    // A signed 1-bit destination can hold 0 but not 1, so clamping to its range
+    // and extending the boolean disagree there.
+    if (!isa<IntegerType>(outputElemType) || outputElemType.isInteger(1))
+      return failure();
+
+    b.replaceOpWithNewOp<tosa::CastOp>(op, outputType, boolInput);
+    return success();
+  }
+};
+
 struct MIGraphXTosaSimplify
     : public migraphx::impl::MIGraphXTosaSimplifyPassBase<
           MIGraphXTosaSimplify> {
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     RewritePatternSet patterns(ctx);
-    patterns.add<EliminateCastOp>(ctx);
+    patterns.add<EliminateCastOp, SimplifyBoolFpToIntCast>(ctx);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
     }

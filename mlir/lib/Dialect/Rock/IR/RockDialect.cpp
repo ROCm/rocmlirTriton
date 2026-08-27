@@ -1728,9 +1728,7 @@ LogicalResult BlockwiseGemmOp::verify() {
           return emitOpError(
               "unexpected error: currLen is not divisible by origLen");
 
-        // matrixA is MxK: K is dim 1, M is dim 0.
-        // matrixB is KxN: K is dim 0, N is dim 1.
-        int64_t packedDim = (isA == kPack) ? 1 : 0;
+        int64_t packedDim = kPack ? getKDimIdx(isA) : getDDimIdx(isA);
         SmallVector<int64_t> expectedShape(matrixShape);
         expectedShape[packedDim] *= currLen / origLen;
         if (expectedShape != scaleShape) {
@@ -2366,8 +2364,11 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v7, add a new `kNumKnobFieldsV7`
-// constant and update the parser to expect the new number of fields.
+// NOTE: The positional form is frozen at v6; new fields are added to the named
+// `prefix:key=value,...` schema in RockAttrDefs.td instead, which needs no
+// version. These constants exist only to keep decoding strings emitted by
+// earlier releases. Knobs introduced after v6 therefore always decode to
+// `kKnobDefault` here.
 //
 // v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
 // knob block by appending `useReductionLayout` on top of v3's five knobs. v5
@@ -2385,7 +2386,8 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useInThreadTranspose,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
                                 int64_t useReductionLayout,
-                                int64_t useOptimizeEpilogue) {
+                                int64_t useOptimizeEpilogue,
+                                int64_t useBf16x3ForF32) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2394,6 +2396,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useBufferAtomics", useBufferAtomics},
       {"useReductionLayout", useReductionLayout},
       {"useOptimizeEpilogue", useOptimizeEpilogue},
+      {"useBf16x3ForF32", useBf16x3ForF32},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2581,7 +2584,7 @@ parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
           perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
           knob("useInThreadTranspose"), knob("useBufferOps"),
           knob("useBufferAtomics"), knob("useReductionLayout"),
-          knob("useOptimizeEpilogue"))))
+          knob("useOptimizeEpilogue"), knob("useBf16x3ForF32"))))
     return failure();
   return ordered;
 }
@@ -2653,6 +2656,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2669,10 +2674,10 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
@@ -2682,7 +2687,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===-----------------------------------------------------===//
@@ -2754,6 +2759,8 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2770,10 +2777,10 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
@@ -2783,7 +2790,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
       numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===----------------------------------------------------------------------===//
