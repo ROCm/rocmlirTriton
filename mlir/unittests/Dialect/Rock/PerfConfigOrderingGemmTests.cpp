@@ -164,9 +164,9 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsNumCTAsNot1) {
 
 TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsLDSOverflow) {
   GemmOrderingTestEnv e;
-  // 256x256x256 fp32 numStages=2 needs ~1 MiB; gfx942 has 64 KiB LDS. Mirrors
-  // the config exercised by lds-overflow-not-applicable.mlir.
-  auto p = e.gemm(256, 256, 256, 1, 1, 4, 16, 1, 2, 0, 0);
+  // 256x256x512 fp32 numStages=3 overflows gfx942 LDS. Mirrors the config
+  // exercised by lds-overflow-not-applicable.mlir.
+  auto p = e.gemm(256, 256, 512, 1, 1, 4, 16, 1, 3, 0, 0);
   EXPECT_FALSE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
 }
 
