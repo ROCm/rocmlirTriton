@@ -15,7 +15,7 @@
 // environment because the dead tiles only exist for a tile size that overhangs
 // M: a configuration dividing 77 evenly has nothing to eliminate.
 
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c --arch=gfx1100 --perf-config=gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0 -o /dev/null 2>&1 | FileCheck %s
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c --arch=gfx1100 --perf-config=gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0 -o /dev/null 2>&1 | FileCheck %s
 
 // Only the loop body is checked. The accumulators that survive are flushed
 // after the loop, and that trailing wmma count is the same either way; the dead
