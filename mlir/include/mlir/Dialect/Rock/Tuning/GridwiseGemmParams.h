@@ -252,9 +252,6 @@ public:
   obtainTuningParameters(OpBuilder &b, const PopulateParamsInfo &info,
                          const StringRef perfConfig);
 
-  int64_t calculatePaddingAmount(GemmParamsAttr params,
-                                 const GemmSize &gemmSize) const;
-
   // Return the set of heuristic tuning parameters for the given opType, data
   // types, and architecture. Pass `quantBlockSize` / `aScaleType` /
   // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability

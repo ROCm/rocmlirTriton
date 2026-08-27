@@ -182,26 +182,6 @@ static LogicalResult couldFusedReductionBePerformant(const GemmSize &gemmSize,
   return success();
 }
 
-static int64_t calculatePaddingComplexity(const GemmSize &paddingAmount,
-                                          const GemmSize &gemmSize) {
-  int64_t nonPaddedComplexity = gemmSize.m * gemmSize.k * gemmSize.n;
-  int64_t paddedComplexity = (gemmSize.m + paddingAmount.m) *
-                             (gemmSize.k + paddingAmount.k) *
-                             (gemmSize.n + paddingAmount.n);
-  return paddedComplexity - nonPaddedComplexity;
-}
-
-int64_t PopulateParams::calculatePaddingAmount(GemmParamsAttr params,
-                                               const GemmSize &gemmSize) const {
-  std::optional<GemmSize> maybeGemmExtraPad =
-      calculatePadding(params.getKPerBlock(), params.getMPerBlock(),
-                       params.getNPerBlock(), gemmSize);
-  if (maybeGemmExtraPad.has_value()) {
-    return calculatePaddingComplexity(maybeGemmExtraPad.value(), gemmSize);
-  }
-  return 0;
-}
-
 LogicalResult PopulateParams::couldBePerformant(const PopulateParamsInfo &info,
                                                 GemmParamsAttr params) {
   if (info.hasFusedReduction) {
