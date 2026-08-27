@@ -664,13 +664,12 @@ static bool reportRegisterPressureOnly() {
 
 /// Refuse the configuration if any kernel in `llvmModule` asks for more
 /// registers than the register allocator can place without thrashing:
-/// `peakPercent` bounds what may be live at once, as a percentage of what a
-/// thread on `arch` can address. What may be carried across a loop back edge is
-/// bounded by `carriedMultiple` as a multiple of the kernel's accumulator, and
-/// only counts against a kernel that also carries more than
-/// `carriedFloorPercent` of the addressable file. Either bound is skipped when
-/// its argument is zero, and a kernel whose accumulator was never recorded is
-/// not screened at all.
+/// `peakLimit` bounds how many 32-bit lanes may be live at once, and
+/// `carriedMultiple` bounds what may be carried across a loop back edge, as a
+/// multiple of the kernel's accumulator, counting only against a kernel that
+/// also carries more than what a thread on `arch` can address. The carried
+/// bound is skipped when its argument is zero, and a kernel whose accumulator
+/// was never recorded is not screened at all.
 ///
 /// Such a kernel spills in proportion, which both makes it several times slower
 /// to run than a tile that fits and hands the register allocator a problem that
@@ -679,10 +678,23 @@ static bool reportRegisterPressureOnly() {
 /// the pipeline for the diagnostic.
 ///
 /// The two bounds answer different questions and neither subsumes the other.
-/// Peak width is loose: most of what is live at the worst point can be split or
-/// rematerialized, so it only bounds the total, and it takes several times the
-/// file before it means trouble -- it is here as a cheap screen for the
-/// configurations that are absurd before optimization even runs.
+///
+/// Peak width is an absolute count rather than a fraction of the register file,
+/// because it is a statement about the allocator's workload and not about the
+/// chip: what it costs to allocate follows the number of live values, while the
+/// file size only decides how much of the excess spills, and past a few
+/// thousand lanes every one of these parts spills. Measured as a fraction it
+/// says two different things on two chips -- the same bound that fits gfx1100
+/// leaves gfx950 unscreened, since its file is twice as large -- while as a
+/// count it says the same thing on both: across 30000 configurations in two
+/// precisions on both parts, the highest-peaking one that still compiles in
+/// under 10s reaches 2956 lanes optimized and 3148 unoptimized.
+///
+/// It does have to be a count large enough for f32, which holds half again as
+/// many lanes as f16 for the same tile and occasionally three times as many,
+/// since an f32 element occupies a whole lane where two f16 elements share one.
+/// A bound fitted to f16 alone lands in the middle of the f32 population and
+/// refuses kernels that compile in five seconds.
 ///
 /// Carried width is the part that cannot be relieved, and it takes two
 /// conditions to characterize, because either one alone misjudges a whole class
@@ -696,19 +708,23 @@ static bool reportRegisterPressureOnly() {
 /// accumulator, so the twenty-odd lanes it carries for addresses and bounds run
 /// to twenty times that and mean nothing at all. A kernel cannot thrash the
 /// allocator with less than the file's worth of carried values, however
-/// lopsided the ratio.
+/// lopsided the ratio. This floor is the one place a per-target number is
+/// needed, and it has to be one: held at the smaller file it refuses 121 fast
+/// configurations on the larger chip, and at the larger file it stops catching
+/// all but one of the slow ones on the smaller chip.
 ///
 /// Calibrated on a 1x512x8x8 f16 conv with a 512x512x3x3 filter, sweeping
 /// kPerBlock over a 16x64 tile on one wave, which is the family that exposed
-/// this, and checked against full gemm tuning spaces on gfx1100 and gfx950.
+/// this, and checked against full gemm, conv and migraphx-conv tuning spaces in
+/// f16 and f32 on gfx1100 and gfx950: 30472 configurations, of which it refuses
+/// 259, every one of them taking over 10s to compile, and none of the 29760
+/// that compile in less than that.
 static LogicalResult
 checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
                       llvm::TargetMachine *tm, StringRef arch,
-                      uint64_t peakPercent, uint64_t carriedMultiple,
-                      uint64_t carriedFloorPercent, StringRef stage) {
-  const uint64_t addressable = rock::getAddressableVGPRs(arch);
-  const uint64_t peakLimit = peakPercent * addressable / 100;
-  const uint64_t carriedFloor = carriedFloorPercent * addressable / 100;
+                      uint64_t peakLimit, uint64_t carriedMultiple,
+                      StringRef stage) {
+  const uint64_t carriedFloor = rock::getAddressableVGPRs(arch);
   llvm::StringMap<uint64_t> accumulators = accumulatorLanes(module);
   for (llvm::Function &fn : llvmModule) {
     if (fn.isDeclaration() || !fn.hasExternalLinkage())
@@ -724,7 +740,7 @@ checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
                << " carried, accumulator " << accumulator << " (limit "
                << carriedLimit << ", floor " << carriedFloor << ")\n");
     if (reportRegisterPressureOnly()) {
-      bool overPeak = accumulator && peakPercent && peak > peakLimit;
+      bool overPeak = accumulator && peak > peakLimit;
       bool overCarried = accumulator && carriedMultiple &&
                          carried > carriedLimit && carried > carriedFloor;
       llvm::errs() << "[register-pressure-report] arch=" << arch
@@ -745,12 +761,12 @@ checkRegisterPressure(ModuleOp module, llvm::Module &llvmModule,
     // bound has been shown to mean anything for them.
     if (!accumulator)
       continue;
-    if (peakPercent && peak > peakLimit) {
+    if (peak > peakLimit) {
       rock::markAsNotApplicable(module);
       module.emitError()
           << "'" << fn.getName() << "' needs " << peak
           << " 32-bit register lanes live at once in the " << stage
-          << " IR, over the limit of " << peakLimit << " for " << arch
+          << " IR, over the limit of " << peakLimit
           << "; the kernel would spill heavily and the register allocator "
              "would dominate compile time";
       return failure();
@@ -1051,10 +1067,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // how much of it optimization removes depends on the kernel, from about half
   // for a convolution to all but a tenth for an attention, so there is no
   // bound on the unoptimized count that means the same thing for both.
-  constexpr uint64_t kPeakPercent = 1300;
+  //
+  // The bound is looser than the one on the optimized IR because optimization
+  // is what removes the slack: across the sweep a configuration sheds anywhere
+  // from a tenth to two thirds of its peak on the way through, so judging it
+  // here on the later number would refuse configurations that were about to
+  // become reasonable.
+  constexpr uint64_t kUnoptimizedPeakLanes = 3328;
   if (failed(checkRegisterPressure(module, *llvmModule, tm.get(), arch,
-                                   kPeakPercent, /*carriedMultiple=*/0,
-                                   /*carriedFloorPercent=*/0, "unoptimized")))
+                                   kUnoptimizedPeakLanes,
+                                   /*carriedMultiple=*/0, "unoptimized")))
     return failure();
 
   // Set AMD-specific control constants
@@ -1196,11 +1218,19 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Second screen, on the optimized IR, which is the faithful measure: it is
   // what the register allocator will actually be handed, and the only point
   // where carried width can be trusted.
+  // Anything from 2964 to 3092 refuses exactly the same configurations across
+  // both precisions in the sweep, so the value only has to sit inside that
+  // range. What sets its floor is f32: the same tile holds half again as many
+  // lanes as in f16, sometimes three times as many, because every element takes
+  // a whole lane instead of half of one, and those kernels compile perfectly
+  // quickly at counts an f16-only calibration would have refused. The highest
+  // any configuration under 10s reaches is 2956, on the f32 non-accelerator
+  // path.
+  constexpr uint64_t kOptimizedPeakLanes = 3072;
   constexpr uint64_t kCarriedMultiple = 10;
-  constexpr uint64_t kCarriedFloorPercent = 100;
   if (failed(checkRegisterPressure(module, *llvmModule, tmAsm.get(), arch,
-                                   kPeakPercent, kCarriedMultiple,
-                                   kCarriedFloorPercent, "optimized")))
+                                   kOptimizedPeakLanes, kCarriedMultiple,
+                                   "optimized")))
     return failure();
 
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());

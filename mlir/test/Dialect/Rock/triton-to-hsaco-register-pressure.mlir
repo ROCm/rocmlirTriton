@@ -1,10 +1,10 @@
 // Peak register pressure gates a configuration out of the tuning space on the
 // unoptimized LLVM IR, and carried pressure gates it on the optimized IR. The
-// arch is pinned rather than %arch-substituted because the peak limit is a
-// percentage of the addressable VGPR count and the carried bound has a floor in
-// the same terms, so the lane counts and verdicts below are gfx1100's: 1300% of
-// 256 live at once, 10x the accumulator carried, and no carried rejection under
-// 256 lanes.
+// peak bounds are absolute lane counts, 3328 unoptimized and 3072 optimized,
+// the same on every target and every element type. The arch is pinned rather than %arch-substituted
+// because the carried bound has a floor at the addressable VGPR count, so the
+// verdicts below are gfx1100's: 10x the accumulator carried, and no carried
+// rejection under 256 lanes.
 //
 // This 1x512x8x8 f16 conv over a 16x64 tile on a single wave is the family that
 // motivated the gate. Sweeping kPerBlock walks it from configs that compile in
@@ -49,7 +49,7 @@
 // The gate reports what it measured and where, and marks the module so that
 // tuning records the config as inapplicable rather than as a compiler bug.
 // PEAK: error: 'mlir_convolution' needs 4149 32-bit register lanes live at once in the unoptimized IR
-// PEAK-SAME: over the limit of 3328 for gfx1100
+// PEAK-SAME: over the limit of 3328
 // PEAK: module attributes
 // PEAK-SAME: rock.not_applicable
 
