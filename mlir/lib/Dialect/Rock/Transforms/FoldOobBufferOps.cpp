@@ -46,6 +46,7 @@
 #include "mlir/Interfaces/Utils/InferIntRangeCommon.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 
@@ -169,6 +170,28 @@ using namespace mlir::rock::fold_oob;
 
 static bool isScalarInt(Type type) { return isa<IntegerType>(type); }
 
+/// The integer `value` holds, at its own width, if it is a constant.
+///
+/// `LLVM::ConstantOp` lets the attribute's width differ from the result's, so
+/// the attribute as written is not the number the access sees. Translation to
+/// LLVM IR resolves that the way `ModuleTranslation::getLLVMConstant` does, by
+/// sign-extending a signless or signed attribute and zero-extending an unsigned
+/// or `i1` one, and this follows it: reasoning about `-1 : i32` in an `i64` as
+/// four billion rather than as all ones would put a live access out of bounds.
+/// Every constant the pass reads comes through here for that reason.
+static std::optional<APInt> matchConstantInt(Value value) {
+  auto valueType = dyn_cast<IntegerType>(value.getType());
+  IntegerAttr attr;
+  if (!valueType || !matchPattern(value, m_Constant(&attr)))
+    return std::nullopt;
+
+  auto attrType = dyn_cast<IntegerType>(attr.getType());
+  unsigned width = valueType.getWidth();
+  if (attrType && (attrType.isUnsigned() || attrType.getWidth() == 1))
+    return attr.getValue().zextOrTrunc(width);
+  return attr.getValue().sextOrTrunc(width);
+}
+
 static intrange::OverflowFlags
 translateOverflowFlags(LLVM::IntegerOverflowFlags flags) {
   intrange::OverflowFlags result = intrange::OverflowFlags::None;
@@ -215,26 +238,61 @@ static ConstantIntRanges boolRange(bool value) {
   return constantRange(APInt(/*numBits=*/1, value));
 }
 
+/// Where warp specialization records the widened warp count. Triton has no
+/// `Attr...Name` constant for this one, so every user upstream, both backends
+/// included, spells the literal.
+constexpr StringLiteral kTotalNumWarpsAttrName = "ttg.total-num-warps";
+
+/// The value of a positive integer attribute on `op`, if it carries one.
+static std::optional<int64_t> getPositiveInt(Operation *op, StringRef name) {
+  auto attr = op->getAttrOfType<IntegerAttr>(name);
+  if (!attr || attr.getValue().sle(0))
+    return std::nullopt;
+  return attr.getValue().getSExtValue();
+}
+
+/// Which of the launch's nested counts an id register runs over. The launch
+/// nests them: lanes fill a wave, waves fill a workgroup, workgroups fill a
+/// cluster, and clusters are what a Triton program is.
+enum class IdSpace { Workitem, Wave, Workgroup, Cluster, ClusterWorkgroup };
+
+/// The space `op` counts in, if it is an x-dimension ROCDL id register. Only x
+/// is handled: for workitem ids that is a Triton invariant, and for the rest a
+/// rock convention, since rock emits only ProgramIDDim::X and rock.grid_size is
+/// one scalar. A convention is not a guarantee, so y and z decline.
+static std::optional<IdSpace> getIdSpace(Operation *op) {
+  return llvm::TypeSwitch<Operation *, std::optional<IdSpace>>(op)
+      .Case<ROCDL::ThreadIdXOp>([](auto) { return IdSpace::Workitem; })
+      // A wave id has no dimension to be the x of: it is the one register
+      // Triton reads on the targets that have it, in place of dividing the
+      // workitem id by the warp size.
+      .Case<ROCDL::WaveId>([](auto) { return IdSpace::Wave; })
+      .Case<ROCDL::BlockIdXOp>([](auto) { return IdSpace::Workgroup; })
+      .Case<ROCDL::ClusterIdXOp>([](auto) { return IdSpace::Cluster; })
+      .Case<ROCDL::ClusterWorkgroupIdXOp>(
+          [](auto) { return IdSpace::ClusterWorkgroup; })
+      .Default([](auto) { return std::nullopt; });
+}
+
 /// The launch bound on `op`'s result, if `op` is one of the ROCDL id registers.
 /// A `range` attribute on the op wins, since the lowering may have narrowed it
-/// further. Otherwise the block size is the module's warp count times warp
-/// width, and the grid size falls back to `rock.grid_size` for want of a Triton
-/// carrier.
+/// further. Otherwise the bound is the count `rock::collectKernelInfo` derives
+/// for the space the register runs over, since an id covers everything the
+/// runtime is handed there.
 static std::optional<ConstantIntRanges> inferIdRegisterRange(Operation *op) {
-  bool isThreadId =
-      isa<ROCDL::ThreadIdXOp, ROCDL::ThreadIdYOp, ROCDL::ThreadIdZOp>(op);
-  bool isBlockId =
-      isa<ROCDL::BlockIdXOp, ROCDL::BlockIdYOp, ROCDL::BlockIdZOp>(op);
-  if (!isThreadId && !isBlockId)
-    return std::nullopt;
-
-  unsigned width = op->getResult(0).getType().getIntOrFloatBitWidth();
   std::optional<LLVM::ConstantRangeAttr> declared =
       llvm::TypeSwitch<Operation *, std::optional<LLVM::ConstantRangeAttr>>(op)
           .Case<ROCDL::ThreadIdXOp, ROCDL::ThreadIdYOp, ROCDL::ThreadIdZOp,
-                ROCDL::BlockIdXOp, ROCDL::BlockIdYOp, ROCDL::BlockIdZOp>(
-              [](auto idOp) { return idOp.getRange(); });
-  if (declared) {
+                ROCDL::BlockIdXOp, ROCDL::BlockIdYOp, ROCDL::BlockIdZOp,
+                ROCDL::ClusterIdXOp, ROCDL::ClusterIdYOp, ROCDL::ClusterIdZOp,
+                ROCDL::ClusterWorkgroupIdXOp, ROCDL::ClusterWorkgroupIdYOp,
+                ROCDL::ClusterWorkgroupIdZOp, ROCDL::WaveId>(
+              [](auto idOp) { return idOp.getRange(); })
+          .Default([](auto) { return std::nullopt; });
+  unsigned width = op->getNumResults() == 1
+                       ? op->getResult(0).getType().getIntOrFloatBitWidth()
+                       : 0;
+  if (declared && width > 0) {
     // ROCDL carries the range as the half-open interval LLVM uses.
     APInt lower = declared->getLower().zextOrTrunc(width);
     APInt upper = declared->getUpper().zextOrTrunc(width);
@@ -242,37 +300,81 @@ static std::optional<ConstantIntRanges> inferIdRegisterRange(Operation *op) {
       return ConstantIntRanges::fromUnsigned(lower, upper - 1);
   }
 
-  int64_t bound;
-  if (isThreadId) {
-    auto module = op->getParentOfType<ModuleOp>();
-    std::optional<int> numWarps = triton::gpu::maybeLookupNumWarps(op);
-    if (!module || !numWarps || *numWarps <= 0)
-      return std::nullopt;
-    bound =
-        *numWarps * triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
-  } else {
+  std::optional<IdSpace> space = getIdSpace(op);
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!space || !module)
+    return std::nullopt;
+
+  // The program count is the module-level per-kernel rock.grid_size, the one
+  // `rock::collectKernelInfo` reads and hands the runtime. The kernel func
+  // still carries the copy `rock-tensor-to-triton-ptr` took of it before the
+  // TTIR lowering, but nothing reconciles the two afterwards, so reading the
+  // func would risk a bound short of the launch. The workgroups each program
+  // launches is Triton's cluster size. Every factor is read rather than
+  // assumed, since a bound short of the launch erases work that runs.
+  auto programCount = [&]() -> std::optional<int64_t> {
     auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
     if (!func)
       return std::nullopt;
-    auto gridSize =
-        func->getAttrOfType<IntegerAttr>(rock::GridSizeAttr::getMnemonic());
-    if (!gridSize || gridSize.getValue().sle(0))
-      return std::nullopt;
-    bound = gridSize.getValue().getSExtValue();
-  }
+    return getPositiveInt(
+        module, rock::GridSizeAttr::getModuleAttrName(func.getName()));
+  };
+  auto clusterSize = [&] {
+    return getPositiveInt(module, triton::gpu::AttrNumCTAsName);
+  };
+  // Warp specialization widens the block and records the result in
+  // ttg.total-num-warps, which is why the launch prefers it to ttg.num-warps.
+  // Triton's own warp-specialization lowering agrees: it requires that
+  // attribute and calls the wave id it reads there the absolute warp id.
+  auto warpCount = [&]() -> std::optional<int64_t> {
+    if (std::optional<int64_t> total =
+            getPositiveInt(module, kTotalNumWarpsAttrName))
+      return total;
+    return getPositiveInt(module, triton::gpu::AttrNumWarpsName);
+  };
 
-  // Both launch dimensions run along x: a Triton invariant for workitem ids,
-  // and for workgroup ids a rock convention, since rock emits only
-  // ProgramIDDim::X and rock.grid_size is one scalar. A convention is not a
-  // guarantee, so y and z decline rather than assume zero.
-  if (!isa<ROCDL::ThreadIdXOp, ROCDL::BlockIdXOp>(op))
+  std::optional<int64_t> bound;
+  switch (*space) {
+  case IdSpace::Workitem: {
+    std::optional<int64_t> warps = warpCount();
+    std::optional<int64_t> lanes =
+        getPositiveInt(module, triton::gpu::AttrNumThreadsPerWarp);
+    if (!warps || !lanes)
+      return std::nullopt;
+    bound = llvm::checkedMul(*warps, *lanes);
+    break;
+  }
+  case IdSpace::Wave:
+    // A wave index inside the workgroup, so the lane count does not enter.
+    bound = warpCount();
+    break;
+  case IdSpace::Workgroup: {
+    // The flat grid, which is every cluster's workgroups.
+    std::optional<int64_t> programs = programCount();
+    std::optional<int64_t> cluster = clusterSize();
+    if (!programs || !cluster)
+      return std::nullopt;
+    bound = llvm::checkedMul(*programs, *cluster);
+    break;
+  }
+  case IdSpace::Cluster:
+    // One cluster per program, so the cluster factor does not enter.
+    bound = programCount();
+    break;
+  case IdSpace::ClusterWorkgroup:
+    // A rank inside one cluster.
+    bound = clusterSize();
+    break;
+  }
+  if (!bound || width == 0)
     return std::nullopt;
+
   // A bound that does not fit the id's own width would narrow to something
   // tighter than the truth, so leave it to the entry state.
-  if (!APInt(64, bound - 1).isIntN(width))
+  if (!APInt(64, *bound - 1).isIntN(width))
     return std::nullopt;
   return ConstantIntRanges::fromUnsigned(APInt::getZero(width),
-                                         APInt(width, bound - 1));
+                                         APInt(width, *bound - 1));
 }
 
 /// Range of `op`'s single integer result given the ranges of its operands, or
@@ -284,9 +386,9 @@ inferLLVMResultRange(Operation *op, ArrayRef<ConstantIntRanges> args) {
 
   unsigned width = op->getResult(0).getType().getIntOrFloatBitWidth();
 
-  if (auto constant = dyn_cast<LLVM::ConstantOp>(op)) {
-    if (auto value = dyn_cast<IntegerAttr>(constant.getValue()))
-      return constantRange(value.getValue().zextOrTrunc(width));
+  if (isa<LLVM::ConstantOp>(op)) {
+    if (std::optional<APInt> value = matchConstantInt(op->getResult(0)))
+      return constantRange(*value);
     return std::nullopt;
   }
   if (isa<LLVM::ZeroOp>(op))
@@ -323,6 +425,12 @@ inferLLVMResultRange(Operation *op, ArrayRef<ConstantIntRanges> args) {
       return args[2];
     return args[1].rangeUnion(args[2]);
   }
+  // A lane read moves a value between lanes without changing it, so what held
+  // across the wave still holds for the lane read out. The lane index is a
+  // second operand of its own width, which is why this settles before the
+  // equal-width check below rather than in the switch after it.
+  if (isa<ROCDL::ReadfirstlaneOp, ROCDL::ReadlaneOp>(op))
+    return args[0];
 
   if (llvm::any_of(op->getOperands(), [&](Value operand) {
         return !isScalarInt(operand.getType()) ||
@@ -467,9 +575,9 @@ inferKnownBits(Operation *op, ArrayRef<llvm::KnownBits> args) {
 
   unsigned width = op->getResult(0).getType().getIntOrFloatBitWidth();
 
-  if (auto constant = dyn_cast<LLVM::ConstantOp>(op)) {
-    if (auto value = dyn_cast<IntegerAttr>(constant.getValue()))
-      return llvm::KnownBits::makeConstant(value.getValue().zextOrTrunc(width));
+  if (isa<LLVM::ConstantOp>(op)) {
+    if (std::optional<APInt> value = matchConstantInt(op->getResult(0)))
+      return llvm::KnownBits::makeConstant(*value);
     return std::nullopt;
   }
   if (isa<LLVM::ZeroOp>(op))
@@ -496,6 +604,10 @@ inferKnownBits(Operation *op, ArrayRef<llvm::KnownBits> args) {
       return args[2];
     return args[1].intersectWith(args[2]);
   }
+  // Identical to the range side: the value crosses lanes unchanged, and the
+  // lane index's width is not the result's.
+  if (isa<ROCDL::ReadfirstlaneOp, ROCDL::ReadlaneOp>(op))
+    return args[0];
 
   if (llvm::any_of(op->getOperands(), [&](Value operand) {
         return !isScalarInt(operand.getType()) ||
@@ -590,11 +702,9 @@ KnownBitsAnalysis::visitOperation(Operation *op,
 /// Matches an integer constant equal to `expected` at the value's own width, so
 /// that e.g. `-1` matches the i32 constant `4294967295`.
 static bool isIntConstant(Value value, int64_t expected) {
-  APInt constant;
-  if (!matchPattern(value, m_ConstantInt(&constant)))
-    return false;
-  return constant == APInt(64, static_cast<uint64_t>(expected))
-                         .zextOrTrunc(constant.getBitWidth());
+  std::optional<APInt> constant = matchConstantInt(value);
+  return constant && *constant == APInt(64, static_cast<uint64_t>(expected))
+                                      .zextOrTrunc(constant->getBitWidth());
 }
 
 /// `lhs >= rhs` as unsigned values at the wider of the two widths, since
@@ -623,22 +733,29 @@ public:
     return max && max->isZero();
   }
 
-  /// The tightest unsigned lower bound either domain proves, or nullopt when
-  /// neither has anything to say about `value`.
+  /// The tightest unsigned lower bound either domain proves.
   std::optional<APInt> getUnsignedMin(Value value) {
     return getBound(value, /*wantMin=*/true);
   }
 
-  /// The tightest unsigned upper bound either domain proves, or nullopt when
-  /// neither has anything to say about `value`.
+  /// The tightest unsigned upper bound either domain proves.
   std::optional<APInt> getUnsignedMax(Value value) {
     return getBound(value, /*wantMin=*/false);
   }
 
 private:
   /// Reads the bound each domain holds for `value` and keeps the tighter of the
-  /// two, since both are sound.
+  /// two, since both are sound. A value neither domain constrains gets its
+  /// type's full range rather than nullopt, one loaded from memory included;
+  /// nullopt is for a value no solver visited, as in unreachable code.
   std::optional<APInt> getBound(Value value, bool wantMin) {
+    // Both domains hold a width-zero fact for a non-integer value, out of which
+    // a bound reads as zero rather than as no bound at all. Every caller passes
+    // an operand the op verifier types as an integer, so this only keeps that
+    // from becoming a silent wrong answer if one ever does not.
+    if (!isScalarInt(value.getType()))
+      return std::nullopt;
+
     std::optional<APInt> result;
     auto keep = [&](const APInt &bound) {
       if (!result || (wantMin ? bound.ugt(*result) : bound.ult(*result)))
@@ -650,8 +767,7 @@ private:
         keep(wantMin ? range->getValue().getValue().umin()
                      : range->getValue().getValue().umax());
     if (const auto *known = knownBits.lookupState<KnownBitsLattice>(value))
-      if (!known->getValue().isUninitialized() &&
-          known->getValue().getValue().getBitWidth() > 0)
+      if (!known->getValue().isUninitialized())
         keep(wantMin ? known->getValue().getValue().getMinValue()
                      : known->getValue().getValue().getMaxValue());
     return result;
@@ -715,11 +831,27 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
   auto makeRsrc = rsrc.getDefiningOp<ROCDL::MakeBufferRsrcOp>();
   if (!makeRsrc || !isIntConstant(makeRsrc.getStride(), 0))
     return std::nullopt;
-  APInt flags;
-  if (!matchPattern(makeRsrc.getFlags(), m_ConstantInt(&flags)) ||
-      !flagsKeepBoundsCheck(isaFamily, flags))
+  std::optional<APInt> flags = matchConstantInt(makeRsrc.getFlags());
+  if (!flags || !flagsKeepBoundsCheck(isaFamily, *flags))
     return std::nullopt;
-  return oracle.getUnsignedMax(makeRsrc.getNumRecords());
+
+  Value numRecords = makeRsrc.getNumRecords();
+  std::optional<APInt> lowest = oracle.getUnsignedMin(numRecords);
+  std::optional<APInt> highest = oracle.getUnsignedMax(numRecords);
+  if (!lowest || !highest)
+    return std::nullopt;
+
+  // Zero and all ones are special in the descriptor rather than extents: they
+  // mark a resource as unbound and as one whose size is not tracked. What an
+  // access past either does varies by target, so a range that could be either
+  // declines everywhere rather than modelling one target's rule. The field
+  // width is what names all ones.
+  unsigned fieldBits =
+      isaFamily == triton::amdgpu::ISAFamily::GFX1250 ? 45 : 32;
+  if (lowest->isZero() ||
+      ugeAtCommonWidth(*highest, APInt::getMaxValue(fieldBits)))
+    return std::nullopt;
+  return highest;
 }
 
 /// Which of the emitter's two out-of-bounds encodings an access matched, or
@@ -786,11 +918,23 @@ static OobShape classifyOobOffset(Value voffset, Value soffset,
   return OobShape::SplitSoffset;
 }
 
-/// The descriptor and offsets a buffer access presents to the hardware, which
-/// the atomics spell three different ways.
+/// The descriptor, offsets and cache policy a buffer access presents to the
+/// hardware, which the atomics spell three different ways.
 struct BufferAccess {
-  Value rsrc, voffset, soffset;
+  Value rsrc, voffset, soffset, aux;
 };
+
+/// Whether the cache policy `aux` could carry `CPol::VOLATILE`. That bit is not
+/// a hardware one: LLVM turns it into `MOVolatile`, which has to reach the
+/// hardware as written however the offset compares. A policy this cannot read
+/// counts as volatile, since the alternative is dropping such an access.
+static bool mayBeVolatile(Value aux) {
+  constexpr unsigned volatileBit = 31;
+  std::optional<APInt> bits = matchConstantInt(aux);
+  if (!bits)
+    return true;
+  return bits->getBitWidth() > volatileBit && (*bits)[volatileBit];
+}
 
 /// The prefix every raw buffer atomic intrinsic shares.
 constexpr StringLiteral kBufferAtomicIntrinsic =
@@ -801,6 +945,7 @@ constexpr StringLiteral kBufferAtomicIntrinsic =
 /// result it has nothing left to do. `RockToTTIR` drops the returned value on
 /// every split-K and atomic-max output write.
 static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
+  // Unlike a discarded load's zero, what a discarded atomic returns is unknown.
   if (!op->use_empty())
     return std::nullopt;
 
@@ -809,7 +954,7 @@ static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
             ROCDL::RawPtrBufferAtomicFmaxOp, ROCDL::RawPtrBufferAtomicSmaxOp,
             ROCDL::RawPtrBufferAtomicUminOp>([](auto atomic) {
         return BufferAccess{atomic.getRsrc(), atomic.getOffset(),
-                            atomic.getSoffset()};
+                            atomic.getSoffset(), atomic.getAux()};
       })
       .Case<LLVM::CallIntrinsicOp>(
           [](LLVM::CallIntrinsicOp call) -> std::optional<BufferAccess> {
@@ -822,27 +967,33 @@ static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
             if (args.size() < 4)
               return std::nullopt;
             return BufferAccess{args[args.size() - 4], args[args.size() - 3],
-                                args[args.size() - 2]};
+                                args[args.size() - 2], args[args.size() - 1]};
           })
       .Default([](auto) { return std::nullopt; });
 }
 
-/// Classifies an access as discarded when its `voffset` is the out-of-bounds
-/// arm of the emitter's predicating select and that predicate is statically
-/// false.
-static OobShape classifyAccess(Value rsrc, Value voffset, Value soffset,
+/// Classifies an access as droppable when its `voffset` is the out-of-bounds
+/// arm of the emitter's predicating select, that predicate is statically false,
+/// and the access is not volatile.
+static OobShape classifyAccess(const BufferAccess &access,
                                triton::amdgpu::ISAFamily isaFamily,
                                PredicateOracle &oracle) {
-  std::optional<APInt> numRecords = getDescriptorBound(rsrc, isaFamily, oracle);
+  if (mayBeVolatile(access.aux))
+    return OobShape::None;
+
+  std::optional<APInt> numRecords =
+      getDescriptorBound(access.rsrc, isaFamily, oracle);
   if (!numRecords)
     return OobShape::None;
+
+  Value voffset = access.voffset;
 
   auto select = voffset.getDefiningOp<LLVM::SelectOp>();
   if (!select)
     return OobShape::None;
 
-  OobShape shape =
-      classifyOobOffset(select.getFalseValue(), soffset, *numRecords, oracle);
+  OobShape shape = classifyOobOffset(select.getFalseValue(), access.soffset,
+                                     *numRecords, oracle);
   if (shape == OobShape::None)
     return OobShape::None;
 
@@ -871,18 +1022,19 @@ void RockFoldOobBufferOpsPass::runOnOperation() {
   SmallVector<std::pair<Operation *, OobShape>> deadAtomics;
   func.walk([&](Operation *op) {
     if (auto store = dyn_cast<ROCDL::RawPtrBufferStoreOp>(op)) {
-      OobShape shape = classifyAccess(store.getRsrc(), store.getOffset(),
-                                      store.getSoffset(), isaFamily, oracle);
+      OobShape shape = classifyAccess({store.getRsrc(), store.getOffset(),
+                                       store.getSoffset(), store.getAux()},
+                                      isaFamily, oracle);
       if (shape != OobShape::None)
         deadStores.emplace_back(store, shape);
     } else if (auto load = dyn_cast<ROCDL::RawPtrBufferLoadOp>(op)) {
-      OobShape shape = classifyAccess(load.getRsrc(), load.getOffset(),
-                                      load.getSoffset(), isaFamily, oracle);
+      OobShape shape = classifyAccess(
+          {load.getRsrc(), load.getOffset(), load.getSoffset(), load.getAux()},
+          isaFamily, oracle);
       if (shape != OobShape::None)
         deadLoads.emplace_back(load, shape);
     } else if (std::optional<BufferAccess> atomic = getUnreadAtomic(op)) {
-      OobShape shape = classifyAccess(atomic->rsrc, atomic->voffset,
-                                      atomic->soffset, isaFamily, oracle);
+      OobShape shape = classifyAccess(*atomic, isaFamily, oracle);
       if (shape != OobShape::None)
         deadAtomics.emplace_back(op, shape);
     }
