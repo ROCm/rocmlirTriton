@@ -275,7 +275,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // body only acts on SI_SPILL_S32_TO_VGPR, so a kernel that never spills SGPRs
   // into lanes is unaffected.
   //
-  // This is containment, not a fix; the allocator defect still needs repairing
+  // TODO: This is containment, not a fix; the allocator defect still needs repairing
   // upstream. Drop this once that lands.
   kernelFn->addFnAttr("amdgpu-prealloc-sgpr-spill-vgprs");
 
