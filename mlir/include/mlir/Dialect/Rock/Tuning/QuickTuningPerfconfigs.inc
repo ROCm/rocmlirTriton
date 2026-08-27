@@ -1508,8 +1508,8 @@ const StringRef PopulateParamsGemm::initParametersFp8GemmGfx950[] = {
 
 // BEGIN_CONV_Gemm_f16_gfx1170_DEFS
 const StringRef PopulateParamsGemm::initParametersF16ConvGfx1170[] = {
-    "gemm:v5:128,64,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1",
     "gemm:v5:64,64,64,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1,-1",
+    "gemm:v5:128,64,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1",
     "gemm:v5:64,64,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1",
     "gemm:v5:64,128,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1",
     "gemm:v5:128,128,64,1,1,4,0,1,2,0,0,-1,-1,-1,-1,-1,-1,-1",
