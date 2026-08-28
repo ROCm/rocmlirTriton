@@ -1,6 +1,7 @@
 //===- ConvToGemm.cpp - MLIR Rock ops lowering passes ------------===//
 //
-// Copyright 2020 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,23 +21,17 @@
 // into rock.gemm_elementwise_gemm.
 //
 //===-----------------------------------------------------===//
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Rock/IR/GemmSize.h"
-#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockConvInterface.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
-#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
-#include "mlir/Dialect/Rock/Tuning/UtilityParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -68,7 +63,6 @@ namespace rock {
 #define DEBUG_TYPE "rock-conv-to-gemm"
 
 using namespace mlir;
-using namespace mlir::arith;
 using namespace mlir::rock;
 //===----------------------------------------------------------------------===//
 // Conv (forward, backward) lowering.
@@ -130,24 +124,6 @@ static void ensureInsertionAfterDef(PatternRewriter &b, Operation *op,
   if (Operation *defOp = dest.getDefiningOp()) {
     if (defOp->getBlock() == op->getBlock() && op->isBeforeInBlock(defOp))
       b.setInsertionPointAfter(defOp);
-  }
-}
-
-/// Update any StoreOp that uses the conv result to use the gemm result instead.
-/// The conv result type differs from the gemm result type (due to shape
-/// transformations), so we need to update the StoreOp to use the gemm result
-/// and the transformed destination tensor.
-void updateStoreOpForGemm(PatternRewriter &b, Location loc, Value convResult,
-                          Value gemmResult, Value gemmDest,
-                          StoreMethodAttr storeMethod) {
-  for (Operation *user : llvm::make_early_inc_range(convResult.getUsers())) {
-    if (auto storeOp = dyn_cast<StoreOp>(user)) {
-      Type storeResultType = storeOp.getResult().getType();
-      auto newStoreOp =
-          StoreOp::create(b, loc, storeResultType, gemmResult, gemmDest,
-                          storeOp.getResultAlias(), storeMethod);
-      b.replaceOp(storeOp, newStoreOp.getResult());
-    }
   }
 }
 
@@ -339,19 +315,6 @@ static LogicalResult makeToLayoutLikeFromLayoutAlong(
   return success();
 }
 
-// Build a mapping from input layout dimension names to filter layout
-// dimension names, used for layout regularization.
-static llvm::StringMap<StringAttr> buildInputToFilterMapping(PatternRewriter &b,
-                                                             int rank) {
-  llvm::StringMap<StringAttr> mapping = {{"ci", b.getStringAttr("c")},
-                                         {"hi", b.getStringAttr("y")},
-                                         {"wi", b.getStringAttr("x")}};
-  for (int i = 0; i < rank - 3; i++)
-    mapping.insert_or_assign(b.getStringAttr(Twine(i) + "i"),
-                             b.getStringAttr(Twine(i)));
-  return mapping;
-}
-
 // Build a mapping from input layout dimension names to output layout
 // dimension names, used for layout regularization.
 static llvm::StringMap<StringAttr> buildInputToOutputMapping(PatternRewriter &b,
@@ -445,12 +408,12 @@ struct MatchLayoutsToInput final
                                      b.getStringAttr(Twine(i) + Twine("o")));
     }
 
-    // Only re-layout the filter/output if it's an input operand of this op,
-    // not if it's the op's own result.
-    LogicalResult didReLayoutFilter = failure();
-    if (filter.getDefiningOp() != op.getOperation())
-      didReLayoutFilter = makeToLayoutLikeFromLayoutAlong(
-          b, op, "input_layout", filter, "filter_layout", inputToFilter);
+    // The filter is an operand for every conv variant, so it can always be
+    // re-laid out.
+    LogicalResult didReLayoutFilter = makeToLayoutLikeFromLayoutAlong(
+        b, op, "input_layout", filter, "filter_layout", inputToFilter);
+    // The output is the result of a forward conv, and a result can't be
+    // re-laid out here; only do it when it's an operand (i.e. BwdData).
     LogicalResult didReLayoutOutput = failure();
     if (output.getDefiningOp() != op.getOperation())
       didReLayoutOutput = makeToLayoutLikeFromLayoutAlong(
@@ -481,256 +444,6 @@ struct MatchFilterToInput final
     return didReLayoutFilter;
   }
 };
-
-/// Lowerings for particular convolution algorithms (TODO, new file?)
-FailureOr<std::tuple<Value, Value, Value>>
-backwardWeightAtomicAdd(ConvBwdWeightOp op, PatternRewriter &b) {
-  Location loc = op.getLoc();
-
-  Attribute tuningParams = op.getParamsAttr();
-  if (!tuningParams) {
-    return op.emitOpError("can't lower without tuning parameters\n");
-  }
-
-  if (!op.getKBlocks().has_value())
-    return op.emitOpError("must have kBlocks set at lowering");
-  int64_t gemmKBlocks = op.getKBlocks()->getZExtValue();
-
-  ConvolutionContext ctx = populateConvContext(op);
-
-  // Get shape of filter tensor (filter is the result for BwdWeight).
-  ShapedType filterType = cast<ShapedType>(op.getResult().getType());
-  auto filterShape = filterType.getShape();
-
-  // Get shape of input tensor.
-  ShapedType inputType = op.getInput().getType();
-  ArrayRef<int64_t> inputShape = inputType.getShape();
-
-  // Get shape of gradient tensor (forward output gradient).
-  ShapedType gradientType = op.getGradient().getType();
-  ArrayRef<int64_t> gradientShape = gradientType.getShape();
-
-  // Obtain convolution parameters: padding / dilation / stride.
-  auto pads = ctx.getPaddingVal();
-  auto dilations = ctx.getDilationVal();
-  auto strides = ctx.getStrideVal();
-  ConvolutionDims convDims = ctx.getConvDims();
-
-  llvm::SmallVector<StringRef, 5> filterNames, inputNames, outputNames;
-  if (failed(getConvDimNames(op, filterNames, inputNames, outputNames)))
-    return failure();
-
-  // Find the StoreOp dest buffer for the filter result.
-  auto maybeStores = traceRootOutputToStoreOps(op.getResult());
-  if (failed(maybeStores))
-    return op.emitOpError("cannot trace bwd_weight result to rock::StoreOp");
-  assert(maybeStores->size() == 1 &&
-         "bwd_weight has no fusions, expected exactly one store");
-  StoreOp firstStore = maybeStores->front();
-  Value filterDest = firstStore.getDest();
-  ensureInsertionAfterDef(b, op, filterDest);
-
-  // Regularize filter dest layout to match input layout ordering.
-  // This must happen before building transforms so that filterNames,
-  // filterShape, and filterDest are all consistent.
-  {
-    int rank = static_cast<int>(filterNames.size());
-    auto mapping = buildInputToFilterMapping(b, rank);
-    filterDest = regularizeDestLayout(
-        b, loc, op->getAttrOfType<ArrayAttr>("input_layout"), filterDest,
-        op->getAttrOfType<ArrayAttr>("filter_layout"), mapping, filterNames);
-    filterShape = cast<ShapedType>(filterDest.getType()).getShape();
-  }
-
-  Value gemmFilter, gemmInput, gemmOutput;
-  // Transform filter tensor.
-  {
-    SmallVector<StringRef, 5> nonKDims;
-    for (StringRef name : filterNames)
-      if (name != "g" && name != "k")
-        nonKDims.push_back(name);
-    // Add a dimension, that'll be ignored when writing the output, for KBlock
-    // The existence of this dimension makes the mapping between the C matrix
-    // and the filter tensor uninvertable, hence the need for atomic add
-
-    llvm::StringMap<uint32_t> kBlockDims =
-        expandNamesInPlace(filterNames, {{{"k", {"kBlock", "k"}}}});
-    BottomUpTMBuilder addKBlockTransform(b, filterNames, filterShape, loc);
-    BottomUpTMTopDimsWrapper addKBlockWrap(addKBlockTransform,
-                                           std::move(kBlockDims));
-    addKBlockWrap.passThrough("g");
-    addKBlockWrap.addDim("kBlock", gemmKBlocks);
-    SmallVector<StringRef, 5> throughDims{"k", "c"};
-    for (size_t i = 0; i < convDims.fil.size(); i++)
-      throughDims.push_back(b.getStringAttr(Twine(i)));
-    addKBlockWrap.passThrough(throughDims);
-
-    TransformMapAttr addKBlockTransformAttr = addKBlockTransform.get();
-    Value withKBlock =
-        rock::TransformOp::create(b, loc, filterDest, addKBlockTransformAttr);
-
-    // Create GEMM filter tensor
-    // Here, we merge the KBlock dimension into the G dimension
-    // keeping the kBlock dimension as the minor index
-    // and send K to the M dimension and CYX to the N dimension as usual
-    auto gemmTransform =
-        BottomUpTMBuilder::above(addKBlockTransform, addKBlockTransformAttr);
-    gemmTransform.merge("gemmG", 0, {"g", "kBlock"});
-    gemmTransform.passThrough({"gemmM"}, {1}, {"k"});
-    gemmTransform.merge("gemmN", 2, nonKDims);
-
-    TransformMapAttr gemmTransformAttr = gemmTransform.get();
-    gemmFilter = TransformOp::create(b, loc, withKBlock, gemmTransformAttr);
-    // This kernel is only invoked when there's no need for gemm padding
-  }
-
-  // Transform input tensor
-  {
-    // Pad H and W and split N into  n0 and n1 where n0 has size kBlocks and n1
-    // is what's left
-    llvm::StringMap<SmallVector<StringRef, 2>> expansions;
-    expansions.insert({"ni", {"n0", "n1"}});
-    for (size_t i = 0; i < convDims.in.size(); i++) {
-      StringAttr key = b.getStringAttr(Twine(i) + "i");
-      StringAttr val = b.getStringAttr(Twine(i) + "ipad");
-      expansions.insert({key, {val}});
-    }
-    llvm::StringMap<uint32_t> firstTransformOutDims =
-        expandNamesInPlace(inputNames, expansions);
-
-    BottomUpTMBuilder firstTransform(b, inputNames, inputShape, loc);
-    BottomUpTMTopDimsWrapper firstWrap(firstTransform,
-                                       std::move(firstTransformOutDims));
-    firstWrap.passThrough("gi");
-    firstWrap.unmerge({"n0", "n1"}, "ni",
-                      {gemmKBlocks, convDims.n / gemmKBlocks});
-    firstWrap.passThrough("ci");
-    SmallVector<StringRef, 3> outs;
-    SmallVector<StringRef, 3> ins;
-    for (size_t i = 0; i < convDims.in.size(); i++) {
-      outs.push_back(b.getStringAttr(Twine(i) + "ipad"));
-      ins.push_back(b.getStringAttr(Twine(i) + "i"));
-    }
-    firstWrap.pad(outs, ins, pads);
-
-    TransformMapAttr firstTransformAttr = firstTransform.get();
-    Value firstTransformed =
-        TransformOp::create(b, loc, op.getInput(), firstTransformAttr);
-
-    // The usual mapping of input space to dimensions such that filter elements
-    // get multiplied by the right thing
-    expansions.clear();
-    for (size_t i = 0; i < convDims.out.size(); i++) {
-      StringAttr key = b.getStringAttr(Twine(i) + "ipad");
-      StringAttr val1 = b.getStringAttr(Twine(i));
-      StringAttr val2 = b.getStringAttr(Twine(i) + "o");
-      expansions.insert({key, {val1, val2}});
-    }
-    llvm::StringMap<uint32_t> embedOutDims =
-        expandNamesInPlace(firstTransform, expansions);
-    auto embedTransform =
-        BottomUpTMBuilder::above(firstTransform, firstTransformAttr);
-    BottomUpTMTopDimsWrapper embedWrap(embedTransform, std::move(embedOutDims));
-    embedWrap.passThrough({"gi", "n0", "n1", "ci"});
-    assert(convDims.fil.size() == convDims.out.size());
-    for (auto [i, filLen] : llvm::enumerate(convDims.fil)) {
-      StringAttr val1 = b.getStringAttr(Twine(i));
-      StringAttr val2 = b.getStringAttr(Twine(i) + "o");
-      StringAttr val3 = b.getStringAttr(Twine(i) + "ipad");
-      if (filLen != 1) {
-        embedWrap.embed({val1, val2}, {filLen, convDims.out[i]}, val3,
-                        {dilations[i], strides[i]});
-      } else if (strides[i] != 1) {
-        embedWrap.addDim(val1, filLen);
-        embedWrap.embed({val2}, {convDims.out[i]}, val3, {strides[i]});
-      } else {
-        embedWrap.addDim(val1, filLen);
-        embedWrap.passThrough(val2, val3);
-      }
-    }
-
-    TransformMapAttr embedTransformAttr = embedTransform.get();
-    Value embedded =
-        TransformOp::create(b, loc, firstTransformed, embedTransformAttr);
-
-    // Merge N1HoWO to gemmK and CYX to gemmN
-    auto gemmInputTransform =
-        BottomUpTMBuilder::above(embedTransform, embedTransformAttr);
-
-    llvm::SmallVector<StringRef, 3> nonNHWDims = {"ci"};
-    for (size_t i = 0; i < convDims.in.size(); i++)
-      nonNHWDims.push_back(b.getStringAttr(Twine(i)));
-    matchUnderlyingOrder(nonNHWDims, gemmInputTransform);
-    llvm::SmallVector<StringRef, 3> nhwDims = {"n1"};
-    for (size_t i = 0; i < convDims.out.size(); i++)
-      nhwDims.push_back(b.getStringAttr(Twine(i) + "o"));
-    matchUnderlyingOrder(nhwDims, gemmInputTransform);
-
-    // In the gemmG dimension, unlike with gemmN, we don't have the same
-    // traversal order concerns - a step in the G dimension always first visits
-    // kBlock/N0 and then moves on to the next G
-    gemmInputTransform.merge("gemmG", 0, {"gi", "n0"});
-    gemmInputTransform.merge("gemmK", 1, nhwDims);
-    gemmInputTransform.merge("gemmN", 2, nonNHWDims);
-
-    TransformMapAttr gemmInputTransformAttr = gemmInputTransform.get();
-    gemmInput = TransformOp::create(b, loc, embedded, gemmInputTransformAttr);
-  }
-
-  // Transform gradient tensor (forward output gradient)
-  {
-    // First, split the N dimension as in the input
-    llvm::StringMap<uint32_t> outDims =
-        expandNamesInPlace(outputNames, {{"no", {"n0", "n1"}}});
-    BottomUpTMBuilder firstTransform(b, outputNames, gradientShape, loc);
-    BottomUpTMTopDimsWrapper firstWrap(firstTransform, std::move(outDims));
-    firstWrap.passThrough("go");
-    firstWrap.unmerge({"n0", "n1"}, "no",
-                      {gemmKBlocks, convDims.n / gemmKBlocks});
-    SmallVector<StringRef, 3> names{"ko"};
-    for (size_t i = 0; i < convDims.out.size(); i++)
-      names.push_back(b.getStringAttr(Twine(i) + "o"));
-    firstWrap.passThrough(names);
-
-    TransformMapAttr firstTransformAttr = firstTransform.get();
-    Value transformed =
-        TransformOp::create(b, loc, op.getGradient(), firstTransformAttr);
-
-    // Map G and N0 to gemmG, N1HW to gemmK and K to gemmM
-    auto gemmOutputTransform =
-        BottomUpTMBuilder::above(firstTransform, firstTransformAttr);
-    llvm::SmallVector<StringRef, 3> nhwDims = {"n1"};
-    for (size_t i = 0; i < convDims.out.size(); i++)
-      nhwDims.push_back(b.getStringAttr(Twine(i) + "o"));
-    matchUnderlyingOrder(nhwDims, gemmOutputTransform);
-    gemmOutputTransform.merge("gemmG", 0, {"go", "n0"});
-    gemmOutputTransform.merge("gemmK", 1, nhwDims);
-    gemmOutputTransform.passThrough({"gemmM"}, {2}, {"ko"});
-
-    TransformMapAttr gemmOutputTransformAttr = gemmOutputTransform.get();
-    gemmOutput =
-        TransformOp::create(b, loc, transformed, gemmOutputTransformAttr);
-  }
-
-  // This kernel is not run when there is padding on the GEMM
-  auto storeMethod = b.getAttr<StoreMethodAttr>(StoreMethod::AtomicAdd);
-  auto gemm = GemmOp::create(
-      b, loc, getResultType(op, gemmFilter), gemmOutput, gemmInput,
-      /*scaleA=*/nullptr, /*scaleB=*/nullptr,
-      /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-      /*cTransposed=*/nullptr,
-      /*aScaleTransposed=*/nullptr, /*bScaleTransposed=*/nullptr,
-      /*quantBlockSize=*/nullptr, op.getParamsAttr());
-
-  // Update any StoreOp that uses the conv result to use the gemm result.
-  updateStoreOpForGemm(b, loc, op.getResult(), gemm.getResult(), gemmFilter,
-                       storeMethod);
-
-  // Finally, erase the original Conv op.
-  b.eraseOp(op);
-
-  return std::make_tuple(Value(), Value(), Value());
-}
 
 FailureOr<std::pair<Value, Value>>
 backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
@@ -1099,20 +812,19 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   return std::pair<Value, Value>(gemm.getResult(), gemmInput);
 }
 
-// Lower a conv op (forward, backward-weight, or backward-data) into one or
+// Lower a conv op (forward or backward-data) into one or
 // more rock.gemm ops by computing the necessary layout transforms for the
 // filter, input, and output tensors. For BwdData, the conv is expanded into
 // multiple gemms (one per kernel ID) inline and the function returns early.
-// For Fwd and BwdWeight, it builds gemm-compatible views (gemmG/gemmM/gemmK/
-// gemmN) of the three conv operands and returns them as (filter, input,
-// output). When Fwd, `outputViews` and `fusionInputMap` are also transformed
-// to carry the output layout so the caller can wire up fusion stores.
+// For Fwd, it builds gemm-compatible views (gemmG/gemmM/gemmK/gemmN) of the
+// three conv operands and returns them as (filter, input, output).
+// `outputViews` and `fusionInputMap` are also transformed to carry the output
+// layout so the caller can wire up fusion stores.
 template <typename T>
 static FailureOr<std::tuple<Value, Value, Value>>
 commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
                   ConvOpType convOpType, DenseMap<Value, Value> &fusionInputMap,
                   SmallVector<Value> &outputViews) {
-  // Type dataType = op.getInput().getType().getElementType();
   if (ConvOpType::BwdData == convOpType) {
     auto bwdDataOp = cast<ConvBwdDataOp>(op);
     Location loc = bwdDataOp.getLoc();
@@ -1179,12 +891,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   Location loc = op.getLoc();
 
   // Determine the filter and input tensor values based on op type.
-  // Each op variant has different operand names:
-  //   ConvOp:                $filter, $input
-  //   ConvBwdWeightOp:       $input, $gradient
-  //   ConvElementwiseGemmOp: $filter, $input
-  // For BwdWeight, the filter is the result (dest comes from StoreOp) and
-  // the gradient is the "output" in convolution terms.
   Value filterValue, inputValue;
   if constexpr (std::is_same_v<T, ConvBwdDataOp>) {
     llvm_unreachable("BwdData should have been handled above");
@@ -1196,16 +902,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     inputValue = op.getConvInput();
   }
 
-  // Get shapes — for BwdWeight, filter shape comes from the result type.
-  ArrayRef<int64_t> filterShape;
-  if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
-    filterShape = cast<ShapedType>(op.getResult().getType()).getShape();
-  else
-    filterShape = cast<ShapedType>(filterValue.getType()).getShape();
+  ArrayRef<int64_t> filterShape =
+      cast<ShapedType>(filterValue.getType()).getShape();
   ArrayRef<int64_t> inputShape =
       cast<ShapedType>(inputValue.getType()).getShape();
-
-  Type dataType = cast<ShapedType>(inputValue.getType()).getElementType();
 
   // Obtain convolution parameters: padding / dilation / stride.
   auto dilations = ctx.getDilationVal();
@@ -1223,85 +923,44 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // buffer
   Value destBuffer;
   if constexpr (notConvGemm) {
-    if constexpr (std::is_same_v<T, ConvBwdWeightOp>)
-      destBuffer = op.getConvOutput();
-    else
-      destBuffer = outputViews[0];
-
-    auto tuningParams = op.getParamsAttr();
-    GemmSize gemmSize = op.getGemmSize();
-    std::optional<GemmSize> maybeGemmExtraPad;
-
-    if (tuningParams) {
-      maybeGemmExtraPad = requiredPadding(tuningParams, gemmSize);
-    } else {
-      // We don't know if this'll be a padding kernel, so we can't promise a
-      // merge or rely on atomic add, and so set the extraPad to a nonsense but
-      // existing value.
-      maybeGemmExtraPad = GemmSize{-1, -1, -1, -1};
-    }
-
-    if (ConvOpType::BwdWeight == convOpType &&
-        isWrWAtomicKernel(dataType, maybeGemmExtraPad.has_value())) {
-      return backwardWeightAtomicAdd(cast<ConvBwdWeightOp>(op), b);
-    }
+    destBuffer = outputViews[0];
   }
 
-  // Apply layout regularization to the dest buffer for result tensors.
-  // MatchLayoutsToInput handles operand regularization; for result values
-  // (filter for BwdWeight, output for ConvOp) we regularize the StoreOp
-  // dest buffer here.
+  // Apply layout regularization to the output destination buffer.
+  // MatchLayoutsToInput handles operand regularization.
   if constexpr (notConvGemm) {
     int rank = static_cast<int>(filterNames.size());
-    if constexpr (std::is_same_v<T, ConvBwdWeightOp>) {
-      // BwdWeight: the regularized filterValue feeds into filter transforms
-      // that become gemm operands, so keep the insertion point moved.
-      // Using `outputViews[0]` instead of `destBuffer`: for BwdWeight 
-      // `destBuffer` is the output-gradient operand which may be
-      // defined before `outputViews[0]`. Using `destBuffer` could
-      // therefore place the new TransformOp before its operand's defining
-      // op and break SSA dominance.
-      ensureInsertionAfterDef(b, op, outputViews[0]);
-      auto mapping = buildInputToFilterMapping(b, rank);
-      filterValue = regularizeDestLayout(
+    // Regularize at the dest buffer's location, then restore the insertion
+    // point to the conv so filter/input transforms and the gemm are placed
+    // there. The gemm doesn't take gemmOutput as an SSA operand.
+    TransformMapAttr relayoutAttr;
+    {
+      OpBuilder::InsertionGuard guard(b);
+      ensureInsertionAfterDef(b, op, destBuffer);
+      auto mapping = buildInputToOutputMapping(b, rank);
+      destBuffer = regularizeDestLayout(
           b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-          outputViews[0],
-          op->template getAttrOfType<ArrayAttr>("filter_layout"), mapping,
-          filterNames);
-      filterShape = cast<ShapedType>(filterValue.getType()).getShape();
-    } else {
-      // ConvOp: regularize at the dest buffer's location, then restore the
-      // insertion point to the conv so filter/input transforms and the gemm
-      // are placed there. The gemm doesn't take gemmOutput as an SSA operand.
-      TransformMapAttr relayoutAttr;
-      {
-        OpBuilder::InsertionGuard guard(b);
-        ensureInsertionAfterDef(b, op, destBuffer);
-        auto mapping = buildInputToOutputMapping(b, rank);
-        destBuffer = regularizeDestLayout(
-            b, loc, op->template getAttrOfType<ArrayAttr>("input_layout"),
-            destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
-            mapping, outputNames);
-        relayoutAttr =
-            cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
-      }
-      // Apply the relayout to each output view and fusion extra input,
-      // placing each transform right after its input's defining op so it
-      // dominates all consumers (fusion ops, stores).
-      auto applyRelayout = [&](Value &v) {
-        if (Operation *defOp = v.getDefiningOp()) {
-          OpBuilder::InsertionGuard vg(b);
-          b.setInsertionPointAfter(defOp);
-          v = TransformOp::create(b, loc, v, relayoutAttr);
-        } else {
-          v = TransformOp::create(b, loc, v, relayoutAttr);
-        }
-      };
-      for (auto &view : outputViews)
-        applyRelayout(view);
-      for (auto &[orig, view] : fusionInputMap)
-        applyRelayout(view);
+          destBuffer, op->template getAttrOfType<ArrayAttr>("output_layout"),
+          mapping, outputNames);
+      relayoutAttr =
+          cast<TransformOp>(destBuffer.getDefiningOp()).getTransform();
     }
+    // Apply the relayout to each output view and fusion extra input, placing
+    // each transform right after its input's defining op so it dominates all
+    // consumers (fusion ops, stores).
+    auto applyRelayout = [&](Value &v) {
+      if (Operation *defOp = v.getDefiningOp()) {
+        OpBuilder::InsertionGuard vg(b);
+        b.setInsertionPointAfter(defOp);
+        v = TransformOp::create(b, loc, v, relayoutAttr);
+      } else {
+        v = TransformOp::create(b, loc, v, relayoutAttr);
+      }
+    };
+    for (auto &view : outputViews)
+      applyRelayout(view);
+    for (auto &[orig, view] : fusionInputMap)
+      applyRelayout(view);
   }
 
   // Transform filter tensor.
@@ -1313,10 +972,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   //   Optimization: If non-K dimensions are consecutive, apply merge.
   // - PassThrough K dimension to dimension 2, name it as gemmM.
   //
-  // Weight tensor transformation for ConvBwdWeightOp
-  // - PassThrough G dimension to dimension 0, name it gemmG
-  // - PassThrough K dimension to dimension 1, name it as gemmM.
-  // - Merge non-K dimensions to dimension 2, name it as gemmN.
   SmallVector<StringRef, 5> filterNonKDims;
   for (StringRef name : filterNames)
     if (name != "g" && name != "k")
@@ -1328,10 +983,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   case ConvOpType::Fwd:
     filterTransform.merge("gemmK", 1, filterNonKDims);
     filterTransform.passThrough({"gemmM"}, {2}, {"k"});
-    break;
-  case ConvOpType::BwdWeight:
-    filterTransform.passThrough({"gemmM"}, {1}, {"k"});
-    filterTransform.merge("gemmN", 2, filterNonKDims);
     break;
   case ConvOpType::BwdData:
     llvm_unreachable("Backward data has been sent elsewhere");
@@ -1420,10 +1071,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // For ConvOp:
   // - Merge ci, y, x dimensions to dimension 1, name it as gemmK.
   // - Merge ni, ho, wo dimensions to dimension 2, name it as gemmN.
-  //
-  // For ConvBwdWeightOp:
-  // - Part 1: Merge ni, ho, wo dimensions to dimension 1, name it as gemmK.
-  // - Part 2: Merge ci, y, x dimensions to dimension 2, name it as gemmN.
 
   auto gemmInputTransform =
       BottomUpTMBuilder::above(embedInputTransform, embedInputTransformAttr);
@@ -1438,15 +1085,10 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     nhwDims.push_back(b.getStringAttr(Twine(i) + "o"));
   matchUnderlyingOrder(nhwDims, gemmInputTransform);
 
-  llvm::SmallVector<StringRef, 3> mergeToK, mergeToN;
   switch (convOpType) {
   case ConvOpType::Fwd:
     gemmInputTransform.merge("gemmK", 1, nonNHWDims);
     gemmInputTransform.merge("gemmN", 2, nhwDims);
-    break;
-  case ConvOpType::BwdWeight:
-    gemmInputTransform.merge("gemmK", 1, nhwDims);
-    gemmInputTransform.merge("gemmN", 2, nonNHWDims);
     break;
   case ConvOpType::BwdData:
     llvm_unreachable("Backward data has been sent elsewhere");
@@ -1470,9 +1112,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     // - PassThrough K dimension to dimension 1, named gemmM
     // - Merge non-K dimensions to dimension2, named gemmN
 
-    // Output tensor transformation for backward weight:
-    // - Merge non-K dimensions to dimension 1, named gemmK
-    // - PassThrough K dimension to dimension 2, name it gemmM
     SmallVector<StringRef, 5> outputNonKDims;
     for (StringRef name : outputNames)
       if (name != "go" && name != "ko")
@@ -1485,10 +1124,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       outputTransform.passThrough({"gemmM"}, {1}, {"ko"});
       outputTransform.merge("gemmN", 2, outputNonKDims);
       break;
-    case ConvOpType::BwdWeight:
-      outputTransform.merge("gemmK", 1, outputNonKDims);
-      outputTransform.passThrough({"gemmM"}, {2}, {"ko"});
-      break;
     case ConvOpType::BwdData:
       llvm_unreachable("Backward data has been sent elsewhere");
       break;
@@ -1496,40 +1131,33 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
 
     TransformMapAttr outputTransformAttr = outputTransform.get();
 
-    // For forward conv, also transform the store destinations and fusion
-    // inputs with the output transform. For BwdWeight, the store destination
-    // is the filter (not the output), so the caller uses gemmC instead.
-    if (convOpType == ConvOpType::Fwd) {
-      for (auto &outputView : outputViews) {
-        if (Operation *defOp = outputView.getDefiningOp()) {
-          OpBuilder::InsertionGuard guard(b);
-          b.setInsertionPointAfter(defOp);
-          outputView =
-              TransformOp::create(b, loc, outputView, outputTransformAttr);
-        } else {
-          outputView =
-              TransformOp::create(b, loc, outputView, outputTransformAttr);
-        }
+    // Transform the store destinations and fusion inputs with the output
+    // transform.
+    for (auto &outputView : outputViews) {
+      if (Operation *defOp = outputView.getDefiningOp()) {
+        OpBuilder::InsertionGuard guard(b);
+        b.setInsertionPointAfter(defOp);
+        outputView =
+            TransformOp::create(b, loc, outputView, outputTransformAttr);
+      } else {
+        outputView =
+            TransformOp::create(b, loc, outputView, outputTransformAttr);
       }
-      for (auto &[orig, view] : fusionInputMap) {
-        if (Operation *defOp = view.getDefiningOp()) {
-          OpBuilder::InsertionGuard guard(b);
-          b.setInsertionPointAfter(defOp);
-          view = TransformOp::create(b, loc, view, outputTransformAttr);
-        } else {
-          view = TransformOp::create(b, loc, view, outputTransformAttr);
-        }
-      }
-      // All of them have the same shape, so get the first one.
-      // Note that we always have at least one outputView, otherwise
-      // traceRootOutputToStoreOps() would have failed
-      assert(!outputViews.empty() && "outputViews is empty!");
-      gemmOutput = outputViews[0];
-    } else {
-      // Note that we don't support backward conv fusions!
-      gemmOutput =
-          TransformOp::create(b, loc, outputValue, outputTransformAttr);
     }
+    for (auto &[orig, view] : fusionInputMap) {
+      if (Operation *defOp = view.getDefiningOp()) {
+        OpBuilder::InsertionGuard guard(b);
+        b.setInsertionPointAfter(defOp);
+        view = TransformOp::create(b, loc, view, outputTransformAttr);
+      } else {
+        view = TransformOp::create(b, loc, view, outputTransformAttr);
+      }
+    }
+    // All of them have the same shape, so get the first one.
+    // Note that we always have at least one outputView, otherwise
+    // traceRootOutputToStoreOps() would have failed
+    assert(!outputViews.empty() && "outputViews is empty!");
+    gemmOutput = outputViews[0];
   }
 
   return std::make_tuple(gemmFilter, gemmInput, gemmOutput);
@@ -1637,10 +1265,7 @@ struct ConvRewritePattern : public OpRewritePattern<T> {
 
     for (size_t i = 0; i < stores.size(); ++i) {
       StoreOp storeOp = stores[i];
-      // For Fwd, the store destination has been output-transformed.
-      // For BwdWeight, the store destination is the filter; use gemmC which
-      // already carries the filter transform.
-      Value view = (convOpType == ConvOpType::Fwd) ? outputViews[i] : gemmC;
+      Value view = outputViews[i];
       // adjust the store method
       StoreMethodAttr storeMethod = storeOp.getStoreMethodAttr();
       // If the store's source is the gemm result directly (no fusions),
@@ -1681,20 +1306,9 @@ template <>
 const ConvOpType ConvRewritePattern<ConvBwdDataOp>::convOpType =
     ConvOpType::BwdData;
 
-template <>
-const ArgumentFields ConvRewritePattern<ConvBwdWeightOp>::fields = {
-    {2, 1, 0},
-    {"MN", "KN", "KM"},
-};
-
-template <>
-const ConvOpType ConvRewritePattern<ConvBwdWeightOp>::convOpType =
-    ConvOpType::BwdWeight;
-
 // Explicitly instantiate the template to operation type
 template struct ConvRewritePattern<ConvOp>;
 template struct ConvRewritePattern<ConvBwdDataOp>;
-template struct ConvRewritePattern<ConvBwdWeightOp>;
 
 void RockConvToGemmPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
@@ -1702,8 +1316,7 @@ void RockConvToGemmPass::runOnOperation() {
 
   // Annotate the function as a convolution kernel.
   WalkResult convWalk = func.walk([](Operation *op) {
-    if (isa<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
-            rock::ConvElementwiseGemmOp>(op))
+    if (isa<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvElementwiseGemmOp>(op))
       return WalkResult::interrupt();
     return WalkResult::advance();
   });
@@ -1721,17 +1334,13 @@ void RockConvToGemmPass::runOnOperation() {
 
   ConversionTarget target(*ctx);
 
-  target.addIllegalOp<rock::ConvOp, rock::ConvBwdDataOp, rock::ConvBwdWeightOp,
+  target.addIllegalOp<rock::ConvOp, rock::ConvBwdDataOp,
                       rock::ConvElementwiseGemmOp>();
   target.addLegalOp<rock::TransformOp, rock::GemmOp,
                     rock::GemmElementwiseGemmOp, rock::StoreOp>();
-  // Below are required legalize for the lowering of ConvBwdWeightOp
-  target.addLegalDialect<arith::ArithDialect, scf::SCFDialect>();
-
   RewritePatternSet patterns(ctx);
   patterns.add<ConvRewritePattern<ConvOp>, ConvRewritePattern<ConvBwdDataOp>,
-               ConvRewritePattern<ConvBwdWeightOp>, ConvGemmRewritePattern>(
-      ctx);
+               ConvGemmRewritePattern>(ctx);
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {

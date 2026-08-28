@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Post Claude review actions to a GitHub PR.
 #
 # Runs in the post job, which has GITHUB_TOKEN but NO LLM Gateway secrets in its

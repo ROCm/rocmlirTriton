@@ -1,5 +1,5 @@
 // A padded 3x3 conv makes the input tensor's validity mask depend on the GEMM
-// K-loop IV, so rock-transforms-invariant-code-motion takes the carry path: it
+// K-loop IV, so rock-incremental-pointer-arith takes the carry path: it
 // decomposes the non-contiguous gemmK Merge, carries the decomposed tap
 // coordinates plus a full-tile offset accumulator as loop iter_args, and
 // advances them with a mixed-radix odometer while rebuilding the mask each

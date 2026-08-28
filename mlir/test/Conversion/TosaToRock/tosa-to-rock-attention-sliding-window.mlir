@@ -1,16 +1,33 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
+// RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-3>/dense<-8>/' %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s --check-prefix=FULL-WIDTH
+// RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-3>/dense<-9>/' %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s --check-prefix=OUT-OF-RANGE
 
-// Runtime sliding-window masking combined with KV-cache seq-len clipping.
-// The KV-cache clip (max/min on currentSeqLen) is re-emitted in front of the
-// attention op, and the sliding-window size is captured as the slidingWindowSize
-// attribute so the gridwise lowering can mask keys below
-// max(0, currentSeqLen - slidingWindowSize).
+// Runtime sliding-window masking combined with last-valid-index clipping.
+// The KV-cache clip (max/min on lastValidKVIndex) is re-emitted in front of the
+// attention op, and the look-back is captured as slidingWindowLookBack so the
+// gridwise lowering can mask keys below max(0, P - L).
 // CHECK-LABEL: func @mlir_attention_kvcache_sliding_window
 // CHECK: %[[MAX:.*]] = tosa.maximum
 // CHECK: %[[CLIP:.*]] = tosa.minimum %[[MAX]], {{.*}} : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%[[CLIP]] : tensor<2xi32>)
-// CHECK: slidingWindowSize = 3
+// CHECK: lastValidKVIndex = (%[[CLIP]] : tensor<2xi32>)
+// CHECK: slidingWindowLookBack = 3
+// A look-back equal to seq_len_k is redundant for an in-contract
+// lastValidKVIndex. Drop the look-back but preserve the KV-cache fold.
+// FULL-WIDTH-LABEL: func @mlir_attention_kvcache_sliding_window
+// FULL-WIDTH: %[[FULL_MAX:.*]] = tosa.maximum
+// FULL-WIDTH: %[[FULL_CLIP:.*]] = tosa.minimum %[[FULL_MAX]], {{.*}} : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
+// FULL-WIDTH: rock.attention
+// FULL-WIDTH: lastValidKVIndex = (%[[FULL_CLIP]] : tensor<2xi32>)
+// FULL-WIDTH-NOT: slidingWindowLookBack
+// A look-back greater than seq_len_k remains outside Rock's valid range.
+// Preserve both masks in the elementwise region instead of creating invalid
+// Rock IR.
+// OUT-OF-RANGE-LABEL: func @mlir_attention_kvcache_sliding_window
+// OUT-OF-RANGE: rock.attention
+// OUT-OF-RANGE-NOT: lastValidKVIndex
+// OUT-OF-RANGE-NOT: slidingWindowLookBack
+// OUT-OF-RANGE: qk = elementwise
 func.func @mlir_attention_kvcache_sliding_window(%arg0: tensor<1xi32>, %arg1: tensor<12xf16>, %arg2: tensor<32xf16>, %arg3: tensor<32xf16>) -> tensor<4xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %0 = "tosa.const"() <{values = dense<4> : tensor<1x1x1x1xi32>}> : () -> tensor<1x1x1x1xi32>
   %1 = tosa.const_shape  {values = dense<4> : tensor<1xindex>} : () -> !tosa.shape<1>

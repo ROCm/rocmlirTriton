@@ -254,6 +254,62 @@
 // OE_ON: tritonamdgpu-optimize-dot-operands
 
 //===----------------------------------------------------------------------===//
+// useBf16x3ForF32
+//===----------------------------------------------------------------------===//
+//
+// `useBf16x3ForF32` picks the `tt.dot` input precision for f32 operands, so unlike
+// the other knobs it shows up in the lowered IR rather than the pass pipeline.
+// -1 follows the arch default (on for gfx950, off elsewhere), 0 forces the
+// IEEE dot, and 1 forces the 3xBF16 decomposition.
+
+// useBf16x3ForF32=-1 on gfx950: the arch default decomposes.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_DEFAULT_ON
+
+// useBf16x3ForF32=0 on gfx950: explicit off overrides the arch default.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=0 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_OFF
+
+// useBf16x3ForF32=-1 on gfx942: the arch default keeps the IEEE dot.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_DEFAULT_OFF
+
+// useBf16x3ForF32=1 on gfx942: explicit on overrides the arch default.
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_ON
+
+// Without fast math the decomposition is off regardless of the knob: neither
+// the gfx950 arch default (-1) nor an explicit request (1) can enable it.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=-1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu -disable-fast-math \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_NO_FAST_MATH
+
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f32 -p --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,matrixInstrNonkdim=16,numStages=2,useBf16x3ForF32=1 \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu -disable-fast-math \
+// RUN:   | FileCheck %s --check-prefix=BF16X3_NO_FAST_MATH
+
+// The tri-state is consumed by rock-to-ttir, so the bridge attribute that
+// carries it from rock-affix-params must not reach Triton IR. It would sit on
+// the kernel function, ahead of the dot, hence the leading CHECK-NOT.
+// BF16X3_DEFAULT_ON-NOT: rock.use_bf16x3_for_f32
+// BF16X3_DEFAULT_ON: tt.dot {{.*}} inputPrecision = bf16x3
+
+// BF16X3_OFF-NOT: inputPrecision = bf16x3
+// BF16X3_OFF: tt.dot
+
+// BF16X3_DEFAULT_OFF-NOT: inputPrecision = bf16x3
+// BF16X3_DEFAULT_OFF: tt.dot
+
+// BF16X3_ON: tt.dot {{.*}} inputPrecision = bf16x3
+
+// BF16X3_NO_FAST_MATH-NOT: inputPrecision = bf16x3
+// BF16X3_NO_FAST_MATH: tt.dot
+
+//===----------------------------------------------------------------------===//
 // `--pass-pipeline=...` validation
 //===----------------------------------------------------------------------===//
 

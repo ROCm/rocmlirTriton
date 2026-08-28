@@ -1,6 +1,7 @@
 //===- Pipelines.cpp - Create Rock compilation pipelines ---------------===//
 //
-// Copyright 2021 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -416,6 +417,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
+  // Cannot be merged with addWithDCE: that helper runs the pass in a new
+  // func nest and the DCE at module level, whereas here both the pass and the
+  // DCE runs on the caller existing func nest.
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
@@ -430,8 +438,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
-  // CSE after deduplicates the now-co-located shared operand loads.
+  // Must run after ToBlockwise passes, which build the K loop and the
+  // accumulator this pass decomposes, and before FuseSiblingLoops, so that it
+  // sees one blockwise_gemm per loop.
+  addWithDCE(rock::createRockDecomposeNonPow2KPass());
+  // Must run after GridwiseGemmToBlockwise and RockDecomposeNonPow2K, but
+  // before InsertOutputFusionLoads. CSE after deduplicates the now-co-located
+  // shared operand loads.
   addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
@@ -506,19 +519,18 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
   // Must run BEFORE TransformsToPointerArith: it simplifies the rock.transform
   // chains feeding TransformsToPtrOp by collapsing contiguous merges.
-  funcPm2.addPass(rock::createRockCollapseContiguousMergesPass());
   // CollapseContiguousMerges builds the collapsed chain fresh and rewires onto
   // it, leaving the original chain dead. DCE it so TransformsToPointerArith
-  // only sees the collapsed chain. Keep this nested per-func: a module-level
-  // RemoveDeadValues strips the kernel function / its rock.arch attribute and
-  // breaks downstream lowering ("rock.arch not found on kernel function").
-  funcPm2.addPass(createRemoveDeadValuesPass());
-  funcPm2.addPass(rock::createRockTransformsInvariantCodeMotionPass());
+  // only sees the collapsed chain.
+  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
+  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
   funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());

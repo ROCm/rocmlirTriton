@@ -302,8 +302,8 @@ pm->addNestedPass<mlir::triton::FuncOp>(
 
 `GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
 static K/V block count. This is a workaround for an LLVM AMDGPU raw-buffer
-bounds-checking bug that can make an out-of-contract `currentSeqLen` read past
-the K/V allocation. The LLVM issue is tracked by ROCM-28757.
+bounds-checking bug that can make an out-of-contract `lastValidKVIndex` read
+past the K/V allocation. The LLVM issue is tracked by ROCM-28757.
 
 On every LLVM bump, check whether the new pinned LLVM revision contains the
 upstream fix and whether the workaround is still necessary. Do not remove the
@@ -358,7 +358,6 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | Function | What to check |
 |----------|---------------|
 | `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
-| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. Mirrors LLVM's `FeatureAtomicFMinFMaxF32GlobalInsts`; there is no compare-and-swap fallback for float atomic max, so a wrong answer here is a codegen failure, not a slowdown. |
 | `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
 | `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |

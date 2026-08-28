@@ -481,6 +481,7 @@ void preMergeCheck(String codepath) {
     if ( (params.nightly == false) && (codepath == "mfma") ) {
         echo "Performing Static Test (preMergeCheck)"
         sh '''
+        set -eu
         if [ ! -f ./build/compile_commands.json ];  then
           echo "No compile commands, bailing."
           exit 1
@@ -488,6 +489,7 @@ void preMergeCheck(String codepath) {
         if [ ! -f ./compile_commands.json ]; then
           ln -s build/compile_commands.json compile_commands.json
         fi
+        # TableGen headers are built inside premerge-checks.py before clang-tidy.
         '''
         def targetBranch = env.CHANGE_TARGET
         if (!targetBranch) {
@@ -593,11 +595,23 @@ void setHeartbeat() {
     }
 }
 
+List<String> getEnabledMfmaArchitectures() {
+    def architectures = []
+    if (params.disable942 == false) architectures << 'gfx942'
+    if (params.disable908 == false) architectures << 'gfx908'
+    if (params.disable90a == false) architectures << 'gfx90a'
+    return architectures
+}
+
 String getLabelFromCodepath(String codepath) {
     echo "codepath is ${codepath}"
     String label = ''
     if (codepath == "mfma") {
-        label = 'mlir && (gfx942 || gfx908 || gfx90a)'
+        def architectures = getEnabledMfmaArchitectures()
+        if (architectures.isEmpty()) {
+            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+        }
+        label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
         // if (params.weekly) {
         //     label = 'mlir && linux-mi350-8'
@@ -737,7 +751,8 @@ boolean shouldRunFromCodepath(String codepath) {
         return true
     }
     // Run mfma when xdlops are available.
-    if ((codepath == "mfma") && params.canXdlops) {
+    if ((codepath == "mfma") && params.canXdlops &&
+        !getEnabledMfmaArchitectures().isEmpty()) {
         return true
     }
     if (codepath == "gfx950" && params.canXdlops && params.disable950 == false) {
@@ -811,7 +826,7 @@ boolean shouldRunBuildAndTest(String codepath) {
     // When a particular codepath is selected, test it if it is supported and
     // enabled.
     if (params.codepath == codepath && params.canXdlops) {
-        if (params.codepath == "mfma") return true
+        if (params.codepath == "mfma") return !getEnabledMfmaArchitectures().isEmpty()
         if (params.codepath == "vanilla") return true
         if (params.codepath == "gfx950" && params.disable950 == false) return true
         if (params.codepath == "navi21" && params.disableNavi21 == false) return true
@@ -1763,24 +1778,24 @@ PY
                                                             sh 'ls -l /dev/kfd'
                                                             sh 'ls -l /dev/dri'
                                                             // Run MLIR vs MIOpen perf benchmarks.
-                                                            sh """python3 ./bin/perfRunner.py --op=conv --batch_all \
-                                                                --configs_file=${convToUse} \
-                                                                --tuning_db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
-                                                                --quick_tuning_db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/perfRunner.py --op=conv --batch-all \
+                                                                --configs-file=${convToUse} \
+                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
+                                                                --quick-tuning-db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
                                                             // Run MLIR vs hipBLASLt perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op=gemm --batch_all \
-                                                                --configs_file=${gemmToUse} \
-                                                                --tuning_db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
-                                                                --quick_tuning_db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/perfRunner.py --op=gemm --batch-all \
+                                                                --configs-file=${gemmToUse} \
+                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
+                                                                --quick-tuning-db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
                                                         }
                                                     }
 
                                                     stage("Test Fusion") {
                                                         dir('build') {
                                                             // Run fusion resnet50 perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op=fusion --test_dir=${WORKSPACE}/mlir/test/fusion/resnet50-e2e/ --tuning_db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/perfRunner.py --op=fusion --test-dir=${WORKSPACE}/mlir/test/fusion/resnet50-e2e/ --tuning-db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
                                                             // Run bert perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op fusion --test_dir=${WORKSPACE}/mlir/test/xmir/bert-torch-tosa-e2e/ --tuning_db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
+                                                            sh """python3 ./bin/perfRunner.py --op fusion --test-dir=${WORKSPACE}/mlir/test/xmir/bert-torch-tosa-e2e/ --tuning-db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
                                                         }
                                                     }
 
@@ -1797,8 +1812,8 @@ PY
                                                                 }
                                                                 // Run attention benchmarks
                                                                 sh """python3 ./bin/perfRunner.py --op=attention -b \
-                                                                    --configs_file=${attnToUse} \
-                                                                    --tuning_db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv"""
+                                                                    --configs-file=${attnToUse} \
+                                                                    --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv"""
                                                             }
                                                         }
                                                     }
@@ -1835,9 +1850,9 @@ PY
                                                                             splitConfigFile(gemmInput, gemmToUse, runIndex)
                                                                         }
                                                                     }
-                                                                    sh """python3 ./bin/perfRunner.py --op=gemm --batch_all \
-                                                                --configs_file=${gemmToUse} \
-                                                                --tuning_db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv --data-type f32 f16 i8_i8 --external-gemm-library CK"""
+                                                                    sh """python3 ./bin/perfRunner.py --op=gemm --batch-all \
+                                                                --configs-file=${gemmToUse} \
+                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv --data-type f32 f16 i8_i8 --external-gemm-library CK"""
                                                                     sh 'python3 ./bin/createPerformanceReports.py ${CHIP} CK'
                                                                 }
                                                             }

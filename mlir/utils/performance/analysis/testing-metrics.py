@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Python script that analyses .tsv.debug files and gives insights such as
 # important metrics (Arithmetic Intensity, Occupancy, Work Imbalance) and
 # plots correlation between them with the selected parameters.

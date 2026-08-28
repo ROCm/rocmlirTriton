@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2025 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -413,12 +413,13 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
 
     auto newOp = rock::AttentionOp::create(
         rewriter, op->getLoc(), resultType, lseType, newQueries, newKeys,
-        newValues, op.getPreSoftmaxElemWiseInputs(), op.getCurrentSeqLen(),
+        newValues, op.getPreSoftmaxElemWiseInputs(), op.getLastValidKVIndex(),
         op.getPrefixOffset(), op.getNumHeadsQAttr(), op.getNumHeadsKVAttr(),
         op.getQTransposedAttr(), op.getKTransposedAttr(),
         op.getVTransposedAttr(), op.getOTransposedAttr(), op.getCausalAttr(),
-        rewriter.getI32IntegerAttr(splitKVFromQ), op.getSlidingWindowSizeAttr(),
-        op.getSoftmaxTypeAttr(), op.getParams0Attr(), op.getParams1Attr(),
+        rewriter.getI32IntegerAttr(splitKVFromQ),
+        op.getSlidingWindowLookBackAttr(), op.getSoftmaxTypeAttr(),
+        op.getParams0Attr(), op.getParams1Attr(),
         /*preSoftmaxHasSplitKVTransforms=*/rewriter.getBoolAttr(true));
 
     // Copy the preSoftmax elementwise region if it exists

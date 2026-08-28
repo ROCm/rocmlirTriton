@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2025 Advanced Micro Devices
+// Copyright Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -957,8 +957,7 @@ public:
             getTosaConstShape(rewriter, loc, biasSize));
       }
 
-      auto groupResultTy =
-          RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
+      auto groupResultTy = RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
       Value groupConv = tosa::Conv2DOp::create(
           rewriter, loc, groupResultTy, slicedInput, slicedFilter, groupBias,
           inputZp, weightZp, padAttr, strideAttr, dilationAttr, accType);
@@ -1026,7 +1025,6 @@ void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
   target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
     return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
            (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-            op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT &&
             op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES);
   });
   target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {

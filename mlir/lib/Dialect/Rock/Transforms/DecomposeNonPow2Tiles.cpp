@@ -1,6 +1,7 @@
 //===- DecomposeNonPow2Tiles.cpp - split non-pow2 gridwise tiles --------===//
 //
-// Copyright 2026 The MLIR Authors.
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -292,7 +293,8 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
         params.getGridGroupSize(), params.getUseAsyncCopy(),
         params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
         params.getUseBufferOps(), params.getUseBufferAtomics(),
-        params.getUseReductionLayout(), params.getUseOptimizeEpilogue());
+        params.getUseReductionLayout(), params.getUseOptimizeEpilogue(),
+        params.getUseBf16x3ForF32());
   };
 
   SmallVector<Value> resultGrid;
