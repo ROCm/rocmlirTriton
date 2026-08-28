@@ -463,7 +463,7 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   // can carry a MALL too. Either way the answer is not a property of the
   // family, whose maximum overshoots a MALL-less APU by up to 512x. Chips whose
   // configuration is published are therefore listed individually. Where a chip
-  // ships in several cache configurations (Navi 31 at 96/80/64 MiB, Navi 48 at
+  // ships in several cache configurations (gfx1100 at 96/80/64 MiB, gfx1201 at
   // 64/48 MiB, ...) the largest is used, so that a cache-flush buffer sized
   // from this always covers the live device.
   //
@@ -471,43 +471,45 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   // https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html, which
   // does not cover gfx10xx; those come from the per-chip tables amdgpu reports
   // to userspace in drivers/gpu/drm/amd/amdkfd/kfd_crat.c (cache_level 3 where
-  // a chip has a MALL, otherwise cache_level 2).
+  // a chip has a MALL, otherwise cache_level 2). Both sources index by product
+  // or codename rather than by gfx number, so looking a figure up again means
+  // mapping the target back to its chip first.
   int64_t perChipSize =
       llvm::StringSwitch<int64_t>(chip)
           // RDNA1: no MALL anywhere in the family, L2 is the last level.
-          .Case("gfx1010", 4 * kMiB) // Navi 10
-          .Case("gfx1011", 4 * kMiB) // Navi 12
-          .Case("gfx1012", 2 * kMiB) // Navi 14
-          .Case("gfx1013", 4 * kMiB) // Cyan Skillfish
+          .Case("gfx1010", 4 * kMiB)
+          .Case("gfx1011", 4 * kMiB)
+          .Case("gfx1012", 2 * kMiB)
+          .Case("gfx1013", 4 * kMiB)
           // RDNA2 discrete: Infinity Cache.
-          .Case("gfx1030", 128 * kMiB) // Navi 21
-          .Case("gfx1031", 96 * kMiB)  // Navi 22
-          .Case("gfx1032", 32 * kMiB)  // Navi 23
-          .Case("gfx1034", 16 * kMiB)  // Navi 24
+          .Case("gfx1030", 128 * kMiB)
+          .Case("gfx1031", 96 * kMiB)
+          .Case("gfx1032", 32 * kMiB)
+          .Case("gfx1034", 16 * kMiB)
           // RDNA2 APUs: no MALL. gfx1036 is a 2 CU part and its L2 is sized to
           // match, so it is the smallest last level cache of any target here.
-          .Case("gfx1033", 1 * kMiB)   // Van Gogh
-          .Case("gfx1035", 2 * kMiB)   // Rembrandt
-          .Case("gfx1036", 256 * kKiB) // Raphael / Granite Ridge
+          .Case("gfx1033", 1 * kMiB)
+          .Case("gfx1035", 2 * kMiB)
+          .Case("gfx1036", 256 * kKiB)
           // RDNA3 discrete: Infinity Cache.
-          .Case("gfx1100", 96 * kMiB) // Navi 31
-          .Case("gfx1101", 64 * kMiB) // Navi 32
-          .Case("gfx1102", 32 * kMiB) // Navi 33
+          .Case("gfx1100", 96 * kMiB)
+          .Case("gfx1101", 64 * kMiB)
+          .Case("gfx1102", 32 * kMiB)
           // RDNA3 / RDNA3.5 APUs. An APU is not automatically MALL-less: of
-          // these, Strix Halo has one and the rest stop at their L2.
-          .Case("gfx1103", 2 * kMiB)  // Phoenix
-          .Case("gfx1150", 2 * kMiB)  // Strix Point
-          .Case("gfx1151", 32 * kMiB) // Strix Halo, MALL over a 2 MiB L2
-          .Case("gfx1152", 1 * kMiB)  // Krackan Point
-          // TODO(gfx1153): guess, AMD has not published Radeon 820M's cache.
-          // It is the smallest RDNA3.5 APU, which bounds its L2 above by
-          // Krackan Point's 1 MiB, and Strix Halo is the only RDNA3.5 APU
-          // *known* to carry a MALL - a MALL here would make this value far
-          // too small. Replace it once real numbers exist.
-          .Case("gfx1153", 1 * kMiB) // Radeon 820M
+          // these, only gfx1151 has one and the rest stop at their L2.
+          .Case("gfx1103", 2 * kMiB)
+          .Case("gfx1150", 2 * kMiB)
+          .Case("gfx1151", 32 * kMiB) // MALL over a 2 MiB L2
+          .Case("gfx1152", 1 * kMiB)
+          // TODO(gfx1153): guess, AMD has not published this chip's cache. It
+          // is the smallest RDNA3.5 APU, which bounds its L2 above by gfx1152's
+          // 1 MiB, and gfx1151 is the only RDNA3.5 APU *known* to carry a MALL
+          // - a MALL here would make this value far too small. Replace it once
+          // real numbers exist.
+          .Case("gfx1153", 1 * kMiB)
           // RDNA4 discrete: Infinity Cache.
-          .Case("gfx1200", 32 * kMiB) // Navi 44
-          .Case("gfx1201", 64 * kMiB) // Navi 48
+          .Case("gfx1200", 32 * kMiB)
+          .Case("gfx1201", 64 * kMiB)
           .Default(0);
   if (perChipSize != 0)
     return perChipSize;
