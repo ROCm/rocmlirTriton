@@ -17,6 +17,7 @@ patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
+patch-f16-exp-log-lowering.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -373,4 +374,18 @@ patch-elementwise-fastmath-flags.patch
   sequence rather than a bare reciprocal.
 
   Not yet proposed upstream. Keep until Triton forwards these flags itself.
+
+patch-f16-exp-log-lowering.patch
+  Keeps approximate FP16 exp and log lowering in FP16 so the AMDGPU backend
+  can select the native v_exp_f16 and v_log_f16 instructions.
+
+  ExpOpConversionApprox now handles FP16 as well as FP32, scaling by log2(e)
+  in the source type and calling llvm.exp2.f16 instead of falling through to
+  __ocml_exp_f16, which widens the calculation to FP32. FP16 log is lowered
+  directly to llvm.intr.log at the AMD pattern benefit, outranking
+  MathToROCDL's __ocml_log_f16 path and preserving the fast-math flags needed
+  for native instruction selection. BF16 and FP64 retain their existing
+  higher-precision fallbacks.
+
+  Not yet proposed upstream. Keep until Triton provides equivalent lowering.
 
