@@ -363,6 +363,7 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |
 | `getWaveSize()` / `getLDSSize()` | These delegate to `TargetInfo`, so they should work automatically if Triton adds the arch. Verify. |
 | `supportsTDM()` | Delegates to `TargetInfo`. Verify it returns the correct value for the new arch. |
+| `isCDNA()` / `isRDNA()` | Delegate to `triton::amdgpu::isCDNA` / `isRDNA`, and `isCDNA()` picks the tuning space. Re-check the classification on every bump: a family moving between the two switches resizes the space with no build error. |
 
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
@@ -383,10 +384,14 @@ list, regenerate the `.inc` (Step 11).
 `ISAFamily`. If a new variant is added, our switches (which use `default:`) will
 silently return a fallback value. The `ISAFamily` enum is defined in
 `TargetFeatures.h` (it moved out of the now-removed
-`TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries:
+`TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries, along with the
+`.cpp` that holds the `isCDNA` / `isRDNA` switch bodies (a reclassification does
+not touch the header):
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- external/triton/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h
+git diff "$OLD_REPO..$NEW_REPO" -- \
+  external/triton/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
+  external/triton/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
 ```
 
 ### 5.6 Hardware feature detection
@@ -640,6 +645,7 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
 - [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
+- [ ] Diff `TargetFeatures.cpp` and re-check the `isCDNA` / `isRDNA` classification that picks the tuning space (see section 5.5)
 - [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
 - [ ] Mirror new or dropped `knobs.amd.*` switches, and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
 - [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
