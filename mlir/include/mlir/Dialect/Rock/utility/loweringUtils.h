@@ -28,7 +28,6 @@ class Type;
 
 namespace rock {
 struct ConvolutionDims;
-struct GemmSize;
 
 namespace layout {
 /// Struct containing the {g,m,n} block coordinates of a block
@@ -56,18 +55,9 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
                                             int64_t kPerBlock,
                                             int64_t dPerBlock, bool isKFirst);
 
-bool isWrWAtomicKernel(Type dataType, bool requiredPadding);
-
 // Return true if this shaped type will occupy more than 4 GB (2 ^ 32 bytes)
 // in memory.
 bool is4GBMemoryType(ShapedType type);
-
-// Returns true if `kBlocks` is a structurally valid backward-weight K-blocks
-// value for batch dimension `N`: strictly positive and an exact divisor of
-// `N`. The bwd-weight atomic-add lowering in `ConvToGemm` splits the batch
-// dimension into (kBlocks, N / kBlocks), so violating either constraint would
-// silently truncate the tensor.
-bool isValidKBlocks(int64_t kBlocks, int64_t N);
 
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
 /// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
@@ -76,35 +66,6 @@ bool isValidKBlocks(int64_t kBlocks, int64_t N);
 LogicalResult validatePerfConfig(Operation *op,
                                  RockTuningParamAttrInterface params,
                                  bool requirePow2MN, bool requirePow2K);
-
-// Heuristic logic to compute KBlock for backward weight atomic add kernel.
-// The logic is adopted from MIOpen.
-//
-// The logic searches within the range of [1, 20 * number of CUs / gridSize],
-// where gridSize is the original number of workgroups required for the
-// convolution, and find the largest KBlock number which preserves the 2
-// contraints:
-// - GemmK (before splitting) = KBlock * KPerBlock * KPack * GemmK (after
-// splitting).
-// - n (batch size) is divisible by KBlock.
-//
-// 20 is a magic number obtained in MIOpen after empirical testing. It offers a
-// reasonable reduction of GemmK after splitting, without incurring too much
-// overheads on atomic adds. One potential future work is to make this value be
-// tunable.
-LogicalResult calculateKBlockNum(const int64_t batchSize,
-                                 const GemmSize &gemmSize, int64_t MPerBlock,
-                                 int64_t NPerBlock, int64_t KPerBlock,
-                                 int64_t KPack, int64_t num_cu,
-                                 int64_t &nKBlock);
-
-/// Compute kBlocks for a backward-weight convolution given selected GEMM
-/// params. Returns 1 when the op is not WrW-atomic (not bwd-weight, or the
-/// dtype/padding combination is ineligible). Returns failure when the params
-/// cannot yield a valid kBlocks split. Shared by AffixTuningParameters and
-/// the rocmlir-gen verifier so the two cannot diverge.
-FailureOr<int64_t> computeBwdWeightKBlocks(RockGemmWrapperInterface op,
-                                           GemmParamsAttr params);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.

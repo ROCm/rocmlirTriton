@@ -36,8 +36,7 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
                 "rock.gemm_elementwise_gemm";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "scf::SCFDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["rock::RockDialect", "gpu::GPUDialect"];
 }
 
 def RockAffixTuningParametersPass

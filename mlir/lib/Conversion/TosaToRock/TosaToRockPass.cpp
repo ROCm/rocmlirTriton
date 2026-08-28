@@ -40,7 +40,8 @@ public:
       return;
 
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      func.emitError("TosaToRockPass: func op does not have the kernel attribute");
+      func.emitError(
+          "TosaToRockPass: func op does not have the kernel attribute");
       signalPassFailure();
     }
     auto &ctx = getContext();
@@ -75,7 +76,6 @@ public:
     target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
       return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
              (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-              op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT &&
               op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES);
     });
     target.addIllegalOp<tosa::Conv2DOp, tosa::Conv3DOp, tosa::MatMulOp,
