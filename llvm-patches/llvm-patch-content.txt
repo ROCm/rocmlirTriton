@@ -190,6 +190,55 @@ Drop this patch on the next LLVM/Triton bump that includes upstream merge
 commit 0a015cc516abb7f54bcdd94763f44219b6298bd9.
 
 ----------------------------------------------------------------------
+patch208136.patch
+----------------------------------------------------------------------
+- Upstream commit : 75a1d31c69c98eeb236d8bf954d709b271fcb55a
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/208136
+- Upstream title  : [AMDGPU] revert srl pattern for true16 mode
+- File Fixed      : llvm/lib/Target/AMDGPU/SIInstructions.td
+                    llvm/test/CodeGen/AMDGPU/* (135 generated-check files,
+                    knowingly left stale; see Contents)
+- Contents        : Deletes the real-true16 ISel pattern that lowered
+                    `(srl VGPR_32, 16)` through REG_SEQUENCE + V_MOV_B16 0.
+                    Companion to #208045; they share the same coalescer /
+                    scheduler root cause.
+
+                    Unlike patch208045, this record does *not* import the
+                    upstream AMDGPU CodeGen LIT refresh. Removing the srl
+                    pattern changes generated ISA, so the vendored
+                    llvm/test/CodeGen/AMDGPU/* checks that were generated
+                    with the pattern present are now stale and would fail
+                    if anyone runs the LLVM CodeGen suite against
+                    external/llvm-project. That skip is intentional: the
+                    hunks do not apply cleanly to the pinned tree (context
+                    drift from later true16 ISel / scheduler output), and
+                    rocmlirTriton's `check-mlir` / `check-rocmlir` path
+                    does not run those tests.
+
+                    On the next bump that includes 75a1d31c, confirm
+                    those vendored checks converge with upstream rather
+                    than treating a remaining TRUE16 mismatch as a new
+                    local regression.
+
+Symptom without the patch
+-------------------------
+The true16 srl-by-16 pattern materializes a shared zero immediate with
+V_MOV_B16 and stitches it into the high half via REG_SEQUENCE. Register
+coalescing can join those repeated zero copies, creating a long WAR chain
+that makes the machine scheduler bail out and inflates compile time. This
+is the remaining half of the regression that led upstream Triton to pass
+`-real-true16` for gfx11 (triton-lang/triton#11188 cites this PR).
+
+Root cause
+----------
+Same as #208045: REG_SEQUENCE of a value with a separately copied zero
+immediate is a coalescer hazard in true16 mode. Reverting the srl pattern
+falls back to the generic shift lowering instead of the V_MOV_B16 0 form.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream merge
+commit 75a1d31c69c98eeb236d8bf954d709b271fcb55a.
+
+----------------------------------------------------------------------
 patch208280.patch
 ----------------------------------------------------------------------
 - Upstream commit : 41c4167cd066e8a9c3185917cafa9bef2cbfdb6d
