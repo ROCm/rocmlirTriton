@@ -94,3 +94,40 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// FP16 has a native exp2, so the expansion stays in FP16 instead of falling
+// through to __ocml_exp_f16, which is defined in terms of FP32. The flags have
+// to reach both operations or the backend will not select v_exp_f16. Neither
+// choice depends on ftz, hence COMMON.
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func public @test_exp_f16(%arg0: tensor<64xf16, #blocked>) {
+    // COMMON-LABEL: test_exp_f16
+    // COMMON: llvm.fmul
+    // COMMON-SAME: {fastmathFlags = #llvm.fastmath<afn>}
+    // COMMON: llvm.call @llvm.exp2.f16
+    // COMMON-SAME: {fastmathFlags = #llvm.fastmath<afn>}
+    // COMMON-NOT: __ocml_exp_f16
+    %0 = math.exp %arg0 fastmath<afn> : tensor<64xf16, #blocked>
+    tt.return
+  }
+}
+
+// -----
+
+// FP16 log goes to llvm.intr.log rather than MathToROCDL's __ocml_log_f16,
+// which is defined as (half)(log2f((float)x) * ln2) and so widens by
+// construction. Keeping the flags is what lets the backend pick v_log_f16.
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [1], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func public @test_log_f16(%arg0: tensor<64xf16, #blocked>) {
+    // COMMON-LABEL: test_log_f16
+    // COMMON: llvm.intr.log
+    // COMMON-SAME: {fastmathFlags = #llvm.fastmath<afn>}
+    // COMMON-NOT: __ocml_log_f16
+    %0 = math.log %arg0 fastmath<afn> : tensor<64xf16, #blocked>
+    tt.return
+  }
+}
