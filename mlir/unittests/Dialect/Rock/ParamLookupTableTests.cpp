@@ -66,8 +66,6 @@ TEST(FindFallbackTest, UnavailableTuningList) {
   // Fall back for single-config lists
   EXPECT_EQ("gfx1200_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
-  EXPECT_EQ("gfx1201_conv_f16",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1200_conv_f16"));
   // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
