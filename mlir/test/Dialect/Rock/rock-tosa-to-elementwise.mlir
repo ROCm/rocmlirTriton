@@ -186,16 +186,11 @@ func.func @floor_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.k
 
 // -----
 
+// Tanh is left as math.tanh; rock-legalize-math-for-triton picks its lowering
+// once the target is known.
 // CHECK-LABEL: @tanh_f32
 // CHECK-NOT:   tosa.tanh
-// CHECK-NOT:   math.tanh
-// Tanh is expanded using the math dialect expansion pattern.
-// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf32>
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf32>
-// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<64xf32>
-// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<64xf32>
-// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<64xi1> to tensor<64xf32>
-// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<64xf32>
+// CHECK:       math.tanh %arg0 : tensor<64xf32>
 func.func @tanh_f32(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
   %0 = tosa.tanh %arg0 : (tensor<64xf32>) -> tensor<64xf32>
   return %0 : tensor<64xf32>
@@ -237,9 +232,7 @@ func.func @abs_i32(%arg0: tensor<32xi32>) -> tensor<32xi32> attributes {rock.ker
 
 // CHECK-LABEL: @negate_f32
 // CHECK-NOT:   tosa.negate
-// CHECK-NOT:   arith.negf
-// CHECK-DAG:   %[[NEG_ONE:.*]] = arith.constant dense<-1.000000e+00> : tensor<16xf32>
-// CHECK:       arith.mulf %arg0, %[[NEG_ONE]] : tensor<16xf32>
+// CHECK:       arith.negf %arg0 : tensor<16xf32>
 func.func @negate_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
   %in_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
   %out_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
@@ -916,14 +909,7 @@ func.func @unsigned_cast_non_kernel(%arg0: tensor<16xf32>) -> tensor<16xi32> {
 
 // CHECK-LABEL: @tanh_f16
 // CHECK-NOT:   tosa.tanh
-// CHECK-NOT:   math.tanh
-// Tanh is expanded using the math dialect expansion pattern.
-// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf16>
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<64xf16>
-// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<64xf16>
-// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<64xf16>
-// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<64xi1> to tensor<64xf16>
-// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<64xf16>
+// CHECK:       math.tanh %arg0 : tensor<64xf16>
 func.func @tanh_f16(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.kernel} {
   %0 = tosa.tanh %arg0 : (tensor<64xf16>) -> tensor<64xf16>
   return %0 : tensor<64xf16>
@@ -931,15 +917,8 @@ func.func @tanh_f16(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.ke
 
 // -----
 
-// math.tanh directly in IR is expanded using the math dialect expansion pattern.
 // CHECK-LABEL: @tanh_direct
-// CHECK-NOT:   math.tanh
-// CHECK-DAG:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32xf32>
-// CHECK-DAG:   %[[ONE:.*]] = arith.constant dense<1.000000e+00> : tensor<32xf32>
-// CHECK-DAG:   %[[NEGTWO:.*]] = arith.constant dense<-2.000000e+00> : tensor<32xf32>
-// CHECK:       %[[CMP:.*]] = arith.cmpf olt, %arg0, %[[ZERO]] : tensor<32xf32>
-// CHECK:       %[[UITOFP:.*]] = arith.uitofp %[[CMP]] : tensor<32xi1> to tensor<32xf32>
-// CHECK:       arith.mulf %[[UITOFP]], %[[NEGTWO]] : tensor<32xf32>
+// CHECK:       math.tanh %arg0 : tensor<32xf32>
 func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = math.tanh %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -947,11 +926,11 @@ func.func @tanh_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
-// NegFTritonWorkaround: arith.negf on tensors is expanded to mulf(x, -1).
+// arith.negf is in the op subset Triton converts, and it lowers to an LLVM
+// fneg, i.e. a free source modifier, so it is left alone on tensors as well as
+// on scalars.
 // CHECK-LABEL: @negf_direct
-// CHECK-NOT:   arith.negf
-// CHECK:       %[[NEG1:.*]] = arith.constant dense<-1.000000e+00> : tensor<32xf32>
-// CHECK:       arith.mulf %arg0, %[[NEG1]] : tensor<32xf32>
+// CHECK:       arith.negf %arg0 : tensor<32xf32>
 func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = arith.negf %arg0 : tensor<32xf32>
   return %0 : tensor<32xf32>
@@ -959,7 +938,6 @@ func.func @negf_direct(%arg0: tensor<32xf32>) -> tensor<32xf32> attributes {rock
 
 // -----
 
-// NegFTritonWorkaround only applies to shaped types; scalar negf is preserved.
 // CHECK-LABEL: @negf_scalar_preserved
 // CHECK:       arith.negf %arg0 : f32
 func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
@@ -969,14 +947,11 @@ func.func @negf_scalar_preserved(%arg0: f32) -> f32 attributes {rock.kernel} {
 
 // -----
 
-// PowFTritonWorkaround: tosa.pow is expanded to exp(y * log(x))
-// because the Triton TritonToTritonGPU conversion has no pattern for math.powf.
+// Like tanh, pow is left as math.powf; rock-legalize-math-for-triton turns it
+// into the OCML call once the target is known.
 // CHECK-LABEL: @pow_f32
 // CHECK-NOT:   tosa.pow
-// CHECK-NOT:   math.powf
-// CHECK:       %[[LOG:.*]] = math.log %arg0 : tensor<64xf32>
-// CHECK:       %[[MUL:.*]] = arith.mulf %arg1, %[[LOG]] : tensor<64xf32>
-// CHECK:       math.exp %[[MUL]] : tensor<64xf32>
+// CHECK:       math.powf %arg0, %arg1 : tensor<64xf32>
 func.func @pow_f32(%arg0: tensor<64xf32>, %arg1: tensor<64xf32>) -> tensor<64xf32> attributes {rock.kernel} {
   %0 = tosa.pow %arg0, %arg1 : (tensor<64xf32>, tensor<64xf32>) -> tensor<64xf32>
   return %0 : tensor<64xf32>
@@ -984,12 +959,8 @@ func.func @pow_f32(%arg0: tensor<64xf32>, %arg1: tensor<64xf32>) -> tensor<64xf3
 
 // -----
 
-// PowFTritonWorkaround: math.powf directly in IR is expanded.
 // CHECK-LABEL: @powf_direct
-// CHECK-NOT:   math.powf
-// CHECK:       %[[LOG:.*]] = math.log %arg0 : tensor<32xf32>
-// CHECK:       %[[MUL:.*]] = arith.mulf %arg1, %[[LOG]] : tensor<32xf32>
-// CHECK:       math.exp %[[MUL]] : tensor<32xf32>
+// CHECK:       math.powf %arg0, %arg1 : tensor<32xf32>
 func.func @powf_direct(%arg0: tensor<32xf32>, %arg1: tensor<32xf32>) -> tensor<32xf32> attributes {rock.kernel} {
   %0 = math.powf %arg0, %arg1 : tensor<32xf32>
   return %0 : tensor<32xf32>

@@ -24,7 +24,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -312,31 +311,6 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
     Value one = arith::ConstantOp::create(rewriter, loc, oneAttr);
     rewriter.replaceOpWithNewOp<arith::DivFOp>(op, op.getType(), one,
                                                op.getInput1());
-    return success();
-  }
-};
-
-// arith.negf(x) -> arith.mulf(x, -1.0)
-// This supports migraphx.neg operator, which will be expanded to arith.negf.
-// However, the TritonToTritonGPU conversion does not have a pattern for
-// arith.negf, so we expand it here into ops that Triton supports.
-//
-// Note that the cleanest way would be to make Triton support arith.negf,
-// however they rejected this change:
-// https://github.com/triton-lang/triton/pull/9955
-struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(arith::NegFOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    auto negOneAttr = DenseElementsAttr::get(
-        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
-    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
-    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
-                                               op.getOperand(), negOne);
     return success();
   }
 };
@@ -657,14 +631,6 @@ struct RockTosaToElementwise
 
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
-    // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
-    // illegal so the workaround patterns below get applied to them.
-    target.addDynamicallyLegalOp<math::TanhOp>(
-        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::PowFOp>(
-        [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<arith::NegFOp>(
-        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
@@ -724,20 +690,6 @@ struct RockTosaToElementwise
              SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
             ctx);
     patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
-
-    // --- Triton workarounds ---
-    // The Triton TritonToTritonGPU conversion is missing patterns for
-    // math.tanh and math.powf so we use upstream
-    // math::populateExpansionPatterns to expand them into ops Triton supports.
-    //
-    // TODO(gfx1250): gfx1250 will have dedicated instructions for tanh,
-    // we need to make sure we emit those instead of using the math.tanh
-    // expansion.
-    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
-
-    // This is to support migraphx.neg operator, which will be expanded to
-    // arith.negf.
-    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

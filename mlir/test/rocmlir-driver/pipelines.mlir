@@ -5,6 +5,8 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1100 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1201 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1170 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
+// RUN: rocmlir-opt --rock-triton-pipeline='arch=gfx942' --dump-pass-pipeline /dev/null 2>&1 | FileCheck %s --check-prefix=FTZ
+// RUN: rocmlir-opt --rock-triton-pipeline='arch=gfx942 allowFlushDenorm=false' --dump-pass-pipeline /dev/null 2>&1 | FileCheck %s --check-prefix=NOFTZ
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
@@ -77,6 +79,8 @@
 // GPU-NEXT:func.func(rock-lower-stores),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-add-triton-metadata),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-legalize-math-for-triton{disable-fast-math=false}),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(math-extend-to-supported-types{extra-types={f16} target-type=f32}),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
@@ -312,6 +316,16 @@
 // TRITON_RDNA-NEXT:llvm.func(rock-fold-oob-buffer-ops),
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:cse)
+
+// `ftz` on the two Triton-to-LLVM conversion passes is bound to
+// TritonOptions::allowFlushDenorm rather than hardcoded, so flipping the option
+// has to flip both passes. Otherwise exp2 and friends keep flushing denormals
+// even when the kernel asked for IEEE behaviour.
+// FTZ:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch=gfx942}
+// FTZ:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx942}
+
+// NOFTZ:convert-triton-amdgpu-to-llvm{ftz=false gfx-arch=gfx942}
+// NOFTZ:convert-builtin-func-to-llvm{ftz=false gfx-arch=gfx942}
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
 // produce `gpu.binary` (via TritonToHsaco + RockEmitGpuBinary) but must NOT
