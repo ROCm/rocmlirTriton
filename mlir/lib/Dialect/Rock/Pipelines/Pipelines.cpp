@@ -262,7 +262,8 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout, bool useBufferOps) {
+                     int64_t useReductionLayout, bool useBufferOps,
+                     bool allowFlushDenorm) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   // Redistribute the layout of the reduction dimension to reduce register
@@ -284,16 +285,22 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // Because we do not implement the instrumentation thing (see
   // docs/bump_triton_version.md Step 6), a single call is sufficient.
 
-  // ## __HIP_FTZ is used to control the denorm flushing behavior of exp2 op as
-  // follows:
-  // ## 1. If __HIP_FTZ = 1, exp2 flushes denorms in input and output regardless
-  // ##    of the value of kernel arg `allow_flush_denorm`.
-  // ## 2. If __HIP_FTZ = 0, whether exp2 flushes denorms in input and output
-  // ##    depends on the value of kernel arg `allow_flush_denorm`.
-  // ## 3. __HIP_FTZ is default to 1 and not exposed as a kernel argument.
-  // ##    For now it is used as a controller for developers only.
-  pm->addPass(
-      mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, /*ftz=*/true));
+  // `ftz` controls the denorm flushing behaviour of exp2:
+  //  - ftz = 1: exp2 becomes the raw `v_exp_f32`, which flushes input and
+  //    output denorms regardless of the kernel's `denormal-fp-math-f32`.
+  //  - ftz = 0: exp2 becomes `llvm.exp2.f32`, and the LLVM backend adds the
+  //    scaling sequence that preserves denorms unless the kernel attribute
+  //    already allows flushing them.
+  //
+  // Upstream hardwires this to 1 (`__HIP_FTZ`, compiler.py) because it has no
+  // user-facing denormal knob. rocmlirTriton does: `denormal-fp-math-f32` is
+  // set from `BackendOptions::allowFlushDenorm` in TritonToHsaco. Hardwiring
+  // `ftz` to 1 here would flush denorms anyway and silently defeat that, so it
+  // follows `TritonOptions::allowFlushDenorm` instead. Those are two separate
+  // options on two separate pipelines; both have to be set to get IEEE
+  // denormals end to end.
+  bool ftz = allowFlushDenorm;
+  pm->addPass(mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz));
   pm->addPass(
       mlir::triton::AMD::createTritonAMDGPUConvertWarpSpecializeToLLVMPass(
           arch));
@@ -309,8 +316,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
 
   // TODO: add_di_scope
 
-  pm->addPass(
-      mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
+  pm->addPass(mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, ftz));
   pm->addPass(mlir::createReconcileUnrealizedCastsPass());
 
   // --- rocmlirTriton pass ----
@@ -477,6 +483,16 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
 
+  // Rewrite the math ops Triton has no conversion pattern for. This has to come
+  // before math-extend-to-supported-types, which would otherwise promote a bf16
+  // or fp8 tanh to f32 and leave it indistinguishable from one the user asked
+  // for at f32. The two get different lowerings, so the distinction matters.
+  {
+    rock::RockLegalizeMathForTritonPassOptions legalizeMathOpts;
+    legalizeMathOpts.disableFastMath = options.disableFastMath;
+    addWithDCE(rock::createRockLegalizeMathForTritonPass(legalizeMathOpts));
+  }
+
   // Legalize math ops on narrow floats before they are converted to integer
   // storage types. LLVM math intrinsics do not accept fp8/fp4 operands.
   {
@@ -581,7 +597,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
   makeLLIR(&pm, arch, options.useReductionLayout,
-           isBufferOpsEnabled(options.useBufferOps));
+           isBufferOpsEnabled(options.useBufferOps), options.allowFlushDenorm);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)
