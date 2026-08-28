@@ -1,4 +1,5 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-to-ttir --split-input-file -mlir-print-op-generic | FileCheck %s --check-prefix=IEEE
 
 // CHECK-LABEL: @test_load_conversion
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
@@ -91,6 +92,28 @@ func.func @test_gemm_conversion(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf1
 //  CHECK-NOT:   rock.blockwise_store_ptr
 func.func @test_atomic_add_store(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xi32>, %arg2: tensor<64x64xi1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   rock.blockwise_store_ptr %arg0 -> %arg1(%arg2) by atomic_add : tensor<64x64xf32> -> tensor<64x64xi32>(tensor<64x64xi1>)
+  return
+}
+
+// -----
+
+// A rank-1 reduction produces a scalar tt.reduce result. It is wrapped in a
+// rank-0 tensor so it can feed the corresponding rank-0 atomic store.
+// CHECK-LABEL: @test_reduce_rank1_atomic_add_store
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<256xf32>, %[[PTRS:.*]]: tensor<i32>, %[[MASK:.*]]: tensor<i1>)
+//      CHECK:   %[[SCALAR:.*]] = "tt.reduce"(%[[INPUT]]) <{axis = 0 : i32}>
+//      CHECK:   ^bb0(%[[LHS:.*]]: f32, %[[RHS:.*]]: f32):
+//      CHECK:     %[[SUM:.*]] = arith.addf %[[LHS]], %[[RHS]] : f32
+//      CHECK:     tt.reduce.return %[[SUM]] : f32
+//      CHECK:   }) : (tensor<256xf32>) -> f32
+//      CHECK:   %[[REDUCED:.*]] = tt.splat %[[SCALAR]] : f32 -> tensor<f32>
+//      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<i32> -> tensor<!tt.ptr<f32>>
+//      CHECK:   tt.atomic_rmw fadd, relaxed, gpu, %[[PTR_TENSOR]], %[[REDUCED]], %[[MASK]]
+//  CHECK-NOT:   rock.blockwise_reduce
+//  CHECK-NOT:   rock.blockwise_store_ptr
+func.func @test_reduce_rank1_atomic_add_store(%arg0: tensor<256xf32>, %arg1: tensor<i32>, %arg2: tensor<i1>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_reduce sum %arg0 {axis = 0 : index} : tensor<256xf32> -> tensor<f32>
+  rock.blockwise_store_ptr %0 -> %arg1(%arg2) by atomic_add : tensor<f32> -> tensor<i32>(tensor<i1>)
   return
 }
 
@@ -359,7 +382,8 @@ func.func @test_unscaled_gemm_f8(
 
 // -----
 
-// Test: f32 GEMM lowers to tt.dot.
+// Test: f32 GEMM lowers to tt.dot with the default IEEE input precision on an
+// arch that does not prefer the 3xBF16 decomposition.
 
 // CHECK-LABEL: @test_gemm_f32
 // CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
@@ -369,9 +393,91 @@ func.func @test_unscaled_gemm_f8(
 func.func @test_gemm_f32(
     %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
     %c: tensor<64x64xf32>) -> tensor<64x64xf32>
-    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel} {
   %result = rock.blockwise_gemm(%a, %b, %c)
     : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: on gfx950 an f32 GEMM asks for the 3xBF16 decomposition, which
+// TritonGPUF32DotTC later expands into dense bf16 MFMAs. Absent
+// `rock.use_bf16x3_for_f32`, the arch default decides.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf32>, %[[B:.*]]: tensor<64x64xf32>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]], inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//      CHECK:   return
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx950(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 0` in the perfConfig forces the IEEE path even on gfx950,
+// where the arch default would decompose. The tri-state is consumed here, so
+// the bridge attribute must not survive into Triton IR.
+
+// CHECK-LABEL: @test_gemm_f32_gfx950_bf16x3_off
+//  CHECK-NOT:   rock.use_bf16x3_for_f32
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}} : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+// IEEE-LABEL:   sym_name = "test_gemm_f32_gfx950_bf16x3_off"
+// IEEE:         "tt.dot"({{.*}}) <{inputPrecision = 2 : i32,
+func.func @test_gemm_f32_gfx950_bf16x3_off(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel,
+                rock.use_bf16x3_for_f32 = 0 : i64} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: `useBf16x3ForF32 = 1` forces the decomposition on an arch whose default is
+// the IEEE path.
+
+// CHECK-LABEL: @test_gemm_f32_gfx942_bf16x3_on
+//      CHECK:   %[[RESULT:.*]] = tt.dot %{{.*}}, %{{.*}}, %{{.*}}, inputPrecision = bf16x3 : tensor<64x64xf32> * tensor<64x64xf32> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f32_gfx942_bf16x3_on(
+    %a: tensor<64x64xf32>, %b: tensor<64x64xf32>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel,
+                rock.use_bf16x3_for_f32 = 1 : i64} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf32>, tensor<64x64xf32>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: the 3xBF16 decomposition is f32-only -- an f16 GEMM on gfx950 keeps the
+// default IEEE input precision (which tt.dot ignores for non-f32 operands).
+
+// CHECK-LABEL: @test_gemm_f16_gfx950
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf16>, %[[B:.*]]: tensor<64x64xf16>, %[[C:.*]]: tensor<64x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.dot %[[A]], %[[B]], %[[C]] : tensor<64x64xf16> * tensor<64x64xf16> -> tensor<64x64xf32>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_gemm_f16_gfx950(
+    %a: tensor<64x64xf16>, %b: tensor<64x64xf16>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+  %result = rock.blockwise_gemm(%a, %b, %c)
+    : tensor<64x64xf16>, tensor<64x64xf16>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
@@ -578,6 +684,64 @@ func.func @test_truncf_f32_to_f16_unchanged(%arg0: tensor<64xf32>) -> tensor<64x
 func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
   %0 = arith.extf %arg0 : tensor<64xf16> to tensor<64xf32>
   return %0 : tensor<64xf32>
+}
+
+// -----
+
+// Test: an explicit to_nearest_even on a non-FP8 truncf keeps it in arith.
+// RTNE is already the default, so there is nothing for tt.fp_to_fp to add.
+// This matches Triton's semantic.cast, where `use_custom_rounding` is only set
+// for a requested mode that differs from RTNE.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtne_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = arith.truncf %[[INPUT]] to_nearest_even : tensor<64xf32> to tensor<64xf16>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_truncf_f32_to_f16_rtne_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 to_nearest_even : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: a non-FP8 truncf asking for toward_zero becomes tt.fp_to_fp with RTZ.
+// Triton's AMD arith.truncf lowering ignores the rounding attribute and always
+// uses RTNE for f32 -> f16/bf16, so RTZ has to leave arith to be honoured.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<64xf32> -> tensor<64xf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f16_rtz(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: the same holds for a bf16 destination.
+
+// CHECK-LABEL: @test_truncf_f32_to_bf16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<2x64xf32> -> tensor<2x64xbf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_bf16_rtz(%arg0: tensor<2x64xf32>) -> tensor<2x64xbf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<2x64xf32> to tensor<2x64xbf16>
+  return %0 : tensor<2x64xbf16>
+}
+
+// -----
+
+// Test: an FP8 destination carries the requested RTZ through rather than
+// falling back to the RTNE default used when no rounding mode is present.
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E5M2_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<4xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<4xf32> -> tensor<4xf8E5M2>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E5M2_rtz(%arg0: tensor<4xf32>) -> tensor<4xf8E5M2> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<4xf32> to tensor<4xf8E5M2>
+  return %0 : tensor<4xf8E5M2>
 }
 
 // -----

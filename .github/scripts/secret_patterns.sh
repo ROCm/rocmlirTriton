@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Secret/credential pattern definitions for the Claude PR review pipeline.
 #
 # Sourced by sanitize_claude_actions.sh, which scans extracted JSON strings

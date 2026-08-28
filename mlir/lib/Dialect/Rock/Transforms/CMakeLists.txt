@@ -12,6 +12,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
+  DecomposeNonPow2K.cpp
   FuseSiblingLoops.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
@@ -23,7 +24,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   PreserveMaskedLoadSemantics.cpp
   CollapseContiguousMerges.cpp
   PointerArithExpand.cpp
-  TransformsInvariantCodeMotion.cpp
+  IncrementalPointerArith.cpp
   TransformsToPointerArith.cpp
   RockToTTIR.cpp
   SerializeHostFuncs.cpp

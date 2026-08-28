@@ -7,8 +7,6 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -p -rand 1 -rand_side input | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND2
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -p -rand 1 -rand_side filter -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED2
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -p -rand 1 -rand_side output  -operation conv_bwd_data | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND2
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -p -rand 1 -rand_side input -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,RAND1,FIXED2
-// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -perf_config="gemm:v1:64,64,64,1,1,4,16,2,2,0,0" -ph -p -rand 1 -rand_side output  -operation conv_bwd_weight | rocmlir-opt -canonicalize | FileCheck %s --check-prefixes=CHECK,HASFIXED,FIXED1,RAND2
 
 // CHECK-LABEL: @main
 // CHECK-DAG: %[[zero:.*]] = arith.constant 0.000000e+00 : f32
@@ -22,7 +20,6 @@
 // CHECK: affine.for
 // RAND1-NEXT: %[[val1:.*]] = func.call @randomIntegerValue(%[[min]], %[[max]])
 // FIXED1-NEXT: %[[val1:.*]] = func.call @randomIntegerValue(%[[one_i16]], %[[one_i16]])
-// BWDWEIGHT-NEXT: memref.store %[[zero]]
 // RAND1-NEXT: memref.store %[[val1]]
 // FIXED1-NEXT: memref.store %[[val1]]
 // CHECK: memref.alloc

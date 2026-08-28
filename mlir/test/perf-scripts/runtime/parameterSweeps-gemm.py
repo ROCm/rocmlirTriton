@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # GEMM companion to ``parameterSweeps-conv.py``: same harness, same
 # rationale, exercises the GemmConfiguration code path.
 #

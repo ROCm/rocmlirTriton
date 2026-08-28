@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
@@ -165,7 +168,6 @@ std::string
 ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
   switch (kernelType) {
   case KernelType::ConvBwdData:
-  case KernelType::ConvBwdWeight:
     // We use the same suffix for all convolution types
     return stringifyEnum(KernelType::Conv).lower();
   default:

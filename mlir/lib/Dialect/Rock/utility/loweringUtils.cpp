@@ -42,12 +42,6 @@ using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
 
-bool mlir::rock::isWrWAtomicKernel(StringRef arch, Type dataType,
-                                   bool requiredPadding) {
-  return isFastAtomicAddSupported(arch, dataType) &&
-         (dataType.isF32() || dataType.isF16()) && !requiredPadding;
-}
-
 bool mlir::rock::is4GBMemoryType(ShapedType type) {
   if (!type.hasStaticShape())
     return true;
@@ -63,52 +57,154 @@ bool mlir::rock::is4GBMemoryType(ShapedType type) {
          (int64_t)std::numeric_limits<uint32_t>::max();
 }
 
-bool mlir::rock::isValidKBlocks(int64_t kBlocks, int64_t N) {
-  return kBlocks >= 1 && N % kBlocks == 0;
+// Per-field perf-config validators. A violation is treated as a hard
+// diagnostic; `markAsNotApplicable` is reserved for arch-feature mismatches.
+static bool isPositivePowerOfTwo(int64_t v) {
+  return v > 0 && llvm::isPowerOf2_64(static_cast<uint64_t>(v));
 }
 
-LogicalResult mlir::rock::calculateKBlockNum(const int64_t batchSize,
-                                             const GemmSize &gemmSize,
-                                             int64_t MPerBlock,
-                                             int64_t NPerBlock,
-                                             int64_t KPerBlock, int64_t KPack,
-                                             int64_t num_cu, int64_t &nKBlock) {
-  const int64_t gemmM = gemmSize.m;
-  const int64_t gemmN = gemmSize.n;
-  const int64_t gemmK = gemmSize.k;
+static LogicalResult validatePositivePowerOfTwo(Operation *op, StringRef name,
+                                                int64_t value) {
+  if (!isPositivePowerOfTwo(value))
+    return op->emitError() << name << "=" << value
+                           << " must be a positive power of two";
+  return success();
+}
 
-  int64_t gemmKBlock = 1;
+static LogicalResult validatePositiveValue(Operation *op, StringRef name,
+                                           int64_t value) {
+  if (value <= 0)
+    return op->emitError() << name << "=" << value << " must be positive";
+  return success();
+}
 
-  assert(gemmM > 0 && gemmN > 0 && gemmK > 0);
-  assert(MPerBlock > 0 && NPerBlock > 0 && KPerBlock > 0 && KPack > 0 &&
-         batchSize > 0);
+static LogicalResult validateNumCTAs(Operation *op, int64_t numCTAs) {
+  if (numCTAs < 1)
+    return op->emitError() << "numCTAs=" << numCTAs << " must be >= 1";
+  if (!isPositivePowerOfTwo(numCTAs))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " must be a positive power of two";
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxNumCTAs = rock::getMaxNumCTAs(arch);
+  if (numCTAs > maxNumCTAs)
+    return op->emitError() << "numCTAs=" << numCTAs << " exceeds max ("
+                           << maxNumCTAs << ") for " << arch;
+  if (numCTAs != 1 && !rock::supportsMultiCTALaunch(arch))
+    return op->emitError() << "numCTAs=" << numCTAs
+                           << " but multi-CTA launch is not supported on "
+                           << arch;
+  return success();
+}
 
-  if ((gemmM % MPerBlock != 0) || (gemmN % NPerBlock != 0) ||
-      (gemmK % (KPerBlock * KPack) != 0))
+static LogicalResult validateKpack(Operation *op, int64_t kpack) {
+  StringRef arch = rock::getArchValue(op);
+  if (kpack < 1)
+    return op->emitError() << "kpack=" << kpack << " must be positive";
+  int64_t maxKpack = rock::getMaxKpack(arch);
+  if (kpack > maxKpack)
+    return op->emitError() << "kpack=" << kpack << " exceeds max (" << maxKpack
+                           << ") for " << arch;
+  return success();
+}
+
+static LogicalResult validateNumWaves(Operation *op, int64_t numWaves) {
+  if (!isPositivePowerOfTwo(numWaves))
+    return op->emitError() << "numWaves=" << numWaves
+                           << " must be a positive power of two";
+  int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
+  int64_t maxNumWaves = rock::maxHardwareWorkgroupSize / waveSize;
+  if (numWaves > maxNumWaves)
+    return op->emitError() << "numWaves=" << numWaves
+                           << " * waveSize=" << waveSize
+                           << " exceeds max workgroup size ("
+                           << rock::maxHardwareWorkgroupSize << ")";
+  return success();
+}
+
+static LogicalResult validateMatrixInstrNonkdim(Operation *op,
+                                                int64_t matrixInstrNonkdim) {
+  if (matrixInstrNonkdim != 0 && !isPositivePowerOfTwo(matrixInstrNonkdim))
+    return op->emitError()
+           << "matrixInstrNonkdim=" << matrixInstrNonkdim
+           << " must be 0 (heuristic) or a positive power of two";
+  return success();
+}
+
+static LogicalResult validateSplitKFactor(Operation *op, int64_t splitKFactor) {
+  if (splitKFactor < 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be >= 1";
+  if (isa<AttentionOp>(op) && splitKFactor != 1)
+    return op->emitError() << "splitKFactor=" << splitKFactor
+                           << " must be 1 for attention";
+  return success();
+}
+
+static LogicalResult validateNumStages(Operation *op, int64_t numStages) {
+  if (numStages < 1)
+    return op->emitError() << "numStages=" << numStages << " must be >= 1";
+  return success();
+}
+
+static LogicalResult validateWavesPerEU(Operation *op, int64_t wavesPerEU) {
+  if (wavesPerEU < 0)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " must be >= 0";
+  StringRef arch = rock::getArchValue(op);
+  int64_t maxWavesPerEU = rock::getMaxWavesPerEU(arch);
+  if (wavesPerEU > maxWavesPerEU)
+    return op->emitError() << "wavesPerEU=" << wavesPerEU << " exceeds max ("
+                           << maxWavesPerEU << ") for " << arch;
+  return success();
+}
+
+static LogicalResult validateGridGroupSize(Operation *op,
+                                           int64_t gridGroupSize) {
+  if (gridGroupSize < 0)
+    return op->emitError() << "gridGroupSize=" << gridGroupSize
+                           << " must be >= 0";
+  return success();
+}
+
+static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
+  if (nPerBlockG1 != 0 && !isPositivePowerOfTwo(nPerBlockG1))
+    return op->emitError() << "nPerBlockG1=" << nPerBlockG1
+                           << " must be 0 (untiled) or a positive power of two";
+  return success();
+}
+
+LogicalResult
+mlir::rock::validatePerfConfig(Operation *op,
+                               RockTuningParamAttrInterface params,
+                               bool requirePow2MN, bool requirePow2K) {
+  auto validateMN =
+      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
     return failure();
-
-  const int64_t gridSize =
-      gemmSize.g * (gemmM / MPerBlock) * (gemmN / NPerBlock);
-  const int64_t maxGridSize = 20 * num_cu;
-
-  gemmKBlock = std::max(maxGridSize / gridSize, static_cast<int64_t>(1));
-  gemmKBlock = std::min(gemmKBlock, batchSize);
-
-  for (; gemmKBlock > 1; --gemmKBlock) {
-    if (!isValidKBlocks(gemmKBlock, batchSize))
-      continue;
-
-    if (gemmK % (gemmKBlock * KPerBlock * KPack) != 0)
-      continue;
-
-    break;
-  }
-  // not more than n
-  gemmKBlock = std::min(batchSize, gemmKBlock);
-  // not less than 1
-  gemmKBlock = std::max((int64_t)1, gemmKBlock);
-
-  nKBlock = gemmKBlock;
+  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+    return failure();
+  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+      return failure();
+  auto validateK =
+      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
+    return failure();
+  if (failed(validateKpack(op, params.getKpack())))
+    return failure();
+  if (failed(validateNumCTAs(op, params.getNumCTAs())))
+    return failure();
+  if (failed(validateNumWaves(op, params.getNumWaves())))
+    return failure();
+  if (failed(validateMatrixInstrNonkdim(op, params.getMatrixInstrNonkdim())))
+    return failure();
+  if (failed(validateSplitKFactor(op, params.getSplitKFactor())))
+    return failure();
+  if (failed(validateNumStages(op, params.getNumStages())))
+    return failure();
+  if (failed(validateWavesPerEU(op, params.getWavesPerEU())))
+    return failure();
+  if (failed(validateGridGroupSize(op, params.getGridGroupSize())))
+    return failure();
   return success();
 }
 
@@ -518,20 +614,20 @@ Type mlir::rock::getAccType(Type elemA, Type elemB) {
 
 // This function will process a tile of gemm input into LDS (or register)
 // buffer in a way it could be fed to blockwise_gemm op
-Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
-                           Value kIter, StringRef dName,
+Value mlir::rock::loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
+                           StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
                            int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                            SmallVector<int64_t, 3> &bidGridLengths,
                            rock::CacheModifier cache) {
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
-      rewriter, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
+      b, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);
   assert(succeeded(maybeBufferViews));
   ArrayAttr bufferViews = maybeBufferViews.value();
 
   // Compute the tile result type by applying the tiling transforms to
   // determine the output shape, then taking the last two dimensions.
-  Value wrappedSource = transform(rewriter, in, bufferViews);
+  Value wrappedSource = transform(b, in, bufferViews);
   auto sourceType = cast<RankedTensorType>(wrappedSource.getType());
   auto sourceShape = sourceType.getShape();
   auto resultType = RankedTensorType::get(sourceShape.take_back(2),
@@ -545,11 +641,11 @@ Value mlir::rock::loadTile(PatternRewriter &rewriter, Location loc, Value in,
   // The tile's dimensions are ordered by `isKFirst`, which puts the k axis
   // that the gemm reduces over first for matrix B and second for matrix A.
   int64_t reductionTileAxis = isKFirst ? 0 : 1;
-  auto markerOp = LoadMarkerOp::create(
-      rewriter, loc, resultType, in, bufferViews,
-      ValueRange{kIter, gridCoords.g_block, gridCoords.m_block,
-                 gridCoords.n_block},
-      cache, rewriter.getDenseI64ArrayAttr({reductionTileAxis}));
+  auto markerOp =
+      LoadMarkerOp::create(b, loc, resultType, in, bufferViews,
+                           ValueRange{kIter, gridCoords.g_block,
+                                      gridCoords.m_block, gridCoords.n_block},
+                           cache, b.getDenseI64ArrayAttr({reductionTileAxis}));
   return markerOp.getResult();
 }
 

@@ -4,7 +4,7 @@
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2022 Advanced Micro Devices INc.
+// Copyright Advanced Micro Devices, Inc.
 //===----------------------------------------------------------------------===//
 //
 // This file defines RockConvInterface, which groups common access methods
@@ -26,7 +26,6 @@ def RockConvInterface : OpInterface<"RockConvInterface"> {
     operand or the computed result of the operation:
     - ConvOp:          filter=operand, input=operand,  output=result
     - ConvBwdDataOp:   filter=operand, input=result,   output=operand($gradient)
-    - ConvBwdWeightOp: filter=result,  input=operand,  output=operand($gradient)
   }];
   let cppNamespace = "::mlir::rock";
 

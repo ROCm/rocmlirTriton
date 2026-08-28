@@ -200,30 +200,31 @@ hardware LDS limit and causing a launch failure.
 
 Attention kernels with KV-cache support use **statically-shaped** K and V
 tensors (compiled to a maximum sequence length `maxSeqLen`) but accept a
-per-batch runtime scalar `currentSeqLen` that gives the **last valid key
-index** (0-based, inclusive — so `currentSeqLen + 1` tokens are
+per-batch runtime scalar `lastValidKVIndex` that gives the **last valid key
+index** (0-based and inclusive, so `lastValidKVIndex + 1` tokens are
 meaningful).
 
-The kernel shortens its N-loop to `ceil((currentSeqLen + 1) /
+The kernel shortens its N-loop to `ceil((lastValidKVIndex + 1) /
 NPerBlock)` tiles and masks logits for key positions past
-`currentSeqLen` to `-inf` on the last iteration, so they do not affect
+`lastValidKVIndex` to `-inf` on the last iteration, so they do not affect
 the softmax result.
 
 **Caller requirements:**
 
 - K and V buffers must be valid for at least
-  `ceil((currentSeqLen + 1) / NPerBlock) * NPerBlock` elements along
-  the sequence axis (i.e. `currentSeqLen` rounded up to the next tile
-  boundary). Padding values beyond `currentSeqLen` are irrelevant
+  `ceil((lastValidKVIndex + 1) / NPerBlock) * NPerBlock` elements along
+  the sequence axis (i.e. `lastValidKVIndex + 1` rounded up to the next tile
+  boundary). Padding values beyond `lastValidKVIndex` are irrelevant
   (masked to `-inf`), but the memory must be mapped and accessible.
   Note: `llvm.dereferenceable` is set to the full static `maxSeqLen`
   byte size, so strictly speaking the safest option is to allocate the
   full `maxSeqLen` extent; in practice the kernel only accesses the
   tile-rounded region.
-- `currentSeqLen` must satisfy `0 <= currentSeqLen <= maxSeqLen - 1`.
+- `lastValidKVIndex` must satisfy
+  `0 <= lastValidKVIndex <= maxSeqLen - 1`.
   A value >= `maxSeqLen` can drive the N-loop past the static tensor
   extent, causing out-of-bounds loads.
-- `currentSeqLen` is a 1-D tensor with one element per batch, matching
+- `lastValidKVIndex` is a 1-D tensor with one element per batch, matching
   the output batch dimension.
 
 ---
@@ -250,4 +251,4 @@ the softmax result.
 | Valid pointers | **External** | `nonnull`, `dereferenceable` |
 | No concurrent external writes | **External** | `agent-one-as`, `invariant` |
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
-| KV-cache: full allocation required | **External** | Static tensor shape; runtime `currentSeqLen` bounds N-loop |
+| KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |

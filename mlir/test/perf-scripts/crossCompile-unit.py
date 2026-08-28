@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Unit tests for ``crossCompile.py``, the local-compile / remote-benchmark
 wrapper around tuningRunner.py.
 

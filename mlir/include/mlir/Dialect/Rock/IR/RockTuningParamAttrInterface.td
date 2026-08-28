@@ -1,10 +1,10 @@
 //===- RockTuningParamAttrInterface.td - tuning params for the rock ops ---===//
 //
-// Part of the rocMLIR Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Part of the rocMLIR Project, under the Apache License v2.0 with LLVM
+// Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (c) 2022 Advanced Micro Devices INc.
+// Copyright Advanced Micro Devices, Inc.
 //===----------------------------------------------------------------------===//
 //
 // This file defines RockTuningParamAttrInterface, which abstracts definitions
@@ -220,6 +220,17 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
         }],
                      /*retType=*/"int64_t",
                      /*methodName=*/"getUseOptimizeEpilogue",
+                     /*args=*/(ins),
+                     /*methodBody=*/"",
+                     /*defaultImplementation=*/"">,
+                 InterfaceMethod<
+                     /*desc=*/[{
+          Gate for lowering an f32 `tt.dot` as three bf16 products instead of
+          an IEEE f32 dot. `-1` follows the per-arch default, `0` forces the
+          IEEE path, and `1` forces the decomposition.
+        }],
+                     /*retType=*/"int64_t",
+                     /*methodName=*/"getUseBf16x3ForF32",
                      /*args=*/(ins),
                      /*methodBody=*/"",
                      /*defaultImplementation=*/"">,

@@ -75,8 +75,6 @@ struct PopulateParamsInfo {
   Type gemmAType;
   Type gemmBType;
   KernelType kernelType;
-  int64_t batchSize;
-  uint32_t numCu;
   bool hasFusedReduction;
   // Block-scaled (MXFP-style) GEMM metadata. `quantBlockSize` is unset for
   // non-scaled ops; the scale element types come from
@@ -91,13 +89,6 @@ struct PopulateParamsInfo {
       : gemmSize(gemmSize), arch(arch), gemmAType(gemmAType),
         gemmBType(gemmBType), kernelType(kernelType), hasFusedReduction(false) {
   }
-
-  PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
-                     Type gemmBType, KernelType kernelType, int64_t batchSize,
-                     uint32_t numCu)
-      : gemmSize(gemmSize), arch(arch), gemmAType(gemmAType),
-        gemmBType(gemmBType), kernelType(kernelType), batchSize(batchSize),
-        numCu(numCu), hasFusedReduction(false) {}
 
   /// Extract the relevant information from a RockGemmWrapperInterface operation
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);
@@ -207,7 +198,8 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*useBufferOps=*/kKnobDefault,
                              /*useBufferAtomics=*/kKnobDefault,
                              /*useReductionLayout=*/kKnobDefault,
-                             /*useOptimizeEpilogue=*/kKnobDefault);
+                             /*useOptimizeEpilogue=*/kKnobDefault,
+                             /*useBf16x3ForF32=*/kKnobDefault);
 }
 
 /// Bump the first param matching `isApplicable` to the front, preserving the
@@ -259,9 +251,6 @@ public:
   FailureOr<GemmParamsAttr>
   obtainTuningParameters(OpBuilder &b, const PopulateParamsInfo &info,
                          const StringRef perfConfig);
-
-  int64_t calculatePaddingAmount(GemmParamsAttr params,
-                                 const GemmSize &gemmSize) const;
 
   // Return the set of heuristic tuning parameters for the given opType, data
   // types, and architecture. Pass `quantBlockSize` / `aScaleType` /

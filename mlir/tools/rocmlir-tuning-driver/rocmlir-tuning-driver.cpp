@@ -1,6 +1,6 @@
 //===- rocmlir-tuning-driver.cpp - rocMLIR tuning driver -------------===//
 //
-// Copyright (c) 2022 Advanced Micro Devices Inc.
+// Copyright Advanced Micro Devices, Inc.
 //
 // Part of the rocMLIR project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
@@ -398,6 +398,8 @@ static benchmark::DataType getDataType(Type inputType) {
     return benchmark::DataType::BF16;
   } else if (inputType.isInteger(8)) {
     return benchmark::DataType::I8;
+  } else if (inputType.isInteger(4)) {
+    return benchmark::DataType::I4;
   } else if (isa<Float8E4M3FNUZType, Float8E4M3FNType, Float8E5M2Type,
                  Float8E5M2FNUZType>(inputType)) {
     return benchmark::DataType::F8;

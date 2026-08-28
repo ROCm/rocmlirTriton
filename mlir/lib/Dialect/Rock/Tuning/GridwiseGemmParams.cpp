@@ -1,7 +1,9 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir-c/Dialect/Rock.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
-#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -46,12 +48,6 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
-
-  if (auto convOp = dyn_cast<ConvBwdWeightOp>(*op)) {
-    auto convDims = ConvolutionDims::fromOp(op);
-    info.numCu = rock::getNumCUValue(convOp);
-    info.batchSize = convDims.n;
-  }
   func::FuncOp func = op->getParentOfType<func::FuncOp>();
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
@@ -186,26 +182,6 @@ static LogicalResult couldFusedReductionBePerformant(const GemmSize &gemmSize,
   return success();
 }
 
-static int64_t calculatePaddingComplexity(const GemmSize &paddingAmount,
-                                          const GemmSize &gemmSize) {
-  int64_t nonPaddedComplexity = gemmSize.m * gemmSize.k * gemmSize.n;
-  int64_t paddedComplexity = (gemmSize.m + paddingAmount.m) *
-                             (gemmSize.k + paddingAmount.k) *
-                             (gemmSize.n + paddingAmount.n);
-  return paddedComplexity - nonPaddedComplexity;
-}
-
-int64_t PopulateParams::calculatePaddingAmount(GemmParamsAttr params,
-                                               const GemmSize &gemmSize) const {
-  std::optional<GemmSize> maybeGemmExtraPad =
-      calculatePadding(params.getKPerBlock(), params.getMPerBlock(),
-                       params.getNPerBlock(), gemmSize);
-  if (maybeGemmExtraPad.has_value()) {
-    return calculatePaddingComplexity(maybeGemmExtraPad.value(), gemmSize);
-  }
-  return 0;
-}
-
 LogicalResult PopulateParams::couldBePerformant(const PopulateParamsInfo &info,
                                                 GemmParamsAttr params) {
   if (info.hasFusedReduction) {
@@ -297,12 +273,14 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   (void)dataTypeA;
   (void)dataTypeB;
 
-  /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
-  /// factor total wave count into an M×N wave grid; `nPerWave` is
-  /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
+  /// MFMA/XDL-only heuristic (rocMLIR
+  /// `PopulateParamsXDL::specificCouldBePerformant`): factor total wave count
+  /// into an M×N wave grid; `nPerWave` is `nPerBlock / nWaves`; `mnPerXdl` is
+  /// `matrixInstrNonkdim`.
 
   /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
-  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
+  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on
+  /// RDNA).
   MatrixAccelKind accelKind = getMatrixAccelKind(arch, dataTypeA, dataTypeB);
   bool isMFMA = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;

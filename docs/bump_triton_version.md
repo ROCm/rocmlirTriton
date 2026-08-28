@@ -302,8 +302,8 @@ pm->addNestedPass<mlir::triton::FuncOp>(
 
 `GridwiseAttnToBlockwise.cpp` clamps the KV-cache N-loop trip count to the
 static K/V block count. This is a workaround for an LLVM AMDGPU raw-buffer
-bounds-checking bug that can make an out-of-contract `currentSeqLen` read past
-the K/V allocation. The LLVM issue is tracked by ROCM-28757.
+bounds-checking bug that can make an out-of-contract `lastValidKVIndex` read
+past the K/V allocation. The LLVM issue is tracked by ROCM-28757.
 
 On every LLVM bump, check whether the new pinned LLVM revision contains the
 upstream fix and whether the workaround is still necessary. Do not remove the
@@ -358,8 +358,6 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | Function | What to check |
 |----------|---------------|
 | `getMatrixAccelKind()` | Does the new arch support MFMA, WMMA, or scaled variants? Update the selection logic (version thresholds, `isF8F6F4`, `isScaledWmmaType`). |
-| `isFastAtomicAddSupported()` | Add the new `ISAFamily` case if atomic f32/f16/bf16 adds are supported. |
-| `isFastAtomicMaxSupported()` | Add the new `ISAFamily` case if atomic f32 max is supported. |
 | `getMaxNumChiplets()` | Update if the new arch has multi-chiplet GPUs. |
 | `getMinNumCU()` | Add the new `ISAFamily` case with the minimum CU count. |
 | `getMaxWavesPerEU()` | Add the new `ISAFamily` case with the correct occupancy limit. |
@@ -606,8 +604,16 @@ matrix. Because the table is compiled into the library, rebuild afterward
 ## Step 12: Run Tests
 
 ```bash
-cd build && ninja check-rocmlir
+cd build && ninja check-mlir && ninja check-rocmlir
 ```
+
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
+the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
+did not regress MLIR itself. Run it before `check-rocmlir`: it is far quicker, so
+regressions surface earlier. The nightly pipeline runs it too, and there with
+`MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that lands on `develop` is covered
+even if this step is skipped.
+
 ## Checklist Summary
 
 Use this checklist to track progress:
@@ -640,7 +646,7 @@ Use this checklist to track progress:
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
-- [ ] Run tests with `cd build && ninja check-rocmlir`
+- [ ] Run tests with `cd build && ninja check-mlir && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 

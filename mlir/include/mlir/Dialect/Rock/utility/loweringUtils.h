@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -27,7 +28,6 @@ class Type;
 
 namespace rock {
 struct ConvolutionDims;
-struct GemmSize;
 
 namespace layout {
 /// Struct containing the {g,m,n} block coordinates of a block
@@ -55,39 +55,17 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
                                             int64_t kPerBlock,
                                             int64_t dPerBlock, bool isKFirst);
 
-bool isWrWAtomicKernel(StringRef arch, Type dataType, bool requiredPadding);
-
 // Return true if this shaped type will occupy more than 4 GB (2 ^ 32 bytes)
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
-// Returns true if `kBlocks` is a structurally valid backward-weight K-blocks
-// value for batch dimension `N`: strictly positive and an exact divisor of
-// `N`. The bwd-weight atomic-add lowering in `ConvToGemm` splits the batch
-// dimension into (kBlocks, N / kBlocks), so violating either constraint would
-// silently truncate the tensor.
-bool isValidKBlocks(int64_t kBlocks, int64_t N);
-
-// Heuristic logic to compute KBlock for backward weight atomic add kernel.
-// The logic is adopted from MIOpen.
-//
-// The logic searches within the range of [1, 20 * number of CUs / gridSize],
-// where gridSize is the original number of workgroups required for the
-// convolution, and find the largest KBlock number which preserves the 2
-// contraints:
-// - GemmK (before splitting) = KBlock * KPerBlock * KPack * GemmK (after
-// splitting).
-// - n (batch size) is divisible by KBlock.
-//
-// 20 is a magic number obtained in MIOpen after empirical testing. It offers a
-// reasonable reduction of GemmK after splitting, without incurring too much
-// overheads on atomic adds. One potential future work is to make this value be
-// tunable.
-LogicalResult calculateKBlockNum(const int64_t batchSize,
-                                 const GemmSize &gemmSize, int64_t MPerBlock,
-                                 int64_t NPerBlock, int64_t KPerBlock,
-                                 int64_t KPack, int64_t num_cu,
-                                 int64_t &nKBlock);
+/// Validate every field shared by Rock GEMM tuning parameter attributes.
+/// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
+/// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
+/// support. Emits an error on `op` for the first invalid field.
+LogicalResult validatePerfConfig(Operation *op,
+                                 RockTuningParamAttrInterface params,
+                                 bool requirePow2MN, bool requirePow2K);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
@@ -164,7 +142,7 @@ ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
 
 Type getAccType(Type elemA, Type elemB);
 
-Value loadTile(PatternRewriter &rewriter, Location loc, Value in, Value kIter,
+Value loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
                StringRef dName, rock::layout::GridCoordinates gridCoords,
                int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
                SmallVector<int64_t, 3> &bidGridLengths,

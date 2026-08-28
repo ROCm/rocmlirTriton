@@ -28,6 +28,8 @@
 // triton::AMD::TargetInfo
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
+#include <cassert>
+
 #define DEBUG_TYPE "rock-amd-arch-db"
 
 using namespace mlir;
@@ -62,6 +64,12 @@ std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
 //===----------------------------------------------------------------------===//
 // Matrix Acceleration Support Detection (using Triton APIs)
 //===----------------------------------------------------------------------===//
+
+/// The M and N extent of every WMMA intrinsic, across RDNA3/RDNA4 and both the
+/// plain and scaled flavours: only kDim varies (16, 32, 64, 128).
+/// Mirror of the `wmmaMap` entries in
+/// `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/WmmaGroup.cpp`
+static constexpr unsigned kWmmaNonKDim = 16;
 
 /// Check if MFMA is supported for the given types on the specified version.
 /// Triton's MfmaIntrinsic::selectFor() requires tile dimensions, but we only
@@ -122,21 +130,19 @@ static bool hasScaledWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
   // Use large K to match any intrinsic - gfx1250 fp8 WMMA uses kDim=128
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
 /// Check if WMMA is supported for the given types on the specified version.
-/// All WMMA intrinsics across RDNA3/RDNA4 use 16x16 tiles (only kDim varies).
 static bool hasWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
                            Type elemOut) {
-  // WMMA has consistently used 16x16 tiles across all RDNA architectures.
-  // The kDim varies (16, 32, 64, 128) but selectFor handles that internally.
+  // Use a large K so selectFor() matches whichever kDim the table offers.
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
@@ -247,104 +253,53 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Type type) {
+FailureOr<int64_t>
+mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                 Type inputTypeB, uint32_t instrNonKDim,
+                                 Type scaleAType, Type scaleBType) {
+  MatrixAccelKind accelKind =
+      getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
+  if (accelKind == MatrixAccelKind::None)
+    return failure();
+
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
+  Type elemOut = rock::getAccType(elemA, elemB);
   auto [isaFamily, _] = getArch(arch);
 
-  Type elem = getElementTypeOrSelf(type);
-  if (elem.isF32()) {
-    switch (isaFamily) {
-    case ISAFamily::GCN5_1:
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA1:
-    case ISAFamily::RDNA2:
-    case ISAFamily::RDNA3:
-    case ISAFamily::GFX1170:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA1:
-    case ISAFamily::CDNA2:
-    case ISAFamily::CDNA3:
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  } else if (elem.isBF16()) {
-    switch (isaFamily) {
-    case ISAFamily::CDNA4:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
+  // Both selectFor()s walk their candidates widest-K first and then fall
+  // through to "the only / smallest-K intrinsic", so an input K of zero skips
+  // every candidate and lands on exactly the one we are asking for.
+  constexpr unsigned narrowest = 0;
+
+  if (accelKind == MatrixAccelKind::WMMA ||
+      accelKind == MatrixAccelKind::ScaledWMMA) {
+    auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
+                                          kWmmaNonKDim, kWmmaNonKDim, narrowest,
+                                          elemA, elemB, elemOut);
+
+    assert(succeeded(instr) && "WMMA arch has no intrinsic for its own types");
+    if (failed(instr))
+      return failure();
+    return instr->kDim;
   }
-  return false;
+
+  MLIRContext *ctx = elemA.getContext();
+  auto instr = MfmaIntrinsic::selectFor(
+      UnknownLoc::get(ctx), rock::getMfmaVersion(isaFamily), instrNonKDim,
+      instrNonKDim, narrowest, elemA, elemB,
+      /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
+      /*useTF32=*/false);
+  if (failed(instr))
+    return failure();
+  return instr->kDim;
 }
 
-bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Type type) {
-  auto [isaFamily, _] = getArch(arch);
-
-  Type elem = getElementTypeOrSelf(type);
-  if (elem.isF32()) {
-    switch (isaFamily) {
-    case ISAFamily::RDNA1:
-    case ISAFamily::RDNA2:
-    case ISAFamily::RDNA3:
-    case ISAFamily::GFX1170:
-    case ISAFamily::RDNA4:
-    case ISAFamily::GFX1250:
-      return true;
-    default:
-      return false;
-    }
-  }
-  return false;
-}
-
-// Enum-dtype adapters: build a real MLIR Type and dispatch to the existing
-// Type-based overload. The Type-based versions remain the single source of
-// truth for the family-vs-dtype matrix; this is just a thin convenience for
-// out-of-MLIR callers (e.g. the Python test binding) that prefer to pass a
-// dtype as an enum rather than constructing an MLIR Type themselves.
-static FailureOr<Type> dtypeToType(MLIRContext &ctx, Dtype dtype) {
-  Builder b(&ctx);
-  switch (dtype) {
-  case Dtype::F32:
-    return b.getF32Type();
-  case Dtype::F16:
-    return b.getF16Type();
-  case Dtype::BF16:
-    return b.getBF16Type();
-  }
-  return failure();
-}
-
-bool mlir::rock::isFastAtomicAddSupported(StringRef arch, Dtype dtype) {
-  MLIRContext ctx;
-  FailureOr<Type> t = dtypeToType(ctx, dtype);
-  if (failed(t))
-    return false;
-  return isFastAtomicAddSupported(arch, *t);
-}
-
-bool mlir::rock::isFastAtomicMaxSupported(StringRef arch, Dtype dtype) {
-  MLIRContext ctx;
-  FailureOr<Type> t = dtypeToType(ctx, dtype);
-  if (failed(t))
-    return false;
-  return isFastAtomicMaxSupported(arch, *t);
+FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
+    StringRef arch, RockGemmWrapperInterface gemmOp, uint32_t instrNonKDim) {
+  return getAccelInstrMinKDim(arch, gemmOp.getAType(), gemmOp.getBType(),
+                              instrNonKDim, gemmOp.getScaleAType(),
+                              gemmOp.getScaleBType());
 }
 
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
@@ -630,6 +585,14 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
 bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
   auto [chip, _] = parseArchString(arch);
   return chip != "gfx950";
+}
+
+// Decomposing an f32 dot into three bf16 products trades the f32 MFMA
+// for the higher throughput bf16 ops. CDNA4 was measured to perform better
+// overall with this decomposition.
+bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {

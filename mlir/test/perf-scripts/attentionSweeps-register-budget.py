@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 """Pin ``attentionSweeps._waves_per_eu_register_budget_ok`` across every
 (wave_size, vgprs_per_eu) regime the predicate distinguishes. Both values
 come from the AmdArchDB pybind module (``amd_arch_db.get_wave_size`` /

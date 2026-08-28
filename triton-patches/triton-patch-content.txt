@@ -5,19 +5,23 @@ This directory holds downstream patch records against the vendored Triton tree
 (external/triton/).
 
 ----------------------------------------------------------------------
+patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-gfx1170.patch
+patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
+patch11295.patch
 patch10497.patch
 patch10563.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
+patch11018.patch
 patch11118.patch
 
 patch-partitionloops-clang-cl.patch
@@ -129,6 +133,50 @@ patch-gfx1170.patch
   Drop this patch on the next Triton bump that pulls gfx1170 support upstream
   into external/triton.
 
+patch-gfx1170-fp8-cvt.patch
+  Applies on top of patch-gfx1170.patch and uses the hardware OCP fp8/bf8
+  conversion instructions on gfx1170. gfx1170 and RDNA4 have
+  FeatureFP8ConversionInsts, i.e. the *plain*
+  v_cvt_pk_f32_{fp8,bf8} / v_cvt_pk_{fp8,bf8}_f32 ops, and on them those ops
+  read and write the OCP encoding -- unlike CDNA3, where the same mnemonics
+  mean FNUZ, which is why the existing plain converters could not simply be
+  reused. They also lack the scaled v_cvt_scalef32_pk_* ops that CDNA4 and
+  gfx1250 use, so the CDNA4 OCP converters could not be reused either.
+  ConvertFpCastOpToLLVM therefore gains a hasPlainOcpFp8HW({GFX1170})
+  capability and a plain-hardware branch in each of the twelve OCP fp8
+  dispatchers, replacing the software bit-manipulation fallback. Those twelve
+  branches share two helpers, plainHWUpcastFromFp8 and plainHWDowncastToFp8,
+  parameterized by the f32/f16/bf16 type on the non-fp8 side. There is no
+  plain 16-bit-source op, so f16/bf16 casts hop through f32; both hops are
+  lossless for these value ranges, leaving the hardware op as the single
+  rounding site. createDestOps no longer forces OCP f8 -> f32 through an f16
+  intermediate on these targets, since they can now do it directly.
+  RTZ downcasts stay on the software path because the hardware op is
+  round-to-nearest-even only, and the stochastic-rounding v_cvt_sr_* ops are
+  not wired up at all: that needs an RNG operand on tt.fp_to_fp, which the
+  Triton IR contract does not currently have.
+
+  RDNA4 is deliberately left out of hasPlainOcpFp8HW even though it has the
+  instructions. Its packed upcast is selected as the fake16 form of
+  v_cvt_pk_f32_{fp8,bf8} and printed without the .l/.h suffix the assembler
+  demands in the real-true16 mode gfx12 defaults to, so the kernel fails to
+  assemble (LCOMPILER-2609). gfx11 escapes this only because make_amdgcn /
+  make_hsaco pass `-real-true16` for every gfx11 kernel, which covers gfx1170.
+  Add RDNA4 once LCOMPILER-2609 is fixed.
+
+  A lone OCP fp8/bf8 value upcasting to f32 uses the scalar v_cvt_f32_{fp8,bf8}
+  rather than the packed op. getNumElements returns 1 instead of the default 4
+  for exactly that case on hasPlainOcpFp8HW targets, which is what stops
+  createDestOps padding the value out with undef before the converter sees it;
+  ScalarF8ToFp32 then emits a single ROCDL::CvtF32{Fp8,Bf8}Op with byteSel 0.
+  Previously this emitted two packed converts and discarded three of the four
+  results. The gate is deliberately narrow -- every other type pair keeps its
+  previous element count, two-element groups still use the packed op, and
+  CDNA3's FNUZ converters are untouched despite having the same shape.
+
+  Drop this patch once gfx1170 OCP fp8/bf8 hardware conversion support is in
+  the pinned Triton revision.
+
 patch10497.patch
   Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
   coverage for f32 FMA dots on RDNA. When WMMA cannot handle the dot, the FMA
@@ -188,6 +236,27 @@ patch10928.patch
   Drop this patch on the next Triton bump that pulls PR #10928 into
   external/triton.
 
+patch11018.patch
+  Gates buffer atomic float min/max on native hardware support:
+  ConvertToBufferOps only rewrites tt.atomic_rmw max/min into
+  amdg.buffer_atomic_rmw when TargetFeatures::supportsBufferAtomicFMinMax
+  accepts the target/type pair (f32 on RDNA1/RDNA2/RDNA3/RDNA4m/RDNA4/GFX1250,
+  f64 on CDNA2/CDNA3/CDNA4/RDNA1/RDNA2/GFX1250); integer min/max always take the
+  generic path.
+  Buffer atomics never reach AtomicExpandPass, so a missing instruction (f32 on
+  CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
+  fallback always has a CAS expansion. That is what lets rocMLIR drop its
+  isFastAtomicMaxSupported() fusion gate.
+
+  Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
+  the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
+  already covers centrally in matchAtomicOp. Lit coverage lives in
+  amd-convert-buffer-ops-atomic-fminmax.mlir as upstream does, leaving
+  amd-convert-buffer-ops.mlir unchanged. Upstream names gfx1170 ISAFamily::RDNA4m;
+  this tree uses ISAFamily::GFX1170 (patch-gfx1170.patch) at the same list slot.
+
+  Drop on the next Triton bump that pulls PR #11018.
+
 patch11118.patch
   Removes the AMD backend's second arith.minimumf/arith.maximumf conversion
   registration, which shadowed its direct LLVM minimum/maximum lowering at the
@@ -199,6 +268,28 @@ patch11118.patch
   Drop this patch on the next Triton bump that includes upstream merge commit
   9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
 
+patch-free-var-mask-register-dim-name.patch
+  Names the register dimension "register" everywhere free-variable masks are
+  produced and consumed, so the redundant-register guards actually fire.
+
+  getFreeVariableMasks(Type) keyed that dimension "reg" for scalars but
+  "register" for tensors, since LinearLayout keys by its input dimension names.
+  Every consumer used "reg", so on tensors the lookup missed and
+  MapVector::operator[] default-inserted 0, making isCanonicalIndex() always
+  true and leaving every redundant-element guard as dead code. Fixed here for
+  the producer and for every consumer: the AMD and NVIDIA store, atomic RMW and
+  CAS conversions, AMD's isRedundantThreadPredWarpUniform, and GSan's
+  instrumentation. Scalars read the same all-redundant mask as before, so only
+  tensor layouts change behaviour.
+
+  It matters for layouts that broadcast across registers: gfx11 WMMA duplicates
+  its result rather than offsetting it, so a depthwise convolution tuned to
+  mPerBlock = 1 stored the same element from all 8 registers of a lane. On the
+  yolov10n depthwise shapes gfx1100 emitted 32 stores and 32 exp2 calls instead
+  of 4 and 4, measuring 1.12x-2.00x slower.
+
+  Not filed upstream yet; upstream Triton has the same defect.
+
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
   function marker. Marked kernels keep the paced LDS round-trip instead of
@@ -206,4 +297,21 @@ patch-optimize-epilogue-rock-metadata.patch
   and tri-state policy resolution live in rocMLIR's rock-add-triton-metadata
   pass; no Rock-specific performance model remains in the vendored Triton
   implementation.
+
+patch11295.patch
+  Fixes a GFX9 direct-to-LDS miscompile that faults at runtime. The lowering
+  implements a swizzled shared encoding as a within-warp lane shuffle to
+  `laneId + swizzleLaneOffset`, assuming that lands in [0, warpSize), but a
+  wide operand swizzle can have a reach of `vec * maxPhase` larger than the
+  lanes covering the swizzled dimension, so the shuffle crosses the warp
+  boundary and issues an out-of-bounds global read.
+  Once a load passes final async-copy eligibility, createStreamOps halves the
+  candidate encoding's maxPhase until the shuffle is provably in-warp, and
+  keeps the clamp only if the load remains async-copy eligible afterward.
+  This keeps the direct-to-LDS fast path with its vectorization intact at the
+  cost of some bank-conflict avoidance, while ineligible stream copies retain
+  their original encoding.
+
+  Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
+  the pinned Triton revision includes that change.
 
