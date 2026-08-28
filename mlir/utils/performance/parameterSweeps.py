@@ -121,7 +121,7 @@ def multiline_repr(obj, num_fields=4):
     fields = []
     in_quotes = False
     # Bracket depth so commas inside list/tuple/dict literals (e.g.
-    # ``current_seqlen=[51, 100, 88]``) don't split a field.
+    # ``last_valid_kv_index=[0, 100, 88]``) don't split a field.
     bracket_depth = 0
     perf_config_str = None
 
@@ -563,7 +563,7 @@ PERF_CONFIG_OPTIONS = {
 # Conv problem-shape sweep. Sizes are a mix of common CNN shapes (e.g. 224, 56,
 # 28) and small/odd ones to hit padding/edge paths.
 CONV_SHAPE_OPTIONS = {
-    'op': ['fwd', 'bwd', 'wrw'],
+    'op': ['fwd', 'bwd'],
     'layout': ['NCHW', 'NHWC'],
     'dtype': ['f32', 'f16', 'bf16', 'i8', 'fp8'],
     'n': [1, 2, 4, 8, 16],

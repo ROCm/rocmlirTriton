@@ -104,25 +104,6 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
   }];
 }
 
-
-def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
-{
-  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
-                           RankedTensorOf<GemmInputTypes>:$gradient),
-                       commonConvAttrs, (ins OptionalAttr<IndexAttr>:$kBlocks));
-  let summary = "N-D convolution backward weight";
-  let description = [{
-    The `rock.conv_bwd_weight` op computes N-D convolution backward weight.
-    Takes input and gradient (from the forward output) tensors, produces the
-    gradient with respect to the filter weights as $result.
-  }];
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    `(` operands `)` attr-dict
-    `:` type(operands) `->` type($result)
-  }];
-}
-
 def Rock_GemmOp
     : Rock_Op<"gemm", [Pure,
                        DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
@@ -193,11 +174,11 @@ def Rock_AttentionOp
           TensorOf<[F32, F16, BF16, I8]>:$keys,
           TensorOf<[F32, F16, BF16]>:$values,
           Variadic<AnyTensor>:$preSoftmaxElemWiseInputs,
-          Optional<TensorOf<[I32]>>:$currentSeqLen,
+          Optional<TensorOf<[I32]>>:$lastValidKVIndex,
           Optional<TensorOf<[I32]>>:$prefixOffset, I32Attr:$numHeadsQ,
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
-          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowSize,
+          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowLookBack,
           OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
@@ -229,15 +210,18 @@ def Rock_AttentionOp
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix
       lengths for each sequence in the batch
 
-    `currentSeqLen` is the zero-based, inclusive current KV-cache position (the
-    last valid key/value index), not the number of cached entries. For a value
-    `P`, key positions `[0, P]` are valid before other masks are applied.
+    `lastValidKVIndex` is the zero-based, inclusive index of the last valid
+    position along the K/V sequence-length dimension, not the number of cached
+    entries. For a value `P`, key positions `[0, P]` are valid before other
+    masks are applied.
 
-    If `slidingWindowSize` is set to `W`, it specifies the maximum look-back
-    distance from `currentSeqLen`. Key positions
-    `[max(0, P - W), P]` are attended to, including the current position, so
-    the window contains up to `W + 1` key positions. Earlier positions are
-    masked with -inf. This requires `currentSeqLen` to be set.
+    Without `slidingWindowLookBack`, attention is non-sliding. If it is set to
+    `L`, it specifies a strictly positive look-back index distance from
+    `lastValidKVIndex`. Key positions `[max(0, P - L), P]` are attended to,
+    including the current position, so the window contains up to `L + 1` key
+    positions. Earlier positions are masked with -inf. This requires
+    `lastValidKVIndex` to be set, and `L` must satisfy
+    `1 <= L <= maxSeqLen - 1`.
 
     LSE (log-sum-exp) is an optional output typically used for flash decoding.
     For flash decoding, you can pass splitKV > 1, the default value is 1, which means flash decoding is disabled. 
@@ -260,9 +244,9 @@ def Rock_AttentionOp
   let assemblyFormat = [{
     `{` `\n`
         ` ` `qk` `=` (`tr` $qTransposed^)? $queries `*` (`tr` $kTransposed^)? $keys `:` type($queries) `,` type($keys) `\n`
-        (`currentSeqLen` `=` `(` $currentSeqLen^ `:` type($currentSeqLen) `)` `\n`)?
+        (`lastValidKVIndex` `=` `(` $lastValidKVIndex^ `:` type($lastValidKVIndex) `)` `\n`)?
         (`prefixOffset` `=` `(` $prefixOffset^ `:` type($prefixOffset) `)` `\n`)?
-        (`slidingWindowSize` `=` $slidingWindowSize^ `\n`)?
+        (`slidingWindowLookBack` `=` $slidingWindowLookBack^ `\n`)?
         (`causal` `\n` $causal^)?
         (`qk` `=` `elementwise` (`otherIns` `(` $preSoftmaxElemWiseInputs^ `:` type($preSoftmaxElemWiseInputs) `)`)? $preSoftmaxBody^ `\n`)?
         `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `\n`
@@ -562,9 +546,9 @@ def Rock_GridwiseAttentionOp
           TensorRankOf<[F32, F16, BF16, I8], [3]>:$keys,
           TensorRankOf<[F32, F16, BF16], [3]>:$values,
           Variadic<AnyRankedTensor>:$preSoftmaxElemWiseInputs,
-          Optional<TensorRankOf<[I32], [1]>>:$currentSeqLen,
+          Optional<TensorRankOf<[I32], [1]>>:$lastValidKVIndex,
           Optional<TensorRankOf<[I32], [1]>>:$prefixOffset, UnitAttr:$causal,
-          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowSize,
+          I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowLookBack,
           UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
@@ -579,8 +563,8 @@ def Rock_GridwiseAttentionOp
   let description = [{
     The `rock.gridwise_attention` op computes gridwise attention.
 
-    `currentSeqLen` and `slidingWindowSize` use the same inclusive KV-cache
-    position and maximum look-back distance semantics as `rock.attention`.
+    `lastValidKVIndex` and `slidingWindowLookBack` use the same inclusive
+    KV-cache index and look-back distance semantics as `rock.attention`.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{
@@ -688,6 +672,20 @@ def Rock_BlockwiseGemmOp
         type($matrixB) (`scaled` `by` type($matrixScaleB)^)? `,`
         type($matrixC)
     `->` type($result)
+  }];
+  let extraClassDeclaration = [{
+    /// Index of the contraction (K) dimension.
+    static constexpr unsigned getKDimIdx(bool isA) { return isA ? 1 : 0; }
+
+    /// Index of the non-contraction dimension (M for `matrixA`, N for
+    /// `matrixB`).
+    static constexpr unsigned getDDimIdx(bool isA) { return isA ? 0 : 1; }
+
+    /// Size of this block's contraction (K) dimension.
+    int64_t getKDim() {
+      return ::llvm::cast<::mlir::ShapedType>(getMatrixA().getType())
+          .getShape()[getKDimIdx(/*isA=*/true)];
+    }
   }];
   let hasVerifier = 1;
 }

@@ -67,14 +67,14 @@ struct GemmGemmOrderingTestEnv {
         /*queries=*/body->getArgument(0), /*keys=*/body->getArgument(1),
         /*values=*/body->getArgument(2),
         /*preSoftmaxElemWiseInputs=*/ValueRange{},
-        /*currentSeqLen=*/Value{}, /*prefixOffset=*/Value{},
+        /*lastValidKVIndex=*/Value{}, /*prefixOffset=*/Value{},
         /*numHeadsQ=*/builder.getI32IntegerAttr(1),
         /*numHeadsKV=*/builder.getI32IntegerAttr(1),
         /*qTransposed=*/UnitAttr{}, /*kTransposed=*/UnitAttr{},
         /*vTransposed=*/UnitAttr{}, /*oTransposed=*/UnitAttr{},
         /*causal=*/UnitAttr{},
         /*splitKV=*/builder.getI32IntegerAttr(1),
-        /*slidingWindowSize=*/IntegerAttr{},
+        /*slidingWindowLookBack=*/IntegerAttr{},
         /*softmaxType=*/TypeAttr{},
         /*params0=*/nullptr, /*params1=*/nullptr,
         /*preSoftmaxHasSplitKVTransforms=*/BoolAttr{});
@@ -102,7 +102,8 @@ struct GemmGemmOrderingTestEnv {
                                    /*useBufferOps=*/kKnobDefault,
                                    /*useBufferAtomics=*/kKnobDefault,
                                    /*useReductionLayout=*/kKnobDefault,
-                                   /*useOptimizeEpilogue=*/kKnobDefault);
+                                   /*useOptimizeEpilogue=*/kKnobDefault,
+                                   /*useBf16x3ForF32=*/kKnobDefault);
   }
 };
 } // namespace
@@ -229,6 +230,7 @@ TEST(PerfConfigOrderingGemmGemmTest, ConservativeDefaultGemmGemmParamsFields) {
   EXPECT_EQ(p.getWavesPerEU(), 0);
   EXPECT_EQ(p.getGridGroupSize(), 0);
   EXPECT_EQ(p.getUseOptimizeEpilogue(), kKnobDefault);
+  EXPECT_EQ(p.getUseBf16x3ForF32(), kKnobDefault);
 }
 
 TEST(PerfConfigOrderingGemmGemmTest,

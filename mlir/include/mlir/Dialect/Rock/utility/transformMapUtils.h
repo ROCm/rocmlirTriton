@@ -354,6 +354,14 @@ struct Pow2Segment {
 /// 48 -> {{0, 32}, {32, 16}}.
 SmallVector<Pow2Segment> decomposePow2(int64_t n);
 
+/// Narrowest K segment an integer GEMM may decompose into. A narrower dot
+/// matches neither an MFMA k-dimension nor v_dot4's `k % 4 == 0`, so Triton
+/// legalizes it as f32 and round-trips the i32 accumulator through
+/// sitofp/fptosi, which is lossy past f32's exact-integer range (2^24).
+/// Since segments are the tile's set bits, a tile satisfies this iff it is a
+/// multiple of the constant.
+constexpr int64_t kMinIntegerKSegment = 4;
+
 /// Zero-copy view that keeps only a power-of-two sub-slice of each tile along
 /// the given dimensions. Each dimension in `sliceDims` is treated as
 /// `blocks[k]` tiles of `tiles[k]` elements; within every tile only the

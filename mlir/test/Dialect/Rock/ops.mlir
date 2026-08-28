@@ -85,35 +85,6 @@ func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %output : ten
 // CHECK-LABEL: func.func @rock_conv_bwd_data_f16
 // CHECK-NEXT: rock.conv_bwd_data
 
-func.func @rock_conv_bwd_weight(%input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["n", "gi", "c", "0i", "1i"],
-    output_layout = ["n", "go", "k", "0o", "1o"],
-    dilations = [1 : index,  1 : index],
-    strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
-}
-// CHECK-LABEL: func.func @rock_conv_bwd_weight
-// CHECK-NEXT: rock.conv_bwd_weight
-
-func.func @rock_conv_bwd_weight_f16(%input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["n", "gi", "c", "0i", "1i"],
-    output_layout = ["n", "go", "k", "0o", "1o"],
-    dilations = [1 : index,  1 : index],
-    strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16> -> tensor<?x?x?x?x?xf16>
-  return %result : tensor<?x?x?x?x?xf16>
-}
-
-// CHECK-LABEL: func.func @rock_conv_bwd_weight_f16
-// CHECK-NEXT: rock.conv_bwd_weight
-
 func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : tensor<64x128xf32>) -> tensor<64x128xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %gemm_result = rock.gemm tr %a * %b
   : tensor<32x64xf16> * tensor<1x32x128xf16> -> tensor<64x128xf32>
@@ -291,9 +262,10 @@ func.func @rock_gridwise_attention(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384
 }
 // CHECK-LABEL: func.func @rock_gridwise_attention
 // CHECK: rock.gridwise_attention
+// CHECK-NOT: slidingWindowLookBack
 
-func.func @rock_gridwise_attention_sliding_window(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %csl: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
-  %result = rock.gridwise_attention(%q, %k, %v, %csl) preSoftmaxOps = {
+func.func @rock_gridwise_attention_sliding_window(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
   ^bb0(%arg_qk: tensor<1x384x384xf32>):
     rock.yield %arg_qk : tensor<1x384x384xf32>
   } {
@@ -301,13 +273,13 @@ func.func @rock_gridwise_attention_sliding_window(%q: tensor<1x384x64xf32>, %k: 
     params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
     params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
     splitKV = 1 : i32,
-    slidingWindowSize = 128 : i32
+    slidingWindowLookBack = 383 : i32
   } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
   return %result : tensor<1x384x64xf32>
 }
 // CHECK-LABEL: func.func @rock_gridwise_attention_sliding_window
 // CHECK: rock.gridwise_attention
-// CHECK: slidingWindowSize = 128
+// CHECK: slidingWindowLookBack = 383
 
 func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
@@ -318,19 +290,20 @@ func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v
 }
 // CHECK-LABEL: func.func @rock_attention
 // CHECK: rock.attention
+// CHECK-NOT: slidingWindowLookBack
 
-func.func @rock_attention_sliding_window(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %csl: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_attention_sliding_window(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
     qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-    currentSeqLen = (%csl : tensor<1xi32>)
+    lastValidKVIndex = (%lastValidKVIndex : tensor<1xi32>)
     softmax(qk) * %v : tensor<1x384x64xf16>
-  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowSize = 128 : i32} -> tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, slidingWindowLookBack = 383 : i32} -> tensor<1x384x64xf16>
   return %result : tensor<1x384x64xf16>
 }
 // CHECK-LABEL: func.func @rock_attention_sliding_window
 // CHECK: rock.attention
-// CHECK: currentSeqLen = (%{{.*}} : tensor<1xi32>)
-// CHECK: slidingWindowSize = 128
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<1xi32>)
+// CHECK: slidingWindowLookBack = 383
 
 func.func @rock_reduce_sum(%in: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>

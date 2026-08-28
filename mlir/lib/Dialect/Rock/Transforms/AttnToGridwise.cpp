@@ -129,8 +129,8 @@ static Value moveNumHeadsToSeqLenQ(OpBuilder builder, Location loc,
   return rock::TransformOp::create(builder, loc, matrixUnmerge, mergerAttr);
 }
 
-// Same as moveNumHeadsToSeqLenQ() but for currSeqLen tensor (KV-Cache)
-static Value moveNumHeadsToSeqLenCurrSeqLen(OpBuilder builder, Location loc,
+// Same as moveNumHeadsToSeqLenQ() but for per-group metadata tensors.
+static Value moveNumHeadsToSeqLenGroupInput(OpBuilder builder, Location loc,
                                             Value inputTensor,
                                             int64_t numRepeats) {
   ArrayRef<int64_t> inpShape =
@@ -221,7 +221,7 @@ struct GQAResult {
   Value queries;
   Value keys;
   Value values;
-  Value currentSeqLen;
+  Value lastValidKVIndex;
   Value prefixOffset;
 };
 
@@ -250,7 +250,7 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
                             DenseMap<Value, Value> &fusionInputMapOut,
                             SmallVector<Value> &lseViews,
                             DenseMap<Value, Value> &fusionInputMapLse,
-                            Value currentSeqLen, Value prefixOffset,
+                            Value lastValidKVIndex, Value prefixOffset,
                             int64_t numHeadsQ, int64_t numHeadsKV,
                             int64_t splitKV) {
 
@@ -262,12 +262,12 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
 
     numRepeatsAttr = rw.getIndexAttr(numRepeats);
     queries = moveNumHeadsToSeqLenQ(rw, loc, queries, numRepeats);
-    if (currentSeqLen)
-      currentSeqLen =
-          moveNumHeadsToSeqLenCurrSeqLen(rw, loc, currentSeqLen, numRepeats);
+    if (lastValidKVIndex)
+      lastValidKVIndex =
+          moveNumHeadsToSeqLenGroupInput(rw, loc, lastValidKVIndex, numRepeats);
     if (prefixOffset)
       prefixOffset =
-          moveNumHeadsToSeqLenCurrSeqLen(rw, loc, prefixOffset, numRepeats);
+          moveNumHeadsToSeqLenGroupInput(rw, loc, prefixOffset, numRepeats);
 
     transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
       return moveNumHeadsToSeqLenOut(rw, loc, v, numRepeats, splitKV);
@@ -279,8 +279,8 @@ static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
     }
   }
 
-  return GQAResult{numRepeatsAttr, queries,       keys,
-                   values,         currentSeqLen, prefixOffset};
+  return GQAResult{numRepeatsAttr, queries,          keys,
+                   values,         lastValidKVIndex, prefixOffset};
 }
 
 template <typename Op>
@@ -475,8 +475,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 
 static LogicalResult commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
-    Value b, Value c, Value currentSeqLen, Value prefixOffset, UnitAttr causal,
-    IntegerAttr splitKV, IntegerAttr slidingWindowSize,
+    Value b, Value c, Value lastValidKVIndex, Value prefixOffset,
+    UnitAttr causal, IntegerAttr splitKV, IntegerAttr slidingWindowLookBack,
     ValueRange elementwiseInputs, Region &preSecondOpRegion, bool enableSoftmax,
     TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
     BoolAttr preSoftmaxHasSplitKVTransforms) {
@@ -544,13 +544,13 @@ static LogicalResult commonAttentionGemmElmtGemm(
   if (enableSoftmax) {
     GQAResult gqa =
         processGQA(rw, op.getLoc(), a, b, c, outputViews, fusionInputMapOut,
-                   lseViews, fusionInputMapLse, currentSeqLen, prefixOffset,
+                   lseViews, fusionInputMapLse, lastValidKVIndex, prefixOffset,
                    numHeadsQ, numHeadsKV, splitKVNum);
     numRepeatsGQA = gqa.numRepeats;
     a = gqa.queries;
     b = gqa.keys;
     c = gqa.values;
-    currentSeqLen = gqa.currentSeqLen;
+    lastValidKVIndex = gqa.lastValidKVIndex;
     prefixOffset = gqa.prefixOffset;
   }
 
@@ -620,7 +620,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
         cast<ShapedType>(lse.getType()).getElementType());
   auto newOp = GridwiseAttentionOp::create(
       rw, loc, newOutputType, newLseType, a, b, c, elementwiseInputs,
-      currentSeqLen, prefixOffset, causal, splitKV, slidingWindowSize,
+      lastValidKVIndex, prefixOffset, causal, splitKV, slidingWindowLookBack,
       /*disableQBypassLDS=*/nullptr, prePadG0MAttr, prePadG0NAttr,
       numRepeatsGQA, softmaxType, params0, params1,
       rw.getBoolAttr(enableSoftmax), preSoftmaxHasSplitKVTransforms);
@@ -677,10 +677,10 @@ AttentionRewritePattern::matchAndRewrite(AttentionOp op,
                                          ConversionPatternRewriter &rw) const {
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getQueries(), adaptor.getKeys(), adaptor.getValues(),
-      adaptor.getCurrentSeqLen(), adaptor.getPrefixOffset(),
+      adaptor.getLastValidKVIndex(), adaptor.getPrefixOffset(),
       adaptor.getCausalAttr(), adaptor.getSplitKVAttr(),
-      adaptor.getSlidingWindowSizeAttr(), adaptor.getPreSoftmaxElemWiseInputs(),
-      op.getPreSoftmaxBody(),
+      adaptor.getSlidingWindowLookBackAttr(),
+      adaptor.getPreSoftmaxElemWiseInputs(), op.getPreSoftmaxBody(),
       /*enableSoftmax=*/true, op.getSoftmaxTypeAttr(), adaptor.getNumHeadsQ(),
       adaptor.getNumHeadsKV(), adaptor.getPreSoftmaxHasSplitKVTransformsAttr());
 }
@@ -692,9 +692,9 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   auto splitKV = rw.getI32IntegerAttr(1);
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
-      /*currentSeqLen=*/nullptr, /*prefixOffset=*/nullptr, /*causal=*/nullptr,
-      splitKV, /*slidingWindowSize=*/nullptr, adaptor.getElemwiseInputs(),
-      op.getPreSecondGemmBody(),
+      /*lastValidKVIndex=*/nullptr, /*prefixOffset=*/nullptr,
+      /*causal=*/nullptr, splitKV, /*slidingWindowLookBack=*/nullptr,
+      adaptor.getElemwiseInputs(), op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
       /*numHeadsKV=*/1,
       /*preSoftmaxHasSplitKVTransforms=*/rw.getBoolAttr(false));

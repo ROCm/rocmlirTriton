@@ -36,8 +36,7 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
                 "rock.gemm_elementwise_gemm";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "scf::SCFDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["rock::RockDialect", "gpu::GPUDialect"];
 }
 
 def RockAffixTuningParametersPass
@@ -229,6 +228,32 @@ def RockDecomposeNonPow2TilesPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockDecomposeNonPow2KPass
+    : Pass<"rock-decompose-nonpow2-k", "::mlir::func::FuncOp"> {
+  let summary = "Decompose a non-power-of-two blockwise GEMM K tile into "
+                "power-of-two segments";
+  let description = [{
+    Rock tuning params may carry a non-power-of-two kPerBlock (48 divides a K
+    of 576 evenly), but Triton requires power-of-two shapes.
+    This pass finds every rock.blockwise_gemm with such a K tile and replaces
+    it with a series of blockwise_gemms whose K tiles are all powers of two.
+    A kPerBlock of 48 decomposes into {32, 16}, so two blockwise_gemms are
+    emitted, with the accumulator threaded through them so that both segments
+    of a K iteration reduce into the same tile.
+
+    This is the K counterpart of rock-decompose-nonpow2-tiles, which decomposes
+    the M and N tiles. It cannot happen at that same gridwise layer: M and N
+    segments are independent output positions, whereas K segments share an
+    accumulator that only exists once Gridwise{Gemm,Attn}ToBlockwise has built
+    the K loop. So the pass runs directly after them, and before
+    rock-fuse-sibling-loops.
+
+    Not supported: scaled GEMMs, sub-byte operands, and integer operands whose
+    K tile decomposes into a segment narrower than 4.
+  }];
+  let dependentDialects = ["rock::RockDialect"];
+}
+
 def RockFuseSiblingLoopsPass
     : Pass<"rock-fuse-sibling-loops", "::mlir::func::FuncOp"> {
   let summary =
@@ -388,6 +413,8 @@ def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "arith::ArithDialect", "triton::TritonDialect"];
+  let options = [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+                        "Disable fast-math dependent lowering choices">];
 }
 
 def RockSortDimensionsMemoryLayoutPass

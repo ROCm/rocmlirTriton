@@ -818,8 +818,6 @@ ConvOpType mlir::rock::convOpTypeFromKernelType(KernelType kernelType) {
     return ConvOpType::Fwd;
   case KernelType::ConvBwdData:
     return ConvOpType::BwdData;
-  case KernelType::ConvBwdWeight:
-    return ConvOpType::BwdWeight;
   case KernelType::Gemm:
     llvm_unreachable(
         "GEMM ops shouldn't be in convolution-specific lowering passes");
@@ -839,8 +837,6 @@ KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
     return KernelType::Conv;
   case ConvOpType::BwdData:
     return KernelType::ConvBwdData;
-  case ConvOpType::BwdWeight:
-    return KernelType::ConvBwdWeight;
   }
   llvm_unreachable("Unsupported ConvOpType");
 }
@@ -859,12 +855,6 @@ GemmSize GemmSize::fromConvolution(ConvOpType type,
     gemmKSize = sizes.c * sizes.fil[0] * sizes.fil[1];
     gemmNSize = sizes.n * sizes.out[0] * sizes.out[1];
     break;
-  case ConvOpType::BwdWeight:
-    gemmGSize = sizes.g;
-    gemmMSize = sizes.k;
-    gemmKSize = sizes.n * sizes.out[0] * sizes.out[1];
-    gemmNSize = sizes.c * sizes.fil[0] * sizes.fil[1];
-    break;
   case ConvOpType::BwdData:
     llvm_unreachable("Should've been caught be an assert");
   }
@@ -875,18 +865,10 @@ KernelType ConvOp::getKernelType() { return KernelType::Conv; }
 
 KernelType ConvBwdDataOp::getKernelType() { return KernelType::ConvBwdData; }
 
-KernelType ConvBwdWeightOp::getKernelType() {
-  return KernelType::ConvBwdWeight;
-}
-
 Type ConvOp::getAType() { return getFilter().getType().getElementType(); }
 
 Type ConvBwdDataOp::getAType() {
   return getFilter().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getAType() {
-  return getGradient().getType().getElementType();
 }
 
 Type ConvOp::getBType() { return getInput().getType().getElementType(); }
@@ -895,17 +877,9 @@ Type ConvBwdDataOp::getBType() {
   return getGradient().getType().getElementType();
 }
 
-Type ConvBwdWeightOp::getBType() {
-  return getInput().getType().getElementType();
-}
-
 Type ConvOp::getCType() { return getResult().getType().getElementType(); }
 
 Type ConvBwdDataOp::getCType() {
-  return getResult().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getCType() {
   return getResult().getType().getElementType();
 }
 
@@ -921,14 +895,6 @@ TypedValue<ShapedType> ConvBwdDataOp::getConvInput() {
   return cast<TypedValue<ShapedType>>(getResult());
 }
 TypedValue<ShapedType> ConvBwdDataOp::getConvOutput() { return getGradient(); }
-
-TypedValue<ShapedType> ConvBwdWeightOp::getConvFilter() {
-  return cast<TypedValue<ShapedType>>(getResult());
-}
-TypedValue<ShapedType> ConvBwdWeightOp::getConvInput() { return getInput(); }
-TypedValue<ShapedType> ConvBwdWeightOp::getConvOutput() {
-  return getGradient();
-}
 
 GemmSize ConvOp::getGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this);
@@ -1032,11 +998,6 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   return biggest;
 }
 
-GemmSize ConvBwdWeightOp::getGemmSize() {
-  auto sizes = ConvolutionDims::fromOp(*this);
-  return GemmSize::fromConvolution(ConvOpType::BwdWeight, sizes);
-}
-
 //===-----------------------------------------------------===//
 // Conv Op Verification
 //===-----------------------------------------------------===//
@@ -1095,47 +1056,6 @@ static LogicalResult verifyConvLikeOp(RockConvInterface op) {
 LogicalResult ConvOp::verify() { return verifyConvLikeOp(*this); }
 
 LogicalResult ConvBwdDataOp::verify() { return verifyConvLikeOp(*this); }
-
-LogicalResult ConvBwdWeightOp::verify() {
-  if (failed(verifyConvLikeOp(*this)))
-    return failure();
-
-  // kBlocks is optional pre-lowering (affix-tuning-params sets it for the
-  // atomic backward-weight path). When present, the lowering in ConvToGemm
-  // splits the batch dimension N into (kBlocks, N / kBlocks), so kBlocks must
-  // satisfy the same structural invariant that `calculateKBlockNum` enforces.
-  IntegerAttr kBlocksAttr = getKBlocksAttr();
-  if (!kBlocksAttr)
-    return success();
-  int64_t kBlocks = kBlocksAttr.getInt();
-
-  // Recover N from the input tensor's layout. The layout attributes are not
-  // formally part of the op definition, so skip the divisibility check when
-  // they're absent or malformed rather than asserting.
-  auto inputLayoutAttr = (*this)->getAttrOfType<ArrayAttr>("input_layout");
-  ArrayRef<int64_t> inputShape = getInput().getType().getShape();
-  if (!inputLayoutAttr ||
-      inputLayoutAttr.size() != static_cast<size_t>(inputShape.size()))
-    return success();
-
-  int64_t batchSize = -1;
-  for (auto [layoutAttr, dimSize] : llvm::zip(inputLayoutAttr, inputShape)) {
-    auto nameAttr = dyn_cast<StringAttr>(layoutAttr);
-    if (nameAttr && nameAttr.getValue() == "ni") {
-      batchSize = dimSize;
-      break;
-    }
-  }
-  if (batchSize <= 0)
-    return success();
-
-  if (!isValidKBlocks(kBlocks, batchSize))
-    return emitOpError("kBlocks (")
-           << kBlocks << ") must be positive and evenly divide batch size N ("
-           << batchSize << ")";
-
-  return success();
-}
 
 //===-----------------------------------------------------===//
 // StoreOp
@@ -1728,9 +1648,7 @@ LogicalResult BlockwiseGemmOp::verify() {
           return emitOpError(
               "unexpected error: currLen is not divisible by origLen");
 
-        // matrixA is MxK: K is dim 1, M is dim 0.
-        // matrixB is KxN: K is dim 0, N is dim 1.
-        int64_t packedDim = (isA == kPack) ? 1 : 0;
+        int64_t packedDim = kPack ? getKDimIdx(isA) : getDDimIdx(isA);
         SmallVector<int64_t> expectedShape(matrixShape);
         expectedShape[packedDim] *= currLen / origLen;
         if (expectedShape != scaleShape) {
@@ -1780,24 +1698,25 @@ LogicalResult BlockwiseGemmOp::inferReturnTypes(
 // GridwiseAttentionOp
 //===----------------------------------------------------------------------===//
 
-// Validate sliding window constraints common to attention-like ops.
+// Validate sliding-window look-back constraints common to attention-like ops.
 static LogicalResult
-verifySlidingWindowConstraints(Operation *op,
-                               std::optional<int32_t> slidingWindowSize,
-                               Value currentSeqLen, int64_t maxSeqLen) {
-  if (!slidingWindowSize)
+verifySlidingWindowLookBack(Operation *op,
+                            std::optional<int32_t> slidingWindowLookBack,
+                            Value lastValidKVIndex, int64_t maxSeqLen) {
+  if (!slidingWindowLookBack)
     return success();
-  int32_t windowSize = static_cast<int32_t>(*slidingWindowSize);
+  int32_t lookBack = static_cast<int32_t>(*slidingWindowLookBack);
 
-  if (windowSize <= 0)
-    return op->emitError("slidingWindowSize must be positive");
+  if (lookBack <= 0)
+    return op->emitError("slidingWindowLookBack must be positive");
 
-  if (!currentSeqLen)
-    return op->emitError("slidingWindowSize requires currentSeqLen to be set");
-
-  if (windowSize > maxSeqLen)
+  if (!lastValidKVIndex)
     return op->emitError(
-        "slidingWindowSize must not exceed max sequence length");
+        "slidingWindowLookBack requires lastValidKVIndex to be set");
+
+  if (lookBack >= maxSeqLen)
+    return op->emitError(
+        "slidingWindowLookBack must be less than max sequence length");
 
   return success();
 }
@@ -1820,8 +1739,8 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError("Setting softmax type only works for attention.");
   }
 
-  if (!getEnableSoftmax() && getCurrentSeqLen())
-    return emitError("currentSeqLen only works for attention.");
+  if (!getEnableSoftmax() && getLastValidKVIndex())
+    return emitError("lastValidKVIndex only works for attention.");
 
   if (!getEnableSoftmax() && getPrefixOffset())
     return emitError("prefixOffset only works for attention.");
@@ -1829,8 +1748,8 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getCausal())
     return emitError("causal only works for attention.");
 
-  if (!getEnableSoftmax() && getSlidingWindowSize())
-    return emitError("slidingWindowSize only works for attention.");
+  if (!getEnableSoftmax() && getSlidingWindowLookBack())
+    return emitError("slidingWindowLookBack only works for attention.");
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
@@ -1850,9 +1769,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   ShapedType kType = cast<ShapedType>(getKeys().getType());
   int64_t maxSeqLen =
       getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
-  if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowSize(),
-                                            getCurrentSeqLen(), maxSeqLen)))
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
   return success();
@@ -2060,7 +1979,7 @@ GemmGemmSize GemmElementwiseGemmOp::getGemmGemmSize() {
 }
 
 static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
-                                              Value currentSeqLen, Value lse,
+                                              Value lastValidKVIndex, Value lse,
                                               int32_t numHeadsQ,
                                               int32_t numHeadsKV) {
   // number of heads for Q and K, V
@@ -2138,15 +2057,15 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     return op.emitError("Head dimensions do not match (V and Output)");
   }
 
-  // check currentSeqLen (KV Cache)
-  if (currentSeqLen) {
-    ShapedType seqLenType = cast<ShapedType>(currentSeqLen.getType());
-    if (seqLenType.getShape().size() != 1) {
-      return op.emitError("Number of dimensions is not one (currentSeqLen)");
+  // Check lastValidKVIndex (KV cache).
+  if (lastValidKVIndex) {
+    ShapedType indexType = cast<ShapedType>(lastValidKVIndex.getType());
+    if (indexType.getShape().size() != 1) {
+      return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
-    if (seqLenType.getShape()[0] != oBatchDim) {
+    if (indexType.getShape()[0] != oBatchDim) {
       return op.emitError(
-          "Batch dimensions do not match (currentSeqLen and Output)");
+          "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
   }
 
@@ -2200,7 +2119,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 }
 
 LogicalResult GemmElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2279,7 +2198,7 @@ GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
 }
 
 LogicalResult ConvElementwiseGemmOp::verify() {
-  return verifyGemmPlusGemmLikeOp(*this, /*currentSeqLen=*/nullptr,
+  return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);
 }
@@ -2345,12 +2264,12 @@ LogicalResult AttentionOp::verify() {
   // Validate sliding window constraints.
   // Max seq len is the key N dimension.
   int64_t maxSeqLen = getGemmGemmSize().n;
-  if (failed(verifySlidingWindowConstraints(getOperation(),
-                                            getSlidingWindowSize(),
-                                            getCurrentSeqLen(), maxSeqLen)))
+  if (failed(verifySlidingWindowLookBack(getOperation(),
+                                         getSlidingWindowLookBack(),
+                                         getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
-  return verifyGemmPlusGemmLikeOp(*this, getCurrentSeqLen(), getLse(),
+  return verifyGemmPlusGemmLikeOp(*this, getLastValidKVIndex(), getLse(),
                                   getNumHeadsQ(), getNumHeadsKV());
 }
 
@@ -2365,8 +2284,11 @@ constexpr size_t SmallVectorInlineSize = 32;
 // Number of trailing knob fields appended in each versioned perfConfig schema.
 // The sentinel value (`rock::kKnobDefault` = `-1`) lives in `KnobUtils.h`.
 //
-// NOTE: If you want to bump the perfConfig to v7, add a new `kNumKnobFieldsV7`
-// constant and update the parser to expect the new number of fields.
+// NOTE: The positional form is frozen at v6; new fields are added to the named
+// `prefix:key=value,...` schema in RockAttrDefs.td instead, which needs no
+// version. These constants exist only to keep decoding strings emitted by
+// earlier releases. Knobs introduced after v6 therefore always decode to
+// `kKnobDefault` here.
 //
 // v3 dropped the legacy `scheduleHint` knob (v2's 6th field). v4 re-grows the
 // knob block by appending `useReductionLayout` on top of v3's five knobs. v5
@@ -2384,7 +2306,8 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useInThreadTranspose,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
                                 int64_t useReductionLayout,
-                                int64_t useOptimizeEpilogue) {
+                                int64_t useOptimizeEpilogue,
+                                int64_t useBf16x3ForF32) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2393,6 +2316,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useBufferAtomics", useBufferAtomics},
       {"useReductionLayout", useReductionLayout},
       {"useOptimizeEpilogue", useOptimizeEpilogue},
+      {"useBf16x3ForF32", useBf16x3ForF32},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2580,7 +2504,7 @@ parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
           perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
           knob("useInThreadTranspose"), knob("useBufferOps"),
           knob("useBufferAtomics"), knob("useReductionLayout"),
-          knob("useOptimizeEpilogue"))))
+          knob("useOptimizeEpilogue"), knob("useBf16x3ForF32"))))
     return failure();
   return ordered;
 }
@@ -2652,6 +2576,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2668,10 +2594,10 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
@@ -2681,7 +2607,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===-----------------------------------------------------===//
@@ -2753,6 +2679,8 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
+  // Never carried by a positional config: the knob postdates v6.
+  int64_t useBf16x3ForF32 = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2769,10 +2697,10 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       useReductionLayout = params[idx++];
     if (version >= 5)
       useOptimizeEpilogue = params[idx++];
-    if (failed(validateKnobBlock(perfConfigStrAttr.strref(), useAsyncCopy,
-                                 useBlockPingpong, useInThreadTranspose,
-                                 useBufferOps, useBufferAtomics,
-                                 useReductionLayout, useOptimizeEpilogue))) {
+    if (failed(validateKnobBlock(
+            perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
+            useInThreadTranspose, useBufferOps, useBufferAtomics,
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
       return {};
     }
   }
@@ -2782,7 +2710,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
       numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue);
+      useOptimizeEpilogue, useBf16x3ForF32);
 }
 
 //===----------------------------------------------------------------------===//

@@ -27,12 +27,29 @@ CONV_COLUMNS = [
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW'
 ]
 ATTENTION_COLUMNS = [
-    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV', 'SlidingWindowSize',
-    'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ', 'SeqLenK', 'NumHeadsQ',
-    'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
+    'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV',
+    'SlidingWindowLookBack', 'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ',
+    'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
+]
+GEMM_GEMM_COLUMNS = ['TransA', 'TransB', 'TransC', 'TransO', 'G', 'M', 'K', 'N', 'O']
+CONV_GEMM_COLUMNS = [
+    'FilterLayout', 'InputLayout', 'TransC', 'TransO', 'N', 'C', 'H', 'W', 'K', 'Y', 'X',
+    'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW', 'O'
 ]
 
-# Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
+# Operations that share the attention (GemmGemm) tuning code path
+GEMM_GEMM_OPS = {'attention', 'gemm_gemm', 'conv_gemm'}
+
+# Maps the user-facing --op value to its C++ KernelType name
+OP_TO_KERNEL_TYPE = {
+    'gemm': 'Gemm',
+    'conv': 'Conv',
+    'attention': 'Attention',
+    'gemm_gemm': 'GemmElementwiseGemm',
+    'conv_gemm': 'ConvElementwiseGemm',
+}
+
+# Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
 LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
 
 # =============================================================================
@@ -40,13 +57,24 @@ LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},
 # =============================================================================
 
 
+def op_from_kernel(kernel):
+    """Reverse-search the --op value for a kernel type via OP_TO_KERNEL_TYPE.
+
+    The match is case-insensitive, so `kernel` may be either a PascalCase KernelType name
+    (e.g. 'GemmElementwiseGemm') or its lowercase lookup-key segment (e.g. 'gemmelementwisegemm').
+    """
+    kernel = kernel.lower()
+    for op, kernel_type in OP_TO_KERNEL_TYPE.items():
+        if kernel_type.lower() == kernel:
+            return op
+    raise ValueError(f"Unknown kernel type: {kernel}")
+
+
 def get_instruction_type(arch, dtype, op):
     """Determine instruction type based on architecture, data type, and operation."""
-    if op == "attention":
+    if op in GEMM_GEMM_OPS:
         return "GemmGemm"
-    else:
-        return "Gemm"
-    raise ValueError(f"Unsupported architecture for quick tuning: {arch}")
+    return "Gemm"
 
 
 def get_class_name(arch, dtype, op):
@@ -56,7 +84,8 @@ def get_class_name(arch, dtype, op):
 
 def get_param_names(arch, dtype, op):
     """Generate array and count variable names."""
-    base = f"initParameters{dtype.capitalize()}{op.capitalize()}{arch.capitalize()}"
+    kernel_type = OP_TO_KERNEL_TYPE[op]
+    base = f"initParameters{dtype.capitalize()}{kernel_type}{arch.capitalize()}"
     return base, f"n{base[0].upper()}{base[1:]}"
 
 
@@ -68,6 +97,10 @@ def get_target_columns(op):
         return CONV_COLUMNS
     elif op == "attention":
         return ATTENTION_COLUMNS
+    elif op == "gemm_gemm":
+        return GEMM_GEMM_COLUMNS
+    elif op == "conv_gemm":
+        return CONV_GEMM_COLUMNS
     else:
         raise ValueError(f"Unknown operation: {op}")
 
@@ -118,14 +151,14 @@ def load_data(files, no_splitk):
     if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
         df['TransBias'] = False
 
-    # Sliding window is optional (KV-cache only) and omitted from the key when
-    # disabled, so legacy attention rows may lack the column or carry NaN after
-    # a mixed-file concat; normalize it to the disabled value 0. Only attention
-    # grouping reads SlidingWindowSize, so defaulting it is a no-op elsewhere.
-    if 'SlidingWindowSize' not in df.columns:
-        df['SlidingWindowSize'] = 0
+    # Sliding look-back is optional (KV-cache only) and omitted from the key when
+    # disabled, so legacy attention rows may lack the column or carry NaN after a
+    # mixed-file concat; normalize it to the disabled sentinel -1. Only attention
+    # grouping reads SlidingWindowLookBack, so defaulting it is a no-op elsewhere.
+    if 'SlidingWindowLookBack' not in df.columns:
+        df['SlidingWindowLookBack'] = -1
     else:
-        df['SlidingWindowSize'] = df['SlidingWindowSize'].fillna(0)
+        df['SlidingWindowLookBack'] = df['SlidingWindowLookBack'].fillna(-1)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)
@@ -322,7 +355,7 @@ def add_lookup_entry(content, section_name, entry):
 
 def get_lookup_section(arch, op, dtype):
     """Get the appropriate lookup table section name."""
-    if op == "attention":
+    if op in GEMM_GEMM_OPS:
         return "GemmGemm_LOOKUP_TABLE_GEN"
     return "Gemm_LOOKUP_TABLE_GEN"
 
@@ -334,6 +367,10 @@ def update_inc_file(results, arch, op):
         init_inc_file(path)
 
     content = path.read_text()
+
+    # Identifiers and section markers use the PascalCase KernelType; the lookup key uses its
+    # lowercase form
+    kernel_type = OP_TO_KERNEL_TYPE[op]
 
     for dtype, configs in results.items():
         instr = get_instruction_type(arch, dtype, op)
@@ -350,8 +387,8 @@ def update_inc_file(results, arch, op):
         def_lines.append("};")
 
         content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
-                                  f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
                                   "\n".join(def_lines))
 
         # Generate declaration
@@ -361,13 +398,13 @@ def update_inc_file(results, arch, op):
         ]
 
         content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
-                                  f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
                                   "\n".join(dec_lines))
 
         # Add lookup entry
         section_name = get_lookup_section(arch, op, dtype)
-        key = f"{arch}_{op}_{dtype}"
+        key = f"{arch}_{kernel_type.lower()}_{dtype}"
         value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
         entry = f'{{"{key}", {value}}},'
         content = add_lookup_entry(content, section_name, entry)
@@ -387,19 +424,21 @@ def add_type_aliases(from_type, to_type):
     aliases_added = 0
     for match in LOOKUP_ENTRY_PATTERN.finditer(content):
         arch = match.group(2)  # e.g., "gfx942"
-        op = match.group(3)  # e.g., "gemm"
+        kernel = match.group(3)  # e.g., "gemm"
         dtype = match.group(4)  # e.g., "f16"
         value = match.group(5)  # e.g., "{PopulateParamsGemm::..., ...}"
 
         if dtype != to_type:
             continue
 
-        from_key = f"{arch}_{op}_{from_type}"
+        from_key = f"{arch}_{kernel}_{from_type}"
 
         # Don't overwrite existing entries - aliases are fallbacks only
         if f'"{from_key}"' in content:
             print(f"Skipping {from_key}: already exists")
             continue
+
+        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
 
         section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
@@ -466,7 +505,9 @@ Examples:
         nargs='*',
         metavar='FILE',
         help='.debug files produced by tuningRunner.py (reads TSV from stdin if none provided)')
-    parser.add_argument('--op', choices=['gemm', 'conv', 'attention'], help='Operation')
+    parser.add_argument('--op',
+                        choices=['gemm', 'conv', 'attention', 'gemm_gemm', 'conv_gemm'],
+                        help='Operation')
     parser.add_argument('--th',
                         type=float,
                         default=0.93,
