@@ -1,19 +1,20 @@
-// Case 1: gfx11 (RDNA3) -> disableTrue16 -> fake16 (plain VGPRs).
-// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1100' %s 2>&1 \
+// Case 1: gfx1170 (RDNA3.5 + OCP fp8 HW) -> disableTrue16 -> fake16 (plain VGPRs).
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1170' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=FAKE16
-// Case 2: gfx12 (RDNA4) -> disable does NOT apply -> true16 (.l/.h subregs).
+// Case 2: gfx1100 (other gfx11) -> disable does NOT apply -> true16 (.l/.h subregs).
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1100' %s 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=TRUE16
+// Case 3: gfx12 (RDNA4) -> disable does NOT apply -> true16 (.l/.h subregs).
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1200' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=TRUE16
 
-// Verify the gfx11 (RDNA3) true16 workaround in translateTritonToHsaco(): for
-// every gfx11 kernel `disableTrue16` adds the `-real-true16` target feature to
-// the AMDGCN/HSACO codegen TargetMachine, unconditionally (it is not gated on
-// fp8 operand usage). This mirrors upstream compiler.py
-// disable_real_true16_feature(), which returns `-real-true16` for any arch
-// starting with "gfx11" and "" otherwise. That feature is not reflected in the
-// LLVM IR, so we inspect the AMDGCN assembly dump (AMDGCN_ENABLE_DUMP). On gfx11
-// the f16 ops use full 32-bit VGPRs (fake16); on a gfx12 arch, where the disable
-// does not apply, the backend emits true16 `.l`/`.h` subregisters.
+// Verify the gfx117x true16 workaround in translateTritonToHsaco(): only
+// gfx117* kernels get `-real-true16` (LCOMPILER-2609: packed OCP fp8 upcast
+// ISel is fake16-only). Other gfx11 and gfx12 compile in real-true16 mode,
+// matching upstream after triton-lang/triton#11188. That feature is not
+// reflected in the LLVM IR, so we inspect the AMDGCN assembly dump
+// (AMDGCN_ENABLE_DUMP). On gfx1170 the f16 ops use full 32-bit VGPRs (fake16);
+// on gfx1100/gfx1200 the backend emits true16 `.l`/`.h` subregisters.
 
 // FAKE16: v_add_f16_e32 v{{[0-9]+}}, v{{[0-9]+}}, v{{[0-9]+}}
 // TRUE16: v_add_f16_e32 v{{[0-9]+}}.{{[lh]}}, v{{[0-9]+}}.{{[lh]}}, v{{[0-9]+}}.{{[lh]}}
