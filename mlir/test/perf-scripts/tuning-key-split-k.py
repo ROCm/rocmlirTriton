@@ -153,7 +153,7 @@ class SplitKTuningKeyTest(unittest.TestCase):
             path.write_text(
                 f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{split_k_key}\tperf_split_k\n"
                 f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{no_split_k_key}\tperf_no_split_k\n")
-            tuning_db = read_tuning_db(str(path))
+            tuning_db = read_tuning_db(str(path), GemmConfiguration, NUM_CU, NUM_CHIPLETS)
 
         self.assertEqual(len(tuning_db), 2)
         self.assertEqual(tuning_db[ARCH, split_k_key], "perf_split_k")
