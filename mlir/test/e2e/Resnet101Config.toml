@@ -4,7 +4,7 @@ suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c |
 
 [[axis]]
 name = "operation"
-values = ["conv", "conv_bwd_data", "conv_bwd_weight"]
+values = ["conv", "conv_bwd_data"]
 prefix = "--operation "
 
 [[axis]]
@@ -15,15 +15,6 @@ values = ["-fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw", "-fil_layout=g
 name = "data type"
 values = ["f32", "f16", "bf16"]
 prefix = "-t "
-
-[[require]]
-feature = "random_data"
-[[require.match]]
-name = "operation"
-values = ["conv_bwd_weight"]
-[[require.match]]
-name = "data type"
-values = ["f16", "bf16"]
 
 [[suite]]
 name = "config"

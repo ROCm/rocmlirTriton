@@ -85,6 +85,11 @@ import amd_arch_db
 # full result (e.g. 10 repeats → ~10× vs reference). Verification must use 1.
 VERIFY_REPEATS = 1
 
+# Default wall-clock budget for a single verification pipeline (rocmlir-gen
+# through the profiler), overridable with --verify-timeout. Generous because CPU
+# verification of a large config is single-threaded and can take minutes.
+DEFAULT_VERIFY_TIMEOUT_SECONDS = 600
+
 # Compile timeouts are recoverable per-config outcomes inside
 # rocmlir-tuning-driver: the driver kills that rocmlir-driver child process,
 # emits N/A for that perf config, and continues tuning. A GPU run timeout is
@@ -224,6 +229,7 @@ class Options:
     wait_for_compiles: bool
     flush_last_level_cache: bool
     timeout: Optional[int]
+    verify_timeout: int
     perf_config_timeout: int
     gpu_run_timeout: int
     rep_ms: int
@@ -317,7 +323,10 @@ class GpuTopology:
         # rocm-smi can take ~20s to enumerate large multi-GPU systems, so allow
         # a generous timeout to avoid spurious TimeoutExpired failures.
         output = subprocess.check_output(
-            [rocm_smi, "--showproductname", "--showtoponuma", "--json"], text=True, timeout=60)
+            [rocm_smi, "--showproductname", "--showtoponuma", "--json"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=60)
         data = json.loads(output)
 
         gpus = {}
@@ -495,7 +504,7 @@ class TuningStateFile:
     File format:
     {
         "contexts": {
-            "<arch>/<num_cu>/<num_chiplets>/<tuning_space>": {
+            "<chip>/<num_cu>/<num_chiplets>/<tuning_space>": {
                 "test_vector_1": "failed",
                 "test_vector_2": "crashed"
             }
@@ -505,10 +514,10 @@ class TuningStateFile:
     If filepath is None, all operations are no-ops.
     """
 
-    def __init__(self, filepath: Optional[str], arch: str, num_cu: int, num_chiplets: int,
-                 tuning_space: str, conf_class: type):
+    def __init__(self, filepath: Optional[str], chip: str, arch: str, num_cu: int,
+                 num_chiplets: int, tuning_space: str, conf_class: type):
         self.filepath = filepath
-        self.context_key = f"{arch}/{num_cu}/{num_chiplets}/{tuning_space}"
+        self.context_key = f"{chip}/{num_cu}/{num_chiplets}/{tuning_space}"
         self._arch = arch
         self._num_cu = num_cu
         self._num_chiplets = num_chiplets
@@ -526,6 +535,7 @@ class TuningStateFile:
         For the active context only:
         - INTERRUPTED configs are removed (will be retried)
         - RUNNING configs become CRASHED (stale = crash)
+        - Entries that don't parse are kept verbatim so they survive a save/load round-trip
         """
         if not self.filepath or not os.path.exists(self.filepath):
             return
@@ -539,21 +549,26 @@ class TuningStateFile:
             for tv, state_str in self._all_contexts[self.context_key].items():
                 try:
                     state = ConfigState(state_str)
-                    if state == ConfigState.INTERRUPTED:
-                        continue  # Remove - will retry
-                    if state == ConfigState.RUNNING:
-                        state = ConfigState.CRASHED  # Stale running = crashed
-                    # Canonicalize so a legacy / non-canonical key still matches
-                    # the canonicalized configs we tune. Keep the raw key on
-                    # failure so it survives a save/load round-trip.
-                    try:
-                        tv = canonicalize_test_vector(tv, self._conf_class, self._arch,
-                                                      self._num_cu, self._num_chiplets)
-                    except ValueError:
-                        pass
-                    self._state.configs[tv] = state
                 except ValueError:
                     logger.warning(f"Unknown state '{state_str}' for config '{tv}' in state file")
+                    continue
+
+                if state == ConfigState.INTERRUPTED:
+                    continue  # Remove - will retry
+                if state == ConfigState.RUNNING:
+                    state = ConfigState.CRASHED  # Stale running = crashed
+
+                # Canonicalize so a legacy / non-canonical key still matches
+                # the canonicalized configs we tune. Keep the raw key on
+                # failure so it survives a save/load round-trip.
+                try:
+                    canonical_tv = canonicalize_test_vector(tv, self._conf_class, self._arch,
+                                                            self._num_cu, self._num_chiplets)
+                except ValueError as e:
+                    logger.debug(f"Failed to canonicalize config in state file: {e}")
+                    canonical_tv = tv  # Keep the raw key so it survives a save/load round-trip
+
+                self._state.configs[canonical_tv] = state
 
     @property
     def state(self) -> TuningState:
@@ -693,11 +708,13 @@ class TunedConfigsCache:
                 if not column_indices:
                     continue
 
-                # Parse data line
                 result = cls._parse_data_line(line.split('\t'), column_indices, options, conf_class,
                                               header_tuning_space, current_commit, warned_commits)
-                if result:
-                    results[result.test_vector] = result
+                if not result:
+                    logger.debug(f"Skipping invalid output file line: {line}")
+                    continue
+
+                results[result.test_vector] = result
 
         return cls(_results=results)
 
@@ -739,7 +756,7 @@ class TunedConfigsCache:
         - arch matches current system (chip or arch for backwards compatibility)
         - numCUs and numChiplets match current system
         - tuning space matches (from column or header)
-        - testVector is present
+        - testVector is present, parseable, and belongs to the expected operation
         - perfConfig is present and not 'None'
         """
 
@@ -947,6 +964,50 @@ class TuningContext:
         logger.info("\n".join(lines))
 
 
+class NumaNodeLock:
+    """Reader-preferring reader-writer lock.
+
+    Shared holders may run concurrently; an exclusive holder excludes all shared holders and any
+    other exclusive holder. A new shared holder is admitted as long as no exclusive holder is
+    currently active, even if an exclusive holder is waiting (writers may starve under sustained
+    reader contention).
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._shared_count = 0
+        self._writer_active = False
+
+    def acquire_shared(self):
+        with self._cond:
+            while self._writer_active:
+                self._cond.wait()
+            self._shared_count += 1
+
+    def release_shared(self):
+        """Release a shared hold. No-op if no shared hold is currently active."""
+        with self._cond:
+            if self._shared_count == 0:
+                return
+            self._shared_count -= 1
+            if self._shared_count == 0:
+                self._cond.notify_all()
+
+    def acquire_exclusive(self):
+        with self._cond:
+            while self._writer_active or self._shared_count > 0:
+                self._cond.wait()
+            self._writer_active = True
+
+    def release_exclusive(self):
+        """Release the exclusive hold. No-op if no exclusive hold is currently active."""
+        with self._cond:
+            if not self._writer_active:
+                return
+            self._writer_active = False
+            self._cond.notify_all()
+
+
 class GpuWorkerPool:
     """Manages assignment of GPUs to worker threads with NUMA-aware CPU affinity."""
 
@@ -955,11 +1016,18 @@ class GpuWorkerPool:
         self._assignment_lock = threading.Lock()
         self._unassigned_gpus = deque(ctx.options.gpu_ids)
         self._worker_state = threading.local()
+        self._numa_locks: Dict[int, NumaNodeLock] = {}
+        for numa_node in ctx.numa_topology.numa_to_cpus:
+            self._numa_locks[numa_node] = NumaNodeLock()
 
     @property
     def worker_count(self) -> int:
         """Number of parallel workers (one per GPU)."""
         return len(self._ctx.options.gpu_ids)
+
+    def get_numa_lock(self, gpu_id: int) -> NumaNodeLock:
+        numa_node = self._ctx.gpu_topology.get_numa_node(gpu_id)
+        return self._numa_locks[numa_node]
 
     def acquire_gpu_for_thread(self) -> int:
         """Assign a GPU to the calling thread if not already assigned.
@@ -1073,8 +1141,15 @@ class DebugFileWriter:
         self.filepath = filepath
         self.file = None
         self._header_written = False
+        self._existing_columns: Optional[List[str]] = None
 
     def __enter__(self):
+        if os.path.exists(self.filepath) and os.path.getsize(self.filepath) > 0:
+            with open(self.filepath, 'r') as f:
+                first_line = f.readline().rstrip('\n')
+            if first_line:
+                self._existing_columns = first_line.split('\t')
+                self._header_written = True
         self.file = open(self.filepath, 'a')
         return self
 
@@ -1088,10 +1163,17 @@ class DebugFileWriter:
         if not result.entries:
             raise ValueError("write_result called without entries")
 
-        pd.DataFrame(result.entries).to_csv(self.file,
-                                            sep='\t',
-                                            header=not self._header_written,
-                                            index=False)
+        df = pd.DataFrame(result.entries)
+        new_columns = list(df.columns)
+        if self._existing_columns is not None and new_columns != self._existing_columns:
+            raise ValueError(
+                f"Debug file '{self.filepath}' has a schema that does not match the current "
+                f"tuning run. Each op writes a different debug schema; please use a per-op "
+                f"output path (e.g. '<base>.<op>.tsv') or remove the existing file.\n"
+                f"  existing columns: {self._existing_columns}\n"
+                f"  new columns:      {new_columns}")
+
+        df.to_csv(self.file, sep='\t', header=not self._header_written, index=False)
         self.file.flush()
         self._header_written = True
 
@@ -1132,6 +1214,15 @@ class TuningArgumentParser(argparse.ArgumentParser):
         if parsed.debug_quick_tune_data and (parsed.two_stage or (parsed.two_stage_topk or 0) > 0):
             self.error(
                 "argument --debug-quick-tune-data: not allowed with --two-stage/--two-stage-topk")
+
+        # The tuning driver takes these as unsigned options, so a negative value would
+        # wrap into a huge timeout instead of being rejected.
+        if parsed.gpu_run_timeout < 0:
+            self.error("argument --gpu-run-timeout: must be non-negative")
+        if parsed.perf_config_timeout < 0:
+            self.error("argument --perf-config-timeout: must be non-negative")
+        if parsed.verify_timeout < 0:
+            self.error("argument --verify-timeout: must be non-negative")
 
         # The coarse warmup is capped at what --warmup affords, so a larger
         # floor would be silently inert. The driver rejects this too.
@@ -1289,10 +1380,16 @@ def format_error(context: str,
 
 
 def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, options: Options,
-                      gpu_id: int) -> float:
+                      gpu_id: int, numa_lock: NumaNodeLock) -> float:
     """Verify a performance config by running with profiling.
 
     Returns the execution time in nanoseconds, or raises TuningError on failure.
+
+    Verification compares the GPU output against a CPU reference. That reference is
+    single-threaded with a large working set and saturates the NUMA node's memory bandwidth if
+    compile threads run alongside it, so an exclusive lock is taken on the GPU's NUMA node for the
+    duration of the run. Callers must release any shared hold on this node's lock before invoking
+    this function to avoid deadlocking themselves against the exclusive acquire.
     """
     gpu_logger = get_gpu_logger(gpu_id)
 
@@ -1312,7 +1409,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     rocmlir_driver_command = [paths.mlir_paths.rocmlir_driver_path, '-c']
     profiler_command = [perfRunner.ROCPROF] + perfRunner.get_metric_args_for_rocprof(
         options.arch) + [
-            '--kernel-trace', '--stats', '-f', 'csv', '-o',
+            '--kernel-trace', '--stats', '--output-format=csv', '-o',
             perfRunner.BENCHMARKING_RESULT_FILE_NAME, '--', paths.mlir_paths.rocm_run_path
         ]
 
@@ -1325,38 +1422,50 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
     with tempfile.TemporaryDirectory() as tmpdir:
         env = make_isolated_gpu_env(gpu_id)
         try:
-            rc, outs, errs = _run_pipeline(verification_commands, env=env, cwd=tmpdir, timeout=600)
-        except subprocess.TimeoutExpired:
-            raise TuningError(
-                format_error(f"Verification timed out for perfconfig '{perfconfig}'",
-                             command=verification_pipeline,
-                             gpu_id=gpu_id))
+            numa_lock.acquire_exclusive()
+            try:
+                rc, outs, errs = _run_pipeline(verification_commands,
+                                               env=env,
+                                               cwd=tmpdir,
+                                               timeout=options.verify_timeout)
+            except subprocess.TimeoutExpired:
+                raise TuningError(
+                    format_error(
+                        f"Verification timed out after {options.verify_timeout}s for perfconfig '{perfconfig}'",
+                        command=verification_pipeline,
+                        gpu_id=gpu_id))
 
-        raise_if_terminated(rc)
-        if rc != 0 or not CORRECT_RESULT_RE.search(outs):
-            raise TuningError(
-                format_error(f"Verification failed for perfconfig '{perfconfig}'",
-                             command=verification_pipeline,
-                             stdout=outs,
-                             stderr=errs,
-                             exit_code=rc,
-                             gpu_id=gpu_id))
+            raise_if_terminated(rc)
+            if rc != 0 or not CORRECT_RESULT_RE.search(outs):
+                raise TuningError(
+                    format_error(f"Verification failed for perfconfig '{perfconfig}'",
+                                 command=verification_pipeline,
+                                 stdout=outs,
+                                 stderr=errs,
+                                 exit_code=rc,
+                                 gpu_id=gpu_id))
 
-        stats_file = os.path.join(
-            tmpdir,
-            perfRunner.get_profiler_output_path(options.arch,
-                                                perfRunner.BENCHMARKING_STATS_FILE_NAME))
-        nano_seconds = perfRunner.get_nanoseconds(stats_file)
+            stats_file = os.path.join(
+                tmpdir,
+                perfRunner.get_profiler_output_path(options.arch,
+                                                    perfRunner.BENCHMARKING_STATS_FILE_NAME))
+            nano_seconds = perfRunner.get_nanoseconds(stats_file)
+        finally:
+            numa_lock.release_exclusive()
 
     return nano_seconds
 
 
-def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfiguration, paths: Paths,
-                         options: Options,
-                         gpu_id: int) -> Tuple[Optional[str], Optional[float], List[Dict]]:
+def find_best_perfconfig(
+        tuning_output_lines: List[str], config: PerfConfiguration, paths: Paths, options: Options,
+        gpu_id: int, numa_lock: NumaNodeLock) -> Tuple[Optional[str], Optional[float], List[Dict]]:
     """Parse tuning driver output and find the best performing perfconfig.
 
     Returns the winning config, its TFLOPS, and all entries.
+
+    `numa_lock` is forwarded to `verify_perfconfig` when `--verify-all-perfconfigs` is enabled so
+    that verification can take an exclusive hold on the NUMA node. The caller must not be holding
+    any shared hold on this lock when invoking this function.
     """
     gpu_logger = get_gpu_logger(gpu_id)
 
@@ -1397,7 +1506,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
         # Verify Discarded configs too: gating this on the timing
         # instead would silently skip verification of non topK configs.
         if options.verify_all_perfconfigs and time != NOT_APPLICABLE_STATUS:
-            verify_ns = verify_perfconfig(perfconfig, config, paths, options, gpu_id)
+            verify_ns = verify_perfconfig(perfconfig, config, paths, options, gpu_id, numa_lock)
             if np.isnan(verify_ns):
                 raise TuningError(f"Verification returned NaN for perfconfig '{perfconfig}'")
 
@@ -1410,7 +1519,7 @@ def find_best_perfconfig(tuning_output_lines: List[str], config: PerfConfigurati
 
 
 def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Options, gpu_id: int,
-                num_compile_threads: int) -> TuningResult:
+                num_compile_threads: int, numa_lock: NumaNodeLock) -> TuningResult:
     """Tune a single configuration and return the result."""
     gpu_logger = get_gpu_logger(gpu_id)
 
@@ -1442,91 +1551,103 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
     env = make_isolated_gpu_env(gpu_id)
 
+    config: Optional[PerfConfiguration] = None
+    tuning_output: Optional[str] = None
     try:
-        rocmlir_gen_command = [paths.mlir_paths.rocmlir_gen_path]
-        tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path] + tuning_driver_args
+        # Hold shared during the tuning pipeline so other workers' verification (exclusive) waits
+        # until our tuning driver finishes. We release before any verification on this worker so
+        # that the exclusive acquire inside verify_perfconfig does not self-deadlock.
+        numa_lock.acquire_shared()
+        try:
+            rocmlir_gen_command = [paths.mlir_paths.rocmlir_gen_path]
+            tuning_driver_command = [paths.mlir_paths.rocmlir_tuning_driver_path
+                                    ] + tuning_driver_args
 
-        if not test_vector.endswith(".mlir"):
-            command_line = test_vector.split(sep=' ')
-            config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
-                                                  options.num_chiplets)
-            command_line_options = config.generate_mlir_driver_commandline(
-                options.rocmlir_gen_flags, kernel_repeats=None)
-            # Note, we don't need the -ph, this goes to the tuning driver.
-            # Because we don't set -ph, kernel_repeats is set to None.
-            # This is because the kernel-repeats flag is only supported with host harness or CPU validation.
-            rocmlir_gen_command += command_line_options.split()
-            tuning_commands = [rocmlir_gen_command, tuning_driver_command]
-        else:
-            rocmlir_gen_command += ['--emit-tuning-key', test_vector]
-            rc, output, err = _run_pipeline([rocmlir_gen_command], env=env)
+            if not test_vector.endswith(".mlir"):
+                command_line = test_vector.split()
+                config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
+                                                      options.num_chiplets)
+                command_line_options = config.generate_mlir_driver_commandline(
+                    options.rocmlir_gen_flags, kernel_repeats=None)
+                # Note, we don't need the -ph, this goes to the tuning driver.
+                # Because we don't set -ph, kernel_repeats is set to None.
+                # This is because the kernel-repeats flag is only supported with host harness or CPU validation.
+                rocmlir_gen_command += command_line_options.split()
+                tuning_commands = [rocmlir_gen_command, tuning_driver_command]
+            else:
+                rocmlir_gen_command += ['--emit-tuning-key', test_vector]
+                rc, output, err = _run_pipeline([rocmlir_gen_command], env=env)
+                raise_if_terminated(rc)
+                if rc != 0:
+                    gpu_logger.error(
+                        format_error("Failed to generate tuning key",
+                                     command=' '.join(rocmlir_gen_command),
+                                     stderr=err,
+                                     exit_code=rc,
+                                     gpu_id=gpu_id))
+                    return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
+                result = output.strip().split('\t')
+                command_line = result[2].split()
+                config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
+                                                      options.num_chiplets)
+                tuning_driver_command += [test_vector]
+                tuning_commands = [tuning_driver_command]
+
+            tuning_pipeline = " | ".join(' '.join(cmd) for cmd in tuning_commands)
+            gpu_logger.debug(f"Tuning '{test_vector}'\nCommand: {tuning_pipeline}")
+
+            try:
+                rc, tuning_output, tuning_errors = _run_pipeline(tuning_commands,
+                                                                 env=env,
+                                                                 timeout=options.timeout)
+            except subprocess.TimeoutExpired:
+                gpu_logger.error(
+                    format_error(f"Tuning timed out after {options.timeout}s",
+                                 command=tuning_pipeline,
+                                 gpu_id=gpu_id))
+                return TuningResult(test_vector=test_vector,
+                                    success=False,
+                                    timed_out=True,
+                                    gpu_id=gpu_id)
+
             raise_if_terminated(rc)
+
+            if rc == GPU_TIMEOUT_EXIT_CODE:
+                # A perf-config's GPU run hung and the driver's run-timeout logic
+                # tore the process down (see rock::kExitGpuTimeout). Treat the
+                # whole test vector as gpu-timed-out and advance to the next
+                # problem config.
+                gpu_logger.error(
+                    format_error(
+                        f"GPU run hung (exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
+                        command=tuning_pipeline,
+                        stderr=tuning_errors,
+                        exit_code=rc,
+                        gpu_id=gpu_id))
+                return TuningResult(test_vector=test_vector,
+                                    success=False,
+                                    gpu_timed_out=True,
+                                    gpu_id=gpu_id)
+
             if rc != 0:
                 gpu_logger.error(
-                    format_error("Failed to generate tuning key",
-                                 command=' '.join(rocmlir_gen_command),
-                                 stderr=err,
+                    format_error("Tuning pipeline failed",
+                                 command=tuning_pipeline,
+                                 stdout=tuning_output,
+                                 stderr=tuning_errors,
                                  exit_code=rc,
                                  gpu_id=gpu_id))
                 return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-            result = output.strip().split('\t')
-            command_line = result[2].split(sep=' ')
-            config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
-                                                  options.num_chiplets)
-            tuning_driver_command += [test_vector]
-            tuning_commands = [tuning_driver_command]
 
-        tuning_pipeline = " | ".join(' '.join(cmd) for cmd in tuning_commands)
-        gpu_logger.debug(f"Tuning '{test_vector}'\nCommand: {tuning_pipeline}")
-
-        try:
-            rc, tuning_output, tuning_errors = _run_pipeline(tuning_commands,
-                                                             env=env,
-                                                             timeout=options.timeout)
-        except subprocess.TimeoutExpired:
-            gpu_logger.error(
-                format_error(f"Tuning timed out after {options.timeout}s",
-                             command=tuning_pipeline,
-                             gpu_id=gpu_id))
-            return TuningResult(test_vector=test_vector,
-                                success=False,
-                                timed_out=True,
-                                gpu_id=gpu_id)
-
-        raise_if_terminated(rc)
-
-        if rc == GPU_TIMEOUT_EXIT_CODE:
-            # A perf-config's GPU run hung and the driver's run-timeout logic
-            # tore the process down (see rock::kExitGpuTimeout). Treat the
-            # whole test vector as gpu-timed-out and advance to the next
-            # problem config.
-            gpu_logger.error(
-                format_error(
-                    f"GPU run hung (exceeded --gpu-run-timeout={options.gpu_run_timeout}s)",
-                    command=tuning_pipeline,
-                    stderr=tuning_errors,
-                    exit_code=rc,
-                    gpu_id=gpu_id))
-            return TuningResult(test_vector=test_vector,
-                                success=False,
-                                gpu_timed_out=True,
-                                gpu_id=gpu_id)
-
-        if rc != 0:
-            gpu_logger.error(
-                format_error("Tuning pipeline failed",
-                             command=tuning_pipeline,
-                             stdout=tuning_output,
-                             stderr=tuning_errors,
-                             exit_code=rc,
-                             gpu_id=gpu_id))
-            return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
-        elif options.verbose and tuning_errors.strip():
             # Log any stderr output from tuning driver because it may contain warnings
-            gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+            if options.verbose and tuning_errors.strip():
+                gpu_logger.warning(f"rocmlir-tuning-driver stderr:\n{tuning_errors}")
+        finally:
+            numa_lock.release_shared()
 
         winning_config, max_tflops, entries = find_best_perfconfig(tuning_output.splitlines(),
-                                                                   config, paths, options, gpu_id)
+                                                                   config, paths, options, gpu_id,
+                                                                   numa_lock)
     except TuningError as e:
         gpu_logger.error(str(e))
         return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
@@ -1538,7 +1659,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
     verify_tflops = None
     if options.verify_winning_config or options.verify_all_perfconfigs:
         try:
-            verify_ns = verify_perfconfig(winning_config, config, paths, options, gpu_id)
+            verify_ns = verify_perfconfig(winning_config, config, paths, options, gpu_id, numa_lock)
         except TuningError as e:
             gpu_logger.error(str(e))
             return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
@@ -1855,6 +1976,10 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
     paths = ctx.paths
     root = options.benchmark_artifacts_dir
     gpu_id = options.gpu_ids[0]
+    # This mode benchmarks one problem at a time on a single GPU, so nothing
+    # else contends for the node; the lock only satisfies the verifier's
+    # exclusive-hold contract.
+    numa_lock = NumaNodeLock()
 
     # These fields are inputs to _problem_hash. Check them once up front so
     # target-option mismatches do not masquerade as missing problem directories.
@@ -1970,7 +2095,7 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
             # below when requested.
             winning_config, max_tflops, entries = find_best_perfconfig(
                 out.splitlines(), config, paths, replace(options, verify_all_perfconfigs=False),
-                gpu_id)
+                gpu_id, numa_lock)
 
             if winning_config is None:
                 logger.error(f"no valid perf config for problem {problem_hash}")
@@ -1988,7 +2113,7 @@ def run_benchmark_artifacts(ctx: TuningContext) -> bool:
                     to_verify = _successful_perfconfigs(out.splitlines())
                 try:
                     for pc in to_verify:
-                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id)
+                        verify_ns = verify_perfconfig(pc, config, paths, options, gpu_id, numa_lock)
                         if np.isnan(verify_ns):
                             raise TuningError(f"Verification returned NaN for perfconfig '{pc}'")
                 except TuningError as e:
@@ -2039,7 +2164,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
 
     # Load state file
     state_file = TuningStateFile(get_state_filepath(ctx.options.output), ctx.options.chip,
-                                 ctx.options.num_cu, ctx.options.num_chiplets,
+                                 ctx.options.arch, ctx.options.num_cu, ctx.options.num_chiplets,
                                  ctx.options.tuning_space_kind, ctx.conf_class)
     state = state_file.state
 
@@ -2120,7 +2245,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
             progress_bar = tqdm(
                 total=len(ctx.configs),
                 initial=total_skipped,
-                disable=ctx.options.quiet or not sys.stderr.isatty(),
+                disable=ctx.options.quiet or ctx.options.output == '-' or not sys.stderr.isatty(),
                 file=sys.stderr,
                 desc=f"Tuning {ctx.conf_class.__name__} ({ctx.options.tuning_space_kind})",
                 unit="config",
@@ -2131,6 +2256,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
 
             def execute_tuning_task(test_vector: str) -> TuningResult:
                 gpu_id = pool.acquire_gpu_for_thread()
+                numa_lock = pool.get_numa_lock(gpu_id)
 
                 state_file.set_running(test_vector)
 
@@ -2138,7 +2264,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                 start_time = time.time()
                 compile_threads = ctx.get_compile_threads(gpu_id)
                 result = tune_config(test_vector, ctx.conf_class, ctx.paths, ctx.options, gpu_id,
-                                     compile_threads)
+                                     compile_threads, numa_lock)
                 result.duration_seconds = time.time() - start_time
                 result.timestamp = timestamp
 
@@ -2252,7 +2378,7 @@ def extract_fusion_configs(test_dir: str,
             logger.debug("Duplicate entry skipped")
             continue
 
-        command_line = test_vector.split(sep=' ')
+        command_line = test_vector.split()
         if command_line[0].startswith('conv'):
             if op_type == Operation.FUSION:
                 op_type = Operation.CONV
@@ -2302,6 +2428,9 @@ def load_configs_from_stdin() -> str:
 def load_configs(op_type: Operation,
                  parsed_args: argparse.Namespace,
                  paths: Paths,
+                 arch: str,
+                 num_cu: int,
+                 num_chiplets: int,
                  target_chip: Optional[str] = None) -> List[str]:
     """Load configurations based on operation type and arguments."""
     if parsed_args.config:
@@ -2309,24 +2438,31 @@ def load_configs(op_type: Operation,
 
     loaders = {
         Operation.CONV:
-            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path,
-                                                       target_chip=target_chip),
+            lambda: perfRunner.get_conv_configurations(
+                paths.configuration_file_path, arch, num_cu, num_chiplets, target_chip=target_chip),
         Operation.GEMM:
             lambda: perfRunner.get_gemm_configurations(paths.configuration_file_path,
+                                                       arch,
+                                                       num_cu,
+                                                       num_chiplets,
                                                        *perfRunner.parse_data_types(parsed_args.
                                                                                     data_type),
                                                        parsed_args.scale_type,
                                                        target_chip=target_chip),
         Operation.ATTENTION:
-            lambda: perfRunner.get_attn_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_attn_configurations(paths.configuration_file_path, arch, num_cu,
+                                                       num_chiplets),
         Operation.GEMM_GEMM:
-            lambda: perfRunner.get_gemm_gemm_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_gemm_gemm_configurations(paths.configuration_file_path, arch,
+                                                            num_cu, num_chiplets),
         Operation.CONV_GEMM:
-            lambda: perfRunner.get_conv_gemm_configurations(paths.configuration_file_path),
+            lambda: perfRunner.get_conv_gemm_configurations(paths.configuration_file_path, arch,
+                                                            num_cu, num_chiplets),
     }
 
     if op_type not in loaders:
         raise ValueError(f"No config loader for operation: {str(op_type)}")
+
     return loaders[op_type]()
 
 
@@ -2479,6 +2615,13 @@ def parse_arguments(args=None) -> argparse.Namespace:
                         default=[],
                         metavar='STATE',
                         help="Retry configs in specified states")
+
+    parser.add_argument("--verify-timeout",
+                        type=int,
+                        default=DEFAULT_VERIFY_TIMEOUT_SECONDS,
+                        metavar='SECONDS',
+                        help="Timeout in seconds for each verification run "
+                        f"(default: {DEFAULT_VERIFY_TIMEOUT_SECONDS})")
 
     parser.add_argument("--gpus",
                         type=int,
@@ -2684,7 +2827,13 @@ def main(args=None):
         if op_type == Operation.FUSION:
             op_type = extract_fusion_configs(parsed_args.test_dir, paths, target_chip=chip)
 
-        configs = load_configs(op_type, parsed_args, paths, target_chip=chip)
+        configs = load_configs(op_type,
+                               parsed_args,
+                               paths,
+                               arch,
+                               num_cu,
+                               num_chiplets,
+                               target_chip=chip)
     finally:
         if stdin_temp_file:
             os.unlink(stdin_temp_file)
@@ -2742,6 +2891,7 @@ def main(args=None):
                       wait_for_compiles=parsed_args.wait_for_compiles,
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
                       timeout=parsed_args.timeout,
+                      verify_timeout=parsed_args.verify_timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
                       gpu_run_timeout=parsed_args.gpu_run_timeout,
                       rep_ms=parsed_args.rep,
@@ -2758,7 +2908,7 @@ def main(args=None):
                       allow_commit_mismatch=parsed_args.allow_commit_mismatch)
 
     ctx = TuningContext(configs=configs,
-                        conf_class=conf_class,
+                        conf_class=get_config_class(op_type),
                         paths=paths,
                         options=options,
                         gpu_topology=get_gpu_topology() if parsed_args.gpus else None,

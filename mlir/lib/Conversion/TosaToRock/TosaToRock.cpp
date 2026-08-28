@@ -287,9 +287,6 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
   } else {
     // Handle forwards convolution.
     // ConvOp takes (filter, input) and produces the output as the result.
-    assert((!convBackwardKind.has_value() ||
-            convBackwardKind.value() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT) &&
-           "bwd_weight currently not implemented");
     cop = rock::ConvOp::create(rw, loc, convFields.expandedOutputType,
                                convFields.filterExp, convFields.inputExp,
                                convFields.pad, convFields.stride,
@@ -350,8 +347,7 @@ static SetVector<int64_t> traceToRes(Value expectedTensor, func::FuncOp func) {
 }
 
 template <typename OpT>
-static LogicalResult setSplitKAttrs(OpT op, 
-                                    PatternRewriter &rw) {
+static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
   auto perfConfig = op->template getAttrOfType<StringAttr>("perf_config");
   if (perfConfig && rock::isSplitKRequested(perfConfig)) {
     func::FuncOp func = op->template getParentOfType<func::FuncOp>();
@@ -698,8 +694,7 @@ public:
     // Make sure its a valid CustomOp representing a convolution.
     if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
       return op->emitError("domain isn't rock");
-    if (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-        op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT)
+    if (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA)
       return op->emitError("has an invalid operator_name");
     if (op.getNumOperands() < 5)
       return op->emitError("must have 5 or more operands");
@@ -732,13 +727,6 @@ public:
     int64_t group = 1;
     if (groupAttr)
       group = groupAttr.getInt();
-
-    // If we are trying to convert bwd_weight, fail as it's currently not
-    // supported.
-    if (op.getOperatorName() == ROCK_CUSTOMOP_CONV_BWD_WEIGHT) {
-      return op->emitError(
-          "TosaToRock lowering support for bwd_weight not supported");
-    }
 
     FailureOr<rock::RockConvInterface> rockConv =
         makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
@@ -3495,9 +3483,8 @@ public:
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
     // Only handle TOSA elementwise ops with 2+ operands and a single result.
-    if (!isa<tosa::TosaDialect>(op->getDialect()) ||
-        !isElementwiseOp(op) || op->getNumOperands() < 2 ||
-        op->getNumResults() != 1)
+    if (!isa<tosa::TosaDialect>(op->getDialect()) || !isElementwiseOp(op) ||
+        op->getNumOperands() < 2 || op->getNumResults() != 1)
       return failure();
 
     auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
@@ -3555,16 +3542,14 @@ public:
           rw.getStringAttr("exp" + std::to_string(i)).getValue());
     }
 
-    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(),
-                                       loc);
+    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(), loc);
     for (int64_t i = 0; i < rank; ++i) {
       if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
         padBuilder.passThrough(dimNames[i]);
       } else {
         if (outputType.getDimSize(i) < inputType.getDimSize(i))
-          return rw.notifyMatchFailure(
-              op, "output dim " + std::to_string(i) +
-                      " is smaller than input dim");
+          return rw.notifyMatchFailure(op, "output dim " + std::to_string(i) +
+                                               " is smaller than input dim");
         int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
         padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
       }

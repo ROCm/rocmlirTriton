@@ -438,8 +438,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
-  // CSE after deduplicates the now-co-located shared operand loads.
+  // Must run after ToBlockwise passes, which build the K loop and the
+  // accumulator this pass decomposes, and before FuseSiblingLoops, so that it
+  // sees one blockwise_gemm per loop.
+  addWithDCE(rock::createRockDecomposeNonPow2KPass());
+  // Must run after GridwiseGemmToBlockwise and RockDecomposeNonPow2K, but
+  // before InsertOutputFusionLoads. CSE after deduplicates the now-co-located
+  // shared operand loads.
   addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
@@ -523,7 +528,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Clean up dead transform chains left after TransformsToPointerArith
   funcPm2.addPass(createCanonicalizerPass());
 
-  funcPm2.addPass(rock::createRockToTTIRPass());
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());

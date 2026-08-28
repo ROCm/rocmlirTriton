@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/RWMutex.h"
 
 namespace mlir {
@@ -46,7 +47,7 @@ struct ParamEntry {
 
 // Total tuning space
 struct TuningParamSet {
-  std::vector<RockTuningParamAttrInterface> tuningRange;
+  llvm::SetVector<RockTuningParamAttrInterface> tuningRange;
   KernelType primaryOpType;
 };
 

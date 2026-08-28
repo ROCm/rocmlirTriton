@@ -79,7 +79,6 @@ if (ROCK_E2E_TEST_ENABLED)
   )
   list(APPEND CONFIGS
   conv_regression_bwd
-  conv_wrw_perf_config
   Resnet101Config
   )
   list(APPEND CONFIGS
