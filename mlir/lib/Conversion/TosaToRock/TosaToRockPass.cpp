@@ -40,8 +40,7 @@ public:
       return;
 
     if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
-      func.emitError(
-          "TosaToRockPass: func op does not have the kernel attribute");
+      func.emitError("TosaToRockPass: func op does not have the kernel attribute");
       signalPassFailure();
     }
     auto &ctx = getContext();
