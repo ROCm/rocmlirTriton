@@ -126,7 +126,7 @@ static llvm::cl::opt<int> num_cu(
     llvm::cl::desc("Number of compute units. If omitted, defaults to the "
                    "per-arch minimum returned by rock::getMinNumCU (e.g. "
                    "gfx906=10, gfx908=120, gfx90a=104, gfx942=20, "
-                   "gfx950=256, gfx1010/gfx1030=30, gfx1100=2, gfx1170=2, "
+                   "gfx950=256, gfx1010=20, gfx1030=2, gfx1100=2, gfx1170=2, "
                    "gfx1200=12, gfx1250=256). Any positive value is "
                    "accepted."),
     llvm::cl::value_desc("compute unit value"), llvm::cl::init(0));
