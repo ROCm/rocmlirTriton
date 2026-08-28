@@ -660,7 +660,7 @@ def Rock_NumCU : Rock_Attr<"NumCU"> {
   let description = [{
     The number of compute units on the target GPU device. Must be at least the
     per-arch minimum returned by `rock::getMinNumCU` (e.g. gfx906=10,
-    gfx908=120, gfx90a=104, gfx942=20, gfx950=256, gfx1010/gfx1030=30,
+    gfx908=120, gfx90a=104, gfx942=20, gfx950=256, gfx1010=20, gfx1030=2,
     gfx1100=2, gfx1200=12, gfx1250=256); any larger value is accepted.
   }];
 }
