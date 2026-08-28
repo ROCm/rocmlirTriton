@@ -281,19 +281,23 @@ struct ExpOpConversionApprox
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    // For non-FP32 input, call __ocml_exp_f64 for higher-precision calculation
-    if (elemTy.getIntOrFloatBitWidth() != 32)
+    // f16 and f32 both have a native exp2 (v_exp_f16 / v_exp_f32), so
+    // exp(x) -> exp2(x * log2e) can stay in the source type. bf16 is also 16
+    // bits but has no native exp2, and f64 wants the higher-precision path,
+    // so both fall through to __ocml_exp_*.
+    bool isF16 = elemTy.isF16();
+    if (!isF16 &&elemTy.getIntOrFloatBitWidth() != 32)
       return {};
 
     const double log2e = 1.4426950408889634;
     LLVM::FastmathFlagsAttr fastmathFlags = getLLVMFastmathFlags(op);
-    Value prod =
-        b.fmul(f32_ty, operands[0][0], b.f32_val(log2e), fastmathFlags);
+    Value log2eVal = isF16 ? b.f16_val(log2e) : b.f32_val(log2e);
+    Value prod = b.fmul(elemTy, operands[0][0], log2eVal, fastmathFlags);
 
-    // Here we use llvm.exp2.f32 instead of math::Exp2Op. The latter
+    // Here we use llvm.exp2 instead of math::Exp2Op. The latter
     // flushes denorms by default, but we want to preserve denorms by default
     // for expOp.
-    StringRef funcName = "llvm.exp2.f32";
+    StringRef funcName = isF16 ? "llvm.exp2.f16" : "llvm.exp2.f32";
     Type funcType = getFunctionType(elemTy, operands[0]);
     LLVM::LLVMFuncOp funcOp =
         appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
@@ -551,9 +555,10 @@ void populateElementwiseOpToLLVMPatterns(
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 
-  // ExpOpConversionApprox will try using __ocml_exp2_f32 if the input type is
-  // FP32. For other input types, ExpOpConversionApprox will return failure and
-  // later pass will call __ocml_exp_f64 for higher-precision calculation
+  // ExpOpConversionApprox will use llvm.exp2 in the source type if the input
+  // is FP32 or FP16, both of which have a native exp2. For other input types
+  // (bf16, FP64) it will return failure and a later pass will call
+  // __ocml_exp_* for higher-precision calculation
   patterns.add<ExpOpConversionApprox>(typeConverter, axisInfoAnalysis, benefit);
   // Exp2OpConversion will use llvm.exp2.f32 or llvm.amdgcn.exp2.f32
   // based on the ftz flag if the input type is FP32. For FP64 input,
