@@ -133,8 +133,8 @@ const StringRef PopulateParamsGemm::initParametersF32ConvGfx90a[] = {
 
 // BEGIN_CONV_Gemm_f32_gfx942_DEFS
 const StringRef PopulateParamsGemm::initParametersF32ConvGfx942[] = {
-    "gemm:v4:64,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
     "gemm:v4:32,32,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
+    "gemm:v4:64,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
     "gemm:v4:64,32,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
     "gemm:v4:32,64,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
     "gemm:v4:64,32,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
