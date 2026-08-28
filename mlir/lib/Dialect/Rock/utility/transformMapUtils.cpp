@@ -1040,8 +1040,7 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       }
       newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
                                           t.getUpperNames(), t.getUpperDims(),
-                                          t.getLowerNames(), t.getLowerDims(),
-                                          t.getIsTileAlignment()));
+                                          t.getLowerNames(), t.getLowerDims()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1581,9 +1580,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(
-          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
-          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
+      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
+                                          t.getUpperNames(), upperDims,
+                                          t.getLowerNames(), lowerDims));
     }
 
     // Add the passthrough transforms
@@ -1637,7 +1636,6 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
-  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1783,7 +1781,6 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
-    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -2105,12 +2102,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr = TransformAttr::get(
-        b.getContext(), args.type, args.params,
-        std::get<DimType::Upper>(args.preservedNames),
-        std::get<DimType::Upper>(args.preservedDims),
-        std::get<DimType::Lower>(args.preservedNames),
-        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
+    auto newTr =
+        TransformAttr::get(b.getContext(), args.type, args.params,
+                           std::get<DimType::Upper>(args.preservedNames),
+                           std::get<DimType::Upper>(args.preservedDims),
+                           std::get<DimType::Lower>(args.preservedNames),
+                           std::get<DimType::Lower>(args.preservedDims));
     newOps.push_back(newTr);
   }
 

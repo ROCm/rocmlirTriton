@@ -4,13 +4,14 @@
 // covered by fusion/pr-e2e/mixr-int4-group-quant-dot-add.mlir; this test pins
 // which loads the pass does and does not rewrite.
 //
-// The arch and tuning parameters are fixed rather than taken from the test
-// environment, because whether a K tile fits inside one quantization group is
-// what decides the rewrite: kPerBlock=32 lands inside a group of 128, while a
-// tile spanning several groups reads a different scale per group and is left
-// alone.
+// The tuning parameters are fixed rather than tuned for, because whether a K
+// tile fits inside one quantization group is what decides the rewrite:
+// kPerBlock=32 lands inside a group of 128, while a tile spanning several
+// groups reads a different scale per group and is left alone. The tile shapes
+// below follow from those parameters alone, so the arch comes from the test
+// environment as usual.
 
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-driver -c --arch=gfx1100 --perf-config=gemm:mPerBlock=80,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0 --mlir-print-ir-after=rock-narrow-redundant-loads --mlir-disable-threading -o /dev/null 2>&1 | FileCheck %s
+// RUN: sed -e 's/##TOKEN_ARCH##/%arch/g' %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel | rocmlir-driver -c --arch=%arch --perf-config=gemm:mPerBlock=80,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0 --mlir-print-ir-after=rock-narrow-redundant-loads --mlir-disable-threading -o /dev/null 2>&1 | FileCheck %s
 
 // The packed weights and the activations read a distinct element per lane, so
 // they keep the full tile.
@@ -22,7 +23,7 @@
 // CHECK: tt.broadcast %[[SCALE]] : tensor<1x128xf16> -> tensor<32x128xf16>
 
 module {
-  func.func @mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add(%arg0: !migraphx.shaped<4096x2048xui8, 2048x1>, %arg1: !migraphx.shaped<4096x32x1xf16, 32x1x1>, %arg2: !migraphx.shaped<1x64x77x64xf16, 315392x4928x64x1>, %arg3: !migraphx.shaped<1x77x4096xf16, 315392x4096x1>) -> !migraphx.shaped<1x77x4096xf16, 315392x4096x1> attributes {rock.arch = "gfx1100", rock.kernel} {
+  func.func @mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add(%arg0: !migraphx.shaped<4096x2048xui8, 2048x1>, %arg1: !migraphx.shaped<4096x32x1xf16, 32x1x1>, %arg2: !migraphx.shaped<1x64x77x64xf16, 315392x4928x64x1>, %arg3: !migraphx.shaped<1x77x4096xf16, 315392x4096x1>) -> !migraphx.shaped<1x77x4096xf16, 315392x4096x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
     %0 = migraphx.literal(dense<8> : tensor<1xui8>) : <1xui8, 0>
     %1 = migraphx.unpack %arg0 {axis = 1 : i64} : <4096x2048xui8, 2048x1> -> <4096x4096xui8, 4096x1>
     %2 = migraphx.multibroadcast %arg1 {out_dyn_dims = [], out_lens = [4096, 32, 128]} : <4096x32x1xf16, 32x1x1> -> <4096x32x128xf16, 32x1x0>
