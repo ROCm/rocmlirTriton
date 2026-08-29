@@ -250,6 +250,7 @@ def sinh(arg0, _semantic=None):
 def tanh(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
+            (core.dtype("fp16"), ): ("__ocml_tanh_f16", core.dtype("fp16")),
             (core.dtype("fp32"), ): ("__ocml_tanh_f32", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("__ocml_tanh_f64", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)

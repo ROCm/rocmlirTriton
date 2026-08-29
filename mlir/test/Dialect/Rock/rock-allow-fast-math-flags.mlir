@@ -32,7 +32,7 @@ module @perop_tests {
   // CHECK-LABEL: func.func @divf_scalar_adds_arcp_nsz_afn
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : f32
   func.func @divf_scalar_adds_arcp_nsz_afn(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = arith.divf %a, %b : f32
     return %0 : f32
   }
@@ -40,7 +40,7 @@ module @perop_tests {
   // CHECK-LABEL: func.func @divf_tensor_adds_arcp_nsz_afn
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
   func.func @divf_tensor_adds_arcp_nsz_afn(%x: tensor<2x3xf32>, %y: tensor<2x3xf32>) -> tensor<2x3xf32>
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = arith.divf %x, %y : tensor<2x3xf32>
     return %0 : tensor<2x3xf32>
   }
@@ -49,7 +49,7 @@ module @perop_tests {
   // CHECK-LABEL: func.func @divf_preserves_other_fastmath
   // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nnan,nsz,arcp,afn> : f32
   func.func @divf_preserves_other_fastmath(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = arith.divf %a, %b fastmath<nnan> : f32
     return %0 : f32
   }
@@ -61,7 +61,7 @@ module @perop_tests {
   // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
   // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
   func.func @binary_arith_adds_contract_nsz(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = arith.addf %a, %b : f32
     %1 = arith.subf %0, %b : f32
     %2 = arith.mulf %1, %a : f32
@@ -81,7 +81,7 @@ module @perop_tests {
   // CHECK: arith.maxnumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   func.func @nsz_only_arith_ops_add_nsz(%a: f32, %b: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = arith.negf %a : f32
     %1 = arith.remf %0, %b : f32
     %2 = arith.maximumf %1, %b : f32
@@ -98,7 +98,7 @@ module @perop_tests {
   // CHECK: math.copysign %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: math.clampf %{{.*}} to [%{{.*}}, %{{.*}}] fastmath<nsz> : f32
   func.func @non_transcendental_math_ops_add_nsz(%a: f32, %lo: f32, %hi: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = math.absf %a : f32
     %1 = math.copysign %0, %a : f32
     %2 = math.clampf %1 to [%lo, %hi] : f32
@@ -115,7 +115,7 @@ module @perop_tests {
   // CHECK: math.sin %{{.*}} fastmath<nsz,contract,afn> : f32
   // CHECK: math.tanh %{{.*}} fastmath<nsz,contract,afn> : f32
   func.func @math_transcendentals_add_afn(%x: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = math.exp %x : f32
     %1 = math.log %0 : f32
     %2 = math.sqrt %1 : f32
@@ -131,7 +131,7 @@ module @perop_tests {
   // CHECK-LABEL: func.func @sincos_multi_result_adds_transcendental_flags
   // CHECK: %{{.*}}, %{{.*}} = math.sincos %{{.*}} fastmath<nsz,contract,afn> : f32
   func.func @sincos_multi_result_adds_transcendental_flags(%x: f32) -> (f32, f32)
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %s, %c = math.sincos %x : f32
     return %s, %c : f32, f32
   }
@@ -141,7 +141,7 @@ module @perop_tests {
   // CHECK-LABEL: func.func @math_fma_adds_contract_nsz
   // CHECK: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
   func.func @math_fma_adds_contract_nsz(%a: f32, %b: f32, %c: f32) -> f32
-      attributes {rock.kernel} {
+      attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
     %0 = math.fma %a, %b, %c : f32
     return %0 : f32
   }
@@ -185,7 +185,7 @@ func.func @migraphx_pipeline_adds_per_op_flags(
     %a: !migraphx.shaped<2x3xf32, 3x1>,
     %b: !migraphx.shaped<2x3xf32, 3x1>,
     %c: !migraphx.shaped<2x3xf32, 3x1>) -> !migraphx.shaped<2x3xf32, 3x1>
-    attributes {kernel, arch = "gfx90a", rock.kernel} {
+    attributes {kernel, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %sub = migraphx.sub %a, %b : <2x3xf32, 3x1>, <2x3xf32, 3x1> -> <2x3xf32, 3x1>
   %exp = migraphx.exp %sub : <2x3xf32, 3x1> -> <2x3xf32, 3x1>
   %add = migraphx.add %exp, %c : <2x3xf32, 3x1>, <2x3xf32, 3x1> -> <2x3xf32, 3x1>

@@ -109,4 +109,31 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     %0 = arith.subf %arg0, %arg1 : tensor<64xbf16, #blocked>
     tt.return %0 : tensor<64xbf16, #blocked>
   }
+
+  // math.tanh lowers to the hardware v_tanh_bf16 via llvm.amdgcn.tanh.bf16.
+  // GFX1250-LABEL: @bf16_tanh
+  tt.func @bf16_tanh(%arg0: tensor<64xbf16, #blocked>) -> tensor<64xbf16, #blocked> {
+    // GFX1250-NOT: llvm.intr.tanh
+    // GFX1250: llvm.call_intrinsic "llvm.amdgcn.tanh.bf16"
+    %0 = math.tanh %arg0 : tensor<64xbf16, #blocked>
+    tt.return %0 : tensor<64xbf16, #blocked>
+  }
+
+  // math.tanh lowers to the hardware v_tanh_f16 via llvm.amdgcn.tanh.f16.
+  // GFX1250-LABEL: @f16_tanh
+  tt.func @f16_tanh(%arg0: tensor<64xf16, #blocked>) -> tensor<64xf16, #blocked> {
+    // GFX1250-NOT: llvm.intr.tanh
+    // GFX1250: llvm.call_intrinsic "llvm.amdgcn.tanh.f16"
+    %0 = math.tanh %arg0 : tensor<64xf16, #blocked>
+    tt.return %0 : tensor<64xf16, #blocked>
+  }
+
+  // math.tanh lowers to the hardware v_tanh_f32 via llvm.amdgcn.tanh.f32.
+  // GFX1250-LABEL: @f32_tanh
+  tt.func @f32_tanh(%arg0: tensor<64xf32, #blocked>) -> tensor<64xf32, #blocked> {
+    // GFX1250-NOT: llvm.intr.tanh
+    // GFX1250: llvm.call_intrinsic "llvm.amdgcn.tanh.f32"
+    %0 = math.tanh %arg0 : tensor<64xf32, #blocked>
+    tt.return %0 : tensor<64xf32, #blocked>
+  }
 }

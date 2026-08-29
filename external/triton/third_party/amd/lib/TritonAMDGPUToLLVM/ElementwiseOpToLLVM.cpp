@@ -289,6 +289,37 @@ struct ExpOpConversionApprox
   }
 };
 
+// On gfx1250 the hardware has dedicated tanh instructions
+// (v_tanh_f32/v_tanh_f16/v_tanh_bf16), exposed through the overloaded
+// llvm.amdgcn.tanh intrinsic.
+struct TanhOpConversion
+    : ElementwiseOpConversionBase<math::TanhOp, TanhOpConversion> {
+  explicit TanhOpConversion(LLVMTypeConverter &typeConverter,
+                            ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                            PatternBenefit benefit)
+      : ElementwiseOpConversionBase(typeConverter, axisInfoAnalysis, benefit) {}
+
+  SmallVector<Value> createDestOps(math::TanhOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    const char *intrinsic = nullptr;
+    if (elemTy.isF32())
+      intrinsic = "llvm.amdgcn.tanh.f32";
+    else if (elemTy.isF16())
+      intrinsic = "llvm.amdgcn.tanh.f16";
+    else if (elemTy.isBF16())
+      intrinsic = "llvm.amdgcn.tanh.bf16";
+
+    if (!intrinsic)
+      return {};
+
+    return {LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, elemTy,
+                                            operands[0][0])
+                ->getResult(0)};
+  }
+};
+
 struct Exp2OpConversion
     : ElementwiseOpConversionBase<math::Exp2Op, Exp2OpConversion> {
   explicit Exp2OpConversion(LLVMTypeConverter &typeConverter,
@@ -521,6 +552,8 @@ void populateElementwiseOpToLLVMPatterns(
         typeConverter, axisInfoAnalysis, gfx1250Benefit);
     patterns.add<PackedArithOpConversion<arith::MulFOp, LLVM::FMulOp>>(
         typeConverter, axisInfoAnalysis, gfx1250Benefit);
+    patterns.add<TanhOpConversion>(typeConverter, axisInfoAnalysis,
+                                   gfx1250Benefit);
   }
 
   patterns.add<FDivOpConversion>(typeConverter, axisInfoAnalysis, benefit);

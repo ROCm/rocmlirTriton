@@ -19,7 +19,7 @@
 
 // CHECK: error: {{.*}}tosa.cast from floating-point to integer is not supported by rock-tosa-to-elementwise
 func.func @cast_f32_to_i32_rejected(%arg0: tensor<16xf32>) -> tensor<16xi32>
-    attributes {rock.kernel} {
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
@@ -28,7 +28,7 @@ func.func @cast_f32_to_i32_rejected(%arg0: tensor<16xf32>) -> tensor<16xi32>
 
 // CHECK: error: {{.*}}tosa.cast from floating-point to integer is not supported by rock-tosa-to-elementwise
 func.func @cast_f16_to_i8_rejected(%arg0: tensor<16xf16>) -> tensor<16xi8>
-    attributes {rock.kernel} {
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %0 = tosa.cast %arg0 : (tensor<16xf16>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
 }
@@ -49,7 +49,7 @@ func.func @cast_f16_to_i8_rejected(%arg0: tensor<16xf16>) -> tensor<16xi8>
 // format.
 // CHECK: rock::createClampedFPToInt: source float type lacks a representable zero, signed representation, or infinity
 func.func @fp_to_int_cast_unsigned_float_rejected(%arg0: tensor<16xf8E8M0FNU>) -> tensor<16xi32>
-    attributes {rock.kernel} {
+    attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a"} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf8E8M0FNU>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }

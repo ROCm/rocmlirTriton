@@ -7,6 +7,7 @@ This directory holds downstream patch records against the vendored Triton tree
 ----------------------------------------------------------------------
 patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
+patch-gfx1250-bf16-tanh.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
@@ -48,6 +49,33 @@ patch-buffer-atomics.patch
   atomic add; gfx11 only F32; gfx942 no PK_ADD_BF16; gfx12 no F64).
   Upstreaming was attempted in https://github.com/triton-lang/triton/pull/10408
   but it was rejected.
+
+patch-gfx1250-bf16-tanh.patch
+  Preserves math.tanh through TTIR -> TTGIR and adds gfx1250 AMD LLVM
+  lowering for math.tanh to llvm.amdgcn.tanh.{f32,f16,bf16}. It also exposes
+  AMD Python fp16 libdevice tanh and maps __ocml_tanh_f32/f16 to hardware tanh
+  on gfx1250. Non-gfx1250 OCML libdevice calls are left untouched; tensor
+  math.tanh for non-gfx1250 is still expected to be expanded before reaching
+  Triton. Three Triton-side pieces are needed:
+
+    1. TritonToTritonGPUPass: add GenericOpPattern<math::TanhOp> to the
+       math-op legalization set so math.tanh survives TTIR -> TTGIR with a
+       blocked encoding (previously it had no TTGIR pattern and only
+       reached LLVM via the expanded form).
+    2. TritonAMDGPUToLLVM (ElementwiseOpToLLVM): register TanhOpConversion only
+       for gfx1250 and emit the overloaded llvm.amdgcn.tanh intrinsic for
+       f32/f16/bf16 element types.
+    3. AMD libdevice/BuiltinFuncToLLVM: expose fp16 tanh from Python as
+       __ocml_tanh_f16, lower __ocml_tanh_f32/f16 to hardware intrinsics on
+       gfx1250, and leave non-gfx1250 OCML calls untouched.
+
+  The rocmlirTriton side gates math.tanh expansion on the kernel arch
+  (rock::archHasHardwareTanh) so the op reaches Triton intact; that part
+  lives in the main tree (RockTosaToElementwise / AmdArchDb), not here.
+  Tests: test/Conversion/amd/tritongpu_to_llvm_gfx1250.mlir
+  (bf16/f16/f32 @*_tanh cases for gfx1250) and
+  test/Conversion/amd/builtin_func_to_llvm.mlir (libdevice-shaped
+  __ocml_tanh_f32/f16 calls).
 
 patch10498.patch
   Extends patch10450's soffset-split safety check to peel sign-preserving

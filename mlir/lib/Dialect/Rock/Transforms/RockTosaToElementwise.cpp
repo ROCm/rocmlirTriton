@@ -25,6 +25,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Math/Transforms/Passes.h"
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -49,6 +51,11 @@ namespace {
 // ===--------------------------------------------------------------------=== //
 // Generic templates for 1:1 TOSA -> arith/math replacement on tensors.
 // ===--------------------------------------------------------------------=== //
+
+static bool isHardwareTanhSupportedType(ShapedType type) {
+  Type elemTy = type.getElementType();
+  return elemTy.isF32() || elemTy.isF16() || elemTy.isBF16();
+}
 
 // Create a rock.transform that broadcasts `input` to `targetShape`.
 // Dimensions where the source has size 1 and the target has size > 1 use
@@ -614,12 +621,23 @@ struct RockTosaToElementwise
     RewritePatternSet patterns(ctx);
     ConversionTarget target(*ctx);
 
+    // check if the target has dedicated tanh instructions, in that case the
+    // Triton pipeline emits those instructions directly from math.tanh. On such
+    // targets we keep `math.tanh` instead of expanding it into elementary ops
+    // below.
+    StringAttr arch = rock::getArchValueOnFunc(func);
+    bool hasHardwareTanh = rock::archHasHardwareTanh(arch);
+
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
     // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
     // illegal so the workaround patterns below get applied to them.
-    target.addDynamicallyLegalOp<math::TanhOp>(
-        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
+    target.addDynamicallyLegalOp<math::TanhOp>([&](math::TanhOp op) {
+      auto shapedType = dyn_cast<ShapedType>(op.getType());
+      if (!shapedType)
+        return true;
+      return hasHardwareTanh && isHardwareTanhSupportedType(shapedType);
+    });
     target.addDynamicallyLegalOp<math::PowFOp>(
         [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
     target.addDynamicallyLegalOp<arith::NegFOp>(
@@ -689,10 +707,11 @@ struct RockTosaToElementwise
     // math.tanh and math.powf so we use upstream
     // math::populateExpansionPatterns to expand them into ops Triton supports.
     //
-    // TODO(gfx1250): gfx1250 will have dedicated instructions for tanh,
-    // we need to make sure we emit those instead of using the math.tanh
-    // expansion.
-    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
+    // On hardware-tanh targets, shaped f32/f16/bf16 math.tanh is legal and
+    // remains for the Triton pipeline to lower to v_tanh_*. Other shaped
+    // math.tanh ops are illegal and expanded here.
+    SmallVector<StringRef> opsToExpand = {"powf", "tanh"};
+    math::populateExpansionPatterns(patterns, opsToExpand);
 
     // This is to support migraphx.neg operator, which will be expanded to
     // arith.negf.

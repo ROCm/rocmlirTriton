@@ -675,3 +675,8 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
 }
+
+bool mlir::rock::archHasHardwareTanh(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::GFX1250;
+}
