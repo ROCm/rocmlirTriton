@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Like mlir/test/fusion/pr-e2e/mixr-conv-bias-leaky-relu.mlir, but this one
 // does not need a GPU, it is just static checks.
 
