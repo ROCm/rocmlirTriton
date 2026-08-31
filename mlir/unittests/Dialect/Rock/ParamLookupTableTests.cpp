@@ -27,8 +27,8 @@ TEST(FindFallbackTest, OldestRelative) {
 }
 
 TEST(FindFallbackTest, YoungestRelative) {
-  // gfx1201 is the youngest available relative for gfx1900
-  EXPECT_EQ("gfx1201_conv_f16",
+  // gfx1200 is the youngest available relative for gfx1900
+  EXPECT_EQ("gfx1200_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1900_conv_f16"));
 }
 
@@ -63,9 +63,26 @@ TEST(FindFallbackTest, NoRelativesBySuffix) {
 }
 
 TEST(FindFallbackTest, UnavailableTuningList) {
-  // Fall back for single-config lists
+  // gfx1201 shares gfx1200 lists whenever both arches were tuned for the same
+  // op/dtype; missing gfx1201 keys fall back to the gfx1200 equivalent.
   EXPECT_EQ("gfx1200_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
+  EXPECT_EQ("gfx1200_gemm_f32",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f32"));
+  EXPECT_EQ("gfx1200_gemm_i8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_i8"));
+  EXPECT_EQ("gfx1200_conv_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_conv_f16"));
+  EXPECT_EQ("gfx1200_conv_f32",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_conv_f32"));
+  EXPECT_EQ("gfx1200_conv_i8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_conv_i8"));
+  EXPECT_EQ("gfx1200_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_f16"));
+  EXPECT_EQ("gfx1200_attention_f32",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_f32"));
   // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
