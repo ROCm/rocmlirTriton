@@ -61,6 +61,16 @@ std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
   return std::make_tuple(isaFamily, chip);
 }
 
+bool mlir::rock::isCDNA(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return triton::amdgpu::isCDNA(isaFamily);
+}
+
+bool mlir::rock::isRDNA(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return triton::amdgpu::isRDNA(isaFamily);
+}
+
 //===----------------------------------------------------------------------===//
 // Matrix Acceleration Support Detection (using Triton APIs)
 //===----------------------------------------------------------------------===//

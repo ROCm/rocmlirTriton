@@ -68,6 +68,16 @@ std::tuple<StringRef, unsigned> parseArchString(StringRef arch);
 /// and `:feature` suffixes stripped.
 std::tuple<triton::amdgpu::ISAFamily, StringRef> getArch(StringRef arch);
 
+/// Whether this architecture belongs to the CDNA (data-center, "big GPU")
+/// line. Mirrors Triton's `triton::amdgpu::isCDNA`, which counts gfx1250 as
+/// CDNA even though its matrix instructions are WMMA.
+bool isCDNA(StringRef arch);
+
+/// Whether this architecture belongs to the RDNA (consumer) line. Mirrors
+/// Triton's `triton::amdgpu::isRDNA`. Note that gfx906 (GCN5_1) is in neither
+/// line, so `isCDNA` and `isRDNA` are not complements.
+bool isRDNA(StringRef arch);
+
 /// Check if hardware matrix acceleration is available for the given GEMM op.
 /// Returns true if any acceleration (MFMA, WMMA, ScaledMFMA, ScaledWMMA)
 /// is available for the operation's types on the specified architecture.

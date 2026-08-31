@@ -150,6 +150,50 @@
 // CHECK-WMMA-ATTN-KPACK: attn:{{.*kpack=1,}}
 
 //===----------------------------------------------------------------------===//
+// gfx1250 tuning space (CDNA-shaped, WMMA instructions)
+//===----------------------------------------------------------------------===//
+
+// gfx1250 issues WMMA instructions, but it is a big GPU that Triton groups with
+// the CDNA parts (isCDNA in TargetFeatures.cpp), so it searches the CDNA space
+// rather than the narrower RDNA one: the K tiles run over {16,...,512} instead
+// of {32,...,256} and numWaves is swept instead of hardcoded to {4,8}. The
+// single config below is out of RDNA's reach on both axes at once. What stays
+// WMMA-shaped is matrixInstrNonkdim, since a 16x16-only instruction leaves no
+// tile to choose.
+// RUN: rocmlir-gen --arch gfx1250 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-GEMM \
+// RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}'
+// CHECK-GFX1250-GEMM: gemm:{{mPerBlock=[0-9]+,nPerBlock=[0-9]+,kPerBlock=16,kpack=1,numCTAs=[0-9]+,numWaves=2,matrixInstrNonkdim=0,}}
+
+// The far ends of those two axes, which are gfx950's as well: a K tile of 512
+// (WMMA stops at 256) and a single-wave workgroup (WMMA's smallest is 4).
+// RUN: rocmlir-gen --arch gfx1250 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-GEMM-RANGES
+// CHECK-GFX1250-GEMM-RANGES-DAG: gemm:{{.*kPerBlock=512,kpack=1,}}
+// CHECK-GFX1250-GEMM-RANGES-DAG: gemm:{{.*numWaves=1,matrixInstrNonkdim=0,}}
+
+// Negative control: gfx1201 (RDNA4) runs the same WMMA instructions but is not
+// CDNA, so it keeps the narrow space -- neither the CDNA-only K tiles (16, 512)
+// nor the CDNA-only wave counts (1, 2) are offered there.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-RDNA4-GEMM \
+// RUN:       --implicit-check-not='{{kPerBlock=(16|512),}}' \
+// RUN:       --implicit-check-not='{{numWaves=(1|2),}}'
+// CHECK-RDNA4-GEMM: gemm:{{.*kPerBlock=(32|64|128|256),kpack=1,}}
+
+// Attention (gemm+gemm) takes the same CDNA branch on gfx1250, whose witness
+// there is numStages: the CDNA space sweeps {1,2,3}, the RDNA one {1,2}.
+// RUN: rocmlir-gen --arch gfx1250 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-ATTN \
+// RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}'
+// CHECK-GFX1250-ATTN: attn:{{.*matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=3,}}
+
+// RUN: rocmlir-gen --arch gfx1201 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-RDNA4-ATTN \
+// RUN:       --implicit-check-not='numStages=3,'
+// CHECK-RDNA4-ATTN: attn:{{.*numStages=(1|2),}}
+
+//===----------------------------------------------------------------------===//
 // Non-accel tuning space
 //===----------------------------------------------------------------------===//
 
