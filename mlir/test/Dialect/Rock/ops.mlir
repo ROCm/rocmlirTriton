@@ -132,7 +132,7 @@ func.func @rock_scaled_gemm(%a : tensor<32x64xf4E2M1FN>, %b : tensor<1x32x128xf4
 // Affine maps needed when testing transform
 #map0 = affine_map<(d0, d1, d2, d3, d4) -> (d1, d0, d2, d3 - 1, d4 - 2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d2, d1 floordiv 512,
-  (d1 mod 512) floordiv 16, d1 mod 16)>
+  (d1 floordiv 16) mod 32, d1 mod 16)>
 #map2 = affine_map<(d0, d1, d2, d3, d4, d5, d6) ->
   (d1, d0, d2, d3 + d4, d5 + d6)>
 

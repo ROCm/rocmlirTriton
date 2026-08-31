@@ -25,7 +25,7 @@
   by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
   bounds = [4, 3, 2, 5] -> [120]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 floordiv 2) mod 3, d0 mod 2, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [24, 5] -> [4, 3, 2, 5]>
@@ -56,7 +56,7 @@ func.func @test_basic_unmerge(%arg0: tensor<120xf32>) {
   by [<Unmerge{4, 5, 3, 2} ["n", "k", "0", "1"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
   bounds = [4, 5, 3, 2] -> [120]>
 #conv2gemm = #rock.transform_map<
-  affine_map<(d0, d1) -> (d1 floordiv 6, d0, (d1 mod 6) floordiv 2, d1 mod 2)>
+  affine_map<(d0, d1) -> (d1 floordiv 6, d0, (d1 floordiv 2) mod 3, d1 mod 2)>
   by [<PassThrough ["gemmM"] at [0] -> ["k"] at [1]>,
     <Merge{4, 3, 2} ["gemmN"] at [1] -> ["n", "0", "1"] at [0, 2, 3]>]
   bounds = [5, 24] -> [4, 5, 3, 2]>
@@ -133,7 +133,7 @@ func.func @test_batch_transpose_bug_1407(%arg0: tensor<33554432xf32>) {
   by [<Unmerge{4, 3, 2, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["raw"] at [0]>]
   bounds = [4, 3, 2, 5] -> [120]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 floordiv 2) mod 3, d0 mod 2, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [24, 5] -> [4, 3, 2, 5]>
@@ -172,7 +172,7 @@ func.func @test_need_for_clone(%arg0: tensor<120xf32>) {
                    <Unmerge{2, 4, 1, 2, 8} ["m_block", "rep_i", "wave_m", "m_tid", "item_i"] at [1, 7, 3, 5, 9] -> ["gemmM"] at [1]>,
                    <Unmerge{2, 4, 1, 16} ["n_block", "rep_j", "wave_n", "n_tid"] at [2, 8, 4, 6] -> ["gemmN"] at [2]>] bounds = [1, 2, 2, 1, 1, 2, 16, 4, 4, 8] -> [1, 128, 128]>
 #merge_map = #rock.transform_map<
-      affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, 0, 0, d3 floordiv 16, d3 mod 16, d4 floordiv 32, (d4 mod 32) floordiv 8, d4 mod 8)>
+      affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, 0, 0, d3 floordiv 16, d3 mod 16, d4 floordiv 32, (d4 floordiv 8) mod 4, d4 mod 8)>
          by [<PassThrough ["g_block", "m_block", "n_block"] at [0, 1, 2] -> ["g_block", "m_block", "n_block"] at [0, 1, 2]>,
              <Merge{1, 1, 2, 16} ["tid"] at [3] -> ["wave_m", "wave_n", "m_tid", "n_tid"] at [3, 4, 5, 6]>,
              <Merge{4, 4, 8} ["item"] at [4] -> ["rep_i", "rep_j", "item_i"] at [7, 8, 9]>] bounds = [1, 2, 2, 32, 128] -> [1, 2, 2, 1, 1, 2, 16, 4, 4, 8]>
@@ -210,7 +210,7 @@ func.func @negative_test_reuse_dim(%arg0: tensor<16384xf32>) {
   by [<Slice{0, 4, 0, 3, 0, 2, 0, 5} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["b", "c", "d", "a"] at [0, 1, 2, 3]>]
   bounds = [4, 3, 2, 5] -> [4, 3, 2, 5]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 floordiv 2) mod 3, d0 mod 2, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [24, 5] -> [4, 3, 2, 5]>
@@ -248,7 +248,7 @@ func.func @test_slice_between_aborts(%arg0: tensor<120xf32>) {
   by [<Pad{0, 0, 0, 0, 0, 0, 0, 0} ["b", "c", "d", "a"] at [0, 1, 2, 3] -> ["b", "c", "d", "a"] at [0, 1, 2, 3]>]
   bounds = [4, 3, 2, 5] -> [4, 3, 2, 5]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 mod 6) floordiv 2, d0 mod 2, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 6, (d0 floordiv 2) mod 3, d0 mod 2, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 3, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [24, 5] -> [4, 3, 2, 5]>
@@ -287,7 +287,7 @@ func.func @test_collapse_through_zero_pad(%arg0: tensor<120xf32>) {
       <PassThrough ["a"] at [3] -> ["a"] at [3]>]
   bounds = [4, 5, 2, 5] -> [4, 3, 2, 5]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 10, (d0 mod 10) floordiv 2, d0 mod 2, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 10, (d0 floordiv 2) mod 5, d0 mod 2, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 5, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [40, 5] -> [4, 5, 2, 5]>
@@ -328,7 +328,7 @@ func.func @test_nonzero_pad_not_contiguous(%arg0: tensor<120xf32>) {
       <PassThrough ["a"] at [3] -> ["a"] at [3]>]
   bounds = [4, 3, 4, 5] -> [4, 3, 2, 5]>
 #merge = #rock.transform_map<
-  affine_map<(d0, d1) -> (d0 floordiv 12, (d0 mod 12) floordiv 4, d0 mod 4, d1)>
+  affine_map<(d0, d1) -> (d0 floordiv 12, (d0 floordiv 4) mod 3, d0 mod 4, d1)>
   by [<PassThrough ["a"] at [1] -> ["a"] at [3]>,
     <Merge{4, 3, 4} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>]
   bounds = [48, 5] -> [4, 3, 4, 5]>

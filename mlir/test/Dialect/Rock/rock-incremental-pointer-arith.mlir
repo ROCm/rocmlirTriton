@@ -228,7 +228,7 @@ func.func @affine_conv_filter_merge(%filter: tensor<36864xi8>, %init: tensor<256
   // raw buffer (gkc01): k_out=64, c=64, 0=3, 1=3 -> 36864.
   %0 = rock.transform %filter by <affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 64 + d2) * 3 + d3) * 3 + d4)> by [<Unmerge{64, 64, 3, 3} ["k", "c", "0", "1"] at [1, 2, 3, 4] -> ["raw"] at [0]>, <AddDim{1} ["g"] at [0] -> [] at []>] bounds = [1, 64, 64, 3, 3] -> [36864]> : tensor<36864xi8> to tensor<1x64x64x3x3xi8>
   // Merge (c, 0, 1) into gemmK (floordiv/mod), gemmM = k_out.
-  %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1 floordiv 9, (d1 mod 9) floordiv 3, d1 mod 3)> by [<PassThrough ["gemmG"] at [0] -> ["g"] at [0]>, <Merge{64, 3, 3} ["gemmK"] at [1] -> ["c", "0", "1"] at [2, 3, 4]>, <PassThrough ["gemmM"] at [2] -> ["k"] at [1]>] bounds = [1, 576, 64] -> [1, 64, 64, 3, 3]> : tensor<1x64x64x3x3xi8> to tensor<1x576x64xi8>
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0, d2, d1 floordiv 9, (d1 floordiv 3) mod 3, d1 mod 3)> by [<PassThrough ["gemmG"] at [0] -> ["g"] at [0]>, <Merge{64, 3, 3} ["gemmK"] at [1] -> ["c", "0", "1"] at [2, 3, 4]>, <PassThrough ["gemmM"] at [2] -> ["k"] at [1]>] bounds = [1, 576, 64] -> [1, 64, 64, 3, 3]> : tensor<1x64x64x3x3xi8> to tensor<1x576x64xi8>
   // Transpose gemmM <-> gemmK.
   %2 = rock.transform %1 by <affine_map<(d0, d1, d2) -> (d0, d2, d1)> by [<PassThrough ["gemmG"] at [0] -> ["gemmG"] at [0]>, <PassThrough ["gemmM", "gemmK"] at [1, 2] -> ["gemmM", "gemmK"] at [2, 1]>] bounds = [1, 64, 576] -> [1, 576, 64]> : tensor<1x576x64xi8> to tensor<1x64x576xi8>
 
@@ -442,7 +442,7 @@ func.func @carry_conv2d_input_rank_redundant(%arg0: tensor<32xi8>, %arg1: tensor
 
   %res = scf.for %k = %c0_i32 to %c9_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
     // Merge (ci, tap0, tap1) into gemmK (radix 2,3,3); (ni, 0o, 1o) into gemmN.
-    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 9, (d1 mod 9) floordiv 3, d2 floordiv 4, d1 mod 3, d2 mod 4)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3, 3} ["gemmK"] at [1] -> ["ci", "0", "1"] at [2, 3, 5]>, <Merge{1, 4, 4} ["gemmN"] at [2] -> ["ni", "0o", "1o"] at [0, 4, 6]>] bounds = [1, 18, 16] -> [1, 1, 2, 3, 4, 3, 4]> : tensor<1x1x2x3x4x3x4xi8> to tensor<1x18x16xi8>
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 9, (d1 floordiv 3) mod 3, d2 floordiv 4, d1 mod 3, d2 mod 4)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3, 3} ["gemmK"] at [1] -> ["ci", "0", "1"] at [2, 3, 5]>, <Merge{1, 4, 4} ["gemmN"] at [2] -> ["ni", "0o", "1o"] at [0, 4, 6]>] bounds = [1, 18, 16] -> [1, 1, 2, 3, 4, 3, 4]> : tensor<1x1x2x3x4x3x4xi8> to tensor<1x18x16xi8>
     // Tiling: k_loop (the iv) feeds gemmK with stride 2 (k_iter = 2); n_iter = 4.
     %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{9, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{4, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [9, 1, 1, 4, 2, 4] -> [1, 18, 16]> : tensor<1x18x16xi8> to tensor<9x1x1x4x2x4xi8>
     %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<9x1x1x4x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
@@ -767,7 +767,7 @@ func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor
   %res = scf.for %k = %c0_i32 to %c6_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
     // gemmK = Merge{2, 2, 3} of (c0, c1, tap); two non-impacting coords sit
     // above the single impacting tap -> prefixSize == 2.
-    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 6, (d1 mod 6) floordiv 3, d1 mod 3, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 2, 3} ["gemmK"] at [1] -> ["c0", "c1", "1"] at [2, 3, 4]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 5]>] bounds = [1, 12, 4] -> [1, 1, 2, 2, 3, 4]> : tensor<1x1x2x2x3x4xi8> to tensor<1x12x4xi8>
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 6, (d1 floordiv 3) mod 2, d1 mod 3, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 2, 3} ["gemmK"] at [1] -> ["c0", "c1", "1"] at [2, 3, 4]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 5]>] bounds = [1, 12, 4] -> [1, 1, 2, 2, 3, 4]> : tensor<1x1x2x2x3x4xi8> to tensor<1x12x4xi8>
     // Tiling: k_loop (the iv) feeds gemmK with stride 2 (k_iter = 2).
     %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{6, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [6, 1, 1, 1, 2, 4] -> [1, 12, 4]> : tensor<1x12x4xi8> to tensor<6x1x1x1x2x4xi8>
     %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<6x1x1x1x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
