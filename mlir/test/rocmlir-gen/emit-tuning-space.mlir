@@ -117,21 +117,28 @@
 
 // Tile shapes known to overflow LDS for an (arch, input dtype) are pruned from
 // the emitted tuning space by the compiled-in blacklist (LdsBlacklist.h,
-// populated offline by generateLDSBlacklist.py). The 64x64x128 tile with
+// populated offline by generateLDSBlacklist.py). The 16x256x512 tile with
 // numStages=3 is a shipped gfx950/f32 blacklist entry, so it must be absent
 // from the default exhaustive space.
-// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+//
+// The probe GEMM has to reach K=512 and a 256-wide N: every gfx950/f32 entry in
+// the current table is a kPerBlock=512 tile with M or N at 256, and the tile
+// ladders are clipped by the problem dims (computeDPerBlock / capKPerBlockByK),
+// so a smaller GEMM emits nothing the blacklist would drop. Regenerating the
+// table can retire whichever entry is named here; pick a surviving one out of
+// LdsBlacklistPerfconfigs.inc rather than dropping the check.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-BLACKLIST \
-// RUN:       --implicit-check-not='gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,'
+// RUN:       --implicit-check-not='gemm:mPerBlock=16,nPerBlock=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,'
 // CHECK-LDS-BLACKLIST: gemm:mPerBlock=
 
 // The ROCMLIR_DISABLE_LDS_BLACKLIST escape hatch makes LdsBlacklist::lookupGemm
 // return an empty set, so the blacklisted config reappears -- this is what lets
 // generateLDSBlacklist.py enumerate the *unfiltered* space to (re)generate the
 // table idempotently.
-// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-NOBLACKLIST
-// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=16,nPerBlock=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
