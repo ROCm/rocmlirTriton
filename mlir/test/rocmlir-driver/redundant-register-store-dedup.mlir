@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A depthwise convolution has one output channel per group, so its GEMM M
 // dimension is 1. When mPerBlock is tuned to 1 the result tensor still gets the
 // matrix instruction's layout, and gfx11's WMMA duplicates its result across
