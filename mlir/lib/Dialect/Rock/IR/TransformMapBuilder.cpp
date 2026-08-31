@@ -121,6 +121,10 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
           affExprsMap.insert({lowerDims[i], thisDim});
           continue;
         }
+        // We intentionally emit `(x floordiv stride) mod size` instead of chaining
+        // a remainder through `(x mod prevStride) floordiv stride` because that way,
+        // Triton's AxisInfo is able to analyze the IR chain better and properly
+        // vectorize the code.
         AffineExpr stride = b.getAffineConstantExpr(lowerDimStrides[i]);
         AffineExpr thisDim = b.getAffineDimExpr(upperDims[0]).floorDiv(stride);
         // Only mod when needed. The coordinate is below totalStride, so the
