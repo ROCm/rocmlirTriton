@@ -1316,6 +1316,16 @@ static LogicalResult detectMissingArguments() {
     }
   }
 
+  // The convolution and the GEMM cannot be fused across groups: the group
+  // becomes the batch dimension of both GEMMs, whereas the GEMM that follows a
+  // grouped convolution contracts over every group's output channels at once.
+  // `ConvElementwiseGemmRewritePattern` rejects the fusion for the same reason,
+  // so there is no grouped conv+gemm kernel to generate.
+  if (operation == rock::KernelType::ConvElementwiseGemm && groupSize != 1) {
+    llvm::errs() << "Group convolution not supported for conv+gemm\n";
+    return failure();
+  }
+
   if (operation == rock::KernelType::Attention ||
       operation == rock::KernelType::GemmElementwiseGemm ||
       operation == rock::KernelType::ConvElementwiseGemm) {
@@ -4446,8 +4456,9 @@ createCpuConvElementwiseGemmKernelWithMlir(ModuleOp module,
       inputZp, weightZp, builder.getDenseI64ArrayAttr(pads),
       builder.getDenseI64ArrayAttr(config->strideDims),
       builder.getDenseI64ArrayAttr(config->dilationDims), firstAccType);
-  // TODO(roctriton): group conv
-  // builder.getI64IntegerAttr(groupSize));
+  // No `group` attribute: conv+gemm does not support grouped convolution, so
+  // `detectMissingArguments` rejects `--groupsize > 1` before we get here and
+  // the `g` dimensions squeezed above are always 1.
 
   // convert conv output to matmul A matrix
   // tensor<bxhxwxkxf16> -> tensor<1x(b*h*w)xkxf16>
@@ -5726,11 +5737,6 @@ static void insertValidationCalls(const GenParams &genParams, OpBuilder &b,
       if (validationType == "cpp") {
         llvm::errs()
             << "External conv elementwise gemm validator is not available\n";
-        exit(1);
-      }
-      if (groupSize != 1) {
-        llvm::errs()
-            << "Group convolution not supported for conv+gemm in rocmlir-gen\n";
         exit(1);
       }
       auto cpuConvElementwiseGemmFunc =

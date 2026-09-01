@@ -1448,6 +1448,19 @@ struct ConvElementwiseGemmRewritePattern
       op.emitOpError("bias not supported yet");
       return failure();
     }
+    // A grouped convolution cannot be fused with the GEMM that follows it.
+    // `ConvGemmRewritePattern` makes the group the batch dimension of both
+    // GEMMs, so each group's output channels reach the second GEMM as their own
+    // tile, contracted against their own slice of `c`. A dot applied to a
+    // grouped convolution instead contracts over every output channel at once,
+    // which means summing those per-group products: a reduction over a
+    // dimension the GEMM+GEMM form treats as parallel.
+    if (auto groupAttr = firstConv->getAttrOfType<IntegerAttr>("group");
+        groupAttr && groupAttr.getInt() != 1) {
+      op.emitOpError("fusing a grouped convolution into conv+gemm is not "
+                     "supported");
+      return failure();
+    }
     return elementwiseRegionFinder;
   }
 
@@ -1465,13 +1478,13 @@ struct ConvElementwiseGemmRewritePattern
     SmallVector<Value> elementwiseOtherArgs =
         elementwiseRegionFinder.getElementwiseArgs();
 
-    int64_t group = 1;
-    if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
-      group = attr.getInt(); // Use op.getGroup() when all OpT have it.
+    assert((!firstConv->getAttrOfType<IntegerAttr>("group") ||
+            firstConv->getAttrOfType<IntegerAttr>("group").getInt() == 1) &&
+           "the matcher rejects grouped convolutions");
     ConvFields convFields = commonConv(
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
         /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
-        firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
+        firstConv.getStrideAttr(), firstConv.getDilationAttr(), /*group=*/1);
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
 

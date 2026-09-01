@@ -46,3 +46,12 @@
 // SLICE: tosa.conv2d {{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 2, 2>}
 // SLICE: tosa.matmul
 // SLICE: return
+
+// A grouped convolution can't be fused with the GEMM that follows it, so
+// conv+gemm rejects groupsize > 1. The rejection lives in
+// detectMissingArguments(), so it fires whether or not a verifier is
+// requested; both RUN lines below must produce the same error.
+// RUN: not rocmlir-gen --arch gfx942:sramecc+:xnack- --operation conv_gemm -groupsize=4 -batchsize=2 -in_channels=256 -out_channels=128 -in_h=32 -in_w=32 -fil_h=1 -fil_w=1 -gemmO=128 -t f32 2>&1 | FileCheck %s --check-prefix=GROUP
+// RUN: not rocmlir-gen --arch gfx942:sramecc+:xnack- --operation conv_gemm -groupsize=4 -batchsize=2 -in_channels=256 -out_channels=128 -in_h=32 -in_w=32 -fil_h=1 -fil_w=1 -gemmO=128 -t f32 -pv 2>&1 | FileCheck %s --check-prefix=GROUP
+
+// GROUP: Group convolution not supported for conv+gemm
