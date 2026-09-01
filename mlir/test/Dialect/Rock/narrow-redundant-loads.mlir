@@ -240,12 +240,18 @@ func.func @masked_uniform_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x1
 
 // -----
 
-// The address is uniform along dim 0 but the mask is not, so which lane a value
-// comes from decides whether it is the loaded value or the fill.
+// The address is uniform along dim 0 but the mask is not, so the mask has no
+// narrower form to ride along on. The load narrows anyway: it runs unmasked and
+// the mask goes back on after the broadcast, so the lanes it excludes still
+// observe the fill. Taking the mask off the load is what the mask being uniform
+// along the surviving dim buys, because whether the load happens then does not
+// depend on which lane group asks and the narrow load reaches no address the
+// original would have left alone.
 
 // CHECK-LABEL: @mask_varies_along_dim
-//  CHECK-NOT:   tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
-//      CHECK:   tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x128x!tt.ptr<f16>>
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<1x128xf16> -> tensor<32x128xf16>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %{{.*}} : tensor<32x128xi1>, tensor<32x128xf16>
 func.func @mask_varies_along_dim(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128xf16> {
   %zero = arith.constant dense<0.0> : tensor<32x128xf16>
   %kRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
@@ -305,5 +311,61 @@ func.func @fill_varies_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x128x
   %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
   %addr = tt.addptr %ptrs, %nB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
   %val = tt.load %addr, %mask, %fill : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
+// The fused convolution epilogue reading a per-output-channel bias across its
+// output tile, which is the shape this rewrite exists for. The address depends
+// only on the channel and so repeats along the whole column axis, while the
+// mask is the column bounds check and varies along exactly that axis. Left as a
+// full tile the bias is what pushes the epilogue onto a transposed layout and
+// costs it a shared-memory round trip to place.
+
+// CHECK-LABEL: @per_channel_bias
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<128x1x!tt.ptr<f32>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<128x1xf32> -> tensor<128x128xf32>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %{{.*}} : tensor<128x128xi1>, tensor<128x128xf32>
+func.func @per_channel_bias(%base: !tt.ptr<f32>, %n: i32) -> tensor<128x128xf32> {
+  %zero = arith.constant dense<0.0> : tensor<128x128xf32>
+  %mRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<128xi32> -> tensor<128x1xi32>
+  %chan = tt.broadcast %mCol : tensor<128x1xi32> -> tensor<128x128xi32>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %limit = tt.splat %n : i32 -> tensor<1x128xi32>
+  %nMask = arith.cmpi slt, %nRow, %limit : tensor<1x128xi32>
+  %mask = tt.broadcast %nMask : tensor<1x128xi1> -> tensor<128x128xi1>
+  %ptrs = tt.splat %base : !tt.ptr<f32> -> tensor<128x128x!tt.ptr<f32>>
+  %addr = tt.addptr %ptrs, %chan : tensor<128x128x!tt.ptr<f32>>, tensor<128x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<128x128x!tt.ptr<f32>>
+  return %val : tensor<128x128xf32>
+}
+
+// -----
+
+// The address repeats along dim 1, but the mask varies along dim 0, the one
+// that survives. Whether a row is read then depends on the row, so a narrow
+// load with the mask taken off would reach addresses the original never touched
+// and nothing here says those are safe to read. The load stays as it is.
+
+// CHECK-LABEL: @mask_varies_along_surviving_dim
+//  CHECK-NOT:   tt.load %{{.*}} : tensor<32x1x!tt.ptr<f16>>
+//      CHECK:   tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x128x!tt.ptr<f16>>
+func.func @mask_varies_along_surviving_dim(%base: !tt.ptr<f16>, %lim: i32) -> tensor<32x128xf16> {
+  %zero = arith.constant dense<0.0> : tensor<32x128xf16>
+  %mRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %mB = tt.broadcast %mCol : tensor<32x1xi32> -> tensor<32x128xi32>
+  %nB = tt.broadcast %nRow : tensor<1x128xi32> -> tensor<32x128xi32>
+  %diag = arith.addi %mB, %nB : tensor<32x128xi32>
+  %limit = tt.splat %lim : i32 -> tensor<32x128xi32>
+  %mask = arith.cmpi slt, %diag, %limit : tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %mB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<32x128x!tt.ptr<f16>>
   return %val : tensor<32x128xf16>
 }

@@ -21,6 +21,15 @@
 // narrower shape, which is value-preserving because taking a slice of a tensor
 // is; anything it does not know how to re-materialize is left alone.
 //
+// A masked load of a broadcast operand needs a second criterion. The analysis
+// reports the constancy of the loaded values, which folds in the mask, so a
+// load whose address repeats but whose mask does not looks like it reads
+// something different in every lane. The fused convolution epilogue reads its
+// per-output-channel bias exactly that way: one address per channel, masked by
+// the output tile's column bounds check. Such a load narrows off the constancy
+// of its address instead, and drops the mask, which `getBroadcastNarrowShape`
+// and `narrowLoad` justify between them.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/Passes.h"
@@ -53,10 +62,22 @@ namespace tt = mlir::triton;
 
 namespace {
 
+/// How a narrowed load reproduces the values the original one produced.
+enum class MaskPolicy {
+  /// The mask is invariant along the narrowed dimensions, so it narrows
+  /// alongside the address and the rewrite is a pure slice.
+  Narrow,
+  /// The mask varies along the narrowed dimensions, so it cannot ride along on
+  /// a load that no longer has them. The narrowed load runs unmasked and the
+  /// original mask is re-applied to the broadcast result.
+  ReapplyAfterBroadcast,
+};
+
 /// A load worth rewriting, together with the shape it should be narrowed to.
 struct NarrowingCandidate {
   tt::LoadOp load;
   SmallVector<int64_t> narrowShape;
+  MaskPolicy maskPolicy;
 };
 
 /// Re-materializes values at a reduced shape, which amounts to taking their
@@ -272,16 +293,92 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
   return narrowed ? std::optional(narrowShape) : std::nullopt;
 }
 
+/// Returns true if `v` is constant along every dimension `narrowShape` keeps,
+/// so it varies at most along the dimensions being collapsed.
+bool isConstantOutsideNarrowedDims(Value v, ArrayRef<int64_t> shape,
+                                   ArrayRef<int64_t> narrowShape,
+                                   tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(v);
+  if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
+    return false;
+  for (auto [dim, extent] : llvm::enumerate(shape)) {
+    if (narrowShape[dim] == 1)
+      continue;
+    if (extent > 1 && info->getConstancy(dim) != extent)
+      return false;
+  }
+  return true;
+}
+
+/// Returns the shape `load` can be narrowed to when its *address* repeats even
+/// though its result does not, which is what a masked load of a broadcast
+/// operand looks like: every lane along the dimension reads the same location,
+/// but the mask decides per lane whether it is read at all.
+///
+/// Narrowing then has to drop the mask, because a mask that varies along a
+/// dimension cannot be carried onto a load that no longer has it. Two
+/// conditions make that sound.
+///
+/// The mask must be constant along every dimension that survives. Whether the
+/// load happens is then independent of which lane group asks, so the program
+/// either reads the whole set of addresses the narrowed load reads or reads
+/// nothing at all -- the narrowed load never reaches an address the original
+/// would not have. This is the memory-safety half.
+///
+/// The values are handled separately, by `narrowLoad` re-applying the mask to
+/// the broadcast result, so the lanes the mask excludes still observe `other`.
+/// That is why nothing here has to prove those lanes are dead.
+std::optional<SmallVector<int64_t>>
+getBroadcastNarrowShape(tt::LoadOp load,
+                        tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto type = dyn_cast<RankedTensorType>(load.getType());
+  if (!type || !type.hasStaticShape())
+    return std::nullopt;
+  // Re-applying the mask has to reproduce what the masked lanes held, which
+  // is only a value this pass can name when `other` is uniform or absent.
+  if (load.getOther() && !isSplatLike(load.getOther()))
+    return std::nullopt;
+  // Without a mask the plain constancy path above already applies.
+  if (!load.getMask())
+    return std::nullopt;
+
+  tt::AxisInfo *info = axisInfo.getAxisInfo(load.getPtr());
+  if (!info || info->getRank() != type.getRank())
+    return std::nullopt;
+
+  ArrayRef<int64_t> shape = type.getShape();
+  SmallVector<int64_t> narrowShape(shape);
+  bool narrowed = false;
+  for (auto [dim, extent] : llvm::enumerate(shape)) {
+    if (extent > 1 && info->getConstancy(dim) == extent) {
+      narrowShape[dim] = 1;
+      narrowed = true;
+    }
+  }
+  if (!narrowed)
+    return std::nullopt;
+
+  if (!isConstantOutsideNarrowedDims(load.getMask(), shape, narrowShape,
+                                     axisInfo))
+    return std::nullopt;
+  return narrowShape;
+}
+
 LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   tt::LoadOp load = candidate.load;
   IRRewriter rewriter(load);
   SliceMaterializer materializer(rewriter);
 
+  // A mask that varies along a narrowed dimension has no narrower form, so it
+  // comes off the load and goes back on after the broadcast instead. `other`
+  // follows it, since tt.load only accepts the two together.
+  bool reapplyMask = candidate.maskPolicy == MaskPolicy::ReapplyAfterBroadcast;
+
   // Narrow every operand before building the load, so that giving up on one of
   // them leaves the original load in place.
   SmallVector<Value> operands;
   for (Value operand : {load.getPtr(), load.getMask(), load.getOther()}) {
-    if (!operand) {
+    if (!operand || (reapplyMask && operand != load.getPtr())) {
       operands.push_back(nullptr);
       continue;
     }
@@ -301,10 +398,17 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
       tt::LoadOp::create(rewriter, load.getLoc(), narrowedType, operands[0],
                          operands[1], operands[2], load.getCacheAttr(),
                          load.getEvictAttr(), load.getIsVolatileAttr());
-  Value broadcast =
+  Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
 
-  rewriter.replaceOp(load, broadcast);
+  // Restore what the masked lanes held. Skipped when the load had no `other`,
+  // because those lanes were undefined to begin with and the broadcast value
+  // is as good as any.
+  if (reapplyMask && load.getOther())
+    result = arith::SelectOp::create(rewriter, load.getLoc(), load.getMask(),
+                                     result, load.getOther());
+
+  rewriter.replaceOp(load, result);
   return success();
 }
 
@@ -318,9 +422,18 @@ struct RockNarrowRedundantLoadsPass
     // Collect first: rewriting the loads invalidates the analysis.
     SmallVector<NarrowingCandidate> candidates;
     module.walk([&](tt::LoadOp load) {
+      // Prefer the plain slice. It reproduces the load exactly, so it is worth
+      // taking wherever it applies even if the broadcast form would too.
       if (std::optional<SmallVector<int64_t>> narrowShape =
-              getNarrowShape(load, axisInfo))
-        candidates.push_back({load, std::move(*narrowShape)});
+              getNarrowShape(load, axisInfo)) {
+        candidates.push_back({load, std::move(*narrowShape),
+                              MaskPolicy::Narrow});
+        return;
+      }
+      if (std::optional<SmallVector<int64_t>> narrowShape =
+              getBroadcastNarrowShape(load, axisInfo))
+        candidates.push_back({load, std::move(*narrowShape),
+                              MaskPolicy::ReapplyAfterBroadcast});
     });
 
     for (const NarrowingCandidate &candidate : candidates) {
