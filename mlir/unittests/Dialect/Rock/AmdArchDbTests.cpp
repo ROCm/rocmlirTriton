@@ -548,6 +548,45 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
 }
 
+// --- isCDNA / isRDNA ---
+
+TEST(AmdArchDbTest, IsCDNA) {
+  // Mirrors Triton's isCDNA(): gfx1250 counts as CDNA despite issuing WMMA.
+  EXPECT_FALSE(isCDNA("gfx906"));  // GCN5_1: neither line
+  EXPECT_TRUE(isCDNA("gfx908"));   // CDNA1
+  EXPECT_TRUE(isCDNA("gfx90a"));   // CDNA2
+  EXPECT_TRUE(isCDNA("gfx942"));   // CDNA3
+  EXPECT_TRUE(isCDNA("gfx950"));   // CDNA4
+  EXPECT_FALSE(isCDNA("gfx1010")); // RDNA1
+  EXPECT_FALSE(isCDNA("gfx1030")); // RDNA2
+  EXPECT_FALSE(isCDNA("gfx1100")); // RDNA3
+  EXPECT_FALSE(isCDNA("gfx1170")); // GFX1170
+  EXPECT_FALSE(isCDNA("gfx1200")); // RDNA4
+  EXPECT_TRUE(isCDNA("gfx1250"));  // GFX1250
+
+  EXPECT_TRUE(isCDNA("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"));
+  EXPECT_FALSE(isCDNA("amdgcn-amd-amdhsa:gfx1200"));
+}
+
+TEST(AmdArchDbTest, IsRDNA) {
+  // gfx1250 is a gfx12 chip but not RDNA, so the two predicates do not
+  // partition the gfx12 line; gfx906 is in neither.
+  EXPECT_FALSE(isRDNA("gfx906"));  // GCN5_1: neither line
+  EXPECT_FALSE(isRDNA("gfx908"));  // CDNA1
+  EXPECT_FALSE(isRDNA("gfx90a"));  // CDNA2
+  EXPECT_FALSE(isRDNA("gfx942"));  // CDNA3
+  EXPECT_FALSE(isRDNA("gfx950"));  // CDNA4
+  EXPECT_TRUE(isRDNA("gfx1010"));  // RDNA1
+  EXPECT_TRUE(isRDNA("gfx1030"));  // RDNA2
+  EXPECT_TRUE(isRDNA("gfx1100"));  // RDNA3
+  EXPECT_TRUE(isRDNA("gfx1170"));  // GFX1170
+  EXPECT_TRUE(isRDNA("gfx1200"));  // RDNA4
+  EXPECT_FALSE(isRDNA("gfx1250")); // GFX1250
+
+  EXPECT_TRUE(isRDNA("amdgcn-amd-amdhsa:gfx1200"));
+  EXPECT_FALSE(isRDNA("amdgcn-amd-amdhsa:gfx942"));
+}
+
 // --- getArch (arch-string parsing) ---
 
 TEST(AmdArchDbTest, GetArchChipParsingGfx1170) {

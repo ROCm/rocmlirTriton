@@ -714,6 +714,23 @@ module {
      return %0 : !migraphx.shaped<16xf32, 1>
   }
 
+  // Float -> signed int cannot be a plain tosa.cast: upstream tosa-to-linalg
+  // would round to nearest even, where MIGraphX truncates, and would leave
+  // out-of-range inputs as poison. The custom op carries the saturating,
+  // truncating semantics into a lowering both the CPU and GPU paths share.
+  // (Float -> unsigned takes the unsigned_cast spelling of the same thing; see
+  // @migraphx_convert_int4_float_to_unsigned in
+  // migraphx-to-tosa-signed-unsigned-ints.mlir.)
+  // CHECK-LABEL: func.func @func_convert_f32_to_si8
+  // CHECK-NOT: tosa.cast
+  // CHECK: tosa.custom
+  // CHECK-SAME: operator_name = "fp_to_int_cast"
+  // CHECK-SAME: (tensor<16xf32>) -> tensor<16xi8>
+  func.func @func_convert_f32_to_si8(%arg0: !migraphx.shaped<16xf32, 1>) -> !migraphx.shaped<16xsi8, 1> {
+    %0 = migraphx.convert %arg0 : <16xf32, 1> to <16xsi8, 1>
+     return %0 : !migraphx.shaped<16xsi8, 1>
+  }
+
   // CHECK-LABEL: func.func @func_div_f32
   // CHECK: tosa.reciprocal
   // CHECK: tosa.mul

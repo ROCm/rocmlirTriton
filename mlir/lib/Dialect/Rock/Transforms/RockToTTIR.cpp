@@ -32,6 +32,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -532,6 +533,113 @@ static bool resolveUseBf16x3ForF32(func::FuncOp funcOp, bool disableFastMath) {
   return policy != 0;
 }
 
+/// Return the value behind a clamp bound, which is either a scalar float
+/// constant or a splat of one.
+static std::optional<APFloat> getConstantFloatBound(Value v) {
+  Attribute attr;
+  if (!matchPattern(v, m_Constant(&attr)))
+    return std::nullopt;
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+    return floatAttr.getValue();
+  if (auto denseAttr = dyn_cast<DenseFPElementsAttr>(attr))
+    if (denseAttr.isSplat())
+      return denseAttr.getSplatValue<APFloat>();
+  return std::nullopt;
+}
+
+/// A nested minnumf/maxnumf pair that a single `tt.clampf` can replace.
+struct ClampIdiom {
+  Operation *inner;
+  Value x;
+  Value lo;
+  Value hi;
+};
+
+/// Recognise a clamp written as a nested minnumf/maxnumf pair and check that
+/// replacing it with a `tt.clampf` carrying `propagateNan = none` preserves
+/// semantics. Both nestings reach here:
+///
+///   maxnumf(minnumf(x, hi), lo)   from tosa.clamp
+///   minnumf(maxnumf(x, lo), hi)   from migraphx.clip
+///
+/// which the `nnan` required below makes equivalent. The NaN-propagating
+/// `maximumf`/`minimumf` spelling is deliberately not matched, since a
+/// non-propagating clamp is not a faithful replacement for it.
+template <typename OuterOp, typename InnerOp>
+static std::optional<ClampIdiom> matchClampIdiom(OuterOp outerOp) {
+  // tt.clampf accepts FP8 operands, but Triton's type converter maps FP8 to i8,
+  // so the lowering would compare integers. This is the same hazard that forces
+  // FP8 casts through tt.fp_to_fp above.
+  if (hasFp8ElementType(outerOp.getType()))
+    return std::nullopt;
+
+  // Every producer of this idiom puts the bound on the right, which is also
+  // where MLIR canonicalises the constant operand of a commutative op.
+  auto innerOp = outerOp.getLhs().template getDefiningOp<InnerOp>();
+  // An inner op read by anything else still has to be computed, so absorbing it
+  // into the clamp would duplicate the work rather than remove it.
+  if (!innerOp || !innerOp->hasOneUse())
+    return std::nullopt;
+
+  // Dropping NaN handling needs `nnan`, even though minnumf/maxnumf already
+  // return the non-NaN operand. The max-outer pair still disagrees with v_med3
+  // on which bound a NaN input collapses to: it yields `hi`, while v_med3
+  // returns the smallest operand and so yields `lo`. Only `nnan` makes that
+  // difference unobservable, and it is demanded of both nestings alike.
+  constexpr arith::FastMathFlags nnan = arith::FastMathFlags::nnan;
+  if (!bitEnumContainsAll(outerOp.getFastmath(), nnan) ||
+      !bitEnumContainsAll(innerOp.getFastmath(), nnan))
+    return std::nullopt;
+
+  constexpr bool maxOuter = std::is_same_v<OuterOp, arith::MaxNumFOp>;
+  Value loVal = maxOuter ? outerOp.getRhs() : innerOp.getRhs();
+  Value hiVal = maxOuter ? innerOp.getRhs() : outerOp.getRhs();
+
+  std::optional<APFloat> lo = getConstantFloatBound(loVal);
+  std::optional<APFloat> hi = getConstantFloatBound(hiVal);
+  if (!lo || !hi)
+    return std::nullopt;
+  // A median only equals the clamp when the bounds are ordered: for lo > hi the
+  // two nestings saturate to opposite bounds and neither agrees with v_med3.
+  // Unordered bounds (a NaN bound) compare as neither less-than nor equal and
+  // are rejected too.
+  APFloat::cmpResult order = lo->compare(*hi);
+  if (order != APFloat::cmpLessThan && order != APFloat::cmpEqual)
+    return std::nullopt;
+
+  return ClampIdiom{innerOp, innerOp.getLhs(), loVal, hiVal};
+}
+
+//===----------------------------------------------------------------------===//
+// ArithClampToClampFPattern - Fold a nested minnumf/maxnumf pair into
+// tt.clampf. For f16 and f32 the AMD backend emits a single v_med3; the other
+// float types fall back to Triton's generic lowering, which is no worse than
+// the pair we started from.
+//===----------------------------------------------------------------------===//
+template <typename OuterOp, typename InnerOp>
+struct ArithClampToClampFPattern : public OpRewritePattern<OuterOp> {
+  using OpRewritePattern<OuterOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OuterOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<ClampIdiom> clamp = matchClampIdiom<OuterOp, InnerOp>(op);
+    if (!clamp)
+      return failure();
+
+    auto propagateNan = triton::PropagateNanAttr::get(
+        rewriter.getContext(), triton::PropagateNan::NONE);
+    rewriter.replaceOpWithNewOp<triton::ClampFOp>(
+        op, op.getType(), clamp->x, clamp->lo, clamp->hi, propagateNan);
+    rewriter.eraseOp(clamp->inner);
+    return success();
+  }
+};
+
+using MaxOuterClampToClampFPattern =
+    ArithClampToClampFPattern<arith::MaxNumFOp, arith::MinNumFOp>;
+using MinOuterClampToClampFPattern =
+    ArithClampToClampFPattern<arith::MinNumFOp, arith::MaxNumFOp>;
+
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -572,6 +680,15 @@ void RockToTTIRPass::runOnOperation() {
   target.addDynamicallyLegalOp<arith::ExtFOp>(
       [](arith::ExtFOp op) { return !hasFp8ElementType(op.getIn().getType()); });
 
+  // A nested minnumf/maxnumf pair that is allowed to ignore NaNs collapses into
+  // a tt.clampf, which AMD lowers to a single v_med3.
+  target.addDynamicallyLegalOp<arith::MaxNumFOp>([](arith::MaxNumFOp op) {
+    return !matchClampIdiom<arith::MaxNumFOp, arith::MinNumFOp>(op).has_value();
+  });
+  target.addDynamicallyLegalOp<arith::MinNumFOp>([](arith::MinNumFOp op) {
+    return !matchClampIdiom<arith::MinNumFOp, arith::MaxNumFOp>(op).has_value();
+  });
+
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
   patterns.add<RockLoadPtrOpRewritePattern>(ctx);
@@ -579,6 +696,7 @@ void RockToTTIRPass::runOnOperation() {
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);
+  patterns.add<MaxOuterClampToClampFPattern, MinOuterClampToClampFPattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
   if (failed(applyPartialConversion(getOperation(), target,

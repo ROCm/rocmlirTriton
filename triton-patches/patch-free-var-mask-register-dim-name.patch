@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 diff --git a/lib/Conversion/TritonGPUToLLVM/Utility.cpp b/lib/Conversion/TritonGPUToLLVM/Utility.cpp
 index be32e772e4ad..0e7c87244dab 100644
 --- a/lib/Conversion/TritonGPUToLLVM/Utility.cpp
@@ -53,10 +56,13 @@ index bc24e4ab3262..d0512f4f9729 100644
      Value eventState = LLVM::AllocaOp::create(rewriter, loc, ptr_ty(ctx),
 diff --git a/test/Conversion/amd/redundant_register_store.mlir b/test/Conversion/amd/redundant_register_store.mlir
 new file mode 100644
-index 000000000000..527bff8df7e4
+index 000000000000..1f4807ede035
 --- /dev/null
 +++ b/test/Conversion/amd/redundant_register_store.mlir
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,69 @@
++// Copyright Advanced Micro Devices, Inc.
++// SPDX-License-Identifier: MIT
++//
 +// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s
 +// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s
 +
@@ -125,10 +131,13 @@ index 000000000000..527bff8df7e4
 +}
 diff --git a/test/Conversion/redundant_register_store.mlir b/test/Conversion/redundant_register_store.mlir
 new file mode 100644
-index 000000000000..2f2ee1d15e24
+index 000000000000..ca52926a4dca
 --- /dev/null
 +++ b/test/Conversion/redundant_register_store.mlir
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,68 @@
++// Copyright Advanced Micro Devices, Inc.
++// SPDX-License-Identifier: MIT
++//
 +// RUN: triton-opt %s -split-input-file --allocate-shared-memory-nv --convert-triton-gpu-to-llvm | FileCheck %s
 +
 +// The store and atomic conversions skip register indices that a layout maps to

@@ -11,13 +11,14 @@ patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
+patch-cost-aware-dot-rematerialization.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
 patch11295.patch
 patch10497.patch
-patch10563.patch
+patch10694.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
@@ -183,11 +184,16 @@ patch10497.patch
   path rewrites imbalanced blocked layouts into a more balanced layout to
   reduce LDS read volume, then converts back to the original result layout.
 
-patch10563.patch
-  Extends InThreadTranspose coverage and logic for the FMA dot path on RDNA.
-  The pass now recognizes when FMA dot operands benefit from an in-thread
-  transpose and avoids applying the transform when the operand-major layout is
-  already the orientation the FMA dot wants in LDS.
+patch10694.patch
+  For FMA dots, re-orients the pipelined LDS tile to operand-major (M-contiguous
+  for A, N-contiguous for B) in getSharedEncIfAllUsersAreDotEnc when the global
+  load arrived K-contiguous. Shared order is otherwise inherited from that load,
+  so an FMA operand that is transposed in global memory is read from LDS
+  strided. MFMA/WMMA operands are unchanged. Imports
+  https://github.com/triton-lang/triton/pull/10694.
+
+  Drop this patch on the next Triton bump that pulls PR #10694 into
+  external/triton.
 
 patch10832.patch
   Gives the ProtonIR object library the MLIR usage requirements it actually
@@ -289,6 +295,34 @@ patch-free-var-mask-register-dim-name.patch
   of 4 and 4, measuring 1.12x-2.00x slower.
 
   Not filed upstream yet; upstream Triton has the same defect.
+
+patch-cost-aware-dot-rematerialization.patch
+  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
+  isRematBeneficial cost model instead of hoisting unconditionally. The pass
+  previously moved every ttg.convert_layout next to its load once the backward
+  slice was elementwise-pure, even when rematerializing the slice in a
+  replicated dot-operand layout cost more than keeping the convert (e.g.
+  expensive math scaled by getCostFactor replication and the 8x
+  isExpensiveMathOp multiplier).
+
+  After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
+  the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,
+  newCvtCost), matching hoistConvertOnTopOfExtOrBroadcast. Hoist proceeds only
+  when eliminating the use-site convert is at least as cheap as rematerializing
+  the slice plus the load-side converts.
+
+  Motivation: fused elementwise + conv kernels on RDNA (e.g. log/tanh/mul on
+  the B operand before a WMMA dot) regressed ~15% vs rocMLIR because a
+  single-M-tile tuning config left the input chain rematerialized in a
+  replicated WMMA dot-operand layout. Keeping the convert after the expensive
+  chain lets each warp compute once and store to LDS.
+
+  No upstream PR yet. If the shared model is too weak or too strong for dot-
+  operand hoists, tune getCostFactor or the expensive-math multiplier in one
+  place rather than adding a second heuristic.
+
+  Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
+  from hoistConvertDotOperand or upstreams this change.
 
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`

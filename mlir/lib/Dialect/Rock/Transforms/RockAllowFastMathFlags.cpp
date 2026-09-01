@@ -17,7 +17,9 @@
 // ============================================================
 //
 // Tags float ops in kernels with the fast-math flags the AMDGPU backend can
-// exploit, choosing per-op what's actually beneficial:
+// exploit, choosing per-op what's actually beneficial. Funcs without
+// `rock.kernel` are skipped, which is what keeps these relaxations out of the
+// CPU reference the kernel is checked against:
 //   * `arcp`     on `arith.divf`  -> hardware reciprocal (v_rcp_f32).
 //   * `contract` on `arith.{add,sub,mul}f` -> mul+add fused to v_fma_f32.
 //                Also on round-tripping `arith.extf(arith.truncf %wide) ->
@@ -28,6 +30,11 @@
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
 //   * `afn`      on `math.*` transcendentals -> hardware approximations
 //                (v_exp_f32, v_log_f32, v_sqrt_f32, ...).
+//   * `nnan`     on `arith.{max,min}numf` -> lets a clamp pair fold into
+//                tt.clampf (one v_med3). The NaN-propagating maximumf/minimumf
+//                are deliberately left alone. Not applied when
+//                `-disable-fast-math` is set, since
+//                `rock-allow-fast-math-flags` is skipped entirely.
 
 //===-----------------------------------------------------===//
 
@@ -138,6 +145,8 @@ struct AnnotateExtTruncRoundTripPattern
 
 void RockAllowFastMathFlagsPass::runOnOperation() {
   auto func = getOperation();
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
   MLIRContext *ctx = &getContext();
 
   // x / y -> x * rcp(y) via hardware reciprocal.
@@ -148,8 +157,13 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   constexpr arith::FastMathFlags fmaFlags =
       arith::FastMathFlags::contract | arith::FastMathFlags::nsz;
   // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too. This does not
-  // imply `nnan`, so maximumf continues to propagate NaNs.
+  // imply `nnan`, so maximumf continues to propagate NaNs by default.
   constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
+  // The already-non-propagating minnumf/maxnumf additionally drop their NaN
+  // handling under the kernel path's default no-NaN assumption, which is what
+  // lets a clamp pair fold into one v_med3. Only these two: flagging
+  // maximumf/minimumf would quietly undo a deliberate choice to propagate.
+  arith::FastMathFlags numMinMaxFlags = nszOnly | arith::FastMathFlags::nnan;
   // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
   constexpr arith::FastMathFlags transcendentalFlags =
       arith::FastMathFlags::nsz | arith::FastMathFlags::contract |
@@ -163,8 +177,9 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   patterns.add<AddFastMathFlagsPattern<arith::NegFOp>,
                AddFastMathFlagsPattern<arith::RemFOp>,
                AddFastMathFlagsPattern<arith::MaximumFOp>,
-               AddFastMathFlagsPattern<arith::MaxNumFOp>,
                AddFastMathFlagsPattern<arith::MinimumFOp>>(ctx, nszOnly);
+  patterns.add<AddFastMathFlagsPattern<arith::MaxNumFOp>,
+               AddFastMathFlagsPattern<arith::MinNumFOp>>(ctx, numMinMaxFlags);
   patterns.add<AddFastMathFlagsPattern<math::ExpOp>,
                AddFastMathFlagsPattern<math::Exp2Op>,
                AddFastMathFlagsPattern<math::ExpM1Op>,

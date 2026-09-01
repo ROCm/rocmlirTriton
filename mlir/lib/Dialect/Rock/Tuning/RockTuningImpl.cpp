@@ -64,6 +64,15 @@ enum class GemmMNDim { M, N };
 // Largest per-block K tile size we tune for.
 #define MAX_K_PER_BLOCK 512
 
+// Whether this arch should use the wider CDNA tuning space. Keyed on the CDNA
+// product line, not on the matrix instruction kind: gfx1250 issues WMMA but is
+// classified as CDNA and shares the wide K/block lists and full numWaves range
+// with MFMA parts. MFMA-only knobs such as matrixInstrNonkdim and kpack > 1 are
+// chosen separately. Mirrors `rock::isCDNA`.
+static bool prefersWideTuningSpace(StringRef arch) {
+  return rock::isCDNA(arch);
+}
+
 // The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
 // sizes. Ignored on WMMA, whose instructions are all 16x16.
 static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
@@ -421,20 +430,17 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                                               uint32_t mPerBlock,
                                               uint32_t nPerBlock) {
   auto arch = rock::getArchValue(gemmOp);
-  auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
-  bool isMfma = accelKind == MatrixAccelKind::MFMA ||
-                accelKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
-                accelKind == MatrixAccelKind::ScaledWMMA;
+  bool isAccel = rock::hasAccel(arch, gemmOp);
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
 
   int64_t k = gemmOp.getGemmSize().k;
 
   std::vector<uint32_t> kList;
-  if (isMfma)
+  if (isWideAccel)
     kList = kind == TuningParamSetKind::Exhaustive
                 ? std::vector<uint32_t>{16, 32, 64, 128, 256, 512}
                 : std::vector<uint32_t>{16, 32, 64, 128};
-  else if (isWmma)
+  else if (isAccel)
     kList = kind == TuningParamSetKind::Exhaustive
                 ? std::vector<uint32_t>{32, 64, 128, 256}
                 : std::vector<uint32_t>{32, 64};
@@ -493,8 +499,7 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
       // Widen at least as far as `alignTo`: every candidate is a multiple of
       // it, so a bound below it would admit nothing.
       uint32_t maxWidenedK = std::max<uint32_t>(
-          (isMfma || isWmma) ? kAccelWidenedRangeEnd : kNonAccelWidenedRangeEnd,
-          alignTo);
+          isAccel ? kAccelWidenedRangeEnd : kNonAccelWidenedRangeEnd, alignTo);
       addCandidates(
           alignedDividingKPerBlock(k, baseMinK, maxK, maxWidenedK, alignTo));
     }
@@ -527,8 +532,13 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
-                accelKind == MatrixAccelKind::ScaledWMMA;
+  bool isAccel = accelKind != MatrixAccelKind::None;
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
+
+  std::vector<uint32_t> matrixInstrNonkdimList =
+      isMfma ? std::vector<uint32_t>(std::begin(kMatrixInstrNonkdims),
+                                     std::end(kMatrixInstrNonkdims))
+             : std::vector<uint32_t>{0};
 
   // The K/block axis is not returned here: it depends on the (m,n) tile and is
   // built per tile by computeKPerBlock in createGemmTuningRangeBF.
@@ -536,20 +546,18 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
 
-  std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      mPerBlock,     // M/block
-      nPerBlock,     // N/block
-      {1},           // kPackList
-      numWavesRange, // numWaves
-      {std::begin(kMatrixInstrNonkdims),
-       std::end(kMatrixInstrNonkdims)}, // matrixInstrNonkdim
-      {1, 2, 3},                        // numStages
-      wavesPerEUList,                   // wavesPerEU
-      gridGroupSizeList,                // gridGroupSize
-      numCTAsList                       // numCTAs
+  std::vector<std::vector<uint32_t>> validRangeCdnaParams = {
+      mPerBlock,              // M/block
+      nPerBlock,              // N/block
+      {1},                    // kPackList
+      numWavesRange,          // numWaves
+      matrixInstrNonkdimList, // matrixInstrNonkdim
+      {1, 2, 3},              // numStages
+      wavesPerEUList,         // wavesPerEU
+      gridGroupSizeList,      // gridGroupSize
+      numCTAsList             // numCTAs
   };
 
-  // WMMA (RDNA) parameters
   // kPack is always one for WMMA
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
       mPerBlock,         // M/block
@@ -584,9 +592,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  if (isMfma)
-    return validRangeMfmaParams;
-  if (isWmma)
+  if (isWideAccel)
+    return validRangeCdnaParams;
+  if (isAccel)
     return validRangeWmmaParams;
   return validRangeNonAccelParams;
 }
@@ -614,6 +622,22 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   capKPerBlockByK(kPerBlock, gemm0K);
 
   auto arch = rock::getArchValue(gemmGemmOp);
+  bool isAccel = rock::hasAccel(arch, gemmGemmOp);
+  // Checking the first gemm is sufficient: the two gemms in attention always
+  // share the same accel kind on every currently supported arch.
+  MatrixAccelKind firstGemmKind =
+      rock::getMatrixAccelKind(arch, gemmGemmOp).first;
+  bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
+                firstGemmKind == MatrixAccelKind::ScaledMFMA;
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
+
+  // An MFMA-only knob (see kMatrixInstrNonkdims), so every WMMA arch -- gfx1250
+  // included -- keeps the 0 that spells "no instruction tile to choose".
+  std::vector<uint32_t> matrixInstrNonkdimList =
+      isMfma ? std::vector<uint32_t>(std::begin(kMatrixInstrNonkdims),
+                                     std::end(kMatrixInstrNonkdims))
+             : std::vector<uint32_t>{0};
+
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
@@ -632,15 +656,14 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
     for (uint32_t t = 64; t <= 256; t *= 2)
       nPerBlockG1List.push_back(t);
 
-  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsMFMA = {
+  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsCDNA = {
       /*gemm0MPerBlock=*/mPerBlock,
       /*gemm0NPerBlock=*/nPerBlock,
       /*nPerBlockG1=*/nPerBlockG1List,
       kPerBlock,
       kPackList,
       numWavesRange,
-      /*matrixInstrNonkdim=*/
-      {std::begin(kMatrixInstrNonkdims), std::end(kMatrixInstrNonkdims)},
+      matrixInstrNonkdimList,
       {1, 2, 3},
       wavesPerEUList,
       gridGroupSizeList,
@@ -682,18 +705,9 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  auto [firstGemmKind, secondGemmKind] =
-      rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
-
-  // Checking the first gemm is sufficient: the two gemms in attention always
-  // share the same accel kind on every currently supported arch.
-  bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
-                firstGemmKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = firstGemmKind == MatrixAccelKind::WMMA ||
-                firstGemmKind == MatrixAccelKind::ScaledWMMA;
-  if (isMfma)
-    return validRangeGemmGemmParamsMFMA;
-  if (isWmma)
+  if (isWideAccel)
+    return validRangeGemmGemmParamsCDNA;
+  if (isAccel)
     return validRangeGemmGemmParamsWMMA;
   return validRangeGemmGemmParamsNonAccel;
 }

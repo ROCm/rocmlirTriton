@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
@@ -122,10 +123,23 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
   }
 };
 
-// tosa.maximum selects the floating operation from its NaN propagation mode.
-struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(tosa::MaximumOp op,
+// tosa.maximum / tosa.minimum select their floating operation from the NaN
+// propagation mode:
+//
+//   PROPAGATE -> arith.maximumf / minimumf (a NaN operand wins)
+//   IGNORE    -> arith.maxnumf  / minnumf  (the non-NaN operand wins)
+//
+// That is the whole of the translation: IGNORE says a NaN operand loses, which
+// is exactly what the num forms do, and nothing here claims NaN cannot occur.
+// Kernels that do make that stronger promise get `nnan` added to these ops
+// later by RockAllowFastMathFlags, which is what lets RockToTTIR fold a clamp
+// pair into a single tt.clampf. Flagging them here instead would also catch
+// TOSA arriving through tosa-to-rock rather than from MIGraphX, where IGNORE
+// carries no such promise and a NaN operand must still return the other one.
+template <typename TosaOp, typename PropagateOp, typename NumOp, typename IntOp>
+struct MinMaxConverter : public OpRewritePattern<TosaOp> {
+  using OpRewritePattern<TosaOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(TosaOp op,
                                 PatternRewriter &rewriter) const override {
     auto inputs = broadcastInputs(rewriter, op);
     if (failed(inputs))
@@ -134,20 +148,24 @@ struct MaximumConverter : public OpRewritePattern<tosa::MaximumOp> {
     Type elemTy = cast<ShapedType>(op.getType()).getElementType();
 
     if (isa<IntegerType>(elemTy)) {
-      rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, op.getType(), in1, in2);
+      rewriter.replaceOpWithNewOp<IntOp>(op, op.getType(), in1, in2);
       return success();
     }
     if (!isa<FloatType>(elemTy))
       return failure();
 
     if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE)
-      rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, op.getType(), in1,
-                                                     in2);
+      rewriter.replaceOpWithNewOp<PropagateOp>(op, op.getType(), in1, in2);
     else
-      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getType(), in1, in2);
+      rewriter.replaceOpWithNewOp<NumOp>(op, op.getType(), in1, in2);
     return success();
   }
 };
+
+using MaximumConverter = MinMaxConverter<tosa::MaximumOp, arith::MaximumFOp,
+                                         arith::MaxNumFOp, arith::MaxSIOp>;
+using MinimumConverter = MinMaxConverter<tosa::MinimumOp, arith::MinimumFOp,
+                                         arith::MinNumFOp, arith::MinSIOp>;
 
 // Unary op whose ODS argument is $input1 (e.g. tosa.exp, tosa.log).
 template <typename TosaOp, typename TargetOp>
@@ -371,8 +389,18 @@ struct SelectConverter : public OpRewritePattern<tosa::SelectOp> {
   }
 };
 
-// tosa.clamp (float): arith.maximumf(arith.minimumf(x, max), min)
-// tosa.clamp (int):   arith.maxsi(arith.minsi(x, max), min)
+// tosa.clamp (float, PROPAGATE): arith.maximumf(arith.minimumf(x, max), min)
+// tosa.clamp (float, IGNORE):    arith.maxnumf(arith.minnumf(x, max), min)
+// tosa.clamp (int):              arith.maxsi(arith.minsi(x, max), min)
+//
+// Like MinMaxConverter this reads `nan_mode` and leaves `nnan` to
+// RockAllowFastMathFlags, but unlike it the IGNORE spelling is not exact: TOSA
+// says a NaN input clamps to `min`, and the pair above gives `max` (upstream
+// pays a cmpf/select to get `min`; the propagating pair we used to emit
+// unconditionally gave NaN, so neither spelling has ever matched). The only
+// producer of IGNORE here is MIGraphXToTosa with fast math on, where no NaN is
+// assumed to occur and the difference cannot be observed. Hand-written TOSA
+// asking for IGNORE on a clamp is the case that would notice.
 struct ClampConverter : public OpRewritePattern<tosa::ClampOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::ClampOp op,
@@ -399,8 +427,13 @@ struct ClampConverter : public OpRewritePattern<tosa::ClampOp> {
           rewriter, loc,
           DenseElementsAttr::get(shapedTy,
                                  rewriter.getFloatAttr(elemTy, maxApf)));
-      Value clamped = arith::MinimumFOp::create(rewriter, loc, x, maxVal);
-      rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, clamped, minVal);
+      if (op.getNanMode() == tosa::NanPropagationMode::PROPAGATE) {
+        Value clamped = arith::MinimumFOp::create(rewriter, loc, x, maxVal);
+        rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, clamped, minVal);
+      } else {
+        Value clamped = arith::MinNumFOp::create(rewriter, loc, x, maxVal);
+        rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, clamped, minVal);
+      }
     } else if (isa<IntegerType>(elemTy)) {
       int64_t minI =
           cast<IntegerAttr>(op->getAttr("min_val")).getValue().getSExtValue();
@@ -520,7 +553,9 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
 // These are custom TOSA ops that represent operations which standard TOSA
 // doesn't support or where we need to override upstream lowering behavior.
 struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
-  using OpRewritePattern::OpRewritePattern;
+  CustomOpConverter(MLIRContext *ctx, bool assumeNoNaNs)
+      : OpRewritePattern(ctx), assumeNoNaNs(assumeNoNaNs) {}
+
   LogicalResult matchAndRewrite(tosa::CustomOp op,
                                 PatternRewriter &rewriter) const override {
     if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
@@ -547,7 +582,8 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
         }
       } else {
         Value result = rock::createClampedFPToInt(
-            rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/true);
+            rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/true,
+            assumeNoNaNs);
         rewriter.replaceOp(op, result);
       }
       return success();
@@ -555,8 +591,9 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
 
     if (op.getOperatorName() == ROCK_CUSTOMOP_FP_TO_INT_CAST) {
       Value input = op.getInputList()[0];
-      Value result = rock::createClampedFPToInt(
-          rewriter, op.getLoc(), input, outElemType, /*isUnsigned=*/false);
+      Value result =
+          rock::createClampedFPToInt(rewriter, op.getLoc(), input, outElemType,
+                                     /*isUnsigned=*/false, assumeNoNaNs);
       rewriter.replaceOp(op, result);
       return success();
     }
@@ -575,6 +612,8 @@ struct CustomOpConverter : public OpRewritePattern<tosa::CustomOp> {
 
     return failure();
   }
+
+  bool assumeNoNaNs;
 };
 
 // Comparison ops: tosa.greater / greater_equal / equal
@@ -605,6 +644,8 @@ struct CmpConverter : public OpRewritePattern<TosaOp> {
 
 struct RockTosaToElementwise
     : public rock::impl::RockTosaToElementwisePassBase<RockTosaToElementwise> {
+  using RockTosaToElementwisePassBase::RockTosaToElementwisePassBase;
+
   void runOnOperation() override {
     auto func = getOperation();
     if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
@@ -639,12 +680,10 @@ struct RockTosaToElementwise
     });
 
     // --- Binary float / int ---
-    patterns.add<
-        BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
-        BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>,
-        BinaryConverter<tosa::MinimumOp, arith::MinimumFOp, arith::MinSIOp>>(
+    patterns.add<BinaryConverter<tosa::AddOp, arith::AddFOp, arith::AddIOp>,
+                 BinaryConverter<tosa::SubOp, arith::SubFOp, arith::SubIOp>>(
         ctx);
-    patterns.add<MaximumConverter>(ctx);
+    patterns.add<MaximumConverter, MinimumConverter>(ctx);
 
     // --- Binary float-only ---
     patterns.add<IntBinaryConverter<tosa::BitwiseAndOp, arith::AndIOp>,
@@ -680,9 +719,11 @@ struct RockTosaToElementwise
 
     // --- Special cases ---
     patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
-    patterns.add<AbsConverter, NegateConverter, MulConverter,
-                 ReciprocalConverter, SigmoidConverter, SelectConverter,
-                 ClampConverter, CastConverter, CustomOpConverter>(ctx);
+    patterns
+        .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
+             SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
+            ctx);
+    patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
 
     // --- Triton workarounds ---
     // The Triton TritonToTritonGPU conversion is missing patterns for

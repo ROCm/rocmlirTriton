@@ -117,21 +117,28 @@
 
 // Tile shapes known to overflow LDS for an (arch, input dtype) are pruned from
 // the emitted tuning space by the compiled-in blacklist (LdsBlacklist.h,
-// populated offline by generateLDSBlacklist.py). The 64x64x128 tile with
+// populated offline by generateLDSBlacklist.py). The 16x256x512 tile with
 // numStages=3 is a shipped gfx950/f32 blacklist entry, so it must be absent
 // from the default exhaustive space.
-// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+//
+// The probe GEMM has to reach K=512 and a 256-wide N: every gfx950/f32 entry in
+// the current table is a kPerBlock=512 tile with M or N at 256, and the tile
+// ladders are clipped by the problem dims (computeDPerBlock / capKPerBlockByK),
+// so a smaller GEMM emits nothing the blacklist would drop. Regenerating the
+// table can retire whichever entry is named here; pick a surviving one out of
+// LdsBlacklistPerfconfigs.inc rather than dropping the check.
+// RUN: rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-BLACKLIST \
-// RUN:       --implicit-check-not='gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,'
+// RUN:       --implicit-check-not='gemm:mPerBlock=16,nPerBlock=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,'
 // CHECK-LDS-BLACKLIST: gemm:mPerBlock=
 
 // The ROCMLIR_DISABLE_LDS_BLACKLIST escape hatch makes LdsBlacklist::lookupGemm
 // return an empty set, so the blacklisted config reappears -- this is what lets
 // generateLDSBlacklist.py enumerate the *unfiltered* space to (re)generate the
 // table idempotently.
-// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 64 -k 128 -n 64 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-NOBLACKLIST
-// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+// CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=16,nPerBlock=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 
 //===----------------------------------------------------------------------===//
 // WMMA tuning space
@@ -148,6 +155,50 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-ATTN-KPACK \
 // RUN:       --implicit-check-not='kpack=2,'
 // CHECK-WMMA-ATTN-KPACK: attn:{{.*kpack=1,}}
+
+//===----------------------------------------------------------------------===//
+// gfx1250 tuning space (CDNA-shaped, WMMA instructions)
+//===----------------------------------------------------------------------===//
+
+// gfx1250 issues WMMA instructions, but it is a big GPU that Triton groups with
+// the CDNA parts (isCDNA in TargetFeatures.cpp), so it searches the CDNA space
+// rather than the narrower RDNA one: the K tiles run over {16,...,512} instead
+// of {32,...,256} and numWaves is swept instead of hardcoded to {4,8}. The
+// single config below is out of RDNA's reach on both axes at once. What stays
+// WMMA-shaped is matrixInstrNonkdim, since a 16x16-only instruction leaves no
+// tile to choose.
+// RUN: rocmlir-gen --arch gfx1250 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-GEMM \
+// RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}'
+// CHECK-GFX1250-GEMM: gemm:{{mPerBlock=[0-9]+,nPerBlock=[0-9]+,kPerBlock=16,kpack=1,numCTAs=[0-9]+,numWaves=2,matrixInstrNonkdim=0,}}
+
+// The far ends of those two axes, which are gfx950's as well: a K tile of 512
+// (WMMA stops at 256) and a single-wave workgroup (WMMA's smallest is 4).
+// RUN: rocmlir-gen --arch gfx1250 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-GEMM-RANGES
+// CHECK-GFX1250-GEMM-RANGES-DAG: gemm:{{.*kPerBlock=512,kpack=1,}}
+// CHECK-GFX1250-GEMM-RANGES-DAG: gemm:{{.*numWaves=1,matrixInstrNonkdim=0,}}
+
+// Negative control: gfx1201 (RDNA4) runs the same WMMA instructions but is not
+// CDNA, so it keeps the narrow space -- neither the CDNA-only K tiles (16, 512)
+// nor the CDNA-only wave counts (1, 2) are offered there.
+// RUN: rocmlir-gen --arch gfx1201 --operation=gemm -t f16 -g 1 -m 256 -k 1024 -n 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-RDNA4-GEMM \
+// RUN:       --implicit-check-not='{{kPerBlock=(16|512),}}' \
+// RUN:       --implicit-check-not='{{numWaves=(1|2),}}'
+// CHECK-RDNA4-GEMM: gemm:{{.*kPerBlock=(32|64|128|256),kpack=1,}}
+
+// Attention (gemm+gemm) takes the same CDNA branch on gfx1250, whose witness
+// there is numStages: the CDNA space sweeps {1,2,3}, the RDNA one {1,2}.
+// RUN: rocmlir-gen --arch gfx1250 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-GFX1250-ATTN \
+// RUN:       --implicit-check-not='{{matrixInstrNonkdim=(16|32),}}'
+// CHECK-GFX1250-ATTN: attn:{{.*matrixInstrNonkdim=0,splitKFactor=[0-9]+,numStages=3,}}
+
+// RUN: rocmlir-gen --arch gfx1201 --operation=attention -t f16 -g 1 -head_dim_qk 32 -head_dim_v 64 -num_heads_q 1 -num_heads_kv 1 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-RDNA4-ATTN \
+// RUN:       --implicit-check-not='numStages=3,'
+// CHECK-RDNA4-ATTN: attn:{{.*numStages=(1|2),}}
 
 //===----------------------------------------------------------------------===//
 // Non-accel tuning space
