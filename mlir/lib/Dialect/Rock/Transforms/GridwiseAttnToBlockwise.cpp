@@ -634,8 +634,7 @@ struct GridwiseAttentionRewritePattern
       ArrayAttr emptyViews = rewriter.getArrayAttr({});
       auto markerOp = LoadMarkerOp::create(
           rewriter, loc, resultType, tensorAddDim, emptyViews,
-          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE,
-          /*reductionTileAxes=*/nullptr);
+          ValueRange{gridCoordsGemm0.g_block}, rock::CacheModifier::NONE);
 
       return triton::UnsplatOp::create(rewriter, loc, markerOp);
     };
@@ -1019,7 +1018,7 @@ struct GridwiseAttentionRewritePattern
           rewriter, loc, resultType, root, otherInputMap,
           ValueRange{gridCoords.g_block, gridCoords.m_block,
                      gridCoords.n_block},
-          rock::CacheModifier::NONE, /*reductionTileAxes=*/nullptr);
+          rock::CacheModifier::NONE);
 
       mapping.map(block.getArgument(i + 1), markerOp.getResult());
     }

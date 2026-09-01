@@ -22,7 +22,7 @@ namespace mlir {
 namespace migraphx {
 
 // Compilation pipeline from MIXR to TOSA
-void addMIGraphXPipeline(PassManager &pm);
+void addMIGraphXPipeline(PassManager &pm, bool disableFastMath);
 
 } // namespace migraphx
 } // namespace mlir

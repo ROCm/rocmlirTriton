@@ -32,6 +32,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -391,9 +392,82 @@ static bool hasFp8ElementType(Type t) {
              Float8E5M2FNUZType>(elem);
 }
 
+/// Map an `arith` rounding mode onto its Triton counterpart. Triton models
+/// only RTZ and RTNE, so directed modes have none.
+static std::optional<triton::RoundingMode>
+toTritonRoundingMode(arith::RoundingMode mode) {
+  switch (mode) {
+  case arith::RoundingMode::toward_zero:
+    return triton::RoundingMode::RTZ;
+  case arith::RoundingMode::to_nearest_even:
+    return triton::RoundingMode::RTNE;
+  default:
+    return std::nullopt;
+  }
+}
+
+/// Effective rounding mode for `op`. An absent attribute means RTNE.
+static arith::RoundingMode truncFEffectiveRounding(arith::TruncFOp op) {
+  if (std::optional<arith::RoundingMode> rm = op.getRoundingmode())
+    return *rm;
+  return arith::RoundingMode::to_nearest_even;
+}
+
+/// Return true when `tt.fp_to_fp` can honour the requested rounding on `op`.
+/// RTNE downcasts can stay in `arith`: Triton's AMD `TruncFOpConversion` always
+/// lowers f32 -> f16/bf16 via RTNE and never reads the rounding attribute
+/// (see `TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp`).
+static bool truncFCanHonourViaFpToFp(arith::TruncFOp op) {
+  arith::RoundingMode rm = truncFEffectiveRounding(op);
+  if (rm == arith::RoundingMode::to_nearest_even)
+    return false;
+
+  std::optional<triton::RoundingMode> mapped = toTritonRoundingMode(rm);
+  if (!mapped)
+    return false;
+
+  Type srcElem = getElementTypeOrSelf(op.getIn().getType());
+  Type dstElem = getElementTypeOrSelf(op.getOut().getType());
+
+  if (hasFp8ElementType(op.getOut().getType())) {
+    // Triton AMD fp_to_fp only lowers RTZ for f16/f32 -> f8E5M2. Other FP8
+    // downcasts (including f32 -> f8E4M3FN) support RTNE only; see
+    // `TritonAMDGPUToLLVM/ConvertFpCastOpToLLVM.cpp` getConversionFunc().
+    if (*mapped != triton::RoundingMode::RTZ)
+      return false;
+    if (!isa<Float8E5M2Type>(dstElem))
+      return false;
+    return srcElem.isF32() || srcElem.isF16();
+  }
+
+  if (*mapped != triton::RoundingMode::RTZ)
+    return false;
+
+  return srcElem.isF32() && (dstElem.isF16() || dstElem.isBF16());
+}
+
+/// Return true when `op` carries a rounding mode that neither `arith` (on the
+/// Triton AMD path) nor `tt.fp_to_fp` can honour.
+static bool truncFHasUnhonouredRounding(arith::TruncFOp op) {
+  arith::RoundingMode rm = truncFEffectiveRounding(op);
+  if (rm == arith::RoundingMode::to_nearest_even)
+    return false;
+  return !truncFCanHonourViaFpToFp(op);
+}
+
+/// Decide whether `op` must become `tt.fp_to_fp`. FP8 destinations always do,
+/// since Triton maps FP8 to i8. Non-default rounding that `tt.fp_to_fp` can
+/// express also does; RTNE stays in `arith` per Triton's `semantic.cast`.
+static bool truncFNeedsFpToFp(arith::TruncFOp op) {
+  if (hasFp8ElementType(op.getOut().getType()))
+    return true;
+  return truncFCanHonourViaFpToFp(op);
+}
+
 //===----------------------------------------------------------------------===//
-// ArithTruncFToFpToFpPattern - Convert arith.truncf (wider → FP8) to
-// tt.fp_to_fp so that Triton's FP8 lowering handles it correctly.
+// ArithTruncFToFpToFpPattern - Convert arith.truncf to tt.fp_to_fp for FP8
+// destinations and for RTZ downcasts; reject rounding modes that cannot be
+// honoured.
 //===----------------------------------------------------------------------===//
 struct ArithTruncFToFpToFpPattern
     : public OpRewritePattern<arith::TruncFOp> {
@@ -401,28 +475,21 @@ struct ArithTruncFToFpToFpPattern
 
   LogicalResult matchAndRewrite(arith::TruncFOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!hasFp8ElementType(op.getOut().getType()))
+    if (truncFHasUnhonouredRounding(op)) {
+      arith::RoundingMode arithRM = truncFEffectiveRounding(op);
+      return op.emitError() << "arith.truncf rounding mode "
+                            << arith::stringifyRoundingMode(arithRM)
+                            << " cannot be honoured by Triton lowering";
+    }
+    if (!truncFNeedsFpToFp(op))
       return failure();
 
-    triton::RoundingMode tritonRM = triton::RoundingMode::RTNE;
-    if (auto arithRM = op.getRoundingmodeAttr()) {
-      switch (arithRM.getValue()) {
-      case arith::RoundingMode::toward_zero:
-        tritonRM = triton::RoundingMode::RTZ;
-        break;
-      case arith::RoundingMode::to_nearest_even:
-        tritonRM = triton::RoundingMode::RTNE;
-        break;
-      default:
-        LLVM_DEBUG(llvm::dbgs()
-                   << "arith.truncf rounding mode "
-                   << arith::stringifyRoundingMode(arithRM.getValue())
-                   << " has no exact Triton equivalent, defaulting to RTNE\n");
-        break;
-      }
-    }
+    arith::RoundingMode arithRM = truncFEffectiveRounding(op);
+    std::optional<triton::RoundingMode> mapped = toTritonRoundingMode(arithRM);
+    assert(mapped && "truncf marked for tt.fp_to_fp must have a mappable mode");
+
     auto roundingAttr =
-        triton::RoundingModeAttr::get(rewriter.getContext(), tritonRM);
+        triton::RoundingModeAttr::get(rewriter.getContext(), *mapped);
     rewriter.replaceOpWithNewOp<triton::FpToFpOp>(op, op.getOut().getType(),
                                                    op.getIn(), roundingAttr);
     return success();
@@ -466,6 +533,113 @@ static bool resolveUseBf16x3ForF32(func::FuncOp funcOp, bool disableFastMath) {
   return policy != 0;
 }
 
+/// Return the value behind a clamp bound, which is either a scalar float
+/// constant or a splat of one.
+static std::optional<APFloat> getConstantFloatBound(Value v) {
+  Attribute attr;
+  if (!matchPattern(v, m_Constant(&attr)))
+    return std::nullopt;
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+    return floatAttr.getValue();
+  if (auto denseAttr = dyn_cast<DenseFPElementsAttr>(attr))
+    if (denseAttr.isSplat())
+      return denseAttr.getSplatValue<APFloat>();
+  return std::nullopt;
+}
+
+/// A nested minnumf/maxnumf pair that a single `tt.clampf` can replace.
+struct ClampIdiom {
+  Operation *inner;
+  Value x;
+  Value lo;
+  Value hi;
+};
+
+/// Recognise a clamp written as a nested minnumf/maxnumf pair and check that
+/// replacing it with a `tt.clampf` carrying `propagateNan = none` preserves
+/// semantics. Both nestings reach here:
+///
+///   maxnumf(minnumf(x, hi), lo)   from tosa.clamp
+///   minnumf(maxnumf(x, lo), hi)   from migraphx.clip
+///
+/// which the `nnan` required below makes equivalent. The NaN-propagating
+/// `maximumf`/`minimumf` spelling is deliberately not matched, since a
+/// non-propagating clamp is not a faithful replacement for it.
+template <typename OuterOp, typename InnerOp>
+static std::optional<ClampIdiom> matchClampIdiom(OuterOp outerOp) {
+  // tt.clampf accepts FP8 operands, but Triton's type converter maps FP8 to i8,
+  // so the lowering would compare integers. This is the same hazard that forces
+  // FP8 casts through tt.fp_to_fp above.
+  if (hasFp8ElementType(outerOp.getType()))
+    return std::nullopt;
+
+  // Every producer of this idiom puts the bound on the right, which is also
+  // where MLIR canonicalises the constant operand of a commutative op.
+  auto innerOp = outerOp.getLhs().template getDefiningOp<InnerOp>();
+  // An inner op read by anything else still has to be computed, so absorbing it
+  // into the clamp would duplicate the work rather than remove it.
+  if (!innerOp || !innerOp->hasOneUse())
+    return std::nullopt;
+
+  // Dropping NaN handling needs `nnan`, even though minnumf/maxnumf already
+  // return the non-NaN operand. The max-outer pair still disagrees with v_med3
+  // on which bound a NaN input collapses to: it yields `hi`, while v_med3
+  // returns the smallest operand and so yields `lo`. Only `nnan` makes that
+  // difference unobservable, and it is demanded of both nestings alike.
+  constexpr arith::FastMathFlags nnan = arith::FastMathFlags::nnan;
+  if (!bitEnumContainsAll(outerOp.getFastmath(), nnan) ||
+      !bitEnumContainsAll(innerOp.getFastmath(), nnan))
+    return std::nullopt;
+
+  constexpr bool maxOuter = std::is_same_v<OuterOp, arith::MaxNumFOp>;
+  Value loVal = maxOuter ? outerOp.getRhs() : innerOp.getRhs();
+  Value hiVal = maxOuter ? innerOp.getRhs() : outerOp.getRhs();
+
+  std::optional<APFloat> lo = getConstantFloatBound(loVal);
+  std::optional<APFloat> hi = getConstantFloatBound(hiVal);
+  if (!lo || !hi)
+    return std::nullopt;
+  // A median only equals the clamp when the bounds are ordered: for lo > hi the
+  // two nestings saturate to opposite bounds and neither agrees with v_med3.
+  // Unordered bounds (a NaN bound) compare as neither less-than nor equal and
+  // are rejected too.
+  APFloat::cmpResult order = lo->compare(*hi);
+  if (order != APFloat::cmpLessThan && order != APFloat::cmpEqual)
+    return std::nullopt;
+
+  return ClampIdiom{innerOp, innerOp.getLhs(), loVal, hiVal};
+}
+
+//===----------------------------------------------------------------------===//
+// ArithClampToClampFPattern - Fold a nested minnumf/maxnumf pair into
+// tt.clampf. For f16 and f32 the AMD backend emits a single v_med3; the other
+// float types fall back to Triton's generic lowering, which is no worse than
+// the pair we started from.
+//===----------------------------------------------------------------------===//
+template <typename OuterOp, typename InnerOp>
+struct ArithClampToClampFPattern : public OpRewritePattern<OuterOp> {
+  using OpRewritePattern<OuterOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OuterOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<ClampIdiom> clamp = matchClampIdiom<OuterOp, InnerOp>(op);
+    if (!clamp)
+      return failure();
+
+    auto propagateNan = triton::PropagateNanAttr::get(
+        rewriter.getContext(), triton::PropagateNan::NONE);
+    rewriter.replaceOpWithNewOp<triton::ClampFOp>(
+        op, op.getType(), clamp->x, clamp->lo, clamp->hi, propagateNan);
+    rewriter.eraseOp(clamp->inner);
+    return success();
+  }
+};
+
+using MaxOuterClampToClampFPattern =
+    ArithClampToClampFPattern<arith::MaxNumFOp, arith::MinNumFOp>;
+using MinOuterClampToClampFPattern =
+    ArithClampToClampFPattern<arith::MinNumFOp, arith::MaxNumFOp>;
+
 } // end anonymous namespace
 
 void RockToTTIRPass::runOnOperation() {
@@ -498,10 +672,22 @@ void RockToTTIRPass::runOnOperation() {
 
   // arith.truncf / arith.extf with FP8 types must be converted to
   // tt.fp_to_fp; Triton's LLVM lowering cannot handle them directly.
-  target.addDynamicallyLegalOp<arith::TruncFOp>(
-      [](arith::TruncFOp op) { return !hasFp8ElementType(op.getOut().getType()); });
+  // Non-default rounding that tt.fp_to_fp can express must also leave arith,
+  // because the Triton AMD truncf lowering ignores the attribute.
+  target.addDynamicallyLegalOp<arith::TruncFOp>([](arith::TruncFOp op) {
+    return !truncFNeedsFpToFp(op) && !truncFHasUnhonouredRounding(op);
+  });
   target.addDynamicallyLegalOp<arith::ExtFOp>(
       [](arith::ExtFOp op) { return !hasFp8ElementType(op.getIn().getType()); });
+
+  // A nested minnumf/maxnumf pair that is allowed to ignore NaNs collapses into
+  // a tt.clampf, which AMD lowers to a single v_med3.
+  target.addDynamicallyLegalOp<arith::MaxNumFOp>([](arith::MaxNumFOp op) {
+    return !matchClampIdiom<arith::MaxNumFOp, arith::MinNumFOp>(op).has_value();
+  });
+  target.addDynamicallyLegalOp<arith::MinNumFOp>([](arith::MinNumFOp op) {
+    return !matchClampIdiom<arith::MinNumFOp, arith::MaxNumFOp>(op).has_value();
+  });
 
   RewritePatternSet patterns(ctx);
   patterns.add<RockBlockwiseReduceOpRewritePattern>(ctx);
@@ -510,6 +696,7 @@ void RockToTTIRPass::runOnOperation() {
   patterns.add<RockStorePtrOpRewritePattern>(ctx);
   patterns.add<ArithTruncFToFpToFpPattern>(ctx);
   patterns.add<ArithExtFToFpToFpPattern>(ctx);
+  patterns.add<MaxOuterClampToClampFPattern, MinOuterClampToClampFPattern>(ctx);
 
   // Apply partial conversion - convert tensor.splat and Rock ops to Triton ops
   if (failed(applyPartialConversion(getOperation(), target,

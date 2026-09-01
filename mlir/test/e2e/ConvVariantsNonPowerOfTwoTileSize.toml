@@ -7,7 +7,7 @@ suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c |
 # backward convolutions, so keep operation first and data type third.
 [[axis]]
 name = "operation"
-values = ["conv", "conv_bwd_data", "conv_bwd_weight"]
+values = ["conv", "conv_bwd_data"]
 prefix = "--operation "
 
 [[axis]]

@@ -33,6 +33,7 @@ using namespace mlir;
 namespace {
 struct MIGraphXToTosa : public impl::MIGraphXToTosaPassBase<MIGraphXToTosa> {
 public:
+  using MIGraphXToTosaPassBase::MIGraphXToTosaPassBase;
   void runOnOperation() override;
 };
 } // end namespace
@@ -75,8 +76,8 @@ void MIGraphXToTosa::runOnOperation() {
   RewritePatternSet bodyPatterns(ctx);
   migraphx::populateMIGraphXToTosaDialectConversion(bodyConversionTarget,
                                                     &bodyTypeConverter);
-  migraphx::populateMIGraphXToTosaConversionPatterns(bodyPatterns,
-                                                     bodyTypeConverter);
+  migraphx::populateMIGraphXToTosaConversionPatterns(
+      bodyPatterns, bodyTypeConverter, disableFastMath);
   if (failed(applyPartialConversion(func, bodyConversionTarget,
                                     std::move(bodyPatterns))))
     return signalPassFailure();

@@ -217,9 +217,6 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     }
   }
 
-  bool isTileAlignment =
-      parser.parseOptionalKeyword("tileAlignment").succeeded();
-
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
   if (parseAndGather<std::string>(parser, AsmParser::Delimiter::Square,
@@ -269,7 +266,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims, isTileAlignment);
+      upperDims, lowerNames, lowerDims);
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -282,8 +279,6 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
     llvm::interleaveComma(params, printer);
     printer << "}";
   }
-  if (getIsTileAlignment())
-    printer << " tileAlignment";
   printer << " [";
   llvm::interleaveComma(getUpperNames(), printer,
                         [&](StringRef s) { printer << "\"" << s << "\""; });
@@ -297,41 +292,13 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "]>";
 }
 
-TransformAttr TransformAttr::get(mlir::MLIRContext *context, TransformType type,
-                                 llvm::ArrayRef<int64_t> params,
-                                 llvm::ArrayRef<llvm::StringRef> upperNames,
-                                 llvm::ArrayRef<uint32_t> upperDims,
-                                 llvm::ArrayRef<llvm::StringRef> lowerNames,
-                                 llvm::ArrayRef<uint32_t> lowerDims) {
-  return TransformAttr::get(context, type, params, upperNames, upperDims,
-                            lowerNames, lowerDims,
-                            /*isTileAlignment=*/false);
-}
-
-TransformAttr TransformAttr::getChecked(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    mlir::MLIRContext *context, TransformType type,
-    llvm::ArrayRef<int64_t> params, llvm::ArrayRef<llvm::StringRef> upperNames,
-    llvm::ArrayRef<uint32_t> upperDims,
-    llvm::ArrayRef<llvm::StringRef> lowerNames,
-    llvm::ArrayRef<uint32_t> lowerDims) {
-  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims,
-                                   /*isTileAlignment=*/false);
-}
-
 LogicalResult
 TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       TransformType type, llvm::ArrayRef<int64_t> params,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims,
-                      bool isTileAlignment) {
-  if (isTileAlignment && type != TransformType::Pad) {
-    return emitError() << "Only a Pad can align a gemm dimension to the tile "
-                          "size";
-  }
+                      llvm::ArrayRef<unsigned> lowerDims) {
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -487,11 +454,9 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
-    bool isTileAlignment) {
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims,
-                                   isTileAlignment);
+                                   upperDims, lowerNames, lowerDims);
 }
 
 //===---------------------------------------------------------
@@ -818,8 +783,6 @@ ConvOpType mlir::rock::convOpTypeFromKernelType(KernelType kernelType) {
     return ConvOpType::Fwd;
   case KernelType::ConvBwdData:
     return ConvOpType::BwdData;
-  case KernelType::ConvBwdWeight:
-    return ConvOpType::BwdWeight;
   case KernelType::Gemm:
     llvm_unreachable(
         "GEMM ops shouldn't be in convolution-specific lowering passes");
@@ -839,8 +802,6 @@ KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
     return KernelType::Conv;
   case ConvOpType::BwdData:
     return KernelType::ConvBwdData;
-  case ConvOpType::BwdWeight:
-    return KernelType::ConvBwdWeight;
   }
   llvm_unreachable("Unsupported ConvOpType");
 }
@@ -859,12 +820,6 @@ GemmSize GemmSize::fromConvolution(ConvOpType type,
     gemmKSize = sizes.c * sizes.fil[0] * sizes.fil[1];
     gemmNSize = sizes.n * sizes.out[0] * sizes.out[1];
     break;
-  case ConvOpType::BwdWeight:
-    gemmGSize = sizes.g;
-    gemmMSize = sizes.k;
-    gemmKSize = sizes.n * sizes.out[0] * sizes.out[1];
-    gemmNSize = sizes.c * sizes.fil[0] * sizes.fil[1];
-    break;
   case ConvOpType::BwdData:
     llvm_unreachable("Should've been caught be an assert");
   }
@@ -875,18 +830,10 @@ KernelType ConvOp::getKernelType() { return KernelType::Conv; }
 
 KernelType ConvBwdDataOp::getKernelType() { return KernelType::ConvBwdData; }
 
-KernelType ConvBwdWeightOp::getKernelType() {
-  return KernelType::ConvBwdWeight;
-}
-
 Type ConvOp::getAType() { return getFilter().getType().getElementType(); }
 
 Type ConvBwdDataOp::getAType() {
   return getFilter().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getAType() {
-  return getGradient().getType().getElementType();
 }
 
 Type ConvOp::getBType() { return getInput().getType().getElementType(); }
@@ -895,17 +842,9 @@ Type ConvBwdDataOp::getBType() {
   return getGradient().getType().getElementType();
 }
 
-Type ConvBwdWeightOp::getBType() {
-  return getInput().getType().getElementType();
-}
-
 Type ConvOp::getCType() { return getResult().getType().getElementType(); }
 
 Type ConvBwdDataOp::getCType() {
-  return getResult().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getCType() {
   return getResult().getType().getElementType();
 }
 
@@ -921,14 +860,6 @@ TypedValue<ShapedType> ConvBwdDataOp::getConvInput() {
   return cast<TypedValue<ShapedType>>(getResult());
 }
 TypedValue<ShapedType> ConvBwdDataOp::getConvOutput() { return getGradient(); }
-
-TypedValue<ShapedType> ConvBwdWeightOp::getConvFilter() {
-  return cast<TypedValue<ShapedType>>(getResult());
-}
-TypedValue<ShapedType> ConvBwdWeightOp::getConvInput() { return getInput(); }
-TypedValue<ShapedType> ConvBwdWeightOp::getConvOutput() {
-  return getGradient();
-}
 
 GemmSize ConvOp::getGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this);
@@ -1032,11 +963,6 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   return biggest;
 }
 
-GemmSize ConvBwdWeightOp::getGemmSize() {
-  auto sizes = ConvolutionDims::fromOp(*this);
-  return GemmSize::fromConvolution(ConvOpType::BwdWeight, sizes);
-}
-
 //===-----------------------------------------------------===//
 // Conv Op Verification
 //===-----------------------------------------------------===//
@@ -1095,47 +1021,6 @@ static LogicalResult verifyConvLikeOp(RockConvInterface op) {
 LogicalResult ConvOp::verify() { return verifyConvLikeOp(*this); }
 
 LogicalResult ConvBwdDataOp::verify() { return verifyConvLikeOp(*this); }
-
-LogicalResult ConvBwdWeightOp::verify() {
-  if (failed(verifyConvLikeOp(*this)))
-    return failure();
-
-  // kBlocks is optional pre-lowering (affix-tuning-params sets it for the
-  // atomic backward-weight path). When present, the lowering in ConvToGemm
-  // splits the batch dimension N into (kBlocks, N / kBlocks), so kBlocks must
-  // satisfy the same structural invariant that `calculateKBlockNum` enforces.
-  IntegerAttr kBlocksAttr = getKBlocksAttr();
-  if (!kBlocksAttr)
-    return success();
-  int64_t kBlocks = kBlocksAttr.getInt();
-
-  // Recover N from the input tensor's layout. The layout attributes are not
-  // formally part of the op definition, so skip the divisibility check when
-  // they're absent or malformed rather than asserting.
-  auto inputLayoutAttr = (*this)->getAttrOfType<ArrayAttr>("input_layout");
-  ArrayRef<int64_t> inputShape = getInput().getType().getShape();
-  if (!inputLayoutAttr ||
-      inputLayoutAttr.size() != static_cast<size_t>(inputShape.size()))
-    return success();
-
-  int64_t batchSize = -1;
-  for (auto [layoutAttr, dimSize] : llvm::zip(inputLayoutAttr, inputShape)) {
-    auto nameAttr = dyn_cast<StringAttr>(layoutAttr);
-    if (nameAttr && nameAttr.getValue() == "ni") {
-      batchSize = dimSize;
-      break;
-    }
-  }
-  if (batchSize <= 0)
-    return success();
-
-  if (!isValidKBlocks(kBlocks, batchSize))
-    return emitOpError("kBlocks (")
-           << kBlocks << ") must be positive and evenly divide batch size N ("
-           << batchSize << ")";
-
-  return success();
-}
 
 //===-----------------------------------------------------===//
 // StoreOp
@@ -1373,12 +1258,6 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
-  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
-  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
-    for (int64_t axis : *axes)
-      if (axis < 0 || axis >= resultRank)
-        return emitOpError() << "reduction tile axis " << axis
-                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),
@@ -1728,9 +1607,7 @@ LogicalResult BlockwiseGemmOp::verify() {
           return emitOpError(
               "unexpected error: currLen is not divisible by origLen");
 
-        // matrixA is MxK: K is dim 1, M is dim 0.
-        // matrixB is KxN: K is dim 0, N is dim 1.
-        int64_t packedDim = (isA == kPack) ? 1 : 0;
+        int64_t packedDim = kPack ? getKDimIdx(isA) : getDDimIdx(isA);
         SmallVector<int64_t> expectedShape(matrixShape);
         expectedShape[packedDim] *= currLen / origLen;
         if (expectedShape != scaleShape) {

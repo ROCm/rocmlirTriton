@@ -18,8 +18,6 @@
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
-#include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/tosaUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -39,6 +37,24 @@ using namespace mlir;
 using mlir::migraphx::MIXRShapedType;
 
 #define DEBUG_TYPE "migraphx-to-tosa"
+
+/// The NaN propagation mode to give a tosa op lowered out of MIGraphX. MIGraphX
+/// itself always propagates, but the kernel path assumes no NaN ever occurs
+/// unless `-disable-fast-math` is set. IGNORE carries that assumption on to
+/// RockTosaToElementwise, which turns it into `nnan`-flagged arith ops; a clamp
+/// pair so flagged folds into a single tt.clampf.
+///
+/// Only the maximum/minimum/clamp family is worth relaxing. tosa.reduce_max
+/// also takes the mode, but TosaToRock lowers reductions without reading it, so
+/// on the kernel path IGNORE would buy nothing, and upstream's linalg reduction
+/// does read it and implements it by adding a second accumulator that tracks
+/// whether every element was NaN. The promise would cost ops there rather than
+/// save them.
+static tosa::NanPropagationMode getNanPropagationMode(bool disableFastMath) {
+  if (disableFastMath)
+    return tosa::NanPropagationMode::PROPAGATE;
+  return tosa::NanPropagationMode::IGNORE;
+}
 
 //===----------------------------------------------------------------------===//
 // Type conversions
@@ -1070,11 +1086,16 @@ struct DivConverter final : public OpConversionPattern<migraphx::DivOp> {
 };
 
 struct MaxConverter final : public OpConversionPattern<migraphx::MaxOp> {
-  using OpConversionPattern<migraphx::MaxOp>::OpConversionPattern;
+  MaxConverter(const TypeConverter &typeConverter, MLIRContext *context,
+               bool disableFastMath)
+      : OpConversionPattern(typeConverter, context),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult
   matchAndRewrite(migraphx::MaxOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final;
+
+  bool disableFastMath;
 };
 
 struct MulConverter final : public OpConversionPattern<migraphx::MulOp> {
@@ -1146,9 +1167,9 @@ MaxConverter::matchAndRewrite(migraphx::MaxOp op, OpAdaptor adaptor,
     return success();
   }
 
-  auto maximum = tosa::MaximumOp::create(rewriter, loc, resultType,
-                                         adaptor.getInA(), adaptor.getInB(),
-                                         tosa::NanPropagationMode::PROPAGATE);
+  auto maximum = tosa::MaximumOp::create(
+      rewriter, loc, resultType, adaptor.getInA(), adaptor.getInB(),
+      getNanPropagationMode(disableFastMath));
   rewriter.replaceOp(op, maximum);
   return success();
 }
@@ -1178,11 +1199,16 @@ struct DeQuantizeLinearConverter final
 
 struct QuantizeLinearConverter final
     : public OpConversionPattern<migraphx::QuantizeLinearOp> {
-  using OpConversionPattern<migraphx::QuantizeLinearOp>::OpConversionPattern;
+  QuantizeLinearConverter(const TypeConverter &typeConverter,
+                          MLIRContext *context, bool disableFastMath)
+      : OpConversionPattern(typeConverter, context),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult
   matchAndRewrite(migraphx::QuantizeLinearOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final;
+
+  bool disableFastMath;
 };
 
 struct ConvertConverter final
@@ -1211,11 +1237,16 @@ struct NegConverter final : public OpConversionPattern<migraphx::NegOp> {
 };
 
 struct ReluConverter final : public OpConversionPattern<migraphx::ReluOp> {
-  using OpConversionPattern<migraphx::ReluOp>::OpConversionPattern;
+  ReluConverter(const TypeConverter &typeConverter, MLIRContext *context,
+                bool disableFastMath)
+      : OpConversionPattern(typeConverter, context),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult
   matchAndRewrite(migraphx::ReluOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final;
+
+  bool disableFastMath;
 };
 
 struct SoftmaxConverter final
@@ -1355,7 +1386,8 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
       llvm_unreachable("unknown type for QuantizeLinearConverter");
     }
     result = rock::tosa::createOpAndInfer<tosa::ClampOp>(
-        rewriter, loc, biasType, result, minVal, maxVal);
+        rewriter, loc, biasType, result, minVal, maxVal,
+        getNanPropagationMode(disableFastMath));
     result = createCastOp(rewriter, loc, outputType, result, biasType,
                           origOutputType);
   }
@@ -1410,7 +1442,8 @@ ReluConverter::matchAndRewrite(migraphx::ReluOp op, OpAdaptor adaptor,
       getTypeConverter()->convertType(op.getResult().getType()));
   auto zero = rock::tosa::getZeroTensor(rewriter, op.getLoc(), outType);
   // Since the zero is second, this handles any implicit broadcast.
-  rewriter.replaceOpWithNewOp<tosa::MaximumOp>(op, outType, inA, zero);
+  rewriter.replaceOpWithNewOp<tosa::MaximumOp>(
+      op, outType, inA, zero, getNanPropagationMode(disableFastMath));
   return success();
 }
 
@@ -1454,11 +1487,16 @@ struct LiteralConverter final
 };
 
 struct ClipConverter final : public OpConversionPattern<migraphx::ClipOp> {
-  using OpConversionPattern<migraphx::ClipOp>::OpConversionPattern;
+  ClipConverter(const TypeConverter &typeConverter, MLIRContext *context,
+                bool disableFastMath)
+      : OpConversionPattern(typeConverter, context),
+        disableFastMath(disableFastMath) {}
 
   LogicalResult
   matchAndRewrite(migraphx::ClipOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final;
+
+  bool disableFastMath;
 };
 
 struct WhereConverter final : public OpConversionPattern<migraphx::WhereOp> {
@@ -1547,10 +1585,11 @@ ClipConverter::matchAndRewrite(migraphx::ClipOp op, OpAdaptor adaptor,
   Value maxVals = adaptor.getMaxVals();
   auto outType = cast<RankedTensorType>(
       getTypeConverter()->convertType(op.getResult().getType()));
+  tosa::NanPropagationMode nanMode = getNanPropagationMode(disableFastMath);
   Value atLeastMin =
-      tosa::MaximumOp::create(rewriter, loc, outType, x, minVals);
-  rewriter.replaceOpWithNewOp<tosa::MinimumOp>(op, outType, atLeastMin,
-                                               maxVals);
+      tosa::MaximumOp::create(rewriter, loc, outType, x, minVals, nanMode);
+  rewriter.replaceOpWithNewOp<tosa::MinimumOp>(op, outType, atLeastMin, maxVals,
+                                               nanMode);
   return success();
 }
 
@@ -1755,32 +1794,36 @@ LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
 //===----------------------------------------------------------------------===//
 
 void migraphx::populateMIGraphXToTosaConversionPatterns(
-    RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<
-      ConvConverter<ConvolutionBwdDataOp>, ConvConverter<ConvolutionOp>,
-      ConvConverter<QuantConvolutionOp>, DotConverter<DotOp>,
-      DotConverter<QuantDotOp>, BroadcastConverter, MultiBroadcastConverter,
-      TransposeConverter, ReshapeConverter, SliceConverter, ReduceMeanConverter,
-      ReduceConverter<ReduceSumOp, tosa::ReduceSumOp>,
-      ReduceConverter<ReduceMaxOp, tosa::ReduceMaxOp>,
-      TrivialConverter<AddOp, tosa::AddOp>,
-      TrivialConverter<SubOp, tosa::SubOp>,
-      TrivialConverter<PowOp, tosa::PowOp>, DivConverter, MulConverter,
-      MaxConverter, TrivialConverter<AbsOp, tosa::AbsOp>,
-      TrivialConverter<CeilOp, tosa::CeilOp>,
-      TrivialConverter<ErfOp, tosa::ErfOp>,
-      TrivialConverter<ExpOp, tosa::ExpOp>,
-      TrivialConverter<FloorOp, tosa::FloorOp>,
-      TrivialConverter<LogOp, tosa::LogOp>,
-      TrivialConverter<RecipOp, tosa::ReciprocalOp>,
-      TrivialConverter<RsqrtOp, tosa::RsqrtOp>,
-      TrivialConverter<SigmoidOp, tosa::SigmoidOp>,
-      TrivialConverter<TanhOp, tosa::TanhOp>, QuantizeLinearConverter,
-      DeQuantizeLinearConverter, ConvertConverter, SqrtConverter, NegConverter,
-      ReluConverter, SoftmaxConverter, LiteralConverter, ClipConverter,
-      WhereConverter, ComparisonConverter<Greater, tosa::GreaterOp>,
-      ComparisonConverter<Equal, tosa::EqualOp>>(typeConverter,
-                                                 patterns.getContext());
+    RewritePatternSet &patterns, TypeConverter &typeConverter,
+    bool disableFastMath) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.add<ConvConverter<ConvolutionBwdDataOp>,
+               ConvConverter<ConvolutionOp>, ConvConverter<QuantConvolutionOp>,
+               DotConverter<DotOp>, DotConverter<QuantDotOp>,
+               BroadcastConverter, MultiBroadcastConverter, TransposeConverter,
+               ReshapeConverter, SliceConverter, ReduceMeanConverter,
+               ReduceConverter<ReduceSumOp, tosa::ReduceSumOp>,
+               ReduceConverter<ReduceMaxOp, tosa::ReduceMaxOp>,
+               TrivialConverter<AddOp, tosa::AddOp>,
+               TrivialConverter<SubOp, tosa::SubOp>,
+               TrivialConverter<PowOp, tosa::PowOp>, DivConverter, MulConverter,
+               TrivialConverter<AbsOp, tosa::AbsOp>,
+               TrivialConverter<CeilOp, tosa::CeilOp>,
+               TrivialConverter<ErfOp, tosa::ErfOp>,
+               TrivialConverter<ExpOp, tosa::ExpOp>,
+               TrivialConverter<FloorOp, tosa::FloorOp>,
+               TrivialConverter<LogOp, tosa::LogOp>,
+               TrivialConverter<RecipOp, tosa::ReciprocalOp>,
+               TrivialConverter<RsqrtOp, tosa::RsqrtOp>,
+               TrivialConverter<SigmoidOp, tosa::SigmoidOp>,
+               TrivialConverter<TanhOp, tosa::TanhOp>,
+               DeQuantizeLinearConverter, ConvertConverter, SqrtConverter,
+               NegConverter, SoftmaxConverter, LiteralConverter, WhereConverter,
+               ComparisonConverter<Greater, tosa::GreaterOp>,
+               ComparisonConverter<Equal, tosa::EqualOp>>(typeConverter, ctx);
+  patterns
+      .add<MaxConverter, QuantizeLinearConverter, ReluConverter, ClipConverter>(
+          typeConverter, ctx, disableFastMath);
 }
 
 void mlir::migraphx::populateMIGraphXFuncBoundaryToTosaConversionPatterns(

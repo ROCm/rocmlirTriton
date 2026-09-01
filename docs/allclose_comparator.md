@@ -328,10 +328,6 @@ for random data and `1e-6` for fixed seeds because:
   is lower; `1e-6` (~`8.4 * eps(fp32)`) passes all current configs.
 - Random data empirically passes at `1e-5` (~`84 * eps(fp32)`), which
   is still 10× tighter than rocBLAS.
-- One outlier config (`conv_regression_bwd/config_16_7`, K_eff=200704)
-  needs a manual `--atol 2.5` override at `1e-5`; at rocBLAS's `1e-4`
-  it would pass without override but at the cost of 10× looser
-  tolerance for all other fp32 tests.
 
 ### 2.4 `K_eff` per operation
 
@@ -343,7 +339,6 @@ accumulation error growth:
 | GEMM | `K` |
 | Attention | `head_dim_qk + seq_len_k` |
 | Conv forward / backward data | `Cin * product(filter_spatial_dims)`, i.e. the im2col K |
-| Conv backward weight | `N * product(output_spatial_dims)` |
 | GEMM -> elementwise -> GEMM | `K_gemm1 + K_gemm2` |
 | Conv -> elementwise -> GEMM | `K_conv + K_gemm2` |
 | Element-wise / other | `1` |
@@ -353,8 +348,7 @@ path adds its own length.
 
 Conv forward/backward data excludes the K (output channel) and G (group)
 dimensions because they do not participate in the per-output-element
-reduction. Backward weight reduces over a fundamentally different set of
-dimensions (batch and output spatial), so it has its own K_eff formula.
+reduction.
 
 ### 2.5 Manual overrides
 
@@ -453,11 +447,12 @@ two sources of atomic-add accumulation and boosts `rtol` accordingly:
    `splitKFactor > 1`, partial results from multiple workgroups are
    merged via `atomic_add`. The extent is the splitK factor.
 
-The boost formula uses the larger of the two extents:
+The boost formula uses the largest of the two extents; the boost term
+applies only when that maximum exceeds 1:
 
 ```
 atomicExtent = max(reduce_axis_extent, splitKFactor)
-rtol_boosted = base_rtol + sqrt(atomicExtent) * eps(dtype)
+rtol_boosted = base_rtol + (atomicExtent > 1 ? sqrt(atomicExtent) * eps(dtype) : 0)
 ```
 
 where:
@@ -476,10 +471,9 @@ and introduces no rounding error.
 
 The fused-reduction scan targets `rock::ReduceOp` (still present in
 the host-side clone at the `-ph` stage) rather than `rock::StoreOp`
-(already lowered away in the GPU function). The splitK factor is
-extracted from `GemmGemmParamsAttr` or `GemmParamsAttr` via the
-`perf_config` string. Passing `-rtol=<value>` explicitly suppresses
-both boost sources.
+(already lowered away in the GPU function). The splitK factor is extracted from
+`GemmGemmParamsAttr` or `GemmParamsAttr` via the `perf_config` string.
+Passing `-rtol=<value>` explicitly suppresses both boost sources.
 
 ### 2.10 Zero-diff count output
 

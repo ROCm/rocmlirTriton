@@ -346,10 +346,10 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
           newUpper - newParams[subIdx * 2] - newParams[subIdx * 2 + 1];
       newLowerBounds[lowerDim] = newLower;
       halvedLowerDim = lowerDim;
-      newOps.push_back(TransformAttr::get(
-          ctx, trAttr.getType(), newParams, trAttr.getUpperNames(),
-          trAttr.getUpperDims(), trAttr.getLowerNames(), trAttr.getLowerDims(),
-          trAttr.getIsTileAlignment()));
+      newOps.push_back(
+          TransformAttr::get(ctx, trAttr.getType(), newParams,
+                             trAttr.getUpperNames(), trAttr.getUpperDims(),
+                             trAttr.getLowerNames(), trAttr.getLowerDims()));
       break;
     }
     case TransformType::Slice: {
@@ -1118,8 +1118,8 @@ static LogicalResult processSubByteInput(OpBuilder &builder,
                                          OperandInput &input, bool isA,
                                          int64_t sourceRank, Type i8Ty) {
   MLIRContext *ctx = builder.getContext();
-  int64_t kDimIdx = isA ? (sourceRank - 1) : (sourceRank - 2);
-  int64_t dDimIdx = isA ? (sourceRank - 2) : (sourceRank - 1);
+  int64_t kDimIdx = sourceRank - 2 + BlockwiseGemmOp::getKDimIdx(isA);
+  int64_t dDimIdx = sourceRank - 2 + BlockwiseGemmOp::getDDimIdx(isA);
 
   Value cur = input.loadOp.getSource();
   TransformOp bottomTransform;
@@ -1216,14 +1216,12 @@ static LogicalResult pack4BitKernelArgs(func::FuncOp funcOp, MLIRContext *ctx) {
 
         // The outermost transform's upper view is the 6D source i.e. (k_loop,
         // g_block, m_block, n_block, k_iter, n_iter) for B of blockwise_load.
-        // The tile dims are the last 2 dims of this view. matrixA (MxK): tile
-        // dim 1 = K -> source dim (rank-1) matrixB (KxN): tile dim 0 = K ->
-        // source dim (rank-2)
+        // The tile dims are the last 2 dims of this view.
         int64_t sourceRank = cast<ShapedType>(source.getType()).getRank();
         if (sourceRank != 6)
           return gemmOp.emitError("source rank must be six");
-        int64_t kDimIdx = isA ? (sourceRank - 1) : (sourceRank - 2);
-        int64_t dDimIdx = isA ? (sourceRank - 2) : (sourceRank - 1);
+        int64_t kDimIdx = sourceRank - 2 + BlockwiseGemmOp::getKDimIdx(isA);
+        int64_t dDimIdx = sourceRank - 2 + BlockwiseGemmOp::getDDimIdx(isA);
 
         if (gemmOperandIs4Bit) {
           // Direct 4-bit GEMM: halve via vectorization + rewriteTransformChain.

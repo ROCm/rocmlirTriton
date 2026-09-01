@@ -154,8 +154,7 @@ TEST(AddPassThroughIndicesTest, MultiBufferAtPositionZero) {
   Location loc = b.getUnknownLoc();
 
   // Create a 2D tensor<2x16xf16> (multi-buffer case)
-  Value transformed =
-      createTransformedTensor(b, loc, {2, 16}, b.getF16Type());
+  Value transformed = createTransformedTensor(b, loc, {2, 16}, b.getF16Type());
 
   // Add extra indices at position 0 with sizes [2]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {2}, 0);
@@ -181,8 +180,7 @@ TEST(AddPassThroughIndicesTest, MultipleDimensionsAtPositionZero) {
       createTransformedTensor(b, loc, {8, 2, 4}, b.getF32Type());
 
   // Add 3 dimensions at position 0 with sizes [1, 2, 3]
-  FailureOr<Value> result =
-      addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
+  FailureOr<Value> result = addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
 
   ASSERT_TRUE(succeeded(result));
   auto resultType = cast<ShapedType>(result.value().getType());
@@ -292,8 +290,8 @@ TEST(IsIdentityOnShapeTest, BroadcastingOnUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_TRUE(isIdentityOnShape(map, {1, 124, 664}));
 }
@@ -307,8 +305,8 @@ TEST(IsIdentityOnShapeTest, BroadcastingOnNonUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {2, 124, 664}));
 }
@@ -322,8 +320,8 @@ TEST(IsIdentityOnShapeTest, TransposeIsNotIdentity) {
   SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
                                    getAffineDimExpr(2, &ctx),
                                    getAffineDimExpr(1, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
   EXPECT_FALSE(isIdentityOnShape(map, {4, 4, 4}));
@@ -338,8 +336,8 @@ TEST(IsIdentityOnShapeTest, WrongConstantOnUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(1, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
 }
@@ -368,8 +366,8 @@ TEST(IsIdentityOnShapeTest, NonSquareMap) {
 
   SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {4, 8}));
 }
@@ -534,33 +532,6 @@ TEST(GetLowerSubDimensionsTest, PadIsUnsupported) {
 
   ArrayAttr transforms = b.getArrayAttr({padAttr});
   EXPECT_TRUE(failed(getLowerSubDimensions(b, transforms, /*dim=*/1)));
-}
-
-//===----------------------------------------------------------------------===//
-// transformChainDependsOnAnyDim Tests
-//===----------------------------------------------------------------------===//
-
-TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
-  TestEnv env;
-  OpBuilder &b = env.builder;
-  Location loc = b.getUnknownLoc();
-
-  BottomUpTMBuilder transform(b, {"m"}, {8}, loc);
-  transform.addDim("k", 1, 16);
-  transform.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
-
-  SmallVector<TransformMapAttr> transforms{transform.get()};
-  SmallVector<unsigned> mDim{0};
-  SmallVector<unsigned> kDim{1};
-  SmallVector<unsigned> bothDims{0, 1};
-  SmallVector<unsigned> noDims;
-  SmallVector<TransformMapAttr> noTransforms;
-
-  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, mDim));
-  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, kDim));
-  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, bothDims));
-  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, noDims));
-  EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
 }
 
 //===----------------------------------------------------------------------===//

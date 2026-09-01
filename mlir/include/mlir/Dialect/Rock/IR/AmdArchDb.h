@@ -68,6 +68,16 @@ std::tuple<StringRef, unsigned> parseArchString(StringRef arch);
 /// and `:feature` suffixes stripped.
 std::tuple<triton::amdgpu::ISAFamily, StringRef> getArch(StringRef arch);
 
+/// Whether this architecture belongs to the CDNA (data-center, "big GPU")
+/// line. Mirrors Triton's `triton::amdgpu::isCDNA`, which counts gfx1250 as
+/// CDNA even though its matrix instructions are WMMA.
+bool isCDNA(StringRef arch);
+
+/// Whether this architecture belongs to the RDNA (consumer) line. Mirrors
+/// Triton's `triton::amdgpu::isRDNA`. Note that gfx906 (GCN5_1) is in neither
+/// line, so `isCDNA` and `isRDNA` are not complements.
+bool isRDNA(StringRef arch);
+
 /// Check if hardware matrix acceleration is available for the given GEMM op.
 /// Returns true if any acceleration (MFMA, WMMA, ScaledMFMA, ScaledWMMA)
 /// is available for the operation's types on the specified architecture.
@@ -79,6 +89,24 @@ getMatrixAccelKind(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
 
 /// Same as above but for gemm+gemm
 bool hasAccel(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
+
+/// The K extent of the narrowest matrix instruction this arch offers for the
+/// given operand types, at an instruction tile of `instrNonKDim` x
+/// `instrNonKDim`. Fails when the arch has no matrix instruction for them,
+/// which callers should read as "no instruction constrains K here" rather than
+/// as an error.
+///
+/// `instrNonKDim` is the `matrixInstrNonkdim` perf-config field, and is ignored
+/// on WMMA, whose instructions are all 16x16.
+FailureOr<int64_t> getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                        Type inputTypeB, uint32_t instrNonKDim,
+                                        Type scaleAType = Type(),
+                                        Type scaleBType = Type());
+
+/// Same as above, for the operand types of a GEMM operation.
+FailureOr<int64_t> getAccelInstrMinKDim(StringRef arch,
+                                        RockGemmWrapperInterface gemmOp,
+                                        uint32_t instrNonKDim);
 
 /// Get minimum number of CUs per arch
 int64_t getMinNumCU(StringRef arch);
@@ -115,9 +143,11 @@ int64_t getWaveSize(StringRef arch);
 /// Get LDS size
 int64_t getLDSSize(StringRef arch);
 
-/// Get the size in bytes of the last-level cache for this architecture (the
-/// AMD Infinity Cache where present, otherwise the L2), taking the maximum
-/// across the variants within an ISA family.
+/// Get the size in bytes of the last-level cache for this chip (the AMD
+/// Infinity Cache / MALL where present, otherwise the L2), taking the maximum
+/// across the cache configurations that chip ships in. Chips whose caches AMD
+/// has not published are estimated from their closest published sibling, or
+/// fall back to the maximum across their ISA family.
 int64_t getLastLevelCacheSize(StringRef arch);
 
 /// Whether the architecture supports multi-CTA

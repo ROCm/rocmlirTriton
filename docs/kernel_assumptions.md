@@ -1,8 +1,8 @@
-# Kernel Memory Assumptions
+# Kernel Memory and Floating-Point Assumptions
 
-This document describes the memory and pointer assumptions that
-rocmlirTriton makes about GPU kernels it generates. These assumptions
-are split into two categories:
+This document describes the memory, pointer, and floating-point
+assumptions that rocmlirTriton makes about GPU kernels it generates.
+These assumptions are split into two categories:
 
 1. **Internal** -- guaranteed by how rocmlirTriton generates kernels.
 2. **External** -- requirements on the runtime/caller (e.g. MIGraphX).
@@ -227,6 +227,23 @@ the softmax result.
 - `lastValidKVIndex` is a 1-D tensor with one element per batch, matching
   the output batch dimension.
 
+### 2.10 No NaN in the floating-point dataflow (`nnan`)
+
+No NaN may appear anywhere in the floating-point dataflow -- not just in the
+kernel arguments, but at any intermediate. A zero quantization scale making
+`0 * inf`, an accumulation overflowing to `inf + (-inf)`, or a division by a zero
+softmax row-sum all violate this even when every input tensor is finite.
+
+Unlike the memory assumptions above, violating it is not undefined behavior: the
+result stays defined but stops matching IEEE. Where a NaN would have propagated,
+the kernel produces a bound instead, so a clamp saturates to one of its limits.
+In particular, `migraphx.max` does not propagate NaNs the way its operator
+contract specifies.
+
+The assumption is unconditional -- there is no option to turn it off. It is what
+lets min/max ops carry the `nnan` fast-math flag, which in turn lets a clamp
+become a single `v_med3`.
+
 ---
 
 ## Summary Table
@@ -252,3 +269,4 @@ the softmax result.
 | No concurrent external writes | **External** | `agent-one-as`, `invariant` |
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
 | KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |
+| No NaN in float dataflow | **External** | `nan_mode = IGNORE`, `nnan` fast-math flag |

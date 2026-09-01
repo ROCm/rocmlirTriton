@@ -152,3 +152,105 @@ func.func @preserve_f8e8m0fnu_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> 
   %1 = tosa.cast %0 : (tensor<4xf8E8M0FNU>) -> tensor<4xf32>
   return %1 : tensor<4xf32>
 }
+
+// ----
+
+// Test 12: Remove the cast -> fp_to_int_cast -> cast chain in front of a
+// select, so that the select takes the tosa.greater as input instead of the
+// useless casts
+// CHECK-LABEL: @boolean_fp_to_int_round_trip
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>, %[[ARG1:.*]]: tensor<4xf32>) -> tensor<4xf32>
+// CHECK: %[[PRED:.*]] = tosa.greater %[[ARG0]], %[[ARG1]]
+// CHECK-NOT: tosa.custom
+// CHECK-NOT: tosa.cast
+// CHECK: tosa.select %[[PRED]], %[[ARG0]], %[[ARG1]]
+func.func @boolean_fp_to_int_round_trip(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf32> {
+  %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
+  %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
+  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %cond = tosa.cast %asInt : (tensor<4xi8>) -> tensor<4xi1>
+  %0 = tosa.select %cond, %arg0, %arg1 : (tensor<4xi1>, tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// ----
+
+// Test 13: A boolean-sourced fp_to_int_cast becomes a zero extension of the
+// boolean, skipping the float domain, when the integer result is used as an
+// integer
+// CHECK-LABEL: @boolean_fp_to_int_cast
+// CHECK: %[[PRED:.*]] = tosa.greater
+// CHECK-NOT: tosa.custom
+// CHECK: tosa.cast %[[PRED]] : (tensor<4xi1>) -> tensor<4xi8>
+func.func @boolean_fp_to_int_cast(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xi8> {
+  %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
+  %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
+  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  return %asInt : tensor<4xi8>
+}
+
+// ----
+
+// Test 14: Keep the fp_to_int_cast when the float operand isn't a boolean
+// CHECK-LABEL: @preserve_fp_to_int_cast
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xi8>
+func.func @preserve_fp_to_int_cast(%arg0: tensor<4xf32>) -> tensor<4xi8> {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// ----
+
+// Test 15: Keep the fp_to_int_cast when the float operand is a widened integer
+// that isn't i1, since those values can overflow the destination
+// CHECK-LABEL: @preserve_fp_to_int_cast_of_widened_int
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xi8>
+func.func @preserve_fp_to_int_cast_of_widened_int(%arg0: tensor<4xi32>) -> tensor<4xi8> {
+  %asFloat = tosa.cast %arg0 : (tensor<4xi32>) -> tensor<4xf32>
+  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  return %0 : tensor<4xi8>
+}
+
+// ----
+
+// Test 16: Simplify the fp_to_int_cast even when the widening cast feeding it
+// has other uses, in which case the widening cast has to stay behind
+// CHECK-LABEL: @boolean_fp_to_int_cast_shared_widening
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>, %[[ARG1:.*]]: tensor<4xf32>)
+// CHECK: %[[PRED:.*]] = tosa.greater %[[ARG0]], %[[ARG1]]
+// CHECK: %[[FLOAT:.*]] = tosa.cast %[[PRED]] : (tensor<4xi1>) -> tensor<4xf32>
+// CHECK-NOT: tosa.custom
+// CHECK: %[[INT:.*]] = tosa.cast %[[PRED]] : (tensor<4xi1>) -> tensor<4xi8>
+// CHECK: return %[[INT]], %[[FLOAT]]
+func.func @boolean_fp_to_int_cast_shared_widening(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> (tensor<4xi8>, tensor<4xf32>) {
+  %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
+  %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
+  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  return %asInt, %asFloat : tensor<4xi8>, tensor<4xf32>
+}
+
+// ----
+
+// Test 17: Keep the fp_to_int_cast of a boolean when the destination is a
+// signed 1-bit integer.
+// CHECK-LABEL: @preserve_boolean_fp_to_int_cast_to_i1
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xi1>
+func.func @preserve_boolean_fp_to_int_cast_to_i1(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xi1> {
+  %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
+  %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
+  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi1>
+  return %0 : tensor<4xi1>
+}
+
+// ----
+
+// Test 18: Keep the fp_to_int_cast of a boolean when the destination isn't an
+// integer at all.
+// CHECK-LABEL: @preserve_boolean_fp_to_int_cast_to_float
+// CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xf16>
+func.func @preserve_boolean_fp_to_int_cast_to_float(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf16> {
+  %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
+  %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
+  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xf16>
+  return %0 : tensor<4xf16>
+}

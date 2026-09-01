@@ -251,7 +251,7 @@ bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
 bool TargetFeatures::supportsBufferAtomicRMW() const {
   // On older AMD GPUs BUFFER_ATOMIC_* silently drops writes against
   // fine-grained pinned host memory. rocmlirTriton's external memory
-  // contract (docs/kernel_memory_assumptions.md) excludes fine-grained
+  // contract (docs/kernel_assumptions.md) excludes fine-grained
   // allocations, so that hazard does not apply and buffer atomic RMW is
   // safe on every family that has the instructions. Per-type FP restrictions
   // are handled separately in supportsBufferAtomicFadd; integer RMW (ADD/AND/

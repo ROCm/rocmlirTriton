@@ -10,8 +10,8 @@ come from the AmdArchDB pybind module (``amd_arch_db.get_wave_size`` /
   (wave_size, vgprs_per_eu)   archs                                 budget/thr at wpe=8
   ---------------------------------------------------------------------------
   (64, 512)                   gfx9xx (CDNA2-4)                      64
-  (32, 1024)                  gfx10xx (RDNA1/2)                     128
-  (32, 1536)                  gfx11xx-gfx12xx (RDNA3/4 + gfx1250)   192
+  (32, 1024)                  gfx10xx (RDNA1/2), gfx1250            128
+  (32, 1536)                  gfx11xx-gfx12xx (RDNA3/4)             192
 
 Each regime gets a just-fits ACCEPT and a just-overflows REJECT pair so a
 future calibration tweak fails fast. ``wavesPerEU == 0`` (treated as
@@ -80,9 +80,12 @@ CASES = [
     ("gfx1201 fits", "gfx1201", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1201 overflow", "gfx1201", (128, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1250 (wave=32, vgprs=1536): same regime as gfx1100/gfx1201; pinned
-    # separately so a future getWaveSize tweak that mis-classifies gfx1250 as
-    # wave=64 (its older mistake -- see AmdArchDbTests.WaveSize) fails this test.
+    # gfx1250 (wave=32, vgprs=1024): the gfx1030 regime, not the gfx1100 one --
+    # gfx1250 has Feature1024AddressableVGPRs, not Feature1536VGPRs. wpe=8
+    # budget=128, so (64*64)/32 = 128 fits exactly -> ACCEPT and (128*64)/32 =
+    # 256 -> REJECT. Pinned separately so a future getWaveSize tweak that
+    # mis-classifies gfx1250 as wave=64 (its older mistake -- see
+    # AmdArchDbTests.WaveSize) fails this test.
     ("gfx1250 fits", "gfx1250", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1250 overflow", "gfx1250", (128, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 

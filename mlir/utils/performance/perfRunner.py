@@ -53,7 +53,7 @@ BENCHMARKING_RESULT_FILE_NAME = 'results'
 BENCHMARKING_STATS_FILE_NAME = 'results_kernel_stats.csv'
 BENCHMARKING_METRICS_FILE_NAME = 'results_counter_collection.csv'
 ROCMLIR_INPUT_METRICS_FILE_NAME = 'rocmlir_metrics.txt'
-DIRECTIONS = ['-F 1', '-F 2', '-F 4']
+DIRECTIONS = ['-F 1', '-F 2']
 LAYOUTS = ['NHWC', 'NCHW']
 
 DATA_TYPES_GEMM = ['f32', 'f16', 'bf16', 'i8', 'fp8', 'f4E2M1FN']
@@ -350,7 +350,17 @@ def parse_tuning_db_line(entries: list) -> Optional[Tuple[str, str, str]]:
     return None
 
 
-def read_tuning_db(path: Optional[str]) -> MaybeTuningDb:
+def read_tuning_db(path: str,
+                   conf_class: type,
+                   num_cu: int = 0,
+                   num_chiplets: int = 0) -> MaybeTuningDb:
+    """Read a tuning DB into a {(arch, canonical config): perfconfig} mapping.
+
+    num_cu/num_chiplets are only needed to build the config objects
+    canonicalization goes through: the DB's own numCUs/numChiplets columns are
+    dropped by parse_tuning_db_line, and neither value reaches the canonical
+    key, which is keyed on (arch, config) alone.
+    """
     try:
         ret = {}
         with open(path, 'r') as db_file:
@@ -366,11 +376,20 @@ def read_tuning_db(path: Optional[str]) -> MaybeTuningDb:
                     continue
 
                 arch, config, perfconfig = parsed
+
+                try:
+                    config = canonicalize_config(config, conf_class, arch, num_cu, num_chiplets)
+                except ValueError:
+                    # Silently skip entries that don't parse under conf_class. This is the common
+                    # case when a single tuning DB stores rows for several ops. Such rows could
+                    # never match a canonical-string lookup anyway, and tuningRunner.py is the
+                    # source of truth for genuine syntax errors.
+                    continue
+
                 ret[arch, config] = perfconfig
         return ret
     except FileNotFoundError:
-        if path:
-            print(f"Warning: Failed to find tuning database: {path}")
+        print(f"Warning: Failed to find tuning database: {path}")
         return None
 
 
@@ -555,7 +574,11 @@ def drop_perf_priority(argv):
 
 
 # convolution configurations.
-def get_conv_configurations(filename, target_chip: Optional[str] = None):
+def get_conv_configurations(filename,
+                            arch,
+                            num_cu,
+                            num_chiplets,
+                            target_chip: Optional[str] = None):
     configs = []
     chip = target_chip
     if filename:
@@ -609,8 +632,10 @@ def get_conv_configurations(filename, target_chip: Optional[str] = None):
                     output_layout = ""
 
                 one_config = f"{datatype}{direction}{filter_layout}{input_layout}{output_layout}{line}"
-                if one_config not in configs:
-                    configs.append(one_config)
+                canonical = canonicalize_or_raise(filename, line, one_config, ConvConfiguration,
+                                                  arch, num_cu, num_chiplets)
+                if canonical not in configs:
+                    configs.append(canonical)
     return configs
 
 
@@ -649,11 +674,7 @@ class ConvConfiguration(PerfConfiguration):
         self.perfconfig = perf_config
 
     def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        direction = {
-            'fwd': '--operation conv',
-            'bwd': '--operation conv_bwd_data',
-            'wrw': '--operation conv_bwd_weight'
-        }[self.direction]
+        direction = {'fwd': '--operation conv', 'bwd': '--operation conv_bwd_data'}[self.direction]
 
         # Pick symmetric or asymmetric padding cmdline form per axis.
         # rocmlir-gen errors out when --padding_h and --padding_h_l/_h_r
@@ -742,18 +763,14 @@ class ConvConfiguration(PerfConfiguration):
                 # -F
                 # 1 fwd only
                 # 2 bwd only
-                # 4 wrw only
                 # TBD:
-                # 0 fwd+bwd+wrw
                 # 3 fwd+bwd
-                # 5 fwd+wrw
-                # 6 bwd+wrw
                 if int(arg) == 1:
                     direction = 'fwd'
                 elif int(arg) == 2:
                     direction = 'bwd'
-                elif int(arg) == 4:
-                    direction = 'wrw'
+                else:
+                    raise ValueError(f"Unsupported convolution direction: -F {arg}")
             elif opt == '-f':
                 filter_layout = arg
             elif opt == '-I':
@@ -799,7 +816,7 @@ class ConvConfiguration(PerfConfiguration):
     def to_command_line(self):
         return (
             f"conv{dict(f32='', f16='fp16', bf16='bfp16', i8='int8', fp8_fp8='fp8_fp8', fp8='fp8')[self.datatype]} "
-            + f"-F {dict(fwd=1, bwd=2, wrw=4)[self.direction]} " +
+            + f"-F {dict(fwd=1, bwd=2)[self.direction]} " +
             f"-f {inverse_filter_layouts(self.filter_layout)} -I {self.input_layout.upper()} " +
             f"-O {inverse_output_layouts(self.output_layout)} " +
             f"-n {self.n} -c {self.c} -H {self.hi} -W {self.wi} -k {self.k} " +
@@ -838,7 +855,7 @@ class ConvConfiguration(PerfConfiguration):
                  perf_config: str = ''):
         if dtype not in DATA_TYPES_CONV:
             raise ValueError(f"Invalid datatype: {dtype}")
-        if direction not in {"fwd", "bwd", "wrw"}:
+        if direction not in {"fwd", "bwd"}:
             raise ValueError(f"Invalid direction: {direction}")
 
         self.datatype = dtype
@@ -907,6 +924,9 @@ class ConvConfiguration(PerfConfiguration):
 
 
 def get_gemm_configurations(filename,
+                            arch,
+                            num_cu,
+                            num_chiplets,
                             datatypes=DATA_TYPES_GEMM,
                             out_dtype_map=OUTPUT_DATA_TYPES_MAP,
                             scale_types=DATA_TYPES_GEMM_SCALES,
@@ -988,18 +1008,23 @@ def get_gemm_configurations(filename,
                         # Strip to avoid spurious spaces
                         one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{scale_a_string}{scale_b_string}{line}".strip(
                         )
-                        if one_config not in configs:
-                            configs.append(one_config)
+                        canonical = canonicalize_or_raise(filename, line, one_config,
+                                                          GemmConfiguration, arch, num_cu,
+                                                          num_chiplets)
+                        if canonical not in configs:
+                            configs.append(canonical)
                 else:
                     # Strip to avoid spurious spaces
                     one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{line}".strip(
                     )
-                    if one_config not in configs:
-                        configs.append(one_config)
+                    canonical = canonicalize_or_raise(filename, line, one_config, GemmConfiguration,
+                                                      arch, num_cu, num_chiplets)
+                    if canonical not in configs:
+                        configs.append(canonical)
     return configs
 
 
-def get_conv_gemm_configurations(filename):
+def get_conv_gemm_configurations(filename, arch, num_cu, num_chiplets):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_CONV_GEMM,
@@ -1036,12 +1061,15 @@ def get_conv_gemm_configurations(filename):
                     one_config = line.strip()
                     for arg, value in zip(args, test_vector):
                         one_config = f"{arg} {value} {one_config}"
-                    if one_config not in configs:
-                        configs.append(one_config)
+                    canonical = canonicalize_or_raise(filename, line, one_config,
+                                                      ConvGemmConfiguration, arch, num_cu,
+                                                      num_chiplets)
+                    if canonical not in configs:
+                        configs.append(canonical)
     return configs
 
 
-def get_gemm_gemm_configurations(filename):
+def get_gemm_gemm_configurations(filename, arch, num_cu, num_chiplets):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_GEMM_GEMM,
@@ -1078,12 +1106,15 @@ def get_gemm_gemm_configurations(filename):
                     one_config = line.strip()
                     for arg, value in zip(args, test_vector):
                         one_config = f"{arg} {value} {one_config}"
-                    if one_config not in configs:
-                        configs.append(one_config)
+                    canonical = canonicalize_or_raise(filename, line, one_config,
+                                                      GemmGemmConfiguration, arch, num_cu,
+                                                      num_chiplets)
+                    if canonical not in configs:
+                        configs.append(canonical)
     return configs
 
 
-def get_attn_configurations(filename):
+def get_attn_configurations(filename, arch, num_cu, num_chiplets):
     bool_space = ['false', 'true']
     # if not defined, set it to false
     default_to_false = ['false']
@@ -1135,8 +1166,11 @@ def get_attn_configurations(filename):
                     if not found_dtype or found_dtype.group(1) not in DATA_TYPES_ATTENTION:
                         continue
 
-                    if one_config not in configs:
-                        configs.append(one_config)
+                    canonical = canonicalize_or_raise(filename, line, one_config,
+                                                      AttentionConfiguration, arch, num_cu,
+                                                      num_chiplets)
+                    if canonical not in configs:
+                        configs.append(canonical)
 
     return configs
 
@@ -2108,8 +2142,8 @@ def run_config_with_mlir(config: PerfConfiguration,
                 "Warning: --flush-last-level-cache is ignored when using rocprof for benchmarking")
         rocmlir_driver_cmd = [paths.mlir_paths.rocmlir_driver_path, '-c']
         profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(arch) + [
-            '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME, '--',
-            paths.mlir_paths.rocm_run_path
+            '--kernel-trace', '--stats', '--output-format=csv', '-o', BENCHMARKING_RESULT_FILE_NAME,
+            '--', paths.mlir_paths.rocm_run_path
         ]
 
         outs, noerr = run_pipeline([rocmlir_gen_cmd.split(), rocmlir_driver_cmd, profiler_cmd])
@@ -2118,6 +2152,12 @@ def run_config_with_mlir(config: PerfConfiguration,
                 get_profiler_output_path(arch, BENCHMARKING_STATS_FILE_NAME))
 
     return nanoseconds
+
+
+# Parser exceptions: ValueError covers most parser errors and getopt issues; NameError covers
+# UnboundLocalError when from_command_line skips required locals; IndexError covers out-of-bounds
+# argv access; KeyError covers to_command_line dict lookups.
+PARSER_EXCEPTIONS = (ValueError, IndexError, KeyError, NameError)
 
 
 def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: int,
@@ -2142,8 +2182,23 @@ def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: in
     if resolved_class is PerfConfiguration:
         resolved_class = (ConvConfiguration
                           if config_str.lstrip().startswith('conv') else GemmConfiguration)
-    config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
-    return config.to_command_line()
+    try:
+        config = resolved_class.from_command_line(config_str.split(), arch, num_cu, num_chiplets)
+        return config.to_command_line()
+    except PARSER_EXCEPTIONS as e:
+        raise ValueError(f"Failed to parse '{config_str}' as {resolved_class.__name__}: {e}") from e
+
+
+def canonicalize_or_raise(filename, raw_line, expanded, conf_class, arch, num_cu, num_chiplets):
+    """Canonicalize a config produced by op-specific expansion of ``raw_line`` under ``conf_class``.
+
+    Returns the canonical command-line. Raises ValueError with both the source filename and
+    the original (pre-expansion) line so users can locate the offending input quickly.
+    """
+    try:
+        return canonicalize_config(expanded, conf_class, arch, num_cu, num_chiplets)
+    except ValueError as e:
+        raise ValueError(f"Failed to canonicalize config from {filename} '{raw_line}': {e}") from e
 
 
 def lookup_tuning_db(tuning_db: MaybeTuningDb, arch: str, config: PerfConfiguration,
@@ -2297,12 +2352,10 @@ def generate_performance_results(configs,
 def get_solver_name(test_vector, arch, num_cu, num_chiplets):
     config = ConvConfiguration.from_command_line(test_vector.split(sep=' '), arch, num_cu,
                                                  num_chiplets)
-    if config.direction == 'fwd':
-        solver_name = 'ConvMlirIgemmFwd'
-    elif config.direction == 'bwd':
-        solver_name = 'ConvMlirIgemmBwd'
-    else:
-        solver_name = 'ConvMlirIgemmWrW'
+    solver_name = {
+        'fwd': 'ConvMlirIgemmFwd',
+        'bwd': 'ConvMlirIgemmBwd',
+    }[config.direction]
     if config.chip in ['gfx908', 'gfx90a', 'gfx942', 'gfx950']:
         solver_name += 'Xdlops'
     return solver_name
@@ -2458,7 +2511,7 @@ def run_fusion_kernel(filename, rocmlir_gen_args, paths: Paths):
     ]
     commands.append(kernel_pipeline_cmd)
     profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(chip) + [
-        '--kernel-trace', '--stats', '-f', 'csv', '-o', BENCHMARKING_RESULT_FILE_NAME
+        '--kernel-trace', '--stats', '--output-format=csv', '-o', BENCHMARKING_RESULT_FILE_NAME
     ] + ['--', paths.mlir_paths.rocm_run_path]
     commands.append(profiler_cmd)
     outs, noerr = run_pipeline(commands)
@@ -2641,12 +2694,12 @@ def main(args=None):
     usage examples:
 
     python3 perfRunner.py
-    python3 perfRunner.py --batch_all -o=output_file.csv
-    python3 perfRunner.py --batch_all -o=output_file.csv -t=tuning_db.tsv
+    python3 perfRunner.py --batch-all -o=output_file.csv
+    python3 perfRunner.py --batch-all -o=output_file.csv -t=tuning_db.tsv
     python3 perfRunner.py -b
     # Uses results from tuning db when running MLIR benchmarks
     python3 perfRunner.py -b -t=tuning_db.tsv
-    python3 perfRunner.py --batch_external
+    python3 perfRunner.py --batch-external
     python3 perfRunner.py --operation gemm --external # hipBLASLt tests
     python3 perfRunner.py -- conv -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 -k 2048 -y 1 -x 1 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -m conv -g 1 -t 1
     python3 perfRunner.py --external -- conv -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 -k 2048 -y 1 -x 1 -p 0 -q 0 -u 2 -v 2 -l 1 -j 1 -m conv -g 1 -t 1
@@ -2678,47 +2731,60 @@ def main(args=None):
 
     mutex_arg_group = parser.add_mutually_exclusive_group()
     mutex_arg_group.add_argument("--tuning", action="store_true", help="Only tune the MLIR kernels")
-    mutex_arg_group.add_argument("-b",
-                                 "--batch_mlir",
-                                 action="store_true",
-                                 help="CSV batch benchmarking mode with MLIR")
-    mutex_arg_group.add_argument("--batch_external",
-                                 action="store_true",
-                                 help="CSV batch benchmarking mode with external reference")
     mutex_arg_group.add_argument(
-        "--batch_all",
+        "-b",
+        "--batch-mlir",
+        "--batch_mlir",  # for backward compatibility
         action="store_true",
-        help="CSV batch benchmarking with MLIR and external reference (defalut on no args)")
+        help="CSV batch benchmarking mode with MLIR")
+    mutex_arg_group.add_argument(
+        "--batch-external",
+        "--batch_external",  # for backward compatibility
+        action="store_true",
+        help="CSV batch benchmarking mode with external reference")
+    mutex_arg_group.add_argument(
+        "--batch-all",
+        "--batch_all",  # for backward compatibility
+        action="store_true",
+        help="CSV batch benchmarking with MLIR and external reference (default on no args)")
     mutex_arg_group.add_argument("--external",
                                  action="store_true",
                                  help="benchmark a single config externally")
 
-    parser.add_argument("-c",
-                        "--configs_file",
-                        type=str,
-                        default=default_conv_configs,
-                        help="File of configurations to test")
+    parser.add_argument(
+        "-c",
+        "--configs-file",
+        "--configs_file",  # for backward compatibility
+        type=str,
+        default=default_conv_configs,
+        help="File of configurations to test")
 
     parser.add_argument("-o",
                         type=str,
                         default=chip + '_' + date.today().strftime("perf.%m%d%y"),
                         help="Output file name",
                         dest="filename")
-    parser.add_argument("-t",
-                        "--tuning_db",
-                        type=str,
-                        default=argparse.SUPPRESS,
-                        help="Tuning database filename")
-    parser.add_argument("-qt",
-                        "--quick_tuning_db",
-                        type=str,
-                        default=argparse.SUPPRESS,
-                        help="Quick tuning database filename")
+    parser.add_argument(
+        "-t",
+        "--tuning-db",
+        "--tuning_db",  # for backward compatibility
+        type=str,
+        default=argparse.SUPPRESS,
+        help="Tuning database filename")
+    parser.add_argument(
+        "-qt",
+        "--quick-tuning-db",
+        "--quick_tuning_db",  # for backward compatibility
+        type=str,
+        default=argparse.SUPPRESS,
+        help="Quick tuning database filename")
 
-    parser.add_argument("--test_dir",
-                        type=str,
-                        default="../mlir/test/fusion/resnet50-e2e",
-                        help="The directory of tests")
+    parser.add_argument(
+        "--test-dir",
+        "--test_dir",  # for backward compatibility
+        type=str,
+        default="../mlir/test/fusion/resnet50-e2e",
+        help="The directory of tests")
     parser.add_argument(
         "--mlir-build-dir",
         type=str,
@@ -2730,10 +2796,12 @@ def main(args=None):
                         nargs='*',
                         help="The specific config to test, if you want to test one")
 
-    parser.add_argument("--rocmlir_gen_flags",
-                        type=str,
-                        default=argparse.SUPPRESS,
-                        help="rocmlir-gen flags to toggle each feature")
+    parser.add_argument(
+        "--rocmlir-gen-flags",
+        "--rocmlir_gen_flags",  # for backward compatibility
+        type=str,
+        default=argparse.SUPPRESS,
+        help="rocmlir-gen flags to toggle each feature")
 
     parser.add_argument("--external-gemm-library",
                         type=str,
@@ -2775,14 +2843,6 @@ def main(args=None):
     if 'rocmlir_gen_flags' in parsed_args:
         rocmlir_gen_flags = parsed_args.rocmlir_gen_flags
 
-    tuning_db = None
-    quick_tuning_db = None
-    if 'tuning_db' in parsed_args:
-        tuning_db = read_tuning_db(parsed_args.tuning_db)
-
-    if 'quick_tuning_db' in parsed_args:
-        quick_tuning_db = read_tuning_db(parsed_args.quick_tuning_db)
-
     # Impose default behavior when no args have been passed
     if len(args) == 0:
         parsed_args.batch_all = True
@@ -2808,22 +2868,33 @@ def main(args=None):
         conf_class = ConvGemmConfiguration
         external_lib = None
 
+    tuning_db = None
+    quick_tuning_db = None
+    if 'tuning_db' in parsed_args:
+        tuning_db = read_tuning_db(parsed_args.tuning_db, conf_class, num_cu, num_chiplets)
+
+    if 'quick_tuning_db' in parsed_args:
+        quick_tuning_db = read_tuning_db(parsed_args.quick_tuning_db, conf_class, num_cu,
+                                         num_chiplets)
+
     configs_path = None if parsed_args.config else parsed_args.configs_file
     paths = create_paths(configs_path, parsed_args.mlir_build_dir)
     configs = None
     if optype == Operation.CONV:
-        configs = get_conv_configurations(paths.configuration_file_path)
+        configs = get_conv_configurations(paths.configuration_file_path, arch, num_cu, num_chiplets)
     elif optype == Operation.GEMM:
         datatypes, output_type_map = parse_data_types(parsed_args.data_type)
         scale_types = parsed_args.scale_type if parsed_args.scale_type else None
-        configs = get_gemm_configurations(paths.configuration_file_path, datatypes, output_type_map,
-                                          scale_types)
+        configs = get_gemm_configurations(paths.configuration_file_path, arch, num_cu, num_chiplets,
+                                          datatypes, output_type_map, scale_types)
     elif optype == Operation.ATTENTION:
-        configs = get_attn_configurations(paths.configuration_file_path)
+        configs = get_attn_configurations(paths.configuration_file_path, arch, num_cu, num_chiplets)
     elif optype == Operation.GEMM_GEMM:
-        configs = get_gemm_gemm_configurations(paths.configuration_file_path)
+        configs = get_gemm_gemm_configurations(paths.configuration_file_path, arch, num_cu,
+                                               num_chiplets)
     elif optype == Operation.CONV_GEMM:
-        configs = get_conv_gemm_configurations(paths.configuration_file_path)
+        configs = get_conv_gemm_configurations(paths.configuration_file_path, arch, num_cu,
+                                               num_chiplets)
 
     if parsed_args.external or parsed_args.batch_external or parsed_args.batch_all:
         if not found_external_tool(paths, optype, external_lib):
