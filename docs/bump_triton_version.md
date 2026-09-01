@@ -232,6 +232,37 @@ A Triton bump that drops, renames, reorders, or changes the options on any pass 
 
 If a Triton bump introduces a new arch-conditional branch in `Pipelines.cpp` that gfx942 doesn't exercise, prefer adding a second prefix (e.g. `TRITON_GFX1250`) for the relevant arch over weakening the existing one.
 
+##### gfx117x `-real-true16` (LCOMPILER-2609)
+
+`TritonToHsaco.cpp::translateTritonToHsaco()` appends `-real-true16` to the
+`make_amdgcn` / `make_hsaco` feature strings for **gfx117x only**. Packed OCP
+fp8 upcast ISel is fake16-only on those chips; real-true16 mode fails to
+assemble (LCOMPILER-2609). This is a **permanent downstream divergence** from
+pinned `compiler.py`, not a delayed copy of an upstream helper.
+
+Before this gate was narrowed, the C++ prefix matched
+`disable_real_true16_feature()` one-to-one (`-real-true16` for every `gfx11*`
+arch). A bump author could therefore reconcile it purely by diffing
+`compiler.py`. The C++ side is now gfx117x-only; the currently pinned
+`compiler.py` still uses the gfx11-wide helper. The next bump that pulls
+[triton-lang/triton#11188](https://github.com/triton-lang/triton/pull/11188)
+deletes `disable_real_true16_feature()` outright, after which upstream emits
+`-real-true16` for **no** gfx11 target while we still emit it for gfx117x
+for a hardware reason upstream does not model.
+
+The mechanical reading of that diff is "upstream dropped this, drop ours
+too". **Do not.** Dropping the gfx117x gate silently reintroduces the
+LCOMPILER-2609 assembly failure: there is no compile error, and the only
+test signal is the gfx1170 case in
+`mlir/test/Dialect/Rock/triton-to-hsaco-disable-true16.mlir` (other gfx11 and
+gfx12 are expected to stay in real-true16, matching post-#11188 upstream).
+
+Keep the `arch.starts_with("gfx117")` check until LCOMPILER-2609 is fixed in
+the pinned LLVM and the gfx1170 (and, if still gated, RDNA4) packed OCP fp8
+path assembles in real-true16. After the bump, confirm that test still
+passes and that `compiler.py` no longer has a gfx11-wide helper that would
+make a 1:1 remirror correct.
+
 ##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
@@ -640,6 +671,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
+- [ ] Keep the gfx117x-only `-real-true16` gate in `TritonToHsaco.cpp` even if `compiler.py` deletes `disable_real_true16_feature()` (see section 5.1); confirm `triton-to-hsaco-disable-true16.mlir`
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
@@ -701,6 +733,7 @@ If new Triton headers are needed:
 |---------|-----------|
 | TTIR/TTGIR/LLIR pipelines | `mlir/lib/Dialect/Rock/Pipelines/Pipelines.cpp` |
 | HSACO translation | `mlir/lib/Translation/TritonToHsaco/TritonToHsaco.cpp` |
+| gfx117x `-real-true16` LIT | `mlir/test/Dialect/Rock/triton-to-hsaco-disable-true16.mlir` |
 | Architecture database | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` |
 | Triton utility replicas | `mlir/lib/Dialect/Rock/utility/tritonUtils.cpp` |
 | Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |

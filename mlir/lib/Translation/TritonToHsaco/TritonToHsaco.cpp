@@ -294,7 +294,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   // override causes LLVM's per-function subtarget lookup to key off a bare
   // `"target-features"=""` attribute and silently *ignore* the TM-level
   // `-mattr` we later set on `tmAsm` in `make_amdgcn` (which is where
-  // `-real-true16` is added for gfx11 kernels). Upstream Triton only
+  // `-real-true16` is added for gfx117x kernels). Upstream Triton only
   // touches `target-features` in the asan path (see
   // `add_fn_target_feature("+xnack")` in compiler.py).
   if (enableAsan) {
@@ -759,10 +759,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string features = options.features;
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
-  // Upstream compiler.py disable_real_true16_feature() passes `-real-true16`
-  // for every gfx11 (RDNA3 / RDNA3.5) kernel, unconditionally, in both
-  // make_amdgcn and make_hsaco. It is no longer gated on fp8 operand usage.
-  bool disableTrue16 = arch.starts_with("gfx11");
+  // gfx117x packed OCP fp8 upcasts fail to assemble in real-true16
+  // mode (LCOMPILER-2609).
+  bool disableTrue16 = arch.starts_with("gfx117");
   bool enableExpertScheduling =
       isExpertSchedulingEnabled(arch, options.useExpertScheduling);
 
