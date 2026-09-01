@@ -1429,6 +1429,8 @@ mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
   assert(dimNames.size() == shape.size() &&
          "expected one name for each shaped dimension");
   if (shape.empty()) {
+    // An empty shape represents a rank-0 tensor. Its scalar value still has
+    // one element of flat storage, so drop that sole lower dimension.
     BottomUpTMBuilder flattener(b, {"raw"}, 1, loc);
     flattener.dropDimAtIndex("raw", 0);
     return flattener.get();
@@ -1523,7 +1525,7 @@ Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
   TransformMapAttr rowMajorMap = buildRowMajorFlatteningTransformMap(
       b, loc, dimNames, shapedType.getShape());
   TransformMapAttr flattenMap = invertTransformMap(b, rowMajorMap, loc);
-  assert(flattenMap && "failed to invert row-major map");
+  assert(flattenMap && "failed to invert contiguous flattening map");
   return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 

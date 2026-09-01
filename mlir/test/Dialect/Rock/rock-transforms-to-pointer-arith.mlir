@@ -306,8 +306,9 @@ func.func @test_i64_overpad_small_buffer(%arg0: tensor<131072xf16>) -> tensor<64
 
 // -----
 
-// Dense non-splat constants use a real pointer base and a row-major flattening
-// map. Unit dimensions must not be duplicated in that map.
+// Dense non-splat constants use a real pointer base and a
+// rightmost-dimension-contiguous (row-major) flattening map. Unit dimensions
+// must not be duplicated in that map.
 // CHECK-LABEL: @test_dense_constant_flattening
 // CHECK: %[[VALUES:.*]] = arith.constant dense<{{.*}}> : tensor<1x1x2x2xf32>
 // CHECK: %[[BASE:.*]] = rock.extract_ptr %[[VALUES]] : tensor<1x1x2x2xf32> -> i32
@@ -323,8 +324,9 @@ func.func @test_dense_constant_flattening() attributes {rock.arch = "##TOKEN_ARC
 
 // -----
 
-// Rank-N splat constants use the same implicit row-major flattening map, but
-// retain their synthetic zero base because they do not require memory storage.
+// Rank-N splat constants use the same implicit
+// rightmost-dimension-contiguous (row-major) flattening map, but retain their
+// synthetic zero base because they do not require memory storage.
 // CHECK-LABEL: @test_splat_constant_flattening
 // CHECK-NOT: rock.extract_ptr
 // CHECK: arith.muli

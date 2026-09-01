@@ -1619,6 +1619,11 @@ static bool requiresCompilerOwnedStorage(Value constant) {
     if (!visited.insert(value).second)
       continue;
     for (Operation *user : value.getUsers()) {
+      // A dense non-splat feeding TransformsToPtrOp becomes an ExtractPtrOp,
+      // which TensorToTritonPtr backs with a compiler-owned global. Keep both
+      // pointer forms even when no BlockwiseLoadOp is visible here. Dense
+      // splats, including attention's synthetic zero buffers, are filtered by
+      // the caller before this analysis.
       if (isa<LoadMarkerOp, BlockwiseLoadOp, TransformsToPtrOp, ExtractPtrOp>(
               user))
         return true;

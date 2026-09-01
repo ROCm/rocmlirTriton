@@ -86,7 +86,7 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
            << *buffer.getDefiningOp();
   }
   auto constantBuffer = buffer.getDefiningOp<arith::ConstantOp>();
-  if (constantBuffer && !isa<DenseElementsAttr>(constantBuffer.getValue())) {
+  if (constantBuffer && !getDenseTensorConstantAttr(buffer)) {
     return op->emitOpError(
         "constant transform chain root must contain dense elements");
   }

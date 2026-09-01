@@ -153,9 +153,9 @@ Value insertBroadcast(OpBuilder &b, Location loc, Value inp,
 /// when `value` is not such a constant. Vector constants are not matched.
 DenseElementsAttr getDenseTensorConstantAttr(Value value);
 
-/// Return true when `value` is a dense, non-splat tensor constant. These
-/// constants are lowered through compiler-owned memory rather than materialized
-/// directly in registers.
+/// Return true when `value` is a dense, non-splat tensor constant. This helper
+/// only classifies the value; callers decide whether compiler-owned storage is
+/// required.
 bool isDenseNonSplatConstant(Value value);
 
 bool isFusionOp(Operation *op);

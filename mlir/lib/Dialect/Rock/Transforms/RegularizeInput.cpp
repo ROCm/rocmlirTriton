@@ -142,9 +142,10 @@ static FailureOr<Value> distributeLoadMarker(
     return cloned->getResult(0);
   }
 
-  // Leaf: arith.constant. Splats are materialized directly in registers.
-  // Dense non-splats are memory-backed compiler constants, so preserve their
-  // transform chain and create a tiled load just as for a kernel argument.
+  // Leaf: arith.constant. Splats remain ordinary SSA constants and can be
+  // rematerialized at the tile shape. Dense non-splats require coordinate-aware
+  // access, so preserve their transform chain and create a tiled load just as
+  // for a kernel argument.
   if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
     if (rock::isDenseNonSplatConstant(originalVal))
       return createTiledLoad();

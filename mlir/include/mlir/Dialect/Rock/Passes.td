@@ -480,8 +480,8 @@ def RockTensorToTritonPtrPass
     1. Converts `arith.addi` on pointer tensors to `tt.addptr`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
     3. Stores dense non-splat tensor constants in deduplicated, internal LLVM
-       globals using row-major flat storage, GPU address space 1, and 16-byte
-       alignment
+       globals using rightmost-dimension-contiguous (row-major) flat storage,
+       GPU address space 1, and 16-byte alignment
     4. Eliminates rock.extract_ptr and adapts its users to use either a kernel
        argument pointer or a pointer to a compiler-owned global
     5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`

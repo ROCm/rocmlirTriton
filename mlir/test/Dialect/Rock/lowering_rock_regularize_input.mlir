@@ -416,20 +416,41 @@ module {
   }
 
   // CHECK-LABEL: func.func @test_non_splat_constant_fusion
-  // CHECK: %[[CST:.*]] = arith.constant dense<{{.*}}> : tensor<1x2xf32>
-  // CHECK: %[[LM:.*]] = rock.load_marker %[[CST]] views
+  // CHECK-DAG: %[[LHS:.*]] = arith.constant dense<{{.*1.*2.*}}> : tensor<1x2xf32>
+  // CHECK-DAG: %[[RHS:.*]] = arith.constant dense<{{.*3.*4.*}}> : tensor<1x2xf32>
+  // CHECK: %[[LHS_LOAD:.*]] = rock.load_marker %[[LHS]] views
   // CHECK-SAME: tensor<1x2xf32> -> tensor<2xf32>
-  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LM]], %[[LM]] : tensor<2xf32>
+  // CHECK: %[[RHS_LOAD:.*]] = rock.load_marker %[[RHS]] views
+  // CHECK-SAME: tensor<1x2xf32> -> tensor<2xf32>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LHS_LOAD]], %[[RHS_LOAD]] : tensor<2xf32>
   // CHECK: %[[UNTILE:.*]] = rock.untile %[[TILE_ADD]]
   // CHECK: arith.addf %{{.*}}, %[[UNTILE]] : tensor<1x2xf32>
   func.func @test_non_splat_constant_fusion(%tile: tensor<2xf32>, %dest: tensor<1x2xf32>, %g: i32, %m: i32) -> tensor<1x2xf32> attributes {rock.kernel} {
     %sm = rock.store_marker %tile views [#tmap_small] [%g, %m] : tensor<2xf32> -> tensor<1x2xf32>
-    %cst = arith.constant dense<[[1.0, 2.0]]> : tensor<1x2xf32>
-    %sum = arith.addf %cst, %cst : tensor<1x2xf32>
+    %lhs = arith.constant dense<[[1.0, 2.0]]> : tensor<1x2xf32>
+    %rhs = arith.constant dense<[[3.0, 4.0]]> : tensor<1x2xf32>
+    %sum = arith.addf %lhs, %rhs : tensor<1x2xf32>
     %lm = rock.load_marker %sum views [#tmap_small] [%g, %m] {cacheModifier = #rock<CacheModifier none>} : tensor<1x2xf32> -> tensor<2xf32>
     %ut = rock.untile %lm : tensor<2xf32> -> tensor<1x2xf32>
     %fused = arith.addf %sm, %ut : tensor<1x2xf32>
     %r = rock.store %fused to %dest by set : tensor<1x2xf32> -> tensor<1x2xf32> to tensor<1x2xf32>
     return %r : tensor<1x2xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_non_splat_constant_transform_chain
+  // CHECK: %[[VALUES:.*]] = arith.constant dense<{{.*}}> : tensor<16xf32>
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %[[VALUES]]
+  // CHECK-SAME: tensor<16xf32> to tensor<1x16x16xf32>
+  // CHECK: %[[TRANSPOSE:.*]] = rock.transform %[[BROADCAST]]
+  // CHECK-SAME: tensor<1x16x16xf32> to tensor<1x16x16xf32>
+  // CHECK: rock.load_marker %[[TRANSPOSE]] views
+  func.func @test_non_splat_constant_transform_chain(
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %values = arith.constant dense<[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0]> : tensor<16xf32>
+    %broadcast = rock.transform %values by #tmap_broadcast_1d : tensor<16xf32> to tensor<1x16x16xf32>
+    %transposed = rock.transform %broadcast by #tmap_transpose_3d : tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    %loaded = rock.load_marker %transposed views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    return %loaded : tensor<16x16xf32>
   }
 }

@@ -188,9 +188,10 @@ TransformMapAttr transformExtractSlice(OpBuilder &b, Location loc,
                                        ArrayRef<int64_t> offsets,
                                        ArrayRef<int64_t> sizes);
 
-/// Build a row-major map whose upper dimensions are `shape` and whose lower
-/// dimension is the corresponding flat storage. The overload without names
-/// generates stable dimension names for callers that only need coordinates.
+/// Build a rightmost-dimension-contiguous (row-major) N-D map whose upper
+/// dimensions are `shape` and whose lower dimension is the corresponding flat
+/// storage. The overload without names generates stable dimension names for
+/// callers that only need coordinates.
 TransformMapAttr
 buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                     ArrayRef<StringRef> dimNames,
@@ -198,9 +199,10 @@ buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
 TransformMapAttr buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                                      ArrayRef<int64_t> shape);
 
-/// Return the implicit row-major transform from a rank-N dense tensor constant
-/// to its flat pointer storage. Returns a null attribute for non-constants and
-/// rank-one constants.
+/// Return the implicit rightmost-dimension-contiguous (row-major) transform
+/// from a rank-N dense tensor constant to its flat pointer storage. Returns a
+/// null attribute for non-constants, constants of rank at most one, and
+/// zero-element constants.
 TransformMapAttr
 buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc, Value value);
 
@@ -218,19 +220,20 @@ buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc, Value value);
 ///
 /// This is done to improve indexing performance, especially in cases where
 /// buffer loads are used, so that, for example, we don't have to mask all the
-/// non-final coordinates to 0 before feeding the index into the N-D row-major
-/// indexing map that's implicit with `tensor`.
+/// non-final coordinates to 0 before feeding the index into the
+/// rightmost-dimension-contiguous (row-major) N-D indexing map that's implicit
+/// with `tensor`.
 void expandFlatFunctionArguments(OpBuilder &b, func::FuncOp func,
                                  ArrayRef<SmallVector<StringRef>> names,
                                  TypeRange logicalTypes,
                                  SmallVectorImpl<Value> &expanded);
 
 /// Apply a flattening transform to a value in logical shape, producing
-/// a 1-D tensor. Internally this builds the row-major map (Unmerge + AddDim,
-/// flat->logical) via buildRowMajorFlatteningTransformMap and then inverts it,
-/// so the applied TransformOp carries a Merge + RemoveDim map (logical->flat).
-/// This is the inverse direction of what expandFlatFunctionArguments does
-/// per argument.
+/// a 1-D tensor. Internally this builds the rightmost-dimension-contiguous
+/// (row-major) map (Unmerge + AddDim, flat->logical) via
+/// buildRowMajorFlatteningTransformMap and then inverts it, so the applied
+/// TransformOp carries a Merge + RemoveDim map (logical->flat). This is the
+/// inverse direction of what expandFlatFunctionArguments does per argument.
 Value flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
                     ArrayRef<StringRef> dimNames);
 

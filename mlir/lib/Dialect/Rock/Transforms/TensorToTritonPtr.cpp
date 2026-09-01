@@ -157,7 +157,11 @@ static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
 }
 
 /// Reject extraction forms that this pass cannot convert without leaving a
-/// dangling integer placeholder or changing its scalar semantics.
+/// dangling integer placeholder or changing its scalar semantics. Triton can
+/// load through scalar pointers, but Rock's extract_ptr contract currently
+/// represents only the base of a tensor-of-pointers broadcast. This validation
+/// applies to both block-argument and constant sources because both use
+/// replaceExtractPtrWithPointer, which requires every user to be tt.splat.
 static LogicalResult validateExtractPtr(rock::ExtractPtrOp extractPtrOp) {
   auto tensorType = cast<RankedTensorType>(extractPtrOp.getSource().getType());
   if (tensorType.getNumElements() == 0)
@@ -228,11 +232,10 @@ LogicalResult RockTensorToTritonPtrPass::processFunction(
 
     if (auto constant = tensorOperand.getDefiningOp<arith::ConstantOp>()) {
       constantsToConvert.push_back({constant, extractPtrOp});
-      return;
+    } else {
+      auto blockArg = cast<BlockArgument>(tensorOperand);
+      argsToConvert.push_back({blockArg.getArgNumber(), extractPtrOp});
     }
-
-    auto blockArg = cast<BlockArgument>(tensorOperand);
-    argsToConvert.push_back({blockArg.getArgNumber(), extractPtrOp});
   });
 
   for (const ArgConversionInfo &info : argsToConvert)

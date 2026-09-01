@@ -4,7 +4,11 @@
 // MIGraphX-to-LLVM pipeline as compiler-owned GPU storage. The LLVM address
 // is bridged through tt.int_to_ptr, which is supported by the vendored
 // Triton pipeline without downstream changes.
+// Attention's splat fake tensors are used only for indexing and must not create
+// additional compiler-owned globals before or after the real dense bias.
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
 // CHECK: llvm.mlir.global internal constant @[[$GLOBAL:__rock_constant_[0-9]+]]({{.*}}) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<16 x f32>
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
 // CHECK-LABEL: llvm.func @constant_attention
 // CHECK: %[[ADDRESS:.*]] = llvm.mlir.addressof @[[$GLOBAL]] : !llvm.ptr<1>
 // CHECK: %[[INTEGER_ADDRESS:.*]] = llvm.ptrtoint %[[ADDRESS]] : !llvm.ptr<1> to i64

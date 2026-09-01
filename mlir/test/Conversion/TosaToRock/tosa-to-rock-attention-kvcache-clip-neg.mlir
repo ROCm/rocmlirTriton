@@ -4,10 +4,11 @@
 // folded lastValidKVIndex. Keep the complete clip and mask in the elementwise
 // region instead of specializing the attention as KV-cache.
 // CHECK-LABEL: func @kvcache_nonsplat_clip_bound
+// CHECK: %[[CLIP_MIN:.*]] = "tosa.const"() <{values = dense<{{.*0.*1.*}}> : tensor<1x2x1x1xi32>}>
 // CHECK: rock.attention
 // Dense non-splat constants are elementwise inputs so downstream Rock lowering
 // can tile-load them from compiler-owned GPU globals.
-// CHECK: qk = elementwise otherIns(%{{.*}}
+// CHECK: qk = elementwise otherIns(%{{.*}}, %{{.*}}, %[[CLIP_MIN]]
 // CHECK-NOT: lastValidKVIndex
 // CHECK: tosa.maximum
 // CHECK: tosa.minimum

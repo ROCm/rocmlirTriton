@@ -92,19 +92,24 @@ backend the full extent of valid memory behind the pointer.
 ### 1.10 Compiler-owned dense constants
 
 Dense non-splat tensor constants are stored in internal, read-only LLVM globals
-in GPU address space 1. Their logical tensor values are flattened in row-major
-order, and each global is aligned to at least 16 bytes. Compatible globals with
-the same type and value are deduplicated.
+in GPU address space 1. Their logical tensor values are flattened with the
+rightmost dimension contiguous (row-major), and each global is aligned to at
+least 16 bytes. Compatible globals with the same type and value are
+deduplicated.
 
 These constants are compiler-owned storage, not kernel arguments, so they do
 not change the kernel ABI or impose allocation requirements on the caller.
-Splat constants continue to be materialized directly in registers. Sub-byte
-non-splat constants that feed memory-loading paths are rejected because packed
-compiler-owned storage is not yet supported. Register-only 4-bit non-splat
-constants are also rejected because the legalization pass cannot pack them;
-register-only constants that need no packing, such as `i1` masks, remain
-supported. Zero-sized constants cannot provide addressable storage and are also
-rejected when used as memory sources.
+This representation does not prescribe SGPR or VGPR allocation: the global's
+base address is uniform, but per-lane indexing and values may be vectorized,
+and the LLVM AMDGPU backend makes the final instruction and register choices.
+Splat constants remain SSA constants and do not use compiler-owned global
+storage; LLVM selects their final immediate or register representation.
+Sub-byte non-splat constants that would require compiler-owned storage are
+rejected because packed storage is not yet supported. Non-memory-backed 4-bit
+non-splat constants are also rejected because the legalization pass cannot pack
+them; other constants that need no packing, such as `i1` masks, remain
+supported. Zero-sized constants cannot provide addressable storage and are
+also rejected when used as memory sources.
 
 ### 1.11 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
 
