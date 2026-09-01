@@ -11,6 +11,7 @@ patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
+patch-cost-aware-dot-rematerialization.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
@@ -289,6 +290,34 @@ patch-free-var-mask-register-dim-name.patch
   of 4 and 4, measuring 1.12x-2.00x slower.
 
   Not filed upstream yet; upstream Triton has the same defect.
+
+patch-cost-aware-dot-rematerialization.patch
+  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
+  isRematBeneficial cost model instead of hoisting unconditionally. The pass
+  previously moved every ttg.convert_layout next to its load once the backward
+  slice was elementwise-pure, even when rematerializing the slice in a
+  replicated dot-operand layout cost more than keeping the convert (e.g.
+  expensive math scaled by getCostFactor replication and the 8x
+  isExpensiveMathOp multiplier).
+
+  After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
+  the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,
+  newCvtCost), matching hoistConvertOnTopOfExtOrBroadcast. Hoist proceeds only
+  when eliminating the use-site convert is at least as cheap as rematerializing
+  the slice plus the load-side converts.
+
+  Motivation: fused elementwise + conv kernels on RDNA (e.g. log/tanh/mul on
+  the B operand before a WMMA dot) regressed ~15% vs rocMLIR because a
+  single-M-tile tuning config left the input chain rematerialized in a
+  replicated WMMA dot-operand layout. Keeping the convert after the expensive
+  chain lets each warp compute once and store to LDS.
+
+  No upstream PR yet. If the shared model is too weak or too strong for dot-
+  operand hoists, tune getCostFactor or the expensive-math multiplier in one
+  place rather than adding a second heuristic.
+
+  Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
+  from hoistConvertDotOperand or upstreams this change.
 
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
