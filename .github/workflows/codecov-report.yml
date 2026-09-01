@@ -188,6 +188,13 @@ jobs:
             fi
           }
 
-          send_to_teams "$MLIR_TEAM_CONVERSATION" "MLIR_TEAM_CONVERSATION"
-          send_to_teams "$MLIR_CI_CHANNEL"        "MLIR_CI_CHANNEL"
+          # Keep going if one webhook fails (set -e would otherwise abort here and
+          # leave the remaining destinations unnotified); failures already emit a
+          # ::warning:: above.
+          notify_failed=0
+          send_to_teams "$MLIR_TEAM_CONVERSATION" "MLIR_TEAM_CONVERSATION" || notify_failed=1
+          send_to_teams "$MLIR_CI_CHANNEL"        "MLIR_CI_CHANNEL"        || notify_failed=1
+          if [ "$notify_failed" -ne 0 ]; then
+            echo "::warning::At least one Teams notification failed; see the per-webhook output above."
+          fi
           echo "Done."
