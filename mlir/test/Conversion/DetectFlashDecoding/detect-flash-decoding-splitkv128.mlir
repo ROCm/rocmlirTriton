@@ -16,7 +16,7 @@
 #map9 = affine_map<(d0, d1, d2) -> (0, d0 floordiv 128, d0 mod 128, d1, d2)>
 #map11 = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 128 + d2, d3)>
 #map14 = affine_map<(d0) -> (d0 floordiv 8192, (d0 floordiv 64) mod 128, d0 mod 64)>
-#map12 = affine_map<(d0) -> (0, d0 floordiv 16384, (d0 floordiv 128) mod 128, d0 mod 128, 0)>
+#map12 = affine_map<(d0) -> (0, d0 floordiv 16384, (d0 mod 16384) floordiv 128, d0 mod 128, 0)>
 #map13 = affine_map<(d0) -> (d0 floordiv 8192, (d0 floordiv 64) mod 128, d0 mod 64)>
 
 #transform_map = #rock.transform_map<#map by [<Unmerge{8, 128, 64} ["exp1", "exp2", "exp3"] at [1, 2, 3] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 8, 128, 64] -> [65536]>
