@@ -423,8 +423,7 @@ def Rock_LoadMarkerOp
     : Rock_Op<"load_marker", [Pure,
                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
-          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier,
-          OptionalAttr<DenseI64ArrayAttr>:$reductionTileAxes)>,
+          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
@@ -447,13 +446,6 @@ def Rock_LoadMarkerOp
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
     back through the source chain (transforms, fusion ops, block argument)
     and combining all transforms.
-
-    `reductionTileAxes` records what the loaded tile feeds, which decides
-    whether tile-alignment padding may be dropped when the load is narrowed to
-    the dimensions it depends on. An absent attribute means the producer does
-    not know and consumers must stay conservative, an empty array means the
-    tile never reaches a reduction, and otherwise it lists the tile axes that
-    are reduced over.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
