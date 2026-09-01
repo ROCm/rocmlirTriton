@@ -26,6 +26,32 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   include(librockcompiler_deps.cmake)
   set(__rocmlir_targets ${__rocmlir_libs})
 
+  # librockcompiler_deps.cmake is a generated snapshot of one build's link
+  # closure, so it can name libraries the current configuration does not build:
+  # the probe binary it is generated from links ${LLVM_TARGETS_TO_BUILD}, which
+  # follows MLIR_ENABLE_ROCM_RUNNER, so a runner-on snapshot carries LLVMX86*
+  # that a runner-off build never produces. Drop those rather than let llvm-ar
+  # fail on a missing member, and keep the surviving target names: members
+  # outside rocMLIR's own link closure (e.g. MLIRFuncInlinerExtension, which
+  # only the tools and CAPI tests link) are otherwise unordered with respect to
+  # the archive step.
+  set(__mlir_targets "")
+  set(__mlir_skipped "")
+  foreach(__library IN LISTS __mlir_libs)
+    if(TARGET ${__library})
+      list(APPEND __mlir_targets ${__library})
+    else()
+      list(APPEND __mlir_skipped ${__library})
+    endif()
+  endforeach()
+  if(__mlir_skipped)
+    message(STATUS
+      "librockCompiler: skipping members not built in this configuration: "
+      "${__mlir_skipped}")
+  endif()
+  set(__mlir_libs ${__mlir_targets})
+  unset(__mlir_skipped)
+
   # Static libraries on Windows have a 4GB size limit. The Debug version of the FAT library
   # exceeds that limit significantly. Therefore, the change is to expose CMake's INTERFACE
   # library instead as an interface to clients. Underneath, on Linux, the single monolithic
@@ -102,7 +128,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
                        COMMAND for archive in ${__rocmlir_libs} ${__mlir_libs} \; do echo "addlib $$archive" >> ${mri_file} \; done
                        COMMAND echo "save" >> ${mri_file}
                        COMMAND echo "end" >> ${mri_file}
-                       DEPENDS ${__rocmlir_targets})
+                       DEPENDS ${__rocmlir_targets} ${__mlir_targets})
 
     # Step two: use mri file to generate the fat library.
     add_custom_command(OUTPUT ${full_output_path}

@@ -158,8 +158,9 @@ endif()
 # rocMLIR Options
 #===----------------------------------------------------------------------===//
 
-# Enable tests by default so that check-rocmlir-build-only target is available
-set(MLIR_INCLUDE_TESTS ON CACHE BOOL "Include MLIR tests")
+# MLIR_INCLUDE_TESTS is deliberately left alone: MLIR defaults it to
+# LLVM_INCLUDE_TESTS, so standalone builds get check-rocmlir-build-only while
+# consumers that pass -DLLVM_INCLUDE_TESTS=Off (e.g. MIGraphX) get no test tree.
 # Disable E2E tests by default since they require JIT runner
 set(ROCMLIR_DRIVER_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build E2E tests for Rock driver")
 set(ROCMLIR_DRIVER_RANDOM_DATA_SEED "none" CACHE STRING "Enable E2E tests using random data")
@@ -167,8 +168,8 @@ set(ROCMLIR_GEN_FLAGS "" CACHE BOOL "Set feature flag for rocmlir-gen")
 # Disable E2E tests by default since they require JIT runner
 set(ROCK_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build rock E2E tests")
 set(ROCMLIR_ENABLE_BENCHMARKS "" CACHE STRING "List of enabled benchmarks")
-# Enable ROCM runner to build rocmlir-tuning-driver and related tools
-set(MLIR_ENABLE_ROCM_RUNNER ON CACHE BOOL "Enable building the ROCm runner")
+option(ROCMLIR_BUILD_TUNING_DRIVER
+  "Build rocmlir-tuning-driver (default ON when BUILD_FAT_LIBROCKCOMPILER)" OFF)
 
 set(ROCMLIR_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin" CACHE PATH "")
 set(ROCMLIR_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/lib" CACHE PATH "")
@@ -192,6 +193,17 @@ endif()
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "")
 set(ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build PR-triggered E2E tests for Rock driver")
+
+# The ROCm runner JITs host code, which a static fat-library build cannot
+# support, so it is off there and rocmlir-tuning-driver is built through its own
+# switch instead. This must precede cmake/triton.cmake, which decides
+# LLVM_TARGETS_TO_BUILD from MLIR_ENABLE_ROCM_RUNNER.
+if(BUILD_FAT_LIBROCKCOMPILER)
+  set(MLIR_ENABLE_ROCM_RUNNER 0 CACHE BOOL "")
+  set(ROCMLIR_BUILD_TUNING_DRIVER ON CACHE BOOL "" FORCE)
+else()
+  set(MLIR_ENABLE_ROCM_RUNNER 1 CACHE BOOL "")
+endif()
 
 if(BUILD_FAT_LIBROCKCOMPILER AND NOT WIN32)
   set(CMAKE_INSTALL_PREFIX "/opt/rocm" CACHE STRING "")
