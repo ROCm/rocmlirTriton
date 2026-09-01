@@ -88,6 +88,10 @@ private:
   // Of `relatives`, all of which share `target`'s suffix and architecture
   // family, returns the one whose key diverges from `target` latest, preferring
   // the newer architecture when two are equidistant.
+  //
+  // `relatives` must be non-empty and sorted ascending: the search for
+  // `target`'s neighbours is a binary search, and the two endpoint cases
+  // dereference the extremes directly. Both preconditions are asserted.
   static StringRef pickClosestRelative(StringRef target,
                                        ArrayRef<StringRef> relatives);
 
