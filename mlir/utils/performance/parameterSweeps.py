@@ -612,22 +612,23 @@ _PRE_WMMA_RDNA_FAMILIES = (
 
 
 # Returns the amplifier value for the given data type and arch.
-# - Amplifier=10 if fp8 and RDNA from gfx11 onwards (RDNA3, gfx1170, RDNA4,
-#   and any future RDNA family)
+# - Amplifier=10 for a dtype in _AMPLIFIED_DTYPES (fp8, fp8_fp8, bf8) on RDNA
+#   from gfx11 onwards (RDNA3, gfx1170, RDNA4, and any future RDNA family)
 # - Amplifier=1 otherwise
 def _dtype_amplifier(dtype: str, arch: str) -> int:
-    """Multiplier on the number of elements held per thread for dtypes whose
-    Triton fp_to_fp lowering expands into many LLVM ops.
+    """Multiplier on the number of elements held per thread for the
+    ``_AMPLIFIED_DTYPES`` (the 8-bit floats: fp8, fp8_fp8, bf8), whose Triton
+    fp_to_fp lowering expands into many LLVM ops.
 
     On the WMMA-era RDNA line -- RDNA3 (gfx11xx), gfx1170, RDNA4 (gfx120x),
-    and whatever RDNA family comes next -- the fp8->f16 path lowers to ~25
-    scalar LLVM ops per element because there is no packed hardware
+    and whatever RDNA family comes next -- the 8-bit-float -> f16 path lowers
+    to ~25 scalar LLVM ops per element because there is no packed hardware
     conversion intrinsic available. CDNA3 keeps the conversion packed via
     v_cvt_pk_f32_fp8, and CDNA4 (gfx950) doesn't need it at all because
     tt.dot_scaled accepts fp8 operands natively, so they aren't amplified.
     gfx1250 runs WMMA but is a CDNA part, and is likewise unamplified.
-    Everything off that line -- all of CDNA, gfx906, the pre-WMMA RDNA1 /
-    RDNA2, and unrecognized targets -- defaults to alpha=1 until measured."""
+    Everything off that line -- all of CDNA, gfx906, and the pre-WMMA RDNA1 /
+    RDNA2 -- defaults to alpha=1 until measured."""
     if dtype not in _AMPLIFIED_DTYPES:
         return 1
     is_wmma_era_rdna = (amd_arch_db.is_rdna(arch) and
@@ -657,10 +658,10 @@ def _dtype_amplifier(dtype: str, arch: str) -> int:
 # halving KPB shortens the K-loop body but leaves the C-epilogue unchanged,
 # and vice versa. So we cap on
 #     max(num_elements_kloop_body, num_elements_c_epilogue) * alpha
-# where ``alpha`` is a dtype amplifier: fp8 on the WMMA-era RDNA line lowers
-# tt.fp_to_fp into ~25 scalar LLVM ops per element (no packed hw conversion),
-# inflating the K-loop body specifically; on CDNA3/4 the conversion is
-# packed/native and alpha == 1.
+# where ``alpha`` is a dtype amplifier: an 8-bit float on the WMMA-era RDNA
+# line lowers tt.fp_to_fp into ~25 scalar LLVM ops per element (no packed hw
+# conversion), inflating the K-loop body specifically; on CDNA3/4 the
+# conversion is packed/native and alpha == 1.
 
 
 def _compile_cost_score(perf: Sequence[int], dtype: str, arch: str) -> float:
@@ -691,7 +692,7 @@ def _compile_cost_budget(arch: str) -> int:
         # The whole RDNA line: more expensive LLVM processing (post-RA
         # scheduler).
         return 8000
-    # Everything else (gfx9, gfx1250, gfx13+, future): looser cap until measured.
+    # Everything else (gfx9, gfx1250): looser cap until measured.
     return 12000
 
 
@@ -702,12 +703,18 @@ def _arch_family(arch: str) -> str:
     - ``'rdna'`` is ``rock::isRDNA``: RDNA1 (gfx101x), RDNA2 (gfx103x), RDNA3
       (gfx11xx), gfx1170, and RDNA4 (gfx120x).
     - ``'cdna'`` is the catch-all non-RDNA bucket: the whole CDNA line
-      (MI100 gfx908, MI200/MI250 gfx90a, MI300 gfx942, gfx950) plus gfx1250,
-      gfx13+, GCN5_1, and unknown targets until they're measured.
+      (MI100 gfx908, MI200/MI250 gfx90a, MI300 gfx942, gfx950) plus gfx1250
+      and GCN5_1.
+
+    "Catch-all" spans only the arches AmdArchDb knows. One it doesn't is a
+    hard error rather than a fallback into ``'cdna'``: ``is_rdna`` goes
+    through ``rock::getArch``, which hits ``llvm_unreachable("Unknown chip")``
+    on an unrecognized chip. So does ``get_wave_size``, which
+    ``_compile_cost_score`` calls first.
 
     Deliberately keyed on ``is_rdna`` rather than ``is_cdna``, since the two
     are not complements (gfx906 is in neither line) and the looser budget is
-    the safe default for an arch we haven't measured. gfx1250 lands in
+    the safe default for a known arch we haven't benchmarked. gfx1250 lands in
     ``'cdna'`` either way, matching the tuning space ``rock::isCDNA`` picks
     for it in RockTuningImpl.cpp."""
     return 'rdna' if amd_arch_db.is_rdna(arch) else 'cdna'

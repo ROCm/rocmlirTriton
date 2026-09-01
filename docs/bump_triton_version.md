@@ -368,7 +368,7 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
 Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
-it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well. That module is
+its `py::enum_<ISAFamily>(...).value(...)` enum updated as well. That module is
 also how the performance scripts reach `AmdArchDb.cpp`, so a new `rock` arch
 predicate that Python needs (`is_cdna` / `is_rdna`, say) has to be exported
 there too -- see section 5.6.
