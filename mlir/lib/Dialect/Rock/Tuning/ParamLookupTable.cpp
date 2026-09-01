@@ -51,31 +51,33 @@ ParamLookupTable<ParamsType>::getFallbackDataType(StringRef dataType) {
 }
 
 template <typename ParamsType>
-StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
-  // `fallbackKey` owns the storage for the substituted-datatype key (if any).
-  std::string fallbackKey;
-  SmallVector<StringRef, 12> relatives = getRelatives(target);
+StringRef
+ParamLookupTable<ParamsType>::getFallbackKernelType(StringRef kernelType) {
+  return llvm::StringSwitch<StringRef>(kernelType)
+      .Case("gemmelementwisegemm", "attention")
+      .Case("convelementwisegemm", "attention")
+      .Default(StringRef());
+}
 
-  // When there is no same-datatype relative across architectures, borrow the
-  // closest datatype that has tuning entries (e.g. gfx942_gemm_fp8 ->
-  // gfx942_gemm_i8) and search once more. If that datatype has no relatives
-  // either, give up.
-  if (relatives.empty()) {
-    auto dataTypePos = target.rfind(separator);
-    if (dataTypePos == StringRef::npos)
-      return StringRef();
-    StringRef fallbackDataType =
-        getFallbackDataType(target.substr(dataTypePos + 1));
-    if (fallbackDataType.empty())
-      return StringRef();
-    fallbackKey =
-        (Twine(target.substr(0, dataTypePos + 1)) + fallbackDataType).str();
-    target = fallbackKey;
-    relatives = getRelatives(target);
-    if (relatives.empty())
-      return StringRef();
-  }
+template <typename ParamsType>
+bool ParamLookupTable<ParamsType>::splitKey(StringRef key, StringRef &arch,
+                                            StringRef &kernelType,
+                                            StringRef &dataType) {
+  // No component of a key contains the separator, so the first and last ones
+  // delimit the kernel type. Requiring them to differ rejects malformed keys.
+  auto firstSep = key.find(separator);
+  auto lastSep = key.rfind(separator);
+  if (firstSep == StringRef::npos || firstSep == lastSep)
+    return false;
+  arch = key.substr(0, firstSep);
+  kernelType = key.substr(firstSep + 1, lastSep - firstSep - 1);
+  dataType = key.substr(lastSep + 1);
+  return true;
+}
 
+template <typename ParamsType>
+StringRef ParamLookupTable<ParamsType>::pickClosestRelative(
+    StringRef target, ArrayRef<StringRef> relatives) {
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
   if (it == relatives.end())
     return relatives.back();
@@ -83,15 +85,66 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
     return relatives.front();
 
   auto prev = std::prev(it);
-  auto mismatchNext = std::mismatch(target.begin(), target.end(), it->begin());
+  // Bounded four-iterator form: a relative may be shorter than `target` (e.g.
+  // gfx90a_gemm_f16 against gfx1100_gemm_f16), and the three-iterator form
+  // would read past its end.
+  auto mismatchNext =
+      std::mismatch(target.begin(), target.end(), it->begin(), it->end());
   auto mismatchPrev =
-      std::mismatch(target.begin(), target.end(), prev->begin());
+      std::mismatch(target.begin(), target.end(), prev->begin(), prev->end());
 
   if (mismatchNext.first < mismatchPrev.first)
     return *prev;
-  else
-    // If the mismatches are equal, prefer the larger (newer) candidate
-    return *it;
+  // If the mismatches are equal, prefer the larger (newer) candidate
+  return *it;
+}
+
+template <typename ParamsType>
+StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
+  StringRef arch, kernelType, dataType;
+  if (!splitKey(target, arch, kernelType, dataType))
+    return StringRef();
+
+  StringRef fallbackKernelType = getFallbackKernelType(kernelType);
+  StringRef fallbackDataType = getFallbackDataType(dataType);
+
+  static const auto &table = getTable();
+
+  // The three axes we may substitute along are not equally cheap, so they are
+  // nested cheapest-innermost.
+  //
+  // Data type is outermost, i.e. the last resort: tile shapes, kpack and the
+  // instruction width are all tuned per precision. Architecture comes next,
+  // because LDS capacity and the available MFMA/WMMA shapes differ across
+  // chips. Swapping the kernel type is cheapest: the gemm+gemm and conv+gemm
+  // fusions lower through the very same gridwise code as attention and share
+  // its perf-config format, so an attention list tuned for *this* chip beats
+  // the same fusion tuned for a different one.
+  for (StringRef data : {dataType, fallbackDataType}) {
+    if (data.empty())
+      continue;
+    for (bool crossArch : {false, true}) {
+      for (StringRef kernel : {kernelType, fallbackKernelType}) {
+        if (kernel.empty())
+          continue;
+        // Only `key` needs to outlive this iteration; every candidate compared
+        // against it is a key owned by the table, and so is the result.
+        std::string key =
+            (Twine(arch) + Twine(separator) + kernel + Twine(separator) + data)
+                .str();
+        if (!crossArch) {
+          if (auto it = table.find(key); it != table.end())
+            return it->first;
+          continue;
+        }
+        SmallVector<StringRef, 12> relatives = getRelatives(key);
+        if (!relatives.empty())
+          return pickClosestRelative(key, relatives);
+      }
+    }
+  }
+
+  return StringRef();
 }
 
 template <typename ParamsType>
@@ -100,15 +153,26 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
   // Fall back within the same gfx major family (gfxN...), e.g. gfx942 ->
   // gfx90a; never across families.
   constexpr auto fallbackArchPrefixLen = 4;
-  const auto suffixLen = target.size() - target.find(separator);
+  auto suffixStart = target.find(separator);
+  if (suffixStart == StringRef::npos)
+    return {};
+  // Everything but the architecture, e.g. "_gemm_f16". Comparing the two
+  // suffixes directly keeps the kernel type and data type intact; deriving a
+  // length from `target` and slicing `candidate` by it instead would underflow
+  // whenever a candidate key is shorter than the suffix being matched, making
+  // every same-family key look like a relative.
+  const StringRef targetSuffix = target.substr(suffixStart);
 
   SmallVector<StringRef, 12> relatives;
 
   static const auto &table = getTable();
   for (const auto &entry : table) {
     StringRef candidate = entry.first;
+    auto candidateSuffixStart = candidate.find(separator);
+    if (candidateSuffixStart == StringRef::npos)
+      continue;
     // If suffix and prefix match, then they are relatives
-    if (target.ends_with(candidate.substr(candidate.size() - suffixLen)) &&
+    if (candidate.substr(candidateSuffixStart) == targetSuffix &&
         target.starts_with(candidate.substr(0, fallbackArchPrefixLen))) {
       relatives.push_back(candidate);
     }
