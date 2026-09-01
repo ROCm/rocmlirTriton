@@ -970,4 +970,37 @@ def RockPrepareLLVMPass
   let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
 }
 
+def RockFoldOobBufferOpsPass
+    : Pass<"rock-fold-oob-buffer-ops", "::mlir::LLVM::LLVMFuncOp"> {
+  let summary = "Drop raw buffer accesses whose predicate is statically false";
+  let description = [{
+    Triton's AMD backend predicates buffer accesses branchlessly: a masked-off
+    lane is given a `voffset` past the descriptor's `NumRecords`, which the
+    hardware discards. That hides the predicate from dead code elimination, so
+    the stored value and everything behind it stay artificially alive. A GEMM
+    whose M dimension is padded up to `mPerBlock` keeps its entire padded-tile
+    epilogue this way.
+
+    When the `voffset` of a raw buffer access is the out-of-bounds arm of the
+    emitter's predicating select, the condition is provably false, and that arm
+    is past the descriptor's `numRecords`, the access does nothing: stores and
+    unread atomics are erased, loads fold to the zero a discarded raw load
+    returns. Both bounds are read out of the IR, so no sentinel value is
+    assumed, and LLVM's own dead code elimination reclaims the rest.
+
+    Two abstract domains run over the LLVM and ROCDL dialects, since neither
+    implements `InferIntRangeInterface`, and a predicate is dead if either
+    proves it false: integer ranges for interval facts, known bits for the
+    per-bit facts of Triton's `xor`-based `LinearLayout` index math.
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
+  let statistics =
+      [Statistic<"numErasedStores", "num-erased-stores",
+                 "Number of raw buffer stores erased">,
+       Statistic<"numFoldedLoads", "num-folded-loads",
+                 "Number of raw buffer loads folded to zero">,
+       Statistic<"numErasedAtomics", "num-erased-atomics",
+                 "Number of raw buffer atomics with unread results erased">];
+}
+
 #endif // MLIR_DIALECT_ROCK_PASSES

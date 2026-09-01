@@ -262,7 +262,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout) {
+                     int64_t useReductionLayout, bool useBufferOps) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   // Redistribute the layout of the reduction dimension to reduce register
@@ -312,6 +312,19 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   pm->addPass(
       mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
   pm->addPass(mlir::createReconcileUnrealizedCastsPass());
+
+  // --- rocmlirTriton pass ----
+  // Must run after convert-triton-amdgpu-to-llvm, which emits the buffer
+  // accesses, and after reconcile-unrealized-casts, since the analyses walk
+  // plain LLVM offset arithmetic and stop at a cast. Canonicalize and CSE
+  // after, so the offset math of an erased access leaves with it.
+  if (useBufferOps) {
+    pm->addNestedPass<mlir::LLVM::LLVMFuncOp>(
+        rock::createRockFoldOobBufferOpsPass());
+    pm->addPass(mlir::createCanonicalizerPass());
+    pm->addPass(mlir::createCSEPass());
+  }
+  // --- rocmlirTriton pass ----
 
   // IMPORTANT:
   //
@@ -560,7 +573,8 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.useReductionLayout);
+  makeLLIR(&pm, arch, options.useReductionLayout,
+           isBufferOpsEnabled(options.useBufferOps));
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

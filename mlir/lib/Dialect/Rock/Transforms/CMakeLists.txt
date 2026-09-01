@@ -13,6 +13,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
   DecomposeNonPow2K.cpp
+  FoldOobBufferOps.cpp
   FuseSiblingLoops.cpp
   GridLayoutEmitter.cpp
   ViewToTransform.cpp
@@ -57,11 +58,13 @@ add_rocmlir_dialect_library(MLIRRockTransforms
 
   LINK_LIBS PUBLIC
   MLIRAffineTransforms
+  MLIRAnalysis
   MLIRArithTransforms
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRDialect
   MLIRFuncDialect
+  MLIRInferIntRangeInterface
   MLIRIR
   MLIRPass
   MLIRLinalgUtils
