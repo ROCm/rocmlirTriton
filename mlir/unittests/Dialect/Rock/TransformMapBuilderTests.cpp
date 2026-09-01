@@ -167,13 +167,12 @@ TEST_F(TMBuilderTest, Merge) {
   TransformMapAttr resDown = buildDown.get();
   TransformMapAttr resUp = buildUp.get();
 
-  EXPECT_EQ(
-      resDown.getMap().getAffineMap(),
-      AffineMap::get(1, 0,
-                     {affD(0).floorDiv(affC(15)),
-                      (affD(0) % affC(15)).floorDiv(affC(5)),
-                      affD(0) % affC(5)},
-                     &context));
+  EXPECT_EQ(resDown.getMap().getAffineMap(),
+            AffineMap::get(1, 0,
+                           {affD(0).floorDiv(affC(15)),
+                            (affD(0) % affC(15)).floorDiv(affC(5)),
+                            affD(0) % affC(5)},
+                           &context));
   EXPECT_EQ(resDown, resUp);
 }
 
@@ -309,8 +308,7 @@ TEST_F(TMBuilderTest, GemmOut) {
       resDown.getMap().getAffineMap(),
       AffineMap::get(3, 0,
                      {affD(2).floorDiv(affC(196)), affD(0), affD(1),
-                      (affD(2) % affC(196)).floorDiv(affC(14)),
-                      affD(2) % 14},
+                      (affD(2) % affC(196)).floorDiv(affC(14)), affD(2) % 14},
                      &context));
   EXPECT_EQ(resDown, resUp);
 }
