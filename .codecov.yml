@@ -22,10 +22,9 @@ flag_management:
   default_rules:
     carryforward: true
 
-# Mirror Jenkins' llvm-cov --ignore-filename-regex. The pre-built LLVM/MLIR
-# lives under external/triton/llvm-project, so the "external/triton" entry also
-# covers the vendored LLVM (unlike rocMLIR's "external/llvm-project").
+# Mirror Jenkins' llvm-cov --ignore-filename-regex.
 ignore:
+  - "external/llvm-project/**"
   - "external/triton/**"
   - "mlir/test/**"
   - "mlir/unittests/**"

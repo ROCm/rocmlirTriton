@@ -846,21 +846,23 @@ void collectCoverageData(String profdata, String cov, String cpath) {
     sh """
        rm -f *.profraw
        # Arbitrarily 150 GB;  we typically see 125 GB of *.profraw.
-       if [ `df --output=avail -k . | tail -1l` -lt 153600000 ]; then
+       if [ `df --output=avail -k . | tail -n 1` -lt 153600000 ]; then
           echo Not enough free disk space for profiling.
           exit 1
        fi
        ninja check-rocmlir
        # Profile processing.
        ${profdata} merge -sparse ./*.profraw -o ./coverage.profdata
-       rm -f build/*.profraw
+       # This runs inside dir('build'), so the raw profiles are in the current
+       # directory; reclaim their ~125 GB before the llvm-cov passes.
+       rm -f ./*.profraw
        ${cov} report --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver      \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex='external/triton|mlir/test/|mlir/unittests/' > ./coverage_${cpath}.report
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' > ./coverage_${cpath}.report
        cat ./coverage_${cpath}.report
        ${cov} export --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver      \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex='external/triton|mlir/test/|mlir/unittests/' --format=lcov              \
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' --format=lcov              \
           --compilation-dir ${WORKSPACE} > ./coverage_${cpath}.lcov
        """
 }
@@ -870,7 +872,7 @@ void produceCoverageHtml(String cov, String cpath) {
     sh """
        ${cov} show --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver        \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex='external/triton|mlir/test/|mlir/unittests/' -Xdemangler=llvm-cxxfilt   \
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' -Xdemangler=llvm-cxxfilt   \
           --format=html > ./coverage_${cpath}.html
        """
 }
@@ -2044,6 +2046,9 @@ PY
                 // One big scripted step per matrix row
                 stages {
                     stage('Matrix row orchestration') {
+                        when {
+                            expression { shouldRunFromCodepath(CODEPATH) }
+                        }
                         steps {
                             // Do not fail the build on code coverage
                             catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
@@ -2099,21 +2104,17 @@ PY
                                                                 // Codecov upload never run. 180 min covers ~60 min tests +
                                                                 // profdata merge + three llvm-cov calls + upload with margin.
                                                                 timeout(time: 180, unit: 'MINUTES') {
-                                                                    // rocmlirTriton builds via cmake.sh (the buildProject helper is
-                                                                    // unused/commented out here). cmake.sh builds the pre-built LLVM/MLIR,
-                                                                    // applies triton + llvm patches, configures and builds
-                                                                    // check-rocmlir-build-only. Coverage instrumentation is wired through
-                                                                    // mlir/CMakeLists.txt's include(HandleLLVMOptions), which honours
-                                                                    // -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON and adds
-                                                                    // -fprofile-instr-generate -fcoverage-mapping to the rocMLIR targets
-                                                                    // only (Triton and the pre-built LLVM are added before the include and
-                                                                    // are therefore not instrumented). cmake.sh wipes build/ itself, so
-                                                                    // no manual CMakeCache/profraw cleanup is needed beforehand.
-                                                                    sh """
-                                                                        export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                        export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                        bash cmake.sh -DCMAKE_BUILD_TYPE=Debug -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON
-                                                                    """
+                                                                    // Keep cmake.sh's default RelWithDebInfo build type. Unlike rocMLIR,
+                                                                    // which builds coverage with CMAKE_BUILD_TYPE=debug, an -O0 build here
+                                                                    // fails to link: Triton's NVIDIA/AMD conversion libraries rely on the
+                                                                    // optimizer inlining header-defined PTX helpers, so at -O0 those
+                                                                    // references survive and ld.lld reports undefined symbols.
+                                                                    // Instrumentation itself comes from -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON,
+                                                                    // which mlir/CMakeLists.txt's include(HandleLLVMOptions) turns into
+                                                                    // -fprofile-instr-generate -fcoverage-mapping; that works at any
+                                                                    // optimization level.
+                                                                    buildProject('check-rocmlir-build-only',
+                                                                                '-DBUILD_FAT_LIBROCKCOMPILER=ON -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON')
                                                                     dir ('build') {
                                                                         // Run tests.
                                                                         collectCoverageData("${LLVM_PROFDATA}", "${LLVM_COV}", "${CODEPATH}")

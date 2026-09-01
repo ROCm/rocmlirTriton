@@ -39,9 +39,9 @@ jobs:
         env:
           MLIR_TEAM_CONVERSATION: ${{ secrets.MLIR_TEAM_CONVERSATION }}
           MLIR_CI_CHANNEL: ${{ secrets.MLIR_CI_CHANNEL }}
-          # rocmlirTriton is a private repo, so the Codecov v2 API requires a
-          # read API token (Authorization: bearer). This is a Codecov API token
-          # (Codecov -> Settings -> Access), NOT the Jenkins upload token.
+          # Optional: the public Codecov API needs no auth for a public repo, but
+          # setting this Codecov API token (Codecov -> Settings -> Access, NOT the
+          # Jenkins upload token) keeps the job working if the repo goes private.
           CODECOV_API_TOKEN: ${{ secrets.CODECOV_API_TOKEN }}
         run: |
           set -euo pipefail
@@ -50,16 +50,14 @@ jobs:
           REPO="rocmlirTriton"
           API="https://api.codecov.io/api/v2/github/${OWNER}/repos/${REPO}"
 
-          # Private repos 404 the Codecov API without authentication, so skip
-          # gracefully (rather than fail the scheduled job) until the token is set.
-          if [ -z "${CODECOV_API_TOKEN:-}" ]; then
-            echo "::warning::CODECOV_API_TOKEN secret is not set; skipping Codecov report (required because rocmlirTriton is a private repo)."
-            exit 0
+          auth_args=()
+          if [ -n "${CODECOV_API_TOKEN:-}" ]; then
+            auth_args=(-H "Authorization: bearer ${CODECOV_API_TOKEN}")
           fi
 
           # ── 1. Fetch repo-level data from Codecov ─────────────────
           echo "::group::Repository coverage"
-          repo_json=$(curl -sf -H "Authorization: bearer ${CODECOV_API_TOKEN}" "$API/") \
+          repo_json=$(curl -sf "${auth_args[@]}" "$API/") \
             || { echo "::error::Failed to fetch repo data from Codecov API"; exit 1; }
           echo "$repo_json" | jq .
           echo "::endgroup::"
