@@ -1,6 +1,9 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-transforms-to-pointer-arith --split-input-file --verify-diagnostics | FileCheck %s
 
-// Verifies transforms_to_ptr is lowered to pointer arithmetic for loads
+// Verifies transforms_to_ptr is lowered to pointer arithmetic for loads.
+// The innermost tile dim is contiguous (vecLen 8 for f16) so the pointer add
+// carries a vectorization hint, while the outer dim is strided (vecLen 1).
+// Divisibility is the byte size of that run: 8*16/8 = 16 bytes.
 // CHECK-LABEL: @test_transforms_to_ptr_load
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<32768xf16>)
 //      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<32768xf16> -> i32
@@ -12,7 +15,7 @@
 //      CHECK:   arith.addi
 //      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
-//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 8]> : tensor<2xi32>, tt.divisibility = dense<[2, 16]> : tensor<2xi32>} : tensor<64x64xi32>
 //      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -32,7 +35,9 @@ func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64
 
 // -----
 
-// Verifies transforms_to_ptr is lowered to pointer arithmetic for stores
+// Verifies transforms_to_ptr is lowered to pointer arithmetic for stores.
+// The innermost tile dim has vecLen 4 for f32, so divisibility is the byte
+// size of that run: 4*32/8 = 16 bytes.
 // CHECK-LABEL: @test_transforms_to_ptr_store
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<64x64xf32>, %[[ARG1:.*]]: tensor<8192xf32>)
 //      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG1]] : tensor<8192xf32> -> i32
@@ -44,7 +49,7 @@ func.func @test_transforms_to_ptr_load(%arg0: tensor<32768xf16>) -> tensor<64x64
 //      CHECK:   arith.addi
 //      CHECK:   tt.splat {{.*}} : i1 -> tensor<64x64xi1>
 //      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x64xi32>
-//      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
+//      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 4]> : tensor<2xi32>, tt.divisibility = dense<[4, 16]> : tensor<2xi32>} : tensor<64x64xi32>
 //      CHECK:   rock.blockwise_store_ptr {{.*}} by  set
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_transforms_to_ptr_store(%arg0: tensor<64x64xf32>, %arg1: tensor<8192xf32>) attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -129,11 +134,13 @@ func.func @test_pad_mask(%arg0: tensor<4032xf16>) -> tensor<64x64xf16> attribute
 
 // Verifies constant buffer root uses base pointer of 0 (no extract_ptr).
 // This mirrors attention where a fakeTensor is used to compute a mask
-// for out-of-bounds padding, not to actually load memory.
+// for out-of-bounds padding, not to actually load memory. Such buffers never
+// load, so no vectorization hint is stamped.
 // CHECK-LABEL: @test_constant_buffer
 //  CHECK-NOT:   rock.extract_ptr
 //      CHECK:   tt.make_range
 //      CHECK:   tt.splat %{{.*}} : i32 -> tensor<64x64xi32>
+//  CHECK-NOT:   tt.contiguity
 //      CHECK:   arith.addi {{.*}} : tensor<64x64xi32>
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_constant_buffer(%arg0: tensor<64x64xf16>, %arg1: tensor<64x64xf16>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -202,7 +209,9 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
 
 // Verifies conv-style input transforms with padding=1 (same-size output).
 // Pad{1,1} produces bounds checks; Embed + Merge produce divui/remui (the
-// affine mod/floordiv lowering is unsigned, see visitModExpr).
+// affine mod/floordiv lowering is unsigned, see visitModExpr). That address
+// math also breaks the contiguous run, so getMaxVectorization proves only
+// vecLen 1 and no vectorization hint is emitted.
 // CHECK-LABEL: @test_embed_conv_style
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<1048576xf32>)
 //      CHECK:   rock.extract_ptr %[[ARG0]]
@@ -214,6 +223,7 @@ func.func @test_nonsquare_tile(%arg0: tensor<4096xf16>) -> tensor<32x128xf16> at
 //      CHECK:   arith.remui
 //      CHECK:   arith.cmpi
 //      CHECK:   arith.andi
+//  CHECK-NOT:   tt.contiguity
 //      CHECK:   rock.blockwise_load_ptr
 //  CHECK-NOT:   rock.transforms_to_ptr
 func.func @test_embed_conv_style(%arg0: tensor<1048576xf32>) -> tensor<8x64xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
@@ -302,4 +312,52 @@ func.func @test_i64_overpad_small_buffer(%arg0: tensor<131072xf16>) -> tensor<64
   %2 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64xi64>, tensor<64xi1> -> tensor<64xf16>
 
   return %2 : tensor<64xf16>
+}
+
+// -----
+
+// Verifies the vectorization hint reflects a run shorter than 128 bits.
+// getMaxVectorization is capped by the innermost tile dim's contiguous run,
+// not by a fixed 128-bit width: here that dim is only 4 elements long, so the
+// proven run is vecLen 4 for f16 (64 bits), giving contiguity 4 and
+// divisibility 4*16/8 = 8 bytes on the innermost dim.
+// CHECK-LABEL: @test_vec_hint_64bit_f16
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<256xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<256xf16> -> i32
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>
+//      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x4xi32>
+//      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 4]> : tensor<2xi32>, tt.divisibility = dense<[2, 8]> : tensor<2xi32>} : tensor<64x4xi32>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x4xi32>, tensor<64x4xi1> -> tensor<64x4xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_vec_hint_64bit_f16(%arg0: tensor<256xf16>) -> tensor<64x4xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 4 + d1)> by [<Unmerge{64, 4} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 4] -> [256]> : tensor<256xf16> to tensor<64x4xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x4xf16> -> tensor<64x4xi32>, tensor<64x4xi1>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x4xi32>, tensor<64x4xi1> -> tensor<64x4xf16>
+
+  return %1 : tensor<64x4xf16>
+}
+
+// -----
+
+// Same idea with an even shorter run: a 2-element innermost dim yields vecLen 2
+// for f16 (32 bits), so contiguity 2 and divisibility 2*16/8 = 4 bytes. This
+// pins the hint to the run length rather than any particular vector width.
+// CHECK-LABEL: @test_vec_hint_32bit_f16
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<128xf16>)
+//      CHECK:   %[[BASE_PTR:.*]] = rock.extract_ptr %[[ARG0]] : tensor<128xf16> -> i32
+//      CHECK:   tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32>
+//      CHECK:   tt.make_range {end = 2 : i32, start = 0 : i32} : tensor<2xi32>
+//      CHECK:   tt.splat %[[BASE_PTR]] : i32 -> tensor<64x2xi32>
+//      CHECK:   arith.addi {{.*}} {tt.contiguity = dense<[1, 2]> : tensor<2xi32>, tt.divisibility = dense<[2, 4]> : tensor<2xi32>} : tensor<64x2xi32>
+//      CHECK:   rock.blockwise_load_ptr {{.*}} : tensor<64x2xi32>, tensor<64x2xi1> -> tensor<64x2xf16>
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @test_vec_hint_32bit_f16(%arg0: tensor<128xf16>) -> tensor<64x2xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 2 + d1)> by [<Unmerge{64, 2} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 2] -> [128]> : tensor<128xf16> to tensor<64x2xf16>
+
+  %pointers, %mask = rock.transforms_to_ptr %0 : tensor<64x2xf16> -> tensor<64x2xi32>, tensor<64x2xi1>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x2xi32>, tensor<64x2xi1> -> tensor<64x2xf16>
+
+  return %1 : tensor<64x2xf16>
 }

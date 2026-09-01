@@ -22,6 +22,7 @@ patch10832.patch
 patch10635.patch
 patch10928.patch
 patch11018.patch
+patch11068.patch
 patch11118.patch
 
 patch-partitionloops-clang-cl.patch
@@ -315,3 +316,35 @@ patch11295.patch
   Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
   the pinned Triton revision includes that change.
 
+patch11068.patch
+  Preserves the `tt.divisibility` / `tt.contiguity` / `tt.constancy` hints on
+  the small-tensor pointer path of tritonamdgpu-canonicalize-pointers. The
+  general (large-tensor) path already re-attaches them when it rewrites a
+  `tt.addptr`, but the small-tensor path (`tt.pointer_range = 32`) rebuilds the
+  pointer from a scalar base plus a tensor offset at the access site and had no
+  attachment point, so the hints were silently dropped. The pass now records
+  the hints found on each `tt.addptr` directly defining a pointer-like operand
+  before the conversion runs, keyed by (consuming op, operand index), and
+  re-stamps them onto the rebuilt `tt.addptr` in MaterializeFatPointer. Because
+  the rebuilt pointer has the same type as the operand it replaces, a hint that
+  was valid before the pass is still valid after it; hints are only recovered
+  from a `tt.addptr` feeding the access directly, so anything in between
+  (broadcast, reshape, a loop-carried block argument) conservatively drops them.
+
+  rocmlirTriton needs this because rock-transforms-to-pointer-arith attaches
+  im2col vectorization hints that AxisInfoAnalysis cannot re-derive once the
+  coordinate chain is flattened into divui/remui, and rock-analyze-memory-use
+  marks nearly every kernel argument `tt.pointer_range = 32`, so our loads take
+  exactly this small-tensor path. Without the hints reaching
+  tritonamdgpu-convert-buffer-ops, the convolution input load scalarizes (see
+  mlir/test/rocmlir-driver/im2col_vectorization_hint_assembly.mlir).
+
+  Mirrors upstream Triton PR
+  https://github.com/triton-lang/triton/pull/11068, except that the
+  `drop_hints_across_reshape` lit test is dropped: our vendored Triton has no
+  ConvertReshape pattern in canonicalize-pointers, so `tt.reshape` on a pointer
+  tensor fails legalization here and the test's expected IR does not apply.
+
+  That PR is still under review upstream, so this patch has to stay until it
+  lands. Drop it on the next Triton bump that pulls PR #11068 into
+  external/triton.
