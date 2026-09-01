@@ -7,10 +7,12 @@
 
 ``_arch_family`` buckets an arch as ``'rdna'`` (the consumer line, via
 ``rock::isRDNA`` through the AmdArchDB pybind module) or ``'cdna'`` (the
-catch-all). The two are not complements, so the cases below cover all three
-groups Triton distinguishes: CDNA proper, RDNA proper, and the archs in
-neither switch (gfx906). The interesting entries are the ones a gfx-number
-range gets wrong:
+catch-all). Each case also pins ``amd_arch_db.is_cdna`` / ``is_rdna``
+themselves, so a binding wired to the wrong ``rock::`` predicate is caught
+here and not by a silently resized budget. The two are not complements, so
+the cases below cover all three groups Triton distinguishes: CDNA proper,
+RDNA proper, and the archs in neither switch (gfx906). The interesting
+entries are the ones a gfx-number range gets wrong:
 
   * gfx1250 is a gfx12 chip but a CDNA part, so it takes the looser budget.
   * gfx1170 is its own ISA family but still RDNA, so it takes the tighter one.
@@ -35,23 +37,31 @@ sys.path.insert(0, os.path.dirname(_script))
 
 import parameterSweeps  # noqa: E402
 
-# (label, arch, expected_family). ``expected_family`` also pins the budget and
-# the per-operation timeout rates, which are looked up by family.
+# Dropped next to the scripts by ci-performance-scripts, so the same sys.path
+# entry finds it.
+import amd_arch_db  # noqa: E402
+
+# (label, arch, expected_family, expected_is_cdna). ``expected_family`` also
+# pins the budget and the per-operation timeout rates, which are looked up by
+# family, and pins ``is_rdna`` since the two agree by construction.
+# ``expected_is_cdna`` is carried separately precisely because it does NOT
+# follow from the family: gfx906 buckets as ``'cdna'`` yet ``is_cdna`` is
+# False, which is the whole reason the bucket is keyed on ``is_rdna``.
 FAMILY_CASES = [
-    ("gcn5_1", "gfx906", 'cdna'),  # in neither isCDNA nor isRDNA
-    ("cdna1", "gfx908", 'cdna'),
-    ("cdna2", "gfx90a", 'cdna'),
-    ("cdna3", "gfx942", 'cdna'),
-    ("cdna4", "gfx950", 'cdna'),
-    ("rdna1", "gfx1010", 'rdna'),
-    ("rdna2", "gfx1030", 'rdna'),
-    ("rdna3", "gfx1100", 'rdna'),
-    ("gfx1170", "gfx1170", 'rdna'),
-    ("rdna4", "gfx1201", 'rdna'),
-    ("gfx1250", "gfx1250", 'cdna'),
+    ("gcn5_1", "gfx906", 'cdna', False),  # in neither isCDNA nor isRDNA
+    ("cdna1", "gfx908", 'cdna', True),
+    ("cdna2", "gfx90a", 'cdna', True),
+    ("cdna3", "gfx942", 'cdna', True),
+    ("cdna4", "gfx950", 'cdna', True),
+    ("rdna1", "gfx1010", 'rdna', False),
+    ("rdna2", "gfx1030", 'rdna', False),
+    ("rdna3", "gfx1100", 'rdna', False),
+    ("gfx1170", "gfx1170", 'rdna', False),
+    ("rdna4", "gfx1201", 'rdna', False),
+    ("gfx1250", "gfx1250", 'cdna', True),
     # Decorated arch strings: HIP gcnArchName and the LLVM triple.
-    ("cdna4 hip", "gfx950:sramecc+:xnack-", 'cdna'),
-    ("rdna4 llvm-triple", "amdgcn-amd-amdhsa:gfx1201", 'rdna'),
+    ("cdna4 hip", "gfx950:sramecc+:xnack-", 'cdna', True),
+    ("rdna4 llvm-triple", "amdgcn-amd-amdhsa:gfx1201", 'rdna', False),
 ]
 
 # (label, dtype, arch, expected_alpha). fp8 is amplified on the WMMA-era RDNA
@@ -75,17 +85,22 @@ EXPECTED_BUDGET = {'cdna': 12000, 'rdna': 8000}
 EXPECTED_ATTN_TIMEOUT_RATE = {'cdna': 0.035, 'rdna': 0.045}
 
 ok = True
-for label, arch, expected in FAMILY_CASES:
+for label, arch, expected, expected_is_cdna in FAMILY_CASES:
     got = parameterSweeps._arch_family(arch)
     budget = parameterSweeps._compile_cost_budget(arch)
     rate = parameterSweeps._timeout_rate(arch, 'attn')
+    # Straight through the pybind, so a binding wired to the wrong rock::
+    # predicate fails here rather than silently resizing every budget.
+    is_cdna = amd_arch_db.is_cdna(arch)
+    is_rdna = amd_arch_db.is_rdna(arch)
     matches = (got == expected and budget == EXPECTED_BUDGET[expected] and
-               rate == EXPECTED_ATTN_TIMEOUT_RATE[expected])
+               rate == EXPECTED_ATTN_TIMEOUT_RATE[expected] and is_cdna == expected_is_cdna and
+               is_rdna == (expected == 'rdna'))
     if not matches:
         ok = False
     status = "OK" if matches else "MISMATCH"
     print(f"[{status}] {label:18} arch={arch!r:34} expected={expected} got={got} "
-          f"budget={budget} attn_rate={rate}")
+          f"is_cdna={is_cdna} is_rdna={is_rdna} budget={budget} attn_rate={rate}")
 
 for label, dtype, arch, expected in AMPLIFIER_CASES:
     got = parameterSweeps._dtype_amplifier(dtype, arch)
