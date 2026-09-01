@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Checks that the image (input) operand of an NHWC forward convolution is
 // loaded with wide vector loads rather than one element at a time.
 //
