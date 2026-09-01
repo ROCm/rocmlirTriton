@@ -1040,8 +1040,7 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       }
       newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
                                           t.getUpperNames(), t.getUpperDims(),
-                                          t.getLowerNames(), t.getLowerDims(),
-                                          t.getIsTileAlignment()));
+                                          t.getLowerNames(), t.getLowerDims()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1068,14 +1067,11 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 }
 
 SmallVector<unsigned>
-mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
-                                       bool ignoreTileAlignmentPads) {
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
     if (type == TransformType::Pad) {
-      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
-        continue;
       ArrayRef<int64_t> params = op.getParams();
       ArrayRef<uint32_t> upper = op.getUpperDims();
       for (size_t i = 0, e = upper.size(); i < e; ++i)
@@ -1106,29 +1102,8 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
   return result;
 }
 
-bool mlir::rock::transformChainDependsOnAnyDim(
-    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
-  if (dims.empty())
-    return false;
-
-  // An empty chain passes its coordinates through unchanged, so the lower
-  // coordinates depend on every upper dim. It also has no domain to check
-  // `dims` against.
-  AffineMap composed = composeTransforms(transforms);
-  if (!composed)
-    return true;
-
-  assert(llvm::all_of(
-             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
-         "queried dim is not an upper coordinate of the transform chain");
-
-  return llvm::any_of(
-      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
-}
-
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
-                                         ArrayRef<unsigned> dims,
-                                         bool ignoreTileAlignmentPads) {
+                                         ArrayRef<unsigned> dims) {
   // An empty chain generates no validity checks, and has no upper coordinate
   // space to check `dims` against.
   if (dims.empty() || transforms.empty())
@@ -1143,8 +1118,7 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
          "queried dim is not an upper coordinate of the transform chain");
 
   for (auto [index, transform] : llvm::enumerate(transforms)) {
-    SmallVector<unsigned> upperDims =
-        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
+    SmallVector<unsigned> upperDims = validityImpactingUpperDims(transform);
     if (upperDims.empty())
       continue;
 
@@ -1218,10 +1192,10 @@ TransformMapAttr mlir::rock::invertTransformMap(
         begins.push_back(leftPad);
         fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
       }
-      transform.slice(
-          SmallVector<StringRef>(tattr.getUpperNames()),
-          SmallVector<uint32_t>(tattr.getUpperDims()),
-          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      transform.slice(SmallVector<StringRef>(tattr.getUpperNames()),
+                      SmallVector<uint32_t>(tattr.getUpperDims()),
+                      SmallVector<StringRef>(tattr.getLowerNames()), begins,
+                      fullLowerSizes);
       break;
     }
     case rock::TransformType::Slice: {
@@ -1606,9 +1580,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(
-          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
-          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
+      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
+                                          t.getUpperNames(), upperDims,
+                                          t.getLowerNames(), lowerDims));
     }
 
     // Add the passthrough transforms
@@ -1662,7 +1636,6 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
-  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1808,7 +1781,6 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
-    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -2130,12 +2102,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr = TransformAttr::get(
-        b.getContext(), args.type, args.params,
-        std::get<DimType::Upper>(args.preservedNames),
-        std::get<DimType::Upper>(args.preservedDims),
-        std::get<DimType::Lower>(args.preservedNames),
-        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
+    auto newTr =
+        TransformAttr::get(b.getContext(), args.type, args.params,
+                           std::get<DimType::Upper>(args.preservedNames),
+                           std::get<DimType::Upper>(args.preservedDims),
+                           std::get<DimType::Lower>(args.preservedNames),
+                           std::get<DimType::Lower>(args.preservedDims));
     newOps.push_back(newTr);
   }
 

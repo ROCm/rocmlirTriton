@@ -34,6 +34,14 @@ struct HighlevelOptions : public PassPipelineOptions<HighlevelOptions> {
   PassOptions::Option<bool> disableRock{
       *this, "disable-rock",
       desc("Disable Rock dialect targeting when bufferizing"), init(false)};
+  /// Only affects the Rock (kernel) path; the CPU path lowered by
+  /// `rocmlir-custom-tosa-to-linalg` always keeps IEEE NaN semantics.
+  PassOptions::Option<bool> disableFastMath{
+      *this, "disable-fast-math",
+      desc("Preserve IEEE NaN semantics when `rock-tosa-to-elementwise` "
+           "lowers float-to-int casts (by default those lowerings assume no "
+           "NaN operand)"),
+      init(false)};
 };
 
 /// Adds the `highlevel` pipeline to the `OpPassManager`.

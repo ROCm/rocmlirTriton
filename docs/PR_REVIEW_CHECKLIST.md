@@ -109,11 +109,13 @@ the author can look up the rationale.
   change (especially after Triton bumps -- this file is regenerated as
   part of the `triton-bump` workflow and is the contract the downstream
   MIGraphX `librockCompiler` fat library depends on).
-- License header missing on a new `.cpp`/`.h`/`.py` file (SPDX
-  `Apache-2.0 WITH LLVM-exception`; LLVM Project convention is no
-  per-file copyright -- see the License-header reference below for the
-  exact template). "We'll fix headers before going public" is not an
-  acceptable plan; the headers must already be in place.
+- License header missing on a new downstream-authored `.cpp`, `.h`, `.py`, or
+  `.mlir` file. For `.mlir`, inspect every file added by a downstream commit,
+  including first-party files and files added by local `[EXTERNAL]` commits
+  under vendored trees. Exclude files introduced unchanged by an upstream
+  subtree import/bump. Use the provenance-aware header from the License-header
+  reference below. "We'll fix headers before going public" is not an acceptable
+  plan; the headers must already be in place.
 - `TODO` without an issue reference (`TODO(#issue-number)`).
 - Architecture coverage: a new op/pass that should work on multiple GPU
   arch families (CDNA `gfx9xx` -- e.g. gfx908, gfx942, gfx950 -- and RDNA
@@ -314,7 +316,7 @@ rocMLIR PR.
 If the PR is exclusively in rocmlirTriton-only paths, no back-port
 note is needed.
 
-## License-header reference (verify on every new file)
+## License-header reference (verify on every new downstream-authored file)
 
 C++/header files (`.cpp`, `.h`):
 
@@ -336,8 +338,39 @@ Python files (`.py`):
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ```
 
-Checklist on every new file:
+Downstream-authored MLIR files (`.mlir`) use the header matching their
+provenance. First-party rocmlirTriton files:
 
-- Header is present.
-- License attribution line is exactly `Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.` (no per-file copyright -- the LLVM Project convention is that `LICENSE.TXT` is the single source).
-- SPDX identifier is exactly `Apache-2.0 WITH LLVM-exception`.
+```
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+```
+
+Files added by local `[EXTERNAL]` commits under `external/triton/`:
+
+```
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+```
+
+Files added by local `[EXTERNAL]` commits under `external/llvm-project/` use
+the standard LLVM/MLIR attribution and Apache SPDX header:
+
+```
+// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+```
+
+Checklist on every new downstream-authored file:
+
+- Header appears before any `RUN:` directives or file content.
+- Copyright and attribution match the file's provenance; preserve any
+  inherited upstream notices.
+- SPDX identifier matches the governing source tree:
+  `Apache-2.0 WITH LLVM-exception` for rocmlirTriton and LLVM/MLIR files, and
+  `MIT` for Triton files.
+- Files introduced unchanged by an upstream subtree import/bump retain their
+  upstream headers and are not stamped as downstream-authored files.
