@@ -122,6 +122,10 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       // contiguity to be worth it. The constant is based on benchmark results:
       // the severe regressions we measured are 2x2 convs, whose innermost size
       // is two, and asking for a multiple of four excludes them.
+      //
+      // TODO(AIROCMLIR-1238): This is a heuristic. We should fix AxisInfo
+      // analysis to properly analyze our IR, instead of making our IR pretty so
+      // that AxisInfo can analyze it.
       bool useNestedForm = params.back() % 4 == 0;
 
       // Build affine transformation expressions.
