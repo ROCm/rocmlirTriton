@@ -367,6 +367,9 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
     assert(inputDimNames[splitDimIdx] == "gemmN");
     ArrayRef<int64_t> inputShape =
         cast<RankedTensorType>(in.getType()).getShape();
+    assert(inputShape[splitDimIdx] == N &&
+           "every operand split along gemmN must agree with b's gemmN: the "
+           "unmerge extents below are derived from it");
 
     BottomUpTMBuilder unmergeTransform(builder, inputDimNames, inputShape, loc);
 
@@ -481,15 +484,12 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 // (gemmM, gemmN), so every value in it carries gemm0's output shape and
 // retyping is the same uniform shape substitution that
 // rock-regularize-inter-gemm-fusion performs when it externalizes transforms.
-static LogicalResult
-retypeInterGemmBodyForSplitK(RockGemmGemmWrapperInterface op, Region &region,
-                             ArrayRef<int64_t> gemm0OutShape,
-                             ArrayRef<Value> elementwiseInputs) {
+static LogicalResult retypeInterGemmBodyForSplitK(
+    OpBuilder &builder, RockGemmGemmWrapperInterface op, Region &region,
+    ArrayRef<int64_t> gemm0OutShape, ArrayRef<Value> elementwiseInputs) {
   if (region.empty())
     return success();
   Block &body = region.front();
-  if (body.without_terminator().empty())
-    return success();
 
   auto retypeArg = [](BlockArgument arg, ArrayRef<int64_t> shape) {
     arg.setType(RankedTensorType::get(
@@ -506,7 +506,7 @@ retypeInterGemmBodyForSplitK(RockGemmGemmWrapperInterface op, Region &region,
     retypeArg(body.getArgument(idx + 1),
               cast<RankedTensorType>(elementwiseInput.getType()).getShape());
 
-  return rock::retypeElementwiseBodyShapes(op, body, gemm0OutShape);
+  return rock::retypeElementwiseBodyShapes(builder, op, body, gemm0OutShape);
 }
 
 static LogicalResult commonAttentionGemmElmtGemm(
@@ -579,7 +579,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
         cast<RankedTensorType>(a.getType()).getShape()[1],
         cast<RankedTensorType>(b.getType()).getShape()[2]};
     if (failed(retypeInterGemmBodyForSplitK(
-            op, preSecondOpRegion, splitGemm0OutShape, elementwiseInputs)))
+            rw, op, preSecondOpRegion, splitGemm0OutShape, elementwiseInputs)))
       return failure();
   }
 

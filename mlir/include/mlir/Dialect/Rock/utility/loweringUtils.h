@@ -189,15 +189,26 @@ void replaceFusionExtraInputs(Value root,
 LogicalResult reshapeSplatConstant(arith::ConstantOp constOp,
                                    ArrayRef<int64_t> targetShape);
 
+/// Replace an elementwise body's references to splat constants defined in an
+/// enclosing scope with copies inside the body, so the body is self-contained.
+/// This has to be re-applied wherever a pass depends on it rather than assumed
+/// from an earlier pass: the greedy rewriter's folder CSEs constants across
+/// parent-ancestor regions, so it hoists such copies straight back out again.
+/// Fails on captured values that are not splat constants.
+LogicalResult inlineExternalConstants(OpBuilder &builder, Operation *op,
+                                      Block &block);
+
 /// Substitute `targetShape` throughout a purely elementwise body (an
 /// inter-gemm / pre-softmax region) whose block argument types the caller has
-/// just changed. Reshapes the body's splat constants - the other leaves - then
-/// retypes each op's result from its first operand, which SSA dominance
-/// guarantees has already been visited, so joins that never touch the
-/// first-GEMM argument are covered too. Element types are preserved
-/// throughout; only shapes move. Fails if a non-splat constant blocks the
-/// reshape, leaving the caller to add context to the diagnostic.
-LogicalResult retypeElementwiseBodyShapes(Operation *op, Block &block,
+/// just changed. Inlines captured constants first, then reshapes the body's
+/// splat constants - the other leaves - and retypes each op's result from its
+/// first operand, which SSA dominance guarantees has already been visited, so
+/// joins that never touch the first-GEMM argument are covered too. Element
+/// types are preserved throughout; only shapes move. Fails if a non-splat
+/// constant blocks the reshape, leaving the caller to add context to the
+/// diagnostic.
+LogicalResult retypeElementwiseBodyShapes(OpBuilder &builder, Operation *op,
+                                          Block &block,
                                           ArrayRef<int64_t> targetShape);
 
 /// Replaces uses of `oldRoot` in fusion ops (arith.*, math.*) with `newRoot`,

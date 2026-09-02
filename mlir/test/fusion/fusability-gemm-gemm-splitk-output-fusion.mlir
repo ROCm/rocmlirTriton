@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // An additive epilogue after gemm1 is legal under split-k: it survives being
 // applied once per split because rock-fusion-splitk-regularization divides the
 // bias by the split factor before the atomic_add sums the partials.

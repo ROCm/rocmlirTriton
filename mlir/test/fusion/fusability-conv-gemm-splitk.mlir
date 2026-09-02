@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // conv+gemm goes through the same split-k legality check as gemm+gemm, via
 // RockGemmGemmWrapperInterface. An elementwise body between the convolution
 // and the second GEMM is pointwise in the convolution's output space, so each

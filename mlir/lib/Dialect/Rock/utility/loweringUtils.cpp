@@ -820,9 +820,52 @@ LogicalResult mlir::rock::reshapeSplatConstant(arith::ConstantOp constOp,
   return success();
 }
 
+LogicalResult mlir::rock::inlineExternalConstants(OpBuilder &builder,
+                                                  Operation *op, Block &block) {
+  Location loc = op->getLoc();
+
+  for (Operation &bodyOp : block.without_terminator()) {
+    for (OpOperand &operand : bodyOp.getOpOperands()) {
+      Value val = operand.get();
+      if (val.getParentBlock() == &block)
+        continue;
+      auto valType = dyn_cast<RankedTensorType>(val.getType());
+      if (!valType)
+        continue;
+      auto *defOp = val.getDefiningOp();
+      auto extConst = defOp ? dyn_cast<arith::ConstantOp>(defOp) : nullptr;
+      if (!extConst)
+        return op->emitOpError()
+               << "non-constant external value in elementwise body is "
+                  "not supported";
+      auto splatAttr = dyn_cast<SplatElementsAttr>(extConst.getValue());
+      if (!splatAttr)
+        return op->emitOpError()
+               << "non-splat external constant in elementwise body is "
+                  "not supported";
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(&bodyOp);
+      Value newConst = arith::ConstantOp::create(
+          builder, loc,
+          SplatElementsAttr::get(valType,
+                                 splatAttr.getSplatValue<Attribute>()));
+      operand.set(newConst);
+    }
+  }
+  return success();
+}
+
 LogicalResult
-mlir::rock::retypeElementwiseBodyShapes(Operation *op, Block &block,
+mlir::rock::retypeElementwiseBodyShapes(OpBuilder &builder, Operation *op,
+                                        Block &block,
                                         ArrayRef<int64_t> targetShape) {
+  // A constant read from an enclosing scope is a leaf the loop below would
+  // never reach, leaving it at the pre-substitution shape while its consumers
+  // move. Pulling captures in first turns them into ordinary body constants
+  // that the loop reshapes like any other.
+  if (failed(inlineExternalConstants(builder, op, block)))
+    return failure();
+
   for (Operation &bodyOp : block.without_terminator()) {
     if (auto constOp = dyn_cast<arith::ConstantOp>(&bodyOp)) {
       if (failed(reshapeSplatConstant(constOp, targetShape)))

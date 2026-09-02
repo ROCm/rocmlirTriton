@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Split-k applied to a conv+gemm whose two GEMMs have an elementwise fusion
 // between them. Driven through the real pipelines rather than a hand-written
 // pass list, so the ordering the compiler actually uses is what gets checked:

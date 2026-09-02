@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Errors reported by attn-to-gridwise when setting up split-k for
 // gemm-gemm-like ops.
 

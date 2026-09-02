@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Attention is never fusible under split-k, whatever the fusion is: softmax
 // reduces over gemmN, the dimension split-k partitions, so a split would each
 // normalize over its own slice. The same module is fusible once the split

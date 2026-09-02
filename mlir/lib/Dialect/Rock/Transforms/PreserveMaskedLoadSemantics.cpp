@@ -202,9 +202,15 @@ static void collectContributingLoads(Value val,
       return;
     if (!isZeroedAccumulator(gemmOp.getMatrixC()))
       return;
+    // Trace the two operands with independent visited sets, seeded from the
+    // caller's so the walk still cannot re-enter anything above this GEMM. A
+    // node reachable from both operands has to be seen by both traversals;
+    // sharing one set would let whichever operand is traced first claim it and
+    // leave the other empty, needlessly treating the GEMM as not load-backed.
     SmallVector<BlockwiseLoadPtrOp> aLoads, bLoads;
-    collectContributingLoads(gemmOp.getMatrixA(), aLoads, visited);
-    collectContributingLoads(gemmOp.getMatrixB(), bLoads, visited);
+    DenseSet<Operation *> aVisited(visited), bVisited(visited);
+    collectContributingLoads(gemmOp.getMatrixA(), aLoads, aVisited);
+    collectContributingLoads(gemmOp.getMatrixB(), bLoads, bVisited);
     if (aLoads.empty() || bLoads.empty())
       return;
     loads.append(aLoads);

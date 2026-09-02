@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -fut conv_gemm_splitk_intergemm_exp --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_gemm_splitk_intergemm_exp --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 
@@ -14,7 +17,13 @@ module {
     %2 = migraphx.transpose %1 {permutation = [0, 2, 3, 1]} : <2x16x8x8xf32, 2048x1x128x16> -> <2x8x8x16xf32, 2048x128x16x1>
     %3 = migraphx.reshape %2 {dims = [1, 128, 16]} : <2x8x8x16xf32, 2048x128x16x1> -> <1x128x16xf32, 2048x16x1>
     %scaled = migraphx.mul %3, %arg3 : <1x128x16xf32, 2048x16x1>, <1x128x16xf32, 2048x16x1> -> <1x128x16xf32, 2048x16x1>
-    %exp = migraphx.exp %scaled : <1x128x16xf32, 2048x16x1> -> <1x128x16xf32, 2048x16x1>
+    // The convolution accumulates 16*3*3 products, so exp of that overflows
+    // f32's usable range and the comparison against the reference drowns in
+    // rounding error. Scaling the exponent down keeps the kernel numerically
+    // comparable; exp(0) is still 1, which is all this test needs.
+    %cst = migraphx.literal(dense<1.562500e-02> : tensor<1x128x16xf32>) : <1x128x16xf32, 0x0x0>
+    %tamed = migraphx.mul %scaled, %cst : <1x128x16xf32, 2048x16x1>, <1x128x16xf32, 0x0x0> -> <1x128x16xf32, 2048x16x1>
+    %exp = migraphx.exp %tamed : <1x128x16xf32, 2048x16x1> -> <1x128x16xf32, 2048x16x1>
     %4 = migraphx.dot %exp, %arg2 {perf_config="attn:mPerBlockG0=128,nPerBlockG0=64,kPerBlock=32,numWaves=4,matrixInstrNonkdim=0,splitKFactor=4"} : <1x128x16xf32, 2048x16x1>, <1x16x32xf32, 0x1x0> -> <1x128x32xf32, 4096x32x1>
     return %4 : !migraphx.shaped<1x128x32xf32, 4096x32x1>
   }

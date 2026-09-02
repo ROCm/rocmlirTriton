@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The epilogue after conv+gemm's second GEMM has to survive being applied once
 // per split and then summed by the atomic_add. A round trip through an integer
 // type is neither linear nor zero-preserving, so it is only fusible when the

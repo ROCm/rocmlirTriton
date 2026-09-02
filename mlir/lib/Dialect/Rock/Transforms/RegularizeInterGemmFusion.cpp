@@ -403,45 +403,6 @@ externalizeBodyTransforms(OpBuilder &builder, Operation *op, Block &block,
   return success();
 }
 
-/// Replace references to external splat constants with inline copies so
-/// the body is self-contained.  Called unconditionally — even when the
-/// body has no transforms — so that downstream passes never need to
-/// handle captured constants.
-static LogicalResult inlineExternalConstants(OpBuilder &builder, Operation *op,
-                                             Block &block) {
-  Location loc = op->getLoc();
-
-  for (Operation &bodyOp : block.without_terminator()) {
-    for (OpOperand &operand : bodyOp.getOpOperands()) {
-      Value val = operand.get();
-      if (val.getParentBlock() == &block)
-        continue;
-      auto valType = dyn_cast<RankedTensorType>(val.getType());
-      if (!valType)
-        continue;
-      auto *defOp = val.getDefiningOp();
-      auto extConst = defOp ? dyn_cast<arith::ConstantOp>(defOp) : nullptr;
-      if (!extConst)
-        return op->emitOpError()
-               << "non-constant external value in elementwise body is "
-                  "not supported";
-      auto splatAttr = dyn_cast<SplatElementsAttr>(extConst.getValue());
-      if (!splatAttr)
-        return op->emitOpError()
-               << "non-splat external constant in elementwise body is "
-                  "not supported";
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPoint(&bodyOp);
-      Value newConst = arith::ConstantOp::create(
-          builder, loc,
-          SplatElementsAttr::get(valType,
-                                 splatAttr.getSplatValue<Attribute>()));
-      operand.set(newConst);
-    }
-  }
-  return success();
-}
-
 /// Regularize the body region of a gemm-gemm-like op so that it contains
 /// only elementwise operations (no rock.transform ops).
 /// Transforms on block arguments are pushed outside the body by applying
@@ -464,7 +425,7 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
     return op->emitOpError(
         "elementwise body block must have at least one argument");
 
-  if (failed(inlineExternalConstants(builder, op, block)))
+  if (failed(rock::inlineExternalConstants(builder, op, block)))
     return failure();
 
   if (failed(eraseYieldBoundaryTransform(op, block)))
@@ -490,7 +451,8 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
   ArrayRef<int64_t> targetShape =
       cast<RankedTensorType>(block.getArgument(0).getType()).getShape();
 
-  if (failed(rock::retypeElementwiseBodyShapes(op, block, targetShape)))
+  if (failed(
+          rock::retypeElementwiseBodyShapes(builder, op, block, targetShape)))
     return failure();
 
   return success();
