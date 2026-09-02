@@ -94,6 +94,23 @@ struct PopulateParamsInfo {
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);
 };
 
+inline bool isFp4ElementType(Type type) {
+  if (!type)
+    return false;
+  Type elemType = getElementTypeOrSelf(type);
+  return isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() == 4;
+}
+
+/// Whether a config keeps its GEMM on the native scaled matrix-accelerator
+/// path, which consumes 4-bit operands directly and so builds no packed upcast
+/// at all. Triton declines that path for a single wave and for a `kPerBlock`
+/// that is not a whole number of instruction k-tiles.
+inline bool staysOnNativeScaledPath(GemmParamsAttr p, StringRef arch) {
+  int64_t kDim = getScaledAccelKDim(arch, p.getMPerBlock(), p.getNPerBlock(),
+                                    p.getMatrixInstrNonkdim());
+  return kDim != 0 && p.getNumWaves() > 1 && p.getKPerBlock() % kDim == 0;
+}
+
 /// Conservative GEMM applicability: covers the perfconfig-driven
 /// `markAsNotApplicable` sites (kpack/splitK/numCTAs constraints + LDS
 /// budget over A+B tiles, `numStages`-buffered).
@@ -127,6 +144,10 @@ inline bool isGemmParamsConservativelyApplicable(
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);
   Type bElem = getElementTypeOrSelf(bElemType);
+  if (archHasScaledMfma(arch) &&
+      (isFp4ElementType(aElem) || isFp4ElementType(bElem)) &&
+      !staysOnNativeScaledPath(p, arch))
+    return false;
   int64_t totalBits =
       (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
       (p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth());
@@ -161,17 +182,11 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
   if (quantBlockSize.has_value() && *quantBlockSize > 0)
     kPerBlock = llvm::alignTo(kPerBlock, *quantBlockSize);
   // The fixed 32x32x32 fallback can leave an FP4 upcast with a partial
-  // per-thread group after Triton distributes the layout. Use the known
-  // conservative K tile for this fallback. This is intentionally not a
-  // general applicability rule: arbitrary tuning candidates are checked
-  // against their final distributed layouts before conversion to LLVM.
-  auto isFp4 = [](Type type) {
-    if (!type)
-      return false;
-    Type elemType = getElementTypeOrSelf(type);
-    return isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() == 4;
-  };
-  if (isFp4(aElemType) || isFp4(bElemType))
+  // per-thread group after Triton distributes the layout. Bumping K to 64
+  // makes the 32x32 tile a whole number of `32x32x64` scaled-MFMA k-tiles, so
+  // the fallback keeps the native path and never reaches an upcast, which is
+  // what `staysOnNativeScaledPath` demands of table entries too.
+  if (isFp4ElementType(aElemType) || isFp4ElementType(bElemType))
     kPerBlock = llvm::alignTo(kPerBlock, 64);
   return GemmParamsAttr::get(ctx,
                              /*mPerBlock=*/32, /*nPerBlock=*/32,

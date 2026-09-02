@@ -26,9 +26,20 @@
 // RUN: rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-CONV
 // RUN: rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --perf_config="$(rocmlir-gen --arch %arch --operation conv -t f16 -fil_layout=gkcyx -in_layout=ngchw -out_layout=ngkhw --batchsize=4 --in_channels=16 --out_channels=16 -in_h=16 -in_w=16 -fil_h=3 -fil_w=3 --dilation_h=1 --dilation_w=1 --conv_stride_h=1 --conv_stride_w=1 --padding_h=1 --padding_w=1 --groupsize=1 --emit-tuning-space=quick | sed -n '1p')" | rocmlir-driver -c -o /dev/null
 //
+// FP4's front() can be invalid for a reason no perf-config field states
+// outright: a decomposed scaled dot may hand a thread a partial packed-upcast
+// group. The arch is pinned because gfx950 is where the scaled matrix
+// accelerator exists, and lowering to a pinned target needs no GPU.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f4E2M1FN -out_dtype f32 --scaledGemm -g 1 -m 256 -k 1024 -n 1280 -transA=false -transB=true --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-FP4
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f4E2M1FN -out_dtype f32 --scaledGemm -g 1 -m 256 -k 1024 -n 1280 -transA=false -transB=true --perf_config="$(rocmlir-gen --arch gfx950 --operation gemm -t f4E2M1FN -out_dtype f32 --scaledGemm -g 1 -m 256 -k 1024 -n 1280 -transA=false -transB=true --emit-tuning-space=quick | sed -n '1p')" | rocmlir-driver -c -o /dev/null
+//
+// The unscaled 4-bit GEMM shares the upcast path, so it gets the same check.
+// RUN: rocmlir-gen --arch gfx950 --operation gemm -t f4E2M1FN -out_datatype f32 -g 1 -m 256 -k 1024 -n 1280 -transA=false -transB=true --perf_config="$(rocmlir-gen --arch gfx950 --operation gemm -t f4E2M1FN -out_datatype f32 -g 1 -m 256 -k 1024 -n 1280 -transA=false -transB=true --emit-tuning-space=quick | sed -n '1p')" | rocmlir-driver -c -o /dev/null
+//
 // CHECK-GEMM-NT: gemm:
 // CHECK-GEMM-TA: gemm:
 // CHECK-ATTN: attn:
 // CHECK-GEMM-GEMM: attn:
 // CHECK-CONV-GEMM: attn:
 // CHECK-CONV: gemm:
+// CHECK-GEMM-FP4: gemm:

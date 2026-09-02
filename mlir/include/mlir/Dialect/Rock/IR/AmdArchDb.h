@@ -179,6 +179,20 @@ bool supportsTDM(StringRef arch);
 /// eight rather than four.
 bool supportsScaledUpcastPk8(StringRef arch);
 
+/// Whether this architecture has the scaled MFMA family
+/// (`mfma_scale_f32_*_f8f6f4`) that Triton can select for a scaled dot.
+bool archHasScaledMfma(StringRef arch);
+
+/// The k-dimension of the scaled matrix-accelerator instruction Triton selects
+/// for an `mPerBlock x nPerBlock` block tile, or 0 when the target has none for
+/// that tile and will decompose the scaled dot instead.
+///
+/// Mirrors Triton's `chooseMfmaInstruction`: `matrixInstrNonkdim` is the non-k
+/// dimension when set, otherwise it comes from the smaller tile dimension, and
+/// no scaled intrinsic covers a tile below 16.
+int64_t getScaledAccelKDim(StringRef arch, int64_t mPerBlock, int64_t nPerBlock,
+                           int64_t matrixInstrNonkdim);
+
 } // namespace rock
 } // namespace mlir
 

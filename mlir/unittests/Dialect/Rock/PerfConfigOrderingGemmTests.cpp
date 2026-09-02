@@ -272,6 +272,92 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultFp4KPerBlock) {
             64);
 }
 
+// --- FP4 partial-upcast-group rejection ---
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsFp4PartialUpcastGroup) {
+  GemmOrderingTestEnv e;
+  // The reproducer from docs/fp4_tuning_crashes.md: kPerBlock = 64 is not a
+  // whole `16x16x128` k-tile, so the dot decomposes into an upcast.
+  auto p = e.gemm(16, 16, 64, 1, 1, /*numWaves=*/4, /*matrixInstrNonkdim=*/16,
+                  1, 1, 0, 0);
+  EXPECT_FALSE(
+      isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx950"));
+  // Same tile with a non-4-bit element type has no upcast to get wrong.
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f16, e.f16, "gfx950"));
+}
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableAcceptsFp4OnNativeScaledMfma) {
+  GemmOrderingTestEnv e;
+  // kPerBlock is a whole number of k-tiles for the selected instruction, so
+  // the GEMM stays native: 128 for the 16x16 form, 64 for the 32x32 one.
+  for (auto [nonKDim, kPerBlock] :
+       {std::pair<int64_t, int64_t>{16, 128}, {32, 64}}) {
+    auto p =
+        e.gemm(16, 16, kPerBlock, 1, 1, /*numWaves=*/4, nonKDim, 1, 1, 0, 0);
+    EXPECT_TRUE(
+        isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx950"))
+        << "rejected native config with matrixInstrNonkdim=" << nonKDim;
+  }
+}
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsFp4OnSingleWave) {
+  GemmOrderingTestEnv e;
+  // Triton refuses the native path for a single wave, even on a whole k-tile.
+  auto p = e.gemm(16, 16, 128, 1, 1, /*numWaves=*/1,
+                  /*matrixInstrNonkdim=*/16, 1, 1, 0, 0);
+  EXPECT_FALSE(
+      isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx950"));
+}
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableRejectsSafeButDecomposedFp4) {
+  GemmOrderingTestEnv e;
+  // This tile does give every thread a whole group, but it decomposes, and
+  // that is judged by the pass at conversion time rather than here.
+  auto p = e.gemm(128, 128, 32, 1, 1, /*numWaves=*/2, /*matrixInstrNonkdim=*/32,
+                  1, 1, 0, 0);
+  EXPECT_FALSE(
+      isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx950"));
+}
+
+TEST(PerfConfigOrderingGemmTest, ScaledAccelKDimFollowsTileWhenNonKDimUnset) {
+  // With no enforced non-k dimension Triton derives it from the smaller tile
+  // dimension, and has no scaled intrinsic for a tile below 16.
+  EXPECT_EQ(getScaledAccelKDim("gfx950", 32, 64, /*matrixInstrNonkdim=*/0), 64);
+  EXPECT_EQ(getScaledAccelKDim("gfx950", 16, 64, /*matrixInstrNonkdim=*/0),
+            128);
+  EXPECT_EQ(getScaledAccelKDim("gfx950", 8, 64, /*matrixInstrNonkdim=*/0), 0);
+  // Only CDNA4 has the scaled MFMA family; elsewhere the dot is decomposed.
+  EXPECT_EQ(getScaledAccelKDim("gfx942", 32, 64, /*matrixInstrNonkdim=*/32), 0);
+}
+
+TEST(PerfConfigOrderingGemmTest, IsApplicableLeavesFp4AloneWithoutScaledMfma) {
+  GemmOrderingTestEnv e;
+  // With no native path to stay on the check stands down instead of rejecting
+  // every 4-bit config on the target.
+  auto p = e.gemm(16, 32, 64, 1, 1, /*numWaves=*/2, /*matrixInstrNonkdim=*/16,
+                  1, /*numStages=*/2, 0, 0);
+  EXPECT_FALSE(archHasScaledMfma("gfx942"));
+  EXPECT_TRUE(
+      isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx942"));
+}
+
+TEST(PerfConfigOrderingGemmTest, ConservativeDefaultFp4PassesPredicate) {
+  GemmOrderingTestEnv e;
+  // Whatever the quick-tuning table holds, the prepended fallback must be
+  // applicable, or `front()` has no guarantee at all.
+  auto p = getConservativeDefaultGemmParams(
+      &e.ctx, /*quantBlockSize=*/std::nullopt, e.f4E2M1, e.f4E2M1);
+  EXPECT_TRUE(
+      isGemmParamsConservativelyApplicable(p, e.f4E2M1, e.f4E2M1, "gfx950"));
+  for (int64_t qBS : {16, 32, 64, 128}) {
+    auto scaled =
+        getConservativeDefaultGemmParams(&e.ctx, qBS, e.f4E2M1, e.f4E2M1);
+    EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+        scaled, e.f4E2M1, e.f4E2M1, "gfx950", qBS, e.f8E8M0, e.f8E8M0))
+        << "FP4 default not applicable for quantBlockSize=" << qBS;
+  }
+}
+
 TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {
   GemmOrderingTestEnv e;
   auto p = getConservativeDefaultGemmParams(&e.ctx);
