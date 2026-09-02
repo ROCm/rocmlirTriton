@@ -19,6 +19,30 @@ module {
 // -----
 
 // ============================================================
+// Error: gemm+gemm op without a params1 attribute. The split factor of a
+// gemm+gemm chain lives on gemm1, so the pass cannot tell whether the op is
+// split without it.
+// ============================================================
+
+module {
+  func.func @error_gemm_gemm_no_params1(%a: tensor<1x4x4xf16>, %b: tensor<1x4x4xf16>, %c: tensor<1x4x4xf16>, %dest: tensor<1x4x4xf16>) -> tensor<1x4x4xf16> attributes {rock.kernel} {
+    // expected-error @below {{rewriteFusionForSplitK: found gemm+gemm op without gemm1 params}}
+    %gemm = rock.gemm_elementwise_gemm{
+      ab = %a * %b : tensor<1x4x4xf16>, tensor<1x4x4xf16>
+      ab = elementwise {
+      ^bb0(%ab_in: tensor<1x4x4xf16>):
+        rock.yield %ab_in : tensor<1x4x4xf16>
+      }
+      out = ab * %c : tensor<1x4x4xf16>
+    } -> tensor<1x4x4xf16>
+    %r = rock.store %gemm to %dest by set : tensor<1x4x4xf16> -> tensor<1x4x4xf16> to tensor<1x4x4xf16>
+    return %r : tensor<1x4x4xf16>
+  }
+}
+
+// -----
+
+// ============================================================
 // Error: mulf with both operands from gemm (gemmOut^2).
 // ============================================================
 

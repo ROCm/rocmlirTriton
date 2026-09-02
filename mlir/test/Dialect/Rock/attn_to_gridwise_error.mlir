@@ -50,3 +50,55 @@ func.func @intergemm_body_non_splat_constant(%a: tensor<1x4x4xf32>, %b: tensor<1
   %stored = rock.store %result to %out by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
   return %stored : tensor<1x4x4xf32>
 }
+
+// -----
+
+#params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// Same restriction as above, but for a constant the body reads from the
+// enclosing scope rather than defining itself. Captures are pulled into the
+// body before the split reshapes it, so a non-splat one is rejected there
+// instead of by the in-body walk.
+func.func @intergemm_captured_non_splat_constant(%a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x4xf32>, %out: tensor<1x4x4xf32>) -> tensor<1x4x4xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  %cst = arith.constant dense<[[[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0], [13.0, 14.0, 15.0, 16.0]]]> : tensor<1x4x4xf32>
+  // expected-error @+2 {{non-splat external constant in elementwise body is not supported}}
+  // expected-error @+1 {{failed to legalize operation 'rock.gemm_elementwise_gemm'}}
+  %result = rock.gemm_elementwise_gemm{
+    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+    ab = elementwise {
+    ^bb0(%ab_in: tensor<1x4x4xf32>):
+      %scaled = arith.mulf %ab_in, %cst : tensor<1x4x4xf32>
+      rock.yield %scaled : tensor<1x4x4xf32>
+    }
+    out = ab * %c : tensor<1x4x4xf32>
+  } {params0 = #params_g0, params1 = #params_g1_splitk} -> tensor<1x4x4xf32>
+  %stored = rock.store %result to %out by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
+  return %stored : tensor<1x4x4xf32>
+}
+
+// -----
+
+#params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// A capture that is not a constant at all cannot be moved into the split space
+// either: only the declared elementwise inputs get padded and split alongside
+// the keys, so a value read straight from the enclosing scope would keep the
+// unsplit extent. rock-regularize-inter-gemm-fusion normally externalizes such
+// reads into otherIns before this pass runs.
+func.func @intergemm_captured_non_constant(%a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x4xf32>, %ext: tensor<1x4x4xf32>, %out: tensor<1x4x4xf32>) -> tensor<1x4x4xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // expected-error @+2 {{non-constant external value in elementwise body is not supported}}
+  // expected-error @+1 {{failed to legalize operation 'rock.gemm_elementwise_gemm'}}
+  %result = rock.gemm_elementwise_gemm{
+    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+    ab = elementwise {
+    ^bb0(%ab_in: tensor<1x4x4xf32>):
+      %scaled = arith.mulf %ab_in, %ext : tensor<1x4x4xf32>
+      rock.yield %scaled : tensor<1x4x4xf32>
+    }
+    out = ab * %c : tensor<1x4x4xf32>
+  } {params0 = #params_g0, params1 = #params_g1_splitk} -> tensor<1x4x4xf32>
+  %stored = rock.store %result to %out by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
+  return %stored : tensor<1x4x4xf32>
+}
