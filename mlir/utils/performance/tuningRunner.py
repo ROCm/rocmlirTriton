@@ -1587,7 +1587,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                                      gpu_id=gpu_id))
                     return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
                 result = output.strip().split('\t')
-                command_line = result[2].split()
+                # Tuning keys are arch, numCUs, numChiplets, and the problem string.
+                command_line = result[3].split()
                 config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                       options.num_chiplets)
                 tuning_driver_command += [test_vector]
