@@ -240,13 +240,7 @@ func.func @masked_uniform_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x1
 
 // -----
 
-// The address is uniform along dim 0 but the mask is not, so the mask has no
-// narrower form to ride along on. The load narrows anyway: it runs unmasked and
-// the mask goes back on after the broadcast, so the lanes it excludes still
-// observe the fill. Taking the mask off the load is what the mask being uniform
-// along the surviving dim buys, because whether the load happens then does not
-// depend on which lane group asks and the narrow load reaches no address the
-// original would have left alone.
+// Address uniform on dim 0, mask not. Load unmasked, then select the fill back.
 
 // CHECK-LABEL: @mask_varies_along_dim
 //      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
@@ -316,12 +310,7 @@ func.func @fill_varies_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x128x
 
 // -----
 
-// The fused convolution epilogue reading a per-output-channel bias across its
-// output tile, which is the shape this rewrite exists for. The address depends
-// only on the channel and so repeats along the whole column axis, while the
-// mask is the column bounds check and varies along exactly that axis. Left as a
-// full tile the bias is what pushes the epilogue onto a transposed layout and
-// costs it a shared-memory round trip to place.
+// Per-channel bias: address repeats along N, mask is the N bounds check.
 
 // CHECK-LABEL: @per_channel_bias
 //      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<128x1x!tt.ptr<f32>>
@@ -345,10 +334,7 @@ func.func @per_channel_bias(%base: !tt.ptr<f32>, %n: i32) -> tensor<128x128xf32>
 
 // -----
 
-// The address repeats along dim 1, but the mask varies along dim 0, the one
-// that survives. Whether a row is read then depends on the row, so a narrow
-// load with the mask taken off would reach addresses the original never touched
-// and nothing here says those are safe to read. The load stays as it is.
+// Address repeats on dim 1, but mask varies on surviving dim 0: leave alone.
 
 // CHECK-LABEL: @mask_varies_along_surviving_dim
 //  CHECK-NOT:   tt.load %{{.*}} : tensor<32x1x!tt.ptr<f16>>
