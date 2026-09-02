@@ -45,6 +45,7 @@ target_link_libraries(MLIRRockUnitTests
 if(MLIR_ENABLE_ROCM_RUNNER)
   target_link_libraries(MLIRRockUnitTests
     PRIVATE
+    MLIRRockDeviceInfo
     hip::host
     hip::amdhip64
   )

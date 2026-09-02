@@ -431,7 +431,8 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::CDNA3:
     return 20;
   case ISAFamily::CDNA4:
-    return 128;
+    // CPX, the narrowest compute-partition mode, exposes one XCD of 32 CUs.
+    return 32;
   case ISAFamily::RDNA1:
     return 20;
   case ISAFamily::RDNA2:
@@ -447,6 +448,23 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 1;
   }
   llvm_unreachable("unhandled ISAFamily in getMinNumCU");
+}
+
+int64_t mlir::rock::getDefaultNumCU(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+
+  // SPX, the unpartitioned mode, exposes all 8 XCDs.
+  if (isaFamily == ISAFamily::CDNA4)
+    return 256;
+
+  // Every other family still hands back what used to double as the validation
+  // floor, so a family that spans APUs (CDNA3, RDNA2, RDNA3) assumes an
+  // implausibly small device. Raising those changes the tuning heuristics for
+  // everyone who does not pass a CU count, so it wants its own change with
+  // perf numbers behind it. getNativeNumCU supplies the real count whenever a
+  // matching device is visible, so these values only apply when no device can
+  // be queried at all.
+  return getMinNumCU(arch);
 }
 
 int64_t mlir::rock::getWaveSize(StringRef arch) {

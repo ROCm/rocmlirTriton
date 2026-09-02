@@ -125,13 +125,12 @@ static llvm::cl::opt<std::string> arch(
 
 static llvm::cl::opt<int> num_cu(
     "num_cu",
-    llvm::cl::desc("Number of compute units. If omitted, uses the matching "
-                   "native HIP device when available, otherwise the per-arch "
-                   "minimum returned by rock::getMinNumCU (e.g. "
-                   "gfx906=10, gfx908=120, gfx90a=104, gfx942=20, "
-                   "gfx950=128, gfx1010=20, gfx1030=2, gfx1100=2, gfx1170=2, "
-                   "gfx1200=12, gfx1250=256). Any positive value is "
-                   "accepted."),
+    llvm::cl::desc("Number of compute units, or of workgroup processors on "
+                   "architectures that schedule per WGP. If omitted, the "
+                   "count is queried from a visible HIP device whose "
+                   "architecture matches --arch, and otherwise falls back to "
+                   "rock::getDefaultNumCU for that arch. Any positive value "
+                   "is accepted."),
     llvm::cl::value_desc("compute unit value"), llvm::cl::init(0));
 
 static llvm::cl::opt<int> numChiplets("num_chiplets",
@@ -146,7 +145,7 @@ static int64_t getEffectiveNumCU(StringRef targetArch) {
     return num_cu.getValue();
   if (nativeNumCU)
     return *nativeNumCU;
-  return rock::getMinNumCU(targetArch);
+  return rock::getDefaultNumCU(targetArch);
 }
 
 static IntegerAttr getNumCUAttr(OpBuilder &builder, StringRef targetArch) {

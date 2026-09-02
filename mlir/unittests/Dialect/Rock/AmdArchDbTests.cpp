@@ -118,14 +118,17 @@ TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
 
 // --- getMinNumCU ---
 
-// This is a hard floor: getNumCUOnFunc rejects a smaller rock.num_cu, so a
-// family that spans APUs has to admit its smallest APU.
+// A floor on what any part in the family can report, so a family that spans
+// APUs has to admit its smallest APU and one that supports compute partitions
+// has to admit its narrowest partition. Nothing enforces this at compile time;
+// `HardwareLimitsTest.NativeNumCUIsAtLeastTheArchFloor` checks it against a
+// live device, which is where a new part that drops below the table shows up.
 TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx906"), 10);   // GCN5_1
   EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
-  EXPECT_EQ(getMinNumCU("gfx950"), 128);  // CDNA4
+  EXPECT_EQ(getMinNumCU("gfx950"), 32);   // CDNA4
   EXPECT_EQ(getMinNumCU("gfx1010"), 20);  // RDNA1
   EXPECT_EQ(getMinNumCU("gfx1030"), 2);   // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
@@ -135,6 +138,23 @@ TEST(AmdArchDbTest, MinNumCU) {
   // The RDNA2 APUs the old family floor of 30 rejected outright.
   EXPECT_LE(getMinNumCU("gfx1036"), 2); // 2 CUs
   EXPECT_LE(getMinNumCU("gfx1033"), 8); // 8 CUs
+  // Every CDNA4 compute-partition mode has to fit under the floor, since a
+  // caller running in one reports its partition's share. inferNumChiplets
+  // recognizes the same four counts.
+  EXPECT_LE(getMinNumCU("gfx950"), 32); // CPX
+}
+
+// --- getDefaultNumCU ---
+
+// The stand-in when the real device is unknown, so it names the flagship part
+// rather than the floor. It has to be at least the floor for the same arch.
+TEST(AmdArchDbTest, DefaultNumCU) {
+  EXPECT_EQ(getDefaultNumCU("gfx950"), 256); // CDNA4, SPX
+  EXPECT_EQ(getDefaultNumCU("amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-"), 256);
+  for (StringRef arch :
+       {"gfx906", "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1010", "gfx1030",
+        "gfx1100", "gfx1170", "gfx1200", "gfx1250"})
+    EXPECT_GE(getDefaultNumCU(arch), getMinNumCU(arch)) << arch.str();
 }
 
 // --- getMaxWavesPerEU ---

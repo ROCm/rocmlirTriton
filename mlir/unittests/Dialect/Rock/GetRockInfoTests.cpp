@@ -115,9 +115,34 @@ TEST(GetRockInfoTest, DefaultNumChipletsFollowDefaultNumCU) {
   auto op = e.makeOp(body);
   auto func = cast<func::FuncOp>(body->getParentOp());
 
-  EXPECT_EQ(rock::getNumCUValue(op), 128);
-  EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), 4);
-  EXPECT_EQ(rock::getNumChipletsValue(op), 4);
+  // With no rock.num_cu the flagship part is assumed, which on CDNA4 is the
+  // unpartitioned 256 CUs over all 8 XCDs.
+  EXPECT_EQ(rock::getNumCUValue(op), 256);
+  EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), 8);
+  EXPECT_EQ(rock::getNumChipletsValue(op), 8);
+}
+
+// A partitioned device reports fewer CUs than the family's flagship. That is
+// valid input and must not be rejected, and the chiplet count has to follow it
+// down rather than staying at the flagship's XCD count.
+TEST(GetRockInfoTest, PartitionedNumCUIsAcceptedAndDrivesChiplets) {
+  GetRockInfoTestEnv e;
+  Operation *moduleOp = *e.module;
+  moduleOp->setAttr(rock::ArchAttr::getMnemonic(),
+                    e.b.getStringAttr("amdgcn-amd-amdhsa:gfx950"));
+  Block *body = e.addFunc();
+  auto op = e.makeOp(body);
+  auto func = cast<func::FuncOp>(body->getParentOp());
+
+  for (auto [numCU, expectedChiplets] :
+       {std::pair<int64_t, int64_t>{128, 4}, {64, 2}, {32, 1}}) {
+    moduleOp->setAttr(rock::NumCUAttr::getMnemonic(),
+                      e.b.getI64IntegerAttr(numCU));
+    auto maybeNumCU = rock::getNumCU(op);
+    ASSERT_TRUE(succeeded(maybeNumCU)) << numCU;
+    EXPECT_EQ(*maybeNumCU, numCU);
+    EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), expectedChiplets) << numCU;
+  }
 }
 
 // An op with no enclosing function should yield a clean failure rather than

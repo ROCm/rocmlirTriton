@@ -323,7 +323,7 @@ static bool constructAndTraverseIr(MlirContext ctx,
   std::cout.precision(2);
 
   // descr -> splitK hint using only high-level information
-  const int64_t numCUs = mlir::rock::getMinNumCU(options.targetArch);
+  const int64_t numCUs = mlir::rock::getDefaultNumCU(options.targetArch);
   constexpr int64_t numGroups = 1;
   RocmlirSplitKSelectionLikelihood likelihood = mlirIsSplitKFaster(
       numGroups, options.M, options.N, options.K, numCUs, options.tuningLevel);
