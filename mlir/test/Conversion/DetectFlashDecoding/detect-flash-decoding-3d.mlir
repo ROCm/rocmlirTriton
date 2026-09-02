@@ -9,7 +9,7 @@
 #map6 = affine_map<(d0, d1, d2) -> (0, d0, d1, d2)>
 #map8 = affine_map<(d0, d1, d2, d3) -> (d1, d2)>
 #map9 = affine_map<(d0) -> (0, d0 floordiv 256, d0 mod 256, 0)>
-#map10 = affine_map<(d0) -> (d0 floordiv 65536, (d0 mod 65536) floordiv 256, d0 mod 256)>
+#map10 = affine_map<(d0) -> (d0 floordiv 65536, (d0 floordiv 256) mod 256, d0 mod 256)>
 #transform_map = #rock.transform_map<#map by [<Unmerge{256, 256} ["exp2", "exp3"] at [2, 3] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>, <AddDim{1} ["unit1"] at [1] -> [] at []>] bounds = [1, 1, 256, 256] -> [65536]>
 #transform_map1 = #rock.transform_map<#map1 by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [2]>, <PassThrough ["dim3"] at [3] -> ["dim3"] at [3]>] bounds = [1, 2, 256, 256] -> [1, 1, 256, 256]>
 #transform_map2 = #rock.transform_map<#map2 by [<Unmerge{2, 128, 256} ["exp1", "exp2", "exp3"] at [1, 2, 3] -> ["dim0"] at [0]>, <AddDim{1} ["unit0"] at [0] -> [] at []>] bounds = [1, 2, 128, 256] -> [65536]>
