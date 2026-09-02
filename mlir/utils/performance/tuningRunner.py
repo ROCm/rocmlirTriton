@@ -49,7 +49,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -2035,13 +2035,18 @@ def _filter_pending_configs(ctx: TuningContext, cache: TunedConfigsCache,
     return pending, skipped_successful, skipped_unsuccessful
 
 
+StartTaskFn = Callable[[str], None]
+HandleResultFn = Callable[[TuningResult], bool]
+ExecuteFn = Callable[[List[str], int, StartTaskFn, HandleResultFn], None]
+
+
 def _run_resumable_session(ctx: TuningContext,
                            *,
                            status_only: bool,
                            wording: SessionWording,
-                           num_workers_fn,
-                           execute,
-                           on_success=None) -> bool:
+                           num_workers_fn: Callable[[List[str]], int],
+                           execute: ExecuteFn,
+                           on_success: Optional[Callable[[TuningResult], None]] = None) -> bool:
     """Drive a resumable, progress-tracked pass over ctx.configs.
 
     Shared by tune_configs (parallel) and run_benchmark_artifacts (sequential).
@@ -2321,7 +2326,8 @@ def run_benchmark_artifacts(ctx: TuningContext, status_only: bool = False) -> bo
     if options.flush_last_level_cache:
         timing_args.append("--flush-last-level-cache")
 
-    def execute(pending_configs, _num_workers, start_task, handle_result):
+    def execute(pending_configs: List[str], _num_workers: int, start_task: StartTaskFn,
+                handle_result: HandleResultFn) -> None:
         for test_vector in pending_configs:
             start_task(test_vector)
             result = _benchmark_one_artifact(test_vector, ctx, gpu_id, timing_args, numa_lock)
@@ -2363,12 +2369,13 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
     """Tune multiple configurations in parallel across available GPUs."""
     pool = GpuWorkerPool(ctx)
 
-    def num_workers_fn(pending_configs) -> int:
+    def num_workers_fn(pending_configs: List[str]) -> int:
         num_workers = min(pool.worker_count, len(pending_configs))
         ctx.print_gpu_summary(num_workers=num_workers)
         return num_workers
 
-    def execute(pending_configs, num_workers, start_task, handle_result):
+    def execute(pending_configs: List[str], num_workers: int, start_task: StartTaskFn,
+                handle_result: HandleResultFn) -> None:
 
         def execute_tuning_task(test_vector: str) -> TuningResult:
             gpu_id = pool.acquire_gpu_for_thread()
