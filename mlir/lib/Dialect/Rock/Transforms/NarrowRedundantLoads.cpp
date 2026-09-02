@@ -285,7 +285,7 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
   return narrowed ? std::optional(narrowShape) : std::nullopt;
 }
 
-/// True if `v` is constant along every dimension that `narrowShape` keeps.
+/// Returns true if `v` is constant along every dimension that `narrowShape` keeps.
 bool isConstantOutsideNarrowedDims(Value v, ArrayRef<int64_t> shape,
                                    ArrayRef<int64_t> narrowShape,
                                    tt::ModuleAxisInfoAnalysis &axisInfo) {
