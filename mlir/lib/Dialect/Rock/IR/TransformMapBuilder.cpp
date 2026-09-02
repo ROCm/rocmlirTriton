@@ -102,6 +102,32 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       totalStride *= params[0];
       std::reverse(lowerDimStrides.begin(), lowerDimStrides.end());
 
+      // The Merge can be decomposed in two equivalent ways. Writing
+      // S_i for the stride of lower dimension i and P_i for its size:
+      //
+      //   1. peeled: (x mod S_{i-1}) floordiv S_i  -- sequential remainders
+      //   2. nested: (x floordiv S_i) mod P_i      -- independent per dim
+      //
+      // Choosing one or the other may affect how Triton's AxisInfo analyzes and
+      // vectorizes the code, so choosing wisely has performance implications.
+      //
+      // The nested form (2.) tends to give better contiguity than the peeled
+      // form (1.), but it is not always faster. The extra contiguity only pays
+      // off if the hardware can fold those elements into a single wider access,
+      // and when nothing widens we have changed the addressing for no gain. For
+      // example, on 2x2 convs, that alone makes threads collide in LDS and
+      // makes the kernel run significantly slower.
+      //
+      // So we take the nested form only when the innermost size gives us enough
+      // contiguity to be worth it. The constant is based on benchmark results:
+      // the severe regressions we measured are 2x2 convs, whose innermost size
+      // is two, and asking for a multiple of four excludes them.
+      //
+      // TODO(AIROCMLIR-1238): This is a heuristic. We should fix AxisInfo
+      // analysis to properly analyze our IR, instead of making our IR pretty so
+      // that AxisInfo can analyze it.
+      bool useNestedForm = params.back() % 4 == 0;
+
       // Build affine transformation expressions.
       AffineExpr remainder = b.getAffineDimExpr(upperDims[0]);
       for (uint32_t i = 0, e = lowerDims.size(); i < e; ++i) {
@@ -123,8 +149,18 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
           continue;
         }
         AffineExpr stride = b.getAffineConstantExpr(lowerDimStrides[i]);
-        AffineExpr thisDim = remainder.floorDiv(stride);
-        remainder = remainder % stride;
+        AffineExpr thisDim;
+        if (useNestedForm) {
+          thisDim = b.getAffineDimExpr(upperDims[0]).floorDiv(stride);
+          // Only mod when needed. The coordinate is below totalStride, so the
+          // quotient stays under params[i] on its own when stride * params[i]
+          // spans the whole merge.
+          if (lowerDimStrides[i] * params[i] < totalStride)
+            thisDim = thisDim % b.getAffineConstantExpr(params[i]);
+        } else {
+          thisDim = remainder.floorDiv(stride);
+          remainder = remainder % stride;
+        }
         affExprsMap.insert({lowerDims[i], thisDim});
       }
     } else if (type == TransformType::AddDim) {
