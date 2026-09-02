@@ -9,8 +9,8 @@
 // CHECK-SAME: %[[filter:.*]]: tensor<32x128x2x3x3xf32>
 // CHECK: %[[gemmFilter:.*]] = rock.transform %[[filter]] by {{.*}}Merge{2, 3, 3} ["gemmK"]{{.*}}PassThrough ["gemmM"]
 // CHECK: %[[swapped:.*]] = rock.transform %[[gemmFilter]] by {{.*}}PassThrough ["gemmM", "gemmK"]{{.*}}-> ["gemmM", "gemmK"]
-// CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} tileAlignment ["gemmKPad"]{{.*}}-> ["gemmK"]
-// CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} tileAlignment ["gemmKPad"]{{.*}}-> ["gemmK"]
+// CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
+// CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: rock.gridwise_gemm(%[[padK]], %[[inputK]])
 func.func @rock_conv_kcyx_nchw_nkhw_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<64x32x2x11x11xf32>, %output : tensor<64x32x128x9x9xf32>) -> tensor<64x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel} {
   %result = rock.conv(%filter, %input) {
@@ -50,8 +50,8 @@ func.func @rock_conv_kcyx_nchw_nkhw_no_extra_padding(%filter : tensor<1x128x64x3
 // CHECK-SAME: %[[filter:.*]]: tensor<32x128x2x3x3xf32>
 // CHECK: %[[gemmFilter:.*]] = rock.transform %[[filter]] by {{.*}}Merge{2, 3, 3} ["gemmK"]{{.*}}PassThrough ["gemmM"]
 // CHECK: %[[swapped:.*]] = rock.transform %[[gemmFilter]] by {{.*}}PassThrough ["gemmM", "gemmK"]{{.*}}-> ["gemmM", "gemmK"]
-// CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} tileAlignment ["gemmKPad"]{{.*}}-> ["gemmK"]
-// CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} tileAlignment ["gemmKPad"]{{.*}}-> ["gemmK"]
+// CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
+// CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: rock.gridwise_gemm(%[[padK]], %[[inputK]])
 func.func @rock_conv_kcyx_nchw_nkhw_partial_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<128x32x2x11x11xf32>, %output : tensor<128x32x128x9x9xf32>) -> tensor<128x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel} {
   %result = rock.conv(%filter, %input) {

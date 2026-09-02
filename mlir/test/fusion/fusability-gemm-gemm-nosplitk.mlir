@@ -3,7 +3,7 @@
 // RUN: rocmlir-gen -emit-module-fusibility-for=attn:v1:64,64,16,1,1,4,16,1,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
 // CHECK-NONSPLITK: fusible:1
 #map = affine_map<(d0, d1, d2) -> ((d0 * 32 + d1) * 32 + d2)>
-#map1 = affine_map<(d0) -> (d0 floordiv 1024, (d0 mod 1024) floordiv 32, d0 mod 32)>
+#map1 = affine_map<(d0) -> (d0 floordiv 1024, (d0 floordiv 32) mod 32, d0 mod 32)>
 #transform_map_a = #rock.transform_map<#map by [<Unmerge{4, 32, 32} ["g", "m", "k"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [4, 32, 32] -> [4096]>
 #transform_map_b = #rock.transform_map<#map by [<Unmerge{4, 32, 32} ["g", "k", "n"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [4, 32, 32] -> [4096]>
 #transform_map_c = #rock.transform_map<#map by [<Unmerge{4, 32, 32} ["g", "n", "gemmO"] at [0, 1, 2] -> ["raw"] at [0]>] bounds = [4, 32, 32] -> [4096]>

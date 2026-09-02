@@ -101,7 +101,9 @@
 // GPU-NEXT:remove-dead-values{{.*}},
 // GPU-NEXT:rock-transforms-to-pointer-arith,
 // GPU-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
-// GPU-NEXT:rock-to-ttir{disable-fast-math=false}),
+// GPU-NEXT:rock-to-ttir{disable-fast-math=false},
+// GPU-NEXT:rock-allow-fast-math-flags,
+// GPU-NEXT:remove-dead-values{{.*}}),
 // GPU-NEXT:rock-tensor-to-triton-ptr,
 // GPU-NEXT:tt.func(canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // GPU-NEXT:cse))
@@ -111,6 +113,7 @@
 // TRITON-NEXT:triton-rewrite-tensor-descriptor-to-pointer,
 // TRITON-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON-NEXT:triton-combine,
+// TRITON-NEXT:rock-narrow-redundant-loads,
 // TRITON-NEXT:triton-reorder-broadcast,
 // TRITON-NEXT:cse,
 // TRITON-NEXT:loop-invariant-code-motion,
@@ -170,12 +173,16 @@
 // TRITON-NEXT:cse,
 // TRITON-NEXT:symbol-dce,
 // TRITON-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx942},
-// TRITON-NEXT:reconcile-unrealized-casts)
+// TRITON-NEXT:reconcile-unrealized-casts,
+// TRITON-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON-NEXT:cse)
 
 // TRITON_GFX1250:Kernel pipeline:
 // TRITON_GFX1250-NEXT:builtin.module(inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 },
 // TRITON_GFX1250-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_GFX1250-NEXT:triton-combine,
+// TRITON_GFX1250-NEXT:rock-narrow-redundant-loads,
 // TRITON_GFX1250-NEXT:triton-reorder-broadcast,
 // TRITON_GFX1250-NEXT:cse,
 // TRITON_GFX1250-NEXT:loop-invariant-code-motion,
@@ -233,7 +240,10 @@
 // TRITON_GFX1250-NEXT:cse,
 // TRITON_GFX1250-NEXT:symbol-dce,
 // TRITON_GFX1250-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx1250},
-// TRITON_GFX1250-NEXT:reconcile-unrealized-casts)
+// TRITON_GFX1250-NEXT:reconcile-unrealized-casts,
+// TRITON_GFX1250-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON_GFX1250-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON_GFX1250-NEXT:cse)
 
 // gfx1100, gfx1170, and gfx1201 run the same pipeline, so they share a single check prefix:
 // TRITON_RDNA:Kernel pipeline:
@@ -241,6 +251,7 @@
 // TRITON_RDNA-NEXT:triton-rewrite-tensor-descriptor-to-pointer,
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:triton-combine,
+// TRITON_RDNA-NEXT:rock-narrow-redundant-loads,
 // TRITON_RDNA-NEXT:triton-reorder-broadcast,
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:loop-invariant-code-motion,
@@ -299,7 +310,10 @@
 // TRITON_RDNA-NEXT:cse,
 // TRITON_RDNA-NEXT:symbol-dce,
 // TRITON_RDNA-NEXT:convert-builtin-func-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
-// TRITON_RDNA-NEXT:reconcile-unrealized-casts)
+// TRITON_RDNA-NEXT:reconcile-unrealized-casts,
+// TRITON_RDNA-NEXT:llvm.func(rock-fold-oob-buffer-ops),
+// TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
+// TRITON_RDNA-NEXT:cse)
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must
 // produce `gpu.binary` (via TritonToHsaco + RockEmitGpuBinary) but must NOT

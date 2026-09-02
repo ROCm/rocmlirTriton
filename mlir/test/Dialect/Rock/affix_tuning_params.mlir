@@ -335,14 +335,30 @@ func.func @rock_gemm_f4_datatype_fallback(%a : tensor<1x72x128xf4E2M1FN>, %b : t
   return %out : tensor<1x128x115200xf32>
 }
 
-// gfx1150 has no quick-tuning list of its own, so with no perf_config the lookup
+// gfx1152 has no quick-tuning list of its own, so with no perf_config the lookup
 // falls back to the closest architecture relative that does (gfx1151).
-// CHECK-LABEL: func.func @rock_gemm_gfx1150_arch_fallback
-// GRID-LABEL: rock_gemm_gfx1150_arch_fallback
-func.func @rock_gemm_gfx1150_arch_fallback(%a : tensor<1x72x128xf16>, %b : tensor<1x72x115200xf16>, %c : tensor<1x128x115200xf16>) -> tensor<1x128x115200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1150", rock.num_cu = 120 : i32} {
+// CHECK-LABEL: func.func @rock_gemm_gfx1152_arch_fallback
+// GRID-LABEL: rock_gemm_gfx1152_arch_fallback
+func.func @rock_gemm_gfx1152_arch_fallback(%a : tensor<1x72x128xf16>, %b : tensor<1x72x115200xf16>, %c : tensor<1x128x115200xf16>) -> tensor<1x128x115200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1152", rock.num_cu = 120 : i32} {
   // CHECK: rock.gemm
   // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 256, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.grid_size = 1800
+  // GRID: rock.gridwise_gemm
+  %result = rock.gemm tr %a * %b
+  : tensor<1x72x128xf16> * tensor<1x72x115200xf16> -> tensor<1x128x115200xf16>
+  %out = rock.store %result to %c by set : tensor<1x128x115200xf16> -> tensor<1x128x115200xf16> to tensor<1x128x115200xf16>
+  return %out : tensor<1x128x115200xf16>
+}
+
+// gfx1150 ships its own tuned quick-tuning list, so it must use that instead of
+// falling back to a relative. Pinning the params keeps a regression in the
+// gfx1150 tables, or their removal, from silently reverting to gfx1151's.
+// CHECK-LABEL: func.func @rock_gemm_gfx1150_own_table
+// GRID-LABEL: rock_gemm_gfx1150_own_table
+func.func @rock_gemm_gfx1150_own_table(%a : tensor<1x72x128xf16>, %b : tensor<1x72x115200xf16>, %c : tensor<1x128x115200xf16>) -> tensor<1x128x115200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1150", rock.num_cu = 120 : i32} {
+  // CHECK: rock.gemm
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 128, nPerBlock = 128, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.grid_size = 900
   // GRID: rock.gridwise_gemm
   %result = rock.gemm tr %a * %b
   : tensor<1x72x128xf16> * tensor<1x72x115200xf16> -> tensor<1x128x115200xf16>
