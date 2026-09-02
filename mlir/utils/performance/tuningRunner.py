@@ -2293,6 +2293,9 @@ def run_benchmark_artifacts(ctx: TuningContext, status_only: bool = False) -> bo
     Resumes by default: problems already present in the output TSV are skipped,
     and a per-config state file lets crashed/interrupted runs continue where they
     left off (RUNNING -> CRASHED on restart, RUNNING -> INTERRUPTED on Ctrl+C).
+    --retune ignores that cache and re-benchmarks everything, appending the new
+    rows to the existing TSV exactly as tune_configs --retune does; readers keep
+    the last row for a problem.
     Progress and ETA are shown via a tqdm progress bar. Benchmarking runs
     sequentially on a single GPU.
     """

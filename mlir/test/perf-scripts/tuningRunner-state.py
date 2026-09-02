@@ -258,6 +258,25 @@ class TunedConfigsCacheTest(TempFileTestCase):
         self.assertIsNotNone(result, "canonical key should match")
         self.assertEqual(result.winning_config, "perf_best")
 
+    def test_rerun_appends_and_last_row_wins(self):
+        """A --retune run appends to the output TSV instead of replacing it, so the
+        file can hold several header blocks and several rows per problem. The most
+        recent row is the one that survives the load."""
+        test_vector = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
+                       "-g 1 -m 1024 -n 512 -k 769")
+        row = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{test_vector}\t"
+                               "perf_old\t1.5\tfull\tabc123\t2025-01-01T00:00:00Z\t10.0\n")
+        rerun = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{test_vector}\t"
+                                 "perf_new\t2.5\tfull\tabc123\t2025-01-02T00:00:00Z\t11.0\n")
+        path = self.temp_path(".tsv", row + rerun)
+
+        cache = TunedConfigsCache.from_output_file(make_options(str(path)), GemmConfiguration)
+
+        self.assertEqual(cache.count(), 1)
+        result = cache.get(test_vector)
+        self.assertEqual(result.winning_config, "perf_new")
+        self.assertEqual(result.max_tflops, 2.5)
+
 
 class DebugFileWriterTest(TempFileTestCase):
     """DebugFileWriter rejects appending rows whose schema would not match an
