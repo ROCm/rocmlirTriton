@@ -686,7 +686,7 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   return targetInfo.supportsTDM();
 }
 
-bool mlir::rock::hasTanhInsts(StringRef arch) {
+bool mlir::rock::tritonLowersTanhToNativeInst(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
   switch (isaFamily) {
   case ISAFamily::GFX1250:
@@ -704,5 +704,5 @@ bool mlir::rock::hasTanhInsts(StringRef arch) {
   case ISAFamily::RDNA4:
     return false;
   }
-  llvm_unreachable("unhandled ISAFamily in hasTanhInsts");
+  llvm_unreachable("unhandled ISAFamily in tritonLowersTanhToNativeInst");
 }

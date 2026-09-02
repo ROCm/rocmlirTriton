@@ -1,6 +1,6 @@
 // Accuracy of the inline tanh approximation in rock-legalize-math-for-triton at
 // bf16, against the upstream CPU lowering of the same graph. This is
-// mixr-conv-tanh-accuracy.e2e.mlir with the element type changed; see it for
+// mixr-conv-tanh-f16.e2e.mlir with the element type changed; see it for
 // why the input range is bounded and why the tolerance is set by hand.
 //
 // bf16 is worth its own run because it reaches the pass by a different route:

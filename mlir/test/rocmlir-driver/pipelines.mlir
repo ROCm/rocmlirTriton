@@ -5,8 +5,7 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1100 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1201 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1170 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
-// RUN: rocmlir-opt --rock-triton-pipeline='arch=gfx942' --dump-pass-pipeline /dev/null 2>&1 | FileCheck %s --check-prefix=FTZ
-// RUN: rocmlir-opt --rock-triton-pipeline='arch=gfx942 allowFlushDenorm=false' --dump-pass-pipeline /dev/null 2>&1 | FileCheck %s --check-prefix=NOFTZ
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx942 -allow-flush-denorm=false /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=NOFTZ
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
@@ -323,9 +322,11 @@
 // TritonOptions::allowFlushDenorm rather than hardcoded, so flipping the option
 // has to flip both passes. Otherwise exp2 and friends keep flushing denormals
 // even when the kernel asked for IEEE behaviour.
-// FTZ:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch=gfx942}
-// FTZ:convert-builtin-func-to-llvm{ftz=true gfx-arch=gfx942}
-
+//
+// Only the flipped value is checked here. The default is already pinned by the
+// TRITON block above, which matches `ftz=true` on both passes for this same
+// arch; what this adds is that the value follows the option, which a hardcoded
+// `true` would also satisfy above but not here.
 // NOFTZ:convert-triton-amdgpu-to-llvm{ftz=false gfx-arch=gfx942}
 // NOFTZ:convert-builtin-func-to-llvm{ftz=false gfx-arch=gfx942}
 

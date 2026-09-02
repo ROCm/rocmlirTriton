@@ -51,7 +51,9 @@ namespace {
 
 /// The Triton frontend's HIP libdevice bindings declare an f32 and an f64 entry
 /// point for each of these (third_party/amd/language/hip/libdevice.py), so a
-/// call is evaluated at whichever of the two fits the operand.
+/// call is evaluated at whichever of the two fits the operand. Hand-mirrored
+/// from that file; re-audited on every Triton bump (see
+/// docs/bump_triton_version.md section 5.4.2).
 constexpr StringLiteral kOcmlTanhF32 = "__ocml_tanh_f32";
 constexpr StringLiteral kOcmlTanhF64 = "__ocml_tanh_f64";
 constexpr StringLiteral kOcmlPowF32 = "__ocml_pow_f32";
@@ -62,18 +64,6 @@ static Type withElementType(Type type, Type elemTy) {
   if (auto shaped = dyn_cast<ShapedType>(type))
     return shaped.clone(elemTy);
   return elemTy;
-}
-
-/// `tt.extern_elementwise` calling `symbol`, matching what
-/// `core.extern_elementwise("", "", ...)` emits in the Triton frontend: no
-/// library name or path, resolved either by an AMD backend rewrite or by the
-/// `ocml.bc` that TritonToHsaco auto-links for leftover `__ocml_*` references.
-static Value createOcmlCall(OpBuilder &b, Location loc, StringRef symbol,
-                            Type resultTy, ValueRange args) {
-  return triton::ExternElementwiseOp::create(b, loc, resultTy, args,
-                                             /*libname=*/"", /*libpath=*/"",
-                                             symbol, /*pure=*/true)
-      .getResult();
 }
 
 /// tanh(x) = 2 / (1 + exp2(-2*log2(e)*x)) - 1
@@ -130,7 +120,9 @@ static Value emitApproxTanh(OpBuilder &b, Location loc, Value x) {
     return rock::createConstantFloatOp(b, loc, ty, elemTy, value);
   };
 
-  Value scaled = arith::MulFOp::create(b, loc, x, constant(-2.0 * M_LOG2E));
+  // -2*log2(e), spelled as the exact f32 the accuracy sweep measured,
+  // 0xc038aa3b.
+  Value scaled = arith::MulFOp::create(b, loc, x, constant(-0x1.715476p+1f));
   Value exp = math::Exp2Op::create(b, loc, scaled);
   Value denom = arith::AddFOp::create(b, loc, exp, constant(1.0));
   Value recip = arith::DivFOp::create(b, loc, constant(1.0), denom);
@@ -163,8 +155,15 @@ static LogicalResult rewriteViaOcml(OpTy op, PatternRewriter &rewriter,
                     .getResult()
               : operand);
 
-  Value result = createOcmlCall(rewriter, loc, isF64 ? f64Symbol : f32Symbol,
-                                computeTy, args);
+  // Empty libname and libpath match what `core.extern_elementwise("", "", ...)`
+  // emits in the Triton frontend: the symbol is resolved either by an AMD
+  // backend rewrite or by the `ocml.bc` that TritonToHsaco auto-links for
+  // leftover `__ocml_*` references.
+  Value result = triton::ExternElementwiseOp::create(
+                     rewriter, loc, computeTy, args, /*libname=*/"",
+                     /*libpath=*/"", isF64 ? f64Symbol : f32Symbol,
+                     /*pure=*/true)
+                     .getResult();
   if (widen)
     result = arith::TruncFOp::create(rewriter, loc, origTy, result).getResult();
   rewriter.replaceOp(op, result);
@@ -172,9 +171,9 @@ static LogicalResult rewriteViaOcml(OpTy op, PatternRewriter &rewriter,
 }
 
 struct TanhLowering : public OpRewritePattern<math::TanhOp> {
-  TanhLowering(MLIRContext *ctx, bool hasNativeTanh, bool allowApprox,
+  TanhLowering(MLIRContext *ctx, bool lowersToNativeInst, bool allowApprox,
                PatternBenefit benefit = 1)
-      : OpRewritePattern(ctx, benefit), hasNativeTanh(hasNativeTanh),
+      : OpRewritePattern(ctx, benefit), lowersToNativeInst(lowersToNativeInst),
         allowApprox(allowApprox) {}
 
   /// Replaces `op` with the approximation evaluated at f32, widening the
@@ -202,10 +201,11 @@ struct TanhLowering : public OpRewritePattern<math::TanhOp> {
     Type origTy = op.getType();
     auto elemTy = dyn_cast<FloatType>(getElementTypeOrSelf(origTy));
 
-    // On a target with a native tanh the OCML call is both the fastest and the
-    // most accurate option, so it wins even under fast math. Without fast math
-    // every type takes it as well, that being the point of the flag.
-    if (hasNativeTanh || !allowApprox || !elemTy)
+    // Where Triton rewrites the call into `v_tanh_f32` it is both the fastest
+    // and the most accurate option, so it wins even under fast math. Without
+    // fast math every type takes the call as well, that being the point of the
+    // flag, though there it stays a real library call.
+    if (lowersToNativeInst || !allowApprox || !elemTy)
       return rewriteViaOcml(op, rewriter, kOcmlTanhF32, kOcmlTanhF64);
 
     // Narrower than f32: approximate, evaluated at f32 rather than at the op's
@@ -232,7 +232,7 @@ struct TanhLowering : public OpRewritePattern<math::TanhOp> {
     return rewriteViaOcml(op, rewriter, kOcmlTanhF32, kOcmlTanhF64);
   }
 
-  bool hasNativeTanh;
+  bool lowersToNativeInst;
   bool allowApprox;
 };
 
@@ -270,8 +270,9 @@ struct RockLegalizeMathForTritonPass
     bool allowApprox = !disableFastMath;
 
     RewritePatternSet patterns(ctx);
-    patterns.add<TanhLowering>(ctx, hasTanhInsts(arch), allowApprox,
-                               /*benefit=*/2);
+    patterns.add<TanhLowering>(
+        ctx, tritonLowersTanhToNativeInst(arch.getValue()), allowApprox,
+        /*benefit=*/2);
     patterns.add<PowFLowering>(ctx, /*benefit=*/2);
     // Fallbacks, at the default benefit so the patterns above win where they
     // apply: f32 tanh, which TanhLowering hands over deliberately, and any

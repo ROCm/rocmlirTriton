@@ -352,6 +352,42 @@ diff the source on every bump:
 git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/Traits.h
 ```
 
+### 5.4.2 Mirrored libdevice symbols and the tanh arch gate
+
+`mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` emits
+`tt.extern_elementwise` calls to OCML entry points directly, spelling the symbol
+names as string constants rather than going through the Triton Python frontend
+that would normally pick them. It also decides *whether* to emit a tanh call at
+all by mirroring the architecture gate Triton puts on its own rewrite of that
+call. Both are **manual copies** that will silently drift if upstream renames an
+entry point, changes which one a dtype maps to, or moves the gate, so diff the
+source on every bump:
+
+| Rock copy | Upstream source | What to check |
+|-----------|-----------------|---------------|
+| `kOcmlTanhF32` / `kOcmlTanhF64` in `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` | `tanh()` in `external/triton/third_party/amd/language/hip/libdevice.py` | Symbol strings must match, and the dtype split must stay f32/f64 (the pass computes anything narrower than f32 at f32). `kOcmlTanhF32` must also stay in sync with the `calleeName == "__ocml_tanh_f32"` match in `third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp`, which is what turns the call into `llvm.amdgcn.tanh.f32`. |
+| `kOcmlPowF32` / `kOcmlPowF64` | `pow()` in the same file | Symbol strings and the same f32/f64 split. The `__ocml_pown_*` integer-exponent entries are deliberately not mirrored: the pass only lowers `math.powf`, whose exponent is a float. |
+| `tritonLowersTanhToNativeInst()` in `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` | the `getISAFamily() == ISAFamily::GFX1250` guard on the `__ocml_tanh_f32` branch of `BuiltinFuncToLLVM.cpp` | The set of families Triton rewrites on. Note this is deliberately *not* LLVM's `FeatureTanhInsts`, which is wider: LLVM gives gfx13 `v_tanh_f32` but Triton does not rewrite there, so querying the LLVM feature would pick a full OCML library call believing it to be one instruction. If upstream widens the guard to a feature check or to more families, widen the switch to match; the point of choosing the call on these targets is that it stops being a call. |
+
+```bash
+git diff "$OLD_REPO..$NEW_REPO" -- \
+  external/triton/third_party/amd/language/hip/libdevice.py \
+  external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp
+```
+
+A renamed symbol does not fail the build, and the lit tests that pin these
+strings (`lowering_rock_legalize_math_for_triton.mlir`,
+`fastmath-through-triton.mlir`) keep passing because they check the same copies:
+the reference stays unresolved until the `ocml.bc` link in `TritonToHsaco`, so it
+surfaces as a link failure there or, for the gfx1250 rewrite above, as a silent
+loss of `v_tanh_f32` that `mlir/test/rocmlir-driver/tanh-isa.mlir` catches.
+
+A moved gate is quieter still, since both sides keep compiling and the call is
+valid either way. The one thing that does speak up is a bump adding an
+`ISAFamily`: `tritonLowersTanhToNativeInst()` switches exhaustively over Triton's
+enum precisely so that this becomes a build error and someone has to go read the
+guard.
+
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
 `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
@@ -368,6 +404,7 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 | `getWaveSize()` / `getLDSSize()` | These delegate to `TargetInfo`, so they should work automatically if Triton adds the arch. Verify. |
 | `supportsTDM()` | Delegates to `TargetInfo`. Verify it returns the correct value for the new arch. |
 | `isCDNA()` / `isRDNA()` | Delegate to `triton::amdgpu::isCDNA` / `isRDNA`, and `isCDNA()` picks the tuning space. Re-check the classification on every bump: a family moving between the two switches resizes the space with no build error. |
+| `tritonLowersTanhToNativeInst()` | Not a hardware property but a mirror of a Triton guard; see section 5.4.2 before adding the new family to either arm of the switch. |
 
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
@@ -664,6 +701,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
+- [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
@@ -740,6 +778,10 @@ If new Triton headers are needed:
 | Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
 | Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` |
 | Triton `maxTensorNumElements` source | `external/triton/include/triton/Dialect/Triton/IR/Traits.h` |
+| Mirrored `__ocml_*` symbol names | `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` |
+| Triton libdevice symbol source | `external/triton/third_party/amd/language/hip/libdevice.py` |
+| Mirrored tanh rewrite arch gate | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` (`tritonLowersTanhToNativeInst`) |
+| Triton tanh rewrite source | `external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |

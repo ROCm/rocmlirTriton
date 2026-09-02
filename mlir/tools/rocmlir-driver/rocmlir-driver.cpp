@@ -108,6 +108,15 @@ static cl::opt<int> gpuOpt("gO",
                            cl::desc("Optimization level for GPU compilation"),
                            cl::value_desc("Integer from 0 to 3"), cl::init(3));
 
+// Drives `TritonOptions::allowFlushDenorm` and `BackendOptions::
+// allowFlushDenorm` together. They are separate options on separate pipelines
+// -- the first picks `ftz` on the Triton-to-LLVM conversions, the second sets
+// `denormal-fp-math-f32` -- and both have to agree to get IEEE denormals end to
+// end, so there is no useful way to set just one from the command line.
+static cl::opt<bool>
+    allowFlushDenorm("allow-flush-denorm", cl::init(true),
+                     cl::desc("Allow flushing denormal floats to zero"));
+
 static cl::opt<bool> barePointers(
     "bare-ptr-memref-kernels",
     cl::desc("Use bare pointers to represent memrefs when calling kernels"),
@@ -236,10 +245,12 @@ runKernelPipeline(StringRef archName, ModuleOp m,
 
   rock::TritonOptions tritonOpts;
   tritonOpts.arch = devName.getChip().str();
+  tritonOpts.allowFlushDenorm = allowFlushDenorm;
   rock::BackendOptions backendOpts;
   backendOpts.triple = devName.getTriple().str();
   backendOpts.chip = devName.getChip().str();
   backendOpts.features = devName.getFeaturesForBackend();
+  backendOpts.allowFlushDenorm = allowFlushDenorm;
   // Set up the lowering pipeline which goes down to ELF Binary
   int optLevel = gpuOpt.getValue();
   if (optLevel < 0 || optLevel > 3) {

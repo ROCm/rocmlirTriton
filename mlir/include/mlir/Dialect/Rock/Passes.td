@@ -419,9 +419,10 @@ def RockLegalizeMathForTritonPass
 
     `math.powf` always becomes a `tt.extern_elementwise` call to the same OCML
     symbol the Triton frontend's libdevice bindings use. `math.tanh` becomes
-    that call on a target with a native tanh or when fast math is disabled, an
-    inline five-op approximation for the types narrower than f32, and otherwise
-    is left to the math dialect's own expansion.
+    that call when fast math is disabled or on a target where Triton rewrites
+    it into the native `v_tanh_f32`, an inline five-op approximation for the
+    types narrower than f32, and otherwise is left to the math dialect's own
+    expansion.
 
     Must run before `math-extend-to-supported-types`, which would promote the
     narrow types to f32 and make them indistinguishable from an f32 the user

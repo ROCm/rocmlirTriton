@@ -10,9 +10,9 @@
 // the IR straight after that pass, and the --implicit-check-not rejects the
 // flag on every op in the dump rather than only on the tanh.
 //
-// This is the static half. The -4..4 RUN of mixr-conv-tanh-accuracy.e2e.mlir is
-// the other one: it drives both ends into saturation on hardware and would
-// print NaN rather than +/-1 if the flag ever appeared.
+// This is the static half. The -4..4 RUN of mixr-conv-tanh-f16.e2e.mlir is the
+// other one: it drives both ends into saturation on hardware and would print
+// NaN rather than +/-1 if the flag ever appeared.
 
 // RUN: rocmlir-gen --clone-harness -arch gfx942 -fut mlir_convolution_tanh %s \
 // RUN: | rocmlir-driver -arch=gfx942 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
