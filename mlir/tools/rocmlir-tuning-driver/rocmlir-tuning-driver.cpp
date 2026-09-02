@@ -44,6 +44,7 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
@@ -58,6 +59,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
@@ -669,17 +671,19 @@ static std::string getRocmlirDriverPath() {
 // what makes the timeout robust: the compile (LLVM backend + in-process LLD)
 // cannot be safely interrupted on a worker thread, but a child process can be
 // killed cleanly.
-static CompilationResult
-compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
-                           StringRef inputPath, StringRef archName,
-                           unsigned timeoutSec, std::mutex &outputMutex,
-                           std::atomic<bool> &compilationFailed) {
+//
+// `emitDiagnostic` writes one message to the console; it serializes against the
+// other workers and against the compile-phase progress bar.
+static CompilationResult compileConfigViaSubprocess(
+    StringRef perfConfig, StringRef driverPath, StringRef inputPath,
+    StringRef archName, unsigned timeoutSec,
+    llvm::function_ref<void(const llvm::Twine &)> emitDiagnostic,
+    std::atomic<bool> &compilationFailed) {
   CompilationResult result;
   result.perfConfig = perfConfig;
 
   auto fail = [&](const llvm::Twine &header) {
-    std::lock_guard<std::mutex> lock(outputMutex);
-    llvm::errs() << header << "\n";
+    emitDiagnostic(header + "\n");
     result.status = CompilationStatus::CompilationFailed;
     compilationFailed.store(true, std::memory_order_relaxed);
   };
@@ -1556,6 +1560,61 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     std::atomic<bool> compilationFailed{
         false}; // Flag to signal early termination
 
+    // Live progress bar for the parallel compile phase. Only rendered when
+    // stderr is a terminal (e.g. tuningRunner's --compile-only path lets the
+    // driver's stderr inherit the console); when stderr is a pipe/file this is
+    // a no-op so captured logs stay clean.
+    const bool showProgress = llvm::sys::Process::StandardErrIsDisplayed();
+    const size_t totalConfigs = configs.size();
+    std::atomic<size_t> completedCount{0};
+    auto lastRender = std::chrono::steady_clock::now();
+    // Width of the bar currently on screen, or 0 if the line is clear. Both are
+    // guarded by `outputMutex`.
+    size_t progressLineWidth = 0;
+
+    auto clearProgressLine = [&]() {
+      if (progressLineWidth == 0)
+        return;
+      llvm::errs() << '\r' << std::string(progressLineWidth, ' ') << '\r';
+      progressLineWidth = 0;
+    };
+
+    // Write one already-formatted message (trailing newline included) to the
+    // console without tearing the progress bar.
+    auto emitDiagnostic = [&](const llvm::Twine &message) {
+      std::lock_guard<std::mutex> lock(outputMutex);
+      clearProgressLine();
+      llvm::errs() << message;
+    };
+
+    auto renderProgress = [&](bool force) {
+      if (!showProgress)
+        return;
+      std::lock_guard<std::mutex> lock(outputMutex);
+      auto now = std::chrono::steady_clock::now();
+      if (!force && now - lastRender < std::chrono::milliseconds(100))
+        return;
+      lastRender = now;
+      // Read the counter here rather than before the lock: a worker that read
+      // it first but reached the lock later would otherwise repaint a stale,
+      // lower count and make the bar step backwards.
+      size_t done = completedCount.load(std::memory_order_relaxed);
+      int pct =
+          totalConfigs ? static_cast<int>(done * 100 / totalConfigs) : 100;
+      constexpr int kBarWidth = 30;
+      int filled = totalConfigs
+                       ? static_cast<int>(done * kBarWidth / totalConfigs)
+                       : kBarWidth;
+      std::string line;
+      llvm::raw_string_ostream lineOs(line);
+      lineOs << "Compiling configs: " << pct << "% |";
+      for (int i = 0; i < kBarWidth; ++i)
+        lineOs << (i < filled ? '=' : ' ');
+      lineOs << "| " << done << "/" << totalConfigs;
+      llvm::errs() << '\r' << line;
+      progressLineWidth = line.size();
+    };
+
     // Compile a single config with a fresh MLIRContext
     auto compileConfig = [&](size_t idx) -> CompilationResult {
       CompilationResult result;
@@ -1568,15 +1627,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       SmallVector<std::string> bufferedDiags;
       auto ctx = createCompilationContext(bufferedDiags);
       // Report a real failure: print the per-path header followed by any
-      // buffered diagnostics atomically under outputMutex, mark the result
-      // as failed, and signal early termination to peer workers.
+      // buffered diagnostics as one atomic console write, mark the result as
+      // failed, and signal early termination to peer workers.
       auto reportFailure = [&](const llvm::Twine &header) {
-        {
-          std::lock_guard<std::mutex> lock(outputMutex);
-          llvm::errs() << header << "\n";
-          for (auto &msg : bufferedDiags)
-            llvm::errs() << msg;
-        }
+        std::string message = (header + "\n").str();
+        for (auto &msg : bufferedDiags)
+          message += msg;
+        emitDiagnostic(message);
         result.status = CompilationStatus::CompilationFailed;
         compilationFailed.store(true, std::memory_order_relaxed);
       };
@@ -1703,7 +1760,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                          ? compileConfigViaSubprocess(
                                configs[idx], driverPath, sharedInputPath,
                                archName, benchmarkParams.perfConfigTimeoutSec,
-                               outputMutex, compilationFailed)
+                               emitDiagnostic, compilationFailed)
                          : compileConfig(idx);
           }
 
@@ -1715,11 +1772,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
             FailureOr<std::string> blobRel = writeArtifactBlob(
                 benchmarkParams.compileOnlyDir, idx, result.hsacoBinary);
             if (failed(blobRel)) {
-              {
-                std::lock_guard<std::mutex> lock(outputMutex);
-                llvm::errs() << "Failed to write artifact blob for config: "
-                             << result.perfConfig << "\n";
-              }
+              emitDiagnostic("Failed to write artifact blob for config: " +
+                             result.perfConfig + "\n");
               compilationFailed.store(true, std::memory_order_relaxed);
             } else {
               result.blobPath = std::move(*blobRel);
@@ -1730,6 +1784,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
           }
 
           compilationResults[idx] = std::move(result);
+
+          completedCount.fetch_add(1, std::memory_order_relaxed);
+          renderProgress(/*force=*/false);
         }
       };
 
@@ -1741,6 +1798,18 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
       for (auto &t : threads) {
         t.join();
+      }
+
+      // Final redraw at 100% followed by a newline so subsequent output starts
+      // on a fresh line. A diagnostic may have erased the bar, in which case
+      // there is no line to terminate.
+      renderProgress(/*force=*/true);
+      {
+        std::lock_guard<std::mutex> lock(outputMutex);
+        if (progressLineWidth != 0) {
+          llvm::errs() << "\n";
+          progressLineWidth = 0;
+        }
       }
     }
 
