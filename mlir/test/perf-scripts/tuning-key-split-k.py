@@ -81,7 +81,7 @@ class SplitKTuningKeyTest(unittest.TestCase):
 
     def test_attention_rejects_split_k_support(self):
         raw = SAMPLES[-1][1]
-        with self.assertRaisesRegex(AssertionError, "attention does not support split-K"):
+        with self.assertRaisesRegex(ValueError, "attention does not support split-K"):
             AttentionConfiguration.from_command_line(f"{raw} -supportsSplitK true".split(), ARCH,
                                                      NUM_CU, NUM_CHIPLETS)
 

@@ -1904,7 +1904,8 @@ class AttentionConfiguration(PerfConfiguration):
                 raise ValueError("sliding_window_look_back must be positive or -1")
             if sliding_window_look_back > seq_len_k - 1:
                 raise ValueError("sliding_window_look_back must not exceed seq_len_k - 1")
-        assert not supports_split_k, "attention does not support split-K"
+        if supports_split_k:
+            raise ValueError("attention does not support split-K")
 
         self.datatype = dtype
         self.g = g
@@ -2673,7 +2674,8 @@ def lookup_fusion_tuning_config(tuning_db: MaybeTuningDb, arch: str, config: Per
         return perf_config
 
     false_suffix = "-supportsSplitK false"
-    assert config_str.endswith(false_suffix)
+    if not config_str.endswith(false_suffix):
+        raise ValueError(f"expected fusion key to end with {false_suffix!r}, got {config_str!r}")
     fallback_config_str = config_str[:-len(false_suffix)] + "-supportsSplitK true"
     if not tuning_db:
         return None
