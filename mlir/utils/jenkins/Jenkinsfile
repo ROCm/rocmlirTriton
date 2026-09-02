@@ -850,7 +850,11 @@ void collectCoverageData(String profdata, String cov, String cpath) {
           echo Not enough free disk space for profiling.
           exit 1
        fi
-       ninja check-rocmlir
+       # A failing test must not discard the whole codepath's coverage: the same
+       # suite gates the build in the regular test stages, and tests with a hard
+       # wall-clock bound can exceed it under instrumentation. Keep going so the
+       # profiles still get merged and uploaded.
+       ninja check-rocmlir || echo "check-rocmlir reported failures; collecting coverage anyway."
        # Profile processing.
        ${profdata} merge -sparse ./*.profraw -o ./coverage.profdata
        # This runs inside dir('build'), so the raw profiles are in the current
@@ -2087,8 +2091,15 @@ PY
                                                         "HOME=${env.WORKSPACE}",
                                                         "PATH=/opt/rocm/llvm/bin:${env.PATH}",
                                                         "PYTHONPATH=${env.WORKSPACE}/MIGraphX/build/lib:${env.PYTHONPATH}",
-                                                        // Note the %m to avoid issues with threads and dynamic libraries.
-                                                        "LLVM_PROFILE_FILE=${env.WORKSPACE}/build/%m-%p.profraw",
+                                                        // %m keeps each instrumented binary's profiles separate (threads and
+                                                        // dynamic libraries). Unlike rocMLIR we omit %p (the pid): appending it
+                                                        // gives every process its own file, which produced ~125 GB of *.profraw
+                                                        // and evicted the gfx950 pods for exceeding their ephemeral-storage
+                                                        // quota, since this build also carries Triton's tree. %8m instead pools
+                                                        // 8 profiles per binary and merges into them on-line, which keeps the
+                                                        // footprint small; the pool (rather than a bare %m) avoids serializing
+                                                        // 128 lit workers on a single file lock. Merged counters are equivalent.
+                                                        "LLVM_PROFILE_FILE=${env.WORKSPACE}/build/%8m.profraw",
                                                         "LLVM_PROFDATA=/opt/rocm/llvm/bin/llvm-profdata",
                                                         "LLVM_COV=/opt/rocm/llvm/bin/llvm-cov"
                                                     ]) {   
