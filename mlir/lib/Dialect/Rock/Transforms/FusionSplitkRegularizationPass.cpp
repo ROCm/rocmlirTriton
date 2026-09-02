@@ -88,49 +88,67 @@ divideAddBySplitkFactor(Value gemmResult, int64_t splitKFactor, IRRewriter &b) {
   return success();
 }
 
-static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
-  IRRewriter rewriter(func->getContext());
-  // TODO: extend this for gemm+gemm
-  SmallVector<GemmOp> gemmOps;
-  bool foundGemmWithoutParams = false;
-
-  func.walk([&](GemmOp gemmOp) {
-    auto params = gemmOp.getParams();
-    if (!params) {
-      foundGemmWithoutParams = true;
-      return;
+// Append to `splitKOps`, for every op of type `OpTy` that runs with split-k,
+// the result its output fusion consumes and the factor that fusion has to be
+// divided by. The tuning parameters carrying the factor are read through
+// `getSplitKParams`; an op that has none is an error reported as
+// `missingParamsMsg`, since this pass runs after they have been affixed.
+// Attention is skipped -- it implements the gemm+gemm interface but partitions
+// its reduction with splitKV rather than with the perf-config splitKFactor;
+// the check never fires for a plain GEMM.
+template <typename OpTy, typename GetSplitKParamsFn>
+static LogicalResult
+collectSplitKOps(func::FuncOp &func, GetSplitKParamsFn getSplitKParams,
+                 StringRef missingParamsMsg,
+                 SmallVectorImpl<std::pair<Value, int64_t>> &splitKOps) {
+  WalkResult res = func.walk([&](OpTy op) -> WalkResult {
+    if (isa<AttentionOp>(op.getOperation()))
+      return WalkResult::advance();
+    auto params = getSplitKParams(op);
+    if (!params.has_value()) {
+      op->emitError(missingParamsMsg);
+      return WalkResult::interrupt();
     }
     int64_t splitKFactor = params->getSplitKFactor();
-    if (splitKFactor > 1) {
-      gemmOps.push_back(gemmOp);
-    }
+    if (splitKFactor > 1)
+      splitKOps.emplace_back(op->getResult(0), splitKFactor);
+    return WalkResult::advance();
   });
+  return success(!res.wasInterrupted());
+}
 
-  if (foundGemmWithoutParams) {
-    func->emitError("rewriteFusionForSplitK: found gemm op without params");
+static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
+  IRRewriter rewriter(func->getContext());
+  SmallVector<std::pair<Value, int64_t>> splitKOps;
+  if (failed(collectSplitKOps<GemmOp>(
+          func, [](GemmOp op) { return op.getParams(); },
+          "rewriteFusionForSplitK: found gemm op without params", splitKOps)))
     return failure();
-  }
+
+  // Split-k on a gemm+gemm chain partitions the dimension shared by the two
+  // GEMMs, so only gemm1's params carry the factor; gemm0 is always unsplit.
+  if (failed(collectSplitKOps<RockGemmGemmWrapperInterface>(
+          func,
+          [](RockGemmGemmWrapperInterface op) { return op.getGemm1Params(); },
+          "rewriteFusionForSplitK: found gemm+gemm op without gemm1 params",
+          splitKOps)))
+    return failure();
 
   // This is relevant for backward convs (where we have multiple gemms in the
   // same kernel)
   // TODO: fix this when we allow fusions for backward convs
-  if (gemmOps.size() > 1) {
-    LLVM_DEBUG(
-        llvm::dbgs()
-        << "More than once GEMM found, skipping rewriteFusionForSplitK\n");
+  if (splitKOps.size() > 1) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "More than one split-k op (gemm or gemm+gemm) found, "
+                  "skipping rewriteFusionForSplitK\n");
     return success();
   }
 
-  if (gemmOps.size() == 1) {
-    GemmOp gemmOp = gemmOps[0];
-    int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
+  if (splitKOps.empty())
+    return success();
 
-    if (failed(divideAddBySplitkFactor(gemmOp.getResult(), splitKFactor,
-                                       rewriter)))
-      return failure();
-  }
-
-  return success();
+  auto [gemmResult, splitKFactor] = splitKOps.front();
+  return divideAddBySplitkFactor(gemmResult, splitKFactor, rewriter);
 }
 
 void RockFusionSplitkRegularizationPass::runOnOperation() {

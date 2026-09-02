@@ -1546,6 +1546,41 @@ llvm.func @volatile_load_survives(%ptr: !llvm.ptr<1>) -> i32 attributes {rock.ar
 
 // -----
 
+// A store in a block the entry only conditionally branches to, which is the
+// shape a gemm's output stores sit in once they are inside the K loop. Reaching
+// the block means getting past a branch whose condition is not a constant, and
+// dead-code analysis declines to mark any successor live until something has
+// given that condition a fact to read - so the oracle must run constant
+// propagation alongside it, not dead-code analysis on its own.
+// CHECK-LABEL: llvm.func @conditional_block_folds
+// CHECK-NOT:     rocdl.raw.ptr.buffer.store
+// CHECK:       llvm.return
+llvm.func @conditional_block_folds(%ptr: !llvm.ptr<1>, %data: i32, %cond: i1) attributes {rock.arch = "gfx1100"} {
+  %stride = llvm.mlir.constant(0 : i16) : i16
+  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
+  %flags = llvm.mlir.constant(822243328 : i32) : i32
+  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1> to <8>
+  llvm.cond_br %cond, ^store, ^exit
+
+^store:
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  %four = llvm.mlir.constant(4 : i32) : i32
+  %sixteen = llvm.mlir.constant(16 : i32) : i32
+  %oob = llvm.mlir.constant(-2147483648 : i32) : i32
+  %offset = llvm.mlir.constant(64 : i32) : i32
+  %tid = rocdl.workitem.id.x : i32
+  %row = llvm.urem %tid, %four : i32
+  %pred = llvm.icmp "uge" %row, %sixteen : i32
+  %voffset = llvm.select %pred, %offset, %oob : i1, i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  llvm.br ^exit
+
+^exit:
+  llvm.return
+}
+
+// -----
+
 // A store in a block with no predecessors. The solvers never visit it, so its
 // operands carry no facts and the fold declines. The block survives only
 // because this pass erases accesses rather than code: the canonicalizer that
