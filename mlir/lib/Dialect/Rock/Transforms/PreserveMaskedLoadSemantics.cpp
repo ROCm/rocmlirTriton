@@ -47,6 +47,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
@@ -156,6 +157,25 @@ static Value materializeMaskPath(OpBuilder &builder, Value mask,
   return mask;
 }
 
+/// Test whether a GEMM accumulator holds zero in the lanes a padded load masks
+/// out. That is either a freshly zeroed tile or, when the GEMM accumulates
+/// across tiles, a value carried around a loop whose initial value is zeroed;
+/// each iteration adds a product that is itself zero in those lanes, so the
+/// zero survives the whole accumulation.
+static bool isZeroedAccumulator(Value val) {
+  if (matchPattern(val, m_AnyZeroFloat()) || matchPattern(val, m_Zero()))
+    return true;
+  auto blockArg = dyn_cast<BlockArgument>(val);
+  if (!blockArg)
+    return false;
+  auto loopOp =
+      dyn_cast<LoopLikeOpInterface>(blockArg.getOwner()->getParentOp());
+  if (!loopOp)
+    return false;
+  OpOperand *init = loopOp.getTiedLoopInit(blockArg);
+  return init && isZeroedAccumulator(init->get());
+}
+
 /// Trace backwards from a value through fusion ops and narrowed-load shape
 /// operations, and collect all BlockwiseLoadPtrOp ops that feed into it
 /// (directly or indirectly).
@@ -167,6 +187,28 @@ static void collectContributingLoads(Value val,
     return;
   if (auto loadOp = dyn_cast<BlockwiseLoadPtrOp>(defOp)) {
     loads.push_back(loadOp);
+    return;
+  }
+  // A blockwise GEMM is zero wherever its operands' masks are out of bounds:
+  // the padded rows of A and columns of B read as zero, so they contribute
+  // nothing to a zeroed accumulator. Tracing through it is what lets a fusion
+  // between two GEMMs (`gemm0 * paddedInput`) be recognized as zero-preserving
+  // instead of being conservatively re-masked inside the second GEMM's K loop.
+  // Both A and B must come from masked loads: their pads are the ones that
+  // zero the padded region of the GEMM's output space, which is the space the
+  // fused elementwise inputs are padded in too.
+  if (auto gemmOp = dyn_cast<BlockwiseGemmOp>(defOp)) {
+    if (!visited.insert(defOp).second)
+      return;
+    if (!isZeroedAccumulator(gemmOp.getMatrixC()))
+      return;
+    SmallVector<BlockwiseLoadPtrOp> aLoads, bLoads;
+    collectContributingLoads(gemmOp.getMatrixA(), aLoads, visited);
+    collectContributingLoads(gemmOp.getMatrixB(), bLoads, visited);
+    if (aLoads.empty() || bLoads.empty())
+      return;
+    loads.append(aLoads);
+    loads.append(bLoads);
     return;
   }
   if (!rock::isFusionOp(defOp) && !isNarrowLoadShapeOp(defOp))

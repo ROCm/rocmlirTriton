@@ -142,9 +142,9 @@ static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
   // same kernel)
   // TODO: fix this when we allow fusions for backward convs
   if (gemmOps.size() + gemmGemmOps.size() > 1) {
-    LLVM_DEBUG(
-        llvm::dbgs()
-        << "More than once GEMM found, skipping rewriteFusionForSplitK\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "More than one split-k op (gemm or gemm+gemm) found, "
+                  "skipping rewriteFusionForSplitK\n");
     return success();
   }
 
