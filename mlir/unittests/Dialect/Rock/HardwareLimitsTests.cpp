@@ -15,7 +15,9 @@
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
+#include <string>
 
 using namespace mlir::rock;
 
@@ -67,4 +69,37 @@ TEST(HardwareLimitsTest, NativeNumCUIsAtLeastTheArchFloor) {
   std::optional<int64_t> nativeNumCU = mlir::rock::getNativeNumCU(arch);
   ASSERT_TRUE(nativeNumCU.has_value()) << arch.str();
   EXPECT_GE(*nativeNumCU, mlir::rock::getMinNumCU(arch)) << arch.str();
+}
+
+// HIP reads the scheduling mode out of the environment while it initializes,
+// so the request only works if it lands there. It also has to win over a
+// caller that asked for CU mode, because grid sizes are computed per workgroup
+// processor either way and a count in the other unit would be off by two.
+TEST(HardwareLimitsTest, RequestWGPSchedulingSetsTheEnvironment) {
+  constexpr const char *envVar = "GPU_ENABLE_WGP_MODE";
+  const char *previous = std::getenv(envVar);
+  std::string saved = previous ? previous : "";
+  bool hadPrevious = previous != nullptr;
+
+  auto setEnvVar = [&](const char *value) {
+#if defined(_WIN32)
+    _putenv_s(envVar, value);
+#else
+    setenv(envVar, value, /*overwrite=*/1);
+#endif
+  };
+
+  setEnvVar("0");
+  mlir::rock::requestWGPScheduling();
+  EXPECT_STREQ(std::getenv(envVar), "1");
+
+  if (hadPrevious) {
+    setEnvVar(saved.c_str());
+  } else {
+#if defined(_WIN32)
+    _putenv_s(envVar, "");
+#else
+    unsetenv(envVar);
+#endif
+  }
 }
