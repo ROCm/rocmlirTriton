@@ -176,8 +176,13 @@ class SplitKTuningKeyTest(unittest.TestCase):
         self.assertIn('-disable-split-k-for-tuning', incapable_cmd.split())
         self.assertIn('-disable-split-k-for-tuning', attention_cmd.split())
 
-        merged = incapable.merge_rocmlir_gen_flags('-disable-split-k-for-tuning')
-        self.assertEqual(merged.split().count('-disable-split-k-for-tuning'), 1)
+        explicit = incapable.generate_mlir_driver_commandline('-disable-split-k-for-tuning')
+        self.assertEqual(explicit.split().count('-disable-split-k-for-tuning'), 1)
+
+        # The external library drivers reject rocmlir-gen-only options, so the
+        # problem-only argv must never carry the flag.
+        external_cmd = incapable.generate_problem_commandline()
+        self.assertNotIn('-disable-split-k-for-tuning', external_cmd.split())
 
 
 if __name__ == "__main__":

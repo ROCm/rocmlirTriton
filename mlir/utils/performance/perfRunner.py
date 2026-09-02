@@ -556,21 +556,29 @@ class PerfConfiguration:
     def tuning_key_metadata(self) -> str:
         return f"-supportsSplitK {str(self.supports_split_k).lower()}"
 
-    def merge_rocmlir_gen_flags(self, rocmlir_gen_flags: str) -> str:
-        """Append -disable-split-k-for-tuning when the problem key says split-K is illegal."""
-        flags = rocmlir_gen_flags.split() if rocmlir_gen_flags else []
-        if not self.supports_split_k and '-disable-split-k-for-tuning' not in flags:
-            flags.append('-disable-split-k-for-tuning')
-        return ' '.join(flags)
-
     def compute_tflops(self, ns: int) -> float:
         raise NotImplementedError()
 
     def table_entry(self, nanoseconds):
         raise NotImplementedError()
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags):
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS) -> str:
+        """Driver arguments describing the problem itself.
+
+        Shared verbatim by rocmlir-gen and the external library benchmark drivers,
+        so it must not carry options that only rocmlir-gen understands.
+        """
         raise NotImplementedError()
+
+    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
+        """The problem arguments plus the rocmlir-gen-only flags they need."""
+        flags = rocmlir_gen_flags.split() if rocmlir_gen_flags else []
+        # A problem key that forbids split-K must not get split-K factors in its
+        # tuning space. The membership test keeps llvm::cl from seeing the option
+        # twice when a caller already passed it explicitly.
+        if not self.supports_split_k and '-disable-split-k-for-tuning' not in flags:
+            flags.append('-disable-split-k-for-tuning')
+        return f"{self.generate_problem_commandline(kernel_repeats)} " + ' '.join(flags)
 
     def set_perfconfig(self, perf_config):
         raise NotImplementedError()
@@ -708,8 +716,7 @@ class ConvConfiguration(PerfConfiguration):
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS):
         direction = {'fwd': '--operation conv', 'bwd': '--operation conv_bwd_data'}[self.direction]
 
         # Pick symmetric or asymmetric padding cmdline form per axis.
@@ -753,9 +760,6 @@ class ConvConfiguration(PerfConfiguration):
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
-        result += ' '
-        if rocmlir_gen_flags != '':
-            result += ' '.join(rocmlir_gen_flags.split())
         return result
 
     @classmethod
@@ -1269,8 +1273,7 @@ class GemmConfiguration(PerfConfiguration):
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join([
             '-operation', 'gemm', '-t', self.datatype, '-out_datatype', self.out_dtype, '--arch',
             self.arch, '--num_cu',
@@ -1296,9 +1299,6 @@ class GemmConfiguration(PerfConfiguration):
         if self.trans_scale_b:
             result += f' -transScaleB {str(self.trans_scale_b)}'
 
-        result += ' '
-        if rocmlir_gen_flags != '':
-            result += ' '.join(rocmlir_gen_flags.split())
         return result
 
     @classmethod
@@ -1562,8 +1562,7 @@ class ConvGemmConfiguration(PerfConfiguration):
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join([
             '-operation', 'conv_gemm', '-t', self.datatype, '--arch', self.arch,
             f'--num_cu={self.num_cu}', f'--num_chiplets={self.num_chiplets}',
@@ -1578,9 +1577,6 @@ class ConvGemmConfiguration(PerfConfiguration):
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
-        result += ' '
-        if rocmlir_gen_flags != '':
-            result += ' '.join(rocmlir_gen_flags.split())
         return result
 
     @classmethod
@@ -1769,8 +1765,7 @@ class GemmGemmConfiguration(PerfConfiguration):
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join([
             '-operation', 'gemm_gemm', '-t', self.datatype, '--arch', self.arch, '--num_cu',
             str(self.num_cu), '--num_chiplets',
@@ -1784,9 +1779,6 @@ class GemmGemmConfiguration(PerfConfiguration):
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
-        result += ' '
-        if rocmlir_gen_flags != '':
-            result += ' '.join(rocmlir_gen_flags.split())
         return result
 
     @classmethod
@@ -1937,7 +1929,7 @@ class AttentionConfiguration(PerfConfiguration):
         # when it is absent. None (or -1) means non-sliding attention.
         self.sliding_window_look_back = sliding_window_look_back
         # Only set in KV-cache mode (seq_len_q == 1). Emitted as
-        # ``-last_valid_kv_index=...`` by generate_mlir_driver_commandline(), which
+        # ``-last_valid_kv_index=...`` by generate_problem_commandline(), which
         # is the single source of truth for the rocmlir-gen argv (the sweep
         # scripts build on it rather than appending the flag themselves), while
         # to_command_line intentionally omits it from the tuning problem identity.
@@ -1993,8 +1985,7 @@ class AttentionConfiguration(PerfConfiguration):
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
 
-    def generate_mlir_driver_commandline(self, rocmlir_gen_flags, kernel_repeats=MLIR_N_REPEATS):
-        rocmlir_gen_flags = self.merge_rocmlir_gen_flags(rocmlir_gen_flags)
+    def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS):
         result = ' '.join([
             '-operation', 'attention', '-t', self.datatype, '--arch', self.arch, '--num_cu',
             str(self.num_cu), '--num_chiplets',
@@ -2017,9 +2008,6 @@ class AttentionConfiguration(PerfConfiguration):
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
-        result += ' '
-        if rocmlir_gen_flags != '':
-            result += ' '.join(rocmlir_gen_flags.split())
         return result
 
     @classmethod
@@ -2185,7 +2173,7 @@ class HipBLASLtGemmConfig(GemmConfiguration):
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
         if not paths.mlir_paths.hipblaslt_benchmark_driver_path:
             raise ValueError("hipblaslt-benchmark-driver not built")
-        benchmark_args = config.generate_mlir_driver_commandline("")
+        benchmark_args = config.generate_problem_commandline()
         # remove the result file generated by rocprof in previous benchmarking
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_STATS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_STATS_FILE_NAME))
@@ -2209,7 +2197,7 @@ class CKGemmConfig(GemmConfiguration):
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
         if not paths.mlir_paths.ck_gemm_benchmark_driver_path:
             raise ValueError("ck-gemm-benchmark-driver not built")
-        benchmark_args = config.generate_mlir_driver_commandline("")
+        benchmark_args = config.generate_problem_commandline()
 
         print(f"Running CK benchmark {config!r}")
 
