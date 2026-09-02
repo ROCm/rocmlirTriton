@@ -570,6 +570,211 @@ func.func @test_gemm_output_int_sum_reduce_uses_zero(
 }
 
 // ============================================================
+// Fusion BETWEEN two GEMMs (gemm+gemm / conv+gemm), which is the shape a
+// split-k inter-gemm fusion lowers to: gemm0's accumulator is combined with a
+// padded elementwise input and the result feeds gemm1 as its A operand.
+//
+// A multiply is zero-preserving here, so no select may be inserted: the
+// elementwise input reads zero in its padded lanes, and so does gemm0's
+// output, because the padded columns of gemm0's B operand read as zero. The
+// select would otherwise land in gemm1's K loop and cost an instruction per
+// iteration.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_mulf_load_not_remasked
+// CHECK: %[[A:.*]] = rock.blockwise_load_ptr
+// CHECK: %[[B:.*]] = rock.blockwise_load_ptr
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm(%[[A]], %[[B]], %{{.*}}) :
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK-NOT: arith.select
+// CHECK: rock.blockwise_gemm(%[[SCALED]],
+func.func @test_inter_gemm_body_mulf_load_not_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %b_ptrs: tensor<32x32xi32>, %b_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>, %ew_mask: tensor<32x32xi1>,
+    %c_ptrs: tensor<32x4xi32>, %c_mask: tensor<32x4xi1>,
+    %out_ptrs: tensor<32x4xi32>, %out_mask: tensor<32x4xi1>) attributes {rock.kernel} {
+  %zero0 = arith.constant dense<0.0> : tensor<32x32xf32>
+  %zero1 = arith.constant dense<0.0> : tensor<32x4xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %qk = rock.blockwise_gemm(%a, %b, %zero0) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+  %ew = rock.blockwise_load_ptr %ew_ptrs[%ew_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+  %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x4xi32>, tensor<32x4xi1> -> tensor<32x4xf32>
+  %out = rock.blockwise_gemm(%scaled, %c, %zero1) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x4xf32>, tensor<32x4xf32> -> tensor<32x4xf32>
+  rock.blockwise_store_ptr %out -> %out_ptrs(%out_mask) by atomic_add : tensor<32x4xf32> -> tensor<32x4xi32>(tensor<32x4xi1>)
+  return
+}
+
+// ============================================================
+// Same inter-GEMM shape, but the body applies exp, which turns the padded
+// zeros into ones. Those lanes must be selected back to zero before they
+// reach gemm1's accumulation.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_exp_remasked
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[EW_MASK:.*]]]
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK: %[[EXP:.*]] = math.exp %[[SCALED]]
+// CHECK: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32x32xf32>
+// CHECK: %[[SAFE:.*]] = arith.select %[[EW_MASK]], %[[EXP]], %[[ZERO]] : tensor<32x32xi1>, tensor<32x32xf32>
+// CHECK: rock.blockwise_gemm(%[[SAFE]],
+func.func @test_inter_gemm_body_exp_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %b_ptrs: tensor<32x32xi32>, %b_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>, %ew_mask: tensor<32x32xi1>,
+    %c_ptrs: tensor<32x4xi32>, %c_mask: tensor<32x4xi1>,
+    %out_ptrs: tensor<32x4xi32>, %out_mask: tensor<32x4xi1>) attributes {rock.kernel} {
+  %zero0 = arith.constant dense<0.0> : tensor<32x32xf32>
+  %zero1 = arith.constant dense<0.0> : tensor<32x4xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %qk = rock.blockwise_gemm(%a, %b, %zero0) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+  %ew = rock.blockwise_load_ptr %ew_ptrs[%ew_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+  %exp = math.exp %scaled fastmath<nsz,contract,afn> : tensor<32x32xf32>
+  %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x4xi32>, tensor<32x4xi1> -> tensor<32x4xf32>
+  %out = rock.blockwise_gemm(%exp, %c, %zero1) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x4xf32>, tensor<32x4xf32> -> tensor<32x4xf32>
+  rock.blockwise_store_ptr %out -> %out_ptrs(%out_mask) by atomic_add : tensor<32x4xf32> -> tensor<32x4xi32>(tensor<32x4xi1>)
+  return
+}
+
+// ============================================================
+// When gemm1 has more than one K tile, its accumulator is carried around an
+// scf.for and the body runs inside the loop. The accumulator is only zeroed
+// at the loop's entry, so recognizing the multiply as zero-preserving means
+// following the loop-carried value back to its initial value.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_in_loop_not_remasked
+// CHECK: scf.for {{.*}} iter_args(%[[ACC:.*]] = %{{.*}})
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK-NOT: arith.select
+// CHECK: rock.blockwise_gemm(%[[SCALED]], %{{.*}}, %[[ACC]])
+func.func @test_inter_gemm_body_in_loop_not_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %b_ptrs: tensor<32x32xi32>, %b_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>, %ew_mask: tensor<32x32xi1>,
+    %c_ptrs: tensor<32x32xi32>, %c_mask: tensor<32x32xi1>,
+    %out_ptrs: tensor<32x32xi32>, %out_mask: tensor<32x32xi1>) attributes {rock.kernel} {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c2 = arith.constant 2 : i32
+  %zero = arith.constant dense<0.0> : tensor<32x32xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %acc = scf.for %i = %c0 to %c2 step %c1 iter_args(%accIn = %zero) -> (tensor<32x32xf32>) : i32 {
+    %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+    %qk = rock.blockwise_gemm(%a, %b, %zero) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+    %ew = rock.blockwise_load_ptr %ew_ptrs[%ew_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+    %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+    %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+    %next = rock.blockwise_gemm(%scaled, %c, %accIn) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+    scf.yield %next : tensor<32x32xf32>
+  }
+  rock.blockwise_store_ptr %acc -> %out_ptrs(%out_mask) by atomic_add : tensor<32x32xf32> -> tensor<32x32xi32>(tensor<32x32xi1>)
+  return
+}
+
+// ============================================================
+// The padded region of gemm0's output is only known to be zero because both
+// of its operands are masked loads. With B a constant, nothing zeroes the
+// padded columns, so the multiply is no longer known to preserve zero.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_gemm_b_not_loaded_remasked
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[EW_MASK:.*]]]
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK: %[[SAFE:.*]] = arith.select %[[EW_MASK]], %[[SCALED]], %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
+// CHECK: rock.blockwise_gemm(%[[SAFE]],
+func.func @test_inter_gemm_body_gemm_b_not_loaded_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>, %ew_mask: tensor<32x32xi1>,
+    %c_ptrs: tensor<32x4xi32>, %c_mask: tensor<32x4xi1>,
+    %out_ptrs: tensor<32x4xi32>, %out_mask: tensor<32x4xi1>) attributes {rock.kernel} {
+  %zero0 = arith.constant dense<0.0> : tensor<32x32xf32>
+  %zero1 = arith.constant dense<0.0> : tensor<32x4xf32>
+  %b = arith.constant dense<3.0> : tensor<32x32xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %qk = rock.blockwise_gemm(%a, %b, %zero0) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+  %ew = rock.blockwise_load_ptr %ew_ptrs[%ew_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+  %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x4xi32>, tensor<32x4xi1> -> tensor<32x4xf32>
+  %out = rock.blockwise_gemm(%scaled, %c, %zero1) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x4xf32>, tensor<32x4xf32> -> tensor<32x4xf32>
+  rock.blockwise_store_ptr %out -> %out_ptrs(%out_mask) by atomic_add : tensor<32x4xf32> -> tensor<32x4xi32>(tensor<32x4xi1>)
+  return
+}
+
+// ============================================================
+// gemm0 accumulating onto a non-zero tile leaves that value in the padded
+// lanes of its output, so the multiply does not preserve zero there either.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_gemm_acc_not_zeroed_remasked
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr %{{.*}}[%[[EW_MASK:.*]]]
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK: %[[SAFE:.*]] = arith.select %[[EW_MASK]], %[[SCALED]], %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
+// CHECK: rock.blockwise_gemm(%[[SAFE]],
+func.func @test_inter_gemm_body_gemm_acc_not_zeroed_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %b_ptrs: tensor<32x32xi32>, %b_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>, %ew_mask: tensor<32x32xi1>,
+    %c_ptrs: tensor<32x4xi32>, %c_mask: tensor<32x4xi1>,
+    %out_ptrs: tensor<32x4xi32>, %out_mask: tensor<32x4xi1>) attributes {rock.kernel} {
+  %nonzero = arith.constant dense<1.0> : tensor<32x32xf32>
+  %zero1 = arith.constant dense<0.0> : tensor<32x4xf32>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %qk = rock.blockwise_gemm(%a, %b, %nonzero) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+  %ew = rock.blockwise_load_ptr %ew_ptrs[%ew_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+  %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x4xi32>, tensor<32x4xi1> -> tensor<32x4xf32>
+  %out = rock.blockwise_gemm(%scaled, %c, %zero1) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x4xf32>, tensor<32x4xf32> -> tensor<32x4xf32>
+  rock.blockwise_store_ptr %out -> %out_ptrs(%out_mask) by atomic_add : tensor<32x4xf32> -> tensor<32x4xi32>(tensor<32x4xi1>)
+  return
+}
+
+// ============================================================
+// Trivial mask on the elementwise input of an inter-GEMM fusion: there are no
+// padded lanes to restore, so even exp needs no select. This isolates the
+// trivial-mask early-out from the zero-preservation analysis.
+// ============================================================
+
+// CHECK-LABEL: func.func @test_inter_gemm_body_trivial_mask_not_remasked
+// CHECK: %[[QK:.*]] = rock.blockwise_gemm
+// CHECK: %[[EW:.*]] = rock.blockwise_load_ptr
+// CHECK: %[[SCALED:.*]] = arith.mulf %[[QK]], %[[EW]]
+// CHECK: %[[EXP:.*]] = math.exp %[[SCALED]]
+// CHECK-NOT: arith.select
+// CHECK: rock.blockwise_gemm(%[[EXP]],
+func.func @test_inter_gemm_body_trivial_mask_not_remasked(
+    %a_ptrs: tensor<32x32xi32>, %a_mask: tensor<32x32xi1>,
+    %b_ptrs: tensor<32x32xi32>, %b_mask: tensor<32x32xi1>,
+    %ew_ptrs: tensor<32x32xi32>,
+    %c_ptrs: tensor<32x4xi32>, %c_mask: tensor<32x4xi1>,
+    %out_ptrs: tensor<32x4xi32>, %out_mask: tensor<32x4xi1>) attributes {rock.kernel} {
+  %zero0 = arith.constant dense<0.0> : tensor<32x32xf32>
+  %zero1 = arith.constant dense<0.0> : tensor<32x4xf32>
+  %trivial = arith.constant dense<true> : tensor<32x32xi1>
+  %a = rock.blockwise_load_ptr %a_ptrs[%a_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %b = rock.blockwise_load_ptr %b_ptrs[%b_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %qk = rock.blockwise_gemm(%a, %b, %zero0) : tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32> -> tensor<32x32xf32>
+  %ew = rock.blockwise_load_ptr %ew_ptrs[%trivial] {cacheModifier = #rock<CacheModifier none>} : tensor<32x32xi32>, tensor<32x32xi1> -> tensor<32x32xf32>
+  %scaled = arith.mulf %qk, %ew fastmath<nsz,contract> : tensor<32x32xf32>
+  %exp = math.exp %scaled fastmath<nsz,contract,afn> : tensor<32x32xf32>
+  %c = rock.blockwise_load_ptr %c_ptrs[%c_mask] {cacheModifier = #rock<CacheModifier none>} : tensor<32x4xi32>, tensor<32x4xi1> -> tensor<32x4xf32>
+  %out = rock.blockwise_gemm(%exp, %c, %zero1) {rock.o_transposed = #rock.o_transposed<false>} : tensor<32x32xf32>, tensor<32x4xf32>, tensor<32x4xf32> -> tensor<32x4xf32>
+  rock.blockwise_store_ptr %out -> %out_ptrs(%out_mask) by atomic_add : tensor<32x4xf32> -> tensor<32x4xi32>(tensor<32x4xi1>)
+  return
+}
+
+// ============================================================
 // Non-kernel function: pass should skip entirely.
 // Even with a non-zero-preserving fusion, no select is inserted.
 // ============================================================

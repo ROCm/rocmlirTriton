@@ -319,6 +319,58 @@ func.func @rock_gemmelementwisegemm_splitk_two_outputs(%arg0: tensor<1x64x64xf32
   return %out1, %out2 : tensor<1x64x64xf32>, tensor<1x64x1xf32>
 }
 
+// Split-k with a fusion between the two GEMMs. The body's inputs live in
+// gemm0's output space, so they are padded and split along gemmN exactly like
+// operand b, and the body itself has to be retyped to follow them: both block
+// arguments, the splat constant, and every result. The `mulf` deliberately
+// takes the elementwise input as its first operand rather than the first-GEMM
+// result, so a retyping that only walked forward from block argument 0 would
+// leave it in the unsplit shape.
+// CHECK-LABEL: func.func @rock_gemmelementwisegemm_splitk_intergemm_fusion
+// CHECK-SAME: (%[[aRaw:.*]]: tensor<1x64x1024xf32>, %[[bRaw:.*]]: tensor<1x64x1024xf32>, %[[cRaw:.*]]: tensor<1x1024x64xf32>, %[[ewRaw:.*]]: tensor<1x1024x1024xf32>, %[[oRaw:.*]]: tensor<1x1024x64xf32>
+// CHECK-SAME: {rock.prefill = 0.000000e+00 : f32})
+func.func @rock_gemmelementwisegemm_splitk_intergemm_fusion(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %ew: tensor<1x1024x1024xf32>, %arg3: tensor<1x1024x64xf32> {rock.prefill = 0.000000e+00 : f32}) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // CHECK-DAG: %[[trA:.*]] = rock.transform %[[aRaw]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
+  // CHECK-DAG: %[[bSplit:.*]] = rock.transform %[[bRaw]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x4x256x64xf32>
+  // CHECK-DAG: %[[b:.*]] = rock.transform %[[bSplit]] by {{.*}} : tensor<1x4x256x64xf32> to tensor<4x64x256xf32>
+  // CHECK-DAG: %[[cSplit:.*]] = rock.transform %[[cRaw]] by {{.*}} : tensor<1x1024x64xf32> to tensor<1x4x256x64xf32>
+  // CHECK-DAG: %[[c:.*]] = rock.transform %[[cSplit]] by {{.*}} : tensor<1x4x256x64xf32> to tensor<4x256x64xf32>
+  // The elementwise input is split along gemmN and folded into gemmG, the same
+  // way operand b is.
+  // CHECK-DAG: %[[ewSplit:.*]] = rock.transform %[[ewRaw]] by {{.*}} : tensor<1x1024x1024xf32> to tensor<1x4x256x1024xf32>
+  // CHECK-DAG: %[[ew:.*]] = rock.transform %[[ewSplit]] by {{.*}} : tensor<1x4x256x1024xf32> to tensor<4x1024x256xf32>
+  // CHECK-DAG: %[[aSplit:.*]] = rock.transform %[[trA]] by {{.*}} : tensor<1x1024x64xf32> to tensor<1x1024x64x4xf32>
+  // CHECK-DAG: %[[a:.*]] = rock.transform %[[aSplit]] by {{.*}} : tensor<1x1024x64x4xf32> to tensor<4x1024x64xf32>
+  // CHECK-DAG: %[[oSplit:.*]] = rock.transform %[[oRaw]] by {{.*}} : tensor<1x1024x64xf32> to tensor<1x4x1024x64xf32>
+  // CHECK-DAG: %[[o:.*]] = rock.transform %[[oSplit]] by {{.*}} : tensor<1x4x1024x64xf32> to tensor<4x1024x64xf32>
+  // CHECK: %[[result:.*]] = rock.gridwise_attention(%[[a]], %[[b]], %[[c]], %[[ew]])
+  // The body moves with its inputs: both block arguments, the constant, and
+  // both results carry the split shape.
+  // CHECK: ^bb0(%[[qk:.*]]: tensor<4x1024x256xf32>, %[[ewArg:.*]]: tensor<4x1024x256xf32>):
+  // CHECK-DAG: %[[cst:.*]] = arith.constant dense<2.000000e+00> : tensor<4x1024x256xf32>
+  // CHECK: %[[scaled:.*]] = arith.mulf %[[ewArg]], %[[cst]] : tensor<4x1024x256xf32>
+  // CHECK: %[[sum:.*]] = arith.addf %[[qk]], %[[scaled]] : tensor<4x1024x256xf32>
+  // CHECK: rock.yield %[[sum]] : tensor<4x1024x256xf32>
+  // CHECK: enableSoftmax = false
+  // CHECK: rock.store %[[result]] to %[[o]] by atomic_add
+  %result = rock.gemm_elementwise_gemm{
+    ab = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
+    ab = elementwise otherIns(%ew : tensor<1x1024x1024xf32>) {
+    ^bb0(%qk: tensor<1x1024x1024xf32>, %ew_in: tensor<1x1024x1024xf32>):
+      %cst = arith.constant dense<2.000000e+00> : tensor<1x1024x1024xf32>
+      %scaled = arith.mulf %ew_in, %cst : tensor<1x1024x1024xf32>
+      %sum = arith.addf %qk, %scaled : tensor<1x1024x1024xf32>
+      rock.yield %sum : tensor<1x1024x1024xf32>
+    }
+    out = ab * %arg2 : tensor<1x1024x64xf32>
+  } {
+    params0 = #xldops_attn_params_g0,
+    params1 = #xldops_attn_params_g1_splitk
+  } -> tensor<1x1024x64xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x1024x64xf32> -> tensor<1x1024x64xf32> to tensor<1x1024x64xf32>
+  return %out : tensor<1x1024x64xf32>
+}
+
 // CHECK-LABEL: func.func @rock_attention_gqa
 // CHECK-SAME: (%[[q:.*]]: tensor<64x1x128xf16>, %[[k:.*]]: tensor<8x128x8192xf16>, %[[v:.*]]: tensor<8x8192x128xf16>, %[[lse:.*]]: tensor<256x1xf16>, %[[o:.*]]: tensor<256x1x128xf16>)
 // CHECK-SAME: rock.grid_size = 32

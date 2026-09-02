@@ -1733,6 +1733,35 @@ LogicalResult GridwiseAttentionOp::verify() {
                                          getLastValidKVIndex(), maxSeqLen)))
     return failure();
 
+  // The elementwise inputs are plain views of the first GEMM's output space:
+  // the earlier `rock-regularize-inter-gemm-fusion` made them so by
+  // externalizing the body's views onto the operands, and the
+  // `rock-attn-to-gridwise` that built this op forwards them unchanged (in the
+  // split-k path, padded and split in lockstep with the keys). Compare against
+  // the pre-pad extents recorded in prePadG0M/N, since the inputs do not pick
+  // up gemm0's `requiredPadding`.
+  //
+  // Attention is excluded: GQA and flash-decoding `splitKV` leave the inputs
+  // in a deliberately different space and move gemm0's output to meet them, in
+  // `undoGQATransforms` and `createSplitKVTransformsForGemm0Out`.
+  if (!getEnableSoftmax()) {
+    ShapedType qType = cast<ShapedType>(getQueries().getType());
+    SmallVector<int64_t, 3> gemm0OutShape = {
+        qType.getShape()[0],
+        getPrePadG0M().value_or(APInt(64, qType.getShape()[1])).getSExtValue(),
+        maxSeqLen};
+    for (auto [idx, elemwiseInput] :
+         llvm::enumerate(getPreSoftmaxElemWiseInputs())) {
+      ArrayRef<int64_t> shape =
+          cast<ShapedType>(elemwiseInput.getType()).getShape();
+      if (shape != ArrayRef<int64_t>(gemm0OutShape))
+        return emitOpError("pre-softmax elementwise input ")
+               << idx << " has shape " << shape
+               << " but must match the first GEMM's output space "
+               << ArrayRef<int64_t>(gemm0OutShape);
+    }
+  }
+
   return success();
 }
 

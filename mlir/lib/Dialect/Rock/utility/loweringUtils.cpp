@@ -803,6 +803,89 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
   return success();
 }
 
+LogicalResult mlir::rock::reshapeSplatConstant(arith::ConstantOp constOp,
+                                               ArrayRef<int64_t> targetShape) {
+  auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+  if (!origType)
+    return success();
+  if (origType.getShape() == targetShape)
+    return success();
+  auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+  if (!splatAttr)
+    return failure();
+  auto newType = RankedTensorType::get(targetShape, origType.getElementType());
+  constOp.setValueAttr(
+      SplatElementsAttr::get(newType, splatAttr.getSplatValue<Attribute>()));
+  constOp.getResult().setType(newType);
+  return success();
+}
+
+LogicalResult mlir::rock::inlineExternalConstants(OpBuilder &builder,
+                                                  Operation *op, Block &block) {
+  Location loc = op->getLoc();
+
+  for (Operation &bodyOp : block.without_terminator()) {
+    for (OpOperand &operand : bodyOp.getOpOperands()) {
+      Value val = operand.get();
+      if (val.getParentBlock() == &block)
+        continue;
+      auto valType = dyn_cast<RankedTensorType>(val.getType());
+      if (!valType)
+        continue;
+      auto *defOp = val.getDefiningOp();
+      auto extConst = defOp ? dyn_cast<arith::ConstantOp>(defOp) : nullptr;
+      if (!extConst)
+        return op->emitOpError()
+               << "non-constant external value in elementwise body is "
+                  "not supported";
+      auto splatAttr = dyn_cast<SplatElementsAttr>(extConst.getValue());
+      if (!splatAttr)
+        return op->emitOpError()
+               << "non-splat external constant in elementwise body is "
+                  "not supported";
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(&bodyOp);
+      Value newConst = arith::ConstantOp::create(
+          builder, loc,
+          SplatElementsAttr::get(valType,
+                                 splatAttr.getSplatValue<Attribute>()));
+      operand.set(newConst);
+    }
+  }
+  return success();
+}
+
+LogicalResult
+mlir::rock::retypeElementwiseBodyShapes(OpBuilder &builder, Operation *op,
+                                        Block &block,
+                                        ArrayRef<int64_t> targetShape) {
+  // A constant read from an enclosing scope is a leaf the loop below would
+  // never reach, leaving it at the pre-substitution shape while its consumers
+  // move. Pulling captures in first turns them into ordinary body constants
+  // that the loop reshapes like any other.
+  if (failed(inlineExternalConstants(builder, op, block)))
+    return failure();
+
+  for (Operation &bodyOp : block.without_terminator()) {
+    if (auto constOp = dyn_cast<arith::ConstantOp>(&bodyOp)) {
+      if (failed(reshapeSplatConstant(constOp, targetShape)))
+        return op->emitOpError()
+               << "non-splat constant in elementwise body cannot be reshaped";
+      continue;
+    }
+    if (bodyOp.getNumResults() != 1 || bodyOp.getNumOperands() == 0)
+      continue;
+    auto operandTy = dyn_cast<RankedTensorType>(bodyOp.getOperand(0).getType());
+    auto resultTy = dyn_cast<RankedTensorType>(bodyOp.getResult(0).getType());
+    if (!operandTy || !resultTy)
+      continue;
+    if (operandTy.getShape() != resultTy.getShape())
+      bodyOp.getResult(0).setType(RankedTensorType::get(
+          operandTy.getShape(), resultTy.getElementType()));
+  }
+  return success();
+}
+
 void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {
   auto newRootType = dyn_cast<RankedTensorType>(newRoot.getType());
   if (!newRootType)

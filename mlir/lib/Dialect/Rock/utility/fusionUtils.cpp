@@ -114,22 +114,21 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
 
   WalkResult gemmGemmWalkResult = func.walk(
       [&](rock::RockGemmGemmWrapperInterface gemmGemmOp) -> WalkResult {
-        // We have two results for attention (output + LSE)
-        // But we only support split-k for gemm+gemm, so there's a single result
-        // here
+        // Attention never supports split-k: softmax reduces over the very
+        // dimension split-k partitions.
+        if (isa<AttentionOp>(gemmGemmOp.getOperation()))
+          return WalkResult::interrupt();
+
+        // Only gemm+gemm reaches here, so there is a single result.
         auto gemmGemmResult = gemmGemmOp->getResult(0);
 
         if (failed(traceRootOutputToArgs(gemmGemmResult, func)))
           return WalkResult::interrupt();
 
-        // no fusions allowed for now
-        auto fusionInfo = rock::collectFusionInfo(gemmGemmResult);
-        if (!fusionInfo.fusionOps.empty())
-          return WalkResult::interrupt();
-
-        // fusions between gemm0 and gemm1 are not allowed
-        bool fusionsFound = gemmGemmHasPreSecondGemmFusion(gemmGemmOp);
-        if (fusionsFound)
+        // The output fusion has to survive being applied once per split and
+        // then summed by the atomic_add, same requirement as a plain GEMM.
+        SmallVector<std::tuple<Operation *, int>> adds;
+        if (failed(checkValidOutputFusion(gemmGemmResult, adds)))
           return WalkResult::interrupt();
 
         return WalkResult::advance();
