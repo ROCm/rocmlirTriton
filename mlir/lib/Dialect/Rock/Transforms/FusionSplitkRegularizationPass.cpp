@@ -88,9 +88,32 @@ divideAddBySplitkFactor(Value gemmResult, int64_t splitKFactor, IRRewriter &b) {
   return success();
 }
 
+// Collect the gemm+gemm-like ops whose second GEMM runs with split-k. Split-k
+// on a gemm+gemm chain partitions the dimension shared by the two GEMMs, so
+// only gemm1's params carry the factor; gemm0 is always unsplit. Attention is
+// skipped: it never supports split-k.
+static LogicalResult
+collectSplitKGemmGemmOps(func::FuncOp &func,
+                         SmallVectorImpl<RockGemmGemmWrapperInterface> &ops) {
+  WalkResult res =
+      func.walk([&](RockGemmGemmWrapperInterface gemmGemmOp) -> WalkResult {
+        if (isa<AttentionOp>(gemmGemmOp.getOperation()))
+          return WalkResult::advance();
+        auto params1 = gemmGemmOp.getGemm1Params();
+        if (!params1.has_value()) {
+          gemmGemmOp->emitError("rewriteFusionForSplitK: found gemm+gemm op "
+                                "without gemm1 params");
+          return WalkResult::interrupt();
+        }
+        if (params1->getSplitKFactor() > 1)
+          ops.push_back(gemmGemmOp);
+        return WalkResult::advance();
+      });
+  return success(!res.wasInterrupted());
+}
+
 static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
   IRRewriter rewriter(func->getContext());
-  // TODO: extend this for gemm+gemm
   SmallVector<GemmOp> gemmOps;
   bool foundGemmWithoutParams = false;
 
@@ -111,10 +134,14 @@ static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
     return failure();
   }
 
+  SmallVector<RockGemmGemmWrapperInterface> gemmGemmOps;
+  if (failed(collectSplitKGemmGemmOps(func, gemmGemmOps)))
+    return failure();
+
   // This is relevant for backward convs (where we have multiple gemms in the
   // same kernel)
   // TODO: fix this when we allow fusions for backward convs
-  if (gemmOps.size() > 1) {
+  if (gemmOps.size() + gemmGemmOps.size() > 1) {
     LLVM_DEBUG(
         llvm::dbgs()
         << "More than once GEMM found, skipping rewriteFusionForSplitK\n");
@@ -126,6 +153,15 @@ static LogicalResult rewriteFusionForSplitK(func::FuncOp &func) {
     int64_t splitKFactor = gemmOp.getParams()->getSplitKFactor();
 
     if (failed(divideAddBySplitkFactor(gemmOp.getResult(), splitKFactor,
+                                       rewriter)))
+      return failure();
+  }
+
+  if (gemmGemmOps.size() == 1) {
+    RockGemmGemmWrapperInterface gemmGemmOp = gemmGemmOps[0];
+    int64_t splitKFactor = gemmGemmOp.getGemm1Params()->getSplitKFactor();
+
+    if (failed(divideAddBySplitkFactor(gemmGemmOp->getResult(0), splitKFactor,
                                        rewriter)))
       return failure();
   }

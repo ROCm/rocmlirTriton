@@ -317,7 +317,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
                                RockGemmGemmWrapperInterface op, Location loc,
                                int64_t splitNFactor, Value a, Value b, Value c,
                                MutableArrayRef<Value> outputViews,
-                               DenseMap<Value, Value> &fusionInputMapOut) {
+                               DenseMap<Value, Value> &fusionInputMapOut,
+                               MutableArrayRef<Value> elementwiseInputs) {
   Value out = op->getResult(0);
   // set the store method and prefill attribute on output store ops
   FailureOr<SetVector<StoreOp>> storeOps = traceRootOutputToStoreOps(out);
@@ -334,12 +335,18 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 
   b = padMatrix(b, builder, loc, "gemmK", 0, "gemmN", nPad);
   c = padMatrix(c, builder, loc, "gemmK", nPad, "gemmO", 0);
+  // The inter-gemm elementwise body is pointwise in (gemmM, gemmN), so its
+  // inputs live in the same (gemmG, gemmM, gemmN) space as gemm0's output -
+  // the op verifier enforces that - and need the same padding and split as
+  // operand b.
+  for (Value &elementwiseInput : elementwiseInputs)
+    elementwiseInput =
+        padMatrix(elementwiseInput, builder, loc, "gemmM", 0, "gemmN", nPad);
 
   // perform coordinate transformations
   Value aNew{nullptr}, bNew{nullptr}, cNew{nullptr};
   ArrayRef<int64_t> aShape = cast<RankedTensorType>(a.getType()).getShape();
   ArrayRef<int64_t> bShape = cast<RankedTensorType>(b.getType()).getShape();
-  ArrayRef<int64_t> cShape = cast<RankedTensorType>(c.getType()).getShape();
   ArrayRef<int64_t> outShape =
       cast<RankedTensorType>(outputViews[0].getType()).getShape();
   for (auto outputView : outputViews) {
@@ -349,32 +356,19 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 
   const int64_t N = bShape[2];
 
-  struct GemmOperandsData {
-    Value &in;
-    Value &out;
-    SmallVector<StringRef> inputDimNames;
-    unsigned presevedDimIdx;
-    unsigned splitDimIdx;
-    ArrayRef<int64_t> inputShape;
-  };
+  // Split gemmN - the dimension the two GEMMs share - and fold the split index
+  // into the batch dimension, so each workgroup owns a private slice of it.
+  // Using bottom-up transformations:
+  // 1. unmerge (gemmN) -> (gemmNSplit, gemmN*)
+  // 2. merge (gemmG, gemmNSplit) -> (gemmG*)
+  auto splitAlongN = [&](Value in, ArrayRef<StringRef> inputDimNames,
+                         unsigned preservedDimIdx, unsigned splitDimIdx) {
+    StringRef preservedDimName = inputDimNames[preservedDimIdx];
+    assert(inputDimNames[splitDimIdx] == "gemmN");
+    ArrayRef<int64_t> inputShape =
+        cast<RankedTensorType>(in.getType()).getShape();
 
-  llvm::SmallVector<GemmOperandsData, 2> gemmOperands{
-      {b, bNew, {"gemmG", "gemmK", "gemmN"}, 1, 2, bShape},
-      {c, cNew, {"gemmG", "gemmN", "gemmO"}, 2, 1, cShape}};
-  for (auto &gemmOperand : gemmOperands) {
-    // Prepare matrix B and C - i.e.,
-    //    (gemmG, gemmK, gemmN) and (gemmG, gemmN, gemmO), respectively
-    // Using bottom-up transformations
-    // 1. unmerge (gemmN) -> (gemmNSplit, gemmN*)
-    // 2. merge (gemmG, gemmNSplit) -> (gemmG*)
-
-    StringRef preservedDimName =
-        gemmOperand.inputDimNames[gemmOperand.presevedDimIdx];
-    StringRef splitDimName = gemmOperand.inputDimNames[gemmOperand.splitDimIdx];
-    assert(splitDimName == "gemmN");
-
-    BottomUpTMBuilder unmergeTransform(builder, gemmOperand.inputDimNames,
-                                       gemmOperand.inputShape, loc);
+    BottomUpTMBuilder unmergeTransform(builder, inputDimNames, inputShape, loc);
 
     unmergeTransform.passThrough({"gemmG", preservedDimName}, {0, 3},
                                  {"gemmG", preservedDimName});
@@ -389,19 +383,27 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
         BottomUpTMBuilder::above(unmergeTransform, unmergeTransformAttr);
 
     mergeTransform.merge("gemmG", 0, {"gemmG", "gemmNSplit"});
-    mergeTransform.passThrough(
-        {"gemmN", preservedDimName},
-        {gemmOperand.splitDimIdx, gemmOperand.presevedDimIdx},
-        {"gemmN", preservedDimName});
+    mergeTransform.passThrough({"gemmN", preservedDimName},
+                               {splitDimIdx, preservedDimIdx},
+                               {"gemmN", preservedDimName});
 
-    auto mergeTransformAttr = mergeTransform.get();
-    transformAttrs.push_back(mergeTransformAttr);
+    transformAttrs.push_back(mergeTransform.get());
 
     std::reverse(transformAttrs.begin(), transformAttrs.end());
-    ArrayAttr arrayTransformAttrs = builder.getArrayAttr(transformAttrs);
-    gemmOperand.out =
-        mlir::rock::transform(builder, gemmOperand.in, arrayTransformAttrs);
-  }
+    return mlir::rock::transform(builder, in,
+                                 builder.getArrayAttr(transformAttrs));
+  };
+
+  // Matrices B and C - i.e., (gemmG, gemmK, gemmN) and (gemmG, gemmN, gemmO).
+  bNew = splitAlongN(b, {"gemmG", "gemmK", "gemmN"}, 1, 2);
+  cNew = splitAlongN(c, {"gemmG", "gemmN", "gemmO"}, 2, 1);
+
+  // The inter-gemm elementwise inputs - (gemmG, gemmM, gemmN) - are split the
+  // same way, so postProcessFirstGemm can compose gemm0's output views with
+  // them in one consistent (gemmG*, gemmM, gemmN/splitNFactor) space.
+  for (Value &elementwiseInput : elementwiseInputs)
+    elementwiseInput =
+        splitAlongN(elementwiseInput, {"gemmG", "gemmM", "gemmN"}, 1, 2);
 
   {
     // Prepare matrix A - i.e., (gemmG, gemmM, gemmK)
@@ -473,14 +475,49 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
   return std::make_tuple(aNew, bNew, cNew);
 }
 
+// Split-k rewrites the inter-gemm elementwise inputs into the split
+// (gemmG * splitKFactor, gemmM, gemmN / splitKFactor) space, so the body that
+// consumes them has to move with them. The body is pointwise in
+// (gemmM, gemmN), so every value in it carries gemm0's output shape and
+// retyping is the same uniform shape substitution that
+// rock-regularize-inter-gemm-fusion performs when it externalizes transforms.
+static LogicalResult
+retypeInterGemmBodyForSplitK(RockGemmGemmWrapperInterface op, Region &region,
+                             ArrayRef<int64_t> gemm0OutShape,
+                             ArrayRef<Value> elementwiseInputs) {
+  if (region.empty())
+    return success();
+  Block &body = region.front();
+  if (body.without_terminator().empty())
+    return success();
+
+  auto retypeArg = [](BlockArgument arg, ArrayRef<int64_t> shape) {
+    arg.setType(RankedTensorType::get(
+        shape, cast<RankedTensorType>(arg.getType()).getElementType()));
+  };
+
+  // The op verifier pins the body to one argument per elementwise input plus
+  // the gemm0 result, so this indexing is safe.
+  assert(body.getNumArguments() == elementwiseInputs.size() + 1 &&
+         "pre-second-GEMM body must take the first-GEMM result plus one "
+         "argument per elementwise input");
+  retypeArg(body.getArgument(0), gemm0OutShape);
+  for (auto [idx, elementwiseInput] : llvm::enumerate(elementwiseInputs))
+    retypeArg(body.getArgument(idx + 1),
+              cast<RankedTensorType>(elementwiseInput.getType()).getShape());
+
+  return rock::retypeElementwiseBodyShapes(op, body, gemm0OutShape);
+}
+
 static LogicalResult commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
     Value b, Value c, Value lastValidKVIndex, Value prefixOffset,
     UnitAttr causal, IntegerAttr splitKV, IntegerAttr slidingWindowLookBack,
-    ValueRange elementwiseInputs, Region &preSecondOpRegion, bool enableSoftmax,
-    TypeAttr softmaxType, int64_t numHeadsQ, int64_t numHeadsKV,
-    BoolAttr preSoftmaxHasSplitKVTransforms) {
+    ValueRange elementwiseInputsIn, Region &preSecondOpRegion,
+    bool enableSoftmax, TypeAttr softmaxType, int64_t numHeadsQ,
+    int64_t numHeadsKV, BoolAttr preSoftmaxHasSplitKVTransforms) {
   Location loc = op->getLoc();
+  SmallVector<Value> elementwiseInputs(elementwiseInputsIn);
 
   if (!op.getGemm0Params().has_value()) {
     return op.emitError("gemm0 params is missing and it should've been "
@@ -530,11 +567,20 @@ static LogicalResult commonAttentionGemmElmtGemm(
       return op.emitError("split-k is not supported for attention");
 
     auto maybeSplitk = arrangeGemmGemmSplitKTransform(
-        rw, op, loc, splitKFactor, a, b, c, outputViews, fusionInputMapOut);
+        rw, op, loc, splitKFactor, a, b, c, outputViews, fusionInputMapOut,
+        elementwiseInputs);
     if (failed(maybeSplitk))
       return op.emitError("split-k set up failed");
 
     std::tie(a, b, c) = maybeSplitk.value();
+
+    SmallVector<int64_t, 3> splitGemm0OutShape = {
+        cast<RankedTensorType>(b.getType()).getShape()[0],
+        cast<RankedTensorType>(a.getType()).getShape()[1],
+        cast<RankedTensorType>(b.getType()).getShape()[2]};
+    if (failed(retypeInterGemmBodyForSplitK(
+            op, preSecondOpRegion, splitGemm0OutShape, elementwiseInputs)))
+      return failure();
   }
 
   int64_t splitKVNum = splitKV.getInt();

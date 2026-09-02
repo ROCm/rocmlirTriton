@@ -803,6 +803,46 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
   return success();
 }
 
+LogicalResult mlir::rock::reshapeSplatConstant(arith::ConstantOp constOp,
+                                               ArrayRef<int64_t> targetShape) {
+  auto origType = dyn_cast<RankedTensorType>(constOp.getType());
+  if (!origType)
+    return success();
+  if (origType.getShape() == targetShape)
+    return success();
+  auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
+  if (!splatAttr)
+    return failure();
+  auto newType = RankedTensorType::get(targetShape, origType.getElementType());
+  constOp.setValueAttr(
+      SplatElementsAttr::get(newType, splatAttr.getSplatValue<Attribute>()));
+  constOp.getResult().setType(newType);
+  return success();
+}
+
+LogicalResult
+mlir::rock::retypeElementwiseBodyShapes(Operation *op, Block &block,
+                                        ArrayRef<int64_t> targetShape) {
+  for (Operation &bodyOp : block.without_terminator()) {
+    if (auto constOp = dyn_cast<arith::ConstantOp>(&bodyOp)) {
+      if (failed(reshapeSplatConstant(constOp, targetShape)))
+        return op->emitOpError()
+               << "non-splat constant in elementwise body cannot be reshaped";
+      continue;
+    }
+    if (bodyOp.getNumResults() != 1 || bodyOp.getNumOperands() == 0)
+      continue;
+    auto operandTy = dyn_cast<RankedTensorType>(bodyOp.getOperand(0).getType());
+    auto resultTy = dyn_cast<RankedTensorType>(bodyOp.getResult(0).getType());
+    if (!operandTy || !resultTy)
+      continue;
+    if (operandTy.getShape() != resultTy.getShape())
+      bodyOp.getResult(0).setType(RankedTensorType::get(
+          operandTy.getShape(), resultTy.getElementType()));
+  }
+  return success();
+}
+
 void mlir::rock::propagateOutputType(Value oldRoot, Value newRoot) {
   auto newRootType = dyn_cast<RankedTensorType>(newRoot.getType());
   if (!newRootType)

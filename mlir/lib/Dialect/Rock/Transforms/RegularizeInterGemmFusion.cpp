@@ -442,45 +442,6 @@ static LogicalResult inlineExternalConstants(OpBuilder &builder, Operation *op,
   return success();
 }
 
-/// Reshape all inline splat constants in the body to match `targetShape`.
-static LogicalResult reshapeBodyConstants(Operation *op, Block &block,
-                                          ArrayRef<int64_t> targetShape) {
-  for (Operation &bodyOp : block.without_terminator()) {
-    auto constOp = dyn_cast<arith::ConstantOp>(&bodyOp);
-    if (!constOp)
-      continue;
-    auto origType = dyn_cast<RankedTensorType>(constOp.getType());
-    if (!origType || origType.getShape() == targetShape)
-      continue;
-    auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue());
-    if (!splatAttr)
-      return op->emitOpError()
-             << "non-splat constant in elementwise body cannot be reshaped";
-    auto newType =
-        RankedTensorType::get(targetShape, origType.getElementType());
-    constOp.setValueAttr(
-        SplatElementsAttr::get(newType, splatAttr.getSplatValue<Attribute>()));
-    constOp.getResult().setType(newType);
-  }
-  return success();
-}
-
-/// Propagate `targetShape` through elementwise op results whose shapes
-/// have become stale after block argument types changed.
-static void propagateBodyResultTypes(Block &block) {
-  for (Operation &bodyOp : block.without_terminator()) {
-    if (bodyOp.getNumResults() != 1 || bodyOp.getNumOperands() == 0)
-      continue;
-    auto operandTy = dyn_cast<RankedTensorType>(bodyOp.getOperand(0).getType());
-    auto resultTy = dyn_cast<RankedTensorType>(bodyOp.getResult(0).getType());
-    if (!operandTy || !resultTy)
-      continue;
-    if (operandTy.getShape() != resultTy.getShape())
-      bodyOp.getResult(0).setType(RankedTensorType::get(
-          operandTy.getShape(), resultTy.getElementType()));
-  }
-}
-
 /// Regularize the body region of a gemm-gemm-like op so that it contains
 /// only elementwise operations (no rock.transform ops).
 /// Transforms on block arguments are pushed outside the body by applying
@@ -529,10 +490,8 @@ static LogicalResult regularizeGemmGemmBody(OpBuilder &builder,
   ArrayRef<int64_t> targetShape =
       cast<RankedTensorType>(block.getArgument(0).getType()).getShape();
 
-  if (failed(reshapeBodyConstants(op, block, targetShape)))
+  if (failed(rock::retypeElementwiseBodyShapes(op, block, targetShape)))
     return failure();
-
-  propagateBodyResultTypes(block);
 
   return success();
 }

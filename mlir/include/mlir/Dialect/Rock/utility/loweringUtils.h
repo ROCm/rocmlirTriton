@@ -9,6 +9,7 @@
 #ifndef ROCK_UTILITY_LOWERINGUTILS_H
 #define ROCK_UTILITY_LOWERINGUTILS_H
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
@@ -178,6 +179,27 @@ void replaceFusionExtraInputs(Value root,
                               const DenseMap<Value, Value> &inputMap);
 
 /// Propagate a new output type through the fusion chain.
+/// Reshape a ranked-tensor splat constant to `targetShape` in place, keeping
+/// its element type and splat value. Elementwise bodies are retiled and
+/// re-split by several passes, and each time the constants riding along in
+/// them have to follow; both the value attribute and the result type must move
+/// together or the constant no longer verifies. A no-op for non-tensor
+/// constants; fails for non-splat tensors, which cannot be reshaped, so the
+/// caller can emit a diagnostic with its own context.
+LogicalResult reshapeSplatConstant(arith::ConstantOp constOp,
+                                   ArrayRef<int64_t> targetShape);
+
+/// Substitute `targetShape` throughout a purely elementwise body (an
+/// inter-gemm / pre-softmax region) whose block argument types the caller has
+/// just changed. Reshapes the body's splat constants - the other leaves - then
+/// retypes each op's result from its first operand, which SSA dominance
+/// guarantees has already been visited, so joins that never touch the
+/// first-GEMM argument are covered too. Element types are preserved
+/// throughout; only shapes move. Fails if a non-splat constant blocks the
+/// reshape, leaving the caller to add context to the diagnostic.
+LogicalResult retypeElementwiseBodyShapes(Operation *op, Block &block,
+                                          ArrayRef<int64_t> targetShape);
+
 /// Replaces uses of `oldRoot` in fusion ops (arith.*, math.*) with `newRoot`,
 /// and updates each fusion op's result type to carry the new shape while
 /// preserving its original element type. Continues recursively through the

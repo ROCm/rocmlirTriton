@@ -1,5 +1,9 @@
+// An elementwise body between the two GEMMs is legal under split-k: it is
+// pointwise in (gemmM, gemmN) and split-k only partitions gemmN, so each split
+// reads its own slice of the body's inputs.
+
 // RUN: rocmlir-gen -emit-module-fusibility-for=attn:v1:64,64,16,1,1,4,16,4,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-SPLITK
-// CHECK-SPLITK: fusible:0
+// CHECK-SPLITK: fusible:1
 // RUN: rocmlir-gen -emit-module-fusibility-for=attn:v1:64,64,16,1,1,4,16,1,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
 // CHECK-NONSPLITK: fusible:1
 #map = affine_map<(d0, d1, d2) -> ((d0 * 32 + d1) * 32 + d2)>
