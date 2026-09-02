@@ -36,6 +36,7 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+#include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -720,9 +721,14 @@ namespace {
 class PredicateOracle {
 public:
   LogicalResult run(Operation *scope) {
-    ranges.load<dataflow::DeadCodeAnalysis>();
+    // The constant propagation is what lets `DeadCodeAnalysis` resolve a
+    // branch: without it every condition reads as uninitialized and the
+    // analysis marks no successor live, leaving every block but the entry one
+    // dead and every value in it without a fact. The K loop puts the output
+    // stores in such a block.
+    dataflow::loadBaselineAnalyses(ranges);
     ranges.load<LLVMIntegerRangeAnalysis>();
-    knownBits.load<dataflow::DeadCodeAnalysis>();
+    dataflow::loadBaselineAnalyses(knownBits);
     knownBits.load<KnownBitsAnalysis>();
     return success(succeeded(ranges.initializeAndRun(scope)) &&
                    succeeded(knownBits.initializeAndRun(scope)));

@@ -22,6 +22,28 @@ func.func @gridwise_attn_prefix_offset_requires_causal(
   return %r : tensor<1x384x64xf32>
 }
 
+// A pre-second-GEMM elementwise input must be a view of the first GEMM's
+// output space. Here gemm0 produces 1x384x384 but the input is 1x384x256, the
+// shape it would have had if a gemmN split had been applied to the input
+// without also being applied to the keys.
+func.func @gridwise_attention_elemwise_input_shape_mismatch(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>,
+    %ew: tensor<1x384x256xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax elementwise input 0 has shape 1, 384, 256 but must match the first GEMM's output space 1, 384, 384}}
+  %r = rock.gridwise_attention(%q, %k, %v, %ew) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>, %arg_ew: tensor<1x384x256xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 1, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    enableSoftmax = false
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1x384x256xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // attention tests
 // -----------------------------------------------------------------------------
