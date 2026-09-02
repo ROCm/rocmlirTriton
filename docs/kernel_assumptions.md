@@ -1,8 +1,8 @@
-# Kernel Memory Assumptions
+# Kernel Memory and Floating-Point Assumptions
 
-This document describes the memory and pointer assumptions that
-rocmlirTriton makes about GPU kernels it generates. These assumptions
-are split into two categories:
+This document describes the memory, pointer, and floating-point
+assumptions that rocmlirTriton makes about GPU kernels it generates.
+These assumptions are split into two categories:
 
 1. **Internal** -- guaranteed by how rocmlirTriton generates kernels.
 2. **External** -- requirements on the runtime/caller (e.g. MIGraphX).
@@ -138,19 +138,33 @@ This is encoded as `rocdl.no_remote_memory` on atomic operations.
 
 ### 2.3 Denormal flushing on f32 (`allow-flush-denorm`)
 
-We set `denormal-fp-math-f32` to `preserve-sign` on every kernel
-function, allowing the hardware to **flush f32 denormals to zero** for
-all f32 operations (not just atomics). Additionally, atomic
-read-modify-write operations are annotated with
-`rocdl.ignore_denormal_mode`, which is needed for native `f32` atomic
-add on older architectures (e.g. gfx90a) where the hardware atomic unit
-unconditionally flushes f32 denormals regardless of the mode register.
-Without this metadata, LLVM would fall back to CAS loops on those
-targets. Newer architectures (gfx11+, gfx94x) support denormals in
-their atomic units natively, so the metadata is redundant but harmless.
+This is gated by the `allow-flush-denorm` pipeline option (default
+`true`). There are two independent encodings: the kernel-wide mode
+register, and a per-atomic override.
 
-This matches rocMLIR's behavior and is gated by the `allow-flush-denorm`
-pipeline option (currently set to `true`).
+**Kernel-wide f32 mode.** `TritonToHsaco.cpp` stamps LLVM's
+`denormal_fpenv` enum attribute (not the legacy
+`"denormal-fp-math-f32"` string; that spelling is only auto-upgraded
+when a module is parsed from IR text, so it is inert on an in-memory
+module). With flushing enabled the f32 mode is `preservesign` — flush
+both denormal *inputs* and *outputs* to signed zero, which is upstream
+Triton's intended `"preserve-sign"`. The AMDGPU backend programs that
+as `.amdhsa_float_denorm_mode_32 0`. f16/f64 stay IEEE. With flushing
+disabled the f32 mode is IEEE as well (hardware value `3`).
+
+This is **not** what rocMLIR does. rocMLIR never stamps a denormal
+attribute on the kernel, so LLVM's compute-kernel default applies:
+IEEE in and out (hardware value `3`) for ordinary arithmetic.
+
+**Atomics.** Atomic RMW ops are annotated with
+`rocdl.ignore_denormal_mode` when flushing is enabled. That is needed
+for native `f32` atomic add on older architectures (e.g. gfx90a),
+where the hardware atomic unit unconditionally flushes f32 denormals
+regardless of the mode register. Without this metadata, LLVM would
+fall back to CAS loops on those targets. Newer architectures (gfx11+,
+gfx94x) support denormals in their atomic units natively, so the
+metadata is redundant but harmless. This atomic annotation *does*
+match rocMLIR, which always sets it.
 
 ### 2.4 Pointer alignment (16 bytes)
 
@@ -227,6 +241,23 @@ the softmax result.
 - `lastValidKVIndex` is a 1-D tensor with one element per batch, matching
   the output batch dimension.
 
+### 2.10 No NaN in the floating-point dataflow (`nnan`)
+
+No NaN may appear anywhere in the floating-point dataflow -- not just in the
+kernel arguments, but at any intermediate. A zero quantization scale making
+`0 * inf`, an accumulation overflowing to `inf + (-inf)`, or a division by a zero
+softmax row-sum all violate this even when every input tensor is finite.
+
+Unlike the memory assumptions above, violating it is not undefined behavior: the
+result stays defined but stops matching IEEE. Where a NaN would have propagated,
+the kernel produces a bound instead, so a clamp saturates to one of its limits.
+In particular, `migraphx.max` does not propagate NaNs the way its operator
+contract specifies.
+
+The assumption is unconditional -- there is no option to turn it off. It is what
+lets min/max ops carry the `nnan` fast-math flag, which in turn lets a clamp
+become a single `v_med3`.
+
 ---
 
 ## Summary Table
@@ -245,10 +276,11 @@ the softmax result.
 | No device heap (skips initHeap) | Internal | `amdgpu-no-heap-ptr` |
 | Coarse-grained memory | **External** | `rocdl.no_fine_grained_memory` |
 | Device-local memory | **External** | `rocdl.no_remote_memory` |
-| Denormal flushing allowed | **External** | `rocdl.ignore_denormal_mode` |
+| Denormal flushing allowed | **External** | `denormal_fpenv(float: preservesign)` + `rocdl.ignore_denormal_mode` |
 | 16-byte alignment | **External** | `llvm.align = 16` |
 | Non-overlapping regions | **External** | `noalias` |
 | Valid pointers | **External** | `nonnull`, `dereferenceable` |
 | No concurrent external writes | **External** | `agent-one-as`, `invariant` |
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
 | KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |
+| No NaN in float dataflow | **External** | `nan_mode = IGNORE`, `nnan` fast-math flag |

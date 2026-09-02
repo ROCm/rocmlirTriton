@@ -14,6 +14,7 @@
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
@@ -43,6 +44,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -60,6 +63,19 @@ enum class GemmMNDim { M, N };
 
 // Largest per-block K tile size we tune for.
 #define MAX_K_PER_BLOCK 512
+
+// Whether this arch should use the wider CDNA tuning space. Keyed on the CDNA
+// product line, not on the matrix instruction kind: gfx1250 issues WMMA but is
+// classified as CDNA and shares the wide K/block lists and full numWaves range
+// with MFMA parts. MFMA-only knobs such as matrixInstrNonkdim and kpack > 1 are
+// chosen separately. Mirrors `rock::isCDNA`.
+static bool prefersWideTuningSpace(StringRef arch) {
+  return rock::isCDNA(arch);
+}
+
+// The matrixInstrNonkdim values the tuner tries, i.e. the MFMA instruction tile
+// sizes. Ignored on WMMA, whose instructions are all 16x16.
+static constexpr uint32_t kMatrixInstrNonkdims[] = {16, 32};
 
 // Smallest tile covering `d` with few pow2 sub-tiles (rock-decompose-nonpow2-
 // tiles splits a tile into one sub-tile per set bit): keep the top pow2 bit and
@@ -117,6 +133,87 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
   assert(llvm::all_of(kPerBlockList,
                       [](uint32_t v) { return v <= MAX_K_PER_BLOCK; }) &&
          "kPerBlock candidates must not exceed MAX_K_PER_BLOCK");
+}
+
+// Whether no pow2 kPerBlock candidate tiles K cleanly, which is when widening
+// the range is worth it. "Cleanly" is two requirements at once:
+//
+//   - the candidate divides K evenly, so no iteration masks a K remainder;
+//   - the candidate is a multiple of `alignTo`, so advancing K moves no inner
+//     coordinate (see kPerBlockAlignmentFactor).
+//
+// We skip kPerBlock of 1, since it always divides K, but degenerates the K loop
+// into one iteration per K element, so it does not count as a usable tiling.
+static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
+                                       int64_t k, int64_t alignTo) {
+  return llvm::none_of(kPerBlockList, [&](uint32_t v) {
+    return v > 1 && k % v == 0 && v % alignTo == 0;
+  });
+}
+
+// The factor a kPerBlock should be a multiple of for the GEMM's K index
+// computation to be cheap to advance. Returns 1 when K carries no such
+// structure, i.e. on a plain GEMM or a 1x1 conv.
+//
+// A forward conv merges the input's channel and spatial dims into gemmK, in the
+// order the input layout lists them, and only the merge's outermost dim
+// advances without carrying into the ones below it. Of those carries, only one
+// into a spatial dim costs anything: it moves the padded input window, leaving
+// the validity mask dependent on the K loop's induction variable. A carry into
+// the channel dim is just a uniform address step.
+//
+// So the factor exists only for a channels-first input (Merge(c, y, x)), where
+// pinning the spatial dims takes a multiple of Y*X. Any other order puts a
+// spatial dim outermost -- channels-last Merge(y, x, c), interleaved
+// Merge(y, c, x) -- and then a spatial dim moves on every step whatever the
+// tile size, so no alignment can buy anything.
+static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
+  // Only forward convs supported for now.
+  if (gemmOp.getKernelType() != KernelType::Conv)
+    return 1;
+
+  Operation *op = gemmOp.getOperation();
+  auto inputLayout = op->getAttrOfType<ArrayAttr>("input_layout");
+  if (!inputLayout)
+    return 1;
+
+  ConvolutionDims convDims = ConvolutionDims::fromOp(op);
+  // Walking the input layout in order collects the gemmK-merged dims in the
+  // same order the merge lists them in, so the first entry is the merge's
+  // outermost dim.
+  SmallVector<int64_t> mergedExtents;
+  bool channelIsOutermost = false;
+  for (Attribute nameAttr : inputLayout) {
+    StringRef name = cast<StringAttr>(nameAttr).getValue();
+    if (name == "ci") {
+      channelIsOutermost = mergedExtents.empty();
+      mergedExtents.push_back(convDims.c);
+      continue;
+    }
+    for (auto [i, filLen] : llvm::enumerate(convDims.fil)) {
+      SmallString<4> spatial;
+      (Twine(i) + "i").toVector(spatial);
+      // "hi"/"wi" are the legacy spellings of "0i"/"1i".
+      bool isLegacy = (i == 0 && name == "hi") || (i == 1 && name == "wi");
+      if (name == spatial || isLegacy)
+        mergedExtents.push_back(filLen);
+    }
+  }
+  if (mergedExtents.size() != convDims.fil.size() + 1)
+    return 1;
+
+  // The spatial dims have to be the fastest changing ones, i.e. the channel dim
+  // has to be the merge's outermost. Otherwise a spatial dim sits above another
+  // merged dim and moves as soon as that one wraps.
+  if (!channelIsOutermost)
+    return 1;
+
+  // Only the outermost dim advances without a carry, so the tile has to be a
+  // multiple of everything below it.
+  int64_t trailing = 1;
+  for (int64_t len : llvm::drop_begin(mergedExtents))
+    trailing *= len;
+  return trailing > 0 ? trailing : 1;
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
@@ -200,6 +297,44 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
   return {1, 3, 4};
 }
 
+// Bounds of the flat range the widened range adds on top of rule (3)'s window.
+//
+// The low bound is the largest non-accel pow2 kPerBlock, and it is exclusive:
+// at or below it the pow2 list {1,4,8,16} already samples K densely, and the
+// window itself reaches the small two-segment divisors (9, 12) on a 16- or
+// 32-wide tile. It only ever bites on the non-accel path, since the caller
+// clamps the range from below by the path's own smallest pow2 tile, which is
+// already above it on an accel path: 17 for MFMA and 32 for WMMA.
+static constexpr uint32_t kWidenedMinExclusiveKPerBlock = 16;
+
+// The high bound depends on accel / non-accel, because the resource that
+// caps kPerBlock is different for each.
+//
+// - Non-accel: The dot operands live in registers, so kPerBlock affects
+// VGPR pressure directly. Higher values become inefficient very quickly.
+//
+// - Accel path: It holds its operands through LDS, so it is not bound by
+// that ceiling, and it needs a higher one to be useful at all.
+//
+// This is where the range stops as long as the alignment fits under it; the
+// caller extends it when the alignment's smallest multiple lies past it.
+static constexpr uint32_t kNonAccelWidenedRangeEnd = 64;
+static constexpr uint32_t kAccelWidenedRangeEnd = 128;
+
+// The narrowest K any matrix instruction reachable from this tuning space can
+// consume, or 1 if the op has no accel path.
+static int64_t accelInstrKAlignment(StringRef arch,
+                                    RockGemmWrapperInterface gemmOp) {
+  std::optional<int64_t> narrowest;
+  for (uint32_t instrNonKDim : kMatrixInstrNonkdims) {
+    FailureOr<int64_t> kDim =
+        rock::getAccelInstrMinKDim(arch, gemmOp, instrNonKDim);
+    if (succeeded(kDim))
+      narrowest = narrowest ? std::min(*narrowest, *kDim) : *kDim;
+  }
+  return narrowest.value_or(1);
+}
+
 // Non-power-of-two kPerBlock heuristic. 3 ideas:
 //
 //   (1) It must divide K evenly
@@ -264,25 +399,48 @@ windowDividingKPerBlock(int64_t gemmK, uint32_t mPerBlock, uint32_t nPerBlock,
   return candidates;
 }
 
+// The widened range is bounded differently. Unlike rule (3) it does not use
+// min(mPerBlock,nPerBlock).
+// What keeps it affordable is the alignment: a conv admits only multiples of
+// lcm(trailing product, instruction K), usually a single value inside the
+// range, so the space grows about as much as rule (3) does. For example:
+//
+//   i8 3x3 conv over C=256, WMMA:  372 -> 462 configs (+24%), adding 144
+//   f32 3x3 conv over C=387, FMA:  756 -> 927 configs (+23%), adding 27
+//
+// Note that it only affects convs (we skip 1x1 convs, since they are
+// essentially GEMMs).
+static SmallVector<uint32_t, 8>
+alignedDividingKPerBlock(int64_t gemmK, uint32_t minBaseK, uint32_t maxK,
+                         uint32_t maxWidenedK, int64_t multipleOf) {
+  SmallVector<uint32_t, 8> candidates;
+  assert(gemmK > 0 && "gemmK must be greater than 0");
+
+  uint32_t lo = std::max(minBaseK, kWidenedMinExclusiveKPerBlock + 1);
+  uint32_t hi = std::min<uint32_t>(maxK, maxWidenedK) + 1;
+  for (uint32_t d = lo; d < hi && static_cast<int64_t>(d) <= gemmK; ++d) {
+    if (d % multipleOf == 0 && gemmK % d == 0)
+      candidates.push_back(d);
+  }
+  return candidates;
+}
+
 static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
                                               TuningParamSetKind kind,
                                               uint32_t mPerBlock,
                                               uint32_t nPerBlock) {
   auto arch = rock::getArchValue(gemmOp);
-  auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
-  bool isMfma = accelKind == MatrixAccelKind::MFMA ||
-                accelKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
-                accelKind == MatrixAccelKind::ScaledWMMA;
+  bool isAccel = rock::hasAccel(arch, gemmOp);
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
 
   int64_t k = gemmOp.getGemmSize().k;
 
   std::vector<uint32_t> kList;
-  if (isMfma)
+  if (isWideAccel)
     kList = kind == TuningParamSetKind::Exhaustive
                 ? std::vector<uint32_t>{16, 32, 64, 128, 256, 512}
                 : std::vector<uint32_t>{16, 32, 64, 128};
-  else if (isWmma)
+  else if (isAccel)
     kList = kind == TuningParamSetKind::Exhaustive
                 ? std::vector<uint32_t>{32, 64, 128, 256}
                 : std::vector<uint32_t>{32, 64};
@@ -304,13 +462,51 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
     bool isIntegerGemm = isa<IntegerType>(gemmOp.getAType()) &&
                          isa<IntegerType>(gemmOp.getBType());
     uint32_t baseMinK = *llvm::min_element(kList);
-    for (uint32_t d : windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK,
-                                              /*maxK=*/256)) {
-      if (isIntegerGemm && d % 4 != 0)
-        continue;
-      if (!llvm::is_contained(kList, d))
-        kList.push_back(d);
+
+    constexpr uint32_t maxK = 256;
+
+    auto addCandidates = [&](ArrayRef<uint32_t> candidates) {
+      for (uint32_t d : candidates) {
+        // Drop tiles the integer GEMM rule would reject.
+        if (isIntegerGemm && d % kMinIntegerKSegment != 0)
+          continue;
+        if (!llvm::is_contained(kList, d))
+          kList.push_back(d);
+      }
+    };
+
+    // Tiling the loop with this value will generate efficient im2col code,
+    // so we want to tune for a kPerBlock that is multiple of this value. It is
+    // 1 when there is no such requirement, i.e. on a plain GEMM or a 1x1 conv.
+    int64_t trailingProduct = kPerBlockAlignmentFactor(gemmOp);
+
+    // We only tune for a kPerBlock that is multiple of the K dimension of the
+    // MFMA/WMMA instruction. For example, a 3x3 conv on WMMA wants a multiple
+    // of 16. So: lcm(9, 16) = 144. A non-accel (FMA) op contributes 1, leaving
+    // the conv requirement on its own.
+    int64_t alignTo =
+        std::lcm(trailingProduct, accelInstrKAlignment(arch, gemmOp));
+
+    // A K that the default space cannot tile cleanly has no good kPerBlock
+    // there, so widen the search for it. trailingProduct > 1 leaves out GEMMs
+    // and 1x1 convs, where widening has not proven any speedup yet; it is the
+    // conv part of `alignTo` on its own, since `alignTo` also carries the
+    // instruction K, which every op has.
+    //
+    // Answered against the pow2 kList, i.e. before either heuristic contributes
+    // to it: the question is whether the *default* space serves this K.
+    if (trailingProduct > 1 && needsWidenedKPerBlockRange(kList, k, alignTo)) {
+      // Widen at least as far as `alignTo`: every candidate is a multiple of
+      // it, so a bound below it would admit nothing.
+      uint32_t maxWidenedK = std::max<uint32_t>(
+          isAccel ? kAccelWidenedRangeEnd : kNonAccelWidenedRangeEnd, alignTo);
+      addCandidates(
+          alignedDividingKPerBlock(k, baseMinK, maxK, maxWidenedK, alignTo));
     }
+
+    addCandidates(
+        windowDividingKPerBlock(k, mPerBlock, nPerBlock, baseMinK, maxK));
+
     llvm::sort(kList);
   }
   return kList;
@@ -336,8 +532,13 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   auto accelKind = rock::getMatrixAccelKind(arch, gemmOp);
   bool isMfma = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = accelKind == MatrixAccelKind::WMMA ||
-                accelKind == MatrixAccelKind::ScaledWMMA;
+  bool isAccel = accelKind != MatrixAccelKind::None;
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
+
+  std::vector<uint32_t> matrixInstrNonkdimList =
+      isMfma ? std::vector<uint32_t>(std::begin(kMatrixInstrNonkdims),
+                                     std::end(kMatrixInstrNonkdims))
+             : std::vector<uint32_t>{0};
 
   // The K/block axis is not returned here: it depends on the (m,n) tile and is
   // built per tile by computeKPerBlock in createGemmTuningRangeBF.
@@ -345,19 +546,18 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
 
-  std::vector<std::vector<uint32_t>> validRangeMfmaParams = {
-      mPerBlock,         // M/block
-      nPerBlock,         // N/block
-      {1},               // kPackList
-      numWavesRange,     // numWaves
-      {16, 32},          // matrixInstrNonkdim
-      {1, 2, 3},         // numStages
-      wavesPerEUList,    // wavesPerEU
-      gridGroupSizeList, // gridGroupSize
-      numCTAsList        // numCTAs
+  std::vector<std::vector<uint32_t>> validRangeCdnaParams = {
+      mPerBlock,              // M/block
+      nPerBlock,              // N/block
+      {1},                    // kPackList
+      numWavesRange,          // numWaves
+      matrixInstrNonkdimList, // matrixInstrNonkdim
+      {1, 2, 3},              // numStages
+      wavesPerEUList,         // wavesPerEU
+      gridGroupSizeList,      // gridGroupSize
+      numCTAsList             // numCTAs
   };
 
-  // WMMA (RDNA) parameters
   // kPack is always one for WMMA
   std::vector<std::vector<uint32_t>> validRangeWmmaParams = {
       mPerBlock,         // M/block
@@ -392,9 +592,9 @@ getRangeGemm(RockGemmWrapperInterface gemmOp, int64_t waveSize,
       numCTAsList        // numCTAs
   };
 
-  if (isMfma)
-    return validRangeMfmaParams;
-  if (isWmma)
+  if (isWideAccel)
+    return validRangeCdnaParams;
+  if (isAccel)
     return validRangeWmmaParams;
   return validRangeNonAccelParams;
 }
@@ -422,6 +622,22 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
   capKPerBlockByK(kPerBlock, gemm0K);
 
   auto arch = rock::getArchValue(gemmGemmOp);
+  bool isAccel = rock::hasAccel(arch, gemmGemmOp);
+  // Checking the first gemm is sufficient: the two gemms in attention always
+  // share the same accel kind on every currently supported arch.
+  MatrixAccelKind firstGemmKind =
+      rock::getMatrixAccelKind(arch, gemmGemmOp).first;
+  bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
+                firstGemmKind == MatrixAccelKind::ScaledMFMA;
+  bool isWideAccel = isAccel && prefersWideTuningSpace(arch);
+
+  // An MFMA-only knob (see kMatrixInstrNonkdims), so every WMMA arch -- gfx1250
+  // included -- keeps the 0 that spells "no instruction tile to choose".
+  std::vector<uint32_t> matrixInstrNonkdimList =
+      isMfma ? std::vector<uint32_t>(std::begin(kMatrixInstrNonkdims),
+                                     std::end(kMatrixInstrNonkdims))
+             : std::vector<uint32_t>{0};
+
   std::vector<uint32_t> numCTAsList;
   for (uint32_t n = 1; n <= rock::getMaxNumCTAs(arch); n *= 2)
     numCTAsList.push_back(n);
@@ -440,14 +656,14 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
     for (uint32_t t = 64; t <= 256; t *= 2)
       nPerBlockG1List.push_back(t);
 
-  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsMFMA = {
+  const std::vector<std::vector<uint32_t>> validRangeGemmGemmParamsCDNA = {
       /*gemm0MPerBlock=*/mPerBlock,
       /*gemm0NPerBlock=*/nPerBlock,
       /*nPerBlockG1=*/nPerBlockG1List,
       kPerBlock,
       kPackList,
       numWavesRange,
-      /*matrixInstrNonkdim=*/{16, 32},
+      matrixInstrNonkdimList,
       {1, 2, 3},
       wavesPerEUList,
       gridGroupSizeList,
@@ -489,18 +705,9 @@ getRangeGemmGemm(RockGemmGemmWrapperInterface gemmGemmOp, int64_t waveSize,
       gridGroupSizeList,
       numCTAsList};
 
-  auto [firstGemmKind, secondGemmKind] =
-      rock::getMatrixAccelKind(rock::getArchValue(gemmGemmOp), gemmGemmOp);
-
-  // Checking the first gemm is sufficient: the two gemms in attention always
-  // share the same accel kind on every currently supported arch.
-  bool isMfma = firstGemmKind == MatrixAccelKind::MFMA ||
-                firstGemmKind == MatrixAccelKind::ScaledMFMA;
-  bool isWmma = firstGemmKind == MatrixAccelKind::WMMA ||
-                firstGemmKind == MatrixAccelKind::ScaledWMMA;
-  if (isMfma)
-    return validRangeGemmGemmParamsMFMA;
-  if (isWmma)
+  if (isWideAccel)
+    return validRangeGemmGemmParamsCDNA;
+  if (isAccel)
     return validRangeGemmGemmParamsWMMA;
   return validRangeGemmGemmParamsNonAccel;
 }
@@ -1310,8 +1517,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
   // Number of chiplets
   problemOS << numChiplets << tab;
 
-  if (opType == KernelType::Conv || opType == KernelType::ConvBwdData ||
-      opType == KernelType::ConvBwdWeight) { // conv cases
+  if (opType == KernelType::Conv ||
+      opType == KernelType::ConvBwdData) { // conv cases
     RockConvInterface convIF = dyn_cast<RockConvInterface>(gemmOp);
 
     ShapedType inType = convIF.getConvInput().getType();
@@ -1355,9 +1562,6 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
       break;
     case KernelType::ConvBwdData:
       problemOS << "-F 2" << sep;
-      break;
-    case KernelType::ConvBwdWeight:
-      problemOS << "-F 4" << sep;
       break;
     default:
       return failure();

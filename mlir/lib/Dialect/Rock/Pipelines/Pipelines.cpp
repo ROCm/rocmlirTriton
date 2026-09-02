@@ -82,6 +82,13 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
+  // --- rocmlirTriton pass ----
+  // Must run after combine-ops, which folds chained addptrs into the single
+  // offset this pass re-materializes and turns select+load into a masked load,
+  // and before CSE and LICM, which respectively deduplicate the narrowed
+  // address computations and hoist any load narrowing made loop-invariant.
+  pm->addPass(rock::createRockNarrowRedundantLoadsPass());
+  // --- rocmlirTriton pass ----
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
   pm->addPass(mlir::createCSEPass());
   pm->addPass(mlir::createLoopInvariantCodeMotionPass());
@@ -255,7 +262,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout) {
+                     int64_t useReductionLayout, bool useBufferOps) {
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   // Redistribute the layout of the reduction dimension to reduce register
@@ -306,6 +313,19 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
       mlir::triton::createConvertBuiltinFuncToLLVMPass(arch, /*ftz=*/true));
   pm->addPass(mlir::createReconcileUnrealizedCastsPass());
 
+  // --- rocmlirTriton pass ----
+  // Must run after convert-triton-amdgpu-to-llvm, which emits the buffer
+  // accesses, and after reconcile-unrealized-casts, since the analyses walk
+  // plain LLVM offset arithmetic and stop at a cast. Canonicalize and CSE
+  // after, so the offset math of an erased access leaves with it.
+  if (useBufferOps) {
+    pm->addNestedPass<mlir::LLVM::LLVMFuncOp>(
+        rock::createRockFoldOobBufferOpsPass());
+    pm->addPass(mlir::createCanonicalizerPass());
+    pm->addPass(mlir::createCSEPass());
+  }
+  // --- rocmlirTriton pass ----
+
   // IMPORTANT:
   //
   // make_llir here has this comment:
@@ -348,7 +368,9 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
     funcPm.addPass(createRocmlirCustomTosaToLinalgPass());
 
   if (!noRock) {
-    funcPm.addPass(rock::createRockTosaToElementwisePass());
+    rock::RockTosaToElementwisePassOptions elementwiseOpts;
+    elementwiseOpts.disableFastMath = options.disableFastMath;
+    funcPm.addPass(rock::createRockTosaToElementwisePass(elementwiseOpts));
   }
   // use tosa conversion pipeline
   // (see mlir/lib/Conversion/TosaToLinalg/TosaToLinalgPass.cpp)
@@ -438,8 +460,13 @@ void rock::buildKernelPipeline(OpPassManager &pm,
 
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
-  // Must run after GridwiseGemmToBlockwise and before InsertOutputFusionLoads.
-  // CSE after deduplicates the now-co-located shared operand loads.
+  // Must run after ToBlockwise passes, which build the K loop and the
+  // accumulator this pass decomposes, and before FuseSiblingLoops, so that it
+  // sees one blockwise_gemm per loop.
+  addWithDCE(rock::createRockDecomposeNonPow2KPass());
+  // Must run after GridwiseGemmToBlockwise and RockDecomposeNonPow2K, but
+  // before InsertOutputFusionLoads. CSE after deduplicates the now-co-located
+  // shared operand loads.
   addWithCSE(rock::createRockFuseSiblingLoopsPass());
   addWithDCE(rock::createRockInsertOutputFusionLoadsPass());
   addWithCSE(rock::createRockRegularizeInputPass());
@@ -461,8 +488,10 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
-  // We run this pass after lower-stores to catch redundant casts that cannot be
-  // flagged earlier due to loads/stores that sit between truncf/extf pairs.
+  // Must run after lower-stores to catch redundant casts that cannot be
+  // flagged earlier due to loads/stores that sit between truncf/extf pairs,
+  // and before RockToTTIR, whose clamp fold only matches a minnumf/maxnumf
+  // pair that already carries `nnan`.
   if (!options.disableFastMath)
     addWithDCE(rock::createRockAllowFastMathFlagsPass());
 
@@ -526,6 +555,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   rock::RockToTTIRPassOptions rockToTTIROpts;
   rockToTTIROpts.disableFastMath = options.disableFastMath;
   funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
+  // A second run, for the float ops RockToTTIR synthesizes itself (the
+  // reduction combiners), which did not exist yet at the run above. Ops that
+  // run already flagged are left alone, so the repeat costs nothing.
+  if (!options.disableFastMath)
+    addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());
@@ -546,7 +580,8 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.useReductionLayout);
+  makeLLIR(&pm, arch, options.useReductionLayout,
+           isBufferOpsEnabled(options.useBufferOps));
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

@@ -85,35 +85,6 @@ func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %output : ten
 // CHECK-LABEL: func.func @rock_conv_bwd_data_f16
 // CHECK-NEXT: rock.conv_bwd_data
 
-func.func @rock_conv_bwd_weight(%input : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["n", "gi", "c", "0i", "1i"],
-    output_layout = ["n", "go", "k", "0o", "1o"],
-    dilations = [1 : index,  1 : index],
-    strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
-}
-// CHECK-LABEL: func.func @rock_conv_bwd_weight
-// CHECK-NEXT: rock.conv_bwd_weight
-
-func.func @rock_conv_bwd_weight_f16(%input : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  %result = rock.conv_bwd_weight(%input, %output) {
-    filter_layout = ["g", "k", "c", "0", "1"],
-    input_layout = ["n", "gi", "c", "0i", "1i"],
-    output_layout = ["n", "go", "k", "0o", "1o"],
-    dilations = [1 : index,  1 : index],
-    strides = [1 : index,  1 : index],
-    padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16> -> tensor<?x?x?x?x?xf16>
-  return %result : tensor<?x?x?x?x?xf16>
-}
-
-// CHECK-LABEL: func.func @rock_conv_bwd_weight_f16
-// CHECK-NEXT: rock.conv_bwd_weight
-
 func.func @rock_gemm(%a : tensor<32x64xf16>, %b : tensor<1x32x128xf16>, %out : tensor<64x128xf32>) -> tensor<64x128xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %gemm_result = rock.gemm tr %a * %b
   : tensor<32x64xf16> * tensor<1x32x128xf16> -> tensor<64x128xf32>
@@ -161,7 +132,7 @@ func.func @rock_scaled_gemm(%a : tensor<32x64xf4E2M1FN>, %b : tensor<1x32x128xf4
 // Affine maps needed when testing transform
 #map0 = affine_map<(d0, d1, d2, d3, d4) -> (d1, d0, d2, d3 - 1, d4 - 2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d2, d1 floordiv 512,
-  (d1 mod 512) floordiv 16, d1 mod 16)>
+  (d1 floordiv 16) mod 32, d1 mod 16)>
 #map2 = affine_map<(d0, d1, d2, d3, d4, d5, d6) ->
   (d1, d0, d2, d3 + d4, d5 + d6)>
 

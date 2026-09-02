@@ -533,3 +533,80 @@ gfx117x even though it has the 128-bit WMMA v2 engine with OCP FP8 operands.
 
 Drop this patch on the next LLVM/Triton bump that includes equivalent upstream
 gfx117x OCP FP8 classification.
+
+----------------------------------------------------------------------
+patch203770.patch
+----------------------------------------------------------------------
+- Upstream commit : c64ec3766d72ab552957827b5a96cc50ed6c7182
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/203770
+- Upstream title  : [AMDGPU] Fix checkVALUHazardsHelper distance accounting
+                    on branchy CFG
+- File Fixed      : llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+                    llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+- Contents        : Splits checkVALUHazardsHelper into
+                    checkUniformWindowVALUHazardsHelper (pre-gfx940, one
+                    1-wait-state window) and
+                    checkSOFFSETWindowVALUHazardsHelper (gfx940-family,
+                    SOFFSET-dependent 1- and 2-wait-state windows). Each
+                    window now runs its own getWaitStatesSince scan, which
+                    returns the minimum distance to a producer across
+                    predecessor paths, instead of one distance counter shared
+                    across recursively visited blocks. Also swaps the
+                    hasGFX940Insts() gate in createsVALUHazard for
+                    hasVDecCoExecHazard(), which is defined as HasGFX940Insts
+                    and so is equivalent here. The upstream cross-block MIR
+                    regression test (appended to
+                    llvm/test/CodeGen/AMDGPU/buffer-store-dwordx4-vpk-mul-war-hazard-gfx942.mir)
+                    is omitted from this downstream record, matching the
+                    handling of the other LLVM lit tests here: the vendored
+                    LLVM is configured as libraries only, with no llc or
+                    FileCheck target, so it cannot be run in this build.
+
+Symptom without the patch
+-------------------------
+The nightly bf16 split-KV attention E2E test miscompares on gfx950, with about
+0.78% of the partial-output workspace wrong (16,801,792 of 2,150,629,376 bf16
+elements):
+
+  -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 \
+  -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 \
+  -return_lse=True -split_kv=32 \
+  --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1
+
+The corrupted elements are f32 LSE values (log2(seq_len_k) = log2(32) = 5.0,
+split across two bf16 slots as the pair (0.0, 5.0)) appearing inside the bf16
+partial-output workspace, at d in {224, 232, 240, 248} for heads h%16 in
+{12..15}. The failure needs a real GPU; the generated ISA compiles fine.
+
+Root cause
+----------
+The pinned LLVM revision is 62b7cf9623fc, which *is* upstream #197267
+("Widen MUBUF/MTBUF source-vgpr WAR hazard on gfx940-family to SGPR soffset").
+That commit rewrote checkVALUHazardsHelper to walk predecessors with an
+always-false predicate, accumulating wait-state distance in a single counter
+shared across recursively visited blocks. On branchy control flow the counter
+sums sibling-path distances, so window - distance goes non-positive and the
+protective S_NOP is dropped.
+
+The attention epilogue is exactly that shape. A wide FLAT store needs a
+2-wait-state window on the gfx940 family, but in the generated kernel
+
+  global_store_dwordx4 v[6:7], v[2:5], off offset:448
+  v_log_f32_e32 v2, v47
+
+are adjacent with no padding, so v2 is overwritten while the store is still
+reading its source vgprs. Wave64 stores read data in lane groups, so only the
+last lane groups lose their bytes -- hence the partial, patterned corruption
+rather than a wholesale wrong result.
+
+CI coverage
+-----------
+mlir/test/fusion/nightly-misc-e2e/attention-bf16-i64-ptr-offset-splitkv.mlir
+already pins the shape and perf_config above and runs under
+ROCMLIR_DRIVER_E2E_TEST_ENABLED, validating against an f64 reference. It was
+added for an unrelated i64 pointer-offset fix, but it is the regression that
+catches this hazard, so a future LLVM bump that loses this patch will fail
+there.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+c64ec3766d72ab552957827b5a96cc50ed6c7182.

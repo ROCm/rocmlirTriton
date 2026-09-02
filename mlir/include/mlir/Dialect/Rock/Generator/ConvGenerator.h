@@ -151,8 +151,6 @@ private:
                    });
     return permutation;
   }
-  LogicalResult needExtraPadBwdWeight(OpBuilder &builder,
-                                      bool &needExtraPad) const;
   LogicalResult hasValidDimension() const;
 
   // Generator config
@@ -167,7 +165,6 @@ private:
 /// being computed) is always last:
 ///   Fwd:       [filter, input, output] (no change)
 ///   BwdData:   [filter, output, input] (swap input/output)
-///   BwdWeight: [input, output, filter] (rotate filter to end)
 template <typename T>
 void reorderConvArgsForKernel(ConvOpType opType, SmallVectorImpl<T> &args) {
   switch (opType) {
@@ -175,9 +172,6 @@ void reorderConvArgsForKernel(ConvOpType opType, SmallVectorImpl<T> &args) {
     break;
   case ConvOpType::BwdData:
     std::swap(args[1], args[2]);
-    break;
-  case ConvOpType::BwdWeight:
-    std::rotate(args.begin(), args.begin() + 1, args.end());
     break;
   }
 }

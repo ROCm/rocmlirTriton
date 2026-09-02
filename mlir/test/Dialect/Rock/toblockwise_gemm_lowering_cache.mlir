@@ -17,11 +17,11 @@
 // A (4 MiB) + B (8 MiB) = 12 MiB > 8 MiB LLC -> cache pressure. B has no reuse
 // (read once), so B is streamed; A keeps its reuse across N and stays cached.
 // The tiling orders each tile with gemmK first for B, a KxN matrix, and second
-// for A, so this case also pins the reduction axis each marker records. The
+// for A, so this case also pins the tile shape each marker produces. The
 // remaining cases only check the cache modifier.
 // CHECK-LABEL: @m_skinny_pressure_streams_b
-// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>, reductionTileAxes = array<i64: 0>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
-// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 1>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
+// CHECK-DAG: rock.load_marker %arg1 {{.*}}{cacheModifier = #rock<CacheModifier cs>} : tensor<1x8192x256xf32> -> tensor<64x128xf32>
+// CHECK-DAG: rock.load_marker %arg0 {{.*}}{cacheModifier = #rock<CacheModifier none>} : tensor<1x128x8192xf32> -> tensor<128x64xf32>
 func.func @m_skinny_pressure_streams_b(%arg0: tensor<1x128x8192xf32>, %arg1: tensor<1x8192x256xf32>, %arg2: tensor<1x128x256xf32>) -> tensor<1x128x256xf32> attributes {rock.block_size = 256 : i32, rock.grid_size = 2 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 104 : i32} {
   %result = rock.gridwise_gemm(%arg0, %arg1) {params = #gemm_params} : tensor<1x128x8192xf32>, tensor<1x8192x256xf32> -> tensor<1x128x256xf32>
   %out = rock.store %result to %arg2 by set : tensor<1x128x256xf32> -> tensor<1x128x256xf32> to tensor<1x128x256xf32>

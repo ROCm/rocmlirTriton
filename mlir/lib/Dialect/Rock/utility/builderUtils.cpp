@@ -11,9 +11,12 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -156,8 +159,10 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
 // If MIGraphX's convert semantics ever change, or if we drop the MIGraphX
 // frontend, much of this can collapse back to a plain `tosa.cast` plus the
 // upstream tosa-to-linalg lowering.
+
 Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
-                           Type dstIntType, bool isUnsigned) {
+                           Type dstIntType, bool isUnsigned,
+                           bool assumeNoNaNs) {
   Type srcType = input.getType();
   auto srcShapedTy = dyn_cast<ShapedType>(srcType);
   Type srcElemTy = srcShapedTy ? srcShapedTy.getElementType() : srcType;
@@ -184,6 +189,20 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
         "representable zero, signed representation, or infinity; promote "
         "it to a wider float type before invoking this conversion");
   }
+
+  // The clamps below run on a value that is known not to be NaN, either because
+  // the sanitization further down replaced it or because the kernel promised as
+  // much, so the non-propagating num forms are the right ones: there is no NaN
+  // for the IEEE-2019 spelling to propagate, and it would only cost the
+  // compare/select fixups that propagation needs on CDNA. `nnan`, which is what
+  // additionally collapses the pair into one v_med3, is left to
+  // RockAllowFastMathFlags to add on the kernels that have earned it.
+  auto clampLow = [&](Value v, Value lo) -> Value {
+    return arith::MaxNumFOp::create(b, loc, v, lo);
+  };
+  auto clampHigh = [&](Value v, Value hi) -> Value {
+    return arith::MinNumFOp::create(b, loc, v, hi);
+  };
 
   auto fpConst = [&](APFloat v) -> Value {
     TypedAttr fa = b.getFloatAttr(srcElemTy, v);
@@ -219,15 +238,25 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
   APInt intMax = isUnsigned ? APInt::getMaxValue(dstWidth)
                             : APInt::getSignedMaxValue(dstWidth);
 
-  // Sanitize NaN -> 0 up front so the case logic below never feeds NaN to
-  // arith.fptosi/fptoui (which would be poison) and never has to disambiguate
-  // it from +/-inf via UEQ comparisons (UEQ is true for unordered, so without
-  // this NaN would erroneously match both the +inf and -inf overflow paths
-  // in case 1, and would leak poison through case 2 entirely). NaN -> 0 also
-  // matches MIGraphX's reference convert behaviour.
-  Value isNaN =
-      arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UNO, input, input);
-  input = arith::SelectOp::create(b, loc, isNaN, fpConstD(0.0), input);
+  // Sanitize NaN -> 0 up front so the case logic below never has to reason
+  // about NaN at all. Without it each case goes its own way: case 1 hands the
+  // raw value to arith.fptosi (poison, even though the UEQ selects then discard
+  // it) and matches the +inf and -inf overflow paths at once, since UEQ is true
+  // for unordered, while cases 2 and 3 let the num-form clamps absorb the NaN
+  // and saturate to a bound. NaN -> 0 is also what MIGraphX's reference convert
+  // does.
+  //
+  // Unless `-disable-fast-math` is set, the kernel path assumes there is no NaN
+  // to sanitize, so the pair is skipped. Note the value being converted is an
+  // intermediate rather than a kernel argument (`migraphx.quantizelinear`
+  // divides by a scale first), so this leans on the whole-dataflow reading of
+  // that assumption. Everything downstream then relies on it instead of on the
+  // select, which is what the `nnan` on the clamps below records.
+  if (!assumeNoNaNs) {
+    Value isNaN =
+        arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UNO, input, input);
+    input = arith::SelectOp::create(b, loc, isNaN, fpConstD(0.0), input);
+  }
 
   // Case 1: int range exceeds the float exponent range, so every finite
   // float maps to a representable integer; only +/-inf need fix-ups.
@@ -247,7 +276,7 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
       // Unsigned: clamp negatives (incl. -inf) to 0 before converting,
       // then patch up +inf to intMax.
       Value zeroF = fpConstD(0.0);
-      Value clampedPos = arith::MaximumFOp::create(b, loc, input, zeroF);
+      Value clampedPos = clampLow(input, zeroF);
       Value conv = fpToInt(clampedPos);
       return arith::SelectOp::create(b, loc, overflow, intConst(intMax), conv);
     }
@@ -274,8 +303,8 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
                               ? static_cast<double>(intMax.getZExtValue())
                               : static_cast<double>(intMax.getSExtValue());
     Value intMaxFP = fpConstD(intMaxDouble);
-    Value hi = arith::MinimumFOp::create(b, loc, input, intMaxFP);
-    Value clamped = arith::MaximumFOp::create(b, loc, hi, intMinFP);
+    Value hi = clampHigh(input, intMaxFP);
+    Value clamped = clampLow(hi, intMinFP);
     return fpToInt(clamped);
   }
 
@@ -287,7 +316,7 @@ Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
                  : static_cast<double>(intMax.getSExtValue()) + 1.0;
   Value intMaxPlusOneFP = fpConstD(intMaxPlusOneDouble);
 
-  Value minClampedFP = arith::MaximumFOp::create(b, loc, input, intMinFP);
+  Value minClampedFP = clampLow(input, intMinFP);
   Value minClamped = fpToInt(minClampedFP);
   Value overflow = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::UGE,
                                          input, intMaxPlusOneFP);

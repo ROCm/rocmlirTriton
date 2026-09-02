@@ -104,25 +104,6 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
   }];
 }
 
-
-def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
-{
-  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
-                           RankedTensorOf<GemmInputTypes>:$gradient),
-                       commonConvAttrs, (ins OptionalAttr<IndexAttr>:$kBlocks));
-  let summary = "N-D convolution backward weight";
-  let description = [{
-    The `rock.conv_bwd_weight` op computes N-D convolution backward weight.
-    Takes input and gradient (from the forward output) tensors, produces the
-    gradient with respect to the filter weights as $result.
-  }];
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    `(` operands `)` attr-dict
-    `:` type(operands) `->` type($result)
-  }];
-}
-
 def Rock_GemmOp
     : Rock_Op<"gemm", [Pure,
                        DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
@@ -442,8 +423,7 @@ def Rock_LoadMarkerOp
     : Rock_Op<"load_marker", [Pure,
                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
-          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier,
-          OptionalAttr<DenseI64ArrayAttr>:$reductionTileAxes)>,
+          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
@@ -466,13 +446,6 @@ def Rock_LoadMarkerOp
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
     back through the source chain (transforms, fusion ops, block argument)
     and combining all transforms.
-
-    `reductionTileAxes` records what the loaded tile feeds, which decides
-    whether tile-alignment padding may be dropped when the load is narrowed to
-    the dimensions it depends on. An absent attribute means the producer does
-    not know and consumers must stay conservative, an empty array means the
-    tile never reaches a reduction, and otherwise it lists the tile axes that
-    are reduced over.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
@@ -691,6 +664,20 @@ def Rock_BlockwiseGemmOp
         type($matrixB) (`scaled` `by` type($matrixScaleB)^)? `,`
         type($matrixC)
     `->` type($result)
+  }];
+  let extraClassDeclaration = [{
+    /// Index of the contraction (K) dimension.
+    static constexpr unsigned getKDimIdx(bool isA) { return isA ? 1 : 0; }
+
+    /// Index of the non-contraction dimension (M for `matrixA`, N for
+    /// `matrixB`).
+    static constexpr unsigned getDDimIdx(bool isA) { return isA ? 0 : 1; }
+
+    /// Size of this block's contraction (K) dimension.
+    int64_t getKDim() {
+      return ::llvm::cast<::mlir::ShapedType>(getMatrixA().getType())
+          .getShape()[getKDimIdx(/*isA=*/true)];
+    }
   }];
   let hasVerifier = 1;
 }

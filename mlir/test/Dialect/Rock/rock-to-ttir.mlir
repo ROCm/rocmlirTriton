@@ -688,6 +688,64 @@ func.func @test_extf_f16_to_f32_unchanged(%arg0: tensor<64xf16>) -> tensor<64xf3
 
 // -----
 
+// Test: an explicit to_nearest_even on a non-FP8 truncf keeps it in arith.
+// RTNE is already the default, so there is nothing for tt.fp_to_fp to add.
+// This matches Triton's semantic.cast, where `use_custom_rounding` is only set
+// for a requested mode that differs from RTNE.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtne_unchanged
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = arith.truncf %[[INPUT]] to_nearest_even : tensor<64xf32> to tensor<64xf16>
+//  CHECK-NOT:   tt.fp_to_fp
+func.func @test_truncf_f32_to_f16_rtne_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 to_nearest_even : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: a non-FP8 truncf asking for toward_zero becomes tt.fp_to_fp with RTZ.
+// Triton's AMD arith.truncf lowering ignores the rounding attribute and always
+// uses RTNE for f32 -> f16/bf16, so RTZ has to leave arith to be honoured.
+
+// CHECK-LABEL: @test_truncf_f32_to_f16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<64xf32> -> tensor<64xf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f16_rtz(%arg0: tensor<64xf32>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<64xf32> to tensor<64xf16>
+  return %0 : tensor<64xf16>
+}
+
+// -----
+
+// Test: the same holds for a bf16 destination.
+
+// CHECK-LABEL: @test_truncf_f32_to_bf16_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x64xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<2x64xf32> -> tensor<2x64xbf16>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_bf16_rtz(%arg0: tensor<2x64xf32>) -> tensor<2x64xbf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<2x64xf32> to tensor<2x64xbf16>
+  return %0 : tensor<2x64xbf16>
+}
+
+// -----
+
+// Test: an FP8 destination carries the requested RTZ through rather than
+// falling back to the RTNE default used when no rounding mode is present.
+
+// CHECK-LABEL: @test_truncf_f32_to_f8E5M2_rtz
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<4xf32>)
+//      CHECK:   %[[RESULT:.*]] = tt.fp_to_fp %[[INPUT]], rounding = rtz : tensor<4xf32> -> tensor<4xf8E5M2>
+//  CHECK-NOT:   arith.truncf
+func.func @test_truncf_f32_to_f8E5M2_rtz(%arg0: tensor<4xf32>) -> tensor<4xf8E5M2> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = arith.truncf %arg0 toward_zero : tensor<4xf32> to tensor<4xf8E5M2>
+  return %0 : tensor<4xf8E5M2>
+}
+
+// -----
+
 // Test: discardable rock metadata (rock.o_transposed) set on rock.blockwise_gemm
 // is carried onto the lowered tt.dot so it survives into the Triton pipeline.
 
@@ -725,5 +783,241 @@ func.func @test_scaled_gemm_carries_otransposed(
       tensor<64x64xf8E4M3FN> scaled by tensor<64x2xi8>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: a `maxnumf(minnumf(x, hi), lo)` clamp whose operands may ignore NaNs
+// becomes a single tt.clampf, which AMD lowers to one v_med3.
+
+// CHECK-LABEL: @test_clamp_nnan_to_clampf
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//  CHECK-DAG:   %[[LO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf32>
+//  CHECK-DAG:   %[[HI:.*]] = arith.constant dense<6.000000e+00> : tensor<64xf32>
+//      CHECK:   %[[RESULT:.*]] = tt.clampf %[[INPUT]], %[[LO]], %[[HI]], propagateNan = none : tensor<64xf32>
+//  CHECK-NOT:   arith.minnumf
+//  CHECK-NOT:   arith.maxnumf
+func.func @test_clamp_nnan_to_clampf(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: the same idiom on f16, the other element type AMD contracts to v_med3.
+
+// CHECK-LABEL: @test_clamp_f16_to_clampf
+//      CHECK:   tt.clampf {{.*}}propagateNan = none : tensor<64xf16>
+//  CHECK-NOT:   arith.minnumf
+func.func @test_clamp_f16_to_clampf(%arg0: tensor<64xf16>) -> tensor<64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf16>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf16>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf16>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf16>
+  return %1 : tensor<64xf16>
+}
+
+// -----
+
+// Test: without `nnan` the pair stays put. minnumf/maxnumf send a NaN input to
+// `hi`, whereas v_med3 would return `lo`, so the rewrite is not equivalent.
+
+// CHECK-LABEL: @test_clamp_no_nnan_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_no_nnan_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: `nnan` on only one of the two ops is not enough.
+
+// CHECK-LABEL: @test_clamp_partial_nnan_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_partial_nnan_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: the NaN-propagating spelling is left alone. A tt.clampf with
+// propagateNan = none would not be a faithful replacement for it.
+
+// CHECK-LABEL: @test_clamp_propagating_ops_unchanged
+//      CHECK:   arith.minimumf
+//      CHECK:   arith.maximumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_propagating_ops_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.minimumf %arg0, %hi fastmath<nnan> : tensor<64xf32>
+  %1 = arith.maximumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: unordered bounds are rejected. For lo > hi the pair saturates to `lo`
+// while v_med3 would return `hi`.
+
+// CHECK-LABEL: @test_clamp_unordered_bounds_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_unordered_bounds_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: non-constant bounds cannot be proven ordered, so the pair stays put.
+
+// CHECK-LABEL: @test_clamp_dynamic_bound_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_dynamic_bound_unchanged(%arg0: tensor<64xf32>, %hi: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: bf16 converts too. AMD's v_med3 path skips it, but Triton's generic
+// lowering emits the min-outer form that LLVM can contract into fmed3.
+
+// CHECK-LABEL: @test_clamp_bf16_to_clampf
+//      CHECK:   tt.clampf {{.*}}propagateNan = none : tensor<64xbf16>
+//  CHECK-NOT:   arith.minnumf
+func.func @test_clamp_bf16_to_clampf(%arg0: tensor<64xbf16>) -> tensor<64xbf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xbf16>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xbf16>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xbf16>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xbf16>
+  return %1 : tensor<64xbf16>
+}
+
+// -----
+
+// Test: f64 converts as well, for the same reason as bf16.
+
+// CHECK-LABEL: @test_clamp_f64_to_clampf
+//      CHECK:   tt.clampf {{.*}}propagateNan = none : tensor<64xf64>
+//  CHECK-NOT:   arith.minnumf
+func.func @test_clamp_f64_to_clampf(%arg0: tensor<64xf64>) -> tensor<64xf64> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf64>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf64>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf64>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf64>
+  return %1 : tensor<64xf64>
+}
+
+// -----
+
+// Test: FP8 is rejected. tt.clampf would accept it, but Triton maps FP8 to i8
+// and the lowering would end up comparing integers.
+
+// CHECK-LABEL: @test_clamp_f8_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_f8_unchanged(%arg0: tensor<64xf8E4M3FN>) -> tensor<64xf8E4M3FN> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf8E4M3FN>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf8E4M3FN>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf8E4M3FN>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf8E4M3FN>
+  return %1 : tensor<64xf8E4M3FN>
+}
+
+// -----
+
+// Test: a min feeding a second consumer is left alone, since folding it into
+// the clamp would duplicate it rather than remove it.
+
+// CHECK-LABEL: @test_clamp_multi_use_min_unchanged
+//      CHECK:   arith.minnumf
+//      CHECK:   arith.maxnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_multi_use_min_unchanged(%arg0: tensor<64xf32>) -> (tensor<64xf32>, tensor<64xf32>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.minnumf %arg0, %hi fastmath<nnan> : tensor<64xf32>
+  %1 = arith.maxnumf %0, %lo fastmath<nnan> : tensor<64xf32>
+  return %1, %0 : tensor<64xf32>, tensor<64xf32>
+}
+
+// -----
+
+// Test: the min-outer spelling `minnumf(maxnumf(x, lo), hi)`, which is what
+// migraphx.clip lowers to, folds just like the max-outer one. Under nnan the
+// two orderings agree.
+
+// CHECK-LABEL: @test_clamp_min_outer_to_clampf
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<64xf32>)
+//  CHECK-DAG:   %[[LO:.*]] = arith.constant dense<0.000000e+00> : tensor<64xf32>
+//  CHECK-DAG:   %[[HI:.*]] = arith.constant dense<6.000000e+00> : tensor<64xf32>
+//      CHECK:   %[[RESULT:.*]] = tt.clampf %[[INPUT]], %[[LO]], %[[HI]], propagateNan = none : tensor<64xf32>
+//  CHECK-NOT:   arith.minnumf
+//  CHECK-NOT:   arith.maxnumf
+func.func @test_clamp_min_outer_to_clampf(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.maxnumf %arg0, %lo fastmath<nnan> : tensor<64xf32>
+  %1 = arith.minnumf %0, %hi fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: the min-outer spelling still needs nnan on both operations.
+
+// CHECK-LABEL: @test_clamp_min_outer_no_nnan_unchanged
+//      CHECK:   arith.maxnumf
+//      CHECK:   arith.minnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_min_outer_no_nnan_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %0 = arith.maxnumf %arg0, %lo : tensor<64xf32>
+  %1 = arith.minnumf %0, %hi : tensor<64xf32>
+  return %1 : tensor<64xf32>
+}
+
+// -----
+
+// Test: unordered bounds are rejected in the min-outer spelling too, where the
+// original saturates to hi while v_med3 would return lo.
+
+// CHECK-LABEL: @test_clamp_min_outer_unordered_bounds_unchanged
+//      CHECK:   arith.maxnumf
+//      CHECK:   arith.minnumf
+//  CHECK-NOT:   tt.clampf
+func.func @test_clamp_min_outer_unordered_bounds_unchanged(%arg0: tensor<64xf32>) -> tensor<64xf32> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %lo = arith.constant dense<6.000000e+00> : tensor<64xf32>
+  %hi = arith.constant dense<0.000000e+00> : tensor<64xf32>
+  %0 = arith.maxnumf %arg0, %lo fastmath<nnan> : tensor<64xf32>
+  %1 = arith.minnumf %0, %hi fastmath<nnan> : tensor<64xf32>
+  return %1 : tensor<64xf32>
 }
 
