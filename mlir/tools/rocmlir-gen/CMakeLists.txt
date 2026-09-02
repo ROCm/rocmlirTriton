@@ -45,7 +45,7 @@ add_rocmlir_tool(rocmlir-gen
 )
 
 
-target_link_libraries(rocmlir-gen PRIVATE ${LIBS} hip::host hip::amdhip64)
+target_link_libraries(rocmlir-gen PRIVATE ${LIBS} MLIRRockDeviceInfo)
 llvm_update_compile_flags(rocmlir-gen)
 
 rocmlir_add_triton_includes(rocmlir-gen)

@@ -10,21 +10,7 @@
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 
-#ifndef __HIP_PLATFORM_AMD__
-#define __HIP_PLATFORM_AMD__
-#endif
-#ifndef __HIP_DEVICE_COMPILE__
-#define __HIP_DEVICE_COMPILE__ 0
-#endif
-#ifndef USE_PROF_API
-#define USE_PROF_API 0
-#endif
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wc++98-compat-extra-semi"
-#pragma clang diagnostic ignored "-Wshadow"
-#pragma clang diagnostic ignored "-Wundef"
 #include <hip/hip_runtime_api.h>
-#pragma clang diagnostic pop
 
 #include <cstdlib>
 #include <tuple>
