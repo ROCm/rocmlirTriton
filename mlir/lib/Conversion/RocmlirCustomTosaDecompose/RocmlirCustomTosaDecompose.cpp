@@ -957,8 +957,7 @@ public:
             getTosaConstShape(rewriter, loc, biasSize));
       }
 
-      auto groupResultTy =
-          RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
+      auto groupResultTy = RankedTensorType::get({N, Ho, Wo, Fg}, resultElemTy);
       Value groupConv = tosa::Conv2DOp::create(
           rewriter, loc, groupResultTy, slicedInput, slicedFilter, groupBias,
           inputZp, weightZp, padAttr, strideAttr, dilationAttr, accType);

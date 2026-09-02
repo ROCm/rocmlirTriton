@@ -273,12 +273,14 @@ LogicalResult PopulateParams::specificCouldBePerformant(GemmParamsAttr params,
   (void)dataTypeA;
   (void)dataTypeB;
 
-  /// MFMA/XDL-only heuristic (rocMLIR `PopulateParamsXDL::specificCouldBePerformant`):
-  /// factor total wave count into an M×N wave grid; `nPerWave` is
-  /// `nPerBlock / nWaves`; `mnPerXdl` is `matrixInstrNonkdim`.
+  /// MFMA/XDL-only heuristic (rocMLIR
+  /// `PopulateParamsXDL::specificCouldBePerformant`): factor total wave count
+  /// into an M×N wave grid; `nPerWave` is `nPerBlock / nWaves`; `mnPerXdl` is
+  /// `matrixInstrNonkdim`.
 
   /// WMMA uses `matrixInstrNonkdim == 0`; do not apply XDL pruning here so the
-  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on RDNA).
+  /// full tuning space stays aligned with `computeNumWaves` (e.g. 2/4/8 on
+  /// RDNA).
   MatrixAccelKind accelKind = getMatrixAccelKind(arch, dataTypeA, dataTypeB);
   bool isMFMA = accelKind == MatrixAccelKind::MFMA ||
                 accelKind == MatrixAccelKind::ScaledMFMA;

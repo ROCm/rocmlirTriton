@@ -261,16 +261,17 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 // 1. makeLLIR (the function below)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
-static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
-                     int64_t useReductionLayout, bool useBufferOps,
-                     bool allowFlushDenorm) {
+static void makeLLIR(mlir::OpPassManager *pm,
+                     const rock::TritonOptions &options) {
+  const std::string &arch = options.arch;
+
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   // Redistribute the layout of the reduction dimension to reduce register
   // pressure. Always scheduled, but the `useReductionLayout`
   // actually controls whether it runs.
   rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
-  reductionLayoutOpts.useReductionLayout = useReductionLayout;
+  reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
   pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   pm->addPass(mlir::createSCFToControlFlowPass());
 
@@ -299,7 +300,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // follows `TritonOptions::allowFlushDenorm` instead. Those are two separate
   // options on two separate pipelines; both have to be set to get IEEE
   // denormals end to end.
-  bool ftz = allowFlushDenorm;
+  bool ftz = options.allowFlushDenorm;
   pm->addPass(mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz));
   pm->addPass(
       mlir::triton::AMD::createTritonAMDGPUConvertWarpSpecializeToLLVMPass(
@@ -324,7 +325,7 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // accesses, and after reconcile-unrealized-casts, since the analyses walk
   // plain LLVM offset arithmetic and stop at a cast. Canonicalize and CSE
   // after, so the offset math of an erased access leaves with it.
-  if (useBufferOps) {
+  if (isBufferOpsEnabled(options.useBufferOps)) {
     pm->addNestedPass<mlir::LLVM::LLVMFuncOp>(
         rock::createRockFoldOobBufferOpsPass());
     pm->addPass(mlir::createCanonicalizerPass());
@@ -596,8 +597,7 @@ void rock::buildTritonPipeline(OpPassManager &pm,
   makeTTGIR(&pm, threadPerWarp, options);
 
   // Run MLIR passes to convert TritonGPU -> LLVM dialect
-  makeLLIR(&pm, arch, options.useReductionLayout,
-           isBufferOpsEnabled(options.useBufferOps), options.allowFlushDenorm);
+  makeLLIR(&pm, options);
 }
 
 // Build host code lowering pipeline (func + GPU ops -> LLVM)

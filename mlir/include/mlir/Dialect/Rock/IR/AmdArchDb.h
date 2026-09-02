@@ -174,10 +174,7 @@ bool preferBf16x3ForF32Dot(StringRef arch);
 bool supportsTDM(StringRef arch);
 
 /// Whether this architecture has the `v_tanh_*` transcendental instructions,
-/// mirroring LLVM's `FeatureTanhInsts`. On these targets a `math.tanh` is
-/// worth handing to Triton as `__ocml_tanh_f32`, which its
-/// `convert-builtin-func-to-llvm` pass turns into `llvm.amdgcn.tanh.f32`;
-/// elsewhere that symbol would stay a full OCML library call.
+/// mirroring LLVM's `FeatureTanhInsts`.
 bool hasTanhInsts(StringRef arch);
 
 } // namespace rock
