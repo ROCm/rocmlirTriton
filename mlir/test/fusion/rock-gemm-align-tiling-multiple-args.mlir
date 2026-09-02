@@ -2,7 +2,7 @@
 
 #map = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)>
 #map_swap = affine_map<(d0, d1, d2) -> (d0, d2, d1)>
-#map_out = affine_map<(d0) -> (d0 floordiv 4096, (d0 mod 4096) floordiv 64, d0 mod 64)>
+#map_out = affine_map<(d0) -> (d0 floordiv 4096, (d0 floordiv 64) mod 64, d0 mod 64)>
 
 #transform_map_f16 = #rock.transform_map<#map by [<Unmerge{64, 64, 64} ["d0", "d1", "d2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [64, 64, 64] -> [262144]>
 #transform_map = #rock.transform_map<#map by [<Unmerge{64, 64, 64} ["d0", "d1", "d2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [64, 64, 64] -> [262144]>
