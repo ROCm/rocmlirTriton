@@ -52,6 +52,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <cstdlib>
+
 namespace mlir {
 namespace rock {
 #define GEN_PASS_DEF_ROCKDECOMPOSENONPOW2KPASS
@@ -284,6 +286,36 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   return success();
 }
 
+/// PROTOTYPE KNOB (ROCK_K_DOT): the K extent each Triton dot should end up
+/// with. A blockwise gemm becomes one dot whose K extent is kPerBlock, and the
+/// backend unrolls that dot whole, so a wide K tile spends its register budget
+/// on live operands and stops the scheduler from forming v_dual_fmac pairs.
+/// Cutting the tile into narrower dots shrinks that liveness, which decouples
+/// the K tile size (chosen for LDS traffic and loop amortization) from the dot
+/// width (which is what governs packing). Zero leaves the pass unchanged.
+static int64_t getTargetDotK() {
+  const char *env = std::getenv("ROCK_K_DOT");
+  if (!env)
+    return 0;
+  int64_t n = 0;
+  if (llvm::StringRef(env).getAsInteger(10, n))
+    return 0;
+  return n;
+}
+
+/// `k` cut into segments of `length` each, or failure if it does not divide
+/// evenly into more than one such power-of-two segment.
+static FailureOr<SmallVector<Pow2Segment>> splitEqually(int64_t k,
+                                                        int64_t length) {
+  if (length < 1 || k <= length || k % length != 0 ||
+      !llvm::isPowerOf2_64(length))
+    return failure();
+  SmallVector<Pow2Segment> segs;
+  for (int64_t off = 0; off < k; off += length)
+    segs.push_back(Pow2Segment{off, length});
+  return segs;
+}
+
 void RockDecomposeNonPow2KPass::runOnOperation() {
   func::FuncOp func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
@@ -292,16 +324,26 @@ void RockDecomposeNonPow2KPass::runOnOperation() {
     return;
   }
 
+  int64_t targetDotK = getTargetDotK();
+
   // Anchor on the K tile of the blockwise gemm itself, which is exactly the
   // tile the Triton layouts cannot represent when it is not a power of two.
   SmallVector<BlockwiseGemmOp> targets;
   func.walk([&](BlockwiseGemmOp gemm) {
-    if (!llvm::isPowerOf2_64(gemm.getKDim()))
+    int64_t k = gemm.getKDim();
+    if (!llvm::isPowerOf2_64(k) || succeeded(splitEqually(k, targetDotK)))
       targets.push_back(gemm);
   });
 
   for (BlockwiseGemmOp gemm : targets) {
-    SmallVector<Pow2Segment> kSegs = decomposePow2(gemm.getKDim());
+    int64_t k = gemm.getKDim();
+    SmallVector<Pow2Segment> kSegs;
+    if (FailureOr<SmallVector<Pow2Segment>> narrowed =
+            splitEqually(k, targetDotK);
+        succeeded(narrowed) && llvm::isPowerOf2_64(k))
+      kSegs = std::move(*narrowed);
+    else
+      kSegs = decomposePow2(k);
     if (failed(decomposeBlockwiseGemm(gemm, kSegs)))
       return signalPassFailure();
   }
