@@ -262,18 +262,20 @@ class TunedConfigsCacheTest(TempFileTestCase):
         """A --retune run appends to the output TSV instead of replacing it, so the
         file can hold several header blocks and several rows per problem. The most
         recent row is the one that survives the load."""
-        test_vector = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
-                       "-g 1 -m 1024 -n 512 -k 769")
-        row = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{test_vector}\t"
+        raw = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
+               "-g 1 -m 1024 -n 512 -k 769")
+        canonical = canonicalize_config(raw, GemmConfiguration, ARCH, NUM_CU, NUM_CHIPLETS)
+        row = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{raw}\t"
                                "perf_old\t1.5\tfull\tabc123\t2025-01-01T00:00:00Z\t10.0\n")
-        rerun = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{test_vector}\t"
+        rerun = OUTPUT_HEADER + (f"{ARCH}\t{NUM_CU}\t{NUM_CHIPLETS}\t{raw}\t"
                                  "perf_new\t2.5\tfull\tabc123\t2025-01-02T00:00:00Z\t11.0\n")
         path = self.temp_path(".tsv", row + rerun)
 
         cache = TunedConfigsCache.from_output_file(make_options(str(path)), GemmConfiguration)
 
         self.assertEqual(cache.count(), 1)
-        result = cache.get(test_vector)
+        result = cache.get(canonical)
+        self.assertIsNotNone(result, "canonical key should match")
         self.assertEqual(result.winning_config, "perf_new")
         self.assertEqual(result.max_tflops, 2.5)
 
