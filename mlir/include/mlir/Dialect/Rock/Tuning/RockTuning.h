@@ -34,11 +34,16 @@ enum class TuningParamSetKind : uint32_t {
   // quickly obtain reasonable performance on an unknown configuration.
   Quick = 0,
   // A full tuning space suitable for most offline tuning tasks which omits
-  // configurations that have been shown not to yield good performance.
-  // (Note: this filtering is currently unimplemented).
+  // configurations a heuristic expects not to perform well (see
+  // `PopulateParams::couldBePerformant`).
   Full = 1,
-  // A tuning space consisting of all possible sets of tuning parameters,
-  // excluding those that could not be applicable to the given problem.
+  // A wider version of `Full` meant for tuning experiments: it stretches a few
+  // of the axes -- numWaves up to the hardware's workgroup limit, larger
+  // K/block tiles -- and drops the performance heuristic above, rather than
+  // adding parameters. Despite the name, it is still not every combination of
+  // every value a parameter can take: the checks that rule out configs no
+  // kernel could run (the LDS blacklist, Triton's per-tensor element cap, ...)
+  // prune it just as they prune `Full`.
   Exhaustive = 2,
 };
 

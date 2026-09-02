@@ -198,7 +198,8 @@ static llvm::cl::opt<rock::SearchStrategyKind> tuningSpaceKind(
         clEnumValN(rock::SearchStrategyKind::Full, "full",
                    "Full tuning space, excluding known-bad configurations"),
         clEnumValN(rock::SearchStrategyKind::Exhaustive, "exhaustive",
-                   "All tuning space combinations, even inapplicable ones"),
+                   "Full tuning space widened along a few axes, such as "
+                   "numWaves and the K/block tiles"),
         clEnumValN(rock::SearchStrategyKind::LFBO, "lfbo",
                    "Search the exhaustive space with a surrogate model, "
                    "benchmarking only the configs it rates promising")),

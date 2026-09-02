@@ -596,8 +596,12 @@ std::vector<PerfConfigString> LFBOSearch::runGeneration() {
     for (auto [candidate, encoded] : llvm::zip_equal(candidates, features))
       encode(candidate, encoded);
 
+    // At least two slots, of which the current config can take only one, so a
+    // copy that still has unvisited neighbours is never retired below because
+    // the model rated the config it came from above all of them. Helion floors
+    // its own quota at two for the same reason.
     unsigned numSelected = std::max<unsigned>(
-        1, static_cast<unsigned>(candidates.size() * options.fracSelected));
+        2, static_cast<unsigned>(candidates.size() * options.fracSelected));
     for (unsigned idx : surrogateSelect(features, numSelected)) {
       if (idx == 0)
         continue;
