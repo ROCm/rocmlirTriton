@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
+#include "mlir/Dialect/Rock/utility/tosaUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
@@ -868,11 +869,10 @@ public:
   using OpRewritePattern<tosa::Conv2DOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(tosa::Conv2DOp op,
                                 PatternRewriter &rewriter) const final {
-    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
-    if (!groupAttr || groupAttr.getInt() == 1)
+    if (!rock::tosa::isGroupedConv(op))
       return rewriter.notifyMatchFailure(op, "not a group convolution");
 
-    int64_t group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
     Location loc = op->getLoc();
 
     Value input = op.getInput();
@@ -1018,19 +1018,21 @@ public:
 
 } // namespace
 
+// The bodies below are in `mlir::rock` scope, where a bare `tosa::` names
+// `mlir::rock::tosa` (the helper namespace from tosaUtils.h) rather than the
+// dialect, so the dialect's ops need spelling out.
 void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
     ConversionTarget &target) {
-  target.addLegalDialect<tosa::TosaDialect>();
+  target.addLegalDialect<mlir::tosa::TosaDialect>();
   target.addLegalOp<tensor::EmptyOp, tensor::InsertSliceOp>();
-  target.addDynamicallyLegalOp<tosa::CustomOp>([](tosa::CustomOp op) {
-    return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
-           (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-            op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES);
-  });
-  target.addDynamicallyLegalOp<tosa::Conv2DOp>([](tosa::Conv2DOp op) {
-    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
-    return !groupAttr || groupAttr.getInt() == 1;
-  });
+  target.addDynamicallyLegalOp<mlir::tosa::CustomOp>(
+      [](mlir::tosa::CustomOp op) {
+        return op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME ||
+               (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
+                op.getOperatorName() != ROCK_CUSTOMOP_EXPAND_STRIDES);
+      });
+  target.addDynamicallyLegalOp<mlir::tosa::Conv2DOp>(
+      [](mlir::tosa::Conv2DOp op) { return !rock::tosa::isGroupedConv(op); });
 }
 
 void mlir::rock::populateRocmlirCustomTosaDecomposeConversionPatterns(

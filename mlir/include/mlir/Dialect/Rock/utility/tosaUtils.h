@@ -59,6 +59,23 @@ bool isMaskingNegInfValue(const llvm::APFloat &v);
 
 namespace tosa {
 
+/// Number of convolution groups on `op`, read from the optional `group`
+/// attribute that the MIGraphX frontend attaches to `tosa.conv2d` and to the
+/// `conv_bwd_data` `tosa.custom`. An op without the attribute is an ordinary
+/// convolution, hence the default of 1.
+///
+/// Defined inline so that callers need only the header, not a dependency on
+/// MLIRRockUtility.
+inline int64_t getConvGroupCount(Operation *op) {
+  if (auto groupAttr = op->getAttrOfType<IntegerAttr>("group"))
+    return groupAttr.getInt();
+  return 1;
+}
+
+/// Whether `op` is a grouped convolution, i.e. one whose group dimension has
+/// to be materialized rather than elided.
+inline bool isGroupedConv(Operation *op) { return getConvGroupCount(op) != 1; }
+
 /// Adjust conv padding for TOSA's exact-divisibility-by-stride requirement.
 /// Floor-mode convolutions may produce partial windows that TOSA rejects.
 /// Trims high-side padding first; if that's insufficient, inserts a

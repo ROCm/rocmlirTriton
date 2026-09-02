@@ -639,15 +639,12 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->template getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->template getAttrOfType<DenseI64ArrayAttr>("pad");
     auto dilationAttr =
         op->template getAttrOfType<DenseI64ArrayAttr>("dilation");
 
     // Verify all required attributes are present
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     if (!padAttr)
       return op->emitError(
@@ -719,14 +716,11 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->getAttrOfType<DenseI64ArrayAttr>("pad");
     auto strideAttr = op->getAttrOfType<DenseI64ArrayAttr>("stride");
     auto dilationAttr = op->getAttrOfType<DenseI64ArrayAttr>("dilation");
 
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     FailureOr<rock::RockConvInterface> rockConv =
         makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
@@ -1448,15 +1442,16 @@ struct ConvElementwiseGemmRewritePattern
       op.emitOpError("bias not supported yet");
       return failure();
     }
-    // A grouped convolution cannot be fused with the GEMM that follows it.
-    // `ConvGemmRewritePattern` makes the group the batch dimension of both
-    // GEMMs, so each group's output channels reach the second GEMM as their own
-    // tile, contracted against their own slice of `c`. A dot applied to a
-    // grouped convolution instead contracts over every output channel at once,
-    // which means summing those per-group products: a reduction over a
-    // dimension the GEMM+GEMM form treats as parallel.
-    if (auto groupAttr = firstConv->getAttrOfType<IntegerAttr>("group");
-        groupAttr && groupAttr.getInt() != 1) {
+    // A grouped convolution cannot be fused with the GEMM that follows it. The
+    // `rock.conv_elementwise_gemm` emitted below is lowered by
+    // `ConvGemmRewritePattern` in Rock/Transforms/ConvToGemm.cpp, which passes
+    // the group dimension through to `gemmG`, the batch dimension of both
+    // GEMMs. Each group's output channels would therefore reach the second GEMM
+    // as their own tile, contracted against their own slice of `c`. A dot
+    // applied to a grouped convolution instead contracts over every output
+    // channel at once, which means summing those per-group products: a
+    // reduction over a dimension the GEMM+GEMM form treats as parallel.
+    if (rock::tosa::isGroupedConv(firstConv)) {
       op.emitOpError("fusing a grouped convolution into conv+gemm is not "
                      "supported");
       return failure();
@@ -1478,8 +1473,7 @@ struct ConvElementwiseGemmRewritePattern
     SmallVector<Value> elementwiseOtherArgs =
         elementwiseRegionFinder.getElementwiseArgs();
 
-    assert((!firstConv->getAttrOfType<IntegerAttr>("group") ||
-            firstConv->getAttrOfType<IntegerAttr>("group").getInt() == 1) &&
+    assert(!rock::tosa::isGroupedConv(firstConv) &&
            "the matcher rejects grouped convolutions");
     ConvFields convFields = commonConv(
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
