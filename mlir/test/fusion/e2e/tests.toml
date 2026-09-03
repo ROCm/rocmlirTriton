@@ -32,7 +32,8 @@ values = ["mixr-bcast-add",
           "mixr-gemm/mixr-gemm-bcast-add",
           "mixr-gemm/mixr-gemm-reshape-case1",
           "mixr-gemm/mixr-gemm-reshape-case2",
-          "mixr-gemm/mixr-gemm-transpose"]
+          "mixr-gemm/mixr-gemm-transpose",
+          "hip/hip-gemm-transpose"]
 
 [[suite]]
 name = "tosa-to-rock tests"

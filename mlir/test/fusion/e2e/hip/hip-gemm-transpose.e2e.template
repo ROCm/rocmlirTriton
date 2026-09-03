@@ -1,0 +1,26 @@
+// Unlike the MIGraphX templates, the kernel carries no `rock.kernel` /
+// `rock.arch`: the hipep phase stamps both (see the TODO in HIPToTosa.cpp), so
+// there is no ##TOKEN_ARCH## to substitute here.
+//
+// The clone-verified run splits hipep out from highlevel so that the CPU
+// reference is cloned once the module is plain TOSA. Cloning before hipep would
+// hand the host pipeline a `hip.*` body it has no lowering for.
+
+// RUN: rocmlir-driver -kernel-pipeline hipep,highlevel -arch %arch %s | rocmlir-gen -ph -print-results -rand none -fut dot_transpose - | rocmlir-driver -arch %arch -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN{disablep}: rocmlir-driver -kernel-pipeline hipep -arch %arch %s | rocmlir-gen -fut dot_transpose --arch %arch --clone-harness - | rocmlir-driver -kernel-pipeline=highlevel -host-pipeline=highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut dot_transpose --verifier clone - | rocmlir-driver -arch %arch -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+
+module {{
+  // Every input is 1.0 and K is 4, so every output element is 4.
+  // CHECK: [4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4,  4]
+
+  // CLONE: [1 1 1]
+  // CLONE-NEXT: Unranked Memref base
+
+  func.func @dot_transpose(%ctx: !hip.context, %arg0: tensor<1x5x4x{type}>, %arg1: tensor<1x4x3x{type}>) -> tensor<1x3x5x{type}> {{
+    %0 = tensor.empty() : tensor<1x5x3x{type}>
+    %1 = hip.matmul(%ctx) ins(%arg0, %arg1 : tensor<1x5x4x{type}>, tensor<1x4x3x{type}>) outs(%0 : tensor<1x5x3x{type}>) : tensor<1x5x3x{type}>
+    %2 = tensor.empty() : tensor<1x3x5x{type}>
+    %3 = hip.transpose(%ctx) ins(%1 : tensor<1x5x3x{type}>) outs(%2 : tensor<1x3x5x{type}>) {{perm = [0, 2, 1]}} : tensor<1x3x5x{type}>
+    return %3 : tensor<1x3x5x{type}>
+  }}
+}}
