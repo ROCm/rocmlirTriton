@@ -477,9 +477,9 @@ static llvm::cl::opt<rock::TuningParamSetKind> emitTuningSpace(
                    "Quick tuning space"),
         clEnumValN(rock::TuningParamSetKind::Full, "full",
                    "Full tuning space, excluding known-bad configurations"),
-        clEnumValN(
-            rock::TuningParamSetKind::Exhaustive, "exhaustive",
-            "All tuning space combinations, including inapplicable ones")),
+        clEnumValN(rock::TuningParamSetKind::Exhaustive, "exhaustive",
+                   "Full tuning space widened along a few axes, such as "
+                   "numWaves and the K/block tiles")),
     llvm::cl::value_desc("tuning space kind to emit"),
     llvm::cl::init(rock::TuningParamSetKind::Full));
 
@@ -6726,12 +6726,9 @@ int main(int argc, char **argv) {
   if (emitTuningSpace.getNumOccurrences() > 0) {
     std::unique_ptr<rock::TuningParamSet> tunableParams(
         rock::createTunableParamSpace(*module, emitTuningSpace));
-    SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfigStr;
-    for (auto param : tunableParams->tuningRange) {
-      param.getPerfConfigStr(perfConfigStr);
+    for (const rock::PerfConfigString &perfConfigStr :
+         tunableParams->tuningRange)
       llvm::outs() << perfConfigStr << "\n";
-      perfConfigStr.clear();
-    }
     return 0;
   }
 

@@ -6,7 +6,10 @@ import argparse
 
 from perfCommonUtils import Operation
 
-TUNING_SPACE_CHOICES = ["quick", "full", "exhaustive"]
+# "lfbo" is not a fixed space but an adaptive search: it benchmarks a batch,
+# learns from the timings, and proposes the next batch, so it needs a live GPU
+# and is incompatible with --compile-only.
+TUNING_SPACE_CHOICES = ["quick", "full", "exhaustive", "lfbo"]
 OPERATION_CHOICES = [operation.name.lower() for operation in Operation]
 DATA_TYPE_CHOICES = [
     "f32", "f16", "bf16", "i8", "i8_i32", "i8_i8", "fp8", "fp8_f32", "fp8_fp8", "f4E2M1FN"
@@ -83,7 +86,10 @@ def add_common_tuning_arguments(
                         "--debug",
                         action="store_true",
                         default=False,
-                        help="Enable detailed per-iteration measurements")
+                        help="Enable detailed per-iteration measurements, written to "
+                        "<output>.debug. With --tuning-space=lfbo, also record how the "
+                        "search progressed, one file per problem under <output>.lfbo "
+                        "(see analysis/plotLFBOTrace.py)")
     parser.add_argument("--debug-quick-tune-data",
                         action="store_true",
                         default=False,

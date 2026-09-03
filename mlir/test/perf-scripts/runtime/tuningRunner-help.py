@@ -10,7 +10,8 @@
 #
 # CHECK: usage: rocmlirTriton tuning runner
 # CHECK-DAG: --op {{.*}}{conv,gemm,fusion,attention,gemm_gemm,conv_gemm}
-# CHECK-DAG: --tuning-space {quick,full,exhaustive}
+# CHECK-DAG: --tuning-space {quick,full,exhaustive,lfbo}
+# CHECK-DAG: --lfbo-effort {quick,full}
 # CHECK-DAG: --configs_file
 # CHECK-DAG: --mlir-build-dir
 # CHECK-DAG: -DLLVM_ENABLE_ZSTD=FORCE_ON

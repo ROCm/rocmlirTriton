@@ -173,6 +173,13 @@ bool preferBf16x3ForF32Dot(StringRef arch);
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
+/// Whether an asynchronous (direct-to-LDS) global load can be issued on this
+/// arch, i.e. whether any of the widths Triton loads by is a direct-to-LDS
+/// width. `createStreamOps` asks `canBeConvertedToAsyncLoad` per load and falls
+/// back to a plain copy whenever it says no, so on an arch that has no such
+/// width every load falls back and `useAsyncCopy` cannot change the kernel.
+bool supportsAsyncCopy(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 

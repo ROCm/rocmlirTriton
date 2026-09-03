@@ -685,3 +685,13 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
 }
+
+bool mlir::rock::supportsAsyncCopy(StringRef arch) {
+  auto [chip, _] = parseArchString(arch);
+  TargetFeatures targetFeatures(chip);
+  // The widths Triton loads by; `fitToValidDirectToLdsVecSize` narrows a wider
+  // load to one of them.
+  return llvm::any_of(ArrayRef<int>{128, 64, 32}, [&](int bitWidth) {
+    return targetFeatures.supportsDirectToLdsLoadBitWidth(bitWidth);
+  });
+}

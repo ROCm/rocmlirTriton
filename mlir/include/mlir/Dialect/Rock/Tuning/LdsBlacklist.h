@@ -83,6 +83,9 @@ public:
   static GemmLdsKeySet lookupGemm(StringRef arch, Type dataType);
 };
 
+// Whether `blacklist` (from `lookupGemm`) records `key` as overflowing LDS.
+bool isBlacklisted(const GemmLdsKeySet &blacklist, const GemmLdsKey &key);
+
 } // namespace rock
 } // namespace mlir
 

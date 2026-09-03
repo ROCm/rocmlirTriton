@@ -16,13 +16,17 @@ empirically (vary one field, hold the rest, watch ttg.shared):
 
     mPerBlock, nPerBlock, kPerBlock, numWaves, matrixInstrNonkdim, numStages
 
-change it; kpack, numCTAs, splitKFactor, wavesPerEU, gridGroupSize and the
-knob fields do NOT. So we key the blacklist on just those six fields (see
-PROJECTION_NAMES / GemmLdsKey in LdsBlacklist.h -- the field order must match
-the C++ struct). This makes the table small and, crucially, lets the C++
-consumer also drop configs that share the projection but differ in an
-LDS-irrelevant field (e.g. every splitK/kpack variant), which the big-K sweep
-never even emits.
+change it; kpack, numCTAs, wavesPerEU, gridGroupSize and the remaining knob
+fields do NOT. So we key the blacklist on just those six fields (see
+PROJECTION_NAMES / GemmLdsKey in LdsBlacklist.h -- the field order must match the
+C++ struct). This makes the table small and, crucially, lets the C++ consumer
+also drop configs that share the projection but differ in an LDS-irrelevant field
+(e.g. every kpack/wavesPerEU variant), which the big-K sweep never even emits.
+
+Three further fields -- splitKFactor, useAsyncCopy and useOptimizeEpilogue -- do
+change it but are not keyed either. Each is pinned to the value that makes the
+footprint smallest (MIN_LDS_FIELDS), so a tile recorded as overflowing overflows
+for every value of them and one compile per tile suffices.
 
 Per-block LDS is not strictly independent of the problem's M/N/K: it grows with
 the K-loop trip count (K / kPerBlock) because ``numStages`` software pipelining
@@ -87,6 +91,24 @@ LDS_OVERFLOW_MARKER = "exceeds LDS limit"
 PROJECTION_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "numWaves", "matrixInstrNonkdim",
                     "numStages")
 
+# The three fields that move ttg.shared without being keyed, pinned to the value
+# that makes it smallest, which is what lets a row stand for every value of them:
+# splitting K accumulates the partial tiles through an atomic epilogue, async copy
+# has the K-loop pipeline buffer more operands, and an unoptimised epilogue keeps
+# the output tile's layout conversion in LDS. Measuring at the smallest footprint
+# means anything else only has more, so a tile that overflows here overflows
+# whatever a search sets them to. Pinning rather than keying also keeps this to
+# one compile per tile: keying them cost a compile per combination.
+#
+# useAsyncCopy is pinned to off rather than to kKnobDefault on purpose. The
+# default resolves to on for the arches that can do it, which would record the
+# larger footprint and let a row prune an async-off config that fits.
+MIN_LDS_FIELDS = {
+    "splitKFactor": 1,
+    "useAsyncCopy": 0,
+    "useOptimizeEpilogue": 1,
+}
+
 Projection = Tuple[int, ...]
 
 # Canonical dtype key (matching ParamLookupTable::getDataTypeString) -> the
@@ -139,7 +161,7 @@ DEFAULT_ARCHES = [
 #   1. M/N/K must exceed the largest per-block tile so the problem shape never
 #      clips the tile ladders (computeDPerBlock caps M/N tiles at
 #      MAX_MN_PER_BLOCK=256, capKPerBlockByK caps K tiles at MAX_K_PER_BLOCK=512,
-#      both in RockTuningImpl.cpp). 32768 sits ~64-128x above those caps.
+#      both in TuningRanges.cpp). 32768 sits ~64-128x above those caps.
 #   2. K must be large enough that the numStages software pipeline saturates:
 #      per-block LDS grows with the K-loop trip count (K / kPerBlock) and only
 #      reaches its worst case once trip count >= numStages. At K=32768 the trip
@@ -197,19 +219,20 @@ def synth_config(proj: Projection) -> str:
     """Reconstruct a representative perf-config string from a projection.
 
     The LDS-irrelevant tunable fields are pinned to the constants the GEMM
-    tuning space always uses (kpack=1, numCTAs=1, splitKFactor=1, wavesPerEU=0,
-    gridGroupSize=0) and the knob fields are omitted, so the parser fills them
-    with the kKnobDefault sentinel. None of these affect ttg.shared (see
-    PROJECTION_*), so the reconstructed config overflows LDS iff the original
-    projection does.
+    tuning space always uses (kpack=1, numCTAs=1, wavesPerEU=0, gridGroupSize=0)
+    and the remaining knob fields are omitted, so the parser fills them with the
+    kKnobDefault sentinel. None of those affect ttg.shared (see
+    PROJECTION_NAMES). The fields in MIN_LDS_FIELDS do affect it, so they are
+    pinned exactly as generation measured them, which is what makes a verify run
+    reproduce the verdict the row was recorded with.
 
     Field order comes from PERF_CONFIG_FIELD_NAMES so it is defined in exactly
     one place."""
     values = {
         **dict(zip(PROJECTION_NAMES, proj)),
+        **MIN_LDS_FIELDS,
         "kpack": 1,
         "numCTAs": 1,
-        "splitKFactor": 1,
         "wavesPerEU": 0,
         "gridGroupSize": 0,
     }
@@ -273,20 +296,33 @@ def config_overflows_lds(paths: perfRunner.Paths, arch: str, gen_dtype: str, per
     return classify_lds(paths, arch, gen_dtype, perf_config, dims) == LDS_OVERFLOW
 
 
+def with_fields(perf_config: str, fields: Dict[str, int]) -> str:
+    """``perf_config`` with each of ``fields`` set to the given value."""
+    prefix, params = parse_perfconfig(perf_config)
+    params.update(fields)
+    return serialize_perfconfig(prefix, params)
+
+
 def overflowing_projections(paths: perfRunner.Paths, arch: str, gen_dtype: str, dims: List[int],
                             jobs: int) -> Tuple[Dict[Projection, str], List[Projection]]:
     """Return ({projection: representative config}, [projections that overflow]).
 
     Dedups the exhaustive space by projection (LDS is a function of the
     projection only, so one representative per projection suffices) and tests
-    each representative in parallel.
+    each representative in parallel, at the smallest footprint the unkeyed fields
+    allow (MIN_LDS_FIELDS). A config the arch cannot support is rejected when
+    lowered, which classify_lds reports as inconclusive and generation treats as
+    "don't blacklist".
     """
     configs = emit_exhaustive_space(paths, arch, gen_dtype, dims)
     reps: Dict[Projection, str] = {}
     for pc in configs:
         p = project(pc)
-        if p is not None:
-            reps.setdefault(p, pc)
+        if p is None or p in reps:
+            continue
+        # Derive the config from a real member of the space rather than
+        # synthesising one, so only the pinned fields differ.
+        reps[p] = with_fields(pc, MIN_LDS_FIELDS)
     if not reps:
         return {}, []
 

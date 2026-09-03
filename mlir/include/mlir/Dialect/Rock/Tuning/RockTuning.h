@@ -19,8 +19,11 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/RWMutex.h"
+
+#include <memory>
+#include <vector>
 
 namespace mlir {
 namespace rock {
@@ -31,31 +34,81 @@ enum class TuningParamSetKind : uint32_t {
   // quickly obtain reasonable performance on an unknown configuration.
   Quick = 0,
   // A full tuning space suitable for most offline tuning tasks which omits
-  // configurations that have been shown not to yield good performance.
-  // (Note: this filtering is currently unimplemented).
+  // configurations a heuristic expects not to perform well (see
+  // `PopulateParams::couldBePerformant`).
   Full = 1,
-  // A tuning space consisting of all possible sets of tuning parameters,
-  // excluding those that could not be applicable to the given problem.
-  Exhaustive = 3,
+  // A wider version of `Full` meant for tuning experiments: it stretches a few
+  // of the axes -- numWaves up to the hardware's workgroup limit, larger
+  // K/block tiles -- and drops the performance heuristic above, rather than
+  // adding parameters. Despite the name, it is still not every combination of
+  // every value a parameter can take: the checks that rule out configs no
+  // kernel could run (the LDS blacklist, Triton's per-tensor element cap, ...)
+  // prune it just as they prune `Full`.
+  Exhaustive = 2,
 };
 
-// Parameter container holding a parameter and serialized string
+// A serialized perf config, e.g. "gemm:mPerBlock=64,nPerBlock=64,...". This is
+// the currency of the tuning interfaces: unlike the attributes the configs are
+// built from, a string is self-contained, so it stays valid once the
+// MLIRContext that produced it is gone and can be handed to a client that
+// compiles in a context of its own.
+using PerfConfigString = SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>;
+
+// Parameter container holding one serialized tuning parameter
 struct ParamEntry {
-  RockTuningParamAttrInterface param;
+  PerfConfigString param;
   KernelType primaryOpType;
 };
 
 // Total tuning space
 struct TuningParamSet {
-  llvm::SetVector<RockTuningParamAttrInterface> tuningRange;
+  std::vector<PerfConfigString> tuningRange;
   KernelType primaryOpType;
 };
+
+// The same tuning space described by its axes instead of by their product: the
+// values each parameter may take, plus the predicate deciding which of their
+// combinations the space contains. A search can explore a space far larger than
+// memory this way, since nothing is enumerated, which `createTunableParamSpace`
+// necessarily does.
+class TuningParamAxes {
+public:
+  virtual ~TuningParamAxes();
+
+  // The values of each parameter that are worth trying, one list per
+  // parameter, ordered as a perf config lists them (see
+  // `RockTuningParamAttrInterface::getParamValues`).
+  //
+  // Where one parameter's legal values depend on another's, the list is
+  // their union over the whole space, so the product of the axes is wider
+  // than the space and `isFeasible` decides which combinations are in it.
+  //
+  // A value can be legal without being listed: a knob's `kKnobDefault`
+  // resolves to off or on, so trying it too would only re-time whichever
+  // it means here. `isFeasible` accepts such a config anyway, which is how
+  // a search can start from one -- a quick-list config, say -- and step
+  // onto the axes.
+  virtual ArrayRef<std::vector<int64_t>> getAxes() const = 0;
+
+  // Whether `values` is a config the space admits.
+  virtual bool isFeasible(ArrayRef<int64_t> values) const = 0;
+
+  // The perf-config key of each parameter, ordered as `getAxes`.
+  virtual void getParamNames(SmallVectorImpl<StringRef> &names) const = 0;
+
+  // Spells `values` as the perf config string the space would have emitted.
+  virtual void serialize(ArrayRef<int64_t> values,
+                         PerfConfigString &out) const = 0;
+};
+
+// Returns nullptr when the module holds no op with a tuning space.
+std::unique_ptr<TuningParamAxes>
+createTunableParamAxes(ModuleOp mod, TuningParamSetKind kind);
 
 TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind);
 // Get a parameters from the set of tunable parameters.
 bool tuningGetParam(TuningParamSet *tuningSpace, unsigned pos,
                     ParamEntry *paramEntry);
-bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry);
 bool tuningSetStr(ModuleOp &mod, StringRef perfConfig);
 
 // A tuning table for rocMLIR.

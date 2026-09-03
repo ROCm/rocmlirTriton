@@ -118,8 +118,14 @@ struct TuningSpaceGemmEnv {
       ADD_FAILURE() << "empty tuning space";
       return kValues;
     }
-    for (auto param : space->tuningRange) {
-      auto gemmParams = cast<GemmParamsAttr>(param);
+    for (const PerfConfigString &perfConfig : space->tuningRange) {
+      auto gemmParams =
+          GemmParamsAttr::get(StringAttr::get(&ctx, StringRef(perfConfig)));
+      if (!gemmParams) {
+        ADD_FAILURE() << "unparseable perf config '" << std::string(perfConfig)
+                      << "'";
+        continue;
+      }
       int64_t minMN =
           std::min(gemmParams.getMPerBlock(), gemmParams.getNPerBlock());
       int64_t kPerBlock = gemmParams.getKPerBlock();
@@ -430,7 +436,7 @@ TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
 // kPerBlock values that evenly divide K (peeled into pow2 K segments
 // downstream), so the tuner can drop K padding on shapes like a conv with
 // K = C*fil_h*fil_w. Each such candidate must satisfy the window heuristic in
-// `windowDividingKPerBlock` (RockTuningImpl.cpp): it peels into exactly two
+// `windowDividingKPerBlock` (TuningRanges.cpp): it peels into exactly two
 // pow2 segments and is the smallest tile edge, i.e. in [min(m,n)/2, min(m,n)).
 TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisors) {
   // K = 576 = 64 * 3 * 3 (a conv's C*fil_h*fil_w). Its non-pow2 divisors in the

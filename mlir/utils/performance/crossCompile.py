@@ -748,6 +748,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if ssh_options_request_pty(args.ssh_option):
         parser.error("--ssh-option cannot request a PTY because SSH stdout carries a binary tar")
+    # The local phase compiles everything up front with --compile-only, which an
+    # adaptive search cannot do: it picks each batch from the previous batch's
+    # timings, and there is no GPU on this side to produce them.
+    if args.tuning_space == "lfbo":
+        parser.error("--tuning-space=lfbo cannot be cross-compiled: it needs benchmark "
+                     "timings to decide what to compile next")
     # tuningRunner.py --benchmark-artifacts benchmarks one problem at a time on
     # a single device and rejects anything else. Catch it here rather than
     # letting the remote reject it after a compile that can run for hours.

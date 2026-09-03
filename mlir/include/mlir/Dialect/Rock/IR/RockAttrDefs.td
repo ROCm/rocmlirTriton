@@ -346,6 +346,10 @@ class Rock_PerfConfigSchema<string prefix, dag params,
 
   string keysInit =
       "{"#!interleave(!foreach(f, fields, "\""#f.key#"\""), ", ")#"}";
+  string valuesInit = "{"#!interleave(
+      !foreach(f, fields,
+               "get"#!toupper(!substr(f.key, 0, 1))#!substr(f.key, 1)#"()"),
+      ", ")#"}";
   string defaultsInit = "{"#!interleave(
       !foreach(f, fields, !cast<string>(f.defaultValue)), ", ")#"}";
   string forwardArgs = !interleave(
@@ -394,6 +398,12 @@ class Rock_PerfConfigSchema<string prefix, dag params,
     static ArrayRef<int64_t> getPerfConfigDefaults() {
         static constexpr int64_t defaults[] = }]#defaultsInit#[{;
         return defaults;
+    }
+
+    // The fields as a flat vector, ordered as `getPerfConfigKeys()`, which is
+    // the inverse of `getFromPerfConfigValues()`.
+    void getPerfConfigValues(::llvm::SmallVectorImpl<int64_t> &values) const {
+        values.append(}]#valuesInit#[{);
     }
 
     // Builds the attribute from values ordered as `getPerfConfigKeys()`, which
@@ -467,20 +477,23 @@ def Rock_GemmParamsAttr
       decomposition additionally requires fast math: `-disable-fast-math` pins
       the IEEE path even at `1`.
 
-    NOTE: The following fields are serialized into the perfConfig but they are
-    not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
-    or `-1` (the knob default) by the tuner:
+    NOTE: The brute-force tuning space (`createGemmTuningRangeBF`) leaves the
+    following fields at `0` (use the backend heuristic) or `-1` (the knob
+    default), since writing out a product costs it a multiple of the whole
+    enumeration per value added. They are still tuned by a search that samples
+    rather than enumerates, which pays only for the configs it benchmarks; see
+    the axes in TuningSearch.cpp.
 
-    - `wavesPerEU`                       (set to 0)
-    - `gridGroupSize`                    (set to 0)
-    - `useAsyncCopy`                     (set to -1)
-    - `useBlockPingpong`                 (set to -1)
-    - `useInThreadTranspose`             (set to -1)
-    - `useBufferOps`                     (set to -1)
-    - `useBufferAtomics`                 (set to -1)
-    - `useReductionLayout`               (set to -1)
-    - `useOptimizeEpilogue`              (set to -1)
-    - `useBf16x3ForF32`                  (set to -1)
+    - `wavesPerEU`                       (0 in the enumerated space)
+    - `gridGroupSize`                    (0 in the enumerated space)
+    - `useAsyncCopy`                     (-1 in the enumerated space)
+    - `useBlockPingpong`                 (-1 in the enumerated space)
+    - `useInThreadTranspose`             (-1 in the enumerated space)
+    - `useBufferOps`                     (-1 in the enumerated space)
+    - `useBufferAtomics`                 (-1 in the enumerated space)
+    - `useReductionLayout`               (-1 in the enumerated space)
+    - `useOptimizeEpilogue`              (-1 in the enumerated space)
+    - `useBf16x3ForF32`                  (-1 in the enumerated space)
   }];
 
   let parameters = kRockGemmParams;
@@ -565,20 +578,26 @@ def Rock_GemmGemmParamsAttr
       Being a precision relaxation, the decomposition additionally requires fast
       math: `-disable-fast-math` pins the IEEE path even at `1`.
 
-    NOTE: The following fields are serialized into the perfConfig but they are
-    not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
-    or `-1` (the knob default) by the tuner:
+    NOTE: The brute-force tuning space (`createGemmGemmTuningRangeBF`) leaves the
+    following fields at `0` (use the backend heuristic) or `-1` (the knob
+    default), since writing out a product costs it a multiple of the whole
+    enumeration per value added. They are still tuned by a search that samples
+    rather than enumerates, which pays only for the configs it benchmarks; see
+    the axes in TuningSearch.cpp.
 
-    - `wavesPerEU`                       (set to 0)
-    - `gridGroupSize`                    (set to 0)
-    - `useAsyncCopy`                     (set to -1)
-    - `useBlockPingpong`                 (set to -1)
-    - `useInThreadTranspose`             (set to -1)
-    - `useBufferOps`                     (set to -1)
-    - `useBufferAtomics`                 (set to -1)
-    - `useReductionLayout`               (set to -1)
-    - `useOptimizeEpilogue`              (set to -1)
-    - `useBf16x3ForF32`                  (set to -1)
+    - `wavesPerEU`                       (0 in the enumerated space)
+    - `useAsyncCopy`                     (-1 in the enumerated space)
+    - `useBlockPingpong`                 (-1 in the enumerated space)
+    - `useInThreadTranspose`             (-1 in the enumerated space)
+    - `useBufferOps`                     (-1 in the enumerated space)
+    - `useBufferAtomics`                 (-1 in the enumerated space)
+    - `useReductionLayout`               (-1 in the enumerated space)
+    - `useOptimizeEpilogue`              (-1 in the enumerated space)
+    - `useBf16x3ForF32`                  (-1 in the enumerated space)
+
+    `gridGroupSize` is absent from that list because no space here varies it:
+    attention lays out its grid with `makeGxNGridLayout`, which takes no group
+    size, so the field reaches nothing and stays at `0`.
   }];
 
   let parameters = kRockGemmGemmParams;

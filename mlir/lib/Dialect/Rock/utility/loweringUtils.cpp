@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -41,6 +42,66 @@ using namespace mlir;
 using namespace mlir::rock;
 
 #define DEBUG_TYPE "rock-lowering-utils"
+
+Pow2TileRequirement
+mlir::rock::pow2TilesRequired(RockGemmWrapperInterface gemmOp) {
+  bool isScaledGemm = gemmOp.getScaleA() || gemmOp.getScaleB();
+  return {isScaledGemm,
+          isScaledGemm || !supportsNonPow2KPerBlock(getArchValue(gemmOp))};
+}
+
+bool mlir::rock::isInputSpatialDimName(StringRef name, size_t dim) {
+  SmallString<4> numbered;
+  (Twine(dim) + "i").toVector(numbered);
+  if (name == numbered)
+    return true;
+  // "hi"/"wi" are the legacy spellings of "0i"/"1i".
+  return (dim == 0 && name == "hi") || (dim == 1 && name == "wi");
+}
+
+int64_t mlir::rock::kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
+  // Only forward convs supported for now.
+  if (gemmOp.getKernelType() != KernelType::Conv)
+    return 1;
+
+  Operation *op = gemmOp.getOperation();
+  auto inputLayout = op->getAttrOfType<ArrayAttr>("input_layout");
+  if (!inputLayout)
+    return 1;
+
+  ConvolutionDims convDims = ConvolutionDims::fromOp(op);
+  // Walking the input layout in order collects the gemmK-merged dims in the
+  // same order the merge lists them in, so the first entry is the merge's
+  // outermost dim.
+  SmallVector<int64_t> mergedExtents;
+  bool channelIsOutermost = false;
+  for (Attribute nameAttr : inputLayout) {
+    StringRef name = cast<StringAttr>(nameAttr).getValue();
+    if (name == "ci") {
+      channelIsOutermost = mergedExtents.empty();
+      mergedExtents.push_back(convDims.c);
+      continue;
+    }
+    for (auto [i, filLen] : llvm::enumerate(convDims.fil))
+      if (isInputSpatialDimName(name, i))
+        mergedExtents.push_back(filLen);
+  }
+  if (mergedExtents.size() != convDims.fil.size() + 1)
+    return 1;
+
+  // The spatial dims have to be the fastest changing ones, i.e. the channel dim
+  // has to be the merge's outermost. Otherwise a spatial dim sits above another
+  // merged dim and moves as soon as that one wraps.
+  if (!channelIsOutermost)
+    return 1;
+
+  // Only the outermost dim advances without a carry, so the tile has to be a
+  // multiple of everything below it.
+  int64_t trailing = 1;
+  for (int64_t len : llvm::drop_begin(mergedExtents))
+    trailing *= len;
+  return trailing > 0 ? trailing : 1;
+}
 
 bool mlir::rock::is4GBMemoryType(ShapedType type) {
   if (!type.hasStaticShape())

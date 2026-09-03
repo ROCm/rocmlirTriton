@@ -146,14 +146,14 @@ mlir::rock::populateConvContextFromConvGemm(ConvElementwiseGemmOp op) {
       auto newKey =
           StringAttr::get(inputLayoutAttr.getContext(), std::string("no"));
       dimIndexAndSize[newKey] = {i, inputSize};
-    } else if (key == "hi" || key == "0i") {
+    } else if (isInputSpatialDimName(key, 0)) {
       int64_t ho = rock::ConvGenerator::outputDim(inputSize, kernelSizeH,
                                                   paddingVal[0], paddingVal[1],
                                                   strideVal[0], dilationVal[0]);
       auto newKey =
           StringAttr::get(inputLayoutAttr.getContext(), std::string("0o"));
       dimIndexAndSize[newKey] = {i, ho};
-    } else if (key == "wi" || key == "1i") {
+    } else if (isInputSpatialDimName(key, 1)) {
       int64_t wo = rock::ConvGenerator::outputDim(inputSize, kernelSizeW,
                                                   paddingVal[2], paddingVal[3],
                                                   strideVal[1], dilationVal[1]);

@@ -81,10 +81,8 @@ MLIR_CAPI_EXPORTED
 size_t mlirRockTuningParamToString(MlirRockTuningParam param, char *buf,
                                    size_t bufLen) {
   auto *paramEntry = unwrap(param);
-  SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
-  paramEntry->param.getPerfConfigStr(perfConfig);
-  strncpy(buf, perfConfig.c_str(), bufLen);
-  return perfConfig.size();
+  strncpy(buf, paramEntry->param.c_str(), bufLen);
+  return paramEntry->param.size();
 }
 
 MLIR_CAPI_EXPORTED

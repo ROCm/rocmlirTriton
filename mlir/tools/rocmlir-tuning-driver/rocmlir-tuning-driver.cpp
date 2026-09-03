@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/Tuning/TuningSearch.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
@@ -191,17 +192,44 @@ static LogicalResult launchKernel(hipFunction_t function, uint32_t gridX,
 static llvm::cl::opt<std::string> inputFilename{
     llvm::cl::Positional, llvm::cl::desc("<input file>"), llvm::cl::init("-")};
 
-static llvm::cl::opt<rock::TuningParamSetKind> tuningSpaceKind(
+static llvm::cl::opt<rock::SearchStrategyKind> tuningSpaceKind(
     "tuning-space", llvm::cl::desc("Tuning space to use for this run"),
     llvm::cl::values(
-        clEnumValN(rock::TuningParamSetKind::Quick, "quick",
+        clEnumValN(rock::SearchStrategyKind::Quick, "quick",
                    "Quick tuning space"),
-        clEnumValN(rock::TuningParamSetKind::Full, "full",
+        clEnumValN(rock::SearchStrategyKind::Full, "full",
                    "Full tuning space, excluding known-bad configurations"),
-        clEnumValN(rock::TuningParamSetKind::Exhaustive, "exhaustive",
-                   "All tuning space combinations, even inapplicable ones")),
+        clEnumValN(rock::SearchStrategyKind::Exhaustive, "exhaustive",
+                   "Full tuning space widened along a few axes, such as "
+                   "numWaves and the K/block tiles"),
+        clEnumValN(rock::SearchStrategyKind::LFBO, "lfbo",
+                   "Search the exhaustive space with a surrogate model, "
+                   "benchmarking only the configs it rates promising")),
     llvm::cl::value_desc("tuning space to use"),
-    llvm::cl::init(rock::TuningParamSetKind::Full));
+    llvm::cl::init(rock::SearchStrategyKind::Full));
+
+static llvm::cl::opt<rock::LFBOEffort> lfboEffort(
+    "lfbo-effort",
+    llvm::cl::desc("How much benchmarking the 'lfbo' tuning space may spend "
+                   "looking for a fast config. The fixed spaces are as large "
+                   "as they are and ignore this."),
+    llvm::cl::values(
+        clEnumValN(rock::LFBOEffort::Quick, "quick",
+                   "A short search, at the risk of settling for a slower "
+                   "config than the space holds"),
+        clEnumValN(rock::LFBOEffort::Full, "full",
+                   "Search until the search stops making progress")),
+    llvm::cl::value_desc("search budget"),
+    llvm::cl::init(rock::LFBOEffort::Full));
+
+static llvm::cl::opt<std::string> lfboTrace(
+    "lfbo-trace",
+    llvm::cl::desc("Append a JSON record of every search iteration to this "
+                   "file, one object per line: what was measured, what was "
+                   "proposed and what it cost. Only the 'lfbo' tuning space "
+                   "searches in iterations, so only it writes anything. See "
+                   "mlir/utils/performance/analysis/plotLFBOTrace.py."),
+    llvm::cl::value_desc("trace file"), llvm::cl::init(""));
 
 static llvm::cl::opt<unsigned> rep(
     "rep",
@@ -572,13 +600,15 @@ struct BenchmarkParams {
   unsigned sleepUs;
   bool showStats;
   bool showAllMeasurements;
-  rock::TuningParamSetKind tuningSpaceKind;
+  rock::SearchStrategyKind tuningSpaceKind;
   unsigned numCompileThreads;
   std::string benchmarkConfig;
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
   std::string compileOnlyDir;
+  std::string lfboTracePath;
+  rock::LFBOEffort lfboEffort = rock::LFBOEffort::Full;
 
   // Two-stage tuning. twoStageTopK == 0 disables it.
   unsigned twoStageTopK;
@@ -1232,10 +1262,17 @@ static bool doesModuleHaveFusions(ModuleOp module) {
 // reported as Discarded. For artifact results (empty hsacoBinary + nonempty
 // blobPath) each HSACO is decompressed just before launch and freed right
 // after. A decompression, launch, or timing failure aborts the run.
-static LogicalResult
+//
+// Returns how many configs were measured. Having measured none is only fatal
+// once the whole run is over, which the caller decides: a search strategy may
+// well propose a batch that turns out to be entirely inapplicable and still
+// have somewhere to go next. When `searchResults` is set, the outcome of every
+// config is appended to it in the form the strategy that proposed them expects.
+static FailureOr<int64_t>
 runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
                   const BufferLayout &layout, const BenchmarkParams &params,
-                  const CoarseConfig &coarseConfig) {
+                  const CoarseConfig &coarseConfig,
+                  std::vector<rock::BenchmarkResult> *searchResults = nullptr) {
   std::vector<void *> hostBuffers;
   std::vector<void *> gpuBuffers;
   llvm::scope_exit bufferCleanup([&]() {
@@ -1305,6 +1342,13 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
   for (size_t i = 0; i < results.size(); ++i)
     reportPrecise[i] = results[i].status == CompilationStatus::Success;
 
+  // Coarse timings of the configs the coarse pass times but top-K does not
+  // shortlist for a precise re-run. They are too rough to report, but they are
+  // still a measurement, so a search strategy is told about them rather than
+  // being left to assume the config failed.
+  std::vector<double> coarseTimeByIdx(results.size(),
+                                      std::numeric_limits<double>::infinity());
+
   // Two-stage tuning is only meaningful when we are searching a space; in
   // single-config benchmark mode there is nothing to shortlist.
   if (params.twoStageTopK > 0 && params.benchmarkConfig.empty()) {
@@ -1347,6 +1391,7 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
         return failure();
       }
       coarseTimes.emplace_back(i, timing.value());
+      coarseTimeByIdx[i] = timing.value();
     }
 
     // Shortlist the K fastest (smallest ns). Everything not shortlisted is
@@ -1372,12 +1417,30 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
   int64_t validResults = 0;
   for (size_t i = 0; i < results.size(); ++i) {
     CompilationResult &result = results[i];
+    // Record the outcome as the search strategy sees it: a config that never
+    // became measurable is a fact about the space, not a gap in it.
+    auto recordForSearch = [&](double timeNs) {
+      if (!searchResults)
+        return;
+      rock::BenchmarkResult searchResult;
+      searchResult.perfConfig = result.perfConfig;
+      searchResult.timeNs = timeNs;
+      if (std::isfinite(timeNs))
+        searchResult.status = rock::BenchmarkResult::Status::Success;
+      else if (result.status == CompilationStatus::NotApplicable)
+        searchResult.status = rock::BenchmarkResult::Status::NotApplicable;
+      else
+        searchResult.status = rock::BenchmarkResult::Status::Failed;
+      searchResults->push_back(std::move(searchResult));
+    };
+
     llvm::outs() << result.perfConfig << "\t";
 
     if (!reportPrecise[i]) {
       llvm::outs() << (result.status == CompilationStatus::Success ? "Discarded"
                                                                    : "N/A")
                    << "\n";
+      recordForSearch(coarseTimeByIdx[i]);
       continue;
     }
 
@@ -1387,15 +1450,12 @@ runBenchmarkPhase(MutableArrayRef<CompilationResult> results,
       return failure();
     }
     llvm::outs() << timing.value() << "\n";
+    recordForSearch(timing.value());
 
     validResults++;
   }
 
-  if (validResults == 0) {
-    llvm::errs() << "No valid configurations found\n";
-    return failure();
-  }
-  return success();
+  return validResults;
 }
 
 static LogicalResult runTuningLoop(ModuleOp source) {
@@ -1461,38 +1521,111 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            perfConfigTimeout,
                                            gpuRunTimeout,
                                            compileOnlyDir,
+                                           lfboTrace,
+                                           lfboEffort,
                                            twoStageTopK};
 
   const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
                                      coarseRelSemTarget, coarseChunkIters,
                                      coarseWarmupIters,  coarseWarmupFloorMs};
 
-  // Main tuning pass: collect perf configs, compile, and benchmark.
+  // The search decides which configs are worth trying. The brute-force spaces
+  // hand out everything at once and ignore the timings; an adaptive search such
+  // as LFBO uses each batch's timings to choose the next one, so the whole
+  // compile-and-benchmark pass below runs once per batch.
+  // --benchmark-config pins one config, which is just a search that proposes
+  // that config and nothing else.
+  std::unique_ptr<rock::TuningSearchStrategy> strategy =
+      benchmarkParams.benchmarkConfig.empty()
+          ? rock::createTuningSearchStrategy(
+                source, benchmarkParams.tuningSpaceKind,
+                benchmarkParams.lfboEffort, benchmarkParams.lfboTracePath)
+          : rock::createFixedBatchSearchStrategy(
+                {rock::PerfConfigString(benchmarkParams.benchmarkConfig)});
+  // Only an iterative search reads the timings back, so only then is it worth
+  // keeping a result record per config alive alongside the batch.
+  const bool feedResultsBack = strategy->isIterative();
+
+  // Asking for a trace of a search that has a single iteration would otherwise
+  // leave no file and no explanation.
+  if (!benchmarkParams.lfboTracePath.empty() && !feedResultsBack)
+    llvm::errs() << "warning: --lfbo-trace: nothing to trace, since this run "
+                    "hands out all of its configs in one batch\n";
+
+  // Likewise for a budget this run has no way of spending.
+  if (lfboEffort.getNumOccurrences() > 0 && !feedResultsBack)
+    llvm::errs() << "warning: --lfbo-effort: nothing to budget, since this "
+                    "run benchmarks every config it was going to anyway\n";
+
+  // In --compile-only mode, stream each successful HSACO to disk as soon as
+  // it is compiled (freeing the in-memory copy) so peak memory is bounded by
+  // the in-flight compiles (~numThreads) rather than the entire config space,
+  // which for an exhaustive space can reach many GiB. Prepare the staging
+  // bundle up front (this also fails fast if zstd is unavailable, before any
+  // compile time is spent). Use the snapshot: PassManager::run() resets the
+  // cl::opt globals during compilation.
+  const bool streamBlobs = !benchmarkParams.compileOnlyDir.empty();
+  if (streamBlobs && feedResultsBack) {
+    llvm::errs() << "error: --compile-only cannot be used with the '"
+                 << rock::getSearchStrategyKindName(
+                        benchmarkParams.tuningSpaceKind)
+                 << "' tuning space, which needs the timings of one batch to "
+                    "decide what to compile next\n";
+    return failure();
+  }
+  if (streamBlobs &&
+      failed(beginArtifactBundle(benchmarkParams.compileOnlyDir)))
+    return failure();
+
+  // Serialize source module once (shared by all threads for parsing)
+  std::string sourceModuleStr;
   {
-    // PHASE 1: Collect perf configs
-    std::vector<SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ>> configs;
+    llvm::raw_string_ostream sourceOs(sourceModuleStr);
+    source->print(sourceOs);
+  }
 
-    if (!benchmarkParams.benchmarkConfig.empty()) {
-      // Benchmark mode - just one config
-      configs.emplace_back(benchmarkParams.benchmarkConfig);
-    } else {
-      // Tuning mode - get configs from tuning space
-      std::unique_ptr<rock::TuningParamSet> tuningSpace(
-          rock::createTunableParamSpace(source,
-                                        benchmarkParams.tuningSpaceKind));
+  // In subprocess mode (--perf-config-timeout > 0), materialize the shared
+  // source module to a temp file once; each rocmlir-driver invocation reads
+  // it and injects its own perf config via --perf-config.
+  SmallString<128> sharedInputPath;
+  std::optional<llvm::FileRemover> sharedInputRemover;
+  std::string driverPath;
+  if (benchmarkParams.perfConfigTimeoutSec > 0) {
+    driverPath = getRocmlirDriverPath();
+    int inputFd = -1;
+    if (llvm::sys::fs::createTemporaryFile("rocmlir-tuning-in", "mlir", inputFd,
+                                           sharedInputPath)) {
+      llvm::errs() << "Failed to create temp input file for tuning\n";
+      return failure();
+    }
+    sharedInputRemover.emplace(sharedInputPath);
+    llvm::raw_fd_ostream inputOs(inputFd, /*shouldClose=*/true);
+    inputOs << sourceModuleStr;
+  }
 
-      if (tuningSpace->tuningRange.empty()) {
+  const bool moduleHasFusions = doesModuleHaveFusions(source);
+
+  // Timings of the batch just benchmarked, handed back to the search so it can
+  // propose the next one. Empty on the first round, as the protocol requires.
+  std::vector<rock::BenchmarkResult> prevResults;
+  int64_t totalValidResults = 0;
+  bool isFirstBatch = true;
+
+  // Main tuning pass: collect perf configs, compile, and benchmark.
+  while (true) {
+    // PHASE 1: Ask the search what to try next.
+    std::vector<rock::PerfConfigString> configs =
+        strategy->getPerfConfigBatch(prevResults);
+    prevResults.clear();
+
+    if (configs.empty()) {
+      if (isFirstBatch) {
         llvm::errs() << "Tuning range is empty\n";
         return failure();
       }
-
-      for (rock::RockTuningParamAttrInterface tuningAttr :
-           tuningSpace->tuningRange) {
-        SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
-        tuningAttr.getPerfConfigStr(perfConfig);
-        configs.push_back(perfConfig);
-      }
+      break;
     }
+    isFirstBatch = false;
 
     // Determine number of parallel threads
     unsigned numThreads = (benchmarkParams.numCompileThreads > 0)
@@ -1504,48 +1637,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     // Don't create more threads than configs to compile
     numThreads = std::min(numThreads, static_cast<unsigned>(configs.size()));
 
-    // In --compile-only mode, stream each successful HSACO to disk as soon as
-    // it is compiled (freeing the in-memory copy) so peak memory is bounded by
-    // the in-flight compiles (~numThreads) rather than the entire config space,
-    // which for an exhaustive space can reach many GiB. Prepare the staging
-    // bundle up front (this also fails fast if zstd is unavailable, before any
-    // compile time is spent). Use the snapshot: PassManager::run() resets the
-    // cl::opt globals during compilation.
-    const bool streamBlobs = !benchmarkParams.compileOnlyDir.empty();
-    if (streamBlobs &&
-        failed(beginArtifactBundle(benchmarkParams.compileOnlyDir)))
-      return failure();
-
-    // Serialize source module once (shared by all threads for parsing)
-    std::string sourceModuleStr;
-    {
-      llvm::raw_string_ostream sourceOs(sourceModuleStr);
-      source->print(sourceOs);
-    }
-
     std::vector<bool> configIsFusible(configs.size(), true);
-    if (doesModuleHaveFusions(source)) {
+    if (moduleHasFusions) {
       for (size_t idx = 0; idx < configs.size(); ++idx)
         configIsFusible[idx] = rock::isModuleFusible(source, configs[idx]);
-    }
-
-    // In subprocess mode (--perf-config-timeout > 0), materialize the shared
-    // source module to a temp file once; each rocmlir-driver invocation reads
-    // it and injects its own perf config via --perf-config.
-    SmallString<128> sharedInputPath;
-    std::optional<llvm::FileRemover> sharedInputRemover;
-    std::string driverPath;
-    if (benchmarkParams.perfConfigTimeoutSec > 0) {
-      driverPath = getRocmlirDriverPath();
-      int inputFd = -1;
-      if (llvm::sys::fs::createTemporaryFile("rocmlir-tuning-in", "mlir",
-                                             inputFd, sharedInputPath)) {
-        llvm::errs() << "Failed to create temp input file for tuning\n";
-        return failure();
-      }
-      sharedInputRemover.emplace(sharedInputPath);
-      llvm::raw_fd_ostream inputOs(inputFd, /*shouldClose=*/true);
-      inputOs << sourceModuleStr;
     }
 
     // PHASE 2: Parallel compilation phase.
@@ -1821,8 +1916,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
     }
 
     // --compile-only: serialize the kernel bundle and return before any HIP
-    // call (no hipMalloc, no stream). Single-pass is asserted above, so this
-    // path runs exactly once.
+    // call (no hipMalloc, no stream). Only non-iterative searches get here, so
+    // this batch is the only one and the bundle is complete.
     if (!benchmarkParams.compileOnlyDir.empty()) {
       bool hasSuccessfulConfig = false;
       for (const CompilationResult &result : compilationResults) {
@@ -1845,12 +1940,21 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       return success();
     }
 
-    // Sequential benchmarking phase via the shared timing path.
-    if (failed(runBenchmarkPhase(compilationResults, layout, benchmarkParams,
-                                 coarseConfig)))
+    // Sequential benchmarking phase via the shared timing path. The timings are
+    // collected into `prevResults` so an iterative search can learn from this
+    // batch before proposing the next one.
+    FailureOr<int64_t> validResults = runBenchmarkPhase(
+        compilationResults, layout, benchmarkParams, coarseConfig,
+        feedResultsBack ? &prevResults : nullptr);
+    if (failed(validResults))
       return failure();
+    totalValidResults += *validResults;
   } // End tuning pass
 
+  if (totalValidResults == 0) {
+    llvm::errs() << "No valid configurations found\n";
+    return failure();
+  }
   return success();
 }
 
@@ -1926,7 +2030,7 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   benchmarkParams.sleepUs = sleepUs;
   benchmarkParams.showStats = showStats;
   benchmarkParams.showAllMeasurements = showAllMeasurements;
-  benchmarkParams.tuningSpaceKind = rock::TuningParamSetKind::Full;
+  benchmarkParams.tuningSpaceKind = rock::SearchStrategyKind::Full;
   benchmarkParams.numCompileThreads = numCompileThreads;
   benchmarkParams.benchmarkConfig = benchmarkConfig;
   benchmarkParams.flushLastLevelCache = flushLastLevelCache;
@@ -1937,7 +2041,15 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
                                      coarseRelSemTarget, coarseChunkIters,
                                      coarseWarmupIters,  coarseWarmupFloorMs};
-  return runBenchmarkPhase(results, layout, benchmarkParams, coarseConfig);
+  FailureOr<int64_t> validResults =
+      runBenchmarkPhase(results, layout, benchmarkParams, coarseConfig);
+  if (failed(validResults))
+    return failure();
+  if (*validResults == 0) {
+    llvm::errs() << "No valid configurations found\n";
+    return failure();
+  }
+  return success();
 }
 #undef HIPCHECK
 

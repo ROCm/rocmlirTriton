@@ -144,3 +144,8 @@ GemmLdsKeySet LdsBlacklist::lookupGemm(StringRef arch, Type dataType) {
     keys.insert(k.asArray());
   return keys;
 }
+
+bool mlir::rock::isBlacklisted(const GemmLdsKeySet &blacklist,
+                               const GemmLdsKey &key) {
+  return blacklist.count(key.asArray()) > 0;
+}
