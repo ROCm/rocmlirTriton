@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/TuningSearch.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -500,6 +501,56 @@ TEST(LLMSearchTest, DescribesTheMachineTheHarnessMeasuredNotTheArchDefault) {
   EXPECT_NE(hardware->getInteger("numChiplets"), rock::getMaxNumChiplets(arch));
 }
 
+TEST(LLMSearchTest, SaysWhichWayEachKnobsDefaultGoesOnThisArch) {
+  RecordedRequest seen;
+  FixtureProposer fixture(recordsTheRequest(seen, "[]"));
+  // gfx942 is the arch that separates the three defaults from one another and
+  // from what the hardware can do: it defaults async copy off while supporting
+  // it, and defaults both of the other two on.
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  runSearch(*e.module, testOptions(fixture));
+  const llvm::json::Object *hardware = seen.request()->getObject("hardware");
+  ASSERT_TRUE(hardware);
+
+  StringRef arch = "amdgcn-amd-amdhsa:gfx942";
+  EXPECT_EQ(hardware->getBoolean("defaultAsyncCopy"),
+            rock::defaultUseAsyncCopy(arch));
+  EXPECT_EQ(hardware->getBoolean("defaultInThreadTranspose"),
+            rock::defaultUseInThreadTranspose(arch));
+  // Resolved against the resolved async-copy decision, the way
+  // `isPingpongScheduleEnabled` resolves it, and not against the knob.
+  EXPECT_EQ(
+      hardware->getBoolean("defaultBlockPingpong"),
+      rock::defaultUseBlockPingpong(arch, rock::defaultUseAsyncCopy(arch)));
+  // The point of reporting the default apart from the capability: here the two
+  // disagree, and a config that read the capability alone would take an
+  // explicit useAsyncCopy=1 for a config that changes nothing.
+  EXPECT_TRUE(rock::supportsAsyncCopy(arch));
+  EXPECT_FALSE(rock::defaultUseAsyncCopy(arch));
+}
+
+TEST(LLMSearchTest, SaysWhatAGridGroupSizeOfZeroWorksOutTo) {
+  RecordedRequest seen;
+  FixtureProposer fixture(recordsTheRequest(seen, "[]"));
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  runSearch(*e.module, testOptions(fixture));
+  const llvm::json::Object *hardware = seen.request()->getObject("hardware");
+  ASSERT_TRUE(hardware);
+
+  // Same f32 operands and result, so the width ratio is 1 and the group size
+  // is the square root of the CUs on one chiplet. Asserted against the shared
+  // helper `makeGroupedGridLayout` itself calls, so the request cannot drift
+  // from the layout it claims to describe.
+  int64_t numCUs = *hardware->getInteger("numCUs");
+  int64_t numChiplets = *hardware->getInteger("numChiplets");
+  EXPECT_EQ(hardware->getInteger("defaultGridGroupSize"),
+            rock::defaultGridGroupSize(numCUs, numChiplets,
+                                       /*inputBitWidth=*/32,
+                                       /*outputBitWidth=*/32));
+}
+
 TEST(LLMSearchTest, DescribesTheKTileAChannelsFirstConvolutionWants) {
   RecordedRequest seen;
   FixtureProposer fixture(recordsTheRequest(seen, "[]"));
@@ -569,7 +620,8 @@ TEST(LLMSearchTest, DescribesAttentionsHeadsMaskingAndSecondGemm) {
   EXPECT_EQ(problem->getBoolean("hasPreSecondGemmFusion"), false);
   EXPECT_EQ(problem->getInteger("numElemwiseInputs"), 0);
   EXPECT_FALSE(problem->get("hasFusedReduction"))
-      << "a fused op cannot carry a reduction, so the question is not asked";
+      << "a gemm+gemm op cannot carry a reduction, so the question is not "
+         "asked";
 }
 
 //===----------------------------------------------------------------------===//
@@ -608,8 +660,8 @@ TEST(LLMSearchTest, ProposesTheConfigTheHelperNamed) {
 // ending a tuning run over, and not worth losing the round's other configs to.
 TEST(LLMSearchTest, DropsSomethingThatIsNotAPerfConfigForThisKernel) {
   FixtureProposer fixture(alwaysAnswers(
-      // Not a perf config at all; the fused kernels' form, which parses but
-      // has the wrong fields for a plain GEMM; and one real config.
+      // Not a perf config at all; the gemm+gemm form, which parses but has the
+      // wrong fields for a plain GEMM; and one real config.
       "['mPerBlock=256', 'attn:mPerBlockG0=128', render(mPerBlock=256)]"));
   GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
 

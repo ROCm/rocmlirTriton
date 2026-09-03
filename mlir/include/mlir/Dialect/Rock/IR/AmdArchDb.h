@@ -190,6 +190,22 @@ bool supportsTDM(StringRef arch);
 /// width every load falls back and `useAsyncCopy` cannot change the kernel.
 bool supportsAsyncCopy(StringRef arch);
 
+/// What the `-1` setting of each of the three arch-dependent schedule knobs
+/// resolves to on `arch`, alongside `preferBf16x3ForF32Dot` above. The pipeline
+/// resolves the knobs through these, and a tuning search reports them, so that
+/// a caller weighing an explicit `0` or `1` against the default knows which of
+/// the two it would be asking for. None of the three is a statement about what
+/// the arch can do -- `supportsAsyncCopy` is that -- only about which way the
+/// heuristic goes where it has a choice.
+///
+/// Note that `useAsyncCopy` defaults off on some arches that support it, and
+/// that pingpong's default reads the resolved async-copy decision rather than
+/// the knob, so turning async copy off also turns pingpong off where that is
+/// what enabled it.
+bool defaultUseAsyncCopy(StringRef arch);
+bool defaultUseBlockPingpong(StringRef arch, bool useAsyncCopy);
+bool defaultUseInThreadTranspose(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 

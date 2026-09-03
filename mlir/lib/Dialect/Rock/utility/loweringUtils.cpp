@@ -36,6 +36,7 @@
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include <cmath>
 #include <numeric>
 #include <optional>
 using namespace mlir;
@@ -951,4 +952,17 @@ void mlir::rock::markAsNotApplicable(Operation *op) {
   assert(moduleOp && "markAsNotApplicable: op must be inside a ModuleOp");
   moduleOp->setAttr(rock::NotApplicableAttr::getMnemonic(),
                     UnitAttr::get(op->getContext()));
+}
+
+int64_t mlir::rock::defaultGridGroupSize(int64_t numCU, int64_t numChiplets,
+                                         int64_t inputBitWidth,
+                                         int64_t outputBitWidth) {
+  if (numChiplets <= 0 || inputBitWidth <= 0 || outputBitWidth <= 0)
+    return 0;
+  // Integer division throughout, as the emitter computes it: the chiplet's
+  // share of the CUs, square-rooted to give a group as wide as it is tall, and
+  // then widened by however many output elements ride on one input element.
+  int64_t narrower = std::min(inputBitWidth, outputBitWidth);
+  return static_cast<int64_t>(std::ceil(std::sqrt(numCU / numChiplets))) *
+         (outputBitWidth / narrower);
 }

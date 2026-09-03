@@ -140,7 +140,7 @@ def main(argv=None) -> int:
     try:
         reply = transport.call_model(
             prompt=prompt,
-            system_prompt=prompting.build_system_prompt(),
+            system_prompt=prompting.build_system_prompt(space),
             model=request.get("model", "composer-2.5"),
             session=session,
             space=space,

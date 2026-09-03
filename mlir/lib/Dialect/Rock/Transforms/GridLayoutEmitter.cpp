@@ -82,14 +82,12 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
                                                     Location loc, Value bid,
                                                     GridLayoutInfo info,
                                                     StringRef arch) {
-  // Heuristic to compute groupSize
-  // This also covers the cases where the output width is larger
-  // than the input width
-  int64_t bitWidthOut = info.outputType.getIntOrFloatBitWidth();
-  int64_t bitWidthIn =
-      std::min((int64_t)info.inputType.getIntOrFloatBitWidth(), bitWidthOut);
-  int64_t groupSize = std::ceil(std::sqrt(info.numCU / info.numChiplets)) *
-                      (bitWidthOut / bitWidthIn);
+  // Heuristic to compute groupSize. Shared with the tuning side, which reports
+  // it as what a `gridGroupSize` of 0 works out to; it also covers the cases
+  // where the output width is larger than the input width.
+  int64_t groupSize = rock::defaultGridGroupSize(
+      info.numCU, info.numChiplets, info.inputType.getIntOrFloatBitWidth(),
+      info.outputType.getIntOrFloatBitWidth());
   // use gridGroupSize if it's not zero
   if (info.gridGroupSize != 0) {
     groupSize = info.gridGroupSize;

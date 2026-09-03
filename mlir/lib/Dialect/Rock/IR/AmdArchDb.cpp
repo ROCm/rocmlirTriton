@@ -696,6 +696,25 @@ bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
   return isaFamily == ISAFamily::CDNA4;
 }
 
+// The three arch-dependent knob defaults. Kept here beside
+// `preferBf16x3ForF32Dot` rather than in the pipeline that consumes them, so
+// that the tuning side can report what a `-1` means without a second copy of
+// the arch list to drift from.
+bool mlir::rock::defaultUseAsyncCopy(StringRef arch) {
+  return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+}
+
+bool mlir::rock::defaultUseBlockPingpong(StringRef arch, bool useAsyncCopy) {
+  return arch.starts_with("gfx942") ||
+         (arch.starts_with("gfx950") && useAsyncCopy);
+}
+
+bool mlir::rock::defaultUseInThreadTranspose(StringRef arch) {
+  return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
+         arch.starts_with("gfx115") || arch.starts_with("gfx117") ||
+         arch.starts_with("gfx120");
+}
+
 bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());

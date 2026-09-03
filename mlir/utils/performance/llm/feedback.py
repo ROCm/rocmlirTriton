@@ -69,12 +69,16 @@ def format_config_diff(default_config: Config, config: Config) -> str:
     return json.dumps(config_diff(default_config, config), sort_keys=True)
 
 
+def _was_timed(result: Result) -> bool:
+    """Whether a result carries a benchmark time that can be compared."""
+    time_ns = result.get("timeNs")
+    return (result.get("status") == "success" and isinstance(time_ns, (int, float)) and
+            math.isfinite(time_ns))
+
+
 def measured_results(results: Sequence[Result]) -> List[Tuple[Config, float]]:
     """Return successful benchmark results sorted from fastest to slowest."""
-    timed = [(result["config"], result["timeNs"])
-             for result in results
-             if result.get("status") == "success" and isinstance(result.get("timeNs"), (
-                 int, float)) and math.isfinite(result["timeNs"])]
+    timed = [(result["config"], result["timeNs"]) for result in results if _was_timed(result)]
     return sorted(timed, key=lambda pair: pair[1])
 
 
@@ -224,12 +228,11 @@ def analyze_top_configs(
     if len(ranked) < 3:
         return "Not enough results for analysis yet."
 
-    top = [{
-        key: value
-        for key, value in config_diff(default_config, config).items()
-        if key != "(default)"
-    }
-           for config, _ in ranked[:5]]
+    def changed_fields(config: Config) -> Config:
+        diff = config_diff(default_config, config)
+        return {key: value for key, value in diff.items() if key != "(default)"}
+
+    top = [changed_fields(config) for config, _ in ranked[:5]]
     all_keys = sorted({key for config in top for key in config})
     if not all_keys:
         return "The best configs are all close to the default config."

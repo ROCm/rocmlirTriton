@@ -249,6 +249,17 @@ arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 /// distinguish a "not-applicable" config from a real compilation bug.
 void markAsNotApplicable(Operation *op);
 
+/// The number of M blocks `makeGroupedGridLayout` groups together when the perf
+/// config leaves `gridGroupSize` at 0, which is what every enumerated tuning
+/// space spells. Lives here rather than in GridLayoutEmitter beside its one
+/// caller because the tuning side reports it as well, and MLIRRockTransforms
+/// already depends on MLIRRockTuning, so the two cannot share a header there.
+///
+/// `inputBitWidth` is only ever charged as the narrower of the two, so a kernel
+/// whose output is wider than its input groups proportionally harder.
+int64_t defaultGridGroupSize(int64_t numCU, int64_t numChiplets,
+                             int64_t inputBitWidth, int64_t outputBitWidth);
+
 } // end namespace rock
 } // end namespace mlir
 #endif

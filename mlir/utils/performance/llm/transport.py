@@ -17,6 +17,14 @@ importantly, its insistence on telling two failures apart:
 Both are fatal to a tuning run, but they are fixed in different places, so
 they are reported differently.
 
+The agent is created with an empty toolset, which makes this a text-in,
+text-out channel and nothing more: it cannot run a command, read a file or
+reach an MCP server. That is all a search needs -- it hands over a description
+of a kernel and gets back a line of JSON -- and the alternative is an agent
+holding a shell on the machine being tuned, unattended, for the length of the
+run. `_text_only_options` therefore refuses to start rather than fall back to
+the default toolset.
+
 A round is a subprocess, so nothing can be kept in memory between rounds. The
 conversation is held instead by the agent itself: round 0 creates an agent and
 records its id in the session file, and every later round resumes that agent,
@@ -93,6 +101,39 @@ def call_model(
     )
 
 
+def _text_only_options(agent_options: Any, local_options: Any, *, api_key: str, model: str,
+                       cwd: str) -> Any:
+    """Build the agent options, and check the toolset really came out empty.
+
+    Checked rather than assumed because of what is lost if it silently is not:
+    an agent with a shell on the machine running the tuning. An SDK too old to
+    know `tools` would reject the argument, and one that took it and ignored it
+    would leave no trace at all, so both are turned into a refusal to start.
+    """
+    try:
+        options = agent_options(
+            api_key=api_key,
+            model=model,
+            local=local_options(cwd=cwd),
+            tools=[],
+        )
+    except TypeError as err:
+        raise TransportError(
+            "this cursor-sdk cannot restrict an agent's toolset, and this "
+            "search will not run an agent that can execute commands; upgrade "
+            f"it with 'pip install -U cursor-sdk' ({err})",
+            started=False,
+        ) from err
+    if getattr(options, "tools", None) != []:
+        raise TransportError(
+            "cursor-sdk accepted an empty toolset and did not keep it, so the "
+            "agent cannot be held to text; upgrade it with "
+            "'pip install -U cursor-sdk'",
+            started=False,
+        )
+    return options
+
+
 def _cursor_reply(
     *,
     prompt: str,
@@ -122,11 +163,31 @@ def _cursor_reply(
             started=False,
         )
 
-    # Local, against a directory of its own: the agent is being asked to think
-    # about numbers, not to read or write this repository. Passed explicitly
-    # because the SDK picks local silently when neither runtime is named, and a
-    # silently-local agent is only correct by accident.
-    local = LocalAgentOptions(cwd=session.get("cwd") or os.getcwd())
+    # Text in, text out, and nothing else. `tools=[]` offers the model no
+    # built-in tool at all, so a reply is the only thing it can produce -- which
+    # is the whole of what this asks for, since a proposal is a line of JSON.
+    #
+    # Worth being deliberate about rather than trusting a prompt to keep the
+    # model in its lane. A local agent runs on the machine doing the tuning,
+    # with that machine's shell, filesystem and credentials, and the tuning
+    # itself is unattended. Removing the tools removes the question.
+    #
+    # `local.setting_sources` is left unset, which is the SDK's default and
+    # means inline configuration only: no project, user, team or plugin
+    # settings, and so no rules, hooks or MCP servers picked up from whatever
+    # environment the tuning happens to run in. `cwd` is where the search was
+    # started from; with no tool to read it, it serves only to scope the
+    # bridge's own conversation store.
+    #
+    # The runtime is named explicitly because the SDK picks local silently when
+    # neither is given, and a silently-local agent is only correct by accident.
+    options = _text_only_options(
+        AgentOptions,
+        LocalAgentOptions,
+        api_key=api_key,
+        model=model,
+        cwd=session.get("cwd") or os.getcwd(),
+    )
     agent_id = session.get("agentId")
 
     # The system prompt rides on the first message rather than being configured
@@ -135,11 +196,13 @@ def _cursor_reply(
     text = prompt if agent_id else f"{system_prompt}\n\n{prompt}"
 
     try:
+        # The same options both ways round: a toolset restriction is not kept on
+        # the agent, so a resumed round that failed to repeat it would be a
+        # round with the full toolset back.
         if agent_id:
-            manager = Agent.resume(agent_id, AgentOptions(api_key=api_key, model=model,
-                                                          local=local))
+            manager = Agent.resume(agent_id, options)
         else:
-            manager = Agent.create(model=model, api_key=api_key, local=local)
+            manager = Agent.create(options)
         with manager as agent:
             session["agentId"] = getattr(agent, "agent_id", None) or agent_id
             run = agent.send(text)
@@ -181,10 +244,11 @@ def _stub_reply(
     round_index = int(session.get("stubRound", 0))
     session["stubRound"] = round_index + 1
 
-    movable = [(name, [value
-                       for value in values
-                       if value != default_config.get(name)])
-               for name, values in space.items()]
+    def alternatives(name: str, values: Sequence[int]) -> List[int]:
+        """The values of `name` other than the one the default config holds."""
+        return [value for value in values if value != default_config.get(name)]
+
+    movable = [(name, alternatives(name, values)) for name, values in space.items()]
     movable = [(name, values) for name, values in movable if values]
     if not movable:
         return '{"configs":[]}'

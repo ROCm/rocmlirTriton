@@ -127,23 +127,20 @@ static bool isPingpongScheduleEnabled(StringRef arch, bool useAsyncCopy,
                                       int64_t useBlockPingpongOverride) {
   if (useBlockPingpongOverride != rock::kKnobDefault)
     return useBlockPingpongOverride;
-  return arch.starts_with("gfx942") ||
-         (arch.starts_with("gfx950") && useAsyncCopy);
+  return rock::defaultUseBlockPingpong(arch, useAsyncCopy);
 }
 
 static bool isInThreadTransposeEnabled(StringRef arch,
                                        int64_t useInThreadTransposeOverride) {
   if (useInThreadTransposeOverride != rock::kKnobDefault)
     return useInThreadTransposeOverride;
-  return arch.starts_with("gfx942") || arch.starts_with("gfx110") ||
-         arch.starts_with("gfx115") || arch.starts_with("gfx117") ||
-         arch.starts_with("gfx120");
+  return rock::defaultUseInThreadTranspose(arch);
 }
 
 static bool isAsyncCopyEnabled(StringRef arch, int64_t useAsyncCopyOverride) {
   if (useAsyncCopyOverride != rock::kKnobDefault)
     return useAsyncCopyOverride;
-  return arch.starts_with("gfx950") || arch.starts_with("gfx1250");
+  return rock::defaultUseAsyncCopy(arch);
 }
 
 static bool isBufferOpsEnabled(int64_t useBufferOpsOverride) {

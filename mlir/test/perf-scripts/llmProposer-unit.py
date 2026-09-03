@@ -44,7 +44,7 @@ if _script is None:
 _bin_dir = Path(_script).parent
 sys.path.insert(0, str(_bin_dir))
 
-from llm import configs, feedback, parsing, prompting, workload  # noqa: E402
+from llm import configs, feedback, parsing, prompting, transport, workload  # noqa: E402
 from llm import proposer  # noqa: E402
 
 # A space small enough to read, shaped like a real one: a tile ladder that is
@@ -447,7 +447,7 @@ class TestWorkloadDescription(unittest.TestCase):
         self.assertIn("workgroups", hints)
         self.assertIn("gridGroupSize", hints)
 
-    def test_does_not_offer_grid_grouping_on_a_fused_kernel(self):
+    def test_does_not_offer_grid_grouping_on_a_gemm_gemm(self):
         # The axes pin gridGroupSize at 0 there, since makeGxNGridLayout takes
         # no group size; suggesting it would be a proposal that cannot land.
         hints = self.hints(self.ATTENTION)
@@ -471,6 +471,31 @@ class TestWorkloadDescription(unittest.TestCase):
         # the largest K tile the space carries.
         self.assertNotIn("576", hints)
 
+    def test_hints_that_kpack_is_the_seeds_blind_spot(self):
+        # The GEMM sweeps pinned kpack at 1, so the seeds agreeing on it is an
+        # absence of evidence rather than evidence.
+        hints = " ".join(workload.compute_workload_hints(self.GEMM, self.HARDWARE))
+        self.assertIn("kpack", hints)
+        self.assertIn("not a measurement", hints)
+
+    def test_says_nothing_of_kpack_where_the_arch_pins_it(self):
+        # gfx950 and gfx1250 cap kpack at 1, so the ladder has one value and
+        # there is nothing to propose against.
+        hardware = {**self.HARDWARE, "maxKpack": 1}
+        hints = " ".join(workload.compute_workload_hints(self.GEMM, hardware))
+        self.assertNotIn("not a measurement", hints)
+
+    def test_hints_that_a_deep_k_loop_can_pipeline_deeper_than_the_seeds(self):
+        deep = {**self.GEMM, "gemmSize": {"g": 1, "m": 1024, "n": 1024, "k": 4096}}
+        hints = " ".join(workload.compute_workload_hints(deep, self.HARDWARE))
+        self.assertIn("capped", hints)
+        self.assertIn("numStages", hints)
+
+    def test_hints_at_no_deeper_pipeline_where_there_is_no_k_to_pipeline(self):
+        shallow = {**self.GEMM, "gemmSize": {"g": 1, "m": 1024, "n": 1024, "k": 32}}
+        hints = " ".join(workload.compute_workload_hints(shallow, self.HARDWARE))
+        self.assertNotIn("capped", hints)
+
     def test_hints_that_a_chained_dot_wants_four_stages(self):
         # Both the chained-dot pipeline schedule and the pingpong that rides
         # on it test numStages == 4 exactly, and the sweeps behind the seeds
@@ -486,6 +511,34 @@ class TestWorkloadDescription(unittest.TestCase):
     def test_hints_at_no_k_alignment_for_a_plain_gemm(self):
         self.assertNotIn("multiple of", self.hints(self.GEMM))
 
+    def test_reaches_for_no_reduction_where_the_axes_pin_the_factor(self):
+        # A shape too small to fill the machine wants splitKFactor, but where
+        # the axes pin it the reading has to change its advice rather than
+        # send the model after a value it cannot have.
+        small = {**self.GEMM, "gemmSize": {"g": 1, "m": 128, "n": 128, "k": 4096}}
+        pinned = " ".join(
+            workload.compute_workload_hints(small, self.HARDWARE, {"splitKFactor": [1]}))
+        self.assertIn("cannot fill the machine", pinned)
+        self.assertIn("pins splitKFactor at 1", pinned)
+
+        offered = " ".join(
+            workload.compute_workload_hints(small, self.HARDWARE, {"splitKFactor": [1, 2, 4]}))
+        self.assertIn("splitKFactor above 1 is the way", offered)
+
+    def test_reads_kpack_off_the_axis_it_was_given(self):
+        # The ladder is what the model may choose from, so it is the ladder
+        # that decides whether the blind spot is one this run can look into.
+        hints = " ".join(workload.compute_workload_hints(self.GEMM, self.HARDWARE, {"kpack": [1]}))
+        self.assertNotIn("not a measurement", hints)
+
+    def test_hints_at_no_stage_depth_the_axes_do_not_carry(self):
+        # No 4 on the axis, so no config reaches the chained-dot schedule and
+        # the paragraph describing it is describing another run's kernel.
+        hints = " ".join(
+            workload.compute_workload_hints(self.ATTENTION, self.HARDWARE,
+                                            {"numStages": [1, 2, 3]}))
+        self.assertNotIn("exactly 4", hints)
+
     def test_describes_the_chip_by_what_it_can_do(self):
         text = workload.describe_hardware(self.HARDWARE)
         self.assertIn("gfx942", text)
@@ -494,6 +547,41 @@ class TestWorkloadDescription(unittest.TestCase):
         self.assertIn("64 KiB", text)
         # Why a one-value ladder is one value, which the space cannot say.
         self.assertIn("numCTAs is fixed at 1", text)
+
+    def test_says_which_way_each_knob_default_goes(self):
+        # The ladders carry -1, 0 and 1 whatever the arch, so nothing in the
+        # space says which of the latter two a -1 already means.
+        text = workload.describe_hardware({
+            **self.HARDWARE, "defaultAsyncCopy": False,
+            "defaultBlockPingpong": True,
+            "defaultInThreadTranspose": True
+        })
+        self.assertIn("useAsyncCopy off", text)
+        self.assertIn("useBlockPingpong on", text)
+
+    def test_warns_that_pingpong_follows_async_copy_where_it_does(self):
+        # gfx950-shaped: pingpong is on only because async copy is, so
+        # useAsyncCopy=0 alone silently gives up the pingpong schedule too.
+        text = workload.describe_hardware({
+            **self.HARDWARE, "defaultAsyncCopy": True,
+            "defaultBlockPingpong": True
+        })
+        self.assertIn("useAsyncCopy=0", text)
+        # gfx942-shaped: pingpong is on for its own sake, so there is no
+        # coupling to warn about.
+        plain = workload.describe_hardware({
+            **self.HARDWARE, "defaultAsyncCopy": False,
+            "defaultBlockPingpong": True
+        })
+        self.assertNotIn("useAsyncCopy=0", plain)
+
+    def test_says_what_a_zero_grid_group_size_works_out_to(self):
+        # 0 is "let the layout decide", not "no grouping", and the model needs
+        # the number it would be competing with.
+        text = workload.describe_hardware({**self.HARDWARE, "defaultGridGroupSize": 6})
+        self.assertIn("6", text)
+        self.assertIn("not ungrouped", text)
+        self.assertNotIn("not ungrouped", workload.describe_hardware(self.HARDWARE))
 
     def test_flags_the_bf16x3_preference_as_a_heuristic(self):
         # An average over shapes that says which of two kernels wins, not a
@@ -509,7 +597,8 @@ class TestWorkloadDescription(unittest.TestCase):
 
 
 class TestProblemDetailDescription(unittest.TestCase):
-    """The facts beyond the shapes: layout, fusion and attention's masking.
+    """The facts beyond the shapes: layout, inter-GEMM fusion and attention's
+    masking.
 
     Two problems with the same M, N and K want different configs when one
     stores A transposed or masks causally, so a description that stopped at the
@@ -552,7 +641,7 @@ class TestProblemDetailDescription(unittest.TestCase):
         text = workload.describe_problem({**TestWorkloadDescription.GEMM, "cType": "f32"})
         self.assertIn("C=f32", text)
 
-    def test_reports_a_fused_ops_second_operand_and_result_apart(self):
+    def test_reports_a_gemm_gemms_second_operand_and_result_apart(self):
         text = workload.describe_problem({
             **TestWorkloadDescription.ATTENTION,
             "cType": "f16",
@@ -672,6 +761,122 @@ class TestProblemDetailDescription(unittest.TestCase):
                 self.assertNotIn(absent, text)
 
 
+class TestSystemPromptGating(unittest.TestCase):
+    """What the system prompt leaves out. Every parameter it explains is one
+    the model then has to consider, so a run whose axes pin a parameter is a
+    run whose prompt should not raise it: the advice cannot be acted on, and
+    the words spent on it are words not spent on the parameters that can be."""
+
+    # A ladder per parameter the prompt has something to say about, all of them
+    # open. Tests below pin the one they are about, so that what changes in the
+    # prompt is attributable to that pin.
+    OPEN = {
+        "mPerBlock": [32, 64],
+        "nPerBlock": [32, 64],
+        "kPerBlock": [16, 32],
+        "kpack": [1, 2],
+        "numCTAs": [1, 2],
+        "numWaves": [4, 8],
+        "matrixInstrNonkdim": [16, 32],
+        "splitKFactor": [1, 2],
+        "numStages": [1, 2],
+        "wavesPerEU": [0, 2],
+        "gridGroupSize": [0, 4],
+        **{
+            knob: [0, 1] for knob in (
+                "useAsyncCopy",
+                "useBlockPingpong",
+                "useInThreadTranspose",
+                "useBufferOps",
+                "useBufferAtomics",
+                "useReductionLayout",
+                "useOptimizeEpilogue",
+                "useBf16x3ForF32",
+            )
+        },
+    }
+
+    def prompt(self, **pinned):
+        """The prompt for a space like `OPEN` but with `pinned` pinned."""
+        return prompting.build_system_prompt({**self.OPEN, **pinned})
+
+    def test_explains_a_parameter_the_axes_leave_open(self):
+        self.assertIn("splitKFactor: splits the contraction", self.prompt())
+
+    def test_says_nothing_of_a_parameter_the_axes_pin(self):
+        # Attention pins splitKFactor, having split that dimension already by
+        # another route, so a prompt for one should not suggest the knob.
+        self.assertNotIn("splitKFactor: splits the contraction", self.prompt(splitKFactor=[1]))
+
+    def test_says_nothing_of_a_knob_the_target_leaves_no_room_for(self):
+        # `addKnobAxes` pins useAsyncCopy where the target has no
+        # direct-to-LDS load width, and both of its values then build the one
+        # kernel. The hardware section says why; the knob glossary should not
+        # be inviting a proposal regardless.
+        self.assertNotIn("useAsyncCopy", self.prompt(useAsyncCopy=[-1]))
+
+    def test_drops_the_knob_section_where_no_knob_is_open(self):
+        prompt = self.prompt(**{knob: [-1] for knob in prompting._KNOB_BULLETS})
+        self.assertNotIn("tri-state", prompt)
+        self.assertNotIn("measures nothing", prompt)
+
+    def test_warns_of_a_knob_a_one_stage_pipeline_defeats(self):
+        # Neither schedule knob reaches a loop that pipelines one stage deep,
+        # so a proposal moving one at numStages=1 re-measures the default.
+        self.assertIn("useAsyncCopy=1 builds the kernel", self.prompt())
+
+    def test_says_nothing_of_that_where_the_axes_rule_one_stage_out(self):
+        self.assertNotIn("builds the kernel", self.prompt(numStages=[2, 3]))
+
+    def test_keeps_a_duplicate_rule_only_while_its_knob_is_open(self):
+        # The rules are about which explicit values re-measure a kernel the
+        # default already built, so each one goes with the knob it is about.
+        self.assertIn("16 bits wide", self.prompt())
+        self.assertNotIn("16 bits wide", self.prompt(useOptimizeEpilogue=[-1]))
+
+    def test_keeps_the_register_budget_only_while_waves_per_eu_is_open(self):
+        self.assertIn("wavesPerEURegisterBudget", self.prompt())
+        self.assertNotIn("wavesPerEURegisterBudget", self.prompt(wavesPerEU=[0]))
+
+    def test_names_the_block_tiles_the_way_this_kernel_spells_them(self):
+        gemm = self.prompt()
+        self.assertIn("mPerBlock, nPerBlock:", gemm)
+        self.assertNotIn("mPerBlockG0", gemm)
+
+        gemm_gemm = prompting.build_system_prompt({**self.OPEN, "nPerBlockG1": [0, 64]})
+        self.assertIn("mPerBlockG0, nPerBlockG0:", gemm_gemm)
+        self.assertIn("nPerBlockG1: the second GEMM's", gemm_gemm)
+
+    def test_explains_the_chained_dot_schedule_only_to_a_gemm_gemm(self):
+        # numStages of exactly 4 buys the chained-dot schedule, which is a fact
+        # about two dots in a loop and says nothing to a single GEMM.
+        self.assertNotIn("chained-dot", self.prompt())
+        self.assertIn("chained-dot",
+                      prompting.build_system_prompt({
+                          **self.OPEN, "nPerBlockG1": [0, 64]
+                      }))
+
+    def test_is_shorter_than_the_prompt_for_a_space_with_every_axis_open(self):
+        # The point of the exercise. gfx1201 running a plain GEMM pins the
+        # matrix instruction, kpack, the CTA count, async copy, pingpong and
+        # (on a non-f32 dot) bf16x3, which is most of a page.
+        wmma = self.prompt(matrixInstrNonkdim=[0],
+                           kpack=[1],
+                           numCTAs=[1],
+                           useAsyncCopy=[-1],
+                           useBlockPingpong=[-1],
+                           useBf16x3ForF32=[-1])
+        self.assertLess(len(wmma), len(self.prompt()))
+
+    def test_explains_everything_where_there_is_no_space_to_read(self):
+        # The fallback has to be the whole prompt rather than a quietly
+        # abridged one, since a caller without a space is a caller that cannot
+        # know what it is missing.
+        full = prompting.build_system_prompt()
+        for name in prompting._PARAM_BULLETS:
+            self.assertIn(f"{name}:", full)
+
+
 class TestPromptConstruction(unittest.TestCase):
     """The prompt is the whole interface to the model, so what has to be in it
     is worth stating: a round that omits the space, or the results it is
@@ -718,6 +923,23 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("unmeasured rather than confirmed", prompt)
         for field in ("wavesPerEU", "gridGroupSize"):
             self.assertIn(field, prompt)
+
+    def test_the_system_prompt_gives_the_arithmetic_behind_each_refusal(self):
+        # The refusal reasons reach the model by name in the Refused Configs
+        # section, so each one needs a rule it can actually check beforehand.
+        system = prompting.build_system_prompt()
+        for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget", "compileCostBudget",
+                      "ldsBlacklist", "notOnAxis", "bufferKnobsDisagree"):
+            self.assertIn(check, system)
+        self.assertIn("1048576", system)
+
+    def test_the_system_prompt_says_which_knob_values_are_duplicates(self):
+        # -1 resolves to on unconditionally for the two buffer knobs, and
+        # agrees with 1 for the epilogue unless the store is 16-bit, so an
+        # explicit 1 there buys a second timing of a kernel already measured.
+        system = prompting.build_system_prompt()
+        self.assertIn("measures nothing", system)
+        self.assertIn("16 bits wide", system)
 
     def test_the_system_prompt_does_not_cite_the_seeds_for_the_knobs(self):
         # The -1s in the seeds are an artifact of how they were produced, so
@@ -884,6 +1106,61 @@ class TestProposerCommandLine(unittest.TestCase):
         run = self.run_proposer("--print-prompt", transport="not-a-backend")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("mPerBlock", run.stdout)
+
+
+class TestTransportIsTextOnly(unittest.TestCase):
+    """The agent gets no tools. It is asked for a line of JSON and runs on the
+    machine being tuned, unattended, so the toolset that could do anything else
+    is removed rather than merely unused -- and the removal is checked, since
+    an SDK that quietly dropped it would leave nothing to notice."""
+
+    class Options:
+        """Stands in for `AgentOptions`, keeping what it was handed."""
+
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+
+    class Local:
+
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+
+    def build(self, options_class):
+        return transport._text_only_options(options_class,
+                                            self.Local,
+                                            api_key="key",
+                                            model="composer-2.5",
+                                            cwd="/tmp")
+
+    def test_asks_for_an_empty_toolset(self):
+        options = self.build(self.Options)
+        self.assertEqual(options.tools, [])
+        self.assertEqual(options.model, "composer-2.5")
+
+    def test_will_not_start_where_the_sdk_has_no_such_option(self):
+        # Too old to restrict a toolset. Running anyway would mean an agent
+        # with a shell, which is the thing being avoided.
+        class Old:
+
+            def __init__(self, *, api_key, model, local):
+                pass
+
+        with self.assertRaises(transport.TransportError) as caught:
+            self.build(Old)
+        self.assertFalse(caught.exception.started)
+        self.assertIn("cursor-sdk", str(caught.exception))
+
+    def test_will_not_start_where_the_sdk_takes_it_and_drops_it(self):
+        # The quiet failure: options that accept anything and keep none of it.
+        class Ignores(TestTransportIsTextOnly.Options):
+
+            def __init__(self, **fields):
+                fields.pop("tools", None)
+                super().__init__(**fields)
+
+        with self.assertRaises(transport.TransportError) as caught:
+            self.build(Ignores)
+        self.assertFalse(caught.exception.started)
 
 
 if __name__ == "__main__":

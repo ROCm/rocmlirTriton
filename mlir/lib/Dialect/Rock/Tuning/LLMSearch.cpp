@@ -61,8 +61,11 @@ struct Workload {
   /// `KernelType` enum gives itself (RockAttrDefs.td), so that what reaches a
   /// prompt or a trace reads the same as the IR. The single-GEMM ops
   /// (`RockGemmWrapperInterface`) are "Gemm", "Conv" or "ConvBwdData", and the
-  /// fused ops (`RockGemmGemmWrapperInterface`) are "Attention",
-  /// "GemmElementwiseGemm" or "ConvElementwiseGemm".
+  /// gemm+gemm ops (`RockGemmGemmWrapperInterface`) are "Attention",
+  /// "GemmElementwiseGemm" or "ConvElementwiseGemm". What sets those three
+  /// apart is the second GEMM rather than any fusion: all of these ops can
+  /// carry input and output fusions, which this representation leaves out, and
+  /// those three can carry one between their two GEMMs, which it does report.
   ///
   /// Worth carrying rather than inferring from the shapes, because everything
   /// downstream is in GEMM terms and the same M/K/N mean different things
@@ -72,13 +75,13 @@ struct Workload {
   /// head dimensions. llm/workload.py keys its explanation off this.
   StringRef kernelType;
   /// The matrix multiply the kernel performs. `o` is the second GEMM's free
-  /// dimension, and so is set for the fused ops and only for them.
+  /// dimension, and so is set for the gemm+gemm ops and only for them.
   int64_t g = 0, m = 0, k = 0, n = 0;
   std::optional<int64_t> o;
   /// The element types of the matrices, named as the ops name them: `a` times
-  /// `b` for the first GEMM, and for a fused op `c` is the second GEMM's other
-  /// operand (attention's V) while `out` is the result. A single GEMM's result
-  /// *is* its C, so `outType` is set for the fused ops only.
+  /// `b` for the first GEMM, and for a gemm+gemm op `c` is the second GEMM's
+  /// other operand (attention's V) while `out` is the result. A single GEMM's
+  /// result *is* its C, so `outType` is set for the gemm+gemm ops only.
   ///
   /// The output type is worth carrying and not only the inputs: it is what the
   /// accumulator has to be converted to and stored as, so it prices the
@@ -125,15 +128,15 @@ struct Workload {
   std::optional<int64_t> kPerBlockAlignment;
 
   //===--------------------------------------------------------------------===//
-  // The fusion, and attention's masking
+  // The inter-GEMM fusion, and attention's masking
   //
   // Both cost registers and bound how large a tile can usefully be, so they
   // belong to the problem as much as the shapes do.
   //===--------------------------------------------------------------------===//
 
   /// Whether anything runs between the two GEMMs -- attention's pre-softmax
-  /// bias or scale, say -- and how many extra operands it reads. Fused ops
-  /// only.
+  /// bias or scale, say -- and how many extra operands it reads. The gemm+gemm
+  /// ops only.
   std::optional<bool> hasPreSecondGemmFusion;
   std::optional<int64_t> numElemwiseInputs;
   /// Attention only. Grouped-query attention when `numHeadsQ` exceeds
@@ -184,6 +187,20 @@ struct Workload {
   bool supportsAsyncCopy = false, supportsTDM = false;
   bool supportsNonPow2KPerBlock = false, supportsScaledGemm = false;
   bool preferBf16x3ForF32Dot = false;
+
+  /// Which way the arch-keyed heuristics behind the schedule knobs' `-1` go
+  /// here. Separate from the `supports*` fields above, which say what the arch
+  /// can do at all: an arch can support async copy and still default to not
+  /// using it, and then `-1` and `0` build the one kernel while `1` builds
+  /// another. Reported so that a proposal of `0` or `1` is a choice against a
+  /// known default rather than a guess at one.
+  bool defaultAsyncCopy = false, defaultBlockPingpong = false;
+  bool defaultInThreadTranspose = false;
+
+  /// What `gridGroupSize = 0` works out to, from `makeGroupedGridLayout`'s own
+  /// heuristic. Zero when the grid layout takes no group size, which is every
+  /// kernel that is not laid out in groups.
+  std::optional<int64_t> defaultGridGroupSize;
 };
 
 std::string typeName(Type type) {
@@ -271,6 +288,12 @@ void gatherHardware(Workload &workload, Operation *op, StringRef arch) {
   workload.supportsNonPow2KPerBlock = rock::supportsNonPow2KPerBlock(arch);
   workload.supportsScaledGemm = rock::archSupportsScaledGemm(arch);
   workload.preferBf16x3ForF32Dot = rock::preferBf16x3ForF32Dot(arch);
+  workload.defaultAsyncCopy = rock::defaultUseAsyncCopy(arch);
+  // Reads the resolved async-copy decision, not the knob, exactly as
+  // `isPingpongScheduleEnabled` does.
+  workload.defaultBlockPingpong =
+      rock::defaultUseBlockPingpong(arch, workload.defaultAsyncCopy);
+  workload.defaultInThreadTranspose = rock::defaultUseInThreadTranspose(arch);
 }
 
 /// Finds the op whose tuning space is being searched and describes it. Walks
@@ -315,6 +338,15 @@ std::optional<Workload> describeWorkload(ModuleOp mod) {
         workload.kPerBlockAlignment = alignment;
     }
     gatherHardware(workload, op, info.arch);
+    // Only the grouped GEMM layout takes a group size, so only here is there a
+    // default worth reporting: attention lays its grid out with
+    // `makeGxNGridLayout`, which takes none, and its axes pin the parameter.
+    Type aElem = getElementTypeOrSelf(info.gemmAType);
+    Type cElem = getElementTypeOrSelf(op.getCType());
+    if (aElem.isIntOrFloat() && cElem.isIntOrFloat())
+      workload.defaultGridGroupSize = rock::defaultGridGroupSize(
+          workload.numCUs, workload.numChiplets, aElem.getIntOrFloatBitWidth(),
+          cElem.getIntOrFloatBitWidth());
     workload.accelKind =
         getNameForMatrixAccelKind(rock::getMatrixAccelKind(info.arch, op));
     found = true;
@@ -441,7 +473,7 @@ llvm::json::Object problemOf(const Workload &workload) {
 }
 
 llvm::json::Object hardwareOf(const Workload &workload) {
-  return llvm::json::Object{
+  llvm::json::Object hardware{
       {"arch", workload.arch},
       {"chip", workload.chip},
       {"isCDNA", workload.isCDNA},
@@ -461,7 +493,12 @@ llvm::json::Object hardwareOf(const Workload &workload) {
       {"supportsNonPow2KPerBlock", workload.supportsNonPow2KPerBlock},
       {"supportsScaledGemm", workload.supportsScaledGemm},
       {"preferBf16x3ForF32Dot", workload.preferBf16x3ForF32Dot},
+      {"defaultAsyncCopy", workload.defaultAsyncCopy},
+      {"defaultBlockPingpong", workload.defaultBlockPingpong},
+      {"defaultInThreadTranspose", workload.defaultInThreadTranspose},
   };
+  addIfSet(hardware, "defaultGridGroupSize", workload.defaultGridGroupSize);
+  return hardware;
 }
 
 //===----------------------------------------------------------------------===//
