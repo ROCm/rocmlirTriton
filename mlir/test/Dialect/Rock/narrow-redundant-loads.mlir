@@ -264,6 +264,32 @@ func.func @mask_varies_along_dim(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128x
 
 // -----
 
+// The same rewrite on a load with no fill. Triton leaves the masked-out lanes
+// undefined there, but the backends give them zero, so the select goes in
+// against a zero constant rather than letting the loaded value reach them.
+
+// CHECK-LABEL: @mask_varies_along_dim_no_other
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<1x128xf16> -> tensor<32x128xf16>
+// CHECK-NEXT:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32x128xf16>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %[[ZERO]] : tensor<32x128xi1>, tensor<32x128xf16>
+func.func @mask_varies_along_dim_no_other(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128xf16> {
+  %kRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %kCol = tt.expand_dims %kRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %limit = tt.splat %k : i32 -> tensor<32x1xi32>
+  %kMask = arith.cmpi slt, %kCol, %limit : tensor<32x1xi32>
+  %mask = tt.broadcast %kMask : tensor<32x1xi1> -> tensor<32x128xi1>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %nB = tt.broadcast %nRow : tensor<1x128xi32> -> tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %nB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr, %mask : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
 // The alignment analysis sees through a transpose, but the rewrite has no rule
 // for one, so it declines rather than guessing. Nothing of the half-built
 // narrow address is left behind.
