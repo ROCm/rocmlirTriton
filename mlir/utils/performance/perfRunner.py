@@ -2831,10 +2831,10 @@ def parse_data_types(data_types):
 
 
 def get_num_cu(chip):
-    numCUs = amd_arch_db.get_native_num_cu(chip)
-    if numCUs is None:
+    num_cus = amd_arch_db.get_native_num_cu(chip)
+    if num_cus is None:
         raise RuntimeError(f"Cannot find number of CUs for {chip}")
-    return numCUs
+    return num_cus
 
 
 def found_external_tool(paths: Paths,

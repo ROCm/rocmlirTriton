@@ -40,7 +40,7 @@ amd_arch_db.get_native_device_count = lambda: len(_visible)
 amd_arch_db.get_native_arch = lambda device_id=0: (_visible[device_id][0]
                                                    if device_id < len(_visible) else None)
 amd_arch_db.get_native_num_cu = lambda chip: next(
-    (numCU for arch, numCU in _visible if chip in arch), None)
+    (num_cu for arch, num_cu in _visible if chip in arch), None)
 
 # Start in CU mode so importing perfRunner must warn and force WGP mode.
 os.environ["GPU_ENABLE_WGP_MODE"] = "0"
