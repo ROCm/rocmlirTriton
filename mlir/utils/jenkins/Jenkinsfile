@@ -840,34 +840,46 @@ boolean shouldRunBuildAndTest(String codepath) {
 boolean isNotNavi3x(String chip) {
     return "${chip}" != 'gfx1100' && "${chip}" != 'gfx1101'
 }
+*/
 
 void collectCoverageData(String profdata, String cov, String cpath) {
     sh """
        rm -f *.profraw
        # Arbitrarily 150 GB;  we typically see 125 GB of *.profraw.
-       if [ `df --output=avail -k . | tail -1l` -lt 153600000 ]; then
+       if [ `df --output=avail -k . | tail -n 1` -lt 153600000 ]; then
           echo Not enough free disk space for profiling.
           exit 1
        fi
-       ninja check-rocmlir
+       # A failing test must not discard the whole codepath's coverage: the same
+       # suite gates the build in the regular test stages, and tests with a hard
+       # wall-clock bound can exceed it under instrumentation. Keep going so the
+       # profiles still get merged and uploaded.
+       ninja check-rocmlir || echo "check-rocmlir reported failures; collecting coverage anyway."
        # Profile processing.
        ${profdata} merge -sparse ./*.profraw -o ./coverage.profdata
-       rm -f build/*.profraw
+       # This runs inside dir('build'), so the raw profiles are in the current
+       # directory; reclaim their ~125 GB before the llvm-cov passes.
+       rm -f ./*.profraw
        ${cov} report --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver      \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex=external/llvm-project > ./coverage_${cpath}.report
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' > ./coverage_${cpath}.report
        cat ./coverage_${cpath}.report
        ${cov} export --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver      \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex=external/llvm-project --format=lcov              \
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' --format=lcov              \
           --compilation-dir ${WORKSPACE} > ./coverage_${cpath}.lcov
+       """
+}
+
+// Produce the HTML coverage report
+void produceCoverageHtml(String cov, String cpath) {
+    sh """
        ${cov} show --object ./bin/rocmlir-opt --object ./bin/rocmlir-driver        \
           --object ./bin/rocmlir-gen --instr-profile ./coverage.profdata           \
-          --ignore-filename-regex=external/llvm-project -Xdemangler=llvm-cxxfilt   \
+          --ignore-filename-regex='external/llvm-project|external/triton|mlir/test/|mlir/unittests/' -Xdemangler=llvm-cxxfilt   \
           --format=html > ./coverage_${cpath}.html
        """
 }
-*/
 
 // Run the body on a node that passes the supplied healthChecks() block
 // The health check is retried on fresh executors; the body is not retried.
@@ -1152,8 +1164,12 @@ pipeline {
                      description: 'Run the MIGraphX integration tests')
         // booleanParam(name: 'checkCK', defaultValue: true,
         //              description: 'Compare performance against CK')
-        // booleanParam(name: 'runCodeCoverage', defaultValue: params.weekly || (!params.weekly && !params.nightly),
-        //              description: 'Collect and upload code-coverage info.')
+        booleanParam(name: 'runCodeCoverage', defaultValue: params.weekly || (!params.weekly && !params.nightly),
+                     description: 'Collect and upload code-coverage info.')
+        booleanParam(name: 'runCoverageHtml', defaultValue: false,
+                     description: 'Also produce the HTML coverage report (llvm-cov show --format=html) and archive it as a Jenkins artifact. Off by default because the step is slow (~30+ minutes per codepath) and Codecov.io already renders coverage in its web UI; enable for offline investigations of the archived HTML.')
+        string(name: 'codecovCredentialsId', defaultValue: 'codecov-token-rocmlirtriton',
+              description: 'Jenkins credential ID for the Codecov upload token. Must be a Secret text containing the token for the ROCm/rocmlirTriton repo on codecov.io (a SEPARATE Codecov project from rocMLIR; do not reuse rocMLIR\'s token or uploads land in the wrong project).')
         // choose the codepath for testing
         choice(name: 'codepath',
                choices: ['default', 'mfma', 'navi21', 'navi3x', 'navi4x', 'vanilla', 'gfx950'],
@@ -2018,12 +2034,10 @@ PY
                 }
             }
         }
-        /* // --- Code coverage and remaining NIGHTLY/WEEKLY STAGES (commented out) ---
         stage ("Code coverage") {
             when {
                 beforeAgent true;
                 equals expected: true, actual: params.runCodeCoverage;
-                equals expected: false, actual: params.weekly;
                 equals expected: false, actual: params.nightly;
             }
             matrix {
@@ -2036,6 +2050,9 @@ PY
                 // One big scripted step per matrix row
                 stages {
                     stage('Matrix row orchestration') {
+                        when {
+                            expression { shouldRunFromCodepath(CODEPATH) }
+                        }
                         steps {
                             // Do not fail the build on code coverage
                             catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
@@ -2072,9 +2089,17 @@ PY
                                                     // The only way the env variables worked with all other changes
                                                     withEnv([
                                                         "HOME=${env.WORKSPACE}",
+                                                        "PATH=/opt/rocm/llvm/bin:${env.PATH}",
                                                         "PYTHONPATH=${env.WORKSPACE}/MIGraphX/build/lib:${env.PYTHONPATH}",
-                                                        // Note the %m to avoid issues with threads and dynamic libraries.
-                                                        "LLVM_PROFILE_FILE=${env.WORKSPACE}/build/%m-%p.profraw",
+                                                        // %m keeps each instrumented binary's profiles separate (threads and
+                                                        // dynamic libraries). Unlike rocMLIR we omit %p (the pid): appending it
+                                                        // gives every process its own file, which produced ~125 GB of *.profraw
+                                                        // and evicted the gfx950 pods for exceeding their ephemeral-storage
+                                                        // quota, since this build also carries Triton's tree. %8m instead pools
+                                                        // 8 profiles per binary and merges into them on-line, which keeps the
+                                                        // footprint small; the pool (rather than a bare %m) avoids serializing
+                                                        // 128 lit workers on a single file lock. Merged counters are equivalent.
+                                                        "LLVM_PROFILE_FILE=${env.WORKSPACE}/build/%8m.profraw",
                                                         "LLVM_PROFDATA=/opt/rocm/llvm/bin/llvm-profdata",
                                                         "LLVM_COV=/opt/rocm/llvm/bin/llvm-cov"
                                                     ]) {   
@@ -2083,31 +2108,70 @@ PY
                                                             showEnv()
                                                             // Build with profiling on, and just code-generation tests.
                                                             try {
-                                                                timeout(time: 60, activity: true, unit: 'MINUTES') {
-                                                                    sh 'rm -f build/CMakeCache.txt'
-                                                                    sh 'rm -f build/*.profraw'
+                                                                // Wall-clock timeout (no `activity:`): the coverage stage has long
+                                                                // silent phases (lit buffers progress; `llvm-profdata merge` on
+                                                                // ~125 GB of *.profraw produces no output for several minutes),
+                                                                // which makes activity-based timeouts fire spuriously and the
+                                                                // Codecov upload never run. 180 min covers ~60 min tests +
+                                                                // profdata merge + three llvm-cov calls + upload with margin.
+                                                                timeout(time: 180, unit: 'MINUTES') {
+                                                                    // Keep cmake.sh's default RelWithDebInfo build type. Unlike rocMLIR,
+                                                                    // which builds coverage with CMAKE_BUILD_TYPE=debug, an -O0 build here
+                                                                    // fails to link: Triton's NVIDIA/AMD conversion libraries rely on the
+                                                                    // optimizer inlining header-defined PTX helpers, so at -O0 those
+                                                                    // references survive and ld.lld reports undefined symbols.
+                                                                    // Instrumentation itself comes from -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON,
+                                                                    // which mlir/CMakeLists.txt's include(HandleLLVMOptions) turns into
+                                                                    // -fprofile-instr-generate -fcoverage-mapping; that works at any
+                                                                    // optimization level.
                                                                     buildProject('check-rocmlir-build-only',
-                                                                                '-DBUILD_FAT_LIBROCKCOMPILER=ON -DCMAKE_BUILD_TYPE=debug -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON')
+                                                                                '-DBUILD_FAT_LIBROCKCOMPILER=ON -DLLVM_BUILD_INSTRUMENTED_COVERAGE=ON')
                                                                     dir ('build') {
                                                                         // Run tests.
                                                                         collectCoverageData("${LLVM_PROFDATA}", "${LLVM_COV}", "${CODEPATH}")
-                                                                        // Upload to codecov.
-                                                                        withCredentials([string(credentialsId: 'codecov-token-rocmlir',
-                                                                                                variable: 'CODECOV_TOKEN')]) {
-                                                                            sh '''
+                                                                        // Interpolate ${CODEPATH} via Groovy at the call site (bare CODEPATH is empty inside nested closures); shell-side vars are escaped with \$.
+                                                                        withCredentials([string(credentialsId: params.codecovCredentialsId ?: 'codecov-token-rocmlirtriton',
+                                                                                            variable: 'CODECOV_TOKEN')]) {
+                                                                            def uploadStatus = sh(script: """
                                                                             curl -Os https://uploader.codecov.io/latest/linux/codecov && chmod +x ./codecov
                                                                             proxy_opt=""
-                                                                            if [ -n "${http_proxy}" ]; then
-                                                                                proxy_opt="-U ${http_proxy}"
+                                                                            if [ -n "\${http_proxy}" ]; then
+                                                                                proxy_opt="-U \${http_proxy}"
                                                                             fi
-                                                                            ./codecov -t ${CODECOV_TOKEN} --flags "${CODEPATH}" -f ./coverage_${CODEPATH}.lcov ${proxy_opt}
-                                                                            '''
+                                                                            set +e
+                                                                            ./codecov -t "\${CODECOV_TOKEN}" --flags "${CODEPATH}" -f ./coverage_${CODEPATH}.lcov \${proxy_opt} -Z
+                                                                            codecov_exit=\$?
+                                                                            set -e
+                                                                            echo "Codecov upload exit code: \${codecov_exit}"
+                                                                            exit \${codecov_exit}
+                                                                            """, returnStatus: true)
+                                                                            if (uploadStatus != 0) {
+                                                                                // Yellow stage but green build: don't block PR merge on Codecov hiccups.
+                                                                                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE',
+                                                                                           message: "Codecov upload failed (exit ${uploadStatus})") {
+                                                                                    error("Codecov upload failed (exit code ${uploadStatus}). Check that credential '${params.codecovCredentialsId ?: 'codecov-token-rocmlirtriton'}' contains a valid token from codecov.io and that the repo is linked.")
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        // Best-effort HTML coverage report: runs AFTER the Codecov upload so a slow/timed-out llvm-cov show cannot prevent the LCOV upload, and is bounded by its own timeout so it cannot block archiveArtifacts. Gated by the runCoverageHtml parameter for builds that only need the Codecov upload.
+                                                                        if (params.runCoverageHtml) {
+                                                                            catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE', message: 'Skipped HTML coverage report (llvm-cov show was slow or failed)') {
+                                                                                timeout(time: 45, unit: 'MINUTES') {
+                                                                                    produceCoverageHtml("${LLVM_COV}", "${CODEPATH}")
+                                                                                }
+                                                                            }
                                                                         }
                                                                     }
-                                                                    archiveArtifacts artifacts: 'build/coverage*.report, build/coverage*.lcov, build/coverage*.html', onlyIfSuccessful: true
                                                                 }
                                                             } catch (Exception e) {
-                                                                echo "NOTE: Code coverage stage had an error or timeout:\n${e}"
+                                                                // Yellow stage but green build, same rationale as above.
+                                                                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE',
+                                                                           message: 'Code coverage stage had an error or timeout') {
+                                                                    error("Code coverage stage had an error or timeout: ${e}")
+                                                                }
+                                                            } finally {
+                                                                // Always archive whatever was produced, even on UNSTABLE / timeout / exception.
+                                                                archiveArtifacts artifacts: 'build/coverage*.report, build/coverage*.lcov, build/coverage*.html', allowEmptyArchive: true
                                                             }
                                                         }
                                                     }
@@ -2129,7 +2193,6 @@ PY
                 }
             }
         }
-        */ // --- END NIGHTLY/WEEKLY STAGES ---
     }
     post {
         always {
