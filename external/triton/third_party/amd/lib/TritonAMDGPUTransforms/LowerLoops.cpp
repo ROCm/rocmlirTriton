@@ -8,6 +8,8 @@
 #include "triton/Dialect/TritonGPU/IR/CGAEncodingAttr.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/GenericSwizzling.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Debug.h"
 #include <variant>
 
@@ -182,6 +184,75 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
   return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
 }
 
+static Operation *findSingleDotUser(Value value) {
+  if (!llvm::hasSingleElement(value.getUses()))
+    return nullptr;
+
+  Operation *user = *value.getUsers().begin();
+  if (isa<tt::DotOpInterface>(user))
+    return user;
+  if (user->getNumResults() != 1 ||
+      user->getBlock() != value.getParentBlock())
+    return nullptr;
+  return findSingleDotUser(user->getResult(0));
+}
+
+static unsigned getDotOperandWarpReuse(
+    Value value, ttg::DotOperandEncodingAttr dotOpEnc) {
+  Operation *dotUser = findSingleDotUser(value);
+  if (!dotUser)
+    return 0;
+
+  auto resultType =
+      dyn_cast<RankedTensorType>(dotUser->getResult(0).getType());
+  if (!resultType || resultType.getRank() != 2)
+    return 0;
+
+  unsigned reuseDim = dotOpEnc.getOpIdx() == 0 ? 1 : 0;
+  return ttg::getWarpsPerCTA(resultType)[reuseDim];
+}
+
+struct LDSAccessCost {
+  int64_t total;
+  int conflicts;
+  int elemsPerVec;
+};
+
+// Estimate the number of wave-level LDS transactions needed to move one tile
+// between a distributed register layout and a shared-memory layout. The bank
+// conflict estimator reports additional serialized transactions per emitted
+// operation, so weight that by the number of vector operations across all
+// warps represented by the register layout.
+static LDSAccessCost
+estimateLDSAccessCost(ttg::TensorOrMemDesc regTy,
+                      ttg::SharedEncodingTrait sharedEnc,
+                      const tt::AMD::TargetInfo &targetInfo, bool isLoad) {
+  auto regLayout = ttg::toLinearLayout(regTy);
+  auto sharedLayout = ttg::toLinearLayout(regTy.getShape(), sharedEnc);
+  auto regNoBroadcast =
+      triton::actionRemoveBroadcastedRegs(regLayout).apply(regLayout);
+  auto regToShared = regNoBroadcast.invertAndCompose(sharedLayout);
+
+  int bitWidth = regTy.getElementTypeBitWidth();
+  auto [elemsPerVec, permutation] = triton::largestVectorisation(
+      regTy.getContext(), regToShared, bitWidth);
+  (void)permutation;
+
+  int vecBitWidth = elemsPerVec * bitWidth;
+  auto [loadTile, storeTile] =
+      targetInfo.getSharedLdStTiles(vecBitWidth);
+  int conflicts = ttg::bankConflictsMemDesc(
+      regLayout, sharedLayout, bitWidth, targetInfo.getSharedMemoryBanks(),
+      isLoad ? loadTile : storeTile);
+
+  auto kRegister = StringAttr::get(regTy.getContext(), "register");
+  auto kWarp = StringAttr::get(regTy.getContext(), "warp");
+  int64_t numOps =
+      regNoBroadcast.getInDimSize(kRegister) / elemsPerVec *
+      regNoBroadcast.getInDimSize(kWarp);
+  return {numOps * (conflicts + 1), conflicts, elemsPerVec};
+}
+
 // Adapted from
 // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
 // to support AMDMfmaEncodingAttr.
@@ -301,14 +372,94 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
           canUseAsyncCopy = canBeConvertedToAsyncLoad(
               2, cast<tt::LoadOp>(loadOp), {}, axisInfoAnalysis, targetInfo);
         }
-        tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
-                                       dotOpEnc.getKWidth(), srcTy, sharedOrder,
-                                       dotOpEnc, canUseAsyncCopy);
-        if (!tempAttr) {
-          tempAttr = ttg::SwizzledSharedEncodingAttr::get(
-              loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,
-              cgaLayout, bitWidth, /*needTrans=*/false);
+
+        auto buildSharedEncoding =
+            [&](ArrayRef<unsigned> candidateOrder) {
+              ttg::SharedEncodingTrait candidate = composePaddedLayout(
+                  targetFeatures, dotOpEnc.getOpIdx(), dotOpEnc.getKWidth(),
+                  srcTy, candidateOrder, dotOpEnc, canUseAsyncCopy);
+              if (!candidate) {
+                candidate = ttg::SwizzledSharedEncodingAttr::get(
+                    loadedValue.getContext(), dotOpEnc, srcTy.getShape(),
+                    candidateOrder, cgaLayout, bitWidth, /*needTrans=*/false);
+              }
+              return candidate;
+            };
+
+        tempAttr = buildSharedEncoding(sharedOrder);
+
+        // WMMA and MFMA without ds_read_tr cannot issue a transposed LDS load.
+        // When kWidth permits vectorization and multiple warps reuse the
+        // operand, consider a K-major shared layout so dot-operand reads can use
+        // packed LDS transactions. Select it only when the estimated combined
+        // LDS store/load transaction cost improves.
+        //
+        // Skip targets that have an LDS transpose-load for this element width
+        // (gfx950 ds_read_tr V1, gfx1250 V2): that path needs the non-K-
+        // contiguous layout, and composeSharedLayoutForOperand / padded layouts
+        // already swizzle it for the hardware instruction.
+        unsigned warpReuse =
+            getDotOperandWarpReuse(userResult, dotOpEnc);
+        bool considerKMajorShared =
+            rank == 2 && dotOpEnc.getKWidth() > 1 &&
+            isa<ttg::AMDMfmaEncodingAttr, ttg::AMDWmmaEncodingAttr>(
+                dotOpEnc.getParent()) &&
+            !targetFeatures.queryLDSTransLoadParams(bitWidth) &&
+            warpReuse > 1;
+        if (considerKMajorShared) {
+          SmallVector<unsigned> kMajorOrder = ttg::getOrderForDotOperand(
+              dotOpEnc.getOpIdx(), /*rank=*/2, /*kContig=*/true);
+          if (sharedOrder != kMajorOrder) {
+            auto kMajorAttr = buildSharedEncoding(kMajorOrder);
+            auto dotOperandTy = cast<ttg::TensorOrMemDesc>(userResType);
+
+            auto originalStore =
+                estimateLDSAccessCost(srcTy, tempAttr, targetInfo,
+                                      /*isLoad=*/false);
+            auto originalLoad =
+                estimateLDSAccessCost(dotOperandTy, tempAttr, targetInfo,
+                                      /*isLoad=*/true);
+            auto kMajorStore =
+                estimateLDSAccessCost(srcTy, kMajorAttr, targetInfo,
+                                      /*isLoad=*/false);
+            auto kMajorLoad =
+                estimateLDSAccessCost(dotOperandTy, kMajorAttr, targetInfo,
+                                      /*isLoad=*/true);
+            int64_t originalCost = originalStore.total + originalLoad.total;
+            int64_t kMajorCost = kMajorStore.total + kMajorLoad.total;
+
+            LDBG("AMD matrix LDS layout costs: original="
+                 << originalCost << " (store=" << originalStore.total
+                 << ", conflicts=" << originalStore.conflicts
+                 << ", vec=" << originalStore.elemsPerVec
+                 << "; load=" << originalLoad.total
+                 << ", conflicts=" << originalLoad.conflicts
+                 << ", vec=" << originalLoad.elemsPerVec
+                 << "), K-major=" << kMajorCost
+                 << " (store=" << kMajorStore.total
+                 << ", conflicts=" << kMajorStore.conflicts
+                 << ", vec=" << kMajorStore.elemsPerVec
+                 << "; load=" << kMajorLoad.total
+                 << ", conflicts=" << kMajorLoad.conflicts
+                 << ", vec=" << kMajorLoad.elemsPerVec
+                 << "), warp reuse=" << warpReuse);
+
+            // A bank-conflicted producer is on the pipeline's critical path.
+            // Require its serialization to be strictly smaller than the
+            // number of reader warps that amortize the write.
+            bool storeCostIsAmortized =
+                static_cast<unsigned>(kMajorStore.conflicts + 1) < warpReuse;
+            if (kMajorCost < originalCost && storeCostIsAmortized) {
+              LDBG("AMD matrix LDS K-major flip: sharedOrder ["
+                   << sharedOrder[0] << "," << sharedOrder[1]
+                   << "] -> K-major [" << kMajorOrder[0] << ","
+                   << kMajorOrder[1]
+                   << "] for opIdx=" << dotOpEnc.getOpIdx());
+              tempAttr = kMajorAttr;
+            }
+          }
         }
+
         LDBG("Deduced shared encoding candidate from dot layout: " << tempAttr);
         sharedEncs.push_back(tempAttr);
       } else if (auto llEnc = dyn_cast<ttg::LinearEncodingAttr>(userResEnc)) {

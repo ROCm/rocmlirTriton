@@ -12,6 +12,7 @@ patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
+patch-lds-k-major-shared-layout.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
@@ -373,4 +374,23 @@ patch-elementwise-fastmath-flags.patch
   sequence rather than a bare reciprocal.
 
   Not yet proposed upstream. Keep until Triton forwards these flags itself.
+
+patch-lds-k-major-shared-layout.patch
+  Lets AMD loop lowering pick a K-major LDS layout for WMMA and pre-gfx950
+  MFMA dots that cannot issue a transposed LDS load. Those targets inherit
+  shared order from the global load, so a non-K-contiguous operand is staged
+  N-major and later read with scalar ds_read. When kWidth allows packed
+  reads and more than one warp reuses the operand, the pass estimates
+  combined LDS store/load transaction cost (vectorization plus bank
+  conflicts) for the original order versus K-major and flips only when the
+  K-major layout is cheaper and the extra store serialization is strictly
+  smaller than the reader-warp reuse.
+
+  Targets with ds_read_tr for the element width (gfx950 V1, gfx1250 V2) are
+  skipped so composeSharedLayoutForOperand can keep the layout the hardware
+  transpose-load expects. FMA operand-major flipping is unchanged.
+
+  Tests live in test/TritonGPU/amd/amd-pipeline-fma-shared-layout.mlir.
+  No upstream PR yet. Re-evaluate on each Triton bump; drop once upstream
+  cost-models this layout choice in getSharedEncIfAllUsersAreDotEnc.
 
