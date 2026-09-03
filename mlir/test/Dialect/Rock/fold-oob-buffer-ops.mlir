@@ -305,6 +305,40 @@ module attributes {"ttg.num-warps" = 8 : i32, "ttg.threads-per-warp" = 32 : i32}
 
 // -----
 
+// The same wave id on a target that has no register for it, which is how every
+// target but RDNA4 and gfx1250 gets one: the workitem id divided by the lanes in
+// a wave, moved to a scalar register by a lane read. Four warps launch, so the
+// division lands in [0, 3], and the lane read has to carry that bound through
+// for the comparison to be out of reach. Losing it here would put back the
+// predication the register case above folds away.
+// CHECK-LABEL: llvm.func @warps_bound_the_divided_wave_id
+// CHECK-NOT:     rocdl.raw.ptr.buffer.store
+// CHECK:       llvm.return
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  llvm.func @warps_bound_the_divided_wave_id(%ptr: !llvm.ptr<1>, %data: i32) attributes {rock.arch = "gfx1100"} {
+    %stride = llvm.mlir.constant(0 : i16) : i16
+    %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
+    %flags = llvm.mlir.constant(822243328 : i32) : i32
+    %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1> to <8>
+
+    %zero = llvm.mlir.constant(0 : i32) : i32
+    %lanes = llvm.mlir.constant(32 : i32) : i32
+    %warps = llvm.mlir.constant(4 : i32) : i32
+    %oob = llvm.mlir.constant(-2147483648 : i32) : i32
+    %offset = llvm.mlir.constant(64 : i32) : i32
+
+    %tid = rocdl.workitem.id.x : i32
+    %wave = llvm.udiv %tid, %lanes : i32
+    %uniform = rocdl.readfirstlane %wave : i32
+    %pred = llvm.icmp "uge" %uniform, %warps : i32
+    %voffset = llvm.select %pred, %offset, %oob : i1, i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    llvm.return
+  }
+}
+
+// -----
+
 // No warp metadata to read. The lanes per warp especially cannot be assumed,
 // since a wave64 target would run twice the ids a default of 32 implies.
 // CHECK-LABEL: llvm.func @missing_warp_metadata_declines
