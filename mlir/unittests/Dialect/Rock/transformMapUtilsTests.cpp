@@ -38,6 +38,83 @@ struct TestEnv {
   }
 };
 
+TEST(BuildRowMajorFlatteningTransformMapTest, RankZero) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(b, loc, {});
+
+  EXPECT_TRUE(transform.getUpperBounds().empty());
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(0, 0, b.getAffineConstantExpr(0)));
+
+  TransformMapAttr inverse = invertTransformMap(b, transform, loc);
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_TRUE(inverse.getLowerBounds().empty());
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, RankOne) {
+  TestEnv env;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      env.builder, env.builder.getUnknownLoc(), {4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::getMultiDimIdentityMap(1, &env.ctx));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, PreservesUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      b, b.getUnknownLoc(), {"batch", "head", "row", "column"}, {1, 1, 4, 4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({1, 1, 4, 4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({16}));
+  AffineExpr row = b.getAffineDimExpr(2);
+  AffineExpr column = b.getAffineDimExpr(3);
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(4, 0, row * 4 + column));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, HandlesAllUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform =
+      buildRowMajorFlatteningTransformMap(b, b.getUnknownLoc(), {1, 1});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1, 1}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(2, 0, b.getAffineDimExpr(1)));
+}
+
+TEST(BuildDenseConstantRowMajorTransformMapTest, ReportsMapApplicability) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  auto rankTwoType = RankedTensorType::get({2, 2}, b.getF32Type());
+  Value rankTwoConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankTwoType, b.getF32FloatAttr(1.0)));
+  FailureOr<TransformMapAttr> flattening =
+      buildDenseConstantRowMajorTransformMap(b, loc, rankTwoConstant);
+  ASSERT_TRUE(succeeded(flattening));
+  EXPECT_EQ(flattening->getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({2, 2}));
+  EXPECT_EQ(flattening->getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+
+  auto rankOneType = RankedTensorType::get({4}, b.getF32Type());
+  Value rankOneConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankOneType, b.getF32FloatAttr(1.0)));
+  EXPECT_TRUE(
+      failed(buildDenseConstantRowMajorTransformMap(b, loc, rankOneConstant)));
+}
+
 // Helper to create a transformed tensor with a simple identity transformation
 Value createTransformedTensor(OpBuilder &b, Location loc,
                               ArrayRef<int64_t> shape, Type elemType) {

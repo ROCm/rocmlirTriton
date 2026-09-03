@@ -557,3 +557,150 @@ func.func @test_arg_attrs_preserved(
 func.func @test_all_unused_tensor_args(%arg0: tensor<4096xf16>, %arg1: tensor<4096xf32>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
   return
 }
+
+// -----
+
+// Dense non-splat constants are compiler-owned storage, not hidden kernel
+// arguments. Identical constants share one compatible GPU global; same-valued
+// globals in the wrong address space, with insufficient alignment, or with
+// mutable storage properties cannot be reused.
+// CHECK: llvm.mlir.global internal constant @[[$GLOBAL:__rock_constant_[0-9]+]](dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tensor<4xf32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
+// CHECK: llvm.mlir.global internal constant @wrong_address_space({{.*}}) {addr_space = 0 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+// CHECK: llvm.mlir.global internal constant @wrong_alignment({{.*}}) {addr_space = 1 : i32, alignment = 8 : i64} : !llvm.array<4 x f32>
+// CHECK: llvm.mlir.global internal thread_local constant @thread_local_same_value({{.*}}) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+// CHECK: llvm.mlir.global internal constant @externally_initialized_same_value({{.*}}) {addr_space = 1 : i32, alignment = 16 : i64, externally_initialized} : !llvm.array<4 x f32>
+// CHECK-LABEL: tt.func @test_dense_constant_global
+// CHECK-SAME: (%[[DEST:.*]]: !tt.ptr<f32>)
+// CHECK-NOT: arith.constant dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tensor<4xf32>
+// CHECK: %[[ADDRESS:.*]] = llvm.mlir.addressof @[[$GLOBAL]] : !llvm.ptr<1>
+// CHECK: %[[INTEGER_ADDRESS:.*]] = llvm.ptrtoint %[[ADDRESS]] : !llvm.ptr<1> to i64
+// CHECK: %[[CONST_PTR:.*]] = tt.int_to_ptr %[[INTEGER_ADDRESS]] : i64 -> !tt.ptr<f32>
+// CHECK: %[[SPLAT:.*]] = tt.splat %[[CONST_PTR]] : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+// CHECK: tt.load %[[SPLAT]]
+// CHECK: %[[SAME_ADDRESS:.*]] = llvm.mlir.addressof @[[$GLOBAL]] : !llvm.ptr<1>
+// CHECK: %[[SAME_INTEGER_ADDRESS:.*]] = llvm.ptrtoint %[[SAME_ADDRESS]] : !llvm.ptr<1> to i64
+// CHECK: %[[SAME_CONST_PTR:.*]] = tt.int_to_ptr %[[SAME_INTEGER_ADDRESS]] : i64 -> !tt.ptr<f32>
+// CHECK: %[[SAME_SPLAT:.*]] = tt.splat %[[SAME_CONST_PTR]] : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+// CHECK: tt.load %[[SAME_SPLAT]]
+// CHECK-NOT: rock.extract_ptr
+llvm.mlir.global internal constant @wrong_address_space([1.000000e+00 : f32, 2.000000e+00 : f32, 3.000000e+00 : f32, 4.000000e+00 : f32]) {addr_space = 0 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+llvm.mlir.global internal constant @wrong_alignment([1.000000e+00 : f32, 2.000000e+00 : f32, 3.000000e+00 : f32, 4.000000e+00 : f32]) {addr_space = 1 : i32, alignment = 8 : i64} : !llvm.array<4 x f32>
+llvm.mlir.global internal thread_local constant @thread_local_same_value(dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+llvm.mlir.global internal constant @externally_initialized_same_value(dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>) {addr_space = 1 : i32, alignment = 16 : i64, externally_initialized} : !llvm.array<4 x f32>
+func.func @test_dense_constant_global(%dest: tensor<4xf32>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>
+  %same_values = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>
+  %mask = arith.constant dense<true> : tensor<4xi1>
+  %base = rock.extract_ptr %values : tensor<4xf32> -> i32
+  %base_splat = tt.splat %base : i32 -> tensor<4xi32>
+  %value_ptrs = rock.cast_to_ptr %base_splat : tensor<4xi32> -> tensor<4x!tt.ptr<f32>>
+  %loaded = tt.load %value_ptrs, %mask : tensor<4x!tt.ptr<f32>>
+  %same_base = rock.extract_ptr %same_values : tensor<4xf32> -> i32
+  %same_base_splat = tt.splat %same_base : i32 -> tensor<4xi32>
+  %same_value_ptrs = rock.cast_to_ptr %same_base_splat : tensor<4xi32> -> tensor<4x!tt.ptr<f32>>
+  %same_loaded = tt.load %same_value_ptrs, %mask : tensor<4x!tt.ptr<f32>>
+  %sum = arith.addf %loaded, %same_loaded : tensor<4xf32>
+  %dest_base = rock.extract_ptr %dest : tensor<4xf32> -> i32
+  %dest_splat = tt.splat %dest_base : i32 -> tensor<4xi32>
+  %dest_ptrs = rock.cast_to_ptr %dest_splat : tensor<4xi32> -> tensor<4x!tt.ptr<f32>>
+  tt.store %dest_ptrs, %sum, %mask : tensor<4x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// A kernel with no tensor arguments still converts when it reads a
+// compiler-owned dense constant.
+// CHECK: llvm.mlir.global internal constant @[[$CONST_ONLY_GLOBAL:__rock_constant_[0-9]+]](dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tensor<4xf32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<4 x f32>
+// CHECK-LABEL: tt.func @test_dense_constant_only_kernel()
+// CHECK-NOT: arith.constant dense<[1.000000e+00, 2.000000e+00, 3.000000e+00, 4.000000e+00]> : tensor<4xf32>
+// CHECK: %[[ADDRESS:.*]] = llvm.mlir.addressof @[[$CONST_ONLY_GLOBAL]] : !llvm.ptr<1>
+// CHECK: %[[INTEGER_ADDRESS:.*]] = llvm.ptrtoint %[[ADDRESS]] : !llvm.ptr<1> to i64
+// CHECK: %[[CONST_PTR:.*]] = tt.int_to_ptr %[[INTEGER_ADDRESS]] : i64 -> !tt.ptr<f32>
+// CHECK: %[[SPLAT:.*]] = tt.splat %[[CONST_PTR]] : !tt.ptr<f32> -> tensor<4x!tt.ptr<f32>>
+// CHECK: tt.load %[[SPLAT]]
+// CHECK: tt.return
+// CHECK-NOT: rock.extract_ptr
+// CHECK-NOT: func.func
+func.func @test_dense_constant_only_kernel() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>
+  %mask = arith.constant dense<true> : tensor<4xi1>
+  %base = rock.extract_ptr %values : tensor<4xf32> -> i32
+  %base_splat = tt.splat %base : i32 -> tensor<4xi32>
+  %value_ptrs = rock.cast_to_ptr %base_splat : tensor<4xi32> -> tensor<4x!tt.ptr<f32>>
+  %loaded = tt.load %value_ptrs, %mask : tensor<4x!tt.ptr<f32>>
+  return
+}
+
+// -----
+
+// Compatible pre-existing globals are indexed and reused, including globals
+// written with the legacy ArrayAttr initializer form.
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
+// CHECK: llvm.mlir.global internal constant @compatible_existing([1 : i32, 2 : i32]) {addr_space = 1 : i32, alignment = 32 : i64} : !llvm.array<2 x i32>
+// CHECK-LABEL: tt.func @test_reuse_existing_global()
+// CHECK: llvm.mlir.addressof @compatible_existing : !llvm.ptr<1>
+llvm.mlir.global internal constant @compatible_existing([1 : i32, 2 : i32]) {addr_space = 1 : i32, alignment = 32 : i64} : !llvm.array<2 x i32>
+func.func @test_reuse_existing_global() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}
+
+// -----
+
+// The module-level lookup is shared across kernel conversion, so identical
+// constants in different kernels reuse one global.
+// CHECK: llvm.mlir.global internal constant @[[$SHARED_GLOBAL:__rock_constant_[0-9]+]](dense<[1, 2]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
+// CHECK-NOT: llvm.mlir.global internal constant @__rock_constant_
+// CHECK-LABEL: tt.func @test_cross_kernel_dedup_first()
+// CHECK: llvm.mlir.addressof @[[$SHARED_GLOBAL]] : !llvm.ptr<1>
+// CHECK-LABEL: tt.func @test_cross_kernel_dedup_second()
+// CHECK: llvm.mlir.addressof @[[$SHARED_GLOBAL]] : !llvm.ptr<1>
+func.func @test_cross_kernel_dedup_first() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}
+func.func @test_cross_kernel_dedup_second() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}
+
+// -----
+
+// Different values require different globals.
+// CHECK-DAG: llvm.mlir.global internal constant @[[$FIRST_GLOBAL:__rock_constant_[0-9]+]](dense<[1, 2]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
+// CHECK-DAG: llvm.mlir.global internal constant @[[$SECOND_GLOBAL:__rock_constant_[0-9]+]](dense<[3, 4]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
+// CHECK-LABEL: tt.func @test_distinct_dense_constants()
+// CHECK: llvm.mlir.addressof @[[$FIRST_GLOBAL]] : !llvm.ptr<1>
+// CHECK: llvm.mlir.addressof @[[$SECOND_GLOBAL]] : !llvm.ptr<1>
+func.func @test_distinct_dense_constants() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %first = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %second = arith.constant dense<[3, 4]> : tensor<2xi32>
+  %first_base = rock.extract_ptr %first : tensor<2xi32> -> i32
+  %first_splat = tt.splat %first_base : i32 -> tensor<2xi32>
+  %second_base = rock.extract_ptr %second : tensor<2xi32> -> i32
+  %second_splat = tt.splat %second_base : i32 -> tensor<2xi32>
+  return
+}
+
+// -----
+
+// Generated globals must not collide with an existing module symbol.
+// CHECK: llvm.mlir.global internal constant @__rock_constant_1(dense<[1, 2]> : tensor<2xi32>) {addr_space = 1 : i32, alignment = 16 : i64} : !llvm.array<2 x i32>
+// CHECK: func.func private @__rock_constant_0()
+// CHECK-LABEL: tt.func @test_constant_global_symbol_collision()
+// CHECK: llvm.mlir.addressof @__rock_constant_1 : !llvm.ptr<1>
+func.func private @__rock_constant_0()
+func.func @test_constant_global_symbol_collision() attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.grid_size = 1 : i32, rock.block_size = 64 : i32} {
+  %values = arith.constant dense<[1, 2]> : tensor<2xi32>
+  %base = rock.extract_ptr %values : tensor<2xi32> -> i32
+  %splat = tt.splat %base : i32 -> tensor<2xi32>
+  return
+}

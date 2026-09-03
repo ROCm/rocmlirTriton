@@ -472,8 +472,14 @@ struct ElementwiseRegionFinder {
       blockArgCandidates.insert(blockArgCandidates.begin(), input);
       return;
     }
-    if (op && dyn_cast<tosa::ConstOp>(op)) {
-      constantVals.push_back(input);
+    if (auto constOp = dyn_cast_or_null<tosa::ConstOp>(op)) {
+      // Splat constants can be freely reshaped to any tile shape; dense
+      // non-splat constants require the same transform and tiled-load path as
+      // tensor inputs.
+      if (isa<SplatElementsAttr>(constOp.getValuesAttr()))
+        constantVals.push_back(input);
+      else
+        blockArgCandidates.push_back(input);
       return;
     }
     // Right now, this is a bit restricted that we only allow reshape-like

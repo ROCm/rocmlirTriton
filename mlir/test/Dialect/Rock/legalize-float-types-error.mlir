@@ -421,3 +421,58 @@ func.func @test_i4_unit_k_tile_not_applicable(
   %result = rock.blockwise_gemm(%a, %dequant, %cst) : tensor<4x1xf16>, tensor<1x4xf16>, tensor<4x4xf32> -> tensor<4x4xf32>
   return %out : tensor<16xf32>
 }
+
+// -----
+
+// Dense non-splat compiler constants do not yet support packed sub-byte
+// storage. Reject them before type legalization can separate the constant's
+// result type from its elements attribute.
+func.func @test_sub_byte_dense_constant_fails() attributes {rock.kernel} {
+  // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  %loaded = rock.blockwise_load %values {cacheModifier = #rock<CacheModifier none>} : tensor<2xi4> -> tensor<2xi4>
+  return
+}
+
+// -----
+
+// Standalone or unregularized pointer IR can still materialize a compiler-owned
+// global downstream even when no blockwise load is visible to this pass.
+func.func @test_sub_byte_dense_constant_extract_ptr_fails() attributes {rock.kernel} {
+  // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  %base = rock.extract_ptr %values : tensor<2xi4> -> i32
+  return
+}
+
+// -----
+
+// Defensive coverage for unregularized IR: trace through fusion operations so
+// the pass diagnoses the unsupported storage instead of creating an invalid
+// arith.constant whose attribute and result types disagree.
+func.func @test_sub_byte_dense_constant_through_fusion_fails() attributes {rock.kernel} {
+  // expected-error @+1 {{sub-byte dense non-splat constants are not supported as compiler-owned storage}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  %sum = arith.addi %values, %values : tensor<2xi4>
+  %loaded = rock.blockwise_load %sum {cacheModifier = #rock<CacheModifier none>} : tensor<2xi4> -> tensor<2xi4>
+  return
+}
+
+// -----
+
+// The 4-bit packing phase only supports values rooted in kernel load paths.
+// Diagnose register-only constants before it separates their result type from
+// the elements attribute.
+func.func @test_register_only_i4_dense_constant_fails() -> tensor<2xi4> attributes {rock.kernel} {
+  // expected-error @+1 {{register-only 4-bit dense non-splat constants are not supported}}
+  %values = arith.constant dense<[1, 2]> : tensor<2xi4>
+  return %values : tensor<2xi4>
+}
+
+// -----
+
+func.func @test_register_only_f4_dense_constant_fails() -> tensor<2xf4E2M1FN> attributes {rock.kernel} {
+  // expected-error @+1 {{register-only 4-bit dense non-splat constants are not supported}}
+  %values = arith.constant dense<[2.0, 4.0]> : tensor<2xf4E2M1FN>
+  return %values : tensor<2xf4E2M1FN>
+}
