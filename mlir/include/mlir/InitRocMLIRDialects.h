@@ -15,6 +15,7 @@
 #define MLIR_INITROCMLIRDIALECTS_H_
 
 // rocMLIR includes
+#include "hip/Dialect/IR/HipDialect.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 
@@ -271,7 +272,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 // Add all the MLIR dialects to the provided registry.
 inline void registerRocMLIRDialects(DialectRegistry &registry) {
   // Register rocMLIR specific dialects
-  registry.insert<rock::RockDialect, migraphx::MIGraphXDialect>();
+  registry
+      .insert<rock::RockDialect, migraphx::MIGraphXDialect, hip::HipDialect>();
 
   // Register auxiliary Upstream dialects
   registerUpstreamDialects(registry);

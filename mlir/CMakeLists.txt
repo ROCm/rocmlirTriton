@@ -63,6 +63,7 @@ set(ARG_PRODUCT_NAME ${CMAKE_PROJECT_NAME} CACHE STRING "")
 set(ARG_VERSION_STRING ${CMAKE_PROJECT_VERSION} CACHE STRING "")
 
 add_subdirectory(include/mlir)
+add_subdirectory(include/hip)
 add_subdirectory(lib)
 # C API needs all dialects for registration, but should be built before tests.
 add_subdirectory(lib/CAPI)
