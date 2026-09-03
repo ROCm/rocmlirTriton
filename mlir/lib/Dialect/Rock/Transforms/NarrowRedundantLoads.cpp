@@ -255,21 +255,26 @@ FailureOr<Value> SliceMaterializer::sliceElementwise(Operation *op,
   return track(builder.create(state));
 }
 
-/// Returns the shape `load` can be narrowed to, or nothing if it reads
-/// something different in every lane along every dimension.
-///
-/// A dimension qualifies when the analysis proves the loaded values repeat
-/// across its whole extent. That constancy already folds in both the address
-/// and the mask; `other` is checked separately because it does not.
-std::optional<SmallVector<int64_t>>
-getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
+/// Returns the type of `load` if this pass can narrow it at all, which every
+/// narrowing criterion below needs first. A dynamically shaped tensor has no
+/// index-0 slice to name, and an `other` holding a different element per lane
+/// has no narrower form, so neither can be re-materialized.
+std::optional<RankedTensorType> getNarrowableType(tt::LoadOp load) {
   auto type = dyn_cast<RankedTensorType>(load.getType());
   if (!type || !type.hasStaticShape())
     return std::nullopt;
   if (load.getOther() && !isSplatLike(load.getOther()))
     return std::nullopt;
+  return type;
+}
 
-  tt::AxisInfo *info = axisInfo.getAxisInfo(load.getResult());
+/// Returns `type`'s shape with every dimension along which `loadValue` repeats
+/// across the whole extent collapsed to 1, or nothing if no dimension does.
+/// A dimension that is already unit-sized is not a narrowing on its own.
+std::optional<SmallVector<int64_t>>
+getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
+                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
   if (!info || info->getRank() != type.getRank())
     return std::nullopt;
 
@@ -283,6 +288,21 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
     }
   }
   return narrowed ? std::optional(narrowShape) : std::nullopt;
+}
+
+/// Returns the shape `load` can be narrowed to, or nothing if it reads
+/// something different in every lane along every dimension.
+///
+/// A dimension qualifies when the analysis proves the loaded values repeat
+/// across its whole extent. That constancy already folds in both the address
+/// and the mask; `other` is checked separately because it does not.
+std::optional<SmallVector<int64_t>>
+getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
+  std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
+  if (!narrowableType)
+    return std::nullopt;
+  return getConstantDimsNarrowShape(load.getResult(), *narrowableType,
+                                    axisInfo);
 }
 
 /// Returns true if `loadValue` is constant along every dimension that
@@ -310,34 +330,24 @@ bool isConstantOutsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
 std::optional<SmallVector<int64_t>>
 getBroadcastNarrowShape(tt::LoadOp load,
                         tt::ModuleAxisInfoAnalysis &axisInfo) {
-  auto type = dyn_cast<RankedTensorType>(load.getType());
-  if (!type || !type.hasStaticShape())
+  std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
+  if (!narrowableType)
     return std::nullopt;
-  // Re-applying the mask needs a uniform `other`, or none.
-  if (load.getOther() && !isSplatLike(load.getOther()))
-    return std::nullopt;
+  RankedTensorType type = *narrowableType;
+
   // Without a mask the plain constancy path above already applies.
   if (!load.getMask())
     return std::nullopt;
 
-  tt::AxisInfo *info = axisInfo.getAxisInfo(load.getPtr());
-  if (!info || info->getRank() != type.getRank())
+  // Same question as `getNarrowShape`, asked about the address rather than the
+  // result, which is what lets it see past the mask.
+  std::optional<SmallVector<int64_t>> narrowShape =
+      getConstantDimsNarrowShape(load.getPtr(), type, axisInfo);
+  if (!narrowShape)
     return std::nullopt;
 
-  ArrayRef<int64_t> shape = type.getShape();
-  SmallVector<int64_t> narrowShape(shape);
-  bool narrowed = false;
-  for (auto [dim, extent] : llvm::enumerate(shape)) {
-    if (extent > 1 && info->getConstancy(dim) == extent) {
-      narrowShape[dim] = 1;
-      narrowed = true;
-    }
-  }
-  if (!narrowed)
-    return std::nullopt;
-
-  if (!isConstantOutsideNarrowedDims(load.getMask(), shape, narrowShape,
-                                     axisInfo))
+  if (!isConstantOutsideNarrowedDims(load.getMask(), type.getShape(),
+                                     *narrowShape, axisInfo))
     return std::nullopt;
   return narrowShape;
 }
