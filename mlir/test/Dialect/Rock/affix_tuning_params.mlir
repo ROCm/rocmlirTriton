@@ -369,11 +369,11 @@ func.func @rock_gemm_gfx1150_own_table(%a : tensor<1x72x128xf16>, %b : tensor<1x
 // CHECK-LABEL: func.func @rock_attention_default
 // CHECK-SAME: rock.block_size = 128
 // GRID-LABEL: func.func @rock_attention_default
-// GRID-SAME: rock.grid_size = 12
+// GRID-SAME: rock.grid_size = 6
 func.func @rock_attention_default(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   // CHECK: rock.attention
-  // CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.gridwise_attention
   %result = rock.attention{
    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -719,11 +719,11 @@ func.func @rock_attn_perfconfig_numstages4(%arg0: tensor<32768xf16>, %arg1: tens
 // CHECK-LABEL: @rock_attn_schedule_default
 // CHECK-SAME: rock.block_size = 128
 // GRID-LABEL: @rock_attn_schedule_default
-// GRID-SAME: rock.grid_size = 12
+// GRID-SAME: rock.grid_size = 6
 func.func @rock_attn_schedule_default(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
   // CHECK: rock.attention
-  // CHECK: params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
-  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK: params0 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // CHECK-SAME: params1 = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
   // GRID: rock.gridwise_attention
   %result = rock.attention{
    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
