@@ -409,6 +409,30 @@ def RockTransformsToPointerArithPass
                            "triton::TritonDialect"];
 }
 
+def RockLegalizeMathForTritonPass
+    : Pass<"rock-legalize-math-for-triton", "::mlir::func::FuncOp"> {
+  let summary = "Lower math.tanh and math.powf into ops Triton accepts";
+  let description = [{
+    TritonToTritonGPU only carries a fixed subset of the math dialect, which
+    excludes `math.tanh` and `math.powf`, so both are rewritten here into ops it
+    accepts.
+
+    `math.powf` always becomes a `tt.extern_elementwise` call to the same OCML
+    symbol the Triton frontend's libdevice bindings use. `math.tanh` becomes
+    that call on a target with a native tanh or when fast math is disabled, an
+    inline five-op approximation for the types narrower than f32, and otherwise
+    is left to the math dialect's own expansion.
+
+    Must run before `math-extend-to-supported-types`, which would promote the
+    narrow types to f32 and make them indistinguishable from an f32 the user
+    asked for.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
+                           "math::MathDialect", "triton::TritonDialect"];
+  let options = [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+                        "Disable fast-math dependent lowering choices">];
+}
+
 def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
