@@ -195,7 +195,7 @@ def _cursor_reply(
     if not api_key:
         raise TransportError(
             "$CURSOR_API_KEY is not set; a key can be minted at "
-            "https://cursor.com/dashboard/integrations",
+            "https://cursor.com/dashboard/api?section=user-keys#user-api-keys",
             started=False,
         )
 
