@@ -285,11 +285,12 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
   return narrowed ? std::optional(narrowShape) : std::nullopt;
 }
 
-/// Returns true if `v` is constant along every dimension that `narrowShape` keeps.
-bool isConstantOutsideNarrowedDims(Value v, ArrayRef<int64_t> shape,
+/// Returns true if `loadValue` is constant along every dimension that
+/// `narrowShape` keeps.
+bool isConstantOutsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
                                    ArrayRef<int64_t> narrowShape,
                                    tt::ModuleAxisInfoAnalysis &axisInfo) {
-  tt::AxisInfo *info = axisInfo.getAxisInfo(v);
+  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
   if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
     return false;
   for (auto [dim, extent] : llvm::enumerate(shape)) {
