@@ -41,7 +41,10 @@ public:
   /// alongside the running executable. `sessionPath` is where the helper keeps
   /// the conversation between rounds, so that a later prompt can refer to an
   /// earlier one; it may be empty, in which case every round starts cold.
-  LLMProposer(StringRef program, StringRef sessionPath, unsigned timeoutSec);
+  /// `transcriptPath` is where the helper writes down what it asked and what
+  /// it was told, for a person to read; empty means nowhere.
+  LLMProposer(StringRef program, StringRef sessionPath,
+              StringRef transcriptPath, unsigned timeoutSec);
 
   /// Asks for the configs `request` describes, as canonical named perf-config
   /// strings (`gemm:mPerBlock=128,...`) with every field spelled out.
@@ -72,6 +75,7 @@ public:
 private:
   std::string program;
   std::string sessionPath;
+  std::string transcriptPath;
   unsigned timeoutSec;
 };
 

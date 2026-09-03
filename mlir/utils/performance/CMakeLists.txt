@@ -36,6 +36,7 @@ set(LLM_PROPOSER_SCRIPTS
   parsing.py
   prompting.py
   proposer.py
+  transcript.py
   transport.py
   workload.py
 )

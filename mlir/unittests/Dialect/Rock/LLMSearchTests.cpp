@@ -31,6 +31,7 @@
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -81,6 +82,7 @@ public:
            "parser.add_argument('--request')\n"
            "parser.add_argument('--response')\n"
            "parser.add_argument('--session', default='')\n"
+           "parser.add_argument('--transcript', default='')\n"
            "args = parser.parse_args()\n"
            "request = json.load(open(args.request))\n"
            "def render(**changes):\n"
@@ -361,8 +363,8 @@ std::vector<BenchmarkResult> fakeTimings(ArrayRef<PerfConfigString> batch) {
   return results;
 }
 
-/// Options that keep a test quick: a small first batch, and no session, since
-/// nothing here reads one back.
+/// Options that keep a test quick: a small first batch, and the session the
+/// search makes for itself, since nothing here reads one back.
 LLMOptions testOptions(const FixtureProposer &fixture) {
   LLMOptions options;
   options.search.proposerPath = fixture.program();
@@ -728,6 +730,95 @@ TEST(LLMSearchTest, StopsAfterTheRoundsItWasGiven) {
       << "the search did not run for exactly the rounds it was given";
 }
 
+// One conversation per search, so that the model a later round is talking to
+// is the one that proposed the earlier rounds. The helper is what holds the
+// conversation; what the search owes it is a file to keep it in, the same one
+// every round, and nowhere for it to outlive the search.
+TEST(LLMSearchTest, GivesEveryRoundTheSameSessionToContinue) {
+  RecordedRequest seen;
+  FixtureProposer fixture(
+      ("open('" + seen.str() + "', 'a').write(args.session + '\\n')\n" +
+       alwaysAnswers("[render(mPerBlock=32 + 16 * request['round'])]"))
+          .str());
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  LLMOptions options = testOptions(fixture);
+  options.search.maxRounds = 2;
+  options.maxStagnantRounds = 100;
+  ASSERT_GT(runSearch(*e.module, options).size(), 2u);
+
+  auto written = llvm::MemoryBuffer::getFile(seen.str());
+  ASSERT_TRUE(!!written);
+  SmallVector<StringRef> paths;
+  StringRef((*written)->getBuffer()).trim().split(paths, '\n');
+  ASSERT_EQ(paths.size(), 2u) << "not one line per round";
+  EXPECT_FALSE(paths[0].empty())
+      << "the search left its rounds nothing to resume";
+  EXPECT_EQ(paths[0], paths[1]) << "each round was given a session of its own";
+  // The search has been destroyed by now, and an unnamed session is the
+  // search's own temporary file rather than something left on the machine.
+  EXPECT_FALSE(llvm::sys::fs::exists(paths[0]))
+      << "the temporary session outlived the search: " << paths[0];
+}
+
+// A named session is somebody asking to keep it, so it stays.
+TEST(LLMSearchTest, KeepsASessionItWasToldWhereToPut) {
+  SmallString<128> sessionPath;
+  ASSERT_FALSE(llvm::sys::fs::createTemporaryFile("rocmlir-llm-kept", "json",
+                                                  sessionPath));
+  llvm::FileRemover removeSession(sessionPath);
+
+  RecordedRequest seen;
+  // A knob, as `DropsProposalsTheSpaceRefuses` uses one: every quick config
+  // spells all eight at their default, so no seed can have taken this config
+  // already and the round cannot come out empty.
+  FixtureProposer fixture(("open('" + seen.str() +
+                           "', 'w').write(args.session)\n" +
+                           alwaysAnswers("[render(useOptimizeEpilogue=0)]"))
+                              .str());
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  LLMOptions options = testOptions(fixture);
+  options.search.initialRandomConfigs = 0;
+  options.search.sessionPath = std::string(sessionPath);
+  ASSERT_GT(runSearch(*e.module, options).size(), 1u);
+
+  auto written = llvm::MemoryBuffer::getFile(seen.str());
+  ASSERT_TRUE(!!written);
+  EXPECT_EQ((*written)->getBuffer(), StringRef(sessionPath));
+  EXPECT_TRUE(llvm::sys::fs::exists(sessionPath));
+}
+
+// Where a run is read back from afterwards. The search only carries the path:
+// what a person wants to read is the prompts and the replies, and the helper
+// is what has those (see llm/transcript.py). So what is under test here is
+// that every round reaches the file, since a transcript missing the round that
+// went wrong is worse than none.
+TEST(LLMSearchTest, GivesEveryRoundTheTranscriptToWriteTo) {
+  SmallString<128> transcriptPath;
+  ASSERT_FALSE(llvm::sys::fs::createTemporaryFile("rocmlir-llm-transcript",
+                                                  "log", transcriptPath));
+  llvm::FileRemover removeTranscript(transcriptPath);
+
+  // Keyed off the round number, as `StopsAfterTheRoundsItWasGiven` is, so that
+  // the dedupe cannot end the search before the second round.
+  FixtureProposer fixture(
+      "open(args.transcript, 'a').write('round %d happened\\n' % "
+      "request['round'])\n" +
+      alwaysAnswers("[render(mPerBlock=32 + 16 * request['round'])]"));
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  LLMOptions options = testOptions(fixture);
+  options.search.maxRounds = 2;
+  options.maxStagnantRounds = 100;
+  options.search.transcriptPath = std::string(transcriptPath);
+
+  ASSERT_GT(runSearch(*e.module, options).size(), 2u);
+  auto written = llvm::MemoryBuffer::getFile(transcriptPath);
+  ASSERT_TRUE(!!written) << "the helper was given no transcript to write to";
+  EXPECT_EQ((*written)->getBuffer(), "round 0 happened\nround 1 happened\n");
+}
+
 // The space refuses configs the ladders alone do not rule out, and a model
 // cannot see those rules. Refusing has to mean dropping the config, not
 // proposing it anyway and not abandoning the round it came in.
@@ -962,7 +1053,7 @@ TEST(LLMProposerTest, ReadsTheConfigsAHelperWrote) {
   FixtureProposer fixture(
       alwaysAnswers("['gemm:mPerBlock=64', 'gemm:nPerBlock=128']"));
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/60);
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -979,7 +1070,7 @@ TEST(LLMProposerTest, ReportsAFailureTheHelperExplained) {
       "json.dump({'error': 'no API key, so no model'}, open(args.response, "
       "'w'))");
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/60);
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -990,7 +1081,7 @@ TEST(LLMProposerTest, ReportsAFailureTheHelperExplained) {
 TEST(LLMProposerTest, ReportsAHelperThatFailed) {
   FixtureProposer fixture("sys.exit(3)");
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/60);
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -1003,7 +1094,7 @@ TEST(LLMProposerTest, ReportsAHelperThatFailed) {
 TEST(LLMProposerTest, KillsAHelperThatOutlivesItsDeadline) {
   FixtureProposer fixture("import time; time.sleep(120)");
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/1);
+                       /*transcriptPath=*/"", /*timeoutSec=*/1);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -1021,7 +1112,7 @@ TEST(LLMProposerTest, RefusesAReplyThatIsNotAConfigList) {
   // that forgot to complete them against the exemplar.
   FixtureProposer fixture(alwaysAnswers("[{'mPerBlock': 64}]"));
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/60);
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -1036,7 +1127,7 @@ TEST(LLMProposerTest, PassesTheRequestToTheHelper) {
   FixtureProposer fixture(
       alwaysAnswers("['gemm:mPerBlock=%d' % request['configsRequested']]"));
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
-                       /*timeoutSec=*/60);
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
@@ -1044,6 +1135,29 @@ TEST(LLMProposerTest, PassesTheRequestToTheHelper) {
   ASSERT_EQ(configs->size(), 1u);
   EXPECT_EQ((*configs)[0], "gemm:mPerBlock=2")
       << "the helper did not see the request it was sent";
+}
+
+// Where the helper writes down what it asked the model and what it was told.
+// Passed on as a path rather than opened here: the file is prose for a person
+// (see llm/transcript.py), and the helper is what has the prose.
+TEST(LLMProposerTest, PassesTheTranscriptPathToTheHelper) {
+  SmallString<128> transcriptPath;
+  ASSERT_FALSE(llvm::sys::fs::createTemporaryFile("rocmlir-llm-transcript",
+                                                  "log", transcriptPath));
+  llvm::FileRemover removeTranscript(transcriptPath);
+
+  FixtureProposer fixture(
+      "open(args.transcript, 'a').write('a round happened\\n')\n" +
+      alwaysAnswers("['gemm:mPerBlock=64']"));
+  LLMProposer proposer(fixture.program(), /*sessionPath=*/"", transcriptPath,
+                       /*timeoutSec=*/60);
+
+  llvm::Expected<std::vector<std::string>> configs =
+      proposer.propose(minimalRequest());
+  ASSERT_TRUE(!!configs) << llvm::toString(configs.takeError());
+  auto written = llvm::MemoryBuffer::getFile(transcriptPath);
+  ASSERT_TRUE(!!written) << "the helper was given no transcript to write to";
+  EXPECT_EQ((*written)->getBuffer(), "a round happened\n");
 }
 
 // An explicit path wins, and with nothing to go on the helper is looked for

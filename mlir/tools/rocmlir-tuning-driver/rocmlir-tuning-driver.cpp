@@ -246,7 +246,9 @@ static llvm::cl::opt<std::string> searchTrace(
 static llvm::cl::opt<std::string>
     llmModel("llm-model",
              llvm::cl::desc("Which model proposes the configs, named as "
-                            "`cursor-agent --model` names them."),
+                            "`cursor-agent --model` names them, optionally "
+                            "followed by `:name=value` parameters of that "
+                            "model (`composer-2.5:fast=true`)."),
              llvm::cl::value_desc("model"),
              llvm::cl::init(rock::LLMSearchOptions{}.model));
 
@@ -309,6 +311,17 @@ static llvm::cl::opt<std::string> llmProposer(
                    "otherwise; a script that answers from a fixture instead of "
                    "from a model is how the tests run this offline."),
     llvm::cl::value_desc("script"), llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> llmTranscript(
+    "llm-transcript",
+    llvm::cl::desc("Append a readable log of this problem's conversation with "
+                   "the model to this file: every prompt and every reply, in "
+                   "full, under a banner naming the problem. The only record "
+                   "of what was said -- --search-trace counts the rounds and "
+                   "not their contents -- and safe to `tail -f` while a run "
+                   "is going. One problem per file, since problems tune "
+                   "concurrently."),
+    llvm::cl::value_desc("log file"), llvm::cl::init(""));
 
 static llvm::cl::opt<unsigned> rep(
     "rep",
@@ -1592,6 +1605,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   searchOptions.llm.compileTimeoutSec = llmCompileTimeout;
   searchOptions.llm.waitForSeeds = llmWaitForSeeds;
   searchOptions.llm.proposerPath = llmProposer;
+  searchOptions.llm.transcriptPath = llmTranscript;
 
   // A model's proposals time out while compiling more often than a fixed
   // space's do, so the LLM spaces put them on a shorter leash -- but only
@@ -1667,7 +1681,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                             llmRequestTimeout.getNumOccurrences() > 0 ||
                             llmCompileTimeout.getNumOccurrences() > 0 ||
                             llmWaitForSeeds.getNumOccurrences() > 0 ||
-                            llmProposer.getNumOccurrences() > 0;
+                            llmProposer.getNumOccurrences() > 0 ||
+                            llmTranscript.getNumOccurrences() > 0;
   if (llmFlagGiven && !searchAsksAModel)
     llvm::errs() << "warning: --llm-*: ignored, since the '"
                  << rock::getSearchStrategyKindName(

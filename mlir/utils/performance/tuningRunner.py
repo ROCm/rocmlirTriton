@@ -262,6 +262,7 @@ class Options:
     llm_configs_per_round: Optional[int] = None
     llm_wait_for_seeds: bool = False
     llm_proposer: Optional[str] = None
+    llm_transcript: bool = True
 
 
 @dataclass
@@ -1600,6 +1601,16 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         os.makedirs(os.path.dirname(trace_path), exist_ok=True)
         tuning_driver_args.append(f"--search-trace={trace_path}")
 
+    # What the model was asked and what it answered, which is the only account
+    # of an LLM run that survives it, so it is kept without waiting to be asked
+    # for. Named after the problem like the trace, since problems tune
+    # concurrently and a shared file would interleave two conversations.
+    transcript_path = llm_transcript_path(test_vector, options)
+    if transcript_path:
+        os.makedirs(os.path.dirname(transcript_path), exist_ok=True)
+        tuning_driver_args.append(f"--llm-transcript={transcript_path}")
+        gpu_logger.info(f"Model transcript for '{test_vector}': {transcript_path}")
+
     env = make_isolated_gpu_env(gpu_id)
 
     config: Optional[PerfConfiguration] = None
@@ -1742,6 +1753,23 @@ def search_trace_path(test_vector: str, options: Options) -> Optional[str]:
     if options.output == '-':
         return None
     return os.path.join(f"{options.output}.search", f"{_problem_hash(test_vector, options)}.jsonl")
+
+
+def llm_transcript_path(test_vector: str, options: Options) -> Optional[str]:
+    """Where this problem's conversation with the model gets written down.
+
+    Beside the search trace and named the same way, since both are one
+    problem's account of one search. Not behind --debug as the trace is: the
+    trace holds counts that can be inferred again from a rerun, while what a
+    model said in a round is gone the moment the run ends, and it is what a
+    disappointing tuning result has to be explained by. See llm/transcript.py.
+    """
+    if not options.llm_transcript or options.tuning_space_kind not in LLM_TUNING_SPACES:
+        return None
+    if options.output == '-':
+        return None
+    return os.path.join(f"{options.output}.search",
+                        f"{_problem_hash(test_vector, options)}.llm.log")
 
 
 def _problem_hash(test_vector: str, options: Options) -> str:
@@ -2597,7 +2625,8 @@ def parse_arguments(args=None) -> argparse.Namespace:
                            default=None,
                            metavar="MODEL",
                            help="Which model proposes the configs, named as `cursor-agent "
-                           "--model` names them.")
+                           "--model` names them, optionally followed by `:name=value` "
+                           "parameters of that model (`composer-2.5:fast=true`).")
     llm_group.add_argument("--llm-rounds",
                            type=int,
                            default=None,
@@ -2620,6 +2649,14 @@ def parse_arguments(args=None) -> argparse.Namespace:
                            metavar="SCRIPT",
                            help="The proposer script to run, instead of the one installed beside "
                            "rocmlir-tuning-driver.")
+    llm_group.add_argument("--llm-transcript",
+                           action=argparse.BooleanOptionalAction,
+                           default=True,
+                           help="Write down every prompt and every reply, readably, one file "
+                           "per problem under <output>.search (see llm/transcript.py). On "
+                           "unless turned off, and safe to `tail -f` while a run is going: "
+                           "what a model said in a round is the only account of why it "
+                           "proposed what it did, and it is gone once the run ends.")
 
     config_group = parser.add_mutually_exclusive_group(required=True)
 
@@ -3019,7 +3056,8 @@ def main(args=None):
                       llm_rounds=parsed_args.llm_rounds,
                       llm_configs_per_round=parsed_args.llm_configs_per_round,
                       llm_wait_for_seeds=parsed_args.llm_wait_for_seeds,
-                      llm_proposer=parsed_args.llm_proposer)
+                      llm_proposer=parsed_args.llm_proposer,
+                      llm_transcript=parsed_args.llm_transcript)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

@@ -87,13 +87,6 @@ struct LLMOptions {
   double minImprovementDelta = 0.005;
   unsigned maxStagnantRounds = 2;
 
-  /// Where the helper keeps the conversation between rounds, so that a later
-  /// prompt can refer to an earlier one. Empty means every round starts cold,
-  /// which costs the model its memory of what it already tried. Helion's
-  /// rolling window over `self._messages` (`_MAX_CONTEXT_ROUNDS`) lives on the
-  /// Python side of this file, since it is the prompt's business.
-  std::string sessionPath;
-
   SharedTrace trace;
 
   void setEffort(SearchEffort effort);

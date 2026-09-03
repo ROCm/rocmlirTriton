@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 # Helion's DEFAULT_REQUEST_TIMEOUT_S. The C++ side enforces its own deadline by
 # killing this process, so this is the inner of two and exists to fail with a
@@ -101,20 +101,61 @@ def call_model(
     )
 
 
-def _text_only_options(agent_options: Any, local_options: Any, *, api_key: str, model: str,
-                       cwd: str) -> Any:
-    """Build the agent options, and check the toolset really came out empty.
+def _parse_model(spec: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Split a model spec into a model id and that model's parameters.
 
-    Checked rather than assumed because of what is lost if it silently is not:
-    an agent with a shell on the machine running the tuning. An SDK too old to
-    know `tools` would reject the argument, and one that took it and ignored it
-    would leave no trace at all, so both are turned into a refusal to start.
+    `composer-2.5` is an id by itself. `composer-2.5:fast=true` is the same id
+    with its `fast` parameter set, which selects the low-latency variant and is
+    what this search runs by default: a round asks for a batch of configs and
+    reads back a line of JSON, and every round after the first is latency the
+    tuning run waits through.
+
+    Several parameters go comma-separated. Which parameters a model takes is
+    the model's own business -- `Cursor.models.list()` is the authority, and it
+    is account- and team-specific -- so no name is checked here. One the
+    account does not offer makes the run fail to start, and that is reported
+    rather than retried without it: a search quietly running a model nobody
+    asked for is worse than one that stops and says so.
     """
+    model_id, _, parameters = spec.partition(":")
+    if not model_id:
+        raise TransportError(f"the model spec '{spec}' names no model", started=False)
+    params: List[Tuple[str, str]] = []
+    for item in parameters.split(",") if parameters else []:
+        name, separator, value = item.partition("=")
+        if not (name and separator and value):
+            raise TransportError(
+                f"the model spec '{spec}' carries '{item}', which is not a "
+                "name=value parameter; write it as 'composer-2.5:fast=true'",
+                started=False,
+            )
+        params.append((name, value))
+    return model_id, params
+
+
+def _text_only_options(sdk: Any, *, api_key: str, model: str, cwd: str) -> Any:
+    """Build the agent options: the model `model` names, and no tools at all.
+
+    The empty toolset is checked rather than assumed, because of what is lost
+    if it silently is not empty: an agent with a shell on the machine running
+    the tuning. An SDK too old to know `tools` would reject the argument, and
+    one that took it and ignored it would leave no trace at all, so both are
+    turned into a refusal to start.
+    """
+    model_id, params = _parse_model(model)
+    # A bare id where there are no parameters, which is the form the SDK
+    # documents first and the only one an older one is sure to take.
+    selection = model_id
+    if params:
+        selection = sdk.ModelSelection(
+            id=model_id,
+            params=[sdk.ModelParameterValue(id=name, value=value) for name, value in params],
+        )
     try:
-        options = agent_options(
+        options = sdk.AgentOptions(
             api_key=api_key,
-            model=model,
-            local=local_options(cwd=cwd),
+            model=selection,
+            local=sdk.LocalAgentOptions(cwd=cwd),
             tools=[],
         )
     except TypeError as err:
@@ -142,12 +183,7 @@ def _cursor_reply(
     session: Dict[str, Any],
 ) -> str:
     try:
-        from cursor_sdk import (
-            Agent,
-            AgentOptions,
-            CursorAgentError,
-            LocalAgentOptions,
-        )
+        import cursor_sdk as sdk
     except ImportError as err:
         raise TransportError(
             "cursor-sdk is not installed; install it with "
@@ -175,19 +211,17 @@ def _cursor_reply(
     # `local.setting_sources` is left unset, which is the SDK's default and
     # means inline configuration only: no project, user, team or plugin
     # settings, and so no rules, hooks or MCP servers picked up from whatever
-    # environment the tuning happens to run in. `cwd` is where the search was
-    # started from; with no tool to read it, it serves only to scope the
-    # bridge's own conversation store.
+    # environment the tuning happens to run in.
+    #
+    # `cwd` is where the search was started from; with no tool to read it, it
+    # serves only to scope the bridge's local conversation store -- which is
+    # why the first round records it and every later one resumes against the
+    # same directory rather than against wherever it happens to be run.
     #
     # The runtime is named explicitly because the SDK picks local silently when
     # neither is given, and a silently-local agent is only correct by accident.
-    options = _text_only_options(
-        AgentOptions,
-        LocalAgentOptions,
-        api_key=api_key,
-        model=model,
-        cwd=session.get("cwd") or os.getcwd(),
-    )
+    cwd = session.setdefault("cwd", os.getcwd())
+    options = _text_only_options(sdk, api_key=api_key, model=model, cwd=cwd)
     agent_id = session.get("agentId")
 
     # The system prompt rides on the first message rather than being configured
@@ -200,9 +234,9 @@ def _cursor_reply(
         # the agent, so a resumed round that failed to repeat it would be a
         # round with the full toolset back.
         if agent_id:
-            manager = Agent.resume(agent_id, options)
+            manager = sdk.Agent.resume(agent_id, options)
         else:
-            manager = Agent.create(options)
+            manager = sdk.Agent.create(options)
         with manager as agent:
             session["agentId"] = getattr(agent, "agent_id", None) or agent_id
             run = agent.send(text)
@@ -213,9 +247,13 @@ def _cursor_reply(
                     started=True,
                 )
             reply = run.text() or getattr(result, "result", "") or ""
-    except CursorAgentError as err:
+    except sdk.CursorAgentError as err:
+        # Named in the message because the model spec is the most likely thing
+        # to be wrong about it, and a parameter this account does not offer
+        # reads as a plain start failure otherwise. `Cursor.models.list()`
+        # gives the ids and parameters that are actually available.
         raise TransportError(
-            f"could not start a model run: {err} "
+            f"could not start a model run for '{model}': {err} "
             f"(retryable={getattr(err, 'is_retryable', 'unknown')})",
             started=False,
         ) from err

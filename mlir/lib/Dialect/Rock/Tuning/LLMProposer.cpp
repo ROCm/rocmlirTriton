@@ -203,9 +203,9 @@ std::string LLMProposer::resolveProgram(StringRef program) {
 }
 
 LLMProposer::LLMProposer(StringRef program, StringRef sessionPath,
-                         unsigned timeoutSec)
+                         StringRef transcriptPath, unsigned timeoutSec)
     : program(resolveProgram(program)), sessionPath(sessionPath.str()),
-      timeoutSec(timeoutSec) {}
+      transcriptPath(transcriptPath.str()), timeoutSec(timeoutSec) {}
 
 llvm::Expected<std::vector<std::string>>
 LLMProposer::propose(llvm::json::Object request) {
@@ -234,9 +234,12 @@ LLMProposer::propose(llvm::json::Object request) {
   std::string requestArg = ("--request=" + requestPath).str();
   std::string responseArg = ("--response=" + responsePath).str();
   std::string sessionArg = ("--session=" + sessionPath);
+  std::string transcriptArg = ("--transcript=" + transcriptPath);
   SmallVector<StringRef, 6> args = {program, requestArg, responseArg};
   if (!sessionPath.empty())
     args.push_back(sessionArg);
+  if (!transcriptPath.empty())
+    args.push_back(transcriptArg);
 
   LLVM_DEBUG(llvm::dbgs() << "LLM: running " << program << " on " << requestPath
                           << "\n");

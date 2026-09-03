@@ -152,7 +152,14 @@ public:
 /// is Helion's, from `LLM_SEARCH_DEFAULTS` in effort_profile.py, except
 /// `model`, which names a Cursor model rather than Helion's `gpt-5-2`.
 struct LLMSearchOptions {
-  std::string model = "composer-2.5";
+  /// A model id, optionally followed by `:name=value` parameters of that
+  /// model, comma-separated. The default asks composer-2.5 for its
+  /// low-latency variant, because a tuning run waits through a round trip per
+  /// round while a machine sits idle, and picking configs is a job a quick
+  /// model does well enough. A parameter the account does not offer fails the
+  /// run rather than being dropped; `Cursor.models.list()` says what is
+  /// available.
+  std::string model = "composer-2.5:fast=true";
   /// Configs to ask for per round.
   unsigned configsPerRound = 15;
   /// Rounds of proposal, including the first. One means a single call.
@@ -176,6 +183,24 @@ struct LLMSearchOptions {
   /// The proposer script to run. Empty means the one installed next to the
   /// running executable, unless $ROCMLIR_LLM_PROPOSER overrides it.
   std::string proposerPath;
+  /// Where the helper keeps the conversation between this search's rounds, so
+  /// that round 3 is the same conversation as round 0 and the model can be
+  /// asked to improve on what it already said rather than told about it.
+  ///
+  /// Empty means a temporary file of the search's own, removed when the search
+  /// ends, which is what almost every client wants: the file is a mechanism
+  /// and llm/transcript.py is what a person reads. Naming one keeps it.
+  ///
+  /// One file per search. Two searches sharing a session would resume the same
+  /// conversation from two problems, and problems tune concurrently, so they
+  /// would also be two rounds contending for one agent.
+  std::string sessionPath;
+  /// Where to write down every prompt and every reply, readably, or empty for
+  /// nowhere. A debugging aid that nothing the search does depends on, and the
+  /// only record of the conversation there is: `tracePath` counts rounds and
+  /// says nothing of what was said in them. One problem per file -- a search
+  /// appends wherever it is pointed -- since problems tune concurrently.
+  std::string transcriptPath;
 };
 
 /// Everything the strategies can be steered by. A single struct because the

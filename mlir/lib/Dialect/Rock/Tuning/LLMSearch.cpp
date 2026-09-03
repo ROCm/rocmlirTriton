@@ -21,12 +21,15 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
 #include <cmath>
 #include <future>
 #include <limits>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -505,11 +508,54 @@ llvm::json::Object hardwareOf(const Workload &workload) {
 // LLMSearch
 //===----------------------------------------------------------------------===//
 
+/// Where the helper keeps the conversation this search's rounds share.
+///
+/// A round is a subprocess, so the file is how two of them agree on which
+/// conversation they are continuing; without one, each round would introduce
+/// itself to a model that has never heard of the rounds before it. Nobody
+/// reads it -- llm/transcript.py is what a person reads -- so a search that
+/// was not told where to keep one keeps it out of the way and takes it with it
+/// when it goes.
+class SessionFile {
+public:
+  explicit SessionFile(StringRef given) {
+    if (!given.empty()) {
+      filePath = given.str();
+      return;
+    }
+    SmallString<128> temporary;
+    if (llvm::sys::fs::createTemporaryFile("rocmlir-llm-session", "json",
+                                           temporary)) {
+      // Every round then starts a conversation of its own, which costs the
+      // model what it remembered of the rounds before and nothing else. Not a
+      // tuning run's worth of failure.
+      llvm::errs() << "warning: could not make a temporary file for the LLM "
+                      "session, so each round will start a new conversation\n";
+      return;
+    }
+    filePath = std::string(temporary);
+    remover.emplace(filePath);
+  }
+
+  /// Empty when there is nowhere to keep one, which the helper reads as a
+  /// round with nothing to resume.
+  StringRef path() const { return filePath; }
+
+private:
+  std::string filePath;
+  std::optional<llvm::FileRemover> remover;
+};
+
 class LLMSearch : public TuningSearchStrategy {
 public:
   LLMSearch(ModuleOp mod, const LLMOptions &options)
       : mod(mod), options(options), rng(options.seed), trace(options.trace),
-        proposer(options.search.proposerPath, options.sessionPath,
+        session(options.search.sessionPath),
+        // Reads `session`, which is initialized before it: members are built
+        // in the order they are declared, and these two are declared in that
+        // order for this reason.
+        proposer(options.search.proposerPath, session.path(),
+                 options.search.transcriptPath,
                  options.search.requestTimeoutSec) {}
 
   std::vector<PerfConfigString>
@@ -633,6 +679,9 @@ private:
   unsigned stagnantRounds = 0;
 
   SharedTrace trace;
+  /// Declared before `proposer`, which is handed its path; see the
+  /// constructor.
+  SessionFile session;
   LLMProposer proposer;
   std::chrono::steady_clock::time_point handedOut;
   double totalMs = 0.0;

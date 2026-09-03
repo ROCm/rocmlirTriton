@@ -24,6 +24,8 @@ prints the failing test's traceback on a non-zero exit.
 # RUN: %python %s
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -32,6 +34,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 # The package is installed beside the performance scripts, at
 # ${ROCMLIR_BIN_DIR}/llm, which is where rocmlir-tuning-driver looks for it.
@@ -45,7 +48,7 @@ _bin_dir = Path(_script).parent
 sys.path.insert(0, str(_bin_dir))
 
 from llm import configs, feedback, parsing, prompting, transport, workload  # noqa: E402
-from llm import proposer  # noqa: E402
+from llm import proposer, transcript  # noqa: E402
 
 # A space small enough to read, shaped like a real one: a tile ladder that is
 # not a power-of-two sequence, a kpack, and a tri-state knob.
@@ -887,7 +890,7 @@ class TestPromptConstruction(unittest.TestCase):
             "round": 0,
             "maxRounds": 4,
             "configsRequested": 8,
-            "model": "composer-2.5",
+            "model": "composer-2.5:fast=true",
             "problem": TestWorkloadDescription.GEMM,
             "hardware": TestWorkloadDescription.HARDWARE,
             "space": SPACE,
@@ -988,6 +991,115 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("default", prompting.build_system_prompt().lower())
 
 
+class TestTranscript(unittest.TestCase):
+    """The record a person reads: what was asked, what came back, and which
+    problem it was all about. Nothing parses this, so what is checked is that
+    the things somebody scrolls looking for can be found."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "conversation.log"
+
+    def log(self, **overrides):
+        request = TestPromptConstruction().request(**overrides)
+        return transcript.Transcript(str(self.path), request)
+
+    def text(self):
+        return self.path.read_text()
+
+    def test_names_the_problem_before_anything_else(self):
+        self.log().begin()
+        banner = self.text()
+        # The shape, so that two problems in one file are told apart, and the
+        # model, since which one answered is the first thing a bad round is
+        # blamed on.
+        self.assertIn("Gemm", banner)
+        self.assertIn("M=1024", banner)
+        self.assertIn("K=1024", banner)
+        self.assertIn("A=f16", banner)
+        self.assertIn("gfx942", banner)
+        self.assertIn("304 CUs", banner)
+        self.assertIn("composer-2.5:fast=true", banner)
+
+    def test_names_the_problem_once_and_not_again_each_round(self):
+        # Round 0 opens a problem's transcript; a later round appends to it.
+        self.log(round=0).begin()
+        self.log(round=1).begin()
+        self.log(round=2).begin()
+        self.assertEqual(self.text().count("# problem"), 1)
+
+    def test_keeps_the_prompt_and_the_reply_apart(self):
+        log = self.log()
+        log.sent("what would you propose?", system_prompt="you are tuning a kernel")
+        log.received("I would propose kpack=8", seconds=1.25)
+        written = self.text()
+        self.assertIn("you are tuning a kernel", written)
+        self.assertIn("what would you propose?", written)
+        self.assertIn("I would propose kpack=8", written)
+        # Each under a heading naming the round, since a file holds several.
+        for heading in ("system prompt", "prompt", "reply"):
+            self.assertIn(f"round 0/4  {heading}", written)
+
+    def test_says_how_long_the_model_took(self):
+        self.log().received("...", seconds=12.5)
+        self.assertIn("12.5s", self.text())
+
+    def test_notes_standing_instructions_it_resent_without_repeating_them(self):
+        # The same thousand words every round would drown the part of a later
+        # round that is new, which is the whole of what a later round says.
+        log = self.log(round=1)
+        log.sent("refine what you proposed", system_prompt="you are tuning a kernel")
+        written = self.text()
+        self.assertIn("system prompt, again", written)
+        self.assertNotIn("you are tuning a kernel", written)
+        self.assertIn("refine what you proposed", written)
+
+    def test_says_nothing_of_a_system_prompt_a_round_did_not_send(self):
+        # A resumed conversation already holds the standing instructions, and
+        # repeating them here would claim they went out again.
+        self.log(round=1).sent("refine what you proposed")
+        self.assertNotIn("system prompt", self.text())
+
+    def test_shows_what_was_read_out_of_a_reply(self):
+        # Beside the reply it came from: the step between the two is where a
+        # good-looking reply turns into nothing to benchmark.
+        self.log().configs(["gemm:mPerBlock=64", "gemm:mPerBlock=128"])
+        written = self.text()
+        self.assertIn("2 configs", written)
+        self.assertIn("gemm:mPerBlock=128", written)
+
+        self.log().configs([])
+        self.assertIn("0 configs", self.text())
+
+    def test_shows_a_round_that_failed(self):
+        self.log(round=2).failed("$CURSOR_API_KEY is not set")
+        written = self.text()
+        self.assertIn("round 2/4  failed", written)
+        self.assertIn("CURSOR_API_KEY", written)
+
+    def test_writes_nowhere_when_asked_for_nowhere(self):
+        request = TestPromptConstruction().request()
+        log = transcript.Transcript("", request)
+        log.begin()
+        log.sent("a prompt")
+        log.received("a reply", seconds=1.0)
+        self.assertFalse(self.path.exists())
+
+    def test_survives_a_path_it_cannot_write(self):
+        # A transcript is a record of a tuning run, not a part of one, so a
+        # path that turns out to be unwritable must not end the run -- nor
+        # complain once per section for the rest of it.
+        self.path.write_text("")  # a file where the path wants a directory
+        log = transcript.Transcript(str(self.path / "x.log"), TestPromptConstruction().request())
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            log.begin()
+            log.sent("a prompt")
+            log.received("a reply", seconds=1.0)
+        self.assertEqual(stderr.getvalue().count("warning"), 1)
+
+
 class TestProposerCommandLine(unittest.TestCase):
     """The contract with LLMProposer.cpp: a request file in, a response file
     out, and an exit code that says whether to believe it."""
@@ -999,6 +1111,7 @@ class TestProposerCommandLine(unittest.TestCase):
         self.request_path = self.tmp / "request.json"
         self.response_path = self.tmp / "response.json"
         self.session_path = self.tmp / "session.json"
+        self.transcript_path = self.tmp / "conversation.log"
 
     def write_request(self, **overrides):
         request = TestPromptConstruction().request(**overrides)
@@ -1079,6 +1192,17 @@ class TestProposerCommandLine(unittest.TestCase):
         self.assertEqual(len(session["rounds"]), 2)
         self.assertEqual(session["rounds"][1]["round"], 1)
 
+    def test_starts_cleanly_from_the_empty_session_the_search_makes(self):
+        # The search creates the file and hands over its path, so round 0 finds
+        # an empty one. That is a fresh conversation, not a damaged session,
+        # and warning about it every run would train people to ignore warnings.
+        self.session_path.write_text("")
+        self.write_request()
+        run = self.run_proposer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("warning", run.stderr)
+        self.assertTrue(self.response()["configs"])
+
     def test_survives_a_session_it_cannot_read(self):
         # A session is a memory aid, not a requirement, so losing one must not
         # end a tuning run that is otherwise going fine.
@@ -1107,12 +1231,47 @@ class TestProposerCommandLine(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("mPerBlock", run.stdout)
 
+    def test_writes_down_the_whole_conversation_when_asked_to(self):
+        # What --llm-transcript is for: the run is over, the tuning result was
+        # disappointing, and the question is what the model was told and what
+        # it said. Two rounds into one file, since that is how a problem's
+        # transcript accumulates.
+        self.write_request()
+        self.assertEqual(self.run_proposer(f"--transcript={self.transcript_path}").returncode, 0)
+        self.write_request(round=1, results=[result({"kpack": 8}, 500.0)])
+        self.assertEqual(self.run_proposer(f"--transcript={self.transcript_path}").returncode, 0)
 
-class TestTransportIsTextOnly(unittest.TestCase):
-    """The agent gets no tools. It is asked for a line of JSON and runs on the
-    machine being tuned, unattended, so the toolset that could do anything else
-    is removed rather than merely unused -- and the removal is checked, since
-    an SDK that quietly dropped it would leave nothing to notice."""
+        written = self.transcript_path.read_text()
+        # The problem, once, and then both rounds in the order they happened.
+        self.assertEqual(written.count("# problem"), 1)
+        self.assertIn("Gemm", written)
+        self.assertLess(written.index("round 0/4"), written.index("round 1/4"))
+        for round_index in (0, 1):
+            self.assertIn(f"round {round_index}/4  prompt", written)
+            self.assertIn(f"round {round_index}/4  reply", written)
+        # The prompt as it was sent, not a summary of it, and the configs the
+        # reply was turned into.
+        self.assertIn("mPerBlock", written)
+        self.assertIn(EXEMPLAR.partition(":")[0], written)
+
+    def test_writes_no_transcript_unless_asked(self):
+        self.write_request()
+        self.assertEqual(self.run_proposer().returncode, 0)
+        self.assertFalse(self.transcript_path.exists())
+
+
+class TestAgentOptions(unittest.TestCase):
+    """How the agent asking for configs is set up, which is two decisions.
+
+    It gets no tools: it is asked for a line of JSON and runs on the machine
+    being tuned, unattended, so the toolset that could do anything else is
+    removed rather than merely unused -- and the removal is checked, since an
+    SDK that quietly dropped it would leave nothing to notice.
+
+    And it gets the model the search names, parameters included, since the
+    variant a spec asks for may be a parameter of a model rather than a model
+    of its own. A spec that cannot be read stops the run instead of being
+    approximated."""
 
     class Options:
         """Stands in for `AgentOptions`, keeping what it was handed."""
@@ -1125,17 +1284,38 @@ class TestTransportIsTextOnly(unittest.TestCase):
         def __init__(self, **fields):
             self.__dict__.update(fields)
 
-    def build(self, options_class):
-        return transport._text_only_options(options_class,
-                                            self.Local,
+    class Selection:
+        """Stands in for `ModelSelection`: a model id and its parameters."""
+
+        def __init__(self, *, id, params):  # noqa: A002
+            self.id = id
+            self.params = list(params)
+
+    class Parameter:
+        """Stands in for `ModelParameterValue`: one parameter of a model."""
+
+        def __init__(self, *, id, value):  # noqa: A002
+            self.id = id
+            self.value = value
+
+    def sdk(self, options_class=None):
+        """The handful of cursor-sdk names the options are built out of."""
+        return SimpleNamespace(
+            AgentOptions=options_class or self.Options,
+            LocalAgentOptions=self.Local,
+            ModelSelection=self.Selection,
+            ModelParameterValue=self.Parameter,
+        )
+
+    def build(self, options_class=None, model="composer-2.5"):
+        return transport._text_only_options(self.sdk(options_class),
                                             api_key="key",
-                                            model="composer-2.5",
+                                            model=model,
                                             cwd="/tmp")
 
     def test_asks_for_an_empty_toolset(self):
-        options = self.build(self.Options)
+        options = self.build()
         self.assertEqual(options.tools, [])
-        self.assertEqual(options.model, "composer-2.5")
 
     def test_will_not_start_where_the_sdk_has_no_such_option(self):
         # Too old to restrict a toolset. Running anyway would mean an agent
@@ -1152,7 +1332,7 @@ class TestTransportIsTextOnly(unittest.TestCase):
 
     def test_will_not_start_where_the_sdk_takes_it_and_drops_it(self):
         # The quiet failure: options that accept anything and keep none of it.
-        class Ignores(TestTransportIsTextOnly.Options):
+        class Ignores(TestAgentOptions.Options):
 
             def __init__(self, **fields):
                 fields.pop("tools", None)
@@ -1161,6 +1341,33 @@ class TestTransportIsTextOnly(unittest.TestCase):
         with self.assertRaises(transport.TransportError) as caught:
             self.build(Ignores)
         self.assertFalse(caught.exception.started)
+
+    def test_names_a_model_that_takes_no_parameters_by_id_alone(self):
+        options = self.build(model="composer-2.5")
+        self.assertEqual(options.model, "composer-2.5")
+
+    def test_asks_composer_for_its_fast_variant(self):
+        # The default spec, and the reason parameters are parsed at all: the
+        # low-latency variant is a parameter of the model, not a model of its
+        # own, so it cannot be passed as a bare id.
+        options = self.build(model="composer-2.5:fast=true")
+        self.assertEqual(options.model.id, "composer-2.5")
+        self.assertEqual([(p.id, p.value) for p in options.model.params], [("fast", "true")])
+
+    def test_passes_on_every_parameter_it_was_given(self):
+        options = self.build(model="some-model:fast=true,thinking=high")
+        self.assertEqual([(p.id, p.value) for p in options.model.params], [("fast", "true"),
+                                                                           ("thinking", "high")])
+
+    def test_will_not_start_on_a_spec_it_cannot_read(self):
+        # Reported rather than guessed at. A misread spec would mean a run
+        # spent on a model nobody chose, and the bill is per token.
+        for spec in ("composer-2.5:fast", "composer-2.5:=true", "composer-2.5:fast=", ":fast=true"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(transport.TransportError) as caught:
+                    self.build(model=spec)
+                self.assertFalse(caught.exception.started)
+                self.assertIn(spec, str(caught.exception))
 
 
 if __name__ == "__main__":
