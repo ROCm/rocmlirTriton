@@ -28,10 +28,8 @@ num_eu_per_cu = 4  # may be changed in newer architectures
 def assign_num_cu():
     if args.c:
         return int(args.c)
-    print(
-        "Using info from the first matching GPU in your system, the data should "
-        "have been obtained from the same GPU."
-    )
+    print("Using info from GPU 0 in your system, the data should have be obtained "
+          "from the same GPU.")
     num_cus = amd_arch_db.get_native_num_cu()
     if num_cus is None:
         raise RuntimeError("Cannot find a visible HIP device")
