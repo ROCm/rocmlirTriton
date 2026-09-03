@@ -51,6 +51,16 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
+      "is_cdna",
+      [](const std::string &arch) { return mlir::rock::isCDNA(arch); },
+      py::arg("arch"));
+
+  m.def(
+      "is_rdna",
+      [](const std::string &arch) { return mlir::rock::isRDNA(arch); },
+      py::arg("arch"));
+
+  m.def(
       "arch_supports_accel_fp8",
       [](const std::string &arch) {
         return mlir::rock::archSupportsAccelFp8(arch);
