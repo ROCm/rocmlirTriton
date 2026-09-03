@@ -16,9 +16,10 @@ patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
+patch-elementwise-fastmath-flags.patch
 patch11295.patch
 patch10497.patch
-patch10563.patch
+patch10694.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
@@ -184,11 +185,16 @@ patch10497.patch
   path rewrites imbalanced blocked layouts into a more balanced layout to
   reduce LDS read volume, then converts back to the original result layout.
 
-patch10563.patch
-  Extends InThreadTranspose coverage and logic for the FMA dot path on RDNA.
-  The pass now recognizes when FMA dot operands benefit from an in-thread
-  transpose and avoids applying the transform when the operand-major layout is
-  already the orientation the FMA dot wants in LDS.
+patch10694.patch
+  For FMA dots, re-orients the pipelined LDS tile to operand-major (M-contiguous
+  for A, N-contiguous for B) in getSharedEncIfAllUsersAreDotEnc when the global
+  load arrived K-contiguous. Shared order is otherwise inherited from that load,
+  so an FMA operand that is transposed in global memory is read from LDS
+  strided. MFMA/WMMA operands are unchanged. Imports
+  https://github.com/triton-lang/triton/pull/10694.
+
+  Drop this patch on the next Triton bump that pulls PR #10694 into
+  external/triton.
 
 patch10832.patch
   Gives the ProtonIR object library the MLIR usage requirements it actually
@@ -343,4 +349,28 @@ patch11295.patch
 
   Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
   the pinned Triton revision includes that change.
+
+patch-elementwise-fastmath-flags.patch
+  Carries fast-math flags across the dialect boundary in the elementwise
+  lowering, which otherwise drops them. arith and math declare `fastmath` as
+  an inherent attribute, so it lives in the operation's properties and is
+  absent from the dictionary an adaptor forwards; LLVM spells the same flags
+  as `fastmathFlags`, so even an explicit copy would land inert.
+  Adds getArithFastmathFlags / getLLVMFastmathFlags /
+  propagateFastMathFlags to ElementwiseOpToLLVMBase.h (hence the new
+  MLIRArithAttrToLLVMConversion link dependency), calls
+  propagateFastMathFlags from the generic ElementwiseOpConversion, and
+  threads the translated attribute through the AMD add/sub/mul/div
+  conversions -- including the bf16 pairs routed via
+  EmitDualBF16ElementwiseOp -- and the exp expansion.
+
+  This is inert for upstream Triton, whose frontend never sets fast-math
+  flags: every helper returns a null attribute and each destination operation
+  is built exactly as before. It matters downstream because
+  `rock-allow-fast-math-flags` tags arith and math ops before they cross into
+  Triton, and losing the flags at the boundary costs real code quality -- most
+  visibly `arith.divf`, which without `arcp` lowers to the IEEE division fixup
+  sequence rather than a bare reciprocal.
+
+  Not yet proposed upstream. Keep until Triton forwards these flags itself.
 

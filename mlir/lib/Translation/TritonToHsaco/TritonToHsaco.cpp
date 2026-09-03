@@ -38,10 +38,12 @@
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -285,8 +287,19 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
                    enableExpertScheduling ? "true" : "false");
   }
 
-  std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
-  kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
+  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
+  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
+  // controls to the `denormal_fpenv` enum attribute and only honours the string
+  // spelling through the auto-upgrade that runs when a module is parsed. A
+  // module built in memory therefore keeps it as an inert string and stays on
+  // the IEEE default. Express upstream's intended mode explicitly instead.
+  llvm::DenormalMode floatMode = allowFlushDenorm
+                                     ? llvm::DenormalMode::getPreserveSign()
+                                     : llvm::DenormalMode::getIEEE();
+  llvm::AttrBuilder denormalAttr(module.getContext());
+  denormalAttr.addDenormalFPEnvAttr(
+      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
+  kernelFn->addFnAttrs(denormalAttr);
 
   // ASan support
   // Only stamp `target-features` on the kernel when the caller actually has

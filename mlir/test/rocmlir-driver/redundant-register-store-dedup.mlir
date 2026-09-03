@@ -34,7 +34,7 @@
 
 // GFX1200-COUNT-4: call{{.*}}@llvm.amdgcn.wmma
 // GFX1200-NOT: call{{.*}}@llvm.amdgcn.wmma
-// GFX1200-COUNT-8: call{{.*}}@llvm.exp2
+// GFX1200-COUNT-32: call{{.*}}@llvm.exp2
 // GFX1200-NOT: call{{.*}}@llvm.exp2
 // GFX1200-COUNT-4: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX1200-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store

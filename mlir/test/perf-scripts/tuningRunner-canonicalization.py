@@ -38,23 +38,26 @@ NUM_CU = 64
 NUM_CHIPLETS = 1
 
 # op -> (conf_class, raw spelling, canonical form, already-canonical vector).
+# The canonical form ends in the -supportsSplitK metadata, which a raw vector may
+# omit: it then defaults to what the op supports (false for attention, which uses
+# splitKV instead, true everywhere else).
 SAMPLE_TEST_VECTORS = {
     "gemm": (
         GemmConfiguration,
         "-g 1 -m 1024 -k 769 -n 512 -t f32 -out_datatype f32 -transA false -transB false",
         ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
-         "-g 1 -m 1024 -n 512 -k 769"),
+         "-g 1 -m 1024 -n 512 -k 769 -supportsSplitK true"),
         ("-t f16 -out_datatype f16 -transA false -transB true -transO false "
-         "-g 1 -m 256 -n 128 -k 64"),
+         "-g 1 -m 256 -n 128 -k 64 -supportsSplitK true"),
     ),
     "conv": (
         ConvConfiguration,
         ("convfp16 -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 -k 256 -y 1 -x 1 "
          "-p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 1"),
         ("convfp16 -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 "
-         "-k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -m conv -g 1 -t 1"),
+         "-k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -m conv -g 1 -t 1 -supportsSplitK true"),
         ("convfp16 -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 "
-         "-k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -m conv -g 1 -t 1"),
+         "-k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -m conv -g 1 -t 1 -supportsSplitK true"),
     ),
     "attention": (
         AttentionConfiguration,
@@ -67,21 +70,21 @@ SAMPLE_TEST_VECTORS = {
          "-causal false -return_lse false -split_kv 1 -g 1 "
          "-seq_len_q 256 -seq_len_k 256 -num_heads_q 8 -num_heads_kv 8 "
          "-head_dim_qk 64 -head_dim_v 64 "
-         "-with-attn-scale false -with-attn-bias false -transBias false"),
+         "-with-attn-scale false -with-attn-bias false -transBias false -supportsSplitK false"),
         ("-t f16 -transQ false -transK false -transV false -transO false "
          "-causal false -return_lse false -split_kv 1 -g 1 "
          "-seq_len_q 128 -seq_len_k 128 -num_heads_q 4 -num_heads_kv 4 "
          "-head_dim_qk 32 -head_dim_v 32 "
-         "-with-attn-scale false -with-attn-bias false -transBias false"),
+         "-with-attn-scale false -with-attn-bias false -transBias false -supportsSplitK false"),
     ),
     "gemm_gemm": (
         GemmGemmConfiguration,
         ("-g 1 -m 64 -k 128 -n 256 -gemmO 32 -t f16 "
          "-transA false -transB false -transC false -transO false"),
         ("-t f16 -transA false -transB false -transC false -transO false "
-         "-g 1 -m 64 -k 128 -n 256 -gemmO 32"),
+         "-g 1 -m 64 -k 128 -n 256 -gemmO 32 -supportsSplitK true"),
         ("-t f16 -transA false -transB false -transC false -transO false "
-         "-g 1 -m 32 -k 64 -n 128 -gemmO 16"),
+         "-g 1 -m 32 -k 64 -n 128 -gemmO 16 -supportsSplitK true"),
     ),
     "conv_gemm": (
         ConvGemmConfiguration,
@@ -90,10 +93,10 @@ SAMPLE_TEST_VECTORS = {
          "-t f16 -transC false -transO false"),
         ("-t f16 -f NCHW -I NCHW -transC false -transO false "
          "-n 1 -c 64 -H 14 -W 14 -k 128 -y 3 -x 3 "
-         "-p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 64"),
+         "-p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 64 -supportsSplitK true"),
         ("-t f16 -f NCHW -I NCHW -transC false -transO false "
          "-n 1 -c 64 -H 14 -W 14 -k 128 -y 3 -x 3 "
-         "-p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 64"),
+         "-p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 64 -supportsSplitK true"),
     ),
 }
 

@@ -533,3 +533,139 @@ gfx117x even though it has the 128-bit WMMA v2 engine with OCP FP8 operands.
 
 Drop this patch on the next LLVM/Triton bump that includes equivalent upstream
 gfx117x OCP FP8 classification.
+
+----------------------------------------------------------------------
+patch201494.patch
+----------------------------------------------------------------------
+- Upstream commit : 7570d2daec569c691694daa0ce967b1119533dc2
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/201494
+- Upstream title  : [AMDGPU] Reject src1 immediates with dpp when unsupported
+- File Fixed      : llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+                    llvm/test/CodeGen/AMDGPU/dpp_combine_gfx11.mir
+                    llvm/test/MachineVerifier/AMDGPU/dpp-imm-src1.mir (new)
+- Contents        : Makes SIInstrInfo::isImmOperandLegal reject an immediate in
+                    the src1 slot of any DPP opcode on subtargets without
+                    FeatureDPPSrc1SGPR, and adds the matching machine-verifier
+                    diagnostic ("DPP src1 cannot be an immediate on this
+                    subtarget") next to the existing SGPR check in
+                    verifyInstruction. Splits the two now-subtarget-dependent
+                    GCN expectations in dpp_combine_gfx11.mir into
+                    GFX_NO_SRC1_SGPR / GFX_SRC1_SGPR (the RUN lines already
+                    defined both prefixes) and adds a MachineVerifier test for
+                    the new diagnostic.
+
+Symptom without the patch
+-------------------------
+Attention kernels on gfx11 subtargets before gfx1150 can fail to assemble with
+
+    error: src1 immediate operand invalid for instruction
+        v_add_f16_e64_dpp v61, v1, 0 row_shr:8 row_mask:0xf bank_mask:0xf bound_ctrl:1
+
+followed by an LLD "target emulation unknown" error and "Lowering failed" as
+fallout from the empty object file. The failure is tile-shape dependent, so it
+surfaces as a quick-tuning list change appearing to break an unrelated E2E
+test: mixr-attention-lse-broadcasts.mlir on gfx1101 hit it once the gfx1100
+f16 attention list started selecting mPerBlockG0=64/kPerBlock=64 instead of the
+conservative 32,32,32 default.
+
+Root cause
+----------
+On gfx11 before gfx1150 (FeatureDPPSrc1SGPR, first set in
+FeatureISAVersion11_5_Common) a DPP src1 must be a VGPR -- neither an SGPR nor
+an immediate. Upstream #164241 added that feature and enforced only the
+register half of the rule, in verifyInstruction and isLegalRegOperand; the
+immediate half was left unchecked because isImmOperandLegal has no DPP
+awareness and answers only "is this a valid inline constant for the operand
+class".
+
+The softmax sum reduction lowers to a v_mov_b32_dpp lane shuffle feeding a
+v_add_f16_e64 whose other operand is the inline constant 0 (the identity of the
+sum). GCNDPPCombine folds the shuffle into the add, copying src1 across
+verbatim, and validates the result with isOperandLegal, which routes
+non-register operands to isImmOperandLegal. That returned true, so the fold was
+accepted and an unencodable v_add_f16_e64_dpp with an immediate src1 reached the
+assembler, which does implement the rule. GCNDPPCombine's pre-existing
+"src1 must be a register" guard does not cover this path: it only runs for a
+non-zero old operand, and here the all-lanes masks plus bound_ctrl make
+CombBCZ true. With the patch the legality query fails, the pass rolls the fold
+back, and the original v_mov_b32_dpp plus v_add_f16_e64 pair survives.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+7570d2daec569c691694daa0ce967b1119533dc2.
+
+----------------------------------------------------------------------
+patch203770.patch
+----------------------------------------------------------------------
+- Upstream commit : c64ec3766d72ab552957827b5a96cc50ed6c7182
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/203770
+- Upstream title  : [AMDGPU] Fix checkVALUHazardsHelper distance accounting
+                    on branchy CFG
+- File Fixed      : llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+                    llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+- Contents        : Splits checkVALUHazardsHelper into
+                    checkUniformWindowVALUHazardsHelper (pre-gfx940, one
+                    1-wait-state window) and
+                    checkSOFFSETWindowVALUHazardsHelper (gfx940-family,
+                    SOFFSET-dependent 1- and 2-wait-state windows). Each
+                    window now runs its own getWaitStatesSince scan, which
+                    returns the minimum distance to a producer across
+                    predecessor paths, instead of one distance counter shared
+                    across recursively visited blocks. Also swaps the
+                    hasGFX940Insts() gate in createsVALUHazard for
+                    hasVDecCoExecHazard(), which is defined as HasGFX940Insts
+                    and so is equivalent here. The upstream cross-block MIR
+                    regression test (appended to
+                    llvm/test/CodeGen/AMDGPU/buffer-store-dwordx4-vpk-mul-war-hazard-gfx942.mir)
+                    is omitted from this downstream record, matching the
+                    handling of the other LLVM lit tests here: the vendored
+                    LLVM is configured as libraries only, with no llc or
+                    FileCheck target, so it cannot be run in this build.
+
+Symptom without the patch
+-------------------------
+The nightly bf16 split-KV attention E2E test miscompares on gfx950, with about
+0.78% of the partial-output workspace wrong (16,801,792 of 2,150,629,376 bf16
+elements):
+
+  -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 \
+  -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 \
+  -return_lse=True -split_kv=32 \
+  --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1
+
+The corrupted elements are f32 LSE values (log2(seq_len_k) = log2(32) = 5.0,
+split across two bf16 slots as the pair (0.0, 5.0)) appearing inside the bf16
+partial-output workspace, at d in {224, 232, 240, 248} for heads h%16 in
+{12..15}. The failure needs a real GPU; the generated ISA compiles fine.
+
+Root cause
+----------
+The pinned LLVM revision is 62b7cf9623fc, which *is* upstream #197267
+("Widen MUBUF/MTBUF source-vgpr WAR hazard on gfx940-family to SGPR soffset").
+That commit rewrote checkVALUHazardsHelper to walk predecessors with an
+always-false predicate, accumulating wait-state distance in a single counter
+shared across recursively visited blocks. On branchy control flow the counter
+sums sibling-path distances, so window - distance goes non-positive and the
+protective S_NOP is dropped.
+
+The attention epilogue is exactly that shape. A wide FLAT store needs a
+2-wait-state window on the gfx940 family, but in the generated kernel
+
+  global_store_dwordx4 v[6:7], v[2:5], off offset:448
+  v_log_f32_e32 v2, v47
+
+are adjacent with no padding, so v2 is overwritten while the store is still
+reading its source vgprs. Wave64 stores read data in lane groups, so only the
+last lane groups lose their bytes -- hence the partial, patterned corruption
+rather than a wholesale wrong result.
+
+CI coverage
+-----------
+mlir/test/fusion/nightly-misc-e2e/attention-bf16-i64-ptr-offset-splitkv.mlir
+already pins the shape and perf_config above and runs under
+ROCMLIR_DRIVER_E2E_TEST_ENABLED, validating against an f64 reference. It was
+added for an unrelated i64 pointer-offset fix, but it is the regression that
+catches this hazard, so a future LLVM bump that loses this patch will fail
+there.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+c64ec3766d72ab552957827b5a96cc50ed6c7182.

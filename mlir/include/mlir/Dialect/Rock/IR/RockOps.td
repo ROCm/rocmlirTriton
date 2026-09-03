@@ -323,6 +323,13 @@ def Rock_ConvElementwiseGemmOp
     [G] x M x O, where G is the optional group dimension (which is assumed to be 1 if not set).
     Note that input and filter layouts are defined by attributes "input_layout" and "filter_layout".
 
+    The convolution must be ungrouped: the verifier requires the filter's `g`
+    dimension to be 1, and the filter and input to agree on `g` and on the
+    channels per group. A grouped convolution has no conv+gemm form, because
+    the second GEMM has to contract over all `g * k` channels the convolution
+    produced, whereas lowering makes `g` a batch dimension and reduces within
+    each group separately.
+
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `cTransposed` is set, then the argument `c` should be
     a [G] x O x M memory.

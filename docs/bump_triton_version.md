@@ -244,6 +244,10 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
+`TritonToHsaco.cpp::setKernelAttributes()` deliberately diverges from upstream
+on **`allow_flush_denorm`**: stamp the `denormal_fpenv` enum attribute, not
+upstream's legacy `"denormal-fp-math-f32"` string (see section 8.1).
+
 ### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a
@@ -368,7 +372,10 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
 Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
-it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
+its `py::enum_<ISAFamily>(...).value(...)` enum updated as well. That module is
+also how the performance scripts reach `AmdArchDb.cpp`, so a new `rock` arch
+predicate that Python needs (`is_cdna` / `is_rdna`, say) has to be exported
+there too -- see section 5.6.
 
 When a new ISA family (not just a new chip in an existing family) gains support,
 add a representative chip to `DEFAULT_ARCHES` in
@@ -417,6 +424,13 @@ if (rock::supportsTDM(arch))
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
 
+The same rule holds for the performance scripts under
+`mlir/utils/performance/`: classify an arch with the `amd_arch_db` pybind
+module (`amd_arch_db.is_rdna(arch)`, `amd_arch_db.get_isa_family(arch)`, ...)
+rather than with a `gfx` number range or a hand-maintained chip list. A range
+check like `0x1100 <= n < 0x1250` compiles and runs fine while silently
+mis-bucketing whichever family lands inside it next.
+
 ## Step 6: Regenerate Fat Library Dependencies
 
 The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
@@ -459,6 +473,7 @@ On a bump, review the upstream diff and propagate any default/semantic changes:
 | `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
 | `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
 | `knobs.amd.use_expert_scheduling`                 | (not in perfConfig -- debug-only)     | `BackendOptions::useExpertScheduling` -> `TritonToHsacoOptions::useExpertScheduling` (backend/HSACO stage, not the Triton MLIR pipeline) |
+| `HIPOptions.allow_flush_denorm`                   | (not in perfConfig)                   | `BackendOptions::allowFlushDenorm` -> `TritonToHsacoOptions::allowFlushDenorm` and `RockPrepareLLVMPassOptions::allowFlushDenorm` |
 
 `knobs.amd.use_expert_scheduling` deliberately diverges from upstream Triton's
 implementation at the final LLVM codegen step. Upstream appends
@@ -470,6 +485,21 @@ attribute `amdgpu-expert-scheduling-mode=true/false` on every defined function.
 LLVM's AMDGPU backend reads this attribute when no process command-line
 occurrence of the global option exists; do not replace it with the upstream
 global-option path during a Triton bump.
+
+`HIPOptions.allow_flush_denorm` deliberately diverges from upstream at the
+final LLVM codegen step. Upstream `compiler.py` stamps the legacy
+`"denormal-fp-math-f32"` string attribute (`"preserve-sign"` when
+`allow_flush_denorm` is true, `"ieee"` otherwise). LLVM has since moved
+denormal controls to the `denormal_fpenv` enum attribute and only
+auto-upgrades the string spelling when a module is **parsed** from IR text.
+`TritonToHsaco.cpp` builds the LLVM module in memory, so copying upstream's
+string attribute would leave it inert: f32 denormals would stay unflushed and
+the AMDGPU backend would insert denormal range guards around every
+`llvm.exp2`/`llvm.log2`. Instead, `setKernelAttributes()` stamps
+`denormal_fpenv(float: preservesign)` when `allowFlushDenorm` is true (the
+rocmlir default) and IEEE otherwise. Do not replace this with upstream's
+string attribute during a Triton bump. Regression coverage:
+`mlir/test/Dialect/Rock/triton-to-hsaco-denormal-mode.mlir`.
 
 If upstream adds a new `knobs.amd.*` switch around an existing pass we
 already replicate, decide whether it's a *tuner* knob (per-arch defaults
@@ -640,6 +670,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
+- [ ] Preserve `TritonToHsaco.cpp::setKernelAttributes()` denormal stamping via `denormal_fpenv` enum (do not copy upstream `"denormal-fp-math-f32"` string; see section 8.1)
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
