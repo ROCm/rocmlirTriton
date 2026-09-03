@@ -166,10 +166,11 @@ struct TransformsToPtrRewritePattern
         constant && constant.getNumElements() == 0)
       return op.emitOpError(
           "zero-sized dense constants cannot provide compiler-owned storage");
-    if (TransformMapAttr flattening =
-            buildDenseConstantRowMajorTransformMap(b, loc, buffer)) {
-      transformVec.push_back(flattening);
-      isBig |= needs64BitIndices(flattening);
+    if (FailureOr<TransformMapAttr> flattening =
+            buildDenseConstantRowMajorTransformMap(b, loc, buffer);
+        succeeded(flattening)) {
+      transformVec.push_back(*flattening);
+      isBig |= needs64BitIndices(*flattening);
     }
 
     // Defensive check: the op verifier already rejects a result type that

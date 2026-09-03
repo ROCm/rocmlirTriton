@@ -1,13 +1,14 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -split-input-file -verify-diagnostics -o -| FileCheck %s
 
-// A per-head, non-splat lower bound is not representable as attributes on the
-// folded lastValidKVIndex. Keep the complete clip and mask in the elementwise
-// region instead of specializing the attention as KV-cache.
+// This is intentionally a negative test for KV-cache specialization. A
+// per-head, non-splat lower bound cannot be folded into the scalar clip bounds
+// on the lastValidKVIndex operand, so the pattern must retain %clip_min in the
+// elementwise region, where it exercises the dense-constant input path.
 // CHECK-LABEL: func @kvcache_nonsplat_clip_bound
 // CHECK: %[[CLIP_MIN:.*]] = "tosa.const"() <{values = dense<{{.*0.*1.*}}> : tensor<1x2x1x1xi32>}>
 // CHECK: rock.attention
-// Dense non-splat constants are elementwise inputs so downstream Rock lowering
-// can tile-load them from compiler-owned GPU globals.
+// The retained dense non-splat constant is an elementwise input so downstream
+// Rock lowering can tile-load it from compiler-owned GPU storage.
 // CHECK: qk = elementwise otherIns(%{{.*}}, %{{.*}}, %[[CLIP_MIN]]
 // CHECK-NOT: lastValidKVIndex
 // CHECK: tosa.maximum

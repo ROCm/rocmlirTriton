@@ -1485,14 +1485,14 @@ mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
   return buildRowMajorFlatteningTransformMap(b, loc, dimNames, shape);
 }
 
-TransformMapAttr
+FailureOr<TransformMapAttr>
 mlir::rock::buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc,
                                                    Value value) {
   if (!getDenseTensorConstantAttr(value))
-    return {};
+    return failure();
   auto tensorType = cast<RankedTensorType>(value.getType());
   if (tensorType.getRank() <= 1 || tensorType.getNumElements() == 0)
-    return {};
+    return failure();
   return buildRowMajorFlatteningTransformMap(b, loc, tensorType.getShape());
 }
 

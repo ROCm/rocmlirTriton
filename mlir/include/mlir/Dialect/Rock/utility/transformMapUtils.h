@@ -199,11 +199,11 @@ buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
 TransformMapAttr buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
                                                      ArrayRef<int64_t> shape);
 
-/// Return the implicit rightmost-dimension-contiguous (row-major) transform
-/// from a rank-N dense tensor constant to its flat pointer storage. Returns a
-/// null attribute for non-constants, constants of rank at most one, and
-/// zero-element constants.
-TransformMapAttr
+/// Build the implicit rightmost-dimension-contiguous (row-major) transform
+/// from a rank-N dense tensor constant to its flat pointer storage. Returns
+/// failure when no flattening map applies: for non-constants, constants of rank
+/// at most one, and zero-element constants.
+FailureOr<TransformMapAttr>
 buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc, Value value);
 
 /// Restore the logical shapes of the arguments to `func`, which were flattened

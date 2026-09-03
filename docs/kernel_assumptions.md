@@ -99,11 +99,12 @@ deduplicated.
 
 These constants are compiler-owned storage, not kernel arguments, so they do
 not change the kernel ABI or impose allocation requirements on the caller.
-This representation does not prescribe SGPR or VGPR allocation: the global's
-base address is uniform, but per-lane indexing and values may be vectorized,
-and the LLVM AMDGPU backend makes the final instruction and register choices.
-Splat constants remain SSA constants and do not use compiler-owned global
-storage; LLVM selects their final immediate or register representation.
+The representation remains memory-backed: consumers load from address space 1,
+and lowering paths that stage operands through LDS continue to do so. It does
+not make the constant register-resident or bypass LDS. The LLVM AMDGPU backend
+makes the final instruction and register choices for loaded addresses and
+values. Splat constants remain SSA constants and do not use compiler-owned
+global storage; LLVM selects their final immediate or register representation.
 Sub-byte non-splat constants that would require compiler-owned storage are
 rejected because packed storage is not yet supported. Non-memory-backed 4-bit
 non-splat constants are also rejected because the legalization pass cannot pack

@@ -93,6 +93,28 @@ TEST(BuildRowMajorFlatteningTransformMapTest, HandlesAllUnitDimensions) {
             AffineMap::get(2, 0, b.getAffineDimExpr(1)));
 }
 
+TEST(BuildDenseConstantRowMajorTransformMapTest, ReportsMapApplicability) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  auto rankTwoType = RankedTensorType::get({2, 2}, b.getF32Type());
+  Value rankTwoConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankTwoType, b.getF32FloatAttr(1.0)));
+  FailureOr<TransformMapAttr> flattening =
+      buildDenseConstantRowMajorTransformMap(b, loc, rankTwoConstant);
+  ASSERT_TRUE(succeeded(flattening));
+  EXPECT_EQ(flattening->getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({2, 2}));
+  EXPECT_EQ(flattening->getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+
+  auto rankOneType = RankedTensorType::get({4}, b.getF32Type());
+  Value rankOneConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankOneType, b.getF32FloatAttr(1.0)));
+  EXPECT_TRUE(
+      failed(buildDenseConstantRowMajorTransformMap(b, loc, rankOneConstant)));
+}
+
 // Helper to create a transformed tensor with a simple identity transformation
 Value createTransformedTensor(OpBuilder &b, Location loc,
                               ArrayRef<int64_t> shape, Type elemType) {
