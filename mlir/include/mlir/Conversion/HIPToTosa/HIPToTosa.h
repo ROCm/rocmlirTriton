@@ -36,6 +36,17 @@ void populateHIPToTosaConversionPatterns(RewritePatternSet &patterns);
 /// HIP-to-TOSA conversion.
 void annotateAsRockKernel(func::FuncOp func, StringRef arch);
 
+/// Erase the `!hip.context` arguments of `func` that no longer have uses. See
+/// the TODO in HIPToTosa.cpp -- this does not belong in a HIP-to-TOSA
+/// conversion either, but it has to run before the Rock-to-Triton bridge.
+void eraseUnusedContextArgs(func::FuncOp func);
+
+/// Erase the `onnx.*` provenance attributes the frontend left on `func`, its
+/// arguments and its results. See the TODO in HIPToTosa.cpp -- Rock validates
+/// kernel attributes against an allowlist, so this metadata has to be gone
+/// before the kernel pipeline runs.
+void eraseOnnxAttrs(func::FuncOp func);
+
 /// Build the HIP-to-TOSA stage of the `hipep` kernel pipeline, targeting
 /// `arch`.
 void addHIPToTosaPasses(OpPassManager &pm, StringRef arch);

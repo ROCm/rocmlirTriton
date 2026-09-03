@@ -156,6 +156,18 @@ struct TransposeConverter final : public OpRewritePattern<hip::TransposeOp> {
 //   whatever decides which functions are kernels at all, since right now we
 //   assume every function we see is one.
 //
+//   `eraseUnusedContextArgs` below is here for the same reason. It has to
+//   happen before the Rock-to-Triton bridge: `!hip.context` is not lifted to a
+//   `!tt.ptr`, so it reaches `tt.func` as an argument with no attribute
+//   dictionary, and Triton's AxisInfo analysis indexes the arg-attr array
+//   positionally and reads out of bounds.
+//
+//   `eraseOnnxAttrs` likewise. AffixTuningParameters validates the discardable
+//   attributes on a kernel against a fixed allowlist, so any ONNX provenance
+//   metadata the frontend left behind is a hard error rather than something
+//   ignored. Dropping it is safe -- it is debug provenance, not semantics --
+//   but deciding what a kernel is allowed to carry is a pipeline question.
+//
 //===----------------------------------------------------------------------===//
 void mlir::hip::annotateAsRockKernel(func::FuncOp func, StringRef arch) {
   OpBuilder builder(func.getContext());
@@ -165,6 +177,42 @@ void mlir::hip::annotateAsRockKernel(func::FuncOp func, StringRef arch) {
   func->setAttr(rock::KernelAttr::getMnemonic(), builder.getUnitAttr());
   if (!arch.empty())
     func->setAttr(rock::ArchAttr::getMnemonic(), builder.getStringAttr(arch));
+}
+void mlir::hip::eraseUnusedContextArgs(func::FuncOp func) {
+  // Walk backwards so erasing does not shift the indices still to be visited.
+  for (unsigned i = func.getNumArguments(); i > 0; --i) {
+    BlockArgument arg = func.getArgument(i - 1);
+    // A context still in use means some HIP op did not convert. Leave it be;
+    // the unconverted op is the real error and reports itself downstream.
+    if (!isa<hip::ContextType>(arg.getType()) || !arg.use_empty())
+      continue;
+    // TODO: call sites are not updated, so this only holds while a HIP module
+    // is a single entry function. hip-ep's AddContextArgPass threads the
+    // context through func.call, and undoing that needs a module-level pass.
+    (void)func.eraseArgument(i - 1);
+  }
+}
+
+/// Names of the `onnx.*` attributes in `dict`, or empty if there are none.
+static SmallVector<StringAttr> onnxAttrNames(DictionaryAttr dict) {
+  SmallVector<StringAttr> names;
+  if (!dict)
+    return names;
+  for (NamedAttribute attr : dict)
+    if (attr.getName().getValue().starts_with("onnx."))
+      names.push_back(attr.getName());
+  return names;
+}
+
+void mlir::hip::eraseOnnxAttrs(func::FuncOp func) {
+  for (StringAttr name : onnxAttrNames(func->getDiscardableAttrDictionary()))
+    func->removeAttr(name);
+  for (unsigned i = 0, e = func.getNumArguments(); i < e; ++i)
+    for (StringAttr name : onnxAttrNames(func.getArgAttrDict(i)))
+      func.removeArgAttr(i, name);
+  for (unsigned i = 0, e = func.getNumResults(); i < e; ++i)
+    for (StringAttr name : onnxAttrNames(func.getResultAttrDict(i)))
+      func.removeResultAttr(i, name);
 }
 //===----------------------------------------------------------------------===//
 //   END OF THE BIT THAT SHOULD PROBABLY GO SOMEWHERE ELSE

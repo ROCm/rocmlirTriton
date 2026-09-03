@@ -47,6 +47,8 @@ void HIPToTosa::runOnOperation() {
 
   // TODO: see the matching TODO in HIPToTosa.cpp -- this does not belong here.
   hip::annotateAsRockKernel(func, arch);
+  hip::eraseUnusedContextArgs(func);
+  hip::eraseOnnxAttrs(func);
 }
 
 void mlir::hip::addHIPToTosaPasses(OpPassManager &pm, StringRef arch) {
