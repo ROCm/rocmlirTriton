@@ -12,6 +12,7 @@
 
 #include "mlir/Conversion/HIPToTosa/HIPToTosa.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/tosaUtils.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
 #include "mlir/Dialect/Tosa/Utils/QuantUtils.h"
@@ -102,8 +103,36 @@ struct MatmulConverter final : public OpRewritePattern<hip::MatmulOp> {
                     TypeAttr::get(rock::getAccType(aType.getElementType(),
                                                    bType.getElementType())));
 
-    rewriter.replaceOp(
-        op, reshapeTo(rewriter, loc, matmul.getResult(), resultType.getShape()));
+    rewriter.replaceOp(op, reshapeTo(rewriter, loc, matmul.getResult(),
+                                     resultType.getShape()));
+    return success();
+  }
+};
+
+/// Lower `hip.transpose` to `tosa.transpose`. Both spell the permutation the
+/// same way -- output dim `i` comes from input dim `perm[i]` -- so `perm`
+/// carries over unchanged. As with matmul, the `!hip.context` and the `outs`
+/// buffer are dropped.
+struct TransposeConverter final : public OpRewritePattern<hip::TransposeOp> {
+  using OpRewritePattern<hip::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(hip::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
+    if (!inputType)
+      return rewriter.notifyMatchFailure(op, "expected a ranked tensor input");
+    if (op.getNumResults() != 1)
+      return rewriter.notifyMatchFailure(op,
+                                         "expected a tensor-mode transpose");
+
+    SmallVector<int32_t, 4> permutation;
+    permutation.reserve(op.getPerm().size());
+    for (auto permElem : op.getPerm().getAsRange<IntegerAttr>())
+      permutation.push_back(permElem.getInt());
+
+    rewriter.replaceOp(op,
+                       rock::tosa::getTransposeOp(rewriter, op.getLoc(),
+                                                  op.getInput(), permutation));
     return success();
   }
 };
@@ -112,5 +141,5 @@ struct MatmulConverter final : public OpRewritePattern<hip::MatmulOp> {
 
 void mlir::hip::populateHIPToTosaConversionPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<MatmulConverter>(patterns.getContext());
+  patterns.add<MatmulConverter, TransposeConverter>(patterns.getContext());
 }
