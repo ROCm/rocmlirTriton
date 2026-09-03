@@ -240,12 +240,12 @@ func.func @masked_uniform_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x1
 
 // -----
 
-// The address is uniform along dim 0 but the mask is not, so which lane a value
-// comes from decides whether it is the loaded value or the fill.
+// Address uniform on dim 0, mask not. Load unmasked, then select the fill back.
 
 // CHECK-LABEL: @mask_varies_along_dim
-//  CHECK-NOT:   tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
-//      CHECK:   tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x128x!tt.ptr<f16>>
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<1x128xf16> -> tensor<32x128xf16>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %{{.*}} : tensor<32x128xi1>, tensor<32x128xf16>
 func.func @mask_varies_along_dim(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128xf16> {
   %zero = arith.constant dense<0.0> : tensor<32x128xf16>
   %kRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
@@ -259,6 +259,32 @@ func.func @mask_varies_along_dim(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128x
   %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
   %addr = tt.addptr %ptrs, %nB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
   %val = tt.load %addr, %mask, %zero : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
+// The same rewrite on a load with no fill. Triton leaves the masked-out lanes
+// undefined there, but the backends give them zero, so the select goes in
+// against a zero constant rather than letting the loaded value reach them.
+
+// CHECK-LABEL: @mask_varies_along_dim_no_other
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<1x128xf16> -> tensor<32x128xf16>
+// CHECK-NEXT:   %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<32x128xf16>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %[[ZERO]] : tensor<32x128xi1>, tensor<32x128xf16>
+func.func @mask_varies_along_dim_no_other(%base: !tt.ptr<f16>, %k: i32) -> tensor<32x128xf16> {
+  %kRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %kCol = tt.expand_dims %kRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %limit = tt.splat %k : i32 -> tensor<32x1xi32>
+  %kMask = arith.cmpi slt, %kCol, %limit : tensor<32x1xi32>
+  %mask = tt.broadcast %kMask : tensor<32x1xi1> -> tensor<32x128xi1>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %nB = tt.broadcast %nRow : tensor<1x128xi32> -> tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %nB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr, %mask : tensor<32x128x!tt.ptr<f16>>
   return %val : tensor<32x128xf16>
 }
 
@@ -305,5 +331,116 @@ func.func @fill_varies_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x128x
   %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
   %addr = tt.addptr %ptrs, %nB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
   %val = tt.load %addr, %mask, %fill : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
+// Per-channel bias: address repeats along N, mask is the N bounds check.
+
+// CHECK-LABEL: @per_channel_bias
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<128x1x!tt.ptr<f32>>
+// CHECK-NEXT:   %[[FULL:.*]] = tt.broadcast %[[VAL]] : tensor<128x1xf32> -> tensor<128x128xf32>
+// CHECK-NEXT:   arith.select %{{.*}}, %[[FULL]], %{{.*}} : tensor<128x128xi1>, tensor<128x128xf32>
+func.func @per_channel_bias(%base: !tt.ptr<f32>, %n: i32) -> tensor<128x128xf32> {
+  %zero = arith.constant dense<0.0> : tensor<128x128xf32>
+  %mRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<128xi32> -> tensor<128x1xi32>
+  %chan = tt.broadcast %mCol : tensor<128x1xi32> -> tensor<128x128xi32>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %limit = tt.splat %n : i32 -> tensor<1x128xi32>
+  %nMask = arith.cmpi slt, %nRow, %limit : tensor<1x128xi32>
+  %mask = tt.broadcast %nMask : tensor<1x128xi1> -> tensor<128x128xi1>
+  %ptrs = tt.splat %base : !tt.ptr<f32> -> tensor<128x128x!tt.ptr<f32>>
+  %addr = tt.addptr %ptrs, %chan : tensor<128x128x!tt.ptr<f32>>, tensor<128x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<128x128x!tt.ptr<f32>>
+  return %val : tensor<128x128xf32>
+}
+
+// -----
+
+// The same bias load bounded in both directions, so the mask is the conjunction
+// of an M check and an N check. The M check is invariant along the collapsed
+// dim, so it stays on the narrowed load and keeps it from reading channels the
+// original skipped; only the N check has to wait for the select.
+
+// CHECK-LABEL: @per_channel_bias_2d_bounds_check
+//      CHECK:   %[[MMASK:.*]] = arith.cmpi slt, %{{.*}} : tensor<128x1xi32>
+//      CHECK:   %[[FULL:.*]] = arith.andi
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}}, %[[MMASK]] : tensor<128x1x!tt.ptr<f32>>
+// CHECK-NEXT:   %[[WIDE:.*]] = tt.broadcast %[[VAL]] : tensor<128x1xf32> -> tensor<128x128xf32>
+// CHECK-NEXT:   arith.select %[[FULL]], %[[WIDE]], %{{.*}} : tensor<128x128xi1>, tensor<128x128xf32>
+func.func @per_channel_bias_2d_bounds_check(%base: !tt.ptr<f32>, %m: i32, %n: i32) -> tensor<128x128xf32> {
+  %zero = arith.constant dense<0.0> : tensor<128x128xf32>
+  %mRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<128xi32> -> tensor<128x1xi32>
+  %mLimit = tt.splat %m : i32 -> tensor<128x1xi32>
+  %mMaskCol = arith.cmpi slt, %mCol, %mLimit : tensor<128x1xi32>
+  %mMask = tt.broadcast %mMaskCol : tensor<128x1xi1> -> tensor<128x128xi1>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %nLimit = tt.splat %n : i32 -> tensor<1x128xi32>
+  %nMaskRow = arith.cmpi slt, %nRow, %nLimit : tensor<1x128xi32>
+  %nMask = tt.broadcast %nMaskRow : tensor<1x128xi1> -> tensor<128x128xi1>
+  %mask = arith.andi %mMask, %nMask : tensor<128x128xi1>
+  %chan = tt.broadcast %mCol : tensor<128x1xi32> -> tensor<128x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f32> -> tensor<128x128x!tt.ptr<f32>>
+  %addr = tt.addptr %ptrs, %chan : tensor<128x128x!tt.ptr<f32>>, tensor<128x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<128x128x!tt.ptr<f32>>
+  return %val : tensor<128x128xf32>
+}
+
+// -----
+
+// A conjunct that varies along the collapsed dim *and* the surviving one is
+// neither sliceable nor safe to drop, so the load stays as it is even though
+// the other conjunct would have been fine on its own.
+
+// CHECK-LABEL: @mask_conjunct_varies_along_both_dims
+//  CHECK-NOT:   tt.load %{{.*}} : tensor<32x1x!tt.ptr<f16>>
+//      CHECK:   tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x128x!tt.ptr<f16>>
+func.func @mask_conjunct_varies_along_both_dims(%base: !tt.ptr<f16>, %m: i32, %lim: i32) -> tensor<32x128xf16> {
+  %zero = arith.constant dense<0.0> : tensor<32x128xf16>
+  %mRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %mLimit = tt.splat %m : i32 -> tensor<32x1xi32>
+  %mMaskCol = arith.cmpi slt, %mCol, %mLimit : tensor<32x1xi32>
+  %mMask = tt.broadcast %mMaskCol : tensor<32x1xi1> -> tensor<32x128xi1>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %mB = tt.broadcast %mCol : tensor<32x1xi32> -> tensor<32x128xi32>
+  %nB = tt.broadcast %nRow : tensor<1x128xi32> -> tensor<32x128xi32>
+  %diag = arith.addi %mB, %nB : tensor<32x128xi32>
+  %diagLimit = tt.splat %lim : i32 -> tensor<32x128xi32>
+  %diagMask = arith.cmpi slt, %diag, %diagLimit : tensor<32x128xi32>
+  %mask = arith.andi %mMask, %diagMask : tensor<32x128xi1>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %mB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
+// Address repeats on dim 1, but mask varies on surviving dim 0: leave alone.
+
+// CHECK-LABEL: @mask_varies_along_surviving_dim
+//  CHECK-NOT:   tt.load %{{.*}} : tensor<32x1x!tt.ptr<f16>>
+//      CHECK:   tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x128x!tt.ptr<f16>>
+func.func @mask_varies_along_surviving_dim(%base: !tt.ptr<f16>, %lim: i32) -> tensor<32x128xf16> {
+  %zero = arith.constant dense<0.0> : tensor<32x128xf16>
+  %mRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %nRange = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
+  %nRow = tt.expand_dims %nRange {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
+  %mB = tt.broadcast %mCol : tensor<32x1xi32> -> tensor<32x128xi32>
+  %nB = tt.broadcast %nRow : tensor<1x128xi32> -> tensor<32x128xi32>
+  %diag = arith.addi %mB, %nB : tensor<32x128xi32>
+  %limit = tt.splat %lim : i32 -> tensor<32x128xi32>
+  %mask = arith.cmpi slt, %diag, %limit : tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %mB : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr, %mask, %zero : tensor<32x128x!tt.ptr<f16>>
   return %val : tensor<32x128xf16>
 }

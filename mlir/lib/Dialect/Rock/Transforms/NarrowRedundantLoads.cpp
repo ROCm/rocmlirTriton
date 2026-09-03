@@ -21,6 +21,12 @@
 // narrower shape, which is value-preserving because taking a slice of a tensor
 // is; anything it does not know how to re-materialize is left alone.
 //
+// Masked loads of a broadcast operand need a second path: result constancy
+// folds in the mask, so a repeating address with a varying mask looks
+// non-constant. Those loads narrow from address constancy instead: the part of
+// the mask that survives narrowing stays on the load, the rest moves to a
+// select on the result.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/Passes.h"
@@ -53,10 +59,23 @@ namespace tt = mlir::triton;
 
 namespace {
 
+/// How the rewrite handles the original load's mask.
+enum class MaskPolicy {
+  /// Mask is constant along narrowed dims; slice it with the address.
+  Narrow,
+  /// Mask varies along narrowed dims; re-apply it after the broadcast.
+  ReapplyAfterBroadcast,
+};
+
 /// A load worth rewriting, together with the shape it should be narrowed to.
 struct NarrowingCandidate {
   tt::LoadOp load;
   SmallVector<int64_t> narrowShape;
+  MaskPolicy maskPolicy;
+  /// The conjuncts of the mask that survive narrowing and stay on the narrowed
+  /// load, keeping it from reading positions the original load skipped. Empty
+  /// means it runs unmasked.
+  SmallVector<Value> loadMaskConjuncts;
 };
 
 /// Re-materializes values at a reduced shape, which amounts to taking their
@@ -242,21 +261,26 @@ FailureOr<Value> SliceMaterializer::sliceElementwise(Operation *op,
   return track(builder.create(state));
 }
 
-/// Returns the shape `load` can be narrowed to, or nothing if it reads
-/// something different in every lane along every dimension.
-///
-/// A dimension qualifies when the analysis proves the loaded values repeat
-/// across its whole extent. That constancy already folds in both the address
-/// and the mask; `other` is checked separately because it does not.
-std::optional<SmallVector<int64_t>>
-getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
+/// Returns the type of `load` if this pass can narrow it at all, which every
+/// narrowing criterion below needs first. A dynamically shaped tensor has no
+/// index-0 slice to name, and an `other` holding a different element per lane
+/// has no narrower form, so neither can be re-materialized.
+std::optional<RankedTensorType> getNarrowableType(tt::LoadOp load) {
   auto type = dyn_cast<RankedTensorType>(load.getType());
   if (!type || !type.hasStaticShape())
     return std::nullopt;
   if (load.getOther() && !isSplatLike(load.getOther()))
     return std::nullopt;
+  return type;
+}
 
-  tt::AxisInfo *info = axisInfo.getAxisInfo(load.getResult());
+/// Returns `type`'s shape with every dimension along which `loadValue` repeats
+/// across the whole extent collapsed to 1, or nothing if no dimension does.
+/// A dimension that is already unit-sized is not a narrowing on its own.
+std::optional<SmallVector<int64_t>>
+getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
+                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
   if (!info || info->getRank() != type.getRank())
     return std::nullopt;
 
@@ -272,16 +296,120 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
   return narrowed ? std::optional(narrowShape) : std::nullopt;
 }
 
+/// Returns the shape `load` can be narrowed to, or nothing if it reads
+/// something different in every lane along every dimension.
+///
+/// A dimension qualifies when the analysis proves the loaded values repeat
+/// across its whole extent. That constancy already folds in both the address
+/// and the mask; `other` is checked separately because it does not.
+std::optional<SmallVector<int64_t>>
+getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
+  std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
+  if (!narrowableType)
+    return std::nullopt;
+  return getConstantDimsNarrowShape(load.getResult(), *narrowableType,
+                                    axisInfo);
+}
+
+/// Returns true if `loadValue` is constant along every dimension that
+/// `narrowShape` keeps.
+bool isConstantOutsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
+                                   ArrayRef<int64_t> narrowShape,
+                                   tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
+  if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
+    return false;
+  for (auto [dim, extent] : llvm::enumerate(shape)) {
+    if (narrowShape[dim] == 1)
+      continue;
+    if (extent > 1 && info->getConstancy(dim) != extent)
+      return false;
+  }
+  return true;
+}
+
+/// Returns true if `loadValue` is constant along every dimension that
+/// `narrowShape` collapses, so slicing it to `narrowShape` preserves its value.
+bool isConstantInsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
+                                  ArrayRef<int64_t> narrowShape,
+                                  tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
+  if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
+    return false;
+  for (auto [dim, extent] : llvm::enumerate(shape)) {
+    if (narrowShape[dim] != 1)
+      continue;
+    if (extent > 1 && info->getConstancy(dim) != extent)
+      return false;
+  }
+  return true;
+}
+
+/// Splits `mask` into its conjuncts, descending through `arith.andi`. A mask
+/// that is not a conjunction is its own only conjunct.
+void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
+  if (auto andOp = mask.getDefiningOp<arith::AndIOp>()) {
+    collectMaskConjuncts(andOp.getLhs(), conjuncts);
+    collectMaskConjuncts(andOp.getRhs(), conjuncts);
+    return;
+  }
+  conjuncts.push_back(mask);
+}
+
+/// Narrowing shape when the address is constant along some dims even though
+/// the result is not (the mask varies per lane). Mask conjuncts constant on
+/// the narrowed dims slice onto the load, reported in `loadMaskConjuncts`; the
+/// rest must be constant on the surviving dims, so dropping them cannot make
+/// the load touch extra addresses. `narrowLoad` re-applies the full mask to
+/// the broadcast result.
+std::optional<SmallVector<int64_t>>
+getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
+                        SmallVectorImpl<Value> &loadMaskConjuncts) {
+  std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
+  if (!narrowableType)
+    return std::nullopt;
+  RankedTensorType type = *narrowableType;
+
+  // Without a mask the plain constancy path above already applies.
+  if (!load.getMask())
+    return std::nullopt;
+
+  // Same question as `getNarrowShape`, asked about the address rather than the
+  // result, which is what lets it see past the mask.
+  std::optional<SmallVector<int64_t>> narrowShape =
+      getConstantDimsNarrowShape(load.getPtr(), type, axisInfo);
+  if (!narrowShape)
+    return std::nullopt;
+
+  ArrayRef<int64_t> shape = type.getShape();
+  SmallVector<Value> conjuncts;
+  collectMaskConjuncts(load.getMask(), conjuncts);
+  for (Value conjunct : conjuncts) {
+    if (isConstantInsideNarrowedDims(conjunct, shape, *narrowShape, axisInfo)) {
+      loadMaskConjuncts.push_back(conjunct);
+      continue;
+    }
+    if (!isConstantOutsideNarrowedDims(conjunct, shape, *narrowShape, axisInfo))
+      return std::nullopt;
+  }
+  return narrowShape;
+}
+
 LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   tt::LoadOp load = candidate.load;
   IRRewriter rewriter(load);
   SliceMaterializer materializer(rewriter);
 
+  // The mask does not slice whole, so it is rebuilt below from the conjuncts
+  // that do. The rest goes to the select, and `other` with it: the lanes it
+  // would fill are the ones the select overwrites.
+  bool reapplyMask = candidate.maskPolicy == MaskPolicy::ReapplyAfterBroadcast;
+
   // Narrow every operand before building the load, so that giving up on one of
   // them leaves the original load in place.
   SmallVector<Value> operands;
   for (Value operand : {load.getPtr(), load.getMask(), load.getOther()}) {
-    if (!operand) {
+    if (!operand || (reapplyMask && operand != load.getPtr())) {
       operands.push_back(nullptr);
       continue;
     }
@@ -294,6 +422,22 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
     operands.push_back(*narrowed);
   }
 
+  // Same for the surviving conjuncts.
+  SmallVector<Value> narrowedConjuncts;
+  for (Value conjunct : candidate.loadMaskConjuncts) {
+    FailureOr<Value> narrowed =
+        materializer.slice(conjunct, candidate.narrowShape);
+    if (failed(narrowed)) {
+      materializer.rollback();
+      return failure();
+    }
+    narrowedConjuncts.push_back(*narrowed);
+  }
+  for (Value conjunct : narrowedConjuncts)
+    operands[1] = operands[1] ? arith::AndIOp::create(rewriter, load.getLoc(),
+                                                      operands[1], conjunct)
+                              : conjunct;
+
   auto type = cast<RankedTensorType>(load.getType());
   auto narrowedType = RankedTensorType::get(
       candidate.narrowShape, type.getElementType(), type.getEncoding());
@@ -301,10 +445,16 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
       tt::LoadOp::create(rewriter, load.getLoc(), narrowedType, operands[0],
                          operands[1], operands[2], load.getCacheAttr(),
                          load.getEvictAttr(), load.getIsVolatileAttr());
-  Value broadcast =
+  Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
 
-  rewriter.replaceOp(load, broadcast);
+  // Restore masked-out lanes. Skip if there was no `other`: they were
+  // undefined.
+  if (reapplyMask && load.getOther())
+    result = arith::SelectOp::create(rewriter, load.getLoc(), load.getMask(),
+                                     result, load.getOther());
+
+  rewriter.replaceOp(load, result);
   return success();
 }
 
@@ -318,9 +468,19 @@ struct RockNarrowRedundantLoadsPass
     // Collect first: rewriting the loads invalidates the analysis.
     SmallVector<NarrowingCandidate> candidates;
     module.walk([&](tt::LoadOp load) {
+      // Prefer the exact slice when it applies.
       if (std::optional<SmallVector<int64_t>> narrowShape =
-              getNarrowShape(load, axisInfo))
-        candidates.push_back({load, std::move(*narrowShape)});
+              getNarrowShape(load, axisInfo)) {
+        candidates.push_back(
+            {load, std::move(*narrowShape), MaskPolicy::Narrow, {}});
+        return;
+      }
+      SmallVector<Value> loadMaskConjuncts;
+      if (std::optional<SmallVector<int64_t>> narrowShape =
+              getBroadcastNarrowShape(load, axisInfo, loadMaskConjuncts))
+        candidates.push_back({load, std::move(*narrowShape),
+                              MaskPolicy::ReapplyAfterBroadcast,
+                              std::move(loadMaskConjuncts)});
     });
 
     for (const NarrowingCandidate &candidate : candidates) {
