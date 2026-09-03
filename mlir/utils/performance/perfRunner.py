@@ -2843,6 +2843,8 @@ def parse_data_types(data_types):
             out_map[dt[0]] = 'i32'
         elif dt[0] == 'fp8':
             out_map[dt[0]] = 'f32'
+        elif dt[0] == 'f4E2M1FN':
+            out_map[dt[0]] = 'f32'
     return datatypes, out_map
 
 

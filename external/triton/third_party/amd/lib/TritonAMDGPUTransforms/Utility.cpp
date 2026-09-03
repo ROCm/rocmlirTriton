@@ -239,6 +239,9 @@ ttg::PaddedSharedEncodingAttr composePaddedLayoutForAsyncCopyCDNA4(
   }
 
   unsigned contigLanes = contigDim / vecSize;
+  // A tile narrower than one vector cannot use this padded async-copy layout.
+  if (contigLanes == 0)
+    return {};
   unsigned wrap = std::min(contigDim, elemPerBankRow) / padding;
   // wrap == 0 means padding > contigDim, which is not a valid configuration
   if (wrap == 0) {
