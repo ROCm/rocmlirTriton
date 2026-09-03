@@ -1018,9 +1018,6 @@ public:
 
 } // namespace
 
-// The bodies below are in `mlir::rock` scope, where a bare `tosa::` names
-// `mlir::rock::tosa` (the helper namespace from tosaUtils.h) rather than the
-// dialect, so the dialect's ops need spelling out.
 void mlir::rock::populateRocmlirCustomTosaDecomposeTarget(
     ConversionTarget &target) {
   target.addLegalDialect<mlir::tosa::TosaDialect>();
