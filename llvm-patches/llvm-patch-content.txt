@@ -669,3 +669,42 @@ there.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 c64ec3766d72ab552957827b5a96cc50ed6c7182.
+
+----------------------------------------------------------------------
+patch218363.patch
+----------------------------------------------------------------------
+- Upstream status : Open PR (head af0eac006f96c99dc2bea93f9507a7c5fc59edfb)
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/218363
+- Upstream title  : [AMDGPU] Add wait states between different MFMAs sharing
+                    an accumulator
+- File Fixed      : llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+                    llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+                    llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir
+- Contents        : Refactors the overlapped src2/C MFMA wait-state logic into
+                    getMFMAOverlappedSrcCWaitStates(), adds
+                    canonicalizeMFMAOpcode() to compare opcode families across
+                    mac and register-bank forms, and updates
+                    checkMAIHazards90A() to require partial-overlap wait states
+                    when two different MFMAs share the same accumulator tuple.
+                    Adds MIR coverage for mixed-MFMA accumulator-forwarding
+                    hazards and for mac/non-mac canonicalization.
+
+Symptom without the patch
+-------------------------
+On gfx940/gfx950, back-to-back MFMA instructions that write and then read the
+same accumulator tuple as src2/C can miss required wait states when the two
+instructions are different MFMA opcodes. This incorrectly relies on the
+zero-wait accumulator-forwarding path that only applies when the MFMA chain
+stays on one opcode family.
+
+Root cause
+----------
+The previous hazard logic in checkMAIHazards90A() treated full-overlap src2/C
+reads as safe for zero wait states on gfx940-family targets without checking
+whether the writer and reader are the same canonical MFMA opcode. Mixed-shape
+or mixed-form pairs (including mac/agpr-form variants) therefore skipped the
+partial-overlap wait-state tables that should have been applied.
+
+As of this patch, upstream #218363 is still open. Drop or reconcile this patch
+once that PR (or an equivalent fix) lands in the LLVM revision pinned by the
+next Triton/LLVM bump.

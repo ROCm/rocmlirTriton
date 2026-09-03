@@ -158,13 +158,10 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // Scaled GEMMs are not yet handled by rock-decompose-nonpow2-tiles (M/N) nor
   // by the K decomposition in rock-gridwise-gemm-to-blockwise, so keep the
   // power-of-two M/N and K requirements for them; plain GEMMs allow both to be
-  // non-pow2. Arches where the peeled K loop miscompiles keep the power-of-two
-  // K requirement as well (see rock::supportsNonPow2KPerBlock).
+  // non-pow2.
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
-  bool requirePow2K =
-      isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
-  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
-                                /*requirePow2K=*/requirePow2K)))
+  if (failed(validatePerfConfig(op, gemmParams,
+                                /*requirePow2Tiles=*/isScaledGemm)))
     return signalPassFailure();
 
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
@@ -214,8 +211,8 @@ void AffixTuningParameters::affixTuningParametersImpl(
   auto attnPerfConfig = maybeAttnPerfConfig.value();
   StringAttr perfConfigAttr = attnPerfConfig.getPerfConfigAttr();
 
-  if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
-                                /*requirePow2K=*/true)))
+  if (failed(validatePerfConfig(op, attnPerfConfig,
+                                /*requirePow2Tiles=*/true)))
     return signalPassFailure();
 
   auto params =

@@ -172,22 +172,18 @@ static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
   return success();
 }
 
-LogicalResult
-mlir::rock::validatePerfConfig(Operation *op,
-                               RockTuningParamAttrInterface params,
-                               bool requirePow2MN, bool requirePow2K) {
-  auto validateMN =
-      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
+LogicalResult mlir::rock::validatePerfConfig(
+    Operation *op, RockTuningParamAttrInterface params, bool requirePow2Tiles) {
+  auto validateTile =
+      requirePow2Tiles ? validatePositivePowerOfTwo : validatePositiveValue;
+  if (failed(validateTile(op, "mPerBlock", params.getMPerBlock())))
     return failure();
-  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+  if (failed(validateTile(op, "nPerBlock", params.getNPerBlock())))
     return failure();
   if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
     if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
       return failure();
-  auto validateK =
-      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
+  if (failed(validateTile(op, "kPerBlock", params.getKPerBlock())))
     return failure();
   if (failed(validateKpack(op, params.getKpack())))
     return failure();

@@ -60,12 +60,12 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
 bool is4GBMemoryType(ShapedType type);
 
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
-/// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
-/// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
-/// support. Emits an error on `op` for the first invalid field.
+/// `requirePow2Tiles` selects the stricter tile constraints on mPerBlock,
+/// nPerBlock, and kPerBlock required by gemm+gemm and scaled GEMMs.
+/// Emits an error on `op` for the first invalid field.
 LogicalResult validatePerfConfig(Operation *op,
                                  RockTuningParamAttrInterface params,
-                                 bool requirePow2MN, bool requirePow2K);
+                                 bool requirePow2Tiles);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
