@@ -862,6 +862,24 @@ class TunedConfigsCache:
                             max_tflops=max_tflops)
 
 
+def format_elapsed(seconds: float) -> str:
+    """A wall-clock duration, in the largest units that keep it readable.
+
+    Unlike `ETATracker._format_eta`, which rounds an estimate to the nearest
+    minute because a finer estimate would claim a precision it does not have,
+    this reports a duration that was actually measured, so it keeps seconds at
+    every scale.
+    """
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
 @dataclass
 class ETATracker:
     """Track completion times for accurate ETA estimation using median of successful configs."""
@@ -2322,6 +2340,10 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                              fail_count=skipped_unsuccessful)
 
     has_errors = False
+    # Wall-clock, taken here rather than at entry so that it measures the
+    # tuning and not the state and cache reading above it, and monotonic so
+    # that a clock adjustment mid-run cannot make it negative.
+    started = time.monotonic()
 
     debug_requested = ctx.options.debug or ctx.options.debug_quick_tune_data
     debug_enabled = debug_requested and ctx.options.output != '-'
@@ -2410,10 +2432,13 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                 progress_bar.set_postfix_str(eta_tracker.get_postfix_str())
 
                 if has_errors and ctx.options.abort_on_error:
+                    logger.error("Aborting on error after "
+                                 f"{format_elapsed(time.monotonic() - started)}")
                     return False
 
         except KeyboardInterrupt:
-            logger.info("Tuning interrupted by user")
+            logger.info("Tuning interrupted by user after "
+                        f"{format_elapsed(time.monotonic() - started)}")
             raise
         finally:
             if executor:
@@ -2423,10 +2448,11 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
 
             state_file.finalize_interrupted()
 
+    elapsed = format_elapsed(time.monotonic() - started)
     if has_errors:
-        logger.error("Encountered errors during tuning")
+        logger.error(f"Encountered errors during tuning after {elapsed}")
     else:
-        logger.info("Tuning completed successfully")
+        logger.info(f"Tuning completed successfully in {elapsed}")
 
     return not has_errors
 
