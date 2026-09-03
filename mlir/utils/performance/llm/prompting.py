@@ -49,26 +49,22 @@ from .workload import compute_workload_hints, describe_hardware, describe_proble
 
 RETURN_JSON_ONLY = 'Return minified JSON only: {"configs":[...]}'
 
-FEASIBILITY_RULE = (
-    "Every value you choose must appear in that parameter's list in the "
-    "Configuration Space, but that is necessary and not sufficient: the lists "
-    "hold each parameter's values independently, and the tuning space also "
-    "checks combinations of them against LDS capacity, Triton's per-tensor "
-    "element cap, a compile-cost budget and the register budget behind "
-    "wavesPerEU. A config can sit entirely on the lists and still be refused "
-    "before it is ever compiled. Refused configs are reported back to you "
-    "under Refused Configs, so read them."
-)
+FEASIBILITY_RULE = ("Every value you choose must appear in that parameter's list in the "
+                    "Configuration Space, but that is necessary and not sufficient: the lists "
+                    "hold each parameter's values independently, and the tuning space also "
+                    "checks combinations of them against LDS capacity, Triton's per-tensor "
+                    "element cap, a compile-cost budget and the register budget behind "
+                    "wavesPerEU. A config can sit entirely on the lists and still be refused "
+                    "before it is ever compiled. Refused configs are reported back to you "
+                    "under Refused Configs, so read them.")
 
 _INITIAL_STRATEGY_BASE_LINES = (
     "First read the problem shape, the hardware, and the configuration space.",
     "Cover 3 config families with a rough mix of about 40% near-default safe, 40% balanced throughput, and 20% aggressive configs, while keeping most candidates ones the space will accept.",
     "If the problem is an unusual shape, stay closer to the default and avoid aggressive coupled changes.",
-    (
-        "Keep each config sparse: usually 2-6 changed fields, omit unchanged "
-        "defaults, and exceed 6 only when several coupled changes are needed "
-        "for a distinct family."
-    ),
+    ("Keep each config sparse: usually 2-6 changed fields, omit unchanged "
+     "defaults, and exceed 6 only when several coupled changes are needed "
+     "for a distinct family."),
     "Use the block tiles to define families: include at least 3 materially different tilings rather than tiny perturbations of one tile.",
     "Vary the M, N and K tiles coherently rather than by arbitrary skew.",
     "Do not repeat unchanged defaults.",
@@ -87,8 +83,7 @@ _DEFAULT_REFINEMENT_LINES = (
     "Reserve at most a small minority for one clearly different family, not random noise.",
 )
 
-_SYSTEM_PROMPT = textwrap.dedent(
-    """\
+_SYSTEM_PROMPT = textwrap.dedent("""\
     You are an expert GPU kernel autotuner for AMD GPUs. You are tuning a
     rocmlirTriton "perf config": a fixed set of integer parameters that decides
     how a matrix-multiply kernel is tiled, scheduled and lowered.
@@ -127,7 +122,11 @@ _SYSTEM_PROMPT = textwrap.dedent(
       reduces LDS traffic; the ceiling is in the hardware section.
     - numStages: software pipeline depth over the K loop. 1 is safest. 2 to 4
       overlaps loads with math on a streaming loop, at numStages times the LDS
-      for the tiles.
+      for the tiles. The sweeps behind the seed configs stopped at 3, so any
+      higher value the Configuration Space offers is unmeasured here rather
+      than known to be bad. On a gemm+gemm kernel 4 is worth a proposal of its
+      own: the chained-dot pipeline schedule, and the pingpong that rides on
+      it, are written for exactly that depth and are skipped at any other.
     - splitKFactor: splits the contraction across that many workgroups, which
       then reduce their partial results. This is the answer to a problem too
       small to fill the machine by tiling M and N, and it is a distinct family:
@@ -154,9 +153,13 @@ _SYSTEM_PROMPT = textwrap.dedent(
     The eight use* knobs are tri-state, and this is the part most easily got
     wrong. Each takes -1, 0 or 1:
     - -1 means "let the compiler decide", and applies a per-architecture
-      heuristic. It is the default, it is what every seed config below spells,
-      and it is very often the right answer.
+      heuristic. It is the default, and it is a reasonable answer.
     - 0 forces the transform off; 1 forces it on.
+    Every seed config below spells -1 in all eight, and 0 in wavesPerEU and
+    gridGroupSize. Read nothing into that. Those configs are distilled from
+    sweeps that pinned exactly those fields and varied only the tiles and the
+    schedule, so a column of -1 records what was never tried rather than what
+    won. They are the least explored part of this space, not the settled part.
     Do not treat these as booleans and do not set them all. Move one when you
     have a reason to believe the heuristic is wrong for this shape, and leave
     the rest at -1. What each gates:
@@ -201,8 +204,7 @@ _SYSTEM_PROMPT = textwrap.dedent(
     - Every value is a plain integer. Never a list, a string, or a float.
     - If you are unsure about a parameter, omit it rather than guessing.
     - Use null not None, true/false not True/False.
-    - Return ONLY minified JSON: {"configs":[...]}"""
-)
+    - Return ONLY minified JSON: {"configs":[...]}""")
 
 
 def _section(title: str, body: str) -> str:
@@ -238,28 +240,20 @@ def _initial_strategy_lines(
         *_INITIAL_STRATEGY_BASE_LINES,
     ]
     if len(space.get("splitKFactor", [1])) > 1:
-        lines.append(
-            "splitKFactor above 1 is available here. Include at least one "
-            "config using it if the shape hints above suggest the machine "
-            "cannot be filled by tiling M and N."
-        )
+        lines.append("splitKFactor above 1 is available here. Include at least one "
+                     "config using it if the shape hints above suggest the machine "
+                     "cannot be filled by tiling M and N.")
     if len(space.get("matrixInstrNonkdim", [])) > 1:
-        lines.append(
-            "matrixInstrNonkdim can vary, so treat 16 and 32 as two families "
-            "and put some configs on each."
-        )
+        lines.append("matrixInstrNonkdim can vary, so treat 16 and 32 as two families "
+                     "and put some configs on each.")
     if knobs := knob_names(space):
-        lines.append(
-            "Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
-            "configs; use an explicit 0 or 1 in a minority, and only where you "
-            "can say why."
-        )
-    lines.append(
-        "Spread numStages and the tiles across the batch rather than clustering "
-        "on one choice: a later refinement search will anchor on whatever this "
-        "round measures, so variety here is worth more than a batch of "
-        "near-identical safe configs."
-    )
+        lines.append("Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
+                     "configs; use an explicit 0 or 1 in a minority, and only where you "
+                     "can say why.")
+    lines.append("Spread numStages and the tiles across the batch rather than clustering "
+                 "on one choice: a later refinement search will anchor on whatever this "
+                 "round measures, so variety here is worth more than a batch of "
+                 "near-identical safe configs.")
     lines.append(FEASIBILITY_RULE)
     return lines
 
@@ -276,19 +270,13 @@ def _refinement_strategy_lines(
         lines = list(_FAILURE_HEAVY_REFINEMENT_LINES)
     else:
         lines = list(_DEFAULT_REFINEMENT_LINES)
-    lines.append(
-        "Prefer edits with attributable effects: move the block tiles, "
-        "numWaves, numStages, kpack, matrixInstrNonkdim, splitKFactor or "
-        "gridGroupSize rather than rewriting every field."
-    )
-    lines.append(
-        "Keep each config sparse: usually 1-4 changed fields, and no more than "
-        f"{MAX_CHANGED_FIELDS_PER_CONFIG} unless absolutely necessary."
-    )
+    lines.append("Prefer edits with attributable effects: move the block tiles, "
+                 "numWaves, numStages, kpack, matrixInstrNonkdim, splitKFactor or "
+                 "gridGroupSize rather than rewriting every field.")
+    lines.append("Keep each config sparse: usually 1-4 changed fields, and no more than "
+                 f"{MAX_CHANGED_FIELDS_PER_CONFIG} unless absolutely necessary.")
     lines.append(FEASIBILITY_RULE)
-    lines.append(
-        "If unsure, return fewer valid configs instead of verbose or malformed JSON."
-    )
+    lines.append("If unsure, return fewer valid configs instead of verbose or malformed JSON.")
     return lines
 
 
@@ -302,16 +290,29 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]]) -> str:
     before anything has been measured. In round 0 these are unmeasured, exactly
     as upstream's are; from round 1 on they reappear with real timings in the
     Results section, so this section only earns its place in the first prompt.
+
+    One asymmetry with upstream is worth spelling out to the model, and the
+    body below does. That list is distilled from exhaustive sweeps, and
+    `createGemmTuningRangeBF` and `createGemmGemmTuningRangeBF` pin every use*
+    knob to `kKnobDefault` and both `wavesPerEU` and `gridGroupSize` to 0 while
+    enumerating -- so every entry in the checked-in list agrees on those
+    fields, without a single one of them having been measured against its
+    alternatives. Left unsaid, a column that never varies reads as a
+    consensus, and the knobs are precisely where a search over the axes can
+    find something the sweeps could not.
     """
     if not seed_configs:
         return ""
-    body = (
-        "rocmlirTriton's tuning heuristic proposes the following configs for "
-        "this problem before anything is measured. Treat them as strong "
-        "starting points: include configs matching these and nearby mutations "
-        "before venturing to unrelated families.\n"
-        + "\n".join(f"  - {format_config_for_prompt(config)}" for config in seed_configs)
-    )
+    body = ("rocmlirTriton's tuning heuristic proposes the following configs for "
+            "this problem before anything is measured. Treat them as strong "
+            "starting points: include configs matching these and nearby mutations "
+            "before venturing to unrelated families.\n"
+            "They are evidence about the fields the sweeps behind them varied: the "
+            "block tiles, kpack, numWaves, matrixInstrNonkdim, splitKFactor and "
+            "numStages. Their use* knobs, wavesPerEU and gridGroupSize were held "
+            "fixed throughout those sweeps, so on those fields these configs are "
+            "unmeasured rather than confirmed.\n" +
+            "\n".join(f"  - {format_config_for_prompt(config)}" for config in seed_configs))
     return _section("Heuristic Seed Configs", body)
 
 
@@ -325,13 +326,11 @@ def build_initial_prompt(request: Dict[str, Any]) -> str:
 
     default_section = _section(
         "Default Configuration",
-        format_config_for_prompt(default_config)
-        + "\n  Any parameter you do not mention takes its value from this config.",
+        format_config_for_prompt(default_config) +
+        "\n  Any parameter you do not mention takes its value from this config.",
     )
-    task_section = (
-        "Propose the first batch of configs. Include both near-default and "
-        f"exploratory candidates. {RETURN_JSON_ONLY}"
-    )
+    task_section = ("Propose the first batch of configs. Include both near-default and "
+                    f"exploratory candidates. {RETURN_JSON_ONLY}")
     return _join_sections(
         _section("Problem", describe_problem(problem)),
         _section("GPU Hardware", describe_hardware(hardware)),
@@ -366,11 +365,9 @@ def build_refinement_prompt(
 ) -> str:
     """Build the refinement prompt sent after each benchmarking round."""
     configs_requested = request.get("configsRequested", 15)
-    task_section = (
-        f"Propose up to {configs_requested} NEW UNIQUE configs around the "
-        "anchors above. Avoid the failed and refused patterns above, and favour "
-        f"targeted edits with attributable effects. {RETURN_JSON_ONLY}"
-    )
+    task_section = (f"Propose up to {configs_requested} NEW UNIQUE configs around the "
+                    "anchors above. Avoid the failed and refused patterns above, and favour "
+                    f"targeted edits with attributable effects. {RETURN_JSON_ONLY}")
     return _join_sections(
         _section("Search State", search_state),
         _section("Anchor Configs", anchor_configs),

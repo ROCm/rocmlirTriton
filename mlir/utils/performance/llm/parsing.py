@@ -50,7 +50,7 @@ def extract_balanced_block(text: str, opener: str, closer: str) -> str | None:
             elif char == closer:
                 depth -= 1
                 if depth == 0:
-                    return text[start : index + 1]
+                    return text[start:index + 1]
         start = text.find(opener, start + 1)
     return None
 
@@ -62,9 +62,7 @@ def iter_jsonish_candidates(text: str) -> list[str]:
     stripped = text.strip()
     if stripped:
         candidates.append(stripped)
-    for match in re.finditer(
-        r"```(?:json|python)?\s*([\s\S]*?)```", text, re.IGNORECASE
-    ):
+    for match in re.finditer(r"```(?:json|python)?\s*([\s\S]*?)```", text, re.IGNORECASE):
         candidate = match.group(1).strip()
         if candidate:
             candidates.append(candidate)

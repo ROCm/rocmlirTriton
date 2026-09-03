@@ -471,6 +471,18 @@ class TestWorkloadDescription(unittest.TestCase):
         # the largest K tile the space carries.
         self.assertNotIn("576", hints)
 
+    def test_hints_that_a_chained_dot_wants_four_stages(self):
+        # Both the chained-dot pipeline schedule and the pingpong that rides
+        # on it test numStages == 4 exactly, and the sweeps behind the seeds
+        # stopped at 3, so the value is untried rather than rejected.
+        hints = " ".join(workload.compute_workload_hints(self.ATTENTION, self.HARDWARE))
+        self.assertIn("exactly 4", hints)
+
+    def test_hints_at_no_stage_depth_for_a_plain_gemm(self):
+        # One dot, so there is no chained-dot schedule to unlock.
+        hints = " ".join(workload.compute_workload_hints(self.GEMM, self.HARDWARE))
+        self.assertNotIn("exactly 4", hints)
+
     def test_hints_at_no_k_alignment_for_a_plain_gemm(self):
         self.assertNotIn("multiple of", self.hints(self.GEMM))
 
@@ -487,17 +499,13 @@ class TestWorkloadDescription(unittest.TestCase):
         # An average over shapes that says which of two kernels wins, not a
         # thing the chip can or cannot do, so it is worth measuring both ways
         # and it does not belong among the capabilities.
-        text = workload.describe_hardware({
-            **self.HARDWARE, "preferBf16x3ForF32Dot": True
-        })
+        text = workload.describe_hardware({**self.HARDWARE, "preferBf16x3ForF32Dot": True})
         self.assertIn("heuristic", text)
-        capabilities = next(
-            line for line in text.splitlines() if "Capabilities:" in line)
+        capabilities = next(line for line in text.splitlines() if "Capabilities:" in line)
         self.assertNotIn("bf16", capabilities)
 
     def test_says_nothing_of_bf16x3_where_the_arch_does_not_prefer_it(self):
-        self.assertNotIn("useBf16x3ForF32",
-                         workload.describe_hardware(self.HARDWARE))
+        self.assertNotIn("useBf16x3ForF32", workload.describe_hardware(self.HARDWARE))
 
 
 class TestProblemDetailDescription(unittest.TestCase):
@@ -541,9 +549,7 @@ class TestProblemDetailDescription(unittest.TestCase):
         self.assertNotIn("Operand layout", text)
 
     def test_gives_the_output_type_as_well_as_the_inputs(self):
-        text = workload.describe_problem({
-            **TestWorkloadDescription.GEMM, "cType": "f32"
-        })
+        text = workload.describe_problem({**TestWorkloadDescription.GEMM, "cType": "f32"})
         self.assertIn("C=f32", text)
 
     def test_reports_a_fused_ops_second_operand_and_result_apart(self):
@@ -702,6 +708,22 @@ class TestPromptConstruction(unittest.TestCase):
         # starting point and the bar the model is being asked to clear.
         prompt = proposer.build_prompt(self.request())
         self.assertIn("64", prompt)
+
+    def test_the_seeds_say_which_of_their_fields_were_measured(self):
+        # The sweeps the quick list is distilled from pinned the knobs,
+        # wavesPerEU and gridGroupSize, so every seed agrees on them without
+        # having compared them to anything. Unqualified, a column that never
+        # varies reads as a consensus.
+        prompt = proposer.build_prompt(self.request())
+        self.assertIn("unmeasured rather than confirmed", prompt)
+        for field in ("wavesPerEU", "gridGroupSize"):
+            self.assertIn(field, prompt)
+
+    def test_the_system_prompt_does_not_cite_the_seeds_for_the_knobs(self):
+        # The -1s in the seeds are an artifact of how they were produced, so
+        # the knob advice must not lean on them as evidence.
+        system = prompting.build_system_prompt()
+        self.assertIn("Read nothing into that", system)
 
     def test_a_later_round_is_told_what_was_measured(self):
         prompt = proposer.build_prompt(self.request(round=1, results=[result({"kpack": 8}, 500.0)]))

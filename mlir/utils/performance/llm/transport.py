@@ -136,9 +136,8 @@ def _cursor_reply(
 
     try:
         if agent_id:
-            manager = Agent.resume(
-                agent_id, AgentOptions(api_key=api_key, model=model, local=local)
-            )
+            manager = Agent.resume(agent_id, AgentOptions(api_key=api_key, model=model,
+                                                          local=local))
         else:
             manager = Agent.create(model=model, api_key=api_key, local=local)
         with manager as agent:
@@ -182,10 +181,10 @@ def _stub_reply(
     round_index = int(session.get("stubRound", 0))
     session["stubRound"] = round_index + 1
 
-    movable = [
-        (name, [value for value in values if value != default_config.get(name)])
-        for name, values in space.items()
-    ]
+    movable = [(name, [value
+                       for value in values
+                       if value != default_config.get(name)])
+               for name, values in space.items()]
     movable = [(name, values) for name, values in movable if values]
     if not movable:
         return '{"configs":[]}'

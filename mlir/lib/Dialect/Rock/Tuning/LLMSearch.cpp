@@ -626,6 +626,15 @@ bool LLMSearch::buildSearchSpace() {
   // reaches the model twice over: as the batch this search opens with, and, in
   // round 0's prompt, as the unmeasured priors that fill the slot Helion's
   // `build_compiler_analysis_section` fills with its own fired heuristics.
+  //
+  // Note what it is a prior over. `quickTuningGen.py` distils it from sweeps of
+  // the enumerated space, and `createGemmTuningRangeBF` pins every knob to
+  // `kKnobDefault` and both `wavesPerEU` and `gridGroupSize` to 0 there. So on
+  // those fields the list is unanimous without having compared anything, and
+  // the ladders built above are wider than any of it was drawn from. That is
+  // this search's opportunity rather than a defect, but the prompt has to say
+  // so, or a model reading the seeds infers a consensus that was never
+  // measured; `build_seed_config_section` is where it does.
   MLIRContext *ctx = mod.getContext();
   std::unique_ptr<TuningParamSet> quickSpace(
       createTunableParamSpace(mod, TuningParamSetKind::Quick));

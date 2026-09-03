@@ -71,13 +71,10 @@ def format_config_diff(default_config: Config, config: Config) -> str:
 
 def measured_results(results: Sequence[Result]) -> List[Tuple[Config, float]]:
     """Return successful benchmark results sorted from fastest to slowest."""
-    timed = [
-        (result["config"], result["timeNs"])
-        for result in results
-        if result.get("status") == "success"
-        and isinstance(result.get("timeNs"), (int, float))
-        and math.isfinite(result["timeNs"])
-    ]
+    timed = [(result["config"], result["timeNs"])
+             for result in results
+             if result.get("status") == "success" and isinstance(result.get("timeNs"), (
+                 int, float)) and math.isfinite(result["timeNs"])]
     return sorted(timed, key=lambda pair: pair[1])
 
 
@@ -101,10 +98,8 @@ def format_results_for_llm(
 
     lines: List[str] = []
     for index, (config, time_ns) in enumerate(ranked[:limit], start=1):
-        lines.append(
-            f"  #{index}: {format_time(time_ns)} - "
-            f"{format_config_diff(default_config, config)}"
-        )
+        lines.append(f"  #{index}: {format_time(time_ns)} - "
+                     f"{format_config_diff(default_config, config)}")
     if unmeasured > 0:
         lines.append(f"  ({unmeasured} configs could not be compiled or run)")
     return "\n".join(lines)
@@ -127,9 +122,7 @@ def summarize_search_state_for_llm(
     if len(ranked) >= 2 and ranked[1][1] > 0:
         gap_pct = ((ranked[1][1] - best_time) / ranked[1][1]) * 100
         lines.append(f"  Margin vs runner-up: {gap_pct:.1f}%")
-    lines.append(
-        f"  Search coverage: {len(ranked)} measured / {len(results)} total configs"
-    )
+    lines.append(f"  Search coverage: {len(ranked)} measured / {len(results)} total configs")
     unmeasured = len(unmeasured_results(results))
     if unmeasured > 0:
         lines.append(f"  Configs that could not be run: {unmeasured}")
@@ -145,12 +138,8 @@ def summarize_failed_configs_for_llm(
     if not unmeasured:
         return "  Every config so far ran."
 
-    counts = collections.Counter(
-        result.get("status", "failed") for result in unmeasured
-    )
-    count_summary = ", ".join(
-        f"{label}={count}" for label, count in sorted(counts.items())
-    )
+    counts = collections.Counter(result.get("status", "failed") for result in unmeasured)
+    count_summary = ", ".join(f"{label}={count}" for label, count in sorted(counts.items()))
     lines = [f"  Counts: {count_summary}"]
 
     seen = set()
@@ -185,8 +174,8 @@ def summarize_rejected_configs_for_llm(
 
     counts = collections.Counter(entry.get("reason", "unknown") for entry in rejected)
     lines = [
-        "  Counts by check: "
-        + ", ".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
+        "  Counts by check: " +
+        ", ".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
     ]
     seen = set()
     for entry in rejected:
@@ -221,10 +210,8 @@ def summarize_anchor_configs_for_llm(
         else:
             gap_pct = ((time_ns - best_time) / best_time) * 100
             delta = f"+{gap_pct:.1f}%"
-        lines.append(
-            f"  Anchor {index} ({delta}): {format_time(time_ns)} - "
-            f"{format_config_diff(default_config, config)}"
-        )
+        lines.append(f"  Anchor {index} ({delta}): {format_time(time_ns)} - "
+                     f"{format_config_diff(default_config, config)}")
     return "\n".join(lines)
 
 
@@ -237,14 +224,12 @@ def analyze_top_configs(
     if len(ranked) < 3:
         return "Not enough results for analysis yet."
 
-    top = [
-        {
-            key: value
-            for key, value in config_diff(default_config, config).items()
-            if key != "(default)"
-        }
-        for config, _ in ranked[:5]
-    ]
+    top = [{
+        key: value
+        for key, value in config_diff(default_config, config).items()
+        if key != "(default)"
+    }
+           for config, _ in ranked[:5]]
     all_keys = sorted({key for config in top for key in config})
     if not all_keys:
         return "The best configs are all close to the default config."
@@ -259,9 +244,7 @@ def analyze_top_configs(
         if len(common) == 1:
             lines.append(f"  {key}: always {common[0][0]}")
         elif common[0][1] >= 3:
-            lines.append(
-                f"  {key}: mostly {common[0][0]} (also {common[1][0]} x{common[1][1]})"
-            )
+            lines.append(f"  {key}: mostly {common[0][0]} (also {common[1][0]} x{common[1][1]})")
         else:
             summary = ", ".join(f"{value} x{count}" for value, count in common)
             lines.append(f"  {key}: {summary}")
