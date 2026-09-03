@@ -105,6 +105,9 @@ enum class FeasibilityCheck : uint32_t {
   // In the space, but the heuristic expects it to be slow; `Full` drops these
   // and `Exhaustive` keeps them.
   NotPerformant = 7,
+  // An M/N pair too wide to be worth compiling on the FMA path; see
+  // `isOverwideNonAccelMNPair`.
+  OverwideNonAccelMNPair = 8,
 };
 
 // The short name of a check, for a prompt, a trace or a diagnostic.
@@ -165,6 +168,7 @@ public:
   virtual void getKnobParams(SmallVectorImpl<bool> &isKnob) const = 0;
 
   // Spells `values` as the perf config string the space would have emitted.
+  // Requires exactly one value for every axis returned by `getAxes`.
   virtual void serialize(ArrayRef<int64_t> values,
                          PerfConfigString &out) const = 0;
 };

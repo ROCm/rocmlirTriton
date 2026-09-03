@@ -159,6 +159,23 @@ class ParseArgumentsTest(unittest.TestCase):
             ["--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--verify-timeout", "-1"])
         self.assertIn("argument --verify-timeout: must be non-negative", stderr)
 
+    def test_nonpositive_llm_rounds_rejected(self):
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                stderr = self.assert_rejects([
+                    "--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512", "--llm-rounds", value
+                ])
+                self.assertIn("argument --llm-rounds: must be at least 1", stderr)
+
+    def test_nonpositive_llm_configs_per_round_rejected(self):
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                stderr = self.assert_rejects([
+                    "--op", "gemm", "--config", "-g 1 -m 1024 -k 769 -n 512",
+                    "--llm-configs-per-round", value
+                ])
+                self.assertIn("argument --llm-configs-per-round: must be at least 1", stderr)
+
     def test_mixed_gpu_models_rejected(self):
         """Selecting GPUs of different SKUs is refused by GpuTopology.select."""
         topology = StubGpuTopology([(0, "gfx900"), (1, "gfx942")])

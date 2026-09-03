@@ -871,8 +871,11 @@ def format_elapsed(seconds: float) -> str:
     every scale.
     """
     seconds = int(round(seconds))
-    hours, remainder = divmod(seconds, 3600)
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
     minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours:02d}h {minutes:02d}m {secs:02d}s"
     if hours:
         return f"{hours}h {minutes:02d}m {secs:02d}s"
     if minutes:
@@ -1260,6 +1263,10 @@ class TuningArgumentParser(argparse.ArgumentParser):
             self.error("argument --perf-config-timeout: must be non-negative")
         if parsed.verify_timeout < 0:
             self.error("argument --verify-timeout: must be non-negative")
+        for name, value in (("--llm-rounds", parsed.llm_rounds), ("--llm-configs-per-round",
+                                                                  parsed.llm_configs_per_round)):
+            if value is not None and value < 1:
+                self.error(f"argument {name}: must be at least 1")
 
         # The coarse warmup is capped at what --warmup affords, so a larger
         # floor would be silently inert. The driver rejects this too.
@@ -2432,13 +2439,11 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
                 progress_bar.set_postfix_str(eta_tracker.get_postfix_str())
 
                 if has_errors and ctx.options.abort_on_error:
-                    logger.error("Aborting on error after "
-                                 f"{format_elapsed(time.monotonic() - started)}")
+                    logger.error("Aborting on error")
                     return False
 
         except KeyboardInterrupt:
-            logger.info("Tuning interrupted by user after "
-                        f"{format_elapsed(time.monotonic() - started)}")
+            logger.info("Tuning interrupted by user")
             raise
         finally:
             if executor:
@@ -2448,11 +2453,15 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
 
             state_file.finalize_interrupted()
 
-    elapsed = format_elapsed(time.monotonic() - started)
+            # Reported here so that every way out says how long the GPU was
+            # busy, including a worker raising, which leaves by neither of the
+            # branches above nor the summary below.
+            logger.info(f"Tuning ran for {format_elapsed(time.monotonic() - started)}")
+
     if has_errors:
-        logger.error(f"Encountered errors during tuning after {elapsed}")
+        logger.error("Encountered errors during tuning")
     else:
-        logger.info(f"Tuning completed successfully in {elapsed}")
+        logger.info("Tuning completed successfully")
 
     return not has_errors
 

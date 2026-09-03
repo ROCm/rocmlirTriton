@@ -67,7 +67,7 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
        InterfaceMethod<
            /*desc=*/[{
           Returns a config of this attribute's kind whose parameters are
-          `values`, or null if `values` is not the length `getParamValues`
+          `values`. Requires one value for every parameter `getParamValues`
           produces.
         }],
            /*retType=*/"::mlir::rock::RockTuningParamAttrInterface",
@@ -75,8 +75,8 @@ def RockTuningParamAttrInterface : AttrInterface<"RockTuningParamAttrInterface">
            /*args=*/(ins "::llvm::ArrayRef<int64_t>":$values),
            /*methodBody=*/"",
            /*defaultImplementation=*/[{
-        if (values.size() != ConcreteAttr::getPerfConfigKeys().size())
-          return nullptr;
+        assert(values.size() == ConcreteAttr::getPerfConfigKeys().size() &&
+               "expected one value per perf-config field");
         return ConcreteAttr::getFromPerfConfigValues($_attr.getContext(),
                                                      values);
       }]>,

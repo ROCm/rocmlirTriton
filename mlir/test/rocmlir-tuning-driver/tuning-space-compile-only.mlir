@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The adaptive tuning spaces choose each batch from the previous batch's
 // timings, so none of them can be driven by the ahead-of-time compile phase,
 // which never runs a kernel. The driver has to say so up front rather than

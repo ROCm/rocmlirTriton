@@ -237,7 +237,10 @@ def synth_config(proj: Projection) -> str:
         "gridGroupSize": 0,
     }
     ordered_values = {name: values[name] for name in PERF_CONFIG_FIELD_NAMES["gemm"]}
-    return serialize_perfconfig("gemm", ordered_values)
+    # The knob fields in MIN_LDS_FIELDS are not in PERF_CONFIG_FIELD_NAMES, so
+    # ordering by it drops them; they go back on afterwards, keyed rather than
+    # positional, which is how generation writes them too.
+    return with_fields(serialize_perfconfig("gemm", ordered_values), MIN_LDS_FIELDS)
 
 
 def default_seed() -> int:

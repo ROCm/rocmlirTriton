@@ -849,6 +849,29 @@ TEST(TuningParamAxesTest, ScheduleKnobsAreExploredOnlyWhereTheyCanAct) {
     SCOPED_TRACE(c.arch.str() + (c.f16 ? " f16" : " f32"));
     EXPECT_EQ(axisOf(*axes, "useAsyncCopy"), c.asyncCopy);
     EXPECT_EQ(axisOf(*axes, "useBlockPingpong"), c.pingpong);
+
+    // Pinning has to constrain feasibility as well as exploration. The LLM
+    // proposes values without walking the axes, so merely exposing a
+    // single-value axis would not stop it from requesting an unsupported
+    // schedule.
+    std::vector<int64_t> config;
+    for (const std::vector<int64_t> &axis : axes->getAxes())
+      config.push_back(axis.front());
+    auto expectPinnedValueRefused = [&](StringRef name,
+                                        const std::vector<int64_t> &expected) {
+      if (expected != pinned)
+        return;
+      size_t index = paramIndex(*axes, name);
+      int64_t old = config[index];
+      config[index] = 1;
+      FeasibilityCheck refusedOn = FeasibilityCheck::MalformedConfig;
+      EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+      EXPECT_EQ(refusedOn, FeasibilityCheck::NotOnAxis);
+      config[index] = old;
+    };
+    expectPinnedValueRefused("useAsyncCopy", c.asyncCopy);
+    expectPinnedValueRefused("useBlockPingpong", c.pingpong);
+
     // The pin is those two and not the knobs in general.
     for (StringRef knob :
          {"useInThreadTranspose", "useBufferOps", "useBufferAtomics",
@@ -947,6 +970,28 @@ TEST(TuningParamAxesTest, ReportsAValueThatIsNotOnItsAxis) {
   FeasibilityCheck refusedOn = FeasibilityCheck::NotPerformant;
   EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
   EXPECT_EQ(refusedOn, FeasibilityCheck::NotOnAxis);
+}
+
+// The enumerated FMA space drops M/N pairs this wide because they account for
+// most of its compile time and have never won a tuned shape. The searched view
+// of the same space must not reintroduce them.
+TEST(TuningParamAxesTest, RefusesOverwideNonAccelMNPair) {
+  GemmModule e([](OpBuilder &b) { return b.getF32Type(); },
+               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx1201");
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
+  ASSERT_TRUE(axes);
+
+  std::vector<int64_t> config;
+  for (const std::vector<int64_t> &axis : axes->getAxes())
+    config.push_back(axis.front());
+  config[paramIndex(*axes, "mPerBlock")] = 256;
+  config[paramIndex(*axes, "nPerBlock")] = 256;
+
+  FeasibilityCheck refusedOn = FeasibilityCheck::NotOnAxis;
+  EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+  EXPECT_EQ(refusedOn, FeasibilityCheck::OverwideNonAccelMNPair);
+  EXPECT_EQ(getFeasibilityCheckName(refusedOn), "overwideNonAccelMNPair");
 }
 
 // The axes only help a search if they leave it something to move: a parameter

@@ -17,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
+#include <limits>
 #include <thread>
 
 #ifndef _WIN32
@@ -48,6 +49,13 @@ constexpr StringLiteral kProposerEnvVar = "ROCMLIR_LLM_PROPOSER";
 /// Short enough that a fast reply is not sat on, long enough that waiting for
 /// a slow model costs nothing.
 constexpr unsigned kPollIntervalMs = 50;
+
+/// A proposal reply contains only a small JSON object and a batch of short
+/// perf-config strings. Bound it before parsing so a broken helper cannot make
+/// the compiler allocate or recursively parse an unbounded response.
+constexpr uint64_t kMaxResponseBytes = 1024 * 1024;
+constexpr unsigned kMaxJsonNesting = 64;
+constexpr size_t kMaxPerfConfigBytes = 4096;
 
 std::string thisExecutableDir() {
   std::string exePath = llvm::sys::fs::getMainExecutable(
@@ -126,12 +134,15 @@ llvm::Error runWithTimeout(ArrayRef<StringRef> args, StringRef logPath,
       return failed("failed with exit code " + llvm::Twine(done.ReturnCode) +
                     ":");
     }
-    if (done.Pid != 0) {
+    if (done.Pid < 0 && waitErr.empty()) {
+      // On POSIX LLVM returns Pid=-1 and leaves the error empty when wait4's
+      // non-blocking poll is interrupted. The child is still healthy.
+    } else if (done.Pid != 0) {
       // Neither "still running" nor "our child": a genuine wait failure.
       killAndReap();
       return failed("could not be waited for (" + waitErr + "):");
     }
-    if (std::chrono::steady_clock::now() >= deadline) {
+    if (timeoutSec > 0 && std::chrono::steady_clock::now() >= deadline) {
       killAndReap();
       return failed("did not answer within " + llvm::Twine(timeoutSec) + "s:");
     }
@@ -142,15 +153,46 @@ llvm::Error runWithTimeout(ArrayRef<StringRef> args, StringRef logPath,
 /// Reads the `configs` array of a helper's reply. Everything the model itself
 /// got wrong has already been dealt with on the Python side; what is left to
 /// check here is that the helper kept its own end of the contract.
-llvm::Expected<std::vector<std::string>> parseResponse(StringRef text) {
+llvm::Expected<std::vector<std::string>> parseResponse(StringRef text,
+                                                       unsigned maxConfigs,
+                                                       StringRef program,
+                                                       StringRef responsePath) {
+  auto invalid = [&](const llvm::Twine &what) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(), "%s wrote an unusable reply to %s: %s",
+        program.str().c_str(), responsePath.str().c_str(), what.str().c_str());
+  };
+  unsigned nesting = 0;
+  bool inString = false;
+  bool escaped = false;
+  for (char c : text) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      inString = true;
+    } else if (c == '[' || c == '{') {
+      if (++nesting > kMaxJsonNesting)
+        return invalid("reply is nested too deeply");
+    } else if ((c == ']' || c == '}') && nesting > 0) {
+      --nesting;
+    }
+  }
+
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(text);
   if (!parsed)
-    return parsed.takeError();
+    return invalid(llvm::toString(parsed.takeError()));
 
   const llvm::json::Object *root = parsed->getAsObject();
   if (!root)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "expected a JSON object");
+    return invalid("expected a JSON object");
   // A failure the helper can explain -- no API key, the model run failed --
   // comes back in-band, so that it can be reported in the helper's own words
   // rather than as an exit code and a log to go and read. Note that a model
@@ -164,8 +206,11 @@ llvm::Expected<std::vector<std::string>> parseResponse(StringRef text) {
   }
   const llvm::json::Array *configs = root->getArray("configs");
   if (!configs)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "reply has no 'configs' array");
+    return invalid("reply has no 'configs' array");
+  if (configs->size() > maxConfigs)
+    return invalid("reply has " + llvm::Twine(configs->size()) +
+                   " configs, but only " + llvm::Twine(maxConfigs) +
+                   " were requested");
 
   // Whole configs in the canonical named form, which is the only spelling
   // anything in-tree accepts. Whether one of them names a legal config is not
@@ -177,10 +222,13 @@ llvm::Expected<std::vector<std::string>> parseResponse(StringRef text) {
   for (const llvm::json::Value &entry : *configs) {
     std::optional<StringRef> perfConfig = entry.getAsString();
     if (!perfConfig)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
+      return invalid(
           "a config is not a string; the helper answers with perf configs "
           "such as 'gemm:mPerBlock=128,...'");
+    if (perfConfig->size() > kMaxPerfConfigBytes)
+      return invalid("a config is " + llvm::Twine(perfConfig->size()) +
+                     " bytes; the maximum is " +
+                     llvm::Twine(kMaxPerfConfigBytes));
     result.push_back(perfConfig->str());
   }
   return result;
@@ -209,6 +257,14 @@ LLMProposer::LLMProposer(StringRef program, StringRef sessionPath,
 
 llvm::Expected<std::vector<std::string>>
 LLMProposer::propose(llvm::json::Object request) {
+  std::optional<int64_t> requested = request.getInteger("configsRequested");
+  if (!requested || *requested < 0 ||
+      static_cast<uint64_t>(*requested) > std::numeric_limits<unsigned>::max())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "the request has no valid unsigned 'configsRequested'");
+  unsigned maxConfigs = static_cast<unsigned>(*requested);
+
   SmallString<128> requestPath, responsePath, logPath;
   if (llvm::sys::fs::createTemporaryFile("rocmlir-llm-req", "json",
                                          requestPath) ||
@@ -246,10 +302,24 @@ LLMProposer::propose(llvm::json::Object request) {
   if (llvm::Error err = runWithTimeout(args, logPath, timeoutSec))
     return std::move(err);
 
+  uint64_t responseSize = 0;
+  if (std::error_code ec = llvm::sys::fs::file_size(responsePath, responseSize))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "cannot inspect %s: %s",
+                                   responsePath.c_str(), ec.message().c_str());
+  if (responseSize > kMaxResponseBytes)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "%s wrote an oversized reply to %s (%llu bytes; maximum %llu)",
+        program.c_str(), responsePath.c_str(),
+        static_cast<unsigned long long>(responseSize),
+        static_cast<unsigned long long>(kMaxResponseBytes));
+
   auto buffer = llvm::MemoryBuffer::getFile(responsePath);
   if (!buffer)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "%s wrote no reply to %s", program.c_str(),
                                    responsePath.c_str());
-  return parseResponse((*buffer)->getBuffer());
+  return parseResponse((*buffer)->getBuffer(), maxConfigs, program,
+                       responsePath);
 }

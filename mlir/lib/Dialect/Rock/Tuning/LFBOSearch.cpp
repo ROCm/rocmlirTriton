@@ -235,7 +235,9 @@ private:
   std::optional<unsigned> waveCountParam;
   std::vector<ConfigValues> quickSeeds;
 
-  /// Every config considered so far, so none is ever benchmarked twice.
+  /// Every config benchmarked already or handed out to be benchmarked, so none
+  /// is ever benchmarked twice. Candidates rejected by the surrogate stay
+  /// eligible for a later generation after it has learned from more results.
   std::set<ConfigValues> visited;
   llvm::StringMap<Measured> perfByConfig;
   std::vector<std::vector<float>> trainX;
@@ -379,6 +381,13 @@ void LFBOSearch::recordResults(ArrayRef<BenchmarkResult> prevResults) {
         parsePerfConfig(ctx, result.perfConfig);
     if (!params)
       continue;
+    ConfigValues values;
+    params.getParamValues(values);
+    // `parsePerfConfig` recognizes both GEMM attribute kinds. Seed results
+    // may come from another search, so reject one for the wrong kind before
+    // `encode` zips it with this search's feature metadata.
+    if (values.size() != ladders.size())
+      continue;
     auto [entry, isNew] = perfByConfig.try_emplace(result.perfConfig);
     if (!isNew)
       continue;
@@ -387,7 +396,7 @@ void LFBOSearch::recordResults(ArrayRef<BenchmarkResult> prevResults) {
     // failures as much as from the fast configs.
     Measured &measured = entry->second;
     measured.perf = result.measured() ? result.timeNs : kInfinity;
-    params.getParamValues(measured.values);
+    measured.values = std::move(values);
     // A config this search proposed is already here, but a seeded one is not,
     // and nothing measured should ever be handed out again.
     visited.insert(measured.values);
@@ -526,7 +535,7 @@ std::vector<PerfConfigString> LFBOSearch::runGeneration() {
     // the neighbourhood against the point it came from.
     candidates.assign(1, copy.current);
     for (const ConfigValues &neighbor : neighbors)
-      if (visited.insert(neighbor).second)
+      if (visited.find(neighbor) == visited.end())
         candidates.push_back(neighbor);
       else
         ++neighborsSeenBefore;
@@ -548,6 +557,12 @@ std::vector<PerfConfigString> LFBOSearch::runGeneration() {
         2, static_cast<unsigned>(candidates.size() * options.fracSelected));
     for (unsigned idx : surrogateSelect(features, numSelected)) {
       if (idx == 0)
+        continue;
+      // Only a selected -- and therefore benchmarked -- candidate becomes
+      // visited. A rejected candidate may be worth reconsidering after the
+      // surrogate has learned from this generation, matching Helion's
+      // benchmarked-only visited-set policy.
+      if (!visited.insert(candidates[idx]).second)
         continue;
       PerfConfigString perfConfig;
       serialize(candidates[idx], perfConfig);

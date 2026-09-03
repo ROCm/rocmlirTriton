@@ -511,7 +511,7 @@ bool valuesAreAdmissible(ArrayRef<std::vector<int64_t>> axes,
     return false;
   for (auto [axis, isKnob, value] : llvm::zip_equal(axes, knobParams, values)) {
     bool legal =
-        isKnob ? isValidKnobBoolean(value) : llvm::is_contained(axis, value);
+        (isKnob && value == kKnobDefault) || llvm::is_contained(axis, value);
     if (!legal)
       return false;
   }
@@ -532,6 +532,7 @@ public:
     MatrixAccelKind accelKind = rock::getMatrixAccelKind(arch, gemmOp);
     isMfma = accelKind == MatrixAccelKind::MFMA ||
              accelKind == MatrixAccelKind::ScaledMFMA;
+    isNonAccel = accelKind == MatrixAccelKind::None;
 
     requirePow2 = pow2TilesRequired(gemmOp);
 
@@ -595,6 +596,8 @@ public:
 
   void serialize(ArrayRef<int64_t> values,
                  PerfConfigString &out) const override {
+    assert(values.size() == axes.size() &&
+           "serialize expects one value per axis");
     out.clear();
     exemplar.cloneWithParamValues(values).getPerfConfigStr(out);
   }
@@ -622,6 +625,13 @@ public:
                       {mPerBlock, nPerBlock, kPerBlock, params.getNumWaves(),
                        params.getMatrixInstrNonkdim(), params.getNumStages()}))
       return refuse(FeasibilityCheck::LdsBlacklist);
+    // The same pairs `createGemmTuningRangeBF` skips: on the FMA path these
+    // cost about 70% of the enumerated space's compile time and have never won
+    // a shape, so a search should not spend trials on them either.
+    if (isNonAccel &&
+        isOverwideNonAccelMNPair(static_cast<uint32_t>(mPerBlock),
+                                 static_cast<uint32_t>(nPerBlock)))
+      return refuse(FeasibilityCheck::OverwideNonAccelMNPair);
     // A search chooses what to spend its trials on, and a config that takes the
     // backend minutes to compile costs it many trials' worth of time, so it is
     // worth passing over here even though the enumerated space keeps it: that
@@ -688,6 +698,9 @@ private:
   GemmLdsKeySet ldsBlacklist;
   Pow2TileRequirement requirePow2;
   bool isMfma;
+  // Whether the op is on the FMA path, which is where the overwide M/N pairs
+  // are too costly to compile to be worth a trial.
+  bool isNonAccel;
   RockTuningParamAttrInterface exemplar;
   // What to explore, and which of its parameters are knobs, whose legal values
   // are wider than that; see `valuesAreAdmissible`.
@@ -755,6 +768,8 @@ public:
 
   void serialize(ArrayRef<int64_t> values,
                  PerfConfigString &out) const override {
+    assert(values.size() == axes.size() &&
+           "serialize expects one value per axis");
     out.clear();
     exemplar.cloneWithParamValues(values).getPerfConfigStr(out);
   }
@@ -943,6 +958,8 @@ StringRef mlir::rock::getFeasibilityCheckName(FeasibilityCheck check) {
     return "bufferKnobsDisagree";
   case FeasibilityCheck::NotPerformant:
     return "notPerformant";
+  case FeasibilityCheck::OverwideNonAccelMNPair:
+    return "overwideNonAccelMNPair";
   }
   llvm_unreachable("unhandled feasibility check");
 }
@@ -950,11 +967,6 @@ StringRef mlir::rock::getFeasibilityCheckName(FeasibilityCheck check) {
 std::unique_ptr<TuningSearchStrategy>
 mlir::rock::createTuningSearchStrategy(ModuleOp mod, SearchStrategyKind kind,
                                        const SearchOptions &options) {
-  // One writer for the whole run, however many searches it is made of: the
-  // stages of a composite share a trace rather than each opening the path and
-  // truncating whatever the last one wrote.
-  SharedTrace trace = openTrace(options.tracePath);
-
   switch (kind) {
   case SearchStrategyKind::Quick:
     return wholeSpaceStrategy(mod, TuningParamSetKind::Quick);
@@ -963,12 +975,14 @@ mlir::rock::createTuningSearchStrategy(ModuleOp mod, SearchStrategyKind kind,
   case SearchStrategyKind::Exhaustive:
     return wholeSpaceStrategy(mod, TuningParamSetKind::Exhaustive);
   case SearchStrategyKind::LFBO: {
+    SharedTrace trace = openTrace(options.tracePath);
     LFBOOptions lfbo;
     lfbo.setEffort(options.effort);
     lfbo.trace = trace;
     return createLFBOSearchStrategy(mod, lfbo);
   }
   case SearchStrategyKind::LLM: {
+    SharedTrace trace = openTrace(options.tracePath);
     LLMOptions llm;
     llm.search = options.llm;
     llm.setEffort(options.effort);
@@ -976,6 +990,9 @@ mlir::rock::createTuningSearchStrategy(ModuleOp mod, SearchStrategyKind kind,
     return createLLMSearchStrategy(mod, llm);
   }
   case SearchStrategyKind::LLMSeededLFBO: {
+    // One writer for both stages: a composite shares a trace rather than each
+    // stage opening the path and truncating what the first one wrote.
+    SharedTrace trace = openTrace(options.tracePath);
     LLMOptions llm;
     llm.search = options.llm;
     // The seed stage is a quick one however much the run as a whole may

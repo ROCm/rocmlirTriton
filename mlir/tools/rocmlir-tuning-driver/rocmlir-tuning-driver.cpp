@@ -229,7 +229,7 @@ static llvm::cl::opt<rock::SearchEffort> searchEffort(
 
 static llvm::cl::opt<std::string> searchTrace(
     "search-trace",
-    llvm::cl::desc("Append a JSON record of every search iteration to this "
+    llvm::cl::desc("Write a JSON record of every search iteration to this "
                    "file, one object per line: what was measured, what was "
                    "proposed and what it cost. Only the adaptive tuning "
                    "spaces search in iterations, so only they write anything. "
@@ -281,7 +281,7 @@ static llvm::cl::opt<unsigned> llmInitialRandomConfigs(
 static llvm::cl::opt<unsigned> llmRequestTimeout(
     "llm-request-timeout",
     llvm::cl::desc("How long one round may take before the proposer is "
-                   "killed and the run fails."),
+                   "killed and the run fails. 0 disables the timeout."),
     llvm::cl::value_desc("seconds"),
     llvm::cl::init(rock::LLMSearchOptions{}.requestTimeoutSec));
 
@@ -1594,6 +1594,17 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // Host/device buffers are allocated inside runBenchmarkPhase (the shared
   // timing path), so --compile-only performs no HIP work at all.
 
+  const bool searchAsksAModel =
+      benchmarkConfig.empty() &&
+      (tuningSpaceKind == rock::SearchStrategyKind::LLM ||
+       tuningSpaceKind == rock::SearchStrategyKind::LLMSeededLFBO);
+  if (searchAsksAModel && (llmRounds == 0 || llmConfigsPerRound == 0)) {
+    llvm::errs()
+        << "error: --llm-rounds and --llm-configs-per-round must be at least "
+           "1\n";
+    return failure();
+  }
+
   rock::SearchOptions searchOptions;
   searchOptions.effort = searchEffort;
   searchOptions.tracePath = searchTrace;
@@ -1613,9 +1624,6 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // compiles each config in a killable subprocess; at 0 there is no timeout to
   // cap, and imposing one would move the whole run into subprocesses to buy a
   // guarantee nobody asked for.
-  const bool searchAsksAModel =
-      tuningSpaceKind == rock::SearchStrategyKind::LLM ||
-      tuningSpaceKind == rock::SearchStrategyKind::LLMSeededLFBO;
   unsigned effectivePerfConfigTimeout = perfConfigTimeout;
   if (searchAsksAModel && perfConfigTimeout > 0 && llmCompileTimeout > 0)
     effectivePerfConfigTimeout =

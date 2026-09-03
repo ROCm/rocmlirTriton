@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """Plot how a searched tuning run got where it got.
 
 The searched tuning spaces (--tuning-space=lfbo, llm, llm-lfbo) record one JSON

@@ -1037,6 +1037,35 @@ TEST(LLMSearchTest, QuickEffortAsksForFewerRounds) {
 }
 
 //===----------------------------------------------------------------------===//
+// Walking away mid-round
+//===----------------------------------------------------------------------===//
+
+TEST(LLMSearchTest, SurvivesBeingAbandonedWithARequestInFlight) {
+  // Round 0's request is launched as soon as the seed batch goes out, so that
+  // the model's latency is spent alongside a batch of compiles. A client is
+  // free never to come back for it -- the tuning driver returns a failure
+  // without another call to `getPerfConfigBatch` as soon as one config in the
+  // batch fails to compile -- which destroys the search while its helper is
+  // still running. The proposer that helper is reading its paths from has to
+  // outlive it, so the search drains the request before it goes.
+  //
+  // The fixture sleeps to keep the request in flight for the destructor to
+  // find. There is nothing to assert beyond arriving here: the failure this
+  // pins is a use-after-free, so it takes a sanitizer to see it, and the older
+  // secondary symptom -- teardown sitting out the whole request deadline --
+  // would only show up as a slow test.
+  FixtureProposer fixture(std::string("import time\ntime.sleep(0.5)\n") +
+                          alwaysAnswers("[render()]"));
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  std::unique_ptr<TuningSearchStrategy> search =
+      createLLMSearchStrategy(*e.module, testOptions(fixture));
+  EXPECT_FALSE(search->getPerfConfigBatch({}).empty())
+      << "no seed batch, so no round was ever launched to abandon";
+  search.reset();
+}
+
+//===----------------------------------------------------------------------===//
 // The transport
 //
 // Driven directly, because the search makes a failed round fatal on purpose
@@ -1060,6 +1089,43 @@ TEST(LLMProposerTest, ReadsTheConfigsAHelperWrote) {
   ASSERT_TRUE(!!configs) << llvm::toString(configs.takeError());
   EXPECT_EQ(*configs, (std::vector<std::string>{"gemm:mPerBlock=64",
                                                 "gemm:nPerBlock=128"}));
+}
+
+TEST(LLMProposerTest, RefusesMoreConfigsThanTheRequestAskedFor) {
+  FixtureProposer fixture(alwaysAnswers(
+      "['gemm:mPerBlock=64', 'gemm:nPerBlock=128', 'gemm:kPerBlock=16']"));
+  LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
+
+  llvm::Expected<std::vector<std::string>> configs =
+      proposer.propose(minimalRequest());
+  ASSERT_FALSE(!!configs);
+  EXPECT_NE(llvm::toString(configs.takeError()).find("only 2 were requested"),
+            std::string::npos);
+}
+
+TEST(LLMProposerTest, RefusesAReplyNestedTooDeeplyToParseSafely) {
+  FixtureProposer fixture(
+      "open(args.response, 'w').write('[' * 65 + '0' + ']' * 65)");
+  LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
+                       /*transcriptPath=*/"", /*timeoutSec=*/60);
+
+  llvm::Expected<std::vector<std::string>> configs =
+      proposer.propose(minimalRequest());
+  ASSERT_FALSE(!!configs);
+  EXPECT_NE(llvm::toString(configs.takeError()).find("nested too deeply"),
+            std::string::npos);
+}
+
+TEST(LLMProposerTest, ZeroTimeoutLeavesTheHelperUnlimited) {
+  FixtureProposer fixture(alwaysAnswers("['gemm:mPerBlock=64']"));
+  LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
+                       /*transcriptPath=*/"", /*timeoutSec=*/0);
+
+  llvm::Expected<std::vector<std::string>> configs =
+      proposer.propose(minimalRequest());
+  ASSERT_TRUE(!!configs) << llvm::toString(configs.takeError());
+  EXPECT_EQ(configs->size(), 1u);
 }
 
 // A helper that cannot do its job says so in the reply, and the message it

@@ -558,6 +558,27 @@ public:
                  options.search.transcriptPath,
                  options.search.requestTimeoutSec) {}
 
+  /// Drains the round in flight, which has to happen before the proposer it
+  /// calls into and the session file it is writing go away. `pending` is
+  /// declared ahead of both, so member order alone destroys them first, and a
+  /// future from `std::async` blocks in its own destructor regardless. A
+  /// client is free to abandon the search mid-round -- the tuning driver does
+  /// exactly that when a config fails to compile -- so this is a path a normal
+  /// run takes.
+  ~LLMSearch() override {
+    // A deferred future runs its task on `get()`, and asking the model a
+    // question nobody will read is not what teardown is for. Only round 0's
+    // request is ever left in flight, and that one is always `async`.
+    if (!pending || pending->wait_for(std::chrono::seconds(0)) ==
+                        std::future_status::deferred)
+      return;
+    // Taking the result is what waits. It also has to be consumed rather than
+    // dropped: an `Expected` aborts if it is destroyed unchecked, and one
+    // holding the answer to a round nobody asked for is still an answer.
+    llvm::Expected<std::vector<std::string>> abandoned = pending->get();
+    llvm::consumeError(abandoned.takeError());
+  }
+
   std::vector<PerfConfigString>
   getPerfConfigBatch(ArrayRef<BenchmarkResult> prevResults) override;
 
