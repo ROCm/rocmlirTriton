@@ -1,5 +1,6 @@
 add_subdirectory(CPU)
 add_subdirectory(EmulateFp8ExtTrunc)
+add_subdirectory(HIPToTosa)
 add_subdirectory(MIGraphXToTosa)
 add_subdirectory(RocmlirCustomTosaDecompose)
 add_subdirectory(RocmlirCustomTosaToLinalg)

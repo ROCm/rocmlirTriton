@@ -107,6 +107,19 @@ def MIGraphXToTosaPass : Pass<"migraphx-to-tosa", "::mlir::func::FuncOp"> {
 }
 
 //===----------------------------------------------------------------------===//
+// HIPToTosa
+//===----------------------------------------------------------------------===//
+
+def HIPToTosaPass : Pass<"hip-to-tosa", "::mlir::func::FuncOp"> {
+  let summary = "Lower HIP to TOSA";
+  let description = [{
+    Pass that converts HIP operations to TOSA operations.
+  }];
+
+  let dependentDialects = ["func::FuncDialect", "tosa::TosaDialect", ];
+}
+
+//===----------------------------------------------------------------------===//
 // EmulateFp8ExtTrunc
 //===----------------------------------------------------------------------===//
 
