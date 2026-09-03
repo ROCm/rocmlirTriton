@@ -16,6 +16,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "hip/Dialect/IR/HipDialect.h"
 
@@ -43,8 +44,16 @@ void HIPToTosa::runOnOperation() {
   hip::populateHIPToTosaConversionPatterns(patterns);
   if (failed(applyPatternsGreedily(func, std::move(patterns))))
     return signalPassFailure();
+
+  // TODO: see the matching TODO in HIPToTosa.cpp -- this does not belong here.
+  hip::annotateAsRockKernel(func, arch);
 }
 
-void mlir::hip::addHIPToTosaPasses(OpPassManager &pm) {
-  pm.addNestedPass<func::FuncOp>(createHIPToTosaPass());
+void mlir::hip::addHIPToTosaPasses(OpPassManager &pm, StringRef arch) {
+  auto &funcPm = pm.nest<func::FuncOp>();
+  HIPToTosaPassOptions opts;
+  opts.arch = arch.str();
+  funcPm.addPass(createHIPToTosaPass(opts));
+  funcPm.addPass(createCanonicalizerPass());
+  funcPm.addPass(createCSEPass());
 }

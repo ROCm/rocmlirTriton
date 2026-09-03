@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/HIPToTosa/HIPToTosa.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/tosaUtils.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
@@ -138,6 +140,35 @@ struct TransposeConverter final : public OpRewritePattern<hip::TransposeOp> {
 };
 
 } // namespace
+
+//===----------------------------------------------------------------------===//
+//
+//   TODO: THIS SHOULD PROBABLY GO SOMEWHERE ELSE!
+//
+//   Stamping `rock.kernel` / `rock.arch` onto the function is not part of
+//   converting HIP ops to TOSA -- it only lives here because TosaToRock
+//   refuses to run without them and nothing else on the HIP path supplies
+//   them yet. On the MIGraphX path these come from the driver pipeline
+//   (rocmlir-driver knows the target and sets `rock.arch` on the module),
+//   not from MIGraphXToTosa.
+//
+//   Once HIP ingestion has a real pipeline, this belongs there -- alongside
+//   whatever decides which functions are kernels at all, since right now we
+//   assume every function we see is one.
+//
+//===----------------------------------------------------------------------===//
+void mlir::hip::annotateAsRockKernel(func::FuncOp func, StringRef arch) {
+  OpBuilder builder(func.getContext());
+  // Presence is all that is checked; rock::KernelAttr is parameterless and
+  // every consumer tests it with hasAttr, so a unit attribute is the canonical
+  // form (see ConvGenerator.cpp).
+  func->setAttr(rock::KernelAttr::getMnemonic(), builder.getUnitAttr());
+  if (!arch.empty())
+    func->setAttr(rock::ArchAttr::getMnemonic(), builder.getStringAttr(arch));
+}
+//===----------------------------------------------------------------------===//
+//   END OF THE BIT THAT SHOULD PROBABLY GO SOMEWHERE ELSE
+//===----------------------------------------------------------------------===//
 
 void mlir::hip::populateHIPToTosaConversionPatterns(
     RewritePatternSet &patterns) {

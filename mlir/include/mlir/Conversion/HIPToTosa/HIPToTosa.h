@@ -14,6 +14,7 @@
 #ifndef MLIR_CONVERSION_HIPTOTOSA_H
 #define MLIR_CONVERSION_HIPTOTOSA_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -30,7 +31,15 @@ namespace hip {
 /// Populates conversion patterns from the HIP dialect to the TOSA dialect.
 void populateHIPToTosaConversionPatterns(RewritePatternSet &patterns);
 
-void addHIPToTosaPasses(OpPassManager &pm);
+/// Mark `func` as a Rock kernel targeting `arch`, so that the TosaToRock pass
+/// will accept it. See the TODO in HIPToTosa.cpp -- this does not belong in a
+/// HIP-to-TOSA conversion.
+void annotateAsRockKernel(func::FuncOp func, StringRef arch);
+
+/// Build the HIP-to-TOSA stage of the `hipep` kernel pipeline, targeting
+/// `arch`.
+void addHIPToTosaPasses(OpPassManager &pm, StringRef arch);
+
 } // namespace hip
 } // namespace mlir
 

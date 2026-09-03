@@ -116,6 +116,11 @@ def HIPToTosaPass : Pass<"hip-to-tosa", "::mlir::func::FuncOp"> {
     Pass that converts HIP operations to TOSA operations.
   }];
 
+  let options = [Option<
+                     "arch", "arch", "std::string", "\"\"",
+                     "Target architecture stamped onto the kernel as rock.arch">,
+  ];
+
   let dependentDialects = ["func::FuncDialect", "tosa::TosaDialect", ];
 }
 

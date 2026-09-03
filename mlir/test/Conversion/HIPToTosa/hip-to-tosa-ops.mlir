@@ -1,6 +1,8 @@
-// RUN: rocmlir-opt --hip-to-tosa %s | FileCheck %s
+// RUN: rocmlir-opt --hip-to-tosa='arch=gfx942' %s | FileCheck %s
 
+// The pass also marks each function as a Rock kernel so TosaToRock accepts it.
 // CHECK-LABEL: func.func @hip_transpose
+// CHECK-SAME: attributes {rock.arch = "gfx942", rock.kernel}
 // CHECK: tosa.transpose %arg1 {perms = array<i32: 0, 3, 1, 2>}
 // CHECK-NOT: hip.transpose
 func.func @hip_transpose(%ctx: !hip.context, %arg0: tensor<4x16x256x4xf32>) -> tensor<4x4x16x256xf32> {

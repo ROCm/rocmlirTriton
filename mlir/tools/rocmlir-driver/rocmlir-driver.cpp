@@ -71,7 +71,8 @@ static cl::opt<std::string>
     kernelPipeline("kernel-pipeline",
                    cl::desc("rocmlir-driver kernel pipeline list"),
                    cl::value_desc("comma separated list of rock pipelines: "
-                                  "migraphx,highlevel,gpu,binary or full"),
+                                  "hipep,migraphx,highlevel,gpu,binary or "
+                                  "full"),
                    cl::init(""));
 
 static cl::opt<std::string>
@@ -332,7 +333,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   }
 
   llvm::SmallDenseSet<StringRef> kernelPipelineOptions{
-      "migraphx", "highlevel", "gpu", "binary", "triton"};
+      "hipep", "migraphx", "highlevel", "gpu", "binary", "triton"};
   llvm::SmallDenseSet<StringRef> kernelFullPipeline{"gpu", "triton", "binary"};
   llvm::SmallDenseSet<StringRef> kernelPipelineSet;
   std::string kernelPipelineStr = kernelPipeline.getValue();
@@ -353,6 +354,20 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     return f->hasAttr(rock::KernelAttr::getMnemonic());
   };
   auto isHost = [&](func::FuncOp f) { return !isKernel(f); };
+
+  // Phase 0: HIP EP lowering.
+  //
+  // Unlike the MIGraphX path, this one cannot split host from kernel
+  // functions: a HIP module arrives with no `rock.kernel` anywhere, and it is
+  // this very phase that stamps it (see the TODO in HIPToTosa.cpp). So detach
+  // nothing and run over every function. Later phases then see the kernels
+  // this marked, because `isKernel` is re-evaluated per phase.
+  if (kernelPipelineSet.contains("hipep")) {
+    if (failed(runWithDetach(
+            module, "Kernel HIPEP", [](func::FuncOp) { return false; },
+            [&](PassManager &pm) { hip::addHIPToTosaPasses(pm, arch); })))
+      return failure();
+  }
 
   // Phase 1: MIGraphX lowering (host and kernel independently).
   //
