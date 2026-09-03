@@ -107,6 +107,20 @@ PYBIND11_MODULE(amd_arch_db, m) {
       },
       py::arg("arch"), py::arg("num_cus"));
 
+  m.def("get_native_device_count",
+        []() { return mlir::rock::getNativeDeviceCount(); });
+
+  m.def(
+      "get_native_arch",
+      [](unsigned deviceId) -> py::object {
+        std::optional<mlir::rock::NativeDeviceInfo> info =
+            mlir::rock::getNativeDeviceInfo(deviceId);
+        if (!info)
+          return py::none();
+        return py::str(info->arch);
+      },
+      py::arg("device_id") = 0);
+
   m.def(
       "get_native_num_cu",
       [](const std::string &arch) -> py::object {

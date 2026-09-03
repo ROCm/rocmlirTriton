@@ -32,16 +32,16 @@ from perfCommonUtils import GEMMLibrary, Operation, SPLITK_KEY, parse_perfconfig
 import amd_arch_db
 
 # Rock treats a WGP as the effective compute unit on architectures that support
-# WGP mode. Set this before importing HIP so multiProcessorCount always reports
-# WGPs there, even if the caller requested CU mode in its environment.
+# WGP mode. amd_arch_db requests the mode itself, as do rocmlir-gen and the
+# tuning driver, but this is exported so that the child processes which still
+# read multiProcessorCount on their own (the external benchmark drivers built
+# on benchmarkUtils.cpp) inherit it too.
 if os.environ.get("GPU_ENABLE_WGP_MODE") == "0":
     print(
         "WARNING: GPU_ENABLE_WGP_MODE=0 is overridden to 1 because perfRunner "
         "requires WGP mode.",
         file=sys.stderr)
 os.environ["GPU_ENABLE_WGP_MODE"] = "1"
-
-from hip import hip  # noqa: E402
 
 # global variables.
 # Honor ROCM_PATH so the scripts work with relocatable/SDK ROCm installs
@@ -188,28 +188,12 @@ def find_mlir_build_dir() -> str:
     return str(build_dir)
 
 
-def hip_check(call_result):
-    err = call_result[0]
-    result = call_result[1:]
-    if len(result) == 1:
-        result = result[0]
-    if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
-        raise RuntimeError(str(err))
-    return result
-
-
-def iter_device_props():
-    for device in range(hip_check(hip.hipGetDeviceCount())):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        yield props
-
-
 def get_arch() -> str:
     agents = set()
-    for props in iter_device_props():
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+    for device in range(amd_arch_db.get_native_device_count()):
+        agent = amd_arch_db.get_native_arch(device)
+        if agent is not None:
+            agents.add(agent)
     if (len(agents) > 1):
         print(
             f"WARNING: Found {len(agents)} different kinds of agents on the same machine :  {', '.join(agents)}"

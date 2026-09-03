@@ -57,27 +57,15 @@ import os
 import sys
 import getopt
 import glob
-from hip import hip
-
-
-def hip_check(call_result):
-    err = call_result[0]
-    result = call_result[1:]
-    if len(result) == 1:
-        result = result[0]
-    if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
-        raise RuntimeError(str(err))
-    return result
+import amd_arch_db
 
 
 def get_arch():
     agents = set()
-    device_count = hip_check(hip.hipGetDeviceCount())
-    for device in range(device_count):
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+    for device in range(amd_arch_db.get_native_device_count()):
+        agent = amd_arch_db.get_native_arch(device)
+        if agent is not None:
+            agents.add(agent)
 
     return agents
 

@@ -37,6 +37,9 @@ struct NativeDeviceInfo {
   int64_t numCU;
 };
 
+/// How many HIP devices are visible, or 0 when HIP is unavailable at runtime.
+int64_t getNativeDeviceCount();
+
 /// Query `deviceId`, or std::nullopt when HIP is unavailable at runtime, no
 /// device is visible, or the device reports a nonsensical count.
 std::optional<NativeDeviceInfo> getNativeDeviceInfo(unsigned deviceId = 0);

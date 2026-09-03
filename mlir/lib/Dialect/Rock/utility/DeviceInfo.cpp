@@ -37,12 +37,17 @@ void requestWGPScheduling() {
 #endif
 }
 
+int64_t getNativeDeviceCount() {
+  int deviceCount = 0;
+  if (hipGetDeviceCount(&deviceCount) != hipSuccess || deviceCount <= 0)
+    return 0;
+  return deviceCount;
+}
+
 std::optional<NativeDeviceInfo> getNativeDeviceInfo(unsigned deviceId) {
   requestWGPScheduling();
 
-  int deviceCount = 0;
-  if (hipGetDeviceCount(&deviceCount) != hipSuccess || deviceCount <= 0 ||
-      deviceId >= static_cast<unsigned>(deviceCount))
+  if (deviceId >= static_cast<unsigned>(getNativeDeviceCount()))
     return std::nullopt;
 
   hipDeviceProp_t properties;
