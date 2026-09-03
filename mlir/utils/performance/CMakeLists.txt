@@ -26,6 +26,21 @@ set(PERFORMANCE_SCRIPTS
 
 list(TRANSFORM PERFORMANCE_SCRIPTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 
+# The LLM proposer is a package, not a script, so it keeps its directory: a
+# flat copy alongside the others would break its imports. rocmlir-tuning-driver
+# locates it at ${ROCMLIR_BIN_DIR}/llm/proposer.py, relative to itself.
+set(LLM_PROPOSER_SCRIPTS
+  __init__.py
+  configs.py
+  feedback.py
+  parsing.py
+  prompting.py
+  proposer.py
+  transport.py
+  workload.py
+)
+list(TRANSFORM LLM_PROPOSER_SCRIPTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/llm/")
+
 # rocm-run is the bash wrapper around mlir-runner that the perf/tuning scripts
 # invoke at runtime. It must sit in ${ROCMLIR_BIN_DIR} alongside them so that
 # (a) the Python scripts can find it via paths.mlir_paths.rocm_run_path, and
@@ -41,6 +56,8 @@ endif()
 
 add_custom_target(ci-performance-scripts
   COMMAND ${CMAKE_COMMAND} -E copy ${PERFORMANCE_SCRIPTS} ${ROCMLIR_BIN_DIR}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ROCMLIR_BIN_DIR}/llm
+  COMMAND ${CMAKE_COMMAND} -E copy ${LLM_PROPOSER_SCRIPTS} ${ROCMLIR_BIN_DIR}/llm
   COMMAND ${CMAKE_COMMAND} -E copy ${ROCM_RUN_WRAPPER} ${ROCMLIR_BIN_DIR}
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           $<TARGET_FILE:amd_arch_db> ${ROCMLIR_BIN_DIR})

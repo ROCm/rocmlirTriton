@@ -3,6 +3,7 @@ set(ROCK_UNITTEST_SOURCES
   BuilderUtilsTests.cpp
   GetRockInfoTests.cpp
   LFBOSearchTests.cpp
+  LLMSearchTests.cpp
   PerfConfigOrderingGemmTests.cpp
   PerfConfigOrderingGemmGemmTests.cpp
   PerfConfigParsingTests.cpp
@@ -10,6 +11,7 @@ set(ROCK_UNITTEST_SOURCES
   RocmDeviceNameTests.cpp
   TransformMapBuilderTests.cpp
   TuningParamAxesTests.cpp
+  TuningSearchTests.cpp
   TosaUtilsTests.cpp
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp

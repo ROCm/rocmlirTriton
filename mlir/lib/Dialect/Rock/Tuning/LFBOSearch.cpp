@@ -44,25 +44,12 @@ constexpr double kInfinity = std::numeric_limits<double>::infinity();
 // Perf config encoding
 //===----------------------------------------------------------------------===//
 
-/// A perf config as the search sees it: the values of its parameters, in the
-/// order the attribute reports them. The search never learns what any of them
-/// mean, nor how many there are; it only moves a value to another value the
-/// same parameter is known to take. That keeps it working unchanged when a
-/// parameter is added to, or removed from, a perf config.
-using ConfigValues = SmallVector<int64_t, 24>;
-
-/// Reads a serialized config back through the attribute that owns the format,
-/// which is the only thing here that knows how a config is spelled. Returns
-/// null if neither perf-config attribute recognizes the string.
-RockTuningParamAttrInterface parseConfig(MLIRContext *ctx,
-                                         StringRef perfConfig) {
-  StringAttr perfConfigAttr = StringAttr::get(ctx, perfConfig);
-  if (auto gemmParams = GemmParamsAttr::get(perfConfigAttr))
-    return gemmParams;
-  if (auto gemmGemmParams = GemmGemmParamsAttr::get(perfConfigAttr))
-    return gemmGemmParams;
-  return nullptr;
-}
+// A perf config reaches the search as `ConfigValues`, the values of its
+// parameters in the order the attribute reports them (see RockTuning.h).
+// The search never learns what any of them mean, nor how many there are; it
+// only moves a value to another value the same parameter is known to take.
+// That keeps it working unchanged when a parameter is added to, or removed
+// from, a perf config.
 
 /// Whether every value a parameter takes is a power of two, in which case it is
 /// encoded in log2, as Helion encodes its own power-of-two parameters. Derived
@@ -108,60 +95,13 @@ double quantileOf(MutableArrayRef<double> values, double quantile) {
 }
 
 //===----------------------------------------------------------------------===//
-// Iteration trace
-//===----------------------------------------------------------------------===//
-
-/// Appends one JSON object per line to a file. A tuning run is long and is
-/// often interrupted, so each line is flushed as it is written: a trace of the
-/// iterations that did happen is worth having.
-class TraceWriter {
-public:
-  explicit TraceWriter(StringRef path) {
-    if (path.empty())
-      return;
-    std::error_code ec;
-    auto file = std::make_unique<llvm::raw_fd_ostream>(
-        path, ec, llvm::sys::fs::CD_CreateAlways, llvm::sys::fs::FA_Write,
-        llvm::sys::fs::OF_Text);
-    // A trace nobody can write is not worth failing a tuning run over.
-    if (ec) {
-      llvm::errs() << "warning: not tracing the search: cannot open " << path
-                   << ": " << ec.message() << "\n";
-      return;
-    }
-    os = std::move(file);
-  }
-
-  bool enabled() const { return os != nullptr; }
-
-  void write(llvm::json::Object record) {
-    if (!os)
-      return;
-    *os << llvm::json::Value(std::move(record)) << "\n";
-    os->flush();
-  }
-
-private:
-  std::unique_ptr<llvm::raw_fd_ostream> os;
-};
-
-/// A time that was never measured is `null` rather than a number, since JSON
-/// has no infinity and a reader must not mistake one for a measurement.
-llvm::json::Value finiteOrNull(double value) {
-  if (!std::isfinite(value))
-    return nullptr;
-  return value;
-}
-
-//===----------------------------------------------------------------------===//
 // LFBOSearch
 //===----------------------------------------------------------------------===//
 
 class LFBOSearch : public TuningSearchStrategy {
 public:
   LFBOSearch(ModuleOp mod, const LFBOOptions &options)
-      : mod(mod), options(options), rng(options.seed),
-        trace(options.tracePath) {}
+      : mod(mod), options(options), rng(options.seed), trace(options.trace) {}
 
   std::vector<PerfConfigString>
   getPerfConfigBatch(ArrayRef<BenchmarkResult> prevResults) override;
@@ -317,7 +257,7 @@ private:
   // being written.
   //===--------------------------------------------------------------------===//
 
-  TraceWriter trace;
+  SharedTrace trace;
   llvm::StringMap<Provenance> provenance;
   /// When the last batch was handed out, so that the next call can report how
   /// long the client spent compiling and benchmarking it. Iterations differ
@@ -386,7 +326,7 @@ bool LFBOSearch::buildSearchSpace() {
   std::unique_ptr<TuningParamSet> quickSpace(
       createTunableParamSpace(mod, TuningParamSetKind::Quick));
   for (const PerfConfigString &perfConfig : quickSpace->tuningRange) {
-    RockTuningParamAttrInterface params = parseConfig(ctx, perfConfig);
+    RockTuningParamAttrInterface params = parsePerfConfig(ctx, perfConfig);
     assert(params && "a tuning space spelled a config its attribute rejects");
     quickSeeds.emplace_back();
     params.getParamValues(quickSeeds.back());
@@ -435,7 +375,8 @@ void LFBOSearch::recordResults(ArrayRef<BenchmarkResult> prevResults) {
       break;
     }
 
-    RockTuningParamAttrInterface params = parseConfig(ctx, result.perfConfig);
+    RockTuningParamAttrInterface params =
+        parsePerfConfig(ctx, result.perfConfig);
     if (!params)
       continue;
     auto [entry, isNew] = perfByConfig.try_emplace(result.perfConfig);
@@ -447,6 +388,9 @@ void LFBOSearch::recordResults(ArrayRef<BenchmarkResult> prevResults) {
     Measured &measured = entry->second;
     measured.perf = result.measured() ? result.timeNs : kInfinity;
     params.getParamValues(measured.values);
+    // A config this search proposed is already here, but a seeded one is not,
+    // and nothing measured should ever be handed out again.
+    visited.insert(measured.values);
     trainX.emplace_back();
     encode(measured.values, trainX.back());
     trainY.push_back(measured.perf);
@@ -461,7 +405,7 @@ void LFBOSearch::recordResults(ArrayRef<BenchmarkResult> prevResults) {
   // it was aiming at. This is what tells a surrogate that has learnt something
   // apart from one that is sampling the neighbourhood at random.
   pickPrecision = -1.0;
-  if (!trace.enabled() || !std::isfinite(inFlightThreshold))
+  if (!traceEnabled(trace) || !std::isfinite(inFlightThreshold))
     return;
   unsigned judged = 0, good = 0;
   for (const PerfConfigString &perfConfig : inFlight) {
@@ -906,13 +850,13 @@ void LFBOSearch::generateTreeGuidedNeighbors(const ConfigValues &base,
 
 void LFBOSearch::recordProvenance(const PerfConfigString &perfConfig,
                                   Origin origin, unsigned copy) {
-  if (!trace.enabled())
+  if (!traceEnabled(trace))
     return;
   provenance[perfConfig] = Provenance{origin, copy, generation};
 }
 
 void LFBOSearch::traceHeader() {
-  if (!trace.enabled())
+  if (!traceEnabled(trace))
     return;
 
   SmallVector<StringRef> names;
@@ -926,27 +870,27 @@ void LFBOSearch::traceHeader() {
   if (auto archAttr = mod->getAttrOfType<StringAttr>(ArchAttr::getMnemonic()))
     arch = archAttr.getValue();
 
-  trace.write(
-      llvm::json::Object{{"kind", "header"},
-                         {"arch", arch},
-                         {"seed", options.seed},
-                         {"initialPopulation", options.initialPopulation},
-                         {"copies", options.copies},
-                         {"maxGenerations", options.maxGenerations},
-                         {"numNeighbors", options.numNeighbors},
-                         {"fracSelected", options.fracSelected},
-                         {"radius", options.radius},
-                         {"quantile", options.quantile},
-                         {"patience", options.patience},
-                         {"minImprovementDelta", options.minImprovementDelta},
-                         {"similarityPenalty", options.similarityPenalty},
-                         {"quickSeeds", quickSeeds.size()},
-                         {"params", std::move(params)}});
+  traceWrite(trace, llvm::json::Object{
+                        {"kind", "header"},
+                        {"arch", arch},
+                        {"seed", options.seed},
+                        {"initialPopulation", options.initialPopulation},
+                        {"copies", options.copies},
+                        {"maxGenerations", options.maxGenerations},
+                        {"numNeighbors", options.numNeighbors},
+                        {"fracSelected", options.fracSelected},
+                        {"radius", options.radius},
+                        {"quantile", options.quantile},
+                        {"patience", options.patience},
+                        {"minImprovementDelta", options.minImprovementDelta},
+                        {"similarityPenalty", options.similarityPenalty},
+                        {"quickSeeds", quickSeeds.size()},
+                        {"params", std::move(params)}});
 }
 
 void LFBOSearch::traceIteration(double elapsedMs,
                                 ArrayRef<PerfConfigString> batch) {
-  if (!trace.enabled())
+  if (!traceEnabled(trace))
     return;
   totalMs += elapsedMs;
 
@@ -971,35 +915,37 @@ void LFBOSearch::traceIteration(double elapsedMs,
   }
 
   auto isActive = [](const SearchCopy &copy) { return copy.active; };
-  trace.write(llvm::json::Object{
-      {"kind", "iteration"},
-      {"generation", generation},
-      {"proposed", batch.size()},
-      {"done", done},
-      {"copies", searchCopies.size()},
-      {"alive", llvm::count_if(searchCopies, isActive)},
-      {"elapsedMs", elapsedMs},
-      {"totalMs", totalMs},
-      {"measured", perfByConfig.size()},
-      {"visited", visited.size()},
-      {"succeeded", numSucceeded},
-      {"notApplicable", numNotApplicable},
-      {"failed", numFailed},
-      {"bestNs", finiteOrNull(bestSoFar)},
-      {"bestConfig", bestConfig.str()},
-      {"bestOrigin", bestOrigin},
-      {"stoppedOutOfPatience", stoppedOutOfPatience},
-      {"stoppedWithoutNeighbors", stoppedWithoutNeighbors},
-      {"stoppedWithoutSelection", stoppedWithoutSelection},
-      {"neighborsGenerated", neighborsGenerated},
-      {"neighborsSeenBefore", neighborsSeenBefore},
-      {"movesRejected", movesRejected},
-      {"trainSize", trainSize},
-      {"positives", numPositives},
-      {"goodThresholdNs", finiteOrNull(goodThreshold)},
-      {"pickPrecision", pickPrecision < 0.0 ? llvm::json::Value(nullptr)
-                                            : llvm::json::Value(pickPrecision)},
-  });
+  traceWrite(trace,
+             llvm::json::Object{
+                 {"kind", "iteration"},
+                 {"generation", generation},
+                 {"proposed", batch.size()},
+                 {"done", done},
+                 {"copies", searchCopies.size()},
+                 {"alive", llvm::count_if(searchCopies, isActive)},
+                 {"elapsedMs", elapsedMs},
+                 {"totalMs", totalMs},
+                 {"measured", perfByConfig.size()},
+                 {"visited", visited.size()},
+                 {"succeeded", numSucceeded},
+                 {"notApplicable", numNotApplicable},
+                 {"failed", numFailed},
+                 {"bestNs", finiteOrNull(bestSoFar)},
+                 {"bestConfig", bestConfig.str()},
+                 {"bestOrigin", bestOrigin},
+                 {"stoppedOutOfPatience", stoppedOutOfPatience},
+                 {"stoppedWithoutNeighbors", stoppedWithoutNeighbors},
+                 {"stoppedWithoutSelection", stoppedWithoutSelection},
+                 {"neighborsGenerated", neighborsGenerated},
+                 {"neighborsSeenBefore", neighborsSeenBefore},
+                 {"movesRejected", movesRejected},
+                 {"trainSize", trainSize},
+                 {"positives", numPositives},
+                 {"goodThresholdNs", finiteOrNull(goodThreshold)},
+                 {"pickPrecision", pickPrecision < 0.0
+                                       ? llvm::json::Value(nullptr)
+                                       : llvm::json::Value(pickPrecision)},
+             });
 }
 
 std::vector<PerfConfigString>
@@ -1037,11 +983,20 @@ LFBOSearch::proposeBatch(ArrayRef<BenchmarkResult> prevResults) {
       return {};
     }
     traceHeader();
-    // Nothing to measure means nothing to fit a model on, so the search ends
-    // before it starts rather than proposing configs blindly.
-    std::vector<PerfConfigString> batch = buildInitialPopulation();
-    done = batch.empty();
-    return batch;
+    // Whatever an earlier stage measured is training data and a starting point
+    // alike; see `LFBOOptions::seedResults`. `prevResults` is empty on this
+    // call by the protocol, so anything in `perfByConfig` afterwards came from
+    // the seeds.
+    recordResults(options.seedResults);
+    if (perfByConfig.empty()) {
+      // Nothing to measure means nothing to fit a model on, so the search ends
+      // before it starts rather than proposing configs blindly.
+      std::vector<PerfConfigString> batch = buildInitialPopulation();
+      done = batch.empty();
+      return batch;
+    }
+    // Seeded: the initial population is already in hand, so fall through and
+    // spend this batch on the first generation instead of re-measuring it.
   }
 
   if (searchCopies.empty()) {
@@ -1119,12 +1074,12 @@ void mlir::rock::stepMoves(ArrayRef<int64_t> ladder, int64_t value,
   movesBetween(ladder, value, place - 1, place + 1, out);
 }
 
-void mlir::rock::LFBOOptions::setEffort(LFBOEffort effort) {
+void mlir::rock::LFBOOptions::setEffort(SearchEffort effort) {
   switch (effort) {
-  case LFBOEffort::Full:
+  case SearchEffort::Full:
     // What the defaults already are.
     return;
-  case LFBOEffort::Quick:
+  case SearchEffort::Quick:
     // Helion's "quick" effort profile. That profile also stops padding the
     // first batch with random configs, which we keep doing: how long the quick
     // list is depends on the problem, and a model fitted on that list alone
@@ -1134,7 +1089,7 @@ void mlir::rock::LFBOOptions::setEffort(LFBOEffort effort) {
     maxGenerations = 5;
     return;
   }
-  llvm_unreachable("unhandled LFBO effort");
+  llvm_unreachable("unhandled search effort");
 }
 
 std::unique_ptr<TuningSearchStrategy>

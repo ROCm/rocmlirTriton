@@ -1149,12 +1149,21 @@ LogicalResult tuningTableLookup(TuningTable *perfTable, ModuleOp &mod,
   return failure();
 }
 
-int64_t retrieveSplitKValue(StringAttr perfConfig) {
-  auto gemmGemmPerfConfig = GemmGemmParamsAttr::get(perfConfig);
-  if (gemmGemmPerfConfig)
-    return gemmGemmPerfConfig.getSplitKFactor();
+RockTuningParamAttrInterface parsePerfConfig(MLIRContext *ctx,
+                                             StringRef perfConfig) {
+  // Prefix-keyed, so which is tried first does not decide anything: a `gemm:`
+  // string is not an `attn:` one under either spelling, named or legacy
+  // positional.
+  StringAttr perfConfigAttr = StringAttr::get(ctx, perfConfig);
+  if (auto gemmParams = GemmParamsAttr::get(perfConfigAttr))
+    return gemmParams;
+  if (auto gemmGemmParams = GemmGemmParamsAttr::get(perfConfigAttr))
+    return gemmGemmParams;
+  return nullptr;
+}
 
-  auto params = GemmParamsAttr::get(perfConfig);
+int64_t retrieveSplitKValue(StringAttr perfConfig) {
+  auto params = parsePerfConfig(perfConfig.getContext(), perfConfig.strref());
   return params ? params.getSplitKFactor() : 1;
 }
 

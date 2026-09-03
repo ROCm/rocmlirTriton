@@ -16,8 +16,11 @@ Usage examples:
     # Quick-tune CONV configs from a file
     python3 tuningRunner.py --op conv -c configs/tier1-conv-configs --tuning-space quick
 
-    # Tune GEMM configs with the adaptive search, on a short budget
-    python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --tuning-space lfbo --lfbo-effort quick
+    # Tune GEMM configs with the surrogate-guided search, on a short budget
+    python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --tuning-space lfbo --search-effort quick
+
+    # Let a language model propose the configs, then refine around what it found
+    python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --tuning-space llm-lfbo
 
     # Use a subset of available GPUs
     python3 tuningRunner.py --op gemm -c configs/tier1-gemm-configs --gpus 2 3
@@ -74,7 +77,11 @@ from perfRunner import (
     auto_precision_flags_att,
     canonicalize_config,
 )
-from tuningArgumentUtils import add_common_tuning_arguments
+from tuningArgumentUtils import (
+    ADAPTIVE_TUNING_SPACES,
+    LLM_TUNING_SPACES,
+    add_common_tuning_arguments,
+)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
@@ -214,7 +221,7 @@ class Options:
     debug: bool
     debug_quick_tune_data: bool
     tuning_space_kind: str
-    lfbo_effort: str
+    search_effort: str
     quiet: bool
     verbose: bool
     chip: str
@@ -248,6 +255,13 @@ class Options:
     compile_only_dir: Optional[str] = None
     benchmark_artifacts_dir: Optional[str] = None
     allow_commit_mismatch: bool = False
+    # None means "whatever the search itself defaults to", so that the default
+    # lives in one place (LLMSearchOptions) rather than being restated here.
+    llm_model: Optional[str] = None
+    llm_rounds: Optional[int] = None
+    llm_configs_per_round: Optional[int] = None
+    llm_wait_for_seeds: bool = False
+    llm_proposer: Optional[str] = None
 
 
 @dataclass
@@ -1256,12 +1270,12 @@ class TuningArgumentParser(argparse.ArgumentParser):
             if parsed.gpus:
                 self.error("argument --gpus: not allowed with --compile-only, "
                            "which performs no GPU runs")
-            # An adaptive search picks each batch from the previous batch's
+            # A searched space picks each batch from the previous batch's
             # timings, which a GPU-less compile phase can never produce.
-            if parsed.tuning_space == "lfbo":
-                self.error("argument --tuning-space=lfbo: not allowed with --compile-only, "
-                           "which performs no GPU runs and so cannot measure the batch "
-                           "that decides what to compile next")
+            if parsed.tuning_space in ADAPTIVE_TUNING_SPACES:
+                self.error(f"argument --tuning-space={parsed.tuning_space}: not allowed with "
+                           "--compile-only, which performs no GPU runs and so cannot measure "
+                           "the batch that decides what to compile next")
             # HIP/rocminfo discovery and the getMinNumCU fallback are unavailable
             # here, so an unset override would bake a wrong grid into the bundle.
             missing = [name for name, value in target_overrides if value is None]
@@ -1558,19 +1572,33 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
         tuning_driver_args.append("--flush-last-level-cache")
-    # A budget only means something to the search that decides how much of its
-    # space to benchmark; passing it to any other space earns a warning.
-    if options.tuning_space_kind == "lfbo":
-        tuning_driver_args.append(f"--lfbo-effort={options.lfbo_effort}")
+    # A budget only means something to a space that decides how much of itself
+    # to benchmark; passing it to a fixed space earns a warning.
+    if options.tuning_space_kind in ADAPTIVE_TUNING_SPACES:
+        tuning_driver_args.append(f"--search-effort={options.search_effort}")
 
-    # An adaptive search is the only one whose progress is worth recording: the
+    # Same for the model knobs, and each is passed only when it was asked for,
+    # so that the search's own defaults stay the ones in force.
+    if options.tuning_space_kind in LLM_TUNING_SPACES:
+        if options.llm_model:
+            tuning_driver_args.append(f"--llm-model={options.llm_model}")
+        if options.llm_rounds is not None:
+            tuning_driver_args.append(f"--llm-rounds={options.llm_rounds}")
+        if options.llm_configs_per_round is not None:
+            tuning_driver_args.append(f"--llm-configs-per-round={options.llm_configs_per_round}")
+        if options.llm_wait_for_seeds:
+            tuning_driver_args.append("--llm-wait-for-seeds")
+        if options.llm_proposer:
+            tuning_driver_args.append(f"--llm-proposer={options.llm_proposer}")
+
+    # A searched space is the only one whose progress is worth recording: the
     # fixed spaces hand out everything in one batch. Problems tune concurrently
     # in a driver process each, so each gets a file of its own, named the way
     # the artifact directories are.
-    trace_path = lfbo_trace_path(test_vector, options)
+    trace_path = search_trace_path(test_vector, options)
     if trace_path:
         os.makedirs(os.path.dirname(trace_path), exist_ok=True)
-        tuning_driver_args.append(f"--lfbo-trace={trace_path}")
+        tuning_driver_args.append(f"--search-trace={trace_path}")
 
     env = make_isolated_gpu_env(gpu_id)
 
@@ -1702,18 +1730,18 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                         verify_tflops=verify_tflops)
 
 
-def lfbo_trace_path(test_vector: str, options: Options) -> Optional[str]:
+def search_trace_path(test_vector: str, options: Options) -> Optional[str]:
     """Where the search should record this problem's iterations, if anywhere.
 
-    Nothing is traced unless --debug asked for detail, the search is the
-    adaptive one, and there is an output file to hang the trace off of. See
-    analysis/plotLFBOTrace.py for what reads it.
+    Nothing is traced unless --debug asked for detail, the space is one that
+    searches, and there is an output file to hang the trace off of. See
+    analysis/plotSearchTrace.py for what reads it.
     """
-    if not options.debug or options.tuning_space_kind != "lfbo":
+    if not options.debug or options.tuning_space_kind not in ADAPTIVE_TUNING_SPACES:
         return None
     if options.output == '-':
         return None
-    return os.path.join(f"{options.output}.lfbo", f"{_problem_hash(test_vector, options)}.jsonl")
+    return os.path.join(f"{options.output}.search", f"{_problem_hash(test_vector, options)}.jsonl")
 
 
 def _problem_hash(test_vector: str, options: Options) -> str:
@@ -2550,14 +2578,48 @@ def parse_arguments(args=None) -> argparse.Namespace:
         allow_abbrev=False)
     add_common_tuning_arguments(parser)
 
-    # Only the adaptive search chooses how much of its space to benchmark, so it
-    # is the only one this can make cheaper.
-    parser.add_argument("--lfbo-effort",
+    # Only a searched space chooses how much of itself to benchmark, so those
+    # are the only ones this can make cheaper.
+    parser.add_argument("--search-effort",
                         default="full",
                         choices=["quick", "full"],
-                        help="How much benchmarking --tuning-space=lfbo may spend looking for a "
-                        "fast config. 'quick' finishes sooner, at the risk of settling for a "
-                        "slower config than the space holds. Ignored by the other spaces.")
+                        help="How much benchmarking a searched tuning space "
+                        f"({', '.join(ADAPTIVE_TUNING_SPACES)}) may spend looking for a fast "
+                        "config. 'quick' finishes sooner, at the risk of settling for a slower "
+                        "config than the space holds. Ignored by the fixed spaces.")
+
+    llm_group = parser.add_argument_group(
+        "language-model search",
+        f"Only used by --tuning-space in {{{', '.join(LLM_TUNING_SPACES)}}}. Defaults come "
+        "from the search itself, so leaving these alone is the supported configuration; they "
+        "are here to shorten a search while iterating on it.")
+    llm_group.add_argument("--llm-model",
+                           default=None,
+                           metavar="MODEL",
+                           help="Which model proposes the configs, named as `cursor-agent "
+                           "--model` names them.")
+    llm_group.add_argument("--llm-rounds",
+                           type=int,
+                           default=None,
+                           metavar="N",
+                           help="How many rounds of proposals to ask for, including the first. "
+                           "Each round after the first is told what the previous one measured. "
+                           "1 asks once and stops.")
+    llm_group.add_argument("--llm-configs-per-round",
+                           type=int,
+                           default=None,
+                           metavar="N",
+                           help="How many configs to ask for per round.")
+    llm_group.add_argument("--llm-wait-for-seeds",
+                           action="store_true",
+                           default=False,
+                           help="Benchmark the first batch before asking for the first proposal, "
+                           "instead of overlapping the two.")
+    llm_group.add_argument("--llm-proposer",
+                           default=None,
+                           metavar="SCRIPT",
+                           help="The proposer script to run, instead of the one installed beside "
+                           "rocmlir-tuning-driver.")
 
     config_group = parser.add_mutually_exclusive_group(required=True)
 
@@ -2925,7 +2987,7 @@ def main(args=None):
                       quiet=parsed_args.quiet,
                       verbose=parsed_args.verbose,
                       tuning_space_kind=parsed_args.tuning_space,
-                      lfbo_effort=parsed_args.lfbo_effort,
+                      search_effort=parsed_args.search_effort,
                       rocmlir_gen_flags=parsed_args.rocmlir_gen_flags,
                       verify_winning_config=parsed_args.verify_winning_config,
                       verify_all_perfconfigs=parsed_args.verify_all_perfconfigs,
@@ -2952,7 +3014,12 @@ def main(args=None):
                       coarse_min_rep_iters=resolved_coarse_min_rep_iters,
                       compile_only_dir=compile_only_dir,
                       benchmark_artifacts_dir=benchmark_artifacts_dir,
-                      allow_commit_mismatch=parsed_args.allow_commit_mismatch)
+                      allow_commit_mismatch=parsed_args.allow_commit_mismatch,
+                      llm_model=parsed_args.llm_model,
+                      llm_rounds=parsed_args.llm_rounds,
+                      llm_configs_per_round=parsed_args.llm_configs_per_round,
+                      llm_wait_for_seeds=parsed_args.llm_wait_for_seeds,
+                      llm_proposer=parsed_args.llm_proposer)
 
     ctx = TuningContext(configs=configs,
                         conf_class=get_config_class(op_type),

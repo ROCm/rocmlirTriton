@@ -30,9 +30,19 @@ enum class MatrixAccelKind {
   None,       /// No hardware acceleration available
   MFMA,       /// AMD CDNA Matrix Fused Multiply-Add
   WMMA,       /// AMD RDNA Wave Matrix Multiply-Accumulate
-  ScaledMFMA, /// AMD CDNA4 Scaled Matrix Fused Multiply-Add (F8/F6/F4 with scales)
-  ScaledWMMA  /// AMD gfx1250 Scaled Wave Matrix Multiply-Accumulate (F8/F4 with scales)
+  ScaledMFMA, /// AMD CDNA4 Scaled Matrix Fused Multiply-Add (F8/F6/F4 with
+              /// scales)
+  ScaledWMMA  /// AMD gfx1250 Scaled Wave Matrix Multiply-Accumulate (F8/F4 with
+              /// scales)
 };
+
+/// The enumerator's own name, for a diagnostic, a trace or a prompt.
+///
+/// Hand-written because this enum is, unlike the dialect's ODS ones
+/// (`KernelType` and friends in RockAttrDefs.td) which get a
+/// `getNameFor...` generated for them. Named to match theirs so that a caller
+/// need not know which kind of enum it has.
+StringRef getNameForMatrixAccelKind(MatrixAccelKind kind);
 
 /// Check if hardware matrix acceleration (MFMA or WMMA) is available
 /// for the given architecture and data types.
@@ -54,8 +64,8 @@ MatrixAccelKind getMatrixAccelKind(StringRef arch, Type inputTypeA,
                                    Type scaleBType = Type());
 
 /// Get the matrix acceleration kind for a GEMM operation.
-/// Note: This does not check for scale types - use the full getMatrixAccelKind()
-/// with explicit scale types for scaled operations.
+/// Note: This does not check for scale types - use the full
+/// getMatrixAccelKind() with explicit scale types for scaled operations.
 MatrixAccelKind getMatrixAccelKind(StringRef arch,
                                    RockGemmWrapperInterface gemmOp);
 

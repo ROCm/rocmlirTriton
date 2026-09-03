@@ -243,9 +243,9 @@ TEST(LFBOSearchTest, ProposesOnlyAdmissibleConfigs) {
 // to both ask for less and be what stops the search.
 TEST(LFBOSearchTest, QuickEffortSpendsLessThanFull) {
   LFBOOptions full;
-  full.setEffort(LFBOEffort::Full);
+  full.setEffort(SearchEffort::Full);
   LFBOOptions quick;
-  quick.setEffort(LFBOEffort::Quick);
+  quick.setEffort(SearchEffort::Quick);
   EXPECT_LT(quick.initialPopulation, full.initialPopulation);
   EXPECT_LT(quick.copies, full.copies);
   EXPECT_LT(quick.maxGenerations, full.maxGenerations);
@@ -292,7 +292,7 @@ TEST(LFBOSearchTest, TracesEachIteration) {
   LFBOOptions options;
   options.initialPopulation = 40;
   options.numNeighbors = 40;
-  options.tracePath = tracePath.str().str();
+  options.trace = openTrace(tracePath);
   std::unique_ptr<TuningSearchStrategy> search =
       createLFBOSearchStrategy(*e.module, options);
 

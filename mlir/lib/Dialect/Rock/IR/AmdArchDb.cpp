@@ -163,6 +163,22 @@ static bool isScaledWmmaType(Type type) {
   return isa<Float8E4M3FNType, Float8E5M2Type, Float4E2M1FNType>(type);
 }
 
+StringRef mlir::rock::getNameForMatrixAccelKind(MatrixAccelKind kind) {
+  switch (kind) {
+  case MatrixAccelKind::None:
+    return "None";
+  case MatrixAccelKind::MFMA:
+    return "MFMA";
+  case MatrixAccelKind::WMMA:
+    return "WMMA";
+  case MatrixAccelKind::ScaledMFMA:
+    return "ScaledMFMA";
+  case MatrixAccelKind::ScaledWMMA:
+    return "ScaledWMMA";
+  }
+  llvm_unreachable("unhandled matrix acceleration kind");
+}
+
 MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
                                                Type inputTypeB, Type scaleAType,
                                                Type scaleBType) {

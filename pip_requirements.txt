@@ -12,3 +12,4 @@ flake8
 pep8-naming
 pre-commit
 tqdm
+cursor-sdk   # only used by --tuning-space=llm and llm-lfbo, via llm/transport.py

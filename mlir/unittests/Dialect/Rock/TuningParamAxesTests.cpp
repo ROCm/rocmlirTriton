@@ -914,6 +914,39 @@ TEST(TuningParamAxesTest, BufferAtomicsNeedBufferOps) {
   EXPECT_TRUE(isFeasibleWith(1, 1));
   EXPECT_TRUE(isFeasibleWith(1, 0));
   EXPECT_TRUE(isFeasibleWith(kKnobDefault, 1));
+
+  // Which check refused it, and not merely that something did. A search that
+  // reports this to a language model is telling it which rule to stop walking
+  // into, so naming the wrong one is worse than naming none.
+  config[opsIdx] = 0;
+  config[atomicsIdx] = 1;
+  FeasibilityCheck refusedOn = FeasibilityCheck::NotOnAxis;
+  EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+  EXPECT_EQ(refusedOn, FeasibilityCheck::BufferKnobsDisagree);
+  EXPECT_EQ(getFeasibilityCheckName(refusedOn), "bufferKnobsDisagree");
+}
+
+// A config off the axes has to be refused as such, not silently rolled into
+// whichever check happens to notice it next: the two mean different things to
+// whoever is being told, since one is a value that does not exist and the
+// other is a combination that does not work.
+TEST(TuningParamAxesTest, ReportsAValueThatIsNotOnItsAxis) {
+  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
+               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
+  ASSERT_TRUE(axes);
+
+  const size_t mIdx = paramIndex(*axes, "mPerBlock");
+  std::vector<int64_t> config(axes->getAxes().size());
+  for (auto [value, axis] : llvm::zip_equal(config, axes->getAxes()))
+    value = axis.front();
+  // 33 is on no tile ladder: they run 1, 2, 4, 8 and then multiples of 16.
+  config[mIdx] = 33;
+
+  FeasibilityCheck refusedOn = FeasibilityCheck::NotPerformant;
+  EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+  EXPECT_EQ(refusedOn, FeasibilityCheck::NotOnAxis);
 }
 
 // The axes only help a search if they leave it something to move: a parameter

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Plot how an LFBO tuning run got where it got.
+"""Plot how a searched tuning run got where it got.
 
-The adaptive tuning search (--tuning-space=lfbo) records one JSON object per
-iteration when it is given --lfbo-trace, which tuningRunner.py does for every
-problem under `--debug`. This turns such a trace into a picture: what the best
-config was after each iteration, what that iteration cost, how many search
+The searched tuning spaces (--tuning-space=lfbo, llm, llm-lfbo) record one JSON
+object per iteration when given --search-trace, which tuningRunner.py does for
+every problem under `--debug`. This turns such a trace into a picture: what the
+best config was after each iteration, what that iteration cost, how many search
 copies were still alive, and what the surrogate model was doing.
 
+A trace holds whichever stages ran, so the panels follow the trace: `lfbo`
+plots the surrogate search, `llm` the rounds of proposals, and `llm-lfbo` both,
+with the handover marked on the round plot.
+
 Usage:
-    $ python3 plotLFBOTrace.py <trace.jsonl | dir> [...] [-o OUT.png] [--show]
+    $ python3 plotSearchTrace.py <trace.jsonl | dir> [...] [-o OUT.png] [--show]
 
 A directory argument is expanded to the traces inside it, so a whole tuning run
 can be plotted with
 
-    $ python3 plotLFBOTrace.py results.tsv.lfbo
+    $ python3 plotSearchTrace.py results.tsv.search
 
 The search measures kernel times, so that is what is plotted; the TFlops of the
 winner are in the tuning output itself.
@@ -24,7 +28,7 @@ import glob
 import json
 import os
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib
 
@@ -37,14 +41,38 @@ STEP = {"where": "post", "linewidth": 2}
 BEST = "best time (ms)"
 
 
-def read_trace(path: str) -> Tuple[Dict, pd.DataFrame]:
-    """Reads a trace into its header and a frame of one row per iteration.
+class Trace:
+    """One problem's trace, split into the stages that wrote it.
+
+    A hybrid run writes both stages to one file, so which frames are populated
+    is what says which stages ran.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self.header: Dict = {}
+        self.llm_header: Dict = {}
+        self.iterations = pd.DataFrame()
+        self.rounds = pd.DataFrame()
+
+    @property
+    def has_lfbo(self) -> bool:
+        return not self.iterations.empty
+
+    @property
+    def has_llm(self) -> bool:
+        return not self.rounds.empty
+
+
+def read_trace(path: str) -> Trace:
+    """Reads a trace into its headers and a frame per stage.
 
     A run that was interrupted leaves a half-written last line, which is worth
     skipping rather than refusing the whole trace over.
     """
-    header: Dict = {}
+    trace = Trace(path)
     iterations: List[Dict] = []
+    rounds: List[Dict] = []
     with open(path) as f:
         for number, line in enumerate(f, start=1):
             line = line.strip()
@@ -55,13 +83,22 @@ def read_trace(path: str) -> Tuple[Dict, pd.DataFrame]:
             except json.JSONDecodeError:
                 print(f"{path}:{number}: ignoring an incomplete record", file=sys.stderr)
                 continue
-            if record.get("kind") == "header":
-                header = record
+            kind = record.get("kind")
+            if kind == "header":
+                trace.header = record
+            elif kind == "llm-header":
+                trace.llm_header = record
+            elif kind == "llm-round":
+                rounds.append(record)
             else:
+                # Anything else is an LFBO iteration, including the records
+                # written before `kind` was added to them.
                 iterations.append(record)
-    if not iterations:
+    if not iterations and not rounds:
         raise ValueError(f"{path}: no iterations were traced")
-    return header, pd.DataFrame(iterations)
+    trace.iterations = pd.DataFrame(iterations)
+    trace.rounds = pd.DataFrame(rounds)
+    return trace
 
 
 def first_search_win(frame: pd.DataFrame) -> Optional[int]:
@@ -211,37 +248,101 @@ def plot_neighborhood(axes, frame: pd.DataFrame) -> None:
     axes.set_title("Room to move")
 
 
-def summarize(header: Dict, frame: pd.DataFrame, best: pd.Series) -> str:
-    last = frame.iloc[-1]
-    measured = best.dropna()
-    outcome = f"{BEST} {measured.iloc[-1]:.3f}, from " \
-        f"{last.get('bestOrigin') or 'nowhere'}" if not measured.empty \
-        else "nothing was measured"
-    parts = [
-        f"{len(frame)} iterations, {int(last['measured'])} configs measured, "
-        f"{last['totalMs'] / 60000.0:.1f} min",
-        outcome,
-    ]
-    if header:
-        parts.append(f"{header.get('arch', 'unknown arch')}, seed "
-                     f"{header.get('seed')}, {header.get('copies')} copies")
+def plot_rounds(axes, frame: pd.DataFrame, best: pd.Series) -> None:
+    axes.step(frame["round"], best, color="tab:blue", marker=".", **STEP)
+    axes.set_xlabel("round")
+    axes.set_ylabel(BEST, color="tab:blue")
+    axes.grid(alpha=0.3)
+    axes.set_xticks(frame["round"])
+
+    # A round is one request to the model plus the batch it produced, so its
+    # cost is mostly latency. Worth seeing next to what it bought.
+    minutes = axes.twinx()
+    minutes.step(frame["round"], frame["elapsedMs"] / 60000.0, color="tab:purple", **STEP)
+    minutes.set_ylabel("round took (minutes)", color="tab:purple")
+    minutes.set_ylim(bottom=0)
+    axes.set_title("What each round of proposals bought")
+
+
+def plot_round_outcomes(axes, frame: pd.DataFrame) -> None:
+    # What the model asked for, minus what never reached the GPU. A model whose
+    # proposals are mostly refused or already-tried is being prompted badly,
+    # and that is the failure this panel exists to make obvious.
+    rounds = frame["round"]
+    proposed = frame["proposed"]
+    rejected = frame.get("rejected", pd.Series(0, index=frame.index))
+    duplicates = frame.get("duplicates", pd.Series(0, index=frame.index))
+    axes.bar(rounds, proposed, color="tab:green", label="benchmarked")
+    axes.bar(rounds, rejected, bottom=proposed, color="tab:red", label="refused by the space")
+    axes.bar(rounds,
+             duplicates,
+             bottom=proposed + rejected,
+             color="tab:orange",
+             label="already tried")
+    axes.set_xlabel("round")
+    axes.set_ylabel("configs")
+    axes.set_xticks(rounds)
+    axes.legend(fontsize=8)
+    axes.grid(alpha=0.3)
+    axes.set_title("What became of each proposal")
+
+
+def summarize(trace: Trace) -> str:
+    parts: List[str] = []
+
+    if trace.has_llm:
+        rounds = trace.rounds
+        last = rounds.iloc[-1]
+        best = (rounds["bestNs"] / 1e6).dropna()
+        parts.append(f"llm: {len(rounds)} rounds, {int(last['proposals'])} configs proposed, "
+                     f"{last['totalMs'] / 60000.0:.1f} min" +
+                     (f", best {best.iloc[-1]:.3f} ms" if not best.empty else ""))
+        if trace.llm_header:
+            parts.append(f"{trace.llm_header.get('model', 'unknown model')} on "
+                         f"{trace.llm_header.get('arch', 'unknown arch')}, "
+                         f"{trace.llm_header.get('quickSeeds')} heuristic seeds")
+
+    if trace.has_lfbo:
+        frame = trace.iterations
+        last = frame.iloc[-1]
+        best = (frame["bestNs"] / 1e6).dropna()
+        outcome = f"best {best.iloc[-1]:.3f} ms, from {last.get('bestOrigin') or 'nowhere'}" \
+            if not best.empty else "nothing was measured"
+        parts.append(f"lfbo: {len(frame)} iterations, {int(last['measured'])} configs measured, "
+                     f"{last['totalMs'] / 60000.0:.1f} min, {outcome}")
+        if trace.header:
+            parts.append(f"{trace.header.get('arch', 'unknown arch')}, seed "
+                         f"{trace.header.get('seed')}, {trace.header.get('copies')} copies")
+
     return "\n".join(parts)
 
 
 def plot_trace(path: str, out: Optional[str], show: bool) -> None:
-    header, frame = read_trace(path)
-    best = frame["bestNs"] / 1e6
+    trace = read_trace(path)
 
     import matplotlib.pyplot as plt
-    figure, panels = plt.subplots(3, 2, figsize=(14, 13))
-    plot_progress(panels[0][0], frame, best)
-    plot_cost(panels[0][1], frame, best)
-    plot_outcomes(panels[1][0], frame)
-    plot_surrogate(panels[1][1], frame)
-    plot_copy_deaths(panels[2][0], frame)
-    plot_neighborhood(panels[2][1], frame)
+    rows = (3 if trace.has_lfbo else 0) + (1 if trace.has_llm else 0)
+    figure, panels = plt.subplots(rows, 2, figsize=(14, 4.4 * rows), squeeze=False)
 
-    figure.suptitle(summarize(header, frame, best), fontsize=9)
+    row = 0
+    if trace.has_llm:
+        rounds = trace.rounds
+        best = rounds["bestNs"] / 1e6
+        plot_rounds(panels[row][0], rounds, best)
+        plot_round_outcomes(panels[row][1], rounds)
+        row += 1
+
+    if trace.has_lfbo:
+        frame = trace.iterations
+        best = frame["bestNs"] / 1e6
+        plot_progress(panels[row][0], frame, best)
+        plot_cost(panels[row][1], frame, best)
+        plot_outcomes(panels[row + 1][0], frame)
+        plot_surrogate(panels[row + 1][1], frame)
+        plot_copy_deaths(panels[row + 2][0], frame)
+        plot_neighborhood(panels[row + 2][1], frame)
+
+    figure.suptitle(summarize(trace), fontsize=9)
     figure.tight_layout(rect=(0, 0, 1, 0.93))
 
     target = out or f"{os.path.splitext(path)[0]}.png"
@@ -271,7 +372,7 @@ def main(argv=None) -> int:
     parser.add_argument("traces",
                         nargs="+",
                         metavar="TRACE",
-                        help="trace files written by --lfbo-trace, or directories of them")
+                        help="trace files written by --search-trace, or directories of them")
     parser.add_argument("-o",
                         "--out",
                         default=None,

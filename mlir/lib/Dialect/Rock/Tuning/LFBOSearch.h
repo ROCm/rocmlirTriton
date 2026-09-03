@@ -20,6 +20,7 @@
 #ifndef MLIR_LIB_DIALECT_ROCK_TUNING_LFBOSEARCH_H
 #define MLIR_LIB_DIALECT_ROCK_TUNING_LFBOSEARCH_H
 
+#include "SearchTrace.h"
 #include "mlir/Dialect/Rock/Tuning/TuningSearch.h"
 
 namespace mlir {
@@ -48,8 +49,9 @@ struct LFBOOptions {
   ///
   /// Every config the search builds belongs to this space. The quick list,
   /// which seeds the first batch, need not: it comes from the heuristic and is
-  /// benchmarked for what it knows, not because the space contains it. rocMLIR
-  /// specific: Helion generates configs rather than drawing them from a space.
+  /// benchmarked for what it knows, not because the space contains it.
+  /// rocmlirTriton specific: Helion generates configs rather than drawing them
+  /// from a space.
   TuningParamSetKind candidateSpace = TuningParamSetKind::Exhaustive;
   /// Number of configs to benchmark before the first model is fitted. The quick
   /// tuning list is always used; `padInitialPopulation` tops it up from the
@@ -80,19 +82,35 @@ struct LFBOOptions {
   /// How strongly a candidate is penalised for resembling one already picked
   /// for the same batch.
   double similarityPenalty = 1.0;
-  /// Fixed so that repeated tuning runs of the same problem agree. rocMLIR
-  /// specific: Helion seeds from its distributed `sync_seed` instead.
+  /// Fixed so that repeated tuning runs of the same problem agree.
+  /// rocmlirTriton specific: Helion seeds from its distributed `sync_seed`
+  /// instead.
   uint64_t seed = 42;
-  /// File to append a JSON record of every iteration to, one object per line:
-  /// what the search knew, what it proposed and what that cost, so that a run
-  /// can be plotted afterwards (see analysis/plotLFBOTrace.py). A search only
-  /// ever reports on itself here; nothing it does depends on this being set.
-  std::string tracePath;
+  /// Configs somebody else has already benchmarked, folded into the training
+  /// set before the first batch is proposed. This is Helion's
+  /// `LFBOPatternSearch.seed_training_data`, which its hybrid autotuner uses to
+  /// hand an LLM stage's measurements to the surrogate "so LFBO learns from the
+  /// LLM's exploration, not just the single best config"
+  /// (`llm_seeded_lfbo.py`). Failures belong here as much as successes: the
+  /// model classifies, so a config that could not be run is a label too.
+  ///
+  /// Seeding also replaces the first batch rather than adding to it: a search
+  /// handed measurements already has the initial population that batch exists
+  /// to produce, so it starts its copies from the best of them and skips
+  /// straight to the first generation. That is Helion's
+  /// `FROM_BEST_AVAILABLE` with `best_available_pad_random=False`, and it is
+  /// why `initialPopulation` and `padInitialPopulation` go unread here.
+  std::vector<BenchmarkResult> seedResults;
+  /// Where to record every iteration: what the search knew, what it proposed
+  /// and what that cost, so that a run can be plotted afterwards (see
+  /// analysis/plotSearchTrace.py). A search only ever reports on itself here;
+  /// nothing it does depends on this being set.
+  SharedTrace trace;
 
   /// Sets the three population sizes - how many configs the first batch holds,
   /// how many searches run in parallel and how long each may run - to what
   /// `effort` allows, and leaves every other knob alone.
-  void setEffort(LFBOEffort effort);
+  void setEffort(SearchEffort effort);
 };
 
 /// Creates an LFBO search over the tuning space of the primary op in `mod`.

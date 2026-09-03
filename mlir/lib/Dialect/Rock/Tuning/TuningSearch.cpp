@@ -16,6 +16,8 @@
 #include "mlir/Dialect/Rock/Tuning/TuningSearch.h"
 
 #include "LFBOSearch.h"
+#include "LLMSeededLFBOSearch.h"
+#include "SearchTrace.h"
 #include "TuningRanges.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -229,6 +231,11 @@ std::vector<int64_t> gridGroupSizeValues() {
 // narrower still, offering only what a work-imbalance model expects to pay off,
 // which is a way to keep brute force short rather than a bound on what a kernel
 // may hold.
+//
+// The K in question on a gemm+gemm is the second GEMM's, which is also the
+// first GEMM's N: `arrangeGemmGemmSplitKTransform` splits `gemmN` in both
+// operands and the factor is read from `params1`. Not the first GEMM's K,
+// which on such a kernel is a head dimension with nothing worth splitting.
 std::vector<int64_t> splitKFactorValues(Operation *op) {
   // `validateSplitKFactor` rejects any factor but one for attention.
   if (isa<AttentionOp>(op))
@@ -481,6 +488,16 @@ orderAxes(RockTuningParamAttrInterface exemplar,
   return axes;
 }
 
+// Sets `failed`, if the caller asked for it, and says the config is out. Both
+// `isFeasible` implementations open with one of these.
+auto refuseWith(FeasibilityCheck *refusedOn) {
+  return [refusedOn](FeasibilityCheck check) {
+    if (refusedOn)
+      *refusedOn = check;
+    return false;
+  };
+}
+
 // Whether every value is one its parameter may legally hold. Deliberately
 // weaker than "on the axis the search explores": a knob may also be
 // `kKnobDefault`, which is how every config the tuning space and the quick list
@@ -572,32 +589,39 @@ public:
     exemplar.getParamNames(names);
   }
 
+  void getKnobParams(SmallVectorImpl<bool> &isKnob) const override {
+    isKnob.assign(knobParams.begin(), knobParams.end());
+  }
+
   void serialize(ArrayRef<int64_t> values,
                  PerfConfigString &out) const override {
     out.clear();
     exemplar.cloneWithParamValues(values).getPerfConfigStr(out);
   }
 
-  bool isFeasible(ArrayRef<int64_t> values) const override {
+  bool isFeasible(ArrayRef<int64_t> values,
+                  FeasibilityCheck *refusedOn) const override {
+    auto refuse = refuseWith(refusedOn);
+
     if (!valuesAreAdmissible(axes, knobParams, values))
-      return false;
+      return refuse(FeasibilityCheck::NotOnAxis);
     auto params =
         dyn_cast_or_null<GemmParamsAttr>(exemplar.cloneWithParamValues(values));
     if (!params)
-      return false;
+      return refuse(FeasibilityCheck::MalformedConfig);
 
     int64_t mPerBlock = params.getMPerBlock();
     int64_t nPerBlock = params.getNPerBlock();
     int64_t kPerBlock = params.getKPerBlock();
     if (exceedsTritonTensorCap(mPerBlock, nPerBlock, kPerBlock))
-      return false;
+      return refuse(FeasibilityCheck::TritonTensorCap);
     // Same filter `createGemmTuningRangeBF` applies to the enumerated space, so
     // that a search over these axes does not spend trials on tile shapes known
     // not to fit in LDS. Field order must match GemmLdsKey.
     if (isBlacklisted(ldsBlacklist,
                       {mPerBlock, nPerBlock, kPerBlock, params.getNumWaves(),
                        params.getMatrixInstrNonkdim(), params.getNumStages()}))
-      return false;
+      return refuse(FeasibilityCheck::LdsBlacklist);
     // A search chooses what to spend its trials on, and a config that takes the
     // backend minutes to compile costs it many trials' worth of time, so it is
     // worth passing over here even though the enumerated space keeps it: that
@@ -605,18 +629,18 @@ public:
     if (!fitsCompileCostBudget(info.arch, info.gemmAType, mPerBlock, nPerBlock,
                                kPerBlock, params.getKpack(),
                                params.getNumWaves()))
-      return false;
+      return refuse(FeasibilityCheck::CompileCostBudget);
     if (!wavesPerEUFitsRegisterBudget(gemmOp, mPerBlock, nPerBlock,
                                       params.getNumWaves(),
                                       params.getWavesPerEU()))
-      return false;
+      return refuse(FeasibilityCheck::RegisterBudget);
     if (!bufferKnobsAgree(params.getUseBufferOps(),
                           params.getUseBufferAtomics()))
-      return false;
+      return refuse(FeasibilityCheck::BufferKnobsDisagree);
     if (kind == TuningParamSetKind::Full) {
       PopulateParams tuningInfo;
       if (failed(tuningInfo.couldBePerformant(info, params)))
-        return false;
+        return refuse(FeasibilityCheck::NotPerformant);
     }
     return true;
   }
@@ -725,19 +749,26 @@ public:
     exemplar.getParamNames(names);
   }
 
+  void getKnobParams(SmallVectorImpl<bool> &isKnob) const override {
+    isKnob.assign(knobParams.begin(), knobParams.end());
+  }
+
   void serialize(ArrayRef<int64_t> values,
                  PerfConfigString &out) const override {
     out.clear();
     exemplar.cloneWithParamValues(values).getPerfConfigStr(out);
   }
 
-  bool isFeasible(ArrayRef<int64_t> values) const override {
+  bool isFeasible(ArrayRef<int64_t> values,
+                  FeasibilityCheck *refusedOn) const override {
+    auto refuse = refuseWith(refusedOn);
+
     if (!valuesAreAdmissible(axes, knobParams, values))
-      return false;
+      return refuse(FeasibilityCheck::NotOnAxis);
     auto params = dyn_cast_or_null<GemmGemmParamsAttr>(
         exemplar.cloneWithParamValues(values));
     if (!params)
-      return false;
+      return refuse(FeasibilityCheck::MalformedConfig);
 
     int64_t mPerBlock = params.getMPerBlockG0();
     int64_t nPerBlock = params.getNPerBlockG0();
@@ -748,15 +779,17 @@ public:
     if (exceedsTritonTensorCap(mPerBlock,
                                nPerBlockG1 == 0 ? gemm1NUntiled : nPerBlockG1,
                                nPerBlock))
-      return false;
+      return refuse(FeasibilityCheck::TritonTensorCap);
     if (exceedsTritonTensorCap(mPerBlock, nPerBlock, params.getKPerBlock()))
-      return false;
+      return refuse(FeasibilityCheck::TritonTensorCap);
     if (!wavesPerEUFitsRegisterBudget(gemmGemmOp, mPerBlock, nPerBlock,
                                       params.getNumWaves(),
                                       params.getWavesPerEU()))
-      return false;
-    return bufferKnobsAgree(params.getUseBufferOps(),
-                            params.getUseBufferAtomics());
+      return refuse(FeasibilityCheck::RegisterBudget);
+    if (!bufferKnobsAgree(params.getUseBufferOps(),
+                          params.getUseBufferAtomics()))
+      return refuse(FeasibilityCheck::BufferKnobsDisagree);
+    return true;
   }
 
 private:
@@ -851,6 +884,8 @@ mlir::rock::parseSearchStrategyKind(StringRef name) {
       .Case("full", SearchStrategyKind::Full)
       .Case("exhaustive", SearchStrategyKind::Exhaustive)
       .Case("lfbo", SearchStrategyKind::LFBO)
+      .Case("llm", SearchStrategyKind::LLM)
+      .Case("llm-lfbo", SearchStrategyKind::LLMSeededLFBO)
       .Default(std::nullopt);
 }
 
@@ -864,13 +899,62 @@ StringRef mlir::rock::getSearchStrategyKindName(SearchStrategyKind kind) {
     return "exhaustive";
   case SearchStrategyKind::LFBO:
     return "lfbo";
+  case SearchStrategyKind::LLM:
+    return "llm";
+  case SearchStrategyKind::LLMSeededLFBO:
+    return "llm-lfbo";
   }
   llvm_unreachable("unhandled search strategy kind");
 }
 
+StringRef
+mlir::rock::getNameForBenchmarkStatus(BenchmarkResult::Status status) {
+  switch (status) {
+  case BenchmarkResult::Status::Success:
+    return "success";
+  case BenchmarkResult::Status::NotApplicable:
+    return "notApplicable";
+  case BenchmarkResult::Status::Failed:
+    return "failed";
+  }
+  llvm_unreachable("unhandled benchmark status");
+}
+
+llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
+                                          BenchmarkResult::Status status) {
+  return os << getNameForBenchmarkStatus(status);
+}
+
+StringRef mlir::rock::getFeasibilityCheckName(FeasibilityCheck check) {
+  switch (check) {
+  case FeasibilityCheck::NotOnAxis:
+    return "notOnAxis";
+  case FeasibilityCheck::MalformedConfig:
+    return "malformedConfig";
+  case FeasibilityCheck::TritonTensorCap:
+    return "exceedsTritonTensorCap";
+  case FeasibilityCheck::LdsBlacklist:
+    return "ldsBlacklist";
+  case FeasibilityCheck::CompileCostBudget:
+    return "compileCostBudget";
+  case FeasibilityCheck::RegisterBudget:
+    return "wavesPerEURegisterBudget";
+  case FeasibilityCheck::BufferKnobsDisagree:
+    return "bufferKnobsDisagree";
+  case FeasibilityCheck::NotPerformant:
+    return "notPerformant";
+  }
+  llvm_unreachable("unhandled feasibility check");
+}
+
 std::unique_ptr<TuningSearchStrategy>
 mlir::rock::createTuningSearchStrategy(ModuleOp mod, SearchStrategyKind kind,
-                                       LFBOEffort effort, StringRef tracePath) {
+                                       const SearchOptions &options) {
+  // One writer for the whole run, however many searches it is made of: the
+  // stages of a composite share a trace rather than each opening the path and
+  // truncating whatever the last one wrote.
+  SharedTrace trace = openTrace(options.tracePath);
+
   switch (kind) {
   case SearchStrategyKind::Quick:
     return wholeSpaceStrategy(mod, TuningParamSetKind::Quick);
@@ -879,10 +963,32 @@ mlir::rock::createTuningSearchStrategy(ModuleOp mod, SearchStrategyKind kind,
   case SearchStrategyKind::Exhaustive:
     return wholeSpaceStrategy(mod, TuningParamSetKind::Exhaustive);
   case SearchStrategyKind::LFBO: {
-    LFBOOptions options;
-    options.setEffort(effort);
-    options.tracePath = tracePath.str();
-    return createLFBOSearchStrategy(mod, options);
+    LFBOOptions lfbo;
+    lfbo.setEffort(options.effort);
+    lfbo.trace = trace;
+    return createLFBOSearchStrategy(mod, lfbo);
+  }
+  case SearchStrategyKind::LLM: {
+    LLMOptions llm;
+    llm.search = options.llm;
+    llm.setEffort(options.effort);
+    llm.trace = trace;
+    return createLLMSearchStrategy(mod, llm);
+  }
+  case SearchStrategyKind::LLMSeededLFBO: {
+    LLMOptions llm;
+    llm.search = options.llm;
+    // The seed stage is a quick one however much the run as a whole may
+    // spend, since what follows it is a full search of the same space:
+    // Helion's hybrid takes `QUICK_LLM_SEARCH_DEFAULTS` even under full
+    // effort (`llm_seeded_lfbo.py`, `get_kwargs_from_profile`).
+    llm.setEffort(SearchEffort::Quick);
+    llm.trace = trace;
+
+    LFBOOptions lfbo;
+    lfbo.setEffort(options.effort);
+    lfbo.trace = trace;
+    return createLLMSeededLFBOSearchStrategy(mod, llm, lfbo);
   }
   }
   llvm_unreachable("unhandled search strategy kind");

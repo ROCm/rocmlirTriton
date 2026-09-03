@@ -49,7 +49,7 @@ def make_options(output,
                  num_cu=NUM_CU,
                  num_chiplets=NUM_CHIPLETS,
                  tuning_space="full",
-                 lfbo_effort="full"):
+                 search_effort="full"):
     """Build the Options bundle TunedConfigsCache.from_output_file reads."""
     return Options(
         chip=arch,
@@ -61,7 +61,7 @@ def make_options(output,
         quiet=False,
         verbose=False,
         tuning_space_kind=tuning_space,
-        lfbo_effort=lfbo_effort,
+        search_effort=search_effort,
         rocmlir_gen_flags="",
         verify_winning_config=False,
         verify_all_perfconfigs=False,

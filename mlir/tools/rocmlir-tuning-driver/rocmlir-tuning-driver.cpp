@@ -202,32 +202,113 @@ static llvm::cl::opt<rock::SearchStrategyKind> tuningSpaceKind(
                    "numWaves and the K/block tiles"),
         clEnumValN(rock::SearchStrategyKind::LFBO, "lfbo",
                    "Search the exhaustive space with a surrogate model, "
-                   "benchmarking only the configs it rates promising")),
+                   "benchmarking only the configs it rates promising"),
+        clEnumValN(rock::SearchStrategyKind::LLM, "llm",
+                   "Ask a language model which configs to benchmark, telling "
+                   "it each round what the last one measured"),
+        clEnumValN(rock::SearchStrategyKind::LLMSeededLFBO, "llm-lfbo",
+                   "Run the 'llm' search, then 'lfbo' over everything it "
+                   "measured, to refine around what the model found")),
     llvm::cl::value_desc("tuning space to use"),
     llvm::cl::init(rock::SearchStrategyKind::Full));
 
-static llvm::cl::opt<rock::LFBOEffort> lfboEffort(
-    "lfbo-effort",
-    llvm::cl::desc("How much benchmarking the 'lfbo' tuning space may spend "
-                   "looking for a fast config. The fixed spaces are as large "
-                   "as they are and ignore this."),
+static llvm::cl::opt<rock::SearchEffort> searchEffort(
+    "search-effort",
+    llvm::cl::desc("How much benchmarking an adaptive tuning space ('lfbo', "
+                   "'llm', 'llm-lfbo') may spend looking for a fast config. "
+                   "The fixed spaces are as large as they are and ignore "
+                   "this."),
     llvm::cl::values(
-        clEnumValN(rock::LFBOEffort::Quick, "quick",
+        clEnumValN(rock::SearchEffort::Quick, "quick",
                    "A short search, at the risk of settling for a slower "
                    "config than the space holds"),
-        clEnumValN(rock::LFBOEffort::Full, "full",
+        clEnumValN(rock::SearchEffort::Full, "full",
                    "Search until the search stops making progress")),
     llvm::cl::value_desc("search budget"),
-    llvm::cl::init(rock::LFBOEffort::Full));
+    llvm::cl::init(rock::SearchEffort::Full));
 
-static llvm::cl::opt<std::string> lfboTrace(
-    "lfbo-trace",
+static llvm::cl::opt<std::string> searchTrace(
+    "search-trace",
     llvm::cl::desc("Append a JSON record of every search iteration to this "
                    "file, one object per line: what was measured, what was "
-                   "proposed and what it cost. Only the 'lfbo' tuning space "
-                   "searches in iterations, so only it writes anything. See "
-                   "mlir/utils/performance/analysis/plotLFBOTrace.py."),
+                   "proposed and what it cost. Only the adaptive tuning "
+                   "spaces search in iterations, so only they write anything. "
+                   "See mlir/utils/performance/analysis/plotSearchTrace.py."),
     llvm::cl::value_desc("trace file"), llvm::cl::init(""));
+
+//===----------------------------------------------------------------------===//
+// The 'llm' and 'llm-lfbo' tuning spaces
+//
+// Defaults live in LLMSearchOptions, not here, so that a client which is not
+// this driver gets the same search. See TuningSearch.h.
+//===----------------------------------------------------------------------===//
+
+static llvm::cl::opt<std::string>
+    llmModel("llm-model",
+             llvm::cl::desc("Which model proposes the configs, named as "
+                            "`cursor-agent --model` names them."),
+             llvm::cl::value_desc("model"),
+             llvm::cl::init(rock::LLMSearchOptions{}.model));
+
+static llvm::cl::opt<unsigned> llmRounds(
+    "llm-rounds",
+    llvm::cl::desc("How many rounds of proposals to ask for, including the "
+                   "first. Each round after the first is told what the "
+                   "previous one measured, so this is how many chances the "
+                   "model gets to react. 1 asks once and stops."),
+    llvm::cl::value_desc("rounds"),
+    llvm::cl::init(rock::LLMSearchOptions{}.maxRounds));
+
+static llvm::cl::opt<unsigned> llmConfigsPerRound(
+    "llm-configs-per-round",
+    llvm::cl::desc("How many configs to ask for per round. The model may "
+                   "answer with fewer, and configs the tuning space refuses "
+                   "or that an earlier round already tried are dropped."),
+    llvm::cl::value_desc("configs"),
+    llvm::cl::init(rock::LLMSearchOptions{}.configsPerRound));
+
+static llvm::cl::opt<unsigned> llmInitialRandomConfigs(
+    "llm-initial-random-configs",
+    llvm::cl::desc("How many configs drawn from the space to benchmark "
+                   "alongside the quick tuning list in the first batch, so "
+                   "that the model's first proposal has something other than "
+                   "the heuristic's own guesses to beat."),
+    llvm::cl::value_desc("configs"),
+    llvm::cl::init(rock::LLMSearchOptions{}.initialRandomConfigs));
+
+static llvm::cl::opt<unsigned> llmRequestTimeout(
+    "llm-request-timeout",
+    llvm::cl::desc("How long one round may take before the proposer is "
+                   "killed and the run fails."),
+    llvm::cl::value_desc("seconds"),
+    llvm::cl::init(rock::LLMSearchOptions{}.requestTimeoutSec));
+
+static llvm::cl::opt<unsigned> llmCompileTimeout(
+    "llm-compile-timeout",
+    llvm::cl::desc("Tighten --perf-config-timeout to at most this while the "
+                   "model's proposals are being benchmarked, since they time "
+                   "out more often per config than the fixed spaces do. Only "
+                   "applies when --perf-config-timeout is already in use, "
+                   "because that is what decides whether configs are compiled "
+                   "in a killable subprocess at all. 0 leaves it alone."),
+    llvm::cl::value_desc("seconds"),
+    llvm::cl::init(rock::LLMSearchOptions{}.compileTimeoutSec));
+
+static llvm::cl::opt<bool> llmWaitForSeeds(
+    "llm-wait-for-seeds",
+    llvm::cl::desc("Benchmark the first batch before asking for the first "
+                   "proposal, instead of overlapping the two. Buys a "
+                   "better-informed first proposal for the latency of a round "
+                   "trip that would otherwise have been free."),
+    llvm::cl::init(rock::LLMSearchOptions{}.waitForSeeds));
+
+static llvm::cl::opt<std::string> llmProposer(
+    "llm-proposer",
+    llvm::cl::desc("The proposer script to run. Defaults to the one installed "
+                   "beside this binary, unless $ROCMLIR_LLM_PROPOSER says "
+                   "otherwise; a script that answers from a fixture instead of "
+                   "from a model is how the tests run this offline."),
+    llvm::cl::value_desc("script"), llvm::cl::init(""));
 
 static llvm::cl::opt<unsigned> rep(
     "rep",
@@ -605,8 +686,7 @@ struct BenchmarkParams {
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
   std::string compileOnlyDir;
-  std::string lfboTracePath;
-  rock::LFBOEffort lfboEffort = rock::LFBOEffort::Full;
+  rock::SearchOptions searchOptions;
 
   // Two-stage tuning. twoStageTopK == 0 disables it.
   unsigned twoStageTopK;
@@ -1501,6 +1581,32 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // Host/device buffers are allocated inside runBenchmarkPhase (the shared
   // timing path), so --compile-only performs no HIP work at all.
 
+  rock::SearchOptions searchOptions;
+  searchOptions.effort = searchEffort;
+  searchOptions.tracePath = searchTrace;
+  searchOptions.llm.model = llmModel;
+  searchOptions.llm.configsPerRound = llmConfigsPerRound;
+  searchOptions.llm.maxRounds = llmRounds;
+  searchOptions.llm.initialRandomConfigs = llmInitialRandomConfigs;
+  searchOptions.llm.requestTimeoutSec = llmRequestTimeout;
+  searchOptions.llm.compileTimeoutSec = llmCompileTimeout;
+  searchOptions.llm.waitForSeeds = llmWaitForSeeds;
+  searchOptions.llm.proposerPath = llmProposer;
+
+  // A model's proposals time out while compiling more often than a fixed
+  // space's do, so the LLM spaces put them on a shorter leash -- but only
+  // where there is already a leash to shorten. --perf-config-timeout is what
+  // compiles each config in a killable subprocess; at 0 there is no timeout to
+  // cap, and imposing one would move the whole run into subprocesses to buy a
+  // guarantee nobody asked for.
+  const bool searchAsksAModel =
+      tuningSpaceKind == rock::SearchStrategyKind::LLM ||
+      tuningSpaceKind == rock::SearchStrategyKind::LLMSeededLFBO;
+  unsigned effectivePerfConfigTimeout = perfConfigTimeout;
+  if (searchAsksAModel && perfConfigTimeout > 0 && llmCompileTimeout > 0)
+    effectivePerfConfigTimeout =
+        std::min<unsigned>(perfConfigTimeout, llmCompileTimeout);
+
   // NOTE: Compilation (PassManager::run()) resets the cl opts, so we have to
   // save the values.
   const BenchmarkParams benchmarkParams = {warmup,
@@ -1514,11 +1620,10 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            numCompileThreads,
                                            benchmarkConfig,
                                            flushLastLevelCache,
-                                           perfConfigTimeout,
+                                           effectivePerfConfigTimeout,
                                            gpuRunTimeout,
                                            compileOnlyDir,
-                                           lfboTrace,
-                                           lfboEffort,
+                                           searchOptions,
                                            twoStageTopK};
 
   const CoarseConfig coarseConfig = {coarseRepIters,     coarseMinRepIters,
@@ -1533,9 +1638,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   // that config and nothing else.
   std::unique_ptr<rock::TuningSearchStrategy> strategy =
       benchmarkParams.benchmarkConfig.empty()
-          ? rock::createTuningSearchStrategy(
-                source, benchmarkParams.tuningSpaceKind,
-                benchmarkParams.lfboEffort, benchmarkParams.lfboTracePath)
+          ? rock::createTuningSearchStrategy(source,
+                                             benchmarkParams.tuningSpaceKind,
+                                             benchmarkParams.searchOptions)
           : rock::createFixedBatchSearchStrategy(
                 {rock::PerfConfigString(benchmarkParams.benchmarkConfig)});
   // Only an iterative search reads the timings back, so only then is it worth
@@ -1544,14 +1649,30 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 
   // Asking for a trace of a search that has a single iteration would otherwise
   // leave no file and no explanation.
-  if (!benchmarkParams.lfboTracePath.empty() && !feedResultsBack)
-    llvm::errs() << "warning: --lfbo-trace: nothing to trace, since this run "
+  if (!benchmarkParams.searchOptions.tracePath.empty() && !feedResultsBack)
+    llvm::errs() << "warning: --search-trace: nothing to trace, since this run "
                     "hands out all of its configs in one batch\n";
 
   // Likewise for a budget this run has no way of spending.
-  if (lfboEffort.getNumOccurrences() > 0 && !feedResultsBack)
-    llvm::errs() << "warning: --lfbo-effort: nothing to budget, since this "
+  if (searchEffort.getNumOccurrences() > 0 && !feedResultsBack)
+    llvm::errs() << "warning: --search-effort: nothing to budget, since this "
                     "run benchmarks every config it was going to anyway\n";
+
+  // A model knob on a space that never asks a model does nothing, and doing
+  // nothing quietly is how a badly tuned run gets blamed on the model.
+  const bool llmFlagGiven = llmModel.getNumOccurrences() > 0 ||
+                            llmRounds.getNumOccurrences() > 0 ||
+                            llmConfigsPerRound.getNumOccurrences() > 0 ||
+                            llmInitialRandomConfigs.getNumOccurrences() > 0 ||
+                            llmRequestTimeout.getNumOccurrences() > 0 ||
+                            llmCompileTimeout.getNumOccurrences() > 0 ||
+                            llmWaitForSeeds.getNumOccurrences() > 0 ||
+                            llmProposer.getNumOccurrences() > 0;
+  if (llmFlagGiven && !searchAsksAModel)
+    llvm::errs() << "warning: --llm-*: ignored, since the '"
+                 << rock::getSearchStrategyKindName(
+                        benchmarkParams.tuningSpaceKind)
+                 << "' tuning space does not ask a model for configs\n";
 
   // In --compile-only mode, stream each successful HSACO to disk as soon as
   // it is compiled (freeing the in-memory copy) so peak memory is bounded by

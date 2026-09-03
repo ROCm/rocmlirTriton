@@ -4,8 +4,12 @@ add_rocmlir_dialect_library(MLIRRockTuning
   GridwiseGemmGemmParams.cpp
   LdsBlacklist.cpp
   LFBOSearch.cpp
+  LLMProposer.cpp
+  LLMSearch.cpp
+  LLMSeededLFBOSearch.cpp
   RandomForest.cpp
   RockTuningImpl.cpp
+  SearchTrace.cpp
   TuningRanges.cpp
   TuningSearch.cpp
   ParamLookupTable.cpp

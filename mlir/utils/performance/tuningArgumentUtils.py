@@ -6,10 +6,16 @@ import argparse
 
 from perfCommonUtils import Operation
 
-# "lfbo" is not a fixed space but an adaptive search: it benchmarks a batch,
-# learns from the timings, and proposes the next batch, so it needs a live GPU
-# and is incompatible with --compile-only.
-TUNING_SPACE_CHOICES = ["quick", "full", "exhaustive", "lfbo"]
+TUNING_SPACE_CHOICES = ["quick", "full", "exhaustive", "lfbo", "llm", "llm-lfbo"]
+
+# The spaces that are not fixed but searched: they benchmark a batch, learn
+# from the timings and propose the next batch. That makes them the ones with a
+# budget worth setting and a progress worth tracing, and the ones that need a
+# live GPU, so they cannot be used with --compile-only or cross-compiled.
+ADAPTIVE_TUNING_SPACES = ("lfbo", "llm", "llm-lfbo")
+
+# The spaces that consult a language model, and so read the --llm-* options.
+LLM_TUNING_SPACES = ("llm", "llm-lfbo")
 OPERATION_CHOICES = [operation.name.lower() for operation in Operation]
 DATA_TYPE_CHOICES = [
     "f32", "f16", "bf16", "i8", "i8_i32", "i8_i8", "fp8", "fp8_f32", "fp8_fp8", "f4E2M1FN"
@@ -87,9 +93,10 @@ def add_common_tuning_arguments(
                         action="store_true",
                         default=False,
                         help="Enable detailed per-iteration measurements, written to "
-                        "<output>.debug. With --tuning-space=lfbo, also record how the "
-                        "search progressed, one file per problem under <output>.lfbo "
-                        "(see analysis/plotLFBOTrace.py)")
+                        "<output>.debug. With one of the searched tuning spaces "
+                        f"({', '.join(ADAPTIVE_TUNING_SPACES)}), also record how the search "
+                        "progressed, one file per problem under <output>.search "
+                        "(see analysis/plotSearchTrace.py)")
     parser.add_argument("--debug-quick-tune-data",
                         action="store_true",
                         default=False,

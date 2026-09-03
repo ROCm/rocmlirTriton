@@ -430,6 +430,20 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
             MatrixAccelKind::WMMA);
 }
 
+// The names reach a tuning trace and an LLM prompt, so they are part of an
+// interface rather than a debugging convenience: every enumerator has to have
+// one, and it has to be the enumerator's own spelling so that what is read
+// back matches what the enum says.
+TEST(AmdArchDbTest, MatrixAccelKindsAreNamedAfterThemselves) {
+  EXPECT_EQ(getNameForMatrixAccelKind(MatrixAccelKind::None), "None");
+  EXPECT_EQ(getNameForMatrixAccelKind(MatrixAccelKind::MFMA), "MFMA");
+  EXPECT_EQ(getNameForMatrixAccelKind(MatrixAccelKind::WMMA), "WMMA");
+  EXPECT_EQ(getNameForMatrixAccelKind(MatrixAccelKind::ScaledMFMA),
+            "ScaledMFMA");
+  EXPECT_EQ(getNameForMatrixAccelKind(MatrixAccelKind::ScaledWMMA),
+            "ScaledWMMA");
+}
+
 // Tests for getAccelInstrMinKDim
 
 // Unwraps the query so the expected K extents below stay readable. Only for
