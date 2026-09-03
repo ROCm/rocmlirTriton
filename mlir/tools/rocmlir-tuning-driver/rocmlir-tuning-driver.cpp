@@ -248,6 +248,12 @@ static llvm::cl::opt<std::string> benchmarkConfig(
         "Run benchmark with specific perf config only (skip tuning)"),
     llvm::cl::value_desc("perf config string"), llvm::cl::init(""));
 
+static llvm::cl::opt<int64_t>
+    dotK("dot-k",
+         llvm::cl::desc("K extent of each Triton dot when it evenly divides a "
+                        "power-of-two K tile (0 = leave the tile unchanged)"),
+         llvm::cl::init(0));
+
 static llvm::cl::opt<unsigned> numCompileThreads(
     "num-compile-threads",
     llvm::cl::desc("Number of parallel compilation threads (0 = auto)"),
@@ -669,11 +675,10 @@ static std::string getRocmlirDriverPath() {
 // what makes the timeout robust: the compile (LLVM backend + in-process LLD)
 // cannot be safely interrupted on a worker thread, but a child process can be
 // killed cleanly.
-static CompilationResult
-compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
-                           StringRef inputPath, StringRef archName,
-                           unsigned timeoutSec, std::mutex &outputMutex,
-                           std::atomic<bool> &compilationFailed) {
+static CompilationResult compileConfigViaSubprocess(
+    StringRef perfConfig, StringRef driverPath, StringRef inputPath,
+    StringRef archName, int64_t targetDotK, unsigned timeoutSec,
+    std::mutex &outputMutex, std::atomic<bool> &compilationFailed) {
   CompilationResult result;
   result.perfConfig = perfConfig;
 
@@ -706,10 +711,11 @@ compileConfigViaSubprocess(StringRef perfConfig, StringRef driverPath,
 
   std::string archArg = ("--arch=" + archName).str();
   std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
-  SmallVector<StringRef, 8> args = {
+  std::string dotKArg = "--dot-k=" + std::to_string(targetDotK);
+  SmallVector<StringRef, 9> args = {
       driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
-      archArg,    perfConfigArg, "-o",
-      outputPath};
+      archArg,    perfConfigArg, dotKArg,
+      "-o",       outputPath};
 
   // Discard stdout (empty path => /dev/null) because it would corrupt the
   // results stream. Capture stderr per child so fatal diagnostics can be
@@ -1421,7 +1427,9 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   }
 
   // 2. Set up compilation options (shared across all threads)
+  const int64_t targetDotK = dotK;
   rock::KernelOptions kernelOpts;
+  kernelOpts.dotK = targetDotK;
 
   RocmDeviceName deviceName;
   StringRef archName =
@@ -1699,12 +1707,13 @@ static LogicalResult runTuningLoop(ModuleOp source) {
             result.perfConfig = configs[idx];
             result.status = CompilationStatus::NotApplicable;
           } else {
-            result = (benchmarkParams.perfConfigTimeoutSec > 0)
-                         ? compileConfigViaSubprocess(
-                               configs[idx], driverPath, sharedInputPath,
-                               archName, benchmarkParams.perfConfigTimeoutSec,
-                               outputMutex, compilationFailed)
-                         : compileConfig(idx);
+            result =
+                (benchmarkParams.perfConfigTimeoutSec > 0)
+                    ? compileConfigViaSubprocess(
+                          configs[idx], driverPath, sharedInputPath, archName,
+                          targetDotK, benchmarkParams.perfConfigTimeoutSec,
+                          outputMutex, compilationFailed)
+                    : compileConfig(idx);
           }
 
           // Stream the compiled HSACO straight to the staging bundle and drop

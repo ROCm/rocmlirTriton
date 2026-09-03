@@ -52,8 +52,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
-#include <cstdlib>
-
 namespace mlir {
 namespace rock {
 #define GEN_PASS_DEF_ROCKDECOMPOSENONPOW2KPASS
@@ -71,6 +69,8 @@ namespace {
 struct RockDecomposeNonPow2KPass
     : public rock::impl::RockDecomposeNonPow2KPassBase<
           RockDecomposeNonPow2KPass> {
+  using RockDecomposeNonPow2KPassBase::RockDecomposeNonPow2KPassBase;
+
   void runOnOperation() override;
 };
 
@@ -286,28 +286,11 @@ static LogicalResult decomposeBlockwiseGemm(BlockwiseGemmOp gemm,
   return success();
 }
 
-/// PROTOTYPE KNOB (ROCK_K_DOT): the K extent each Triton dot should end up
-/// with. A blockwise gemm becomes one dot whose K extent is kPerBlock, and the
-/// backend unrolls that dot whole, so a wide K tile spends its register budget
-/// on live operands and stops the scheduler from forming v_dual_fmac pairs.
-/// Cutting the tile into narrower dots shrinks that liveness, which decouples
-/// the K tile size (chosen for LDS traffic and loop amortization) from the dot
-/// width (which is what governs packing). Zero leaves the pass unchanged.
-static int64_t getTargetDotK() {
-  const char *env = std::getenv("ROCK_K_DOT");
-  if (!env)
-    return 0;
-  int64_t n = 0;
-  if (llvm::StringRef(env).getAsInteger(10, n))
-    return 0;
-  return n;
-}
-
-/// `k` cut into segments of `length` each, or failure if it does not divide
-/// evenly into more than one such power-of-two segment.
-static FailureOr<SmallVector<Pow2Segment>> splitEqually(int64_t k,
-                                                        int64_t length) {
-  if (length < 1 || k <= length || k % length != 0 ||
+/// A power-of-two `k` cut into equal segments, or failure if `length` does not
+/// divide it into more than one power-of-two segment.
+static FailureOr<SmallVector<Pow2Segment>>
+splitPowerOfTwoEqually(int64_t k, int64_t length) {
+  if (!llvm::isPowerOf2_64(k) || length < 1 || k <= length || k % length != 0 ||
       !llvm::isPowerOf2_64(length))
     return failure();
   SmallVector<Pow2Segment> segs;
@@ -324,14 +307,19 @@ void RockDecomposeNonPow2KPass::runOnOperation() {
     return;
   }
 
-  int64_t targetDotK = getTargetDotK();
+  int64_t targetDotK = dotK;
+  if (targetDotK < 0 || (targetDotK != 0 && !llvm::isPowerOf2_64(targetDotK))) {
+    func.emitError("dot-k must be zero or a positive power of two");
+    return signalPassFailure();
+  }
 
   // Anchor on the K tile of the blockwise gemm itself, which is exactly the
   // tile the Triton layouts cannot represent when it is not a power of two.
   SmallVector<BlockwiseGemmOp> targets;
   func.walk([&](BlockwiseGemmOp gemm) {
     int64_t k = gemm.getKDim();
-    if (!llvm::isPowerOf2_64(k) || succeeded(splitEqually(k, targetDotK)))
+    if (!llvm::isPowerOf2_64(k) ||
+        succeeded(splitPowerOfTwoEqually(k, targetDotK)))
       targets.push_back(gemm);
   });
 
@@ -339,8 +327,8 @@ void RockDecomposeNonPow2KPass::runOnOperation() {
     int64_t k = gemm.getKDim();
     SmallVector<Pow2Segment> kSegs;
     if (FailureOr<SmallVector<Pow2Segment>> narrowed =
-            splitEqually(k, targetDotK);
-        succeeded(narrowed) && llvm::isPowerOf2_64(k))
+            splitPowerOfTwoEqually(k, targetDotK);
+        succeeded(narrowed))
       kSegs = std::move(*narrowed);
     else
       kSegs = decomposePow2(k);

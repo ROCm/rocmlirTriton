@@ -133,6 +133,11 @@ static cl::opt<bool> disableFastMath(
              "themselves are worth: the quick tuning list is tuned with the "
              "3xBF16 dot decomposition enabled on gfx950"));
 
+static cl::opt<int64_t>
+    dotK("dot-k", cl::init(0),
+         cl::desc("K extent of each Triton dot when it evenly divides a "
+                  "power-of-two K tile (0 = leave the tile unchanged)"));
+
 /// Values copied out of the `cl::opt`s above before any pipeline runs.
 ///
 /// The binary stage links with in-process LLD, which calls
@@ -143,6 +148,7 @@ struct CLOptionSnapshot {
   std::string outputFilename;
   std::string dumpCpuSchedules;
   bool disableFastMath;
+  int64_t dotK;
 };
 
 namespace test {
@@ -209,13 +215,13 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   return result;
 }
 
-/// `noFastMath` comes from `CLOptionSnapshot` rather than from the
-/// `-disable-fast-math` cl::opt, because this function runs the binary stage
-/// that resets every option.
+/// `noFastMath` and `targetDotK` come from `CLOptionSnapshot` rather than from
+/// their `cl::opt`s, because this function runs the binary stage that resets
+/// every option.
 static LogicalResult
 runKernelPipeline(StringRef archName, ModuleOp m,
                   llvm::SmallDenseSet<StringRef> &kernelPipelineSet,
-                  bool noFastMath) {
+                  bool noFastMath, int64_t targetDotK) {
   PassManager pm(m->getName(), PassManager::Nesting::Implicit);
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
@@ -288,6 +294,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     rock::KernelOptions opts;
     opts.arch = archName.str();
     opts.disableFastMath = noFastMath;
+    opts.dotK = targetDotK;
 
     rock::buildKernelPipeline(pm, opts);
   }
@@ -418,7 +425,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       }
     }
     if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
-                                 clOpts.disableFastMath)))
+                                 clOpts.disableFastMath, clOpts.dotK)))
       return failure();
   }
 
@@ -483,7 +490,7 @@ int main(int argc, char **argv) {
   // Snapshot the cl::opts that are consumed once lowering is under way, right
   // after parsing and before anything can reset them; see CLOptionSnapshot.
   const CLOptionSnapshot clOpts = {outputFilename, dumpCpuSchedules,
-                                   disableFastMath};
+                                   disableFastMath, dotK};
 
   // Create context after ParseCommandLineOptions, otherwise the context
   // will be created without the command line flags.

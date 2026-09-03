@@ -10,6 +10,11 @@
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=binary -arch=gfx950 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=BINARY --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=highlevel -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=HIGHLEVEL --match-full-lines --strict-whitespace
 
+// The manual dot-width option must reach the decomposition pass in the gpu
+// pipeline.
+// RUN: rocmlir-driver -dump-pipelines -dot-k=16 -kernel-pipeline=gpu -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=DOT_K
+// DOT_K:rock-decompose-nonpow2-k{dot-k=16}
+
 // `-disable-fast-math` has to reach every pass that takes it, in each phase
 // that has one and on the host pipeline as well as the kernel one. Asserting on
 // the constructed pipeline rather than on generated code is what catches a phase
@@ -64,7 +69,7 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-gridwise-gemm-to-blockwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
-// GPU-NEXT:func.func(rock-decompose-nonpow2-k),
+// GPU-NEXT:func.func(rock-decompose-nonpow2-k{dot-k=0}),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-fuse-sibling-loops),
 // GPU-NEXT:cse,

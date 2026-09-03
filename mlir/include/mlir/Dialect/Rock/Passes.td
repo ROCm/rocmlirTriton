@@ -250,8 +250,16 @@ def RockDecomposeNonPow2KPass
 
     Not supported: scaled GEMMs, sub-byte operands, and integer operands whose
     K tile decomposes into a segment narrower than 4.
+
+    `dot-k` can also split a power-of-two K tile into equal, narrower segments,
+    decoupling the Triton dot width from kPerBlock. This can reduce the number
+    of operands kept live while the backend lowers a dot. The value must be
+    zero or a positive power of two. Zero leaves power-of-two K tiles unchanged.
   }];
   let dependentDialects = ["rock::RockDialect"];
+  let options = [Option<"dotK", "dot-k", "int64_t", /*default=*/"0",
+                        "K extent of each Triton dot when it evenly divides a "
+                        "power-of-two K tile (0 = leave the tile unchanged)">];
 }
 
 def RockFuseSiblingLoopsPass

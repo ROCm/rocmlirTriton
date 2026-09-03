@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // RUN: rocmlir-opt -split-input-file -rock-decompose-nonpow2-k -canonicalize %s | FileCheck %s
+// RUN: rocmlir-opt -split-input-file -rock-decompose-nonpow2-k="dot-k=16" -canonicalize %s | FileCheck %s --check-prefix=DOT-K
 
 // A K tile of 48 decomposes into {32, 16}.
 
@@ -110,7 +111,8 @@ func.func @decompose_i8_narrowest_segment(%arg0: tensor<1x64x40xi8>, %arg1: tens
 
 // -----
 
-// We bail on a power-of-two K tile.
+// A power-of-two K tile is unchanged by default and split when dot-k is a
+// smaller divisor.
 
 #map = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 64 + d4, d3 * 64 + d5)>
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2 * 64 + d4, d0 * 64 + d5)>
@@ -119,6 +121,9 @@ func.func @decompose_i8_narrowest_segment(%arg0: tensor<1x64x40xi8>, %arg1: tens
 
 // CHECK-LABEL: @pow2_tile_untouched
 // CHECK-NOT: rock.transform
+// DOT-K-LABEL: @pow2_tile_untouched
+// DOT-K-COUNT-4: rock.blockwise_gemm({{.*}}) : tensor<64x16xf16>, tensor<16x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+// DOT-K-NOT: rock.blockwise_gemm
 func.func @pow2_tile_untouched(%arg0: tensor<1x64x128xf16>, %arg1: tensor<1x128x64xf16>, %arg2: tensor<64x64xf32>) -> tensor<64x64xf32> attributes {rock.kernel} {
   // CHECK: rock.blockwise_gemm(%{{.*}}, %{{.*}}, %{{.*}}) : tensor<64x64xf16>, tensor<64x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
   // CHECK-NOT: rock.blockwise_gemm

@@ -463,7 +463,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Must run after ToBlockwise passes, which build the K loop and the
   // accumulator this pass decomposes, and before FuseSiblingLoops, so that it
   // sees one blockwise_gemm per loop.
-  addWithDCE(rock::createRockDecomposeNonPow2KPass());
+  rock::RockDecomposeNonPow2KPassOptions decomposeKOpts;
+  decomposeKOpts.dotK = options.dotK;
+  addWithDCE(rock::createRockDecomposeNonPow2KPass(decomposeKOpts));
   // Must run after GridwiseGemmToBlockwise and RockDecomposeNonPow2K, but
   // before InsertOutputFusionLoads. CSE after deduplicates the now-co-located
   // shared operand loads.

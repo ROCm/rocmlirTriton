@@ -64,6 +64,13 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
            "reciprocal-style and FMA-friendly lowering), and keep every f32 "
            "`tt.dot` at IEEE precision"),
       init(false)};
+  /// Forwarded to `rock-decompose-nonpow2-k` to control the dot width
+  /// independently of kPerBlock.
+  PassOptions::Option<int64_t> dotK{
+      *this, "dot-k",
+      desc("K extent of each Triton dot when it evenly divides a power-of-two "
+           "K tile (0 = leave the tile unchanged)"),
+      init(0)};
 };
 
 /// Adds the `kernel` pipeline to the `OpPassManager`.
