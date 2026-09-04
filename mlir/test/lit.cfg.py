@@ -115,6 +115,13 @@ llvm_config.add_tool_substitutions(tools, tool_dirs)
 # it can be explicitly opted-in by prefixing the variable name with $
 config.environment['FILECHECK_OPTS'] = "-enable-var-scope --allow-unused-prefixes=false"
 
+# Without an explicit --num_cu, rocmlir-gen reads the count off a visible device
+# whose architecture matches --arch. That makes generated IR depend on the host
+# the suite happens to run on, and it initializes the HIP runtime once per
+# invocation. Tests want the per-arch default instead, so opt out for all of
+# them; a test that cares about a specific count passes --num_cu.
+config.environment['ROCMLIR_GEN_NO_NATIVE_CU_QUERY'] = "1"
+
 # LLVM can be configured with an empty default triple
 # by passing ` -DLLVM_DEFAULT_TARGET_TRIPLE="" `.
 # This is how LLVM filters tests that require the host target
