@@ -286,12 +286,13 @@ Type ConvGenerator::getOutputDataType(OpBuilder &builder) const {
 
 uint32_t ConvGenerator::getNumCU() const {
   return config.num_cu.has_value() ? config.num_cu.value()
-                                   : rock::getMinNumCU(config.arch);
+                                   : rock::getDefaultNumCU(config.arch);
 }
 
 int64_t ConvGenerator::getNumChiplets() const {
-  return config.num_chiplets.has_value() ? config.num_chiplets.value()
-                                         : rock::getMaxNumChiplets(config.arch);
+  return config.num_chiplets.has_value()
+             ? config.num_chiplets.value()
+             : rock::inferNumChiplets(config.arch, getNumCU());
 }
 
 LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,

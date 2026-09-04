@@ -9,7 +9,7 @@
 // CHECK_SCALE-SAME: %[[scaleRaw:.*3]]: tensor<4194304xf32>,
 // CHECK_SCALE-SAME: %[[lastValidKVIndexRaw:.*4]]: tensor<1xi32>,
 // CHECK_SCALE-SAME: %[[outputRaw:.*5]]: tensor<131072xf32>)
-// CHECK_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel{{.*}}}
 // CHECK_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>
@@ -90,7 +90,7 @@
 // CHECK_NO_SCALE-SAME: %[[valuesRaw:.*2]]: tensor<65536xf32>,
 // CHECK_NO_SCALE-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK_NO_SCALE-SAME: %[[outputRaw:.*4]]: tensor<131072xf32>)
-// CHECK_NO_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK_NO_SCALE-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel{{.*}}}
 // CHECK_NO_SCALE-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK_NO_SCALE-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK_NO_SCALE-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>

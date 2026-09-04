@@ -74,25 +74,22 @@ StringAttr mlir::rock::getArchValue(Operation *op) {
 }
 
 FailureOr<int64_t> mlir::rock::getNumCUOnFunc(FunctionOpInterface func) {
-  FailureOr<StringAttr> maybeArch = getArchOnFunc(func);
-  if (failed(maybeArch)) {
+  // A CU count without an arch to interpret it against is malformed IR, so
+  // keep requiring one even though the value itself no longer needs the arch.
+  if (failed(getArchOnFunc(func))) {
     LLVM_DEBUG(llvm::dbgs() << "arch not found\n");
     return failure();
   }
-  StringAttr arch = maybeArch.value();
   FailureOr<IntegerAttr> maybeNumCU = getAttrFromFuncOrParent<IntegerAttr>(
       func, rock::NumCUAttr::getMnemonic());
   if (failed(maybeNumCU)) {
     return failure();
   }
-  IntegerAttr numCU = maybeNumCU.value();
-  int64_t minNumCU = rock::getMinNumCU(arch);
-  if (numCU.getValue().getSExtValue() < minNumCU) {
-    return func->emitError()
-           << "num_cu=" << numCU
-           << " cannot be lower than arch minNumCU=" << minNumCU;
-  }
-  return numCU.getValue().getSExtValue();
+  // No lower bound is enforced here. A caller that queried a partitioned
+  // device legitimately supplies fewer CUs than the family's flagship, and
+  // rejecting that would fail lowering on an input that is perfectly valid.
+  // `HardwareLimitsTest` asserts `getMinNumCU` against live devices instead.
+  return maybeNumCU.value().getValue().getSExtValue();
 }
 
 FailureOr<int64_t> mlir::rock::getNumCU(Operation *op) {
@@ -105,13 +102,13 @@ int64_t mlir::rock::getNumCUValueOnFunc(FunctionOpInterface func) {
     return maybeCU.value();
   }
 
-  // Otherwise, we will need to get the minimum CU value from the architecture
+  // Otherwise assume the flagship part of the architecture.
   auto archStr = rock::getArchValueOnFunc(func);
-  int64_t minCU = rock::getMinNumCU(archStr);
-  LLVM_DEBUG(llvm::dbgs() << "Could not find num_cu, defaulting to minimum "
-                          << "CU value for " << archStr << ": " << minCU
-                          << "\n");
-  return minCU;
+  int64_t defaultCU = rock::getDefaultNumCU(archStr);
+  LLVM_DEBUG(llvm::dbgs() << "Could not find num_cu, defaulting to the "
+                          << "flagship CU count for " << archStr << ": "
+                          << defaultCU << "\n");
+  return defaultCU;
 }
 
 int64_t mlir::rock::getNumCUValue(Operation *op) {
@@ -155,7 +152,12 @@ int64_t mlir::rock::getNumChipletsValueOnFunc(FunctionOpInterface func) {
     return maybeChiplets.value();
   }
 
-  // Otherwise, we will need to get the max chiplets value from the architecture
+  // Otherwise assume every chiplet the architecture can have. Inferring from
+  // the CU count instead is tempting, but here the count may itself be the
+  // per-arch default rather than a measured one, and inferNumChiplets reports
+  // a single chiplet for any count it does not recognize, so an unusual count
+  // would silently shrink the grid layout to one chiplet. rocmlir-gen does
+  // infer, because there the count came from the device it just queried.
   auto archStr = rock::getArchValueOnFunc(func);
   int64_t maxChiplets = rock::getMaxNumChiplets(archStr);
   LLVM_DEBUG(

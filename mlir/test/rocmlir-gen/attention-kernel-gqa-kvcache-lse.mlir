@@ -9,7 +9,7 @@
 // CHECK-SAME: %[[lastValidKVIndexRaw:.*3]]: tensor<1xi32>,
 // CHECK-SAME: %[[lseRaw:.*4]]: tensor<4096xf32>,
 // CHECK-SAME: %[[outputRaw:.*5]]: tensor<131072xf32>)
-// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel}
+// CHECK-SAME: attributes {rock.arch = "[[$ARCH]]", rock.kernel{{.*}}}
 // CHECK-NEXT: %[[queries:.*]] = rock.transform %[[queriesRaw]] {{.*}} : tensor<131072xf32> to tensor<4x1024x32xf32>
 // CHECK-NEXT: %[[keys:.*]] = rock.transform %[[keysRaw]] {{.*}} : tensor<65536xf32> to tensor<2x32x1024xf32>
 // CHECK-NEXT: %[[values:.*]] = rock.transform %[[valuesRaw]] {{.*}} : tensor<65536xf32> to tensor<2x1024x32xf32>

@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/DeviceInfo.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
@@ -1887,10 +1888,15 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   // Target-identity guardrail (always a hard error): arch/numCUs/numChiplets
   // were baked into grid sizes at compile time, so any mismatch would produce
   // wrong launch dimensions and bogus timings.
-  hipDeviceProp_t props;
-  HIPCHECK(hipGetDeviceProperties(&props, 0));
-  StringRef liveArch(props.gcnArchName);
-  int64_t liveCU = props.multiProcessorCount;
+  std::optional<rock::NativeDeviceInfo> liveDevice =
+      rock::getNativeDeviceInfo();
+  if (!liveDevice) {
+    llvm::errs() << "error: could not query the live GPU to check it against "
+                    "the artifact's target\n";
+    return failure();
+  }
+  StringRef liveArch(liveDevice->arch);
+  int64_t liveCU = liveDevice->numCU;
   int64_t liveChiplets = rock::inferNumChiplets(liveArch, liveCU);
 
   RocmDeviceName manifestDev, liveDev;
@@ -1943,6 +1949,11 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
 
 int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
+
+  // HIP latches the scheduling mode when it initializes, and this tool goes on
+  // to make plenty of HIP calls, so the request has to come before all of
+  // them.
+  rock::requestWGPScheduling();
 
   mlir::registerMLIRCLOptions();
   llvm::cl::ParseCommandLineOptions(argc, argv, "rocMLIR tuning driver");

@@ -20,33 +20,20 @@ import matplotlib.pyplot as plt
 import argparse
 import math
 import os
-from hip import hip
-
-# TODO use AmdArchDb.py (when it's implemented)
+import amd_arch_db
 
 num_eu_per_cu = 4  # may be changed in newer architectures
-
-
-def hip_check(call_result):
-    err = call_result[0]
-    result = call_result[1:]
-    if len(result) == 1:
-        result = result[0]
-    if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
-        raise RuntimeError(str(err))
-    return result
 
 
 def assign_num_cu():
     if args.c:
         return int(args.c)
-    else:
-        props = hip.hipDeviceProp_t()
-        hip_check(hip.hipGetDeviceProperties(props, 0))
-        print(
-            "Using info from GPU 0 in your system, the data should have be obtained from the same GPU."
-        )
-        return int(props.multiProcessorCount)
+    print("Using info from GPU 0 in your system, the data should have be obtained "
+          "from the same GPU.")
+    num_cus = amd_arch_db.get_native_num_cu()
+    if num_cus is None:
+        raise RuntimeError("Cannot find a visible HIP device")
+    return num_cus
 
 
 def analyze_gemm_file(file, n):

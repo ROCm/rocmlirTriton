@@ -270,7 +270,7 @@ computeOptimalSplitKFactors(RockGemmGemmWrapperInterface gemmGemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmGemmOp));
+  uint32_t numCUs = rock::getDefaultNumCU(rock::getArchValue(gemmGemmOp));
   auto opNumCUs = rock::getNumCU(gemmGemmOp);
   if (succeeded(opNumCUs))
     numCUs = opNumCUs.value();
@@ -882,7 +882,7 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
     return splitKValues;
   }
 
-  uint32_t numCUs = rock::getMinNumCU(rock::getArchValue(gemmOp));
+  uint32_t numCUs = rock::getDefaultNumCU(rock::getArchValue(gemmOp));
   if (succeeded(rock::getNumCU(gemmOp))) {
     numCUs = rock::getNumCU(gemmOp).value();
   }
