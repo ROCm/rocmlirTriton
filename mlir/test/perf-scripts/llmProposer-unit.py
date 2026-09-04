@@ -980,6 +980,24 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("Best so far", refinement)
         self.assertNotIn("Best so far", initial)
 
+    def test_wait_for_seeds_keeps_the_problem_context(self):
+        # This is the first message in the conversation even though measured
+        # seeds put it on the refinement path. The model cannot recover this
+        # context from an earlier message because there is no earlier message.
+        prompt = proposer.build_prompt(self.request(round=0, results=[result({"kpack": 8}, 500.0)]))
+        for section in ("## Problem", "## GPU Hardware", "## Configuration Space",
+                        "## Default Configuration", "## Search State"):
+            self.assertIn(section, prompt)
+        self.assertIn("G=1 M=1024 K=1024 N=1024", prompt)
+        self.assertIn("gfx942", prompt)
+
+    def test_a_resumed_refinement_does_not_repeat_the_problem_context(self):
+        prompt = proposer.build_prompt(self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
+        self.assertIn("## Search State", prompt)
+        for section in ("## Problem", "## GPU Hardware", "## Configuration Space",
+                        "## Default Configuration"):
+            self.assertNotIn(section, prompt)
+
     def test_the_system_prompt_explains_the_parameters(self):
         # The model has no knowledge of Rock, so every parameter it is allowed
         # to move has to be explained somewhere.

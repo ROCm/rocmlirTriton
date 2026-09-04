@@ -38,7 +38,7 @@ would either lose it or bury it in a template.
 from __future__ import annotations
 
 import textwrap
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .configs import knob_names, render_space
 from .feedback import (
@@ -520,27 +520,35 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]]) -> str:
     return _section("Heuristic Seed Configs", body)
 
 
-def build_initial_prompt(request: Dict[str, Any]) -> str:
-    """Build the full initial user prompt, for the round that has no results."""
+def _build_problem_context(request: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """The context a conversation needs before it can reason about results."""
     problem = request.get("problem", {})
     hardware = request.get("hardware", {})
     space = request.get("space", {})
     default_config = request.get("defaultConfig", {})
     hints = compute_workload_hints(problem, hardware, space)
-
     default_section = _section(
         "Default Configuration",
         format_config_for_prompt(default_config) +
         "\n  Any parameter you do not mention takes its value from this config.",
     )
-    task_section = ("Propose the first batch of configs. Include both near-default and "
-                    f"exploratory candidates. {RETURN_JSON_ONLY}")
     return _join_sections(
         _section("Problem", describe_problem(problem)),
         _section("GPU Hardware", describe_hardware(hardware)),
         _bullet_section("What The Shapes Suggest", hints) if hints else "",
         _section("Configuration Space", render_space(space, default_config)),
         default_section,
+    ), hints
+
+
+def build_initial_prompt(request: Dict[str, Any]) -> str:
+    """Build the full initial user prompt, for the round that has no results."""
+    space = request.get("space", {})
+    context, hints = _build_problem_context(request)
+    task_section = ("Propose the first batch of configs. Include both near-default and "
+                    f"exploratory candidates. {RETURN_JSON_ONLY}")
+    return _join_sections(
+        context,
         build_seed_config_section(request.get("seedConfigs", [])),
         _bullet_section(
             "Search Strategy",
@@ -572,7 +580,14 @@ def build_refinement_prompt(
     task_section = (f"Propose up to {configs_requested} NEW UNIQUE configs around the "
                     "anchors above. Avoid the failed and refused patterns above, and favour "
                     f"targeted edits with attributable effects. {RETURN_JSON_ONLY}")
+    # Ordinarily the initial request established this context and a resumed
+    # conversation retains it. With --llm-wait-for-seeds, however, round 0
+    # already has measurements and enters this refinement path on the first
+    # request. Put the context in that first message rather than asking the
+    # model to tune anonymous M/N/K timings.
+    context = _build_problem_context(request)[0] if request.get("round") == 0 else ""
     return _join_sections(
+        context,
         _section("Search State", search_state),
         _section("Anchor Configs", anchor_configs),
         _section("Results (best first)", results),
