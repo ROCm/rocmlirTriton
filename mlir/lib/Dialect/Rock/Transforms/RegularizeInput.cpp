@@ -89,17 +89,21 @@ static FailureOr<Value> distributeLoadMarker(
 
   Operation *defOp = originalVal.getDefiningOp();
 
+  auto createTiledLoad = [&]() -> Value {
+    Value source = applyTransforms(builder, originalVal, postTransforms);
+    auto marker = LoadMarkerOp::create(builder, loc, tileType, source,
+                                       extraViews, extraIndices, cache);
+    valueMapping.insert({cacheKey, marker.getResult()});
+    return marker.getResult();
+  };
+
   // Leaf: block argument — apply postTransforms, create new load_marker.
   if (!defOp) {
     auto blockArg = cast<BlockArgument>(originalVal);
     if (blockArg.getOwner() != &funcOp.front())
       return failure();
 
-    Value source = applyTransforms(builder, originalVal, postTransforms);
-    auto newMarker = LoadMarkerOp::create(builder, loc, tileType, source,
-                                          extraViews, extraIndices, cache);
-    valueMapping.insert({cacheKey, newMarker.getResult()});
-    return newMarker.getResult();
+    return createTiledLoad();
   }
 
   // rock.transform — accumulate and recurse.
@@ -138,20 +142,31 @@ static FailureOr<Value> distributeLoadMarker(
     return cloned->getResult(0);
   }
 
-  // Leaf: splat arith.constant — reshape to tile type.
+  // Leaf: arith.constant. Splats remain ordinary SSA constants and can be
+  // rematerialized at the tile shape. Dense non-splats require coordinate-aware
+  // access, so preserve their transform chain and create a tiled load just as
+  // for a kernel argument.
   if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+    if (rock::isDenseNonSplatConstant(originalVal))
+      return createTiledLoad();
+
     auto attr = dyn_cast<DenseElementsAttr>(constOp.getValue());
-    if (!attr || !attr.isSplat()) {
-      defOp->emitOpError("non-splat constant in fusion chain not supported");
+    if (!attr) {
+      defOp->emitOpError("expected a dense tensor constant in fusion chain");
       return failure();
     }
-    auto tileRankedType = cast<RankedTensorType>(tileType);
-    auto newAttr =
-        DenseElementsAttr::get(tileRankedType, attr.getSplatValue<Attribute>());
-    auto newConst =
-        arith::ConstantOp::create(builder, loc, tileRankedType, newAttr);
-    valueMapping.insert({cacheKey, newConst.getResult()});
-    return newConst.getResult();
+    if (attr.isSplat()) {
+      auto tileRankedType = cast<RankedTensorType>(tileType);
+      auto newAttr = DenseElementsAttr::get(tileRankedType,
+                                            attr.getSplatValue<Attribute>());
+      auto newConst =
+          arith::ConstantOp::create(builder, loc, tileRankedType, newAttr);
+      valueMapping.insert({cacheKey, newConst.getResult()});
+      return newConst.getResult();
+    }
+    defOp->emitOpError(
+        "non-splat constant in fusion chain must be a ranked tensor");
+    return failure();
   }
 
   return failure();

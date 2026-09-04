@@ -60,3 +60,17 @@ func.func @separate_read_write(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>) -> 
 func.func @non_kernel_skipped(%arg0: tensor<16xf32>) {
   return
 }
+
+// A transformed dense compiler constant is loaded from internal storage and
+// must not be treated as a kernel argument. The only argument remains
+// write-only.
+// CHECK-LABEL: @dense_constant
+// CHECK-SAME: (%{{.*}}: tensor<4xf32> {{{.*}}llvm.writeonly{{.*}}})
+func.func @dense_constant(%dest: tensor<4xf32>) -> tensor<4xf32> attributes {rock.kernel} {
+  %values = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>
+  %view = rock.transform %values by <affine_map<(d0) -> (d0)> by [<PassThrough ["element"] at [0] -> ["element"] at [0]>] bounds = [4] -> [4]> : tensor<4xf32> to tensor<4xf32>
+  %loaded = rock.blockwise_load %view {cacheModifier = #rock<CacheModifier none>} : tensor<4xf32> -> tensor<4xf32>
+  %result = rock.blockwise_store %loaded -> %dest by set
+    : tensor<4xf32> -> tensor<4xf32> -> tensor<4xf32>
+  return %result : tensor<4xf32>
+}

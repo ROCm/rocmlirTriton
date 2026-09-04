@@ -30,3 +30,28 @@ func.func @test_error_multiple_results(%arg0: tensor<64x64xf16>) -> tensor<64x64
 
   return %1 : tensor<64x64xf16>
 }
+
+// -----
+
+// Only dense tensor constants have a defined compiler-owned storage layout.
+// Other ElementsAttr implementations must be rejected rather than silently
+// using the zero pointer reserved for splats.
+func.func @test_error_non_dense_constant() attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %values = arith.constant sparse<[[0], [3]], [1.0, 4.0]> : tensor<4xf32>
+  // expected-error @+2 {{'rock.transforms_to_ptr' op constant transform chain root must contain dense elements}}
+  // expected-error @+1 {{failed to legalize operation 'rock.transforms_to_ptr' that was explicitly marked illegal}}
+  %pointers, %mask = rock.transforms_to_ptr %values : tensor<4xf32> -> tensor<4xi32>, tensor<4xi1>
+  return
+}
+
+// -----
+
+// Zero-sized constants have no addressable storage and cannot be flattened
+// through an Unmerge transform.
+func.func @test_error_zero_sized_constant() attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %values = arith.constant dense<> : tensor<0x2xf32>
+  // expected-error @+2 {{zero-sized dense constants cannot provide compiler-owned storage}}
+  // expected-error @+1 {{failed to infer returned types}}
+  %pointers, %mask = rock.transforms_to_ptr %values : tensor<0x2xf32> -> tensor<0x2xi32>, tensor<0x2xi1>
+  return
+}

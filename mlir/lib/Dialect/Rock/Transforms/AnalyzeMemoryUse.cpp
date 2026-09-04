@@ -34,6 +34,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/Debug.h"
@@ -94,11 +95,21 @@ void RockAnalyzeMemoryUsePass::runOnOperation() {
   auto loadResult = func.walk([&](rock::BlockwiseLoadOp loadOp) {
     FailureOr<BlockArgument> srcArg =
         rock::findBlockArgument(loadOp.getSource());
-    if (failed(srcArg) || srcArg->getOwner() != &func.front()) {
+    if (succeeded(srcArg) && srcArg->getOwner() == &func.front()) {
+      isRead[srcArg->getArgNumber()] = true;
+      return WalkResult::advance();
+    }
+
+    // Dense non-splat constants do not participate in kernel-argument memory
+    // attributes.
+    SmallVector<TransformMapAttr> transforms;
+    Value root;
+    std::tie(root, std::ignore) =
+        rock::untransform(loadOp.getSource(), transforms);
+    if (!rock::isDenseNonSplatConstant(root)) {
       loadOp.emitError("cannot trace load source to kernel argument");
       return WalkResult::interrupt();
     }
-    isRead[srcArg->getArgNumber()] = true;
     return WalkResult::advance();
   });
   if (loadResult.wasInterrupted())

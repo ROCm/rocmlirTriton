@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -659,6 +660,18 @@ Value mlir::rock::insertBroadcast(OpBuilder &b, Location loc, Value inp,
   if (!broadcastDone)
     return inp;
   return rock::TransformOp::create(b, loc, inp, broadcastDims.get());
+}
+
+DenseElementsAttr mlir::rock::getDenseTensorConstantAttr(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant || !isa<RankedTensorType>(constant.getType()))
+    return {};
+  return dyn_cast<DenseElementsAttr>(constant.getValue());
+}
+
+bool mlir::rock::isDenseNonSplatConstant(Value value) {
+  DenseElementsAttr elements = getDenseTensorConstantAttr(value);
+  return elements && !elements.isSplat();
 }
 
 bool mlir::rock::isFusionOp(Operation *op) {
