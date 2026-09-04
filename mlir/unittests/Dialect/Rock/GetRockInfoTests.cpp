@@ -107,7 +107,10 @@ TEST(GetRockInfoTest, GetNumCURejectsLegacyUnprefixedName) {
   EXPECT_EQ(*maybeNumCU, 256);
 }
 
-TEST(GetRockInfoTest, DefaultNumChipletsFollowDefaultNumCU) {
+// With no rock.num_cu the flagship part is assumed, which on CDNA4 is the
+// unpartitioned 256 CUs. The chiplet default does not follow the CU count: see
+// getNumChipletsValueOnFunc for why the library keeps the arch maximum.
+TEST(GetRockInfoTest, DefaultsAssumeTheFlagshipPart) {
   GetRockInfoTestEnv e;
   (*e.module)->setAttr(rock::ArchAttr::getMnemonic(),
                        e.b.getStringAttr("amdgcn-amd-amdhsa:gfx950"));
@@ -115,17 +118,17 @@ TEST(GetRockInfoTest, DefaultNumChipletsFollowDefaultNumCU) {
   auto op = e.makeOp(body);
   auto func = cast<func::FuncOp>(body->getParentOp());
 
-  // With no rock.num_cu the flagship part is assumed, which on CDNA4 is the
-  // unpartitioned 256 CUs over all 8 XCDs.
   EXPECT_EQ(rock::getNumCUValue(op), 256);
   EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), 8);
   EXPECT_EQ(rock::getNumChipletsValue(op), 8);
 }
 
-// A partitioned device reports fewer CUs than the family's flagship. That is
-// valid input and must not be rejected, and the chiplet count has to follow it
-// down rather than staying at the flagship's XCD count.
-TEST(GetRockInfoTest, PartitionedNumCUIsAcceptedAndDrivesChiplets) {
+// A partitioned device reports fewer CUs than the family's flagship, which is
+// valid input: nothing may reject it, since MIGraphX passes in whatever the
+// device reported. The chiplet count is left to whoever knows the topology,
+// which is why an omitted rock.num_chiplets still resolves to the arch maximum
+// rather than being inferred from a count that may itself be a default.
+TEST(GetRockInfoTest, PartitionedNumCUIsAccepted) {
   GetRockInfoTestEnv e;
   Operation *moduleOp = *e.module;
   moduleOp->setAttr(rock::ArchAttr::getMnemonic(),
@@ -134,14 +137,13 @@ TEST(GetRockInfoTest, PartitionedNumCUIsAcceptedAndDrivesChiplets) {
   auto op = e.makeOp(body);
   auto func = cast<func::FuncOp>(body->getParentOp());
 
-  for (auto [numCU, expectedChiplets] :
-       {std::pair<int64_t, int64_t>{128, 4}, {64, 2}, {32, 1}}) {
+  for (int64_t numCU : {128, 64, 32}) {
     moduleOp->setAttr(rock::NumCUAttr::getMnemonic(),
                       e.b.getI64IntegerAttr(numCU));
     auto maybeNumCU = rock::getNumCU(op);
     ASSERT_TRUE(succeeded(maybeNumCU)) << numCU;
     EXPECT_EQ(*maybeNumCU, numCU);
-    EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), expectedChiplets) << numCU;
+    EXPECT_EQ(rock::getNumChipletsValueOnFunc(func), 8) << numCU;
   }
 }
 

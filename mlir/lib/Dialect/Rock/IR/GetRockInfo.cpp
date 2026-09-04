@@ -152,16 +152,19 @@ int64_t mlir::rock::getNumChipletsValueOnFunc(FunctionOpInterface func) {
     return maybeChiplets.value();
   }
 
-  // Otherwise, infer chiplets from the effective CU count. This keeps omitted
-  // chiplets consistent with an explicitly supplied or architecture-default CU
-  // count.
+  // Otherwise assume every chiplet the architecture can have. Inferring from
+  // the CU count instead is tempting, but here the count may itself be the
+  // per-arch default rather than a measured one, and inferNumChiplets reports
+  // a single chiplet for any count it does not recognize, so an unusual count
+  // would silently shrink the grid layout to one chiplet. rocmlir-gen does
+  // infer, because there the count came from the device it just queried.
   auto archStr = rock::getArchValueOnFunc(func);
-  int64_t numCU = rock::getNumCUValueOnFunc(func);
-  int64_t chiplets = rock::inferNumChiplets(archStr, numCU);
-  LLVM_DEBUG(llvm::dbgs() << "Could not find num_chiplets, inferring "
-                          << chiplets << " chiplets for " << archStr << " with "
-                          << numCU << " CUs\n");
-  return chiplets;
+  int64_t maxChiplets = rock::getMaxNumChiplets(archStr);
+  LLVM_DEBUG(
+      llvm::dbgs() << "Could not find num_chiplets, defaulting to maximum "
+                   << "chiplets value for " << archStr << ": " << maxChiplets
+                   << "\n");
+  return maxChiplets;
 }
 
 int64_t mlir::rock::getNumChipletsValue(Operation *op) {
