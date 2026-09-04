@@ -207,10 +207,15 @@ llvm::Expected<std::vector<std::string>> parseResponse(StringRef text,
   const llvm::json::Array *configs = root->getArray("configs");
   if (!configs)
     return invalid("reply has no 'configs' array");
-  if (configs->size() > maxConfigs)
-    return invalid("reply has " + llvm::Twine(configs->size()) +
-                   " configs, but only " + llvm::Twine(maxConfigs) +
-                   " were requested");
+  // A model that answers with more configs than the round asked for has been
+  // generous, not broken, and the round can use the first `maxConfigs` of
+  // them. Treating it as a malformed reply ended the whole tuning run over one
+  // config too many.
+  size_t offered = configs->size();
+  if (offered > maxConfigs)
+    llvm::errs() << "warning: " << program << " answered with " << offered
+                 << " configs where " << maxConfigs
+                 << " were requested; using the first " << maxConfigs << "\n";
 
   // Whole configs in the canonical named form, which is the only spelling
   // anything in-tree accepts. Whether one of them names a legal config is not
@@ -220,6 +225,8 @@ llvm::Expected<std::vector<std::string>> parseResponse(StringRef text,
   // unlucky.
   std::vector<std::string> result;
   for (const llvm::json::Value &entry : *configs) {
+    if (result.size() == maxConfigs)
+      break;
     std::optional<StringRef> perfConfig = entry.getAsString();
     if (!perfConfig)
       return invalid(

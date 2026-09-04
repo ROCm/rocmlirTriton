@@ -29,6 +29,7 @@ from .configs import alias_config
 MAX_RESULTS_IN_PROMPT = 8
 MAX_ANCHORS_IN_PROMPT = 2
 MAX_CHANGED_FIELDS_PER_CONFIG = 6
+MAX_FAILURES_IN_PROMPT = 5
 MAX_REJECTIONS_IN_PROMPT = 4
 
 Config = Dict[str, int]
@@ -148,12 +149,33 @@ def summarize_failed_configs_for_llm(
     if not unmeasured:
         return "  Every config so far ran."
 
-    counts = collections.Counter(result.get("status", "failed") for result in unmeasured)
+    # `buildSeedBatch` pads its batch with configs drawn at random across every
+    # axis at once, and those fail often. Listed as failures the same way a
+    # proposal is, they read as patterns to avoid: one round told the model
+    # that six configs had failed and offered kPerBlock=208 and numWaves=16
+    # among the things they had in common, when the only thing they had in
+    # common was having been generated at random. A config that moves more
+    # fields than any proposal is allowed to cannot be a proposal, so it is
+    # counted rather than held up as an example.
+    probes = [result for result in unmeasured
+              if len(config_diff(default_config, result["config"])) >
+              MAX_CHANGED_FIELDS_PER_CONFIG]
+    proposals = [result for result in unmeasured if result not in probes]
+    if probes:
+        lines = [f"  {len(probes)} of the random configs padding the seed batch could not "
+                 "be run. Each moves most of its fields at once, so there is no pattern "
+                 "in them for you to avoid."]
+    else:
+        lines = []
+    if not proposals:
+        return "\n".join(lines) or "  Every config so far ran."
+
+    counts = collections.Counter(result.get("status", "failed") for result in proposals)
     count_summary = ", ".join(f"{label}={count}" for label, count in sorted(counts.items()))
-    lines = [f"  Counts: {count_summary}"]
+    lines.append(f"  Counts: {count_summary}")
 
     seen = set()
-    for result in unmeasured:
+    for result in proposals:
         label = result.get("status", "failed")
         diff_text = format_config_diff(default_config, result["config"])
         key = f"{label}:{diff_text}"
@@ -161,7 +183,7 @@ def summarize_failed_configs_for_llm(
             continue
         seen.add(key)
         lines.append(f"  {label}: {diff_text}")
-        if len(lines) >= 6:
+        if len(seen) >= MAX_FAILURES_IN_PROMPT:
             break
     return "\n".join(lines)
 
@@ -245,7 +267,12 @@ def analyze_top_configs(
 
     lines: List[str] = []
     for key in all_keys:
-        values = [config[key] for config in top if key in config]
+        # Every top config votes, including the ones whose sparse diff leaves
+        # this field alone: an omitted field is a vote for the default, not an
+        # abstention. Counting only the configs that mention it turned two
+        # fastest configs at mPerBlock=64 into "mPerBlock: always 128", a claim
+        # the Results section directly above it contradicted.
+        values = [config.get(key, default_config.get(key)) for config in top]
         if not values:
             continue
         counts = collections.Counter(json.dumps(value) for value in values)

@@ -369,6 +369,76 @@ def describe_hardware(hardware: Hardware) -> str:
     return "\n".join(lines)
 
 
+# Rock names a convolution's dimensions g, k, c and 0, 1 for the spatial ones,
+# suffixed per tensor (ni, ci, 0i on the input; no, ko, 0o on the output), so a
+# layout reaches here as gkc01 or nigici0i1i. Spelled in the letters the
+# convolution literature uses, the same layouts read as GKCYX and NGCHW.
+_LAYOUT_LETTERS = {
+    "g": "G",
+    "k": "K",
+    "c": "C",
+    "ni": "N",
+    "gi": "G",
+    "ci": "C",
+    "no": "N",
+    "go": "G",
+    "ko": "K",
+}
+_FILTER_SPATIAL_LETTERS = ("Z", "Y", "X")
+_IMAGE_SPATIAL_LETTERS = ("D", "H", "W")
+
+
+def _spatial_letters(count: int, filter_tensor: bool) -> Sequence[str]:
+    """The usual names for `count` spatial dimensions, outermost first."""
+    letters = _FILTER_SPATIAL_LETTERS if filter_tensor else _IMAGE_SPATIAL_LETTERS
+    return letters[len(letters) - count:] if 0 < count <= len(letters) else ()
+
+
+def _standard_layout(dims: Sequence[str], filter_tensor: bool) -> str:
+    """`dims` written the way convolution layouts usually are, NGCHW and such."""
+    spatial = _spatial_letters(sum(1 for dim in dims if dim[:1].isdigit()), filter_tensor)
+    return "".join(
+        spatial[int(dim[0])] if dim[:1].isdigit() and spatial else _LAYOUT_LETTERS.get(dim, dim)
+        for dim in dims)
+
+
+def _layout_legend(dims: Sequence[str]) -> str:
+    """What those letters stand for, since N and K also name GEMM dimensions."""
+    spatial = sum(1 for dim in dims if dim[:1].isdigit())
+    window = _spatial_letters(spatial, True)
+    image = _spatial_letters(spatial, False)
+    tail = (f", {''.join(window)} the filter window and {''.join(image)} the image"
+            if window and image else "")
+    return ("  Those letters name the tensors' dimensions, not the GEMM's: N batch, "
+            f"G group, C input channels, K output channels{tail}.")
+
+
+def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
+    """Strides, dilations and padding, each tagged with the dimension it moves.
+
+    Bare lists leave the reader to work out that strides=[2, 1] is a stride
+    down the image and none across it, and that padding carries two numbers per
+    dimension where the others carry one.
+    """
+    terms = [(name, list(problem[name]))
+             for name in ("strides", "dilations", "padding") if problem.get(name)]
+    if not terms:
+        return None
+    letters = _spatial_letters(spatial, False)
+    tagged, paired = [], False
+    for name, values in terms:
+        per_dim = len(values) // spatial if spatial else 0
+        if not letters or per_dim not in (1, 2) or len(values) != per_dim * spatial:
+            tagged.append(f"{name}={values}")
+            continue
+        paired = paired or per_dim == 2
+        groups = (",".join(str(value) for value in values[i * per_dim:(i + 1) * per_dim])
+                  for i in range(spatial))
+        tagged.append(f"{name} " + " ".join(
+            f"{letter}={group}" for letter, group in zip(letters, groups)))
+    return "  Window: " + "; ".join(tagged) + (" (padding before, after)" if paired else "")
+
+
 def summarize_problem_for_prompt(problem: Problem) -> str:
     """Render the problem facts once, leaving interpretation to the hints."""
     kernel = problem.get("kernelType", "unknown")
@@ -388,24 +458,24 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
 
     if kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm"):
         lines.append("  Implicit GEMM: M=channels, N=batch*spatial, K=channels*filter.")
+        dims = problem.get("inputLayout") or problem.get("filterLayout") or ()
         layouts = [
-            f"{label}={''.join(problem[key])}"
+            f"{label}={_standard_layout(problem[key], label == 'filter')}"
             for label, key in (("filter", "filterLayout"), ("input", "inputLayout"),
                                ("output", "outputLayout"))
             if problem.get(key)
         ]
         if layouts:
             lines.append("  Layouts: " + " ".join(layouts))
-        window = [
-            f"{name}={problem[name]}"
-            for name in ("strides", "dilations", "padding")
-            if problem.get(name)
-        ]
+            lines.append(_layout_legend(dims))
+        window = _describe_window(problem, sum(1 for dim in dims if dim[:1].isdigit()))
         if window:
-            lines.append("  Window: " + " ".join(window))
+            lines.append(window)
         alignment = problem.get("kPerBlockAlignment") or 1
         if alignment > 1:
-            lines.append(f"  kPerBlock should be a multiple of {alignment}.")
+            # The fact only; what it means for kPerBlock is one of the hints.
+            lines.append(f"  K walks the filter's {alignment} positions for one input "
+                         f"channel, then the next channel's {alignment}.")
     elif kernel == "Attention":
         lines.append("  gemm0=Q*K^T; gemm1=softmax(gemm0)*V.")
     elif "o" in size:
@@ -423,9 +493,19 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
     return "\n".join(lines)
 
 
-def summarize_hardware_for_prompt(hardware: Hardware) -> str:
-    """Render the hardware budgets and defaults without explanatory prose."""
+def summarize_hardware_for_prompt(hardware: Hardware, space: Optional[Space] = None) -> str:
+    """Render the hardware budgets and defaults without explanatory prose.
+
+    A chip limit the space has already pinned is left out. The chip's kpack
+    ceiling and the kpack axis are computed from different things and disagree
+    often enough to matter: one convolution advertised "max kpack=2" four lines
+    above a Configuration Space reading "kpack: fixed at 1", leaving the model
+    to guess which of the two the tuner would obey.
+    """
     family = "CDNA" if hardware.get("isCDNA") else "RDNA" if hardware.get("isRDNA") else "GCN"
+    packs = _axis(space, "kpack")
+    kpack_limit = "" if packs is not None and len(packs) <= 1 else \
+        f"  max kpack={hardware.get('maxKpack')}; "
     lines = [
         f"  {hardware.get('chip')} ({family}); {hardware.get('numCUs')} CUs/"
         f"{hardware.get('numChiplets')} chiplet(s); {hardware.get('accelKind')}; "
@@ -434,7 +514,7 @@ def summarize_hardware_for_prompt(hardware: Hardware) -> str:
         f"VGPR/EU={hardware.get('vgprsPerEU')}; "
         f"max waves/EU={hardware.get('maxWavesPerEU')}; "
         f"cache={_si(hardware.get('lastLevelCacheSize', 0))}",
-        f"  max kpack={hardware.get('maxKpack')}; "
+        f"{kpack_limit or '  '}"
         f"max CTAs={hardware.get('maxNumCTAs', 1)}; "
         f"async-copy={'yes' if hardware.get('supportsAsyncCopy') else 'no'}; "
         f"non-power-of-two K={'yes' if hardware.get('supportsNonPow2KPerBlock') else 'no'}",
@@ -448,7 +528,11 @@ def summarize_hardware_for_prompt(hardware: Hardware) -> str:
     if defaults:
         lines.append("  -1 defaults: " + " ".join(defaults))
     if hardware.get("defaultGridGroupSize"):
-        lines.append(f"  gridGroupSize=0 selects {hardware['defaultGridGroupSize']}.")
+        # An explicit value only replaces the heuristic's, so asking for the
+        # number it already picked builds the same kernel.
+        lines.append(f"  gridGroupSize=0 is not ungrouped: a heuristic picks "
+                     f"{hardware['defaultGridGroupSize']}, and asking for that value "
+                     f"changes nothing.")
     return "\n".join(lines)
 
 
@@ -585,10 +669,11 @@ def _gemm_hints(m: int, n: int, k: int, num_cus: int, hardware: Hardware, k_alig
                      f"kPerBlock that is a multiple of {k_alignment} advances K without "
                      "moving the input window and keeps the validity mask out of the K "
                      f"loop. Such tiles are in kPerBlock's list and look unusual -- "
-                     f"neither powers of two nor multiples of 16 -- but they are the "
-                     f"ones to reach for here" +
-                     (f", the best of them also dividing K ({k}) exactly: "
-                      f"{', '.join(str(tile) for tile in divides[-4:])}." if divides else "."))
+                     f"neither powers of two nor multiples of 16. What they save on the "
+                     f"mask they spend on LDS, which a wide tile needs too, so they "
+                     f"compete with the ordinary tiles rather than replacing them" +
+                     (f". The smallest of them that also divide K ({k}) exactly: "
+                      f"{', '.join(str(tile) for tile in divides[:4])}." if divides else "."))
     return hints
 
 

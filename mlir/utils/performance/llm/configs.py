@@ -248,10 +248,18 @@ def render_space(space: Dict[str, Sequence[int]], default_config: Config) -> str
 
 
 def knob_names(space: Dict[str, Sequence[int]]) -> List[str]:
-    """The parameters that accept -1, which is what makes them tri-state.
+    """The parameters that accept -1 and something else, which is what makes
+    them tri-state here.
 
     Read off the values C++ sent rather than from a list kept here, so that a
     knob added to the perf config is described correctly without this file
     knowing it exists.
+
+    A knob pinned to -1 alone is left out. Both callers name these to the model
+    as knobs it may set, and on one convolution three of the eight named --
+    useAsyncCopy, useBf16x3ForF32 and useBlockPingpong -- were pinned by the
+    same Configuration Space the prompt calls the authority, so setting one is
+    refused before it is compiled.
     """
-    return [name for name, values in space.items() if KNOB_DEFAULT in values]
+    return [name for name, values in space.items()
+            if KNOB_DEFAULT in values and len(values) > 1]

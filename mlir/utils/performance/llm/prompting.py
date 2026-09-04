@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .configs import knob_names, render_response_aliases, render_space
 from .feedback import (
     MAX_CHANGED_FIELDS_PER_CONFIG,
+    format_config_diff,
     format_config_for_prompt,
 )
 from .workload import (
@@ -64,7 +65,6 @@ FEASIBILITY_RULE = ("Every value you choose must appear in that parameter's list
 
 _INITIAL_STRATEGY_BASE_LINES = (
     "Use about 40% near-default, 40% balanced and 20% aggressive candidates.",
-    "Stay near the default for unusual shapes.",
     "Keep configs sparse: 2-6 changed fields, omitting unchanged defaults.",
     "Cover at least 3 coherent M/N/K tile families.",
     "Do not combine the largest tiles, deepest pipeline and highest split.",
@@ -328,43 +328,6 @@ _ASYNC_COPY_DUPLICATE_RULE = textwrap.dedent("""\
       of 1 useAsyncCopy=1 builds the kernel -1 already built. Again, move
       numStages in the same config or leave the knob alone.""")
 
-_FEASIBILITY_INTRO = textwrap.dedent("""\
-    Arithmetic worth doing before you propose a config. A refused config costs
-    a whole candidate and tells you only which check it failed, and the checks
-    are these, by the name they are reported under. Write t for the threads in
-    a workgroup, numWaves times the wave size from the hardware section:
-    - exceedsTritonTensorCap: kPerBlock * max(mPerBlock, nPerBlock) must be at
-      most 1048576, Triton's limit of 2^20 elements in one tensor. Deep K tiles
-      on a wide block are what run into it.""")
-
-_REGISTER_BUDGET_RULE = textwrap.dedent("""\
-    - wavesPerEURegisterBudget: a nonzero wavesPerEU caps each thread at
-      (VGPRs per EU) / wavesPerEU registers, so mPerBlock * nPerBlock *
-      wavesPerEU must be at most (VGPRs per EU) * t. This is why a large tile
-      and a high wavesPerEU cannot be asked for together.""")
-
-# Both budgets rather than the one this chip uses, since which it is follows
-# from the family the hardware section already names. Worth a number at all
-# because the model can compare its own arithmetic against one, where it cannot
-# against "the low thousands" (`compileCostBudget` in TuningSearch.cpp).
-_COMPILE_COST_RULE = textwrap.dedent("""\
-    - compileCostBudget: a config whose kernel would take the backend minutes
-      is passed over. The cost is the larger of (mPerBlock + nPerBlock) *
-      kPerBlock / (t * kpack), the K-loop body, and mPerBlock * nPerBlock / t,
-      the accumulator, in elements per thread, and it has to stay under 8000 on
-      RDNA or 12000 elsewhere. Note which one dominates before moving a field:
-      halving kPerBlock does nothing for a config the accumulator dominates.""")
-
-_LDS_RULE = textwrap.dedent("""\
-    - ldsBlacklist: the A and B tiles are staged in LDS once per stage, so
-      (mPerBlock * kPerBlock * bits(A) + nPerBlock * kPerBlock * bits(B)) / 8 *
-      numStages has to fit the LDS per workgroup given in the hardware section.
-      Tile shapes known to overrun it are refused up front.
-    - notOnAxis: a value that is not in that parameter's list. Reread the
-      list.""")
-
-_BUFFER_KNOBS_RULE = "- bufferKnobsDisagree: useBufferAtomics=1 with useBufferOps=0."
-
 
 def _bullets_for(bullets: Dict[str, str], space: Optional[Dict[str, Sequence[int]]],
                  gemm_gemm: bool) -> List[str]:
@@ -434,21 +397,6 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
         if duplicates:
             blocks.append("Avoid duplicate kernels:\n" + "\n".join(duplicates))
 
-    feasibility = [
-        "Feasibility checks:",
-        "- exceedsTritonTensorCap: k * max(m,n) <= 1048576.",
-    ]
-    if _is_tunable(space, "wavesPerEU"):
-        feasibility.append("- wavesPerEURegisterBudget: large tiles and high occupancy conflict.")
-    feasibility.extend([
-        "- compileCostBudget: avoid simultaneously wide tiles and deep K.",
-        "- ldsBlacklist: (m*k*bits(A) + n*k*bits(B))/8 * stages must fit LDS.",
-        "- notOnAxis: every value must be on its axis.",
-    ])
-    if _any_tunable(space, "useBufferOps", "useBufferAtomics"):
-        feasibility.append(_BUFFER_KNOBS_RULE)
-    blocks.append("\n".join(feasibility))
-
     blocks.append(textwrap.dedent("""\
         Output contract:
         - Return exactly {"configs":[...]} on one line: no markdown or prose.
@@ -478,10 +426,23 @@ def _initial_strategy_lines(
     if len(space.get("matrixInstrNonkdim", [])) > 1:
         lines.append("matrixInstrNonkdim can vary, so treat 16 and 32 as two families "
                      "and put some configs on each.")
+    # Pointed at the aggressive fifth rather than left as "a minority ... only
+    # where you can say why", which the model read as a reason not to bother:
+    # across 2799 proposals in the transcripts the eight tri-state knobs moved
+    # in 2.9% between them and wavesPerEU in 1.0%, while the aggressive share
+    # went entirely on larger tiles. They are worth the fifth: a non-default
+    # knob appears in 29 of 161 winning configs, one of them the second-fastest
+    # config measured on any problem here.
     if knobs := knob_names(space):
+        occupancy = [name for name in ("wavesPerEU", "gridGroupSize")
+                     if len(space.get(name, ())) > 1]
         lines.append("Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
-                     "configs; use an explicit 0 or 1 in a minority, and only where you "
-                     "can say why.")
+                     "configs. The aggressive fifth is where they belong: give those "
+                     "configs an explicit 0 or 1 on a knob" +
+                     (f", or a non-default {' or '.join(occupancy)}, " if occupancy else " ") +
+                     "instead of only reaching for a bigger tile. These are the least "
+                     "explored part of the space, since the sweeps behind the seed "
+                     "configs never varied them.")
     lines.append("Spread tiles and numStages; variety matters more than near-duplicates.")
     return lines
 
@@ -491,6 +452,7 @@ def _refinement_strategy_lines(
     unmeasured_count: int,
     total_count: int,
     rejected_count: int,
+    space: Optional[Dict[str, Sequence[int]]] = None,
 ) -> List[str]:
     """Build the bullet list used for the refinement-step section."""
     trouble = unmeasured_count + rejected_count
@@ -498,16 +460,34 @@ def _refinement_strategy_lines(
         lines = list(_FAILURE_HEAVY_REFINEMENT_LINES)
     else:
         lines = list(_DEFAULT_REFINEMENT_LINES)
-    lines.append("Prefer edits with attributable effects: move the block tiles, "
-                 "numWaves, numStages, kpack, matrixInstrNonkdim, splitKFactor or "
-                 "gridGroupSize rather than rewriting every field.")
+    # Named from the space, because a fixed list is wrong in both directions on
+    # a problem whose axes are narrow. It recommended kpack and
+    # matrixInstrNonkdim on a convolution that pins both, spending a third of
+    # the advice on moves the space refuses, and left out wavesPerEU and the
+    # tri-state knobs, which were free, unexplored and in 29 of the 161 winning
+    # configs measured here.
+    movable = [name for name in ("numWaves", "numStages", "kpack", "matrixInstrNonkdim",
+                                 "splitKFactor", "gridGroupSize", "wavesPerEU")
+               if space is None or len(space.get(name, ())) > 1]
+    lines.append("Prefer edits with attributable effects: move the block tiles"
+                 + ("".join(f", {name}" for name in movable[:-1]) + f" or {movable[-1]}"
+                    if movable else "")
+                 + " rather than rewriting every field.")
+    if knobs := knob_names(space or {}):
+        lines.append("A tri-state knob (" + ", ".join(knobs) + ") flipped from -1 to 0 or "
+                     "1 on an otherwise unchanged anchor is a clean experiment, and one "
+                     "the sweeps behind the seed configs never ran: while Results shows "
+                     "no knob moved, that is a better use of the minority above than "
+                     "another tile family.")
     lines.append("Keep each config sparse: usually 1-4 changed fields, and no more than "
                  f"{MAX_CHANGED_FIELDS_PER_CONFIG} unless absolutely necessary.")
     lines.append("If unsure, return fewer valid configs instead of verbose or malformed JSON.")
     return lines
 
 
-def build_seed_config_section(seed_configs: Sequence[Dict[str, int]]) -> str:
+def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
+                              default_config: Optional[Dict[str, int]] = None,
+                              space: Optional[Dict[str, Sequence[int]]] = None) -> str:
     """Show the compiler's own heuristic configs as an unmeasured prior.
 
     Helion's `build_compiler_analysis_section`, repointed. Upstream surfaces
@@ -527,19 +507,48 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]]) -> str:
     alternatives. Left unsaid, a column that never varies reads as a
     consensus, and the knobs are precisely where a search over the axes can
     find something the sweeps could not.
+
+    A seed naming a value this problem's axes do not carry is left out. The
+    list is checked in for no particular chip, so on one convolution four of
+    its thirty-four seeds asked for mPerBlock=256 where the axis stopped at
+    160 -- held up as starting points by a prompt that also calls the
+    Configuration Space the authority on legal values. One run copied the 256
+    and another extrapolated to 192, and `accept` refused both.
+
+    The seeds are written as diffs against the default, like every other
+    config the model is shown. Printed in full they repeat nineteen fields
+    thirty-four times to say the five or six that differ: on that same
+    convolution, 5845 of the initial prompt's 10234 characters.
+
+    The body also has to say that these configs are spoken for. `buildSeedBatch`
+    has handed every one of them to the benchmark by the time this prompt goes
+    out and `accept` drops a proposal that repeats one, so asking the model to
+    "include configs matching these" spent the round on configs that could not
+    land: eight of fifteen proposals were exact repeats of seeds printed here,
+    and saying so instead took the duplicates a round from 3.7 to 0.3.
     """
+    default_config = default_config or {}
+    if space:
+        seed_configs = [
+            config for config in seed_configs
+            if all(value in space[field]
+                   for field, value in config.items() if field in space)
+        ]
     if not seed_configs:
         return ""
     body = ("rocmlirTriton's tuning heuristic proposes the following configs for "
-            "this problem before anything is measured. Treat them as strong "
-            "starting points: include configs matching these and nearby mutations "
-            "before venturing to unrelated families.\n"
-            "They are evidence about the fields the sweeps behind them varied: the "
+            "this problem. They are already being benchmarked while you read this, "
+            "so a config matching one of them is dropped rather than measured: "
+            "propose mutations of them instead.\n"
+            "They are strong starting points on the fields the sweeps behind them "
+            "varied, and evidence about nothing else: the "
             "block tiles, kpack, numWaves, matrixInstrNonkdim, splitKFactor and "
             "numStages. Their use* knobs, wavesPerEU and gridGroupSize were held "
             "fixed throughout those sweeps, so on those fields these configs are "
-            "unmeasured rather than confirmed.\n" +
-            "\n".join(f"  - {format_config_for_prompt(config)}" for config in seed_configs))
+            "unmeasured rather than confirmed.\n"
+            "Each is written as its difference from the default config above.\n" +
+            "\n".join(f"  - {format_config_diff(default_config, config)}"
+                      for config in seed_configs))
     return _section("Heuristic Seed Configs", body)
 
 
@@ -557,7 +566,7 @@ def _build_problem_context(request: Dict[str, Any]) -> Tuple[str, List[str]]:
     )
     return _join_sections(
         _section("Problem", summarize_problem_for_prompt(problem)),
-        _section("GPU Hardware", summarize_hardware_for_prompt(hardware)),
+        _section("GPU Hardware", summarize_hardware_for_prompt(hardware, space)),
         _bullet_section("What The Shapes Suggest", hints) if hints else "",
         _section("Configuration Space", render_space(space, default_config)),
         _section("Response Aliases", render_response_aliases(space)),
@@ -573,7 +582,8 @@ def build_initial_prompt(request: Dict[str, Any]) -> str:
                     f"exploratory candidates. {RETURN_JSON_ONLY}")
     return _join_sections(
         context,
-        build_seed_config_section(request.get("seedConfigs", [])),
+        build_seed_config_section(request.get("seedConfigs", []),
+                                  request.get("defaultConfig", {}), space),
         _bullet_section(
             "Search Strategy",
             _initial_strategy_lines(
@@ -624,6 +634,7 @@ def build_refinement_prompt(
                 unmeasured_count=unmeasured_count,
                 total_count=total_count,
                 rejected_count=rejected_count,
+                space=request.get("space", {}),
             ),
         ),
         _section("Task", task_section),

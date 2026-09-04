@@ -1091,7 +1091,8 @@ TEST(LLMProposerTest, ReadsTheConfigsAHelperWrote) {
                                                 "gemm:nPerBlock=128"}));
 }
 
-TEST(LLMProposerTest, RefusesMoreConfigsThanTheRequestAskedFor) {
+TEST(LLMProposerTest, TrimsMoreConfigsThanTheRequestAskedFor) {
+  // A model that answered with one config too many used to end the tuning run.
   FixtureProposer fixture(alwaysAnswers(
       "['gemm:mPerBlock=64', 'gemm:nPerBlock=128', 'gemm:kPerBlock=16']"));
   LLMProposer proposer(fixture.program(), /*sessionPath=*/"",
@@ -1099,9 +1100,9 @@ TEST(LLMProposerTest, RefusesMoreConfigsThanTheRequestAskedFor) {
 
   llvm::Expected<std::vector<std::string>> configs =
       proposer.propose(minimalRequest());
-  ASSERT_FALSE(!!configs);
-  EXPECT_NE(llvm::toString(configs.takeError()).find("only 2 were requested"),
-            std::string::npos);
+  ASSERT_TRUE(!!configs);
+  EXPECT_EQ(*configs, (std::vector<std::string>{"gemm:mPerBlock=64",
+                                                "gemm:nPerBlock=128"}));
 }
 
 TEST(LLMProposerTest, RefusesAReplyNestedTooDeeplyToParseSafely) {

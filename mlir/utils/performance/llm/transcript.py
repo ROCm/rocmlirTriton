@@ -161,8 +161,13 @@ class Transcript:
         self._append(self._heading(f"prompt ({_words(prompt)})"), prompt)
 
     def received(self, reply: str, seconds: float) -> None:
-        """What the model said, before anything was made of it."""
-        self._append(self._heading(f"reply after {seconds:.1f}s ({_words(reply)})"), reply)
+        """What the model said, before anything was made of it.
+
+        Sized in characters where a prompt is sized in words. A reply is one
+        line of minified JSON, so every reply there has ever been has logged
+        itself as "1 word" however many configs it carried.
+        """
+        self._append(self._heading(f"reply after {seconds:.1f}s ({len(reply)} chars)"), reply)
 
     def timing(self, measurements: Dict[str, Any]) -> None:
         """Break a model round into transport and generation phases."""

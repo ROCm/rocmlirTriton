@@ -282,6 +282,12 @@ class TestSpaceRendering(unittest.TestCase):
         # described as one without this file being told about it.
         self.assertEqual(configs.knob_names(SPACE), ["useAsyncCopy"])
 
+    def test_leaves_out_a_knob_pinned_to_its_own_sentinel(self):
+        # Both callers offer these to the model as knobs it may set. On one
+        # convolution three of the eight offered were pinned at -1 by the same
+        # space the prompt calls the authority on legal values.
+        self.assertEqual(configs.knob_names({**SPACE, "useAsyncCopy": [-1]}), [])
+
     def test_space_description_names_every_parameter(self):
         rendered = configs.render_space(SPACE, DEFAULT_CONFIG)
         for name in SPACE:
@@ -366,6 +372,49 @@ class TestFeedback(unittest.TestCase):
         text = feedback.summarize_rejected_configs_for_llm(rejected, DEFAULT_CONFIG)
         self.assertEqual(text.count("same check: "), 1)
         self.assertIn("same check=5", text)
+
+    def test_counts_a_pattern_over_the_configs_that_left_the_field_alone(self):
+        # A sparse diff that omits mPerBlock is a config running the default
+        # mPerBlock, not a config with no opinion. Counting only the diffs that
+        # named it reported "always 64" over two configs while the three
+        # fastest, listed directly above, all ran the default 32.
+        results = [
+            result({**DEFAULT_CONFIG, "kpack": 8}, 100.0),
+            result({**DEFAULT_CONFIG, "kpack": 2}, 200.0),
+            result({**DEFAULT_CONFIG, "kpack": 1}, 300.0),
+            result({**DEFAULT_CONFIG, "mPerBlock": 64}, 400.0),
+            result({**DEFAULT_CONFIG, "mPerBlock": 64, "kpack": 2}, 500.0),
+        ]
+        text = feedback.analyze_top_configs(results, DEFAULT_CONFIG)
+        self.assertNotIn("mPerBlock: always", text)
+        self.assertIn("mostly 32", text)
+
+    def test_counts_the_random_probes_rather_than_calling_them_a_pattern(self):
+        # The seed batch is padded with configs drawn at random across every
+        # axis at once. Listed as failures they read as patterns to avoid, when
+        # all they have in common is having been generated at random.
+        probe = {
+            "mPerBlock": 64,
+            "nPerBlock": 48,
+            "kpack": 8,
+            "useAsyncCopy": 1,
+            "numWaves": 16,
+            "numStages": 5,
+            "splitKFactor": 3,
+            "wavesPerEU": 9,
+        }
+        results = [result(probe, 0.0, status="notApplicable")]
+        text = feedback.summarize_failed_configs_for_llm(results, DEFAULT_CONFIG)
+        self.assertIn("1 of the random configs padding the seed batch", text)
+        self.assertIn("no pattern in them for you to avoid", text)
+
+    def test_still_shows_a_failure_the_model_could_have_proposed(self):
+        # Only the padding is exempt: a sparse config that failed is a real
+        # answer to a real proposal and belongs in front of the model.
+        results = [result({**DEFAULT_CONFIG, "kpack": 8}, 0.0, status="failed")]
+        text = feedback.summarize_failed_configs_for_llm(results, DEFAULT_CONFIG)
+        self.assertIn('failed: {"p":8}', text)
+        self.assertNotIn("random configs padding", text)
 
 
 class TestWorkloadDescription(unittest.TestCase):
@@ -453,13 +502,80 @@ class TestWorkloadDescription(unittest.TestCase):
             "strides": [2, 1],
             "kPerBlockAlignment": 15,
         })
-        for expected in ("Conv:", "strides=", "kPerBlock should be a multiple"):
+        # How K is built, rather than what to do about it: the hints argue for
+        # the aligned tiles, and this section says what makes them aligned.
+        for expected in ("Conv:", "strides", "K walks the filter's 15 positions for one "
+                         "input channel, then the next channel's 15"):
             self.assertIn(expected, text)
+
+    def test_says_which_dimension_each_window_number_moves(self):
+        # A bare [2, 1] leaves the reader counting positions, and padding's two
+        # numbers per dimension make that worse.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
+            "strides": [2, 1],
+            "dilations": [1, 1],
+            "padding": [1, 1, 2, 2],
+        })
+        self.assertIn("strides H=2 W=1", text)
+        self.assertIn("dilations H=1 W=1", text)
+        self.assertIn("padding H=1,1 W=2,2 (padding before, after)", text)
+
+    def test_falls_back_to_the_bare_window_lists_without_a_layout(self):
+        # Nothing says how many spatial dimensions there are, so tagging them
+        # would be a guess.
+        text = workload.summarize_problem_for_prompt({
+            **{key: value
+               for key, value in self.CONV.items() if not key.endswith("Layout")},
+            "strides": [2, 1],
+        })
+        self.assertIn("strides=[2, 1]", text)
+
+    def test_spells_the_layouts_the_way_convolutions_are_written(self):
+        # Rock's own gkc01/nigici0i1i spelling says the same thing as GKCYX and
+        # NGCHW, to a reader who already knows the suffix convention.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "filterLayout": ["g", "k", "c", "0", "1"],
+            "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
+            "outputLayout": ["no", "go", "ko", "0o", "1o"],
+        })
+        self.assertIn("Layouts: filter=GKCYX input=NGCHW output=NGKHW", text)
+        self.assertNotIn("nigici", text)
+        # N and K are the GEMM's dimensions two lines up, so the letters say
+        # whose dimensions they are.
+        self.assertIn("not the GEMM's", text)
+
+    def test_keeps_the_order_the_layout_came_in(self):
+        # Which dimension is innermost is the whole content of a layout.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "filterLayout": ["g", "0", "1", "c", "k"],
+            "inputLayout": ["ni", "0i", "1i", "gi", "ci"],
+        })
+        self.assertIn("filter=GYXCK input=NHWGC", text)
+
+    def test_names_the_third_spatial_dimension_of_a_3d_convolution(self):
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "filterLayout": ["g", "k", "c", "0", "1", "2"],
+            "inputLayout": ["ni", "gi", "ci", "0i", "1i", "2i"],
+        })
+        self.assertIn("filter=GKCZYX input=NGCDHW", text)
+        self.assertIn("ZYX the filter window and DHW the image", text)
 
     def test_compact_hardware_summary_keeps_budgets(self):
         text = workload.summarize_hardware_for_prompt(self.HARDWARE)
         for expected in ("gfx942", "304 CUs", "LDS=", "VGPR/EU=", "max kpack="):
             self.assertIn(expected, text)
+
+    def test_says_the_grid_group_size_default_is_a_heuristic_and_reachable(self):
+        # "gridGroupSize=0 selects 7" read as a fact about 0 rather than as one
+        # about 7, and a model spent three configs of a run asking for 7.
+        text = workload.summarize_hardware_for_prompt({**self.HARDWARE, "defaultGridGroupSize": 7})
+        self.assertIn("not ungrouped", text)
+        self.assertIn("a heuristic picks 7, and asking for that value changes nothing", text)
 
     def hints(self, problem):
         return "\n".join(workload.compute_workload_hints(problem, self.HARDWARE))
@@ -490,10 +606,19 @@ class TestWorkloadDescription(unittest.TestCase):
         self.assertIn("multiple of 9", hints)
         # Named outright, because the model would otherwise have to notice for
         # itself which values in the list are multiples of 9 that divide K.
-        self.assertIn("288", hints)
-        # Not 576 or 1152, which divide K and are multiples of 9 but are past
-        # the largest K tile the space carries.
-        self.assertNotIn("576", hints)
+        # The smallest of them: what a deep kPerBlock costs is the LDS a wide
+        # tile needs, and naming the largest sent a model on a real convolution
+        # to tiles that measured thirty times slower than the one it had.
+        self.assertIn("9, 18, 36, 72", hints)
+        self.assertNotIn("288", hints)
+
+    def test_offers_the_aligned_k_tiles_against_the_ordinary_ones(self):
+        # Told they were "the ones to reach for", a model spent up to nine
+        # proposals of fifteen on them and handed back the config it started
+        # from.
+        hints = self.hints({**self.CONV, "kPerBlockAlignment": 9})
+        self.assertIn("compete with the ordinary tiles", hints)
+        self.assertNotIn("ones to reach for", hints)
 
     def test_hints_that_kpack_is_the_seeds_blind_spot(self):
         # The GEMM sweeps pinned kpack at 1, so the seeds agreeing on it is an
@@ -858,9 +983,14 @@ class TestSystemPromptGating(unittest.TestCase):
         self.assertIn("16 bits wide", self.prompt())
         self.assertNotIn("16 bits wide", self.prompt(useOptimizeEpilogue=[-1]))
 
-    def test_keeps_the_register_budget_only_while_waves_per_eu_is_open(self):
-        self.assertIn("wavesPerEURegisterBudget", self.prompt())
-        self.assertNotIn("wavesPerEURegisterBudget", self.prompt(wavesPerEU=[0]))
+    def test_leaves_the_feasibility_arithmetic_to_the_refusals(self):
+        # The system prompt no longer restates the checks. What a config has to
+        # satisfy beyond the axes is reported per config under Refused Configs,
+        # where it is about a config the model actually proposed.
+        prompt = self.prompt()
+        for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget",
+                      "compileCostBudget", "ldsBlacklist", "notOnAxis"):
+            self.assertNotIn(check, prompt)
 
     def test_names_the_block_tiles_the_way_this_kernel_spells_them(self):
         gemm = self.prompt()
@@ -955,14 +1085,54 @@ class TestPromptConstruction(unittest.TestCase):
         for field in ("wavesPerEU", "gridGroupSize"):
             self.assertIn(field, prompt)
 
-    def test_the_system_prompt_gives_the_arithmetic_behind_each_refusal(self):
-        # The refusal reasons reach the model by name in the Refused Configs
-        # section, so each one needs a rule it can actually check beforehand.
-        system = prompting.build_system_prompt()
-        for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget", "compileCostBudget",
-                      "ldsBlacklist", "notOnAxis", "bufferKnobsDisagree"):
-            self.assertIn(check, system)
-        self.assertIn("1048576", system)
+    def test_the_seeds_are_asked_to_be_mutated_and_not_matched(self):
+        # `buildSeedBatch` hands every seed to the benchmark before this prompt
+        # is sent and `accept` drops a proposal that repeats one, so asking for
+        # "configs matching these" spent the round on configs that could not
+        # land: eight of fifteen proposals on one convolution.
+        prompt = proposer.build_prompt(self.request())
+        self.assertIn("already being benchmarked", prompt)
+        self.assertIn("propose mutations of them instead", prompt)
+        self.assertNotIn("include configs matching these", prompt)
+
+    def test_the_seeds_are_written_as_diffs_like_every_other_config(self):
+        # The checked-in list holds whole configs, so printed verbatim one
+        # convolution's thirty-four seeds spent 5845 of the prompt's 10234
+        # characters repeating nineteen fields to say five.
+        prompt = proposer.build_prompt(self.request(seedConfigs=[{
+            "mPerBlock": 64,
+            "nPerBlock": 48,
+            "kpack": DEFAULT_CONFIG["kpack"],
+            "useAsyncCopy": DEFAULT_CONFIG["useAsyncCopy"],
+        }]))
+        seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
+        self.assertIn('  - {"m":64,"n":48}', seeds)
+        self.assertNotIn('"ac"', seeds)
+
+    def test_the_seeds_leave_out_what_this_problems_axes_refuse(self):
+        # The quick list is checked in for no particular chip, so it can name a
+        # tile this problem's space does not carry: on one convolution four
+        # seeds asked for mPerBlock=256 where the axis stopped at 160, in a
+        # prompt that also calls the Configuration Space the authority. One run
+        # copied the 256 and another extrapolated to 192, and both were refused.
+        off_axis = max(SPACE["mPerBlock"]) * 2
+        prompt = proposer.build_prompt(self.request(seedConfigs=[
+            {"mPerBlock": 48, "nPerBlock": 64},
+            {"mPerBlock": off_axis, "nPerBlock": 64},
+        ]))
+        seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
+        self.assertIn('"m":48', seeds)
+        self.assertNotIn(str(off_axis), seeds)
+
+    def test_leaves_out_a_chip_limit_the_space_pins_anyway(self):
+        # The chip's kpack ceiling and the kpack axis are computed from
+        # different things: one convolution advertised "max kpack=2" four lines
+        # above "kpack: fixed at 1".
+        pinned = dict(SPACE, kpack=[1])
+        prompt = proposer.build_prompt(self.request(space=pinned))
+        self.assertIn("kpack: fixed at 1", prompt)
+        self.assertNotIn("max kpack", prompt)
+        self.assertIn("max kpack", proposer.build_prompt(self.request()))
 
     def test_the_system_prompt_says_which_knob_values_are_duplicates(self):
         # -1 resolves to on unconditionally for the two buffer knobs, and
@@ -977,6 +1147,34 @@ class TestPromptConstruction(unittest.TestCase):
         # the knob advice must not lean on them as evidence.
         system = prompting.build_system_prompt()
         self.assertIn("Read nothing into that", system)
+
+    def test_the_aggressive_share_is_pointed_at_the_knobs(self):
+        # "A minority, and only where you can say why" read as a reason not to
+        # bother: across 2799 proposals the tri-state knobs moved in 2.9% and
+        # wavesPerEU in 1.0%, with the aggressive fifth going on bigger tiles
+        # instead. A non-default knob is in 29 of 161 winning configs.
+        prompt = proposer.build_prompt(self.request())
+        self.assertIn("aggressive fifth is where they belong", prompt)
+        self.assertIn("least explored part of the space", prompt)
+
+    def test_a_later_round_asks_for_a_knob_experiment(self):
+        # The refinement bullets named seven fields to move and no knob among
+        # them, so a knob never got tried once the anchors existed.
+        prompt = proposer.build_prompt(
+            self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
+        self.assertIn("flipped from -1 to 0 or 1", prompt)
+        self.assertIn("useAsyncCopy", prompt)
+
+    def test_a_later_round_does_not_recommend_a_field_the_space_pins(self):
+        # The list used to be fixed, so on a convolution pinning kpack and
+        # matrixInstrNonkdim it spent a third of its advice on moves the space
+        # refuses.
+        prompt = proposer.build_prompt(
+            self.request(round=1, space=dict(SPACE, kpack=[4]),
+                         results=[result({"mPerBlock": 64}, 500.0)]))
+        advice = prompt.split("attributable effects:")[1].split("\n")[0]
+        self.assertNotIn("kpack", advice)
+        self.assertIn("the block tiles", advice)
 
     def test_a_later_round_is_told_what_was_measured(self):
         prompt = proposer.build_prompt(self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
@@ -1090,6 +1288,15 @@ class TestTranscript(unittest.TestCase):
     def test_says_how_long_the_model_took(self):
         self.log().received("...", seconds=12.5)
         self.assertIn("12.5s", self.text())
+
+    def test_sizes_a_reply_in_characters(self):
+        # A reply is one line of minified JSON, so sizing it the way a prompt
+        # is sized logged every reply there has ever been as "1 word",
+        # whether it carried two configs or twenty.
+        self.log().received('{"configs":[{"m":64},{"m":128}]}', seconds=1.0)
+        written = self.text()
+        self.assertIn("32 chars", written)
+        self.assertNotIn("1 word", written)
 
     def test_records_the_transport_latency_breakdown(self):
         self.log().timing({
