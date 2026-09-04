@@ -164,6 +164,30 @@ class Transcript:
         """What the model said, before anything was made of it."""
         self._append(self._heading(f"reply after {seconds:.1f}s ({_words(reply)})"), reply)
 
+    def timing(self, measurements: Dict[str, Any]) -> None:
+        """Break a model round into transport and generation phases."""
+        if not measurements:
+            return
+
+        def milliseconds(name: str) -> str:
+            return f"{float(measurements.get(name, 0.0)):.1f} ms"
+
+        self._append(
+            self._heading("latency breakdown"),
+            f"SDK import: {milliseconds('sdkImportMs')}",
+            f"Options: {milliseconds('optionsMs')}",
+            f"Agent {'resume' if measurements.get('resumed') else 'create'}: "
+            f"{milliseconds('agentOpenMs')}",
+            f"Send: {milliseconds('sendMs')}",
+            f"First text after send: {milliseconds('firstTextMs')}",
+            f"Completion after send: {milliseconds('completionMs')}",
+            f"Total transport: {milliseconds('totalMs')}",
+            f"Prompt: {measurements.get('promptChars', 0)} chars; "
+            f"response: {measurements.get('responseChars', 0)} chars",
+            f"Agent: {measurements.get('agentId', '?')}; run: "
+            f"{measurements.get('runId', '?')}",
+        )
+
     def configs(self, configs: Sequence[str]) -> None:
         """What was made of it: the configs the search will benchmark.
 

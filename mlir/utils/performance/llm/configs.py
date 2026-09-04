@@ -45,6 +45,48 @@ MAX_LADDER_VALUES = 40
 # fallback.
 KNOB_DEFAULT = -1
 
+# Short wire names reduce the model's output tokens without changing the
+# perf-config schema. Full names remain accepted for compatibility.
+RESPONSE_ALIASES = {
+    "mPerBlock": "m",
+    "nPerBlock": "n",
+    "mPerBlockG0": "m0",
+    "nPerBlockG0": "n0",
+    "nPerBlockG1": "n1",
+    "kPerBlock": "k",
+    "kpack": "p",
+    "numCTAs": "c",
+    "numWaves": "w",
+    "matrixInstrNonkdim": "i",
+    "splitKFactor": "s",
+    "numStages": "d",
+    "wavesPerEU": "e",
+    "gridGroupSize": "g",
+    "useAsyncCopy": "ac",
+    "useBlockPingpong": "bp",
+    "useInThreadTranspose": "it",
+    "useBufferOps": "bo",
+    "useBufferAtomics": "ba",
+    "useReductionLayout": "rl",
+    "useOptimizeEpilogue": "oe",
+    "useBf16x3ForF32": "bf",
+}
+
+
+def alias_config(config: Config) -> Config:
+    """Spell known perf-config fields with their short response names."""
+    return {RESPONSE_ALIASES.get(name, name): value for name, value in config.items()}
+
+
+def render_response_aliases(space: Dict[str, Sequence[int]]) -> str:
+    """The aliases available for this problem, as a compact legend."""
+    pairs = [
+        f"{alias}={name}"
+        for name, alias in RESPONSE_ALIASES.items()
+        if name in space
+    ]
+    return "  " + ", ".join(pairs)
+
 
 def parse_response_configs(response: str, *, space: Dict[str, Sequence[int]]) -> List[Config]:
     """Pull the sparse configs out of a reply, dropping what cannot be one.
@@ -86,7 +128,13 @@ def _sparse_config(raw: Any, space: Dict[str, Sequence[int]]) -> Config | None:
     if not isinstance(raw, dict):
         return None
     config: Config = {}
+    names_by_alias = {
+        alias: name
+        for name, alias in RESPONSE_ALIASES.items()
+        if name in space
+    }
     for key, value in raw.items():
+        key = names_by_alias.get(key, key)
         if key not in space:
             # A parameter this space does not have. Dropping it rather than the
             # whole config: the rest of what the model said about this config

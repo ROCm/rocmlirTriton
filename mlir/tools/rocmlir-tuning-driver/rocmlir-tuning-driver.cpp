@@ -248,7 +248,7 @@ static llvm::cl::opt<std::string>
              llvm::cl::desc("Which model proposes the configs, named as "
                             "`cursor-agent --model` names them, optionally "
                             "followed by `:name=value` parameters of that "
-                            "model (`composer-2.5:fast=true`)."),
+                            "model (`gpt-5.4-nano:reasoning=none`)."),
              llvm::cl::value_desc("model"),
              llvm::cl::init(rock::LLMSearchOptions{}.model));
 

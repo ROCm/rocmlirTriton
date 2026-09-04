@@ -24,10 +24,12 @@ import json
 import math
 from typing import Any, Dict, List, Sequence, Tuple
 
-MAX_RESULTS_IN_PROMPT = 12
+from .configs import alias_config
+
+MAX_RESULTS_IN_PROMPT = 8
 MAX_ANCHORS_IN_PROMPT = 2
 MAX_CHANGED_FIELDS_PER_CONFIG = 6
-MAX_REJECTIONS_IN_PROMPT = 8
+MAX_REJECTIONS_IN_PROMPT = 4
 
 Config = Dict[str, int]
 Result = Dict[str, Any]
@@ -49,7 +51,7 @@ def format_time(time_ns: float) -> str:
 
 def format_config_for_prompt(config: Config) -> str:
     """Serialize a config exactly as it should appear in prompt examples."""
-    return json.dumps(dict(config), sort_keys=True, separators=(",", ":"))
+    return json.dumps(alias_config(config), sort_keys=True, separators=(",", ":"))
 
 
 def config_diff(default_config: Config, config: Config) -> Config:
@@ -66,7 +68,11 @@ def config_diff(default_config: Config, config: Config) -> Config:
 
 def format_config_diff(default_config: Config, config: Config) -> str:
     """Format only the changed fields as compact JSON."""
-    return json.dumps(config_diff(default_config, config), sort_keys=True)
+    return json.dumps(
+        alias_config(config_diff(default_config, config)),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _was_timed(result: Result) -> bool:

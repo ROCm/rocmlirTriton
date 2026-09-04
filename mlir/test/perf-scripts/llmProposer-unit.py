@@ -79,6 +79,13 @@ class TestResponseParsing(unittest.TestCase):
     def test_reads_a_plain_reply(self):
         self.assertEqual(self.parse('{"configs": [{"mPerBlock": 64}]}'), [{"mPerBlock": 64}])
 
+    def test_expands_short_response_names(self):
+        self.assertEqual(self.parse('{"configs":[{"m":64,"p":8,"ac":0}]}'), [{
+            "mPerBlock": 64,
+            "kpack": 8,
+            "useAsyncCopy": 0,
+        }])
+
     def test_reads_a_bare_list(self):
         # A model told to answer with configs sometimes answers with configs
         # rather than with an object holding them.
@@ -307,7 +314,7 @@ class TestFeedback(unittest.TestCase):
         # The full config is seventeen fields, most of them the default; the
         # diff is what a model can actually read a pattern out of.
         text = feedback.format_config_diff(DEFAULT_CONFIG, {**DEFAULT_CONFIG, "kpack": 8})
-        self.assertIn("kpack", text)
+        self.assertIn('"p":8', text)
         self.assertNotIn("mPerBlock", text)
 
     def test_names_the_default_rather_than_showing_an_empty_diff(self):
@@ -342,7 +349,7 @@ class TestFeedback(unittest.TestCase):
         }]
         text = feedback.summarize_rejected_configs_for_llm(rejected, DEFAULT_CONFIG)
         self.assertIn("exceeds LDS capacity", text)
-        self.assertIn("mPerBlock", text)
+        self.assertIn('"m":64', text)
 
     def test_caps_how_many_rejections_it_lists(self):
         rejected = [{
@@ -439,6 +446,20 @@ class TestWorkloadDescription(unittest.TestCase):
 
     def test_says_nothing_about_a_second_gemm_for_a_plain_one(self):
         self.assertNotIn("softmax", workload.describe_problem(self.GEMM).lower())
+
+    def test_compact_problem_summary_keeps_convolution_facts(self):
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "strides": [2, 1],
+            "kPerBlockAlignment": 15,
+        })
+        for expected in ("Conv:", "strides=", "kPerBlock should be a multiple"):
+            self.assertIn(expected, text)
+
+    def test_compact_hardware_summary_keeps_budgets(self):
+        text = workload.summarize_hardware_for_prompt(self.HARDWARE)
+        for expected in ("gfx942", "304 CUs", "LDS=", "VGPR/EU=", "max kpack="):
+            self.assertIn(expected, text)
 
     def hints(self, problem):
         return "\n".join(workload.compute_workload_hints(problem, self.HARDWARE))
@@ -911,6 +932,13 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn("mPerBlock", prompt)
         self.assertIn("gfx942", prompt)
 
+    def test_the_first_round_gives_compact_response_aliases(self):
+        prompt = proposer.build_prompt(self.request())
+        self.assertIn("## Response Aliases", prompt)
+        for alias in ("m=mPerBlock", "n=nPerBlock", "p=kpack", "ac=useAsyncCopy"):
+            self.assertIn(alias, prompt)
+        self.assertIn('"m":64', prompt)
+
     def test_the_first_round_offers_the_quick_list(self):
         # The seeds are the heuristic's own answer, which is both a decent
         # starting point and the bar the model is being asked to clear.
@@ -1062,6 +1090,27 @@ class TestTranscript(unittest.TestCase):
     def test_says_how_long_the_model_took(self):
         self.log().received("...", seconds=12.5)
         self.assertIn("12.5s", self.text())
+
+    def test_records_the_transport_latency_breakdown(self):
+        self.log().timing({
+            "sdkImportMs": 1.0,
+            "optionsMs": 2.0,
+            "agentOpenMs": 3000.0,
+            "sendMs": 4.0,
+            "firstTextMs": 5000.0,
+            "completionMs": 9000.0,
+            "totalMs": 12007.0,
+            "promptChars": 1234,
+            "responseChars": 567,
+            "agentId": "agent-1",
+            "runId": "run-1",
+            "resumed": False,
+        })
+        written = self.text()
+        for expected in ("latency breakdown", "Agent create: 3000.0 ms",
+                         "First text after send: 5000.0 ms", "Total transport: 12007.0 ms",
+                         "1234 chars", "run-1"):
+            self.assertIn(expected, written)
 
     def test_notes_standing_instructions_it_resent_without_repeating_them(self):
         # The same thousand words every round would drown the part of a later

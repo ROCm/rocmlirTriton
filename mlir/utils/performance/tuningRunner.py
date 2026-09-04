@@ -2661,7 +2661,7 @@ def parse_arguments(args=None) -> argparse.Namespace:
                            metavar="MODEL",
                            help="Which model proposes the configs, named as `cursor-agent "
                            "--model` names them, optionally followed by `:name=value` "
-                           "parameters of that model (`composer-2.5:fast=true`).")
+                           "parameters of that model (`gpt-5.4-nano:reasoning=none`).")
     llm_group.add_argument("--llm-rounds",
                            type=int,
                            default=None,

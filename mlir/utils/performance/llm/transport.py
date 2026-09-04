@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any, Dict, List, Sequence, Tuple
 
 # Helion's DEFAULT_REQUEST_TIMEOUT_S. The C++ side enforces its own deadline by
@@ -182,6 +183,8 @@ def _cursor_reply(
     model: str,
     session: Dict[str, Any],
 ) -> str:
+    transport_started = time.monotonic()
+    import_started = transport_started
     try:
         import cursor_sdk as sdk
     except ImportError as err:
@@ -190,6 +193,7 @@ def _cursor_reply(
             f"'pip install -r pip_requirements.txt' ({err})",
             started=False,
         ) from err
+    import_done = time.monotonic()
 
     api_key = os.environ.get("CURSOR_API_KEY")
     if not api_key:
@@ -221,7 +225,9 @@ def _cursor_reply(
     # The runtime is named explicitly because the SDK picks local silently when
     # neither is given, and a silently-local agent is only correct by accident.
     cwd = session.setdefault("cwd", os.getcwd())
+    options_started = time.monotonic()
     options = _text_only_options(sdk, api_key=api_key, model=model, cwd=cwd)
+    options_done = time.monotonic()
     agent_id = session.get("agentId")
 
     # The system prompt rides on the first message rather than being configured
@@ -233,20 +239,45 @@ def _cursor_reply(
         # The same options both ways round: a toolset restriction is not kept on
         # the agent, so a resumed round that failed to repeat it would be a
         # round with the full toolset back.
+        agent_started = time.monotonic()
         if agent_id:
             manager = sdk.Agent.resume(agent_id, options)
         else:
             manager = sdk.Agent.create(options)
+        agent_ready = time.monotonic()
         with manager as agent:
             session["agentId"] = getattr(agent, "agent_id", None) or agent_id
+            send_started = time.monotonic()
             run = agent.send(text)
+            send_done = time.monotonic()
+            first_text = None
+            chunks = []
+            for chunk in run.iter_text():
+                if first_text is None:
+                    first_text = time.monotonic()
+                chunks.append(chunk)
             result = run.wait()
+            completed = time.monotonic()
             if getattr(result, "status", None) == "error":
                 raise TransportError(
                     f"the model run failed (run {getattr(result, 'id', '?')})",
                     started=True,
                 )
-            reply = run.text() or getattr(result, "result", "") or ""
+            reply = "".join(chunks) or run.text() or getattr(result, "result", "") or ""
+            session["lastTransportTiming"] = {
+                "sdkImportMs": (import_done - import_started) * 1000.0,
+                "optionsMs": (options_done - options_started) * 1000.0,
+                "agentOpenMs": (agent_ready - agent_started) * 1000.0,
+                "sendMs": (send_done - send_started) * 1000.0,
+                "firstTextMs": ((first_text or completed) - send_done) * 1000.0,
+                "completionMs": (completed - send_done) * 1000.0,
+                "totalMs": (completed - transport_started) * 1000.0,
+                "promptChars": len(text),
+                "responseChars": len(reply),
+                "agentId": session.get("agentId") or "",
+                "runId": getattr(run, "id", ""),
+                "resumed": bool(agent_id),
+            }
     except sdk.CursorAgentError as err:
         # Named in the message because the model spec is the most likely thing
         # to be wrong about it, and a parameter this account does not offer

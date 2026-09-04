@@ -369,6 +369,89 @@ def describe_hardware(hardware: Hardware) -> str:
     return "\n".join(lines)
 
 
+def summarize_problem_for_prompt(problem: Problem) -> str:
+    """Render the problem facts once, leaving interpretation to the hints."""
+    kernel = problem.get("kernelType", "unknown")
+    size = problem.get("gemmSize", {})
+    dims = " ".join(
+        f"{name.upper()}={size.get(name)}"
+        for name in ("g", "m", "k", "n", "o")
+        if name in size
+    )
+    types = " ".join(
+        f"{name}={problem.get(key)}"
+        for name, key in (("A", "aType"), ("B", "bType"), ("C", "cType"),
+                          ("out", "outType"))
+        if problem.get(key)
+    )
+    lines = [f"  {kernel}: {dims}; {types}"]
+
+    if kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm"):
+        lines.append("  Implicit GEMM: M=channels, N=batch*spatial, K=channels*filter.")
+        layouts = [
+            f"{label}={''.join(problem[key])}"
+            for label, key in (("filter", "filterLayout"), ("input", "inputLayout"),
+                               ("output", "outputLayout"))
+            if problem.get(key)
+        ]
+        if layouts:
+            lines.append("  Layouts: " + " ".join(layouts))
+        window = [
+            f"{name}={problem[name]}"
+            for name in ("strides", "dilations", "padding")
+            if problem.get(name)
+        ]
+        if window:
+            lines.append("  Window: " + " ".join(window))
+        alignment = problem.get("kPerBlockAlignment") or 1
+        if alignment > 1:
+            lines.append(f"  kPerBlock should be a multiple of {alignment}.")
+    elif kernel == "Attention":
+        lines.append("  gemm0=Q*K^T; gemm1=softmax(gemm0)*V.")
+    elif "o" in size:
+        lines.append("  One perf config tiles both chained GEMMs.")
+
+    flags = [
+        name
+        for name, key in (("inter-GEMM fusion", "hasPreSecondGemmFusion"),
+                          ("fused reduction", "hasFusedReduction"),
+                          ("causal mask", "causal"))
+        if problem.get(key)
+    ]
+    if flags:
+        lines.append("  Extra work: " + ", ".join(flags) + ".")
+    return "\n".join(lines)
+
+
+def summarize_hardware_for_prompt(hardware: Hardware) -> str:
+    """Render the hardware budgets and defaults without explanatory prose."""
+    family = "CDNA" if hardware.get("isCDNA") else "RDNA" if hardware.get("isRDNA") else "GCN"
+    lines = [
+        f"  {hardware.get('chip')} ({family}); {hardware.get('numCUs')} CUs/"
+        f"{hardware.get('numChiplets')} chiplet(s); {hardware.get('accelKind')}; "
+        f"wave {hardware.get('waveSize')}",
+        f"  LDS={_si(hardware.get('ldsSize', 0))}; "
+        f"VGPR/EU={hardware.get('vgprsPerEU')}; "
+        f"max waves/EU={hardware.get('maxWavesPerEU')}; "
+        f"cache={_si(hardware.get('lastLevelCacheSize', 0))}",
+        f"  max kpack={hardware.get('maxKpack')}; "
+        f"max CTAs={hardware.get('maxNumCTAs', 1)}; "
+        f"async-copy={'yes' if hardware.get('supportsAsyncCopy') else 'no'}; "
+        f"non-power-of-two K={'yes' if hardware.get('supportsNonPow2KPerBlock') else 'no'}",
+    ]
+    defaults = [
+        f"{name}={'on' if hardware[key] else 'off'}"
+        for name, key in (("ac", "defaultAsyncCopy"), ("bp", "defaultBlockPingpong"),
+                          ("it", "defaultInThreadTranspose"))
+        if key in hardware
+    ]
+    if defaults:
+        lines.append("  -1 defaults: " + " ".join(defaults))
+    if hardware.get("defaultGridGroupSize"):
+        lines.append(f"  gridGroupSize=0 selects {hardware['defaultGridGroupSize']}.")
+    return "\n".join(lines)
+
+
 def _axis(space: Optional[Space], name: str) -> Optional[Sequence[int]]:
     """The values the axes let `name` take, or None where they do not say.
 

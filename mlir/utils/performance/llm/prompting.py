@@ -40,12 +40,16 @@ from __future__ import annotations
 import textwrap
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .configs import knob_names, render_space
+from .configs import knob_names, render_response_aliases, render_space
 from .feedback import (
     MAX_CHANGED_FIELDS_PER_CONFIG,
     format_config_for_prompt,
 )
-from .workload import compute_workload_hints, describe_hardware, describe_problem
+from .workload import (
+    compute_workload_hints,
+    summarize_hardware_for_prompt,
+    summarize_problem_for_prompt,
+)
 
 RETURN_JSON_ONLY = 'Return minified JSON only: {"configs":[...]}'
 
@@ -59,16 +63,11 @@ FEASIBILITY_RULE = ("Every value you choose must appear in that parameter's list
                     "under Refused Configs, so read them.")
 
 _INITIAL_STRATEGY_BASE_LINES = (
-    "First read the problem shape, the hardware, and the configuration space.",
-    "Cover 3 config families with a rough mix of about 40% near-default safe, 40% balanced throughput, and 20% aggressive configs, while keeping most candidates ones the space will accept.",
-    "If the problem is an unusual shape, stay closer to the default and avoid aggressive coupled changes.",
-    ("Keep each config sparse: usually 2-6 changed fields, omit unchanged "
-     "defaults, and exceed 6 only when several coupled changes are needed "
-     "for a distinct family."),
-    "Use the block tiles to define families: include at least 3 materially different tilings rather than tiny perturbations of one tile.",
-    "Vary the M, N and K tiles coherently rather than by arbitrary skew.",
-    "Do not repeat unchanged defaults.",
-    "Avoid configs that max out several aggressive knobs at once (largest tiles plus deepest numStages plus highest splitKFactor) unless there is a reason.",
+    "Use about 40% near-default, 40% balanced and 20% aggressive candidates.",
+    "Stay near the default for unusual shapes.",
+    "Keep configs sparse: 2-6 changed fields, omitting unchanged defaults.",
+    "Cover at least 3 coherent M/N/K tile families.",
+    "Do not combine the largest tiles, deepest pipeline and highest split.",
 )
 
 _FAILURE_HEAVY_REFINEMENT_LINES = (
@@ -146,8 +145,8 @@ _OUTPUT_CONTRACT = textwrap.dedent("""\
       config unique.
     - Do not use Python syntax or expressions.
     - Only specify parameters you want to change; unspecified = default.
-    - Use only parameter names that appear in the configuration space, and only
-      values that appear in that parameter's list.
+    - Use the short names in Response Aliases. Full parameter names are also
+      accepted. Use only values from that parameter's Configuration Space list.
     - Every value is a plain integer. Never a list, a string, or a float.
     - If you are unsure about a parameter, omit it rather than guessing.
     - Use null not None, true/false not True/False.
@@ -380,54 +379,83 @@ def _bullets_for(bullets: Dict[str, str], space: Optional[Dict[str, Sequence[int
 
 
 def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str:
-    """The global instruction block, cut down to what this run can act on.
-
-    Most of it is fixed, but a good deal describes parameters that a given arch
-    or kernel leaves no choice about: attention pins splitKFactor and
-    gridGroupSize, WMMA pins matrixInstrNonkdim and kpack, an arch with no
-    direct-to-LDS width pins useAsyncCopy, and a dot that is not f32 pins
-    useBf16x3ForF32. Explaining one of those spends the model's attention on a
-    decision it does not have, and the axes say which they are without this
-    having to know why, so `space` is read to drop those blocks. Passing none
-    yields the full text.
-    """
+    """A compact instruction block, gated to parameters this run can move."""
     gemm_gemm = space is not None and "nPerBlockG1" in space
     tiles = _GEMM_GEMM_TILE_BULLET if gemm_gemm else _GEMM_TILE_BULLET
-    blocks = ["\n".join((_SYSTEM_PREAMBLE, tiles, _KPERBLOCK_BULLET))]
+    blocks = [
+        textwrap.dedent("""\
+            You are tuning a rocmlirTriton integer perf config for an AMD GPU.
+            Use only the supplied axes and defaults. Return 15 useful, unique,
+            sparse candidates as minified JSON and no prose."""),
+        tiles,
+        _KPERBLOCK_BULLET,
+    ]
 
-    scheduling = _bullets_for(_PARAM_BULLETS, space, gemm_gemm)
+    compact_params = {
+        "numWaves": "- numWaves: waves per workgroup; match it to tile size.",
+        "matrixInstrNonkdim":
+            "- matrixInstrNonkdim: matrix-instruction M/N width; 16 and 32 are distinct families.",
+        "kpack": "- kpack: matrix instructions issued per LDS load.",
+        "numStages": "- numStages: K-loop pipeline depth; more overlap costs more LDS.",
+        "splitKFactor":
+            "- splitKFactor: splits the contraction across workgroups and pays for a reduction.",
+        "gridGroupSize": "- gridGroupSize: M-grid grouping for cache locality; 0 is heuristic.",
+        "numCTAs": "- numCTAs: workgroups per cooperative cluster.",
+        "wavesPerEU": "- wavesPerEU: occupancy hint that limits registers; 0 means no hint.",
+    }
+    scheduling = _bullets_for(compact_params, space, gemm_gemm)
     if scheduling:
         blocks.append("Scheduling and layout:\n" + "\n".join(scheduling))
 
-    knobs = _bullets_for(_KNOB_BULLETS, space, gemm_gemm)
+    compact_knobs = {
+        name: f"- {name}: tri-state -1=compiler heuristic, 0=off, 1=on."
+        for name in _KNOB_BULLETS
+    }
+    knobs = _bullets_for(compact_knobs, space, gemm_gemm)
     if knobs:
-        blocks.append(_KNOB_INTRO + "\n" + "\n".join(knobs))
+        blocks.append(
+            "The use* knobs are tri-state. Seed -1 values were not compared; Read nothing "
+            "into that. Change only one with a reason.\n" + "\n".join(knobs))
 
         duplicates = []
         if _any_tunable(space, "useBufferOps", "useBufferAtomics"):
-            duplicates.append(_BUFFER_DUPLICATE_RULE)
+            duplicates.append("- useBufferOps/useBufferAtomics: -1 and 1 produce the same "
+                              "kernel, so an explicit 1 measures nothing.")
         if _is_tunable(space, "useOptimizeEpilogue"):
-            duplicates.append(_EPILOGUE_DUPLICATE_RULE)
+            duplicates.append("- useOptimizeEpilogue: except for a 16 bits wide output, -1 "
+                              "and 1 agree and an explicit 1 measures nothing.")
         if _may_pipeline_one_stage(space):
             if _is_tunable(space, "useBlockPingpong"):
-                duplicates.append(_PINGPONG_DUPLICATE_RULE)
+                duplicates.append("- At numStages=1, useBlockPingpong=1 builds the kernel "
+                                  "that -1 already selected.")
             if _is_tunable(space, "useAsyncCopy"):
-                duplicates.append(_ASYNC_COPY_DUPLICATE_RULE)
+                duplicates.append("- At numStages=1, useAsyncCopy=1 builds the kernel "
+                                  "that -1 already selected.")
         if duplicates:
-            blocks.append(_DUPLICATE_RULES_INTRO + "\n" + "\n".join(duplicates))
+            blocks.append("Avoid duplicate kernels:\n" + "\n".join(duplicates))
 
-    blocks.append(_GENERAL_HEURISTICS)
-
-    feasibility = [_FEASIBILITY_INTRO]
+    feasibility = [
+        "Feasibility checks:",
+        "- exceedsTritonTensorCap: k * max(m,n) <= 1048576.",
+    ]
     if _is_tunable(space, "wavesPerEU"):
-        feasibility.append(_REGISTER_BUDGET_RULE)
-    feasibility.append(_COMPILE_COST_RULE)
-    feasibility.append(_LDS_RULE)
+        feasibility.append("- wavesPerEURegisterBudget: large tiles and high occupancy conflict.")
+    feasibility.extend([
+        "- compileCostBudget: avoid simultaneously wide tiles and deep K.",
+        "- ldsBlacklist: (m*k*bits(A) + n*k*bits(B))/8 * stages must fit LDS.",
+        "- notOnAxis: every value must be on its axis.",
+    ])
     if _any_tunable(space, "useBufferOps", "useBufferAtomics"):
         feasibility.append(_BUFFER_KNOBS_RULE)
     blocks.append("\n".join(feasibility))
 
-    blocks.append(_OUTPUT_CONTRACT)
+    blocks.append(textwrap.dedent("""\
+        Output contract:
+        - Return exactly {"configs":[...]} on one line: no markdown or prose.
+        - Use short names from Response Aliases; full names are accepted.
+        - Values are scalar integers from the Configuration Space.
+        - Omit unchanged/default fields; usually change 1-4 fields, at most 6.
+        - Make every config unique; if unsure, return fewer valid configs."""))
     return "\n\n".join(blocks)
 
 
@@ -454,11 +482,7 @@ def _initial_strategy_lines(
         lines.append("Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
                      "configs; use an explicit 0 or 1 in a minority, and only where you "
                      "can say why.")
-    lines.append("Spread numStages and the tiles across the batch rather than clustering "
-                 "on one choice: a later refinement search will anchor on whatever this "
-                 "round measures, so variety here is worth more than a batch of "
-                 "near-identical safe configs.")
-    lines.append(FEASIBILITY_RULE)
+    lines.append("Spread tiles and numStages; variety matters more than near-duplicates.")
     return lines
 
 
@@ -479,7 +503,6 @@ def _refinement_strategy_lines(
                  "gridGroupSize rather than rewriting every field.")
     lines.append("Keep each config sparse: usually 1-4 changed fields, and no more than "
                  f"{MAX_CHANGED_FIELDS_PER_CONFIG} unless absolutely necessary.")
-    lines.append(FEASIBILITY_RULE)
     lines.append("If unsure, return fewer valid configs instead of verbose or malformed JSON.")
     return lines
 
@@ -533,10 +556,11 @@ def _build_problem_context(request: Dict[str, Any]) -> Tuple[str, List[str]]:
         "\n  Any parameter you do not mention takes its value from this config.",
     )
     return _join_sections(
-        _section("Problem", describe_problem(problem)),
-        _section("GPU Hardware", describe_hardware(hardware)),
+        _section("Problem", summarize_problem_for_prompt(problem)),
+        _section("GPU Hardware", summarize_hardware_for_prompt(hardware)),
         _bullet_section("What The Shapes Suggest", hints) if hints else "",
         _section("Configuration Space", render_space(space, default_config)),
+        _section("Response Aliases", render_response_aliases(space)),
         default_section,
     ), hints
 

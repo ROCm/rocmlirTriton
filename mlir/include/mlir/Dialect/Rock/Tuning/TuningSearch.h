@@ -153,13 +153,11 @@ public:
 /// `model`, which names a Cursor model rather than Helion's `gpt-5-2`.
 struct LLMSearchOptions {
   /// A model id, optionally followed by `:name=value` parameters of that
-  /// model, comma-separated. The default asks composer-2.5 for its
-  /// low-latency variant, because a tuning run waits through a round trip per
-  /// round while a machine sits idle, and picking configs is a job a quick
-  /// model does well enough. A parameter the account does not offer fails the
-  /// run rather than being dropped; `Cursor.models.list()` says what is
-  /// available.
-  std::string model = "composer-2.5:fast=true";
+  /// model, comma-separated. The default uses Nano without reasoning: measured
+  /// convolution rounds average under ten seconds while retaining useful
+  /// config quality. A parameter the account does not offer fails the run
+  /// rather than being dropped; `Cursor.models.list()` says what is available.
+  std::string model = "gpt-5.4-nano:reasoning=none";
   /// Configs to ask for per round.
   unsigned configsPerRound = 15;
   /// Rounds of proposal, including the first. One means a single call.

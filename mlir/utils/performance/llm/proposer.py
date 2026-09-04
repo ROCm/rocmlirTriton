@@ -176,13 +176,14 @@ def main(argv=None) -> int:
             system_prompt=system_prompt,
             # The C++ side always names one; this default only keeps a
             # hand-written request working, and matches LLMSearchOptions.
-            model=request.get("model", "composer-2.5:fast=true"),
+            model=request.get("model", "gpt-5.4-nano:reasoning=none"),
             session=session,
             space=space,
             default_config=default_config,
             configs_requested=request.get("configsRequested", 15),
         )
         log.received(reply, seconds=time.monotonic() - started)
+        log.timing(session.get("lastTransportTiming", {}))
         # A reply with nothing usable in it is an empty round, not a failure:
         # the search treats it as the model having no more to offer and stops,
         # which is what Helion's `_run_refinement_round` does. The trace records
