@@ -1686,10 +1686,10 @@ class TestBackendSelection(unittest.TestCase):
     def test_each_backend_answers_for_its_own_memory(self):
         # The standing instructions go out again unless a conversation is
         # already holding them, and what counts as one differs: cursor has an
-        # agent to resume, the OpenAI backend has messages to resend.
+        # agent to resume, the OpenAI backend a response to continue from.
         agent = {"agentId": "agent-1"}
-        messages = {"messages": [{"role": "system", "content": "..."}]}
-        for backend, open_session, other in (("cursor", agent, messages), ("openai", messages,
+        response = {"responseId": "resp-1"}
+        for backend, open_session, other in (("cursor", agent, response), ("openai", response,
                                                                            agent)):
             with self.subTest(backend=backend):
                 with mock.patch.dict(os.environ, {"ROCMLIR_LLM_TRANSPORT": backend}):
@@ -1700,8 +1700,8 @@ class TestBackendSelection(unittest.TestCase):
 class TestOpenAiBackend(unittest.TestCase):
     """The second way out: any OpenAI-compatible endpoint.
 
-    It has no service holding the conversation, so what the model remembers is
-    what this resends, and choosing that is the substance of the backend."""
+    The gateway holds the conversation, so a round sends its own prompt and
+    names the response it continues from."""
 
     REPLY = '{"configs":[{"m":128}]}'
 
@@ -1717,6 +1717,7 @@ class TestOpenAiBackend(unittest.TestCase):
     def openai(self, *, reply=REPLY, raises=""):
         """A stand-in for the openai package, and the requests it was given."""
         calls = []
+        clients = []
 
         class OpenAIError(Exception):
             pass
@@ -1727,19 +1728,23 @@ class TestOpenAiBackend(unittest.TestCase):
                                  **{name: type(name, (OpenAIError,), {}) for name in names})
 
         def create(**arguments):
-            # A copy, since a real client serializes the conversation as it
-            # stands now and this one goes on being appended to.
-            calls.append({
-                **arguments, "messages": [dict(message) for message in arguments["messages"]]
-            })
+            calls.append(arguments)
             if raises:
                 raise getattr(module, raises)("the gateway said no")
-            return SimpleNamespace(
-                id="chatcmpl-1", choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+            # One response per round, so that a session naming the last one is
+            # naming something this fake can tell apart.
+            return SimpleNamespace(id=f"resp-{len(calls)}", output_text=reply)
 
-        module.OpenAI = lambda **_: SimpleNamespace(chat=SimpleNamespace(
-            completions=SimpleNamespace(create=create)))
-        return module, calls
+        def client(**arguments):
+            clients.append(arguments)
+            return SimpleNamespace(responses=SimpleNamespace(create=create))
+
+        module.OpenAI = client
+        return module, calls, clients
+
+    def httpx(self):
+        """A stand-in for httpx, which the client is handed one of."""
+        return SimpleNamespace(Client=lambda **arguments: SimpleNamespace(**arguments))
 
     def ask(self, module, *, session=None, prompt="round prompt", model="GPT-oss-20B"):
         session = {} if session is None else session
@@ -1750,46 +1755,61 @@ class TestOpenAiBackend(unittest.TestCase):
                               space={},
                               default_config={},
                               configs_requested=15)
-        with mock.patch.dict(sys.modules, {"openai": module}):
+        with mock.patch.dict(sys.modules, {"openai": module, "httpx": self.httpx()}):
             return openai_backend.OpenAiBackend().reply(turn), session
+
+    def test_hands_the_gateway_the_key_on_the_header_it_reads(self):
+        # The API-management layer in front of the models authenticates on a
+        # header of its own, and ignores the one the SDK always sends.
+        module, _, clients = self.openai()
+        self.ask(module)
+        headers = clients[-1]["default_headers"]
+        self.assertEqual(headers[openai_backend.KEY_HEADER], "a-key")
+        self.assertEqual(clients[-1]["api_key"], openai_backend.UNUSED_SDK_KEY)
+        self.assertIn("user", headers)
 
     def test_gives_the_standing_instructions_a_role_of_their_own(self):
         # Where the cursor backend glues them onto the first message, because
         # an agent takes one message and not a conversation.
-        module, calls = self.openai()
+        module, calls, _ = self.openai()
         reply, _ = self.ask(module)
         self.assertEqual(reply, self.REPLY)
-        messages = calls[-1]["messages"]
-        self.assertEqual(messages[0], {"role": "system", "content": "standing instructions"})
-        self.assertEqual(messages[-1], {"role": "user", "content": "round prompt"})
+        self.assertEqual(calls[-1]["input"], [{
+            "role": "system",
+            "content": "standing instructions"
+        }, {
+            "role": "user",
+            "content": "round prompt"
+        }])
+        self.assertNotIn("previous_response_id", calls[-1])
 
-    def test_remembers_what_it_proposed_and_forgets_what_it_was_asked(self):
-        # The replies are the memory worth having. The prompts that drew them
-        # are a snapshot of a search that has moved on, and resending round 0's
-        # "Best so far" beside round 1's would be two answers to one question.
-        module, calls = self.openai()
+    def test_continues_from_the_response_the_last_round_left(self):
+        # The gateway is holding everything already said, so a later round
+        # names it rather than resending it: no standing instructions, no
+        # earlier prompt, and no reply of its own.
+        module, calls, _ = self.openai()
         _, session = self.ask(module, prompt="round 0 prompt")
+        self.assertEqual(session["responseId"], "resp-1")
         self.ask(module, session=session, prompt="round 1 prompt")
-        messages = calls[-1]["messages"]
-        self.assertEqual([message["role"] for message in messages],
-                         ["system", "user", "assistant", "user"])
-        self.assertEqual(messages[1]["content"], openai_backend.SUPERSEDED_PROMPT)
-        self.assertEqual(messages[2]["content"], self.REPLY)
-        self.assertEqual(messages[3]["content"], "round 1 prompt")
-        self.assertNotIn("round 0 prompt", json.dumps(messages))
+        self.assertEqual(calls[-1]["previous_response_id"], "resp-1")
+        self.assertEqual(calls[-1]["input"], [{"role": "user", "content": "round 1 prompt"}])
+        self.assertNotIn("round 0 prompt", json.dumps(calls[-1]["input"]))
 
     def test_reads_a_specs_parameters_into_the_request(self):
-        # They arrive as text and the endpoint wants them typed.
-        module, calls = self.openai()
-        self.ask(module, model="GPT-oss-20B:temperature=0.2,seed=7,stream=false")
+        # They arrive as text and the endpoint wants them typed. A dotted name
+        # nests, which is the only way to write `reasoning={"effort": ...}`.
+        module, calls, _ = self.openai()
+        self.ask(module,
+                 model="GPT-oss-20B:temperature=0.2,seed=7,stream=false,reasoning.effort=low")
         request = calls[-1]
         self.assertEqual(request["model"], "GPT-oss-20B")
         self.assertEqual(request["temperature"], 0.2)
         self.assertEqual(request["seed"], 7)
         self.assertIs(request["stream"], False)
+        self.assertEqual(request["reasoning"], {"effort": "low"})
 
     def test_will_not_start_without_an_endpoint_to_ask(self):
-        module, _ = self.openai()
+        module, _, _ = self.openai()
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(openai_backend.BASE_URL_VARIABLE, None)
             os.environ.pop("OPENAI_BASE_URL", None)
@@ -1799,7 +1819,7 @@ class TestOpenAiBackend(unittest.TestCase):
         self.assertIn(openai_backend.BASE_URL_VARIABLE, str(caught.exception))
 
     def test_will_not_start_without_the_key_every_backend_reads(self):
-        module, _ = self.openai()
+        module, _, _ = self.openai()
         with mock.patch.dict(os.environ, {}, clear=False):
             for name in (transport.KEY_VARIABLE, "CURSOR_API_KEY"):
                 os.environ.pop(name, None)
@@ -1813,22 +1833,22 @@ class TestOpenAiBackend(unittest.TestCase):
         for raises, started in (("APIConnectionError", False), ("AuthenticationError", False),
                                 ("NotFoundError", False), ("OpenAIError", True)):
             with self.subTest(raises=raises):
-                module, _ = self.openai(raises=raises)
+                module, _, _ = self.openai(raises=raises)
                 with self.assertRaises(transport.TransportError) as caught:
                     self.ask(module)
                 self.assertEqual(caught.exception.started, started)
 
     def test_counts_an_empty_reply_as_a_run_that_failed(self):
-        module, _ = self.openai(reply="  ")
+        module, _, _ = self.openai(reply="  ")
         with self.assertRaises(transport.TransportError) as caught:
             self.ask(module)
         self.assertTrue(caught.exception.started)
 
     def test_records_a_latency_breakdown_the_transcript_can_print(self):
-        module, _ = self.openai()
+        module, _, _ = self.openai()
         _, session = self.ask(module)
         timing = session["lastTransportTiming"]
-        self.assertEqual(timing["responseId"], "chatcmpl-1")
+        self.assertEqual(timing["responseId"], "resp-1")
         self.assertFalse(timing["resumed"])
         self.assertEqual(timing["responseChars"], len(self.REPLY))
 

@@ -2662,7 +2662,7 @@ def parse_arguments(args=None) -> argparse.Namespace:
                            help="Which model proposes the configs, named as the endpoint behind "
                            "$ROCMLIR_LLM_TRANSPORT names it, optionally followed by "
                            "`:name=value` parameters of that model "
-                           "(`gpt-oss-20b:reasoning_effort=low`).")
+                           "(`GPT-oss-20B:reasoning.effort=low`).")
     llm_group.add_argument("--llm-rounds",
                            type=int,
                            default=None,

@@ -159,7 +159,7 @@ struct LLMSearchOptions {
   /// buys more by measuring another round than by thinking longer about this
   /// one. A parameter the endpoint does not offer fails the run rather than
   /// being dropped, and which models it serves is its own business.
-  std::string model = "gpt-oss-20b:reasoning_effort=low";
+  std::string model = "GPT-oss-20B:reasoning.effort=low";
   /// Configs to ask for per round.
   unsigned configsPerRound = 15;
   /// Rounds of proposal, including the first. One means a single call.

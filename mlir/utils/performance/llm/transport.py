@@ -6,8 +6,8 @@
 Which model, and by what route, is $ROCMLIR_LLM_TRANSPORT's business:
 
 - `openai`, the default: any OpenAI-compatible endpoint, named by
-  $ROCMLIR_LLM_BASE_URL -- an on-prem gateway, a local server. See
-  llm/openai_backend.py.
+  $ROCMLIR_LLM_BASE_URL -- an on-prem gateway, a local server -- with the
+  gateway holding the conversation. See llm/openai_backend.py.
 - `cursor`: a cursor agent, resumed round to round. See
   llm/cursor_backend.py.
 - `stub`: answers out of the config space without a network, which is what

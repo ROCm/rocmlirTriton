@@ -249,7 +249,7 @@ static llvm::cl::opt<std::string>
                             "endpoint behind $ROCMLIR_LLM_TRANSPORT names it, "
                             "optionally followed by `:name=value` parameters "
                             "of that model "
-                            "(`gpt-oss-20b:reasoning_effort=low`)."),
+                            "(`GPT-oss-20B:reasoning.effort=low`)."),
              llvm::cl::value_desc("model"),
              llvm::cl::init(rock::LLMSearchOptions{}.model));
 

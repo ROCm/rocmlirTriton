@@ -180,7 +180,7 @@ def main(argv=None) -> int:
             system_prompt=system_prompt,
             # The C++ side always names one; this default only keeps a
             # hand-written request working, and matches LLMSearchOptions.
-            model=request.get("model", "gpt-oss-20b:reasoning_effort=low"),
+            model=request.get("model", "GPT-oss-20B:reasoning.effort=low"),
             session=session,
             space=space,
             default_config=default_config,
