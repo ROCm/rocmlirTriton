@@ -90,6 +90,31 @@ def conversation_input(turn: Turn, previous: str) -> List[Dict[str, str]]:
     ]
 
 
+def token_counts(response: Any) -> Dict[str, int]:
+    """What the round cost, in the units the model is slow in.
+
+    A round's seconds are a prompt read and a reply written, and the two are
+    fixed in different places: a long prompt is this search's to trim, while
+    reasoning the model spent before answering is the effort parameter's to
+    turn down. Characters cannot tell them apart, and reasoning does not show
+    up in the reply at all.
+
+    Empty when the endpoint reports no usage, since a count of zero would read
+    as an answer rather than as a silence.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    details = getattr(usage, "output_tokens_details", None)
+    counts = {
+        "inputTokens": getattr(usage, "input_tokens", 0) or 0,
+        "outputTokens": getattr(usage, "output_tokens", 0) or 0,
+    }
+    if details is not None:
+        counts["reasoningTokens"] = getattr(details, "reasoning_tokens", 0) or 0
+    return counts
+
+
 class OpenAiBackend(Backend):
     """A response from an OpenAI-compatible endpoint, one per round."""
 
@@ -167,6 +192,7 @@ class OpenAiBackend(Backend):
         reply = getattr(response, "output_text", "") or ""
         session["responseId"] = getattr(response, "id", "") or ""
         session["lastTransportTiming"] = {
+            **token_counts(response),
             "sdkImportMs": (import_done - transport_started) * 1000.0,
             "optionsMs": (client_ready - import_done) * 1000.0,
             "agentOpenMs":

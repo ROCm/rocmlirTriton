@@ -177,6 +177,15 @@ class Transcript:
         def milliseconds(name: str) -> str:
             return f"{float(measurements.get(name, 0.0)):.1f} ms"
 
+        # Only the backends whose endpoint reports usage have these, and they
+        # are what says whether a slow round was a long prompt or a model
+        # thinking at length before it answered.
+        tokens = "; ".join(f"{label}: {measurements[key]}" for label, key in (
+            ("input", "inputTokens"),
+            ("output", "outputTokens"),
+            ("of it reasoning", "reasoningTokens"),
+        ) if key in measurements)
+
         self._append(
             self._heading("latency breakdown"),
             f"SDK import: {milliseconds('sdkImportMs')}",
@@ -189,6 +198,7 @@ class Transcript:
             f"Total transport: {milliseconds('totalMs')}",
             f"Prompt: {measurements.get('promptChars', 0)} chars; "
             f"response: {measurements.get('responseChars', 0)} chars",
+            *([f"Tokens: {tokens}"] if tokens else []),
             # Whichever of these the backend has: a cursor round is an agent
             # and a run, an OpenAI-compatible one is a single response.
             "; ".join(f"{label}: {measurements[key]}" for label, key in (
