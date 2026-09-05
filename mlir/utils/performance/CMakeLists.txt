@@ -31,11 +31,15 @@ list(TRANSFORM PERFORMANCE_SCRIPTS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 # locates it at ${ROCMLIR_BIN_DIR}/llm/proposer.py, relative to itself.
 set(LLM_PROPOSER_SCRIPTS
   __init__.py
+  backend.py
   configs.py
+  cursor_backend.py
   feedback.py
+  openai_backend.py
   parsing.py
   prompting.py
   proposer.py
+  stub_backend.py
   transcript.py
   transport.py
   workload.py

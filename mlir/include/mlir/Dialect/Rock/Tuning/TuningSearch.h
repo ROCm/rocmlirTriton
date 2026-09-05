@@ -150,14 +150,16 @@ public:
 
 /// What a language model is allowed to spend proposing configs. Every default
 /// is Helion's, from `LLM_SEARCH_DEFAULTS` in effort_profile.py, except
-/// `model`, which names a Cursor model rather than Helion's `gpt-5-2`.
+/// `model`, which names a model the default transport serves rather than
+/// Helion's `gpt-5-2`.
 struct LLMSearchOptions {
   /// A model id, optionally followed by `:name=value` parameters of that
-  /// model, comma-separated. The default uses Nano without reasoning: measured
-  /// convolution rounds average under ten seconds while retaining useful
-  /// config quality. A parameter the account does not offer fails the run
-  /// rather than being dropped; `Cursor.models.list()` says what is available.
-  std::string model = "gpt-5.4-nano:reasoning=none";
+  /// model, comma-separated. The default is a small mixture-of-experts model
+  /// asked for little reasoning, because a round is spent time: the search
+  /// buys more by measuring another round than by thinking longer about this
+  /// one. A parameter the endpoint does not offer fails the run rather than
+  /// being dropped, and which models it serves is its own business.
+  std::string model = "gpt-oss-20b:reasoning_effort=low";
   /// Configs to ask for per round.
   unsigned configsPerRound = 15;
   /// Rounds of proposal, including the first. One means a single call.

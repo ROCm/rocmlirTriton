@@ -161,22 +161,26 @@ def main(argv=None) -> int:
     log = transcript.Transcript(args.transcript, request)
     log.begin()
     system_prompt = prompting.build_system_prompt(space)
-    # The standing instructions go out with the first message of a conversation
-    # and not again, so the transcript is told about them on the same terms the
-    # transport sends them on: a round with an agent to resume is a round that
-    # already has them. See `_cursor_reply`.
-    resumed = bool(session.get("agentId"))
-    log.sent(prompt, system_prompt=None if resumed else system_prompt)
 
     response: Dict[str, Any]
     started = time.monotonic()
+    # Asking which backend this is can fail -- an unknown one stops the run --
+    # and that belongs in the same report as any other way of not reaching a
+    # model, rather than as a traceback the driver renders as "the helper
+    # failed".
     try:
+        # The standing instructions go out with the first message of a
+        # conversation and not again, so the transcript is told about them on
+        # the same terms the transport sends them on: a round with a
+        # conversation to continue is a round that already has them.
+        resumed = transport.conversation_is_open(session)
+        log.sent(prompt, system_prompt=None if resumed else system_prompt)
         reply = transport.call_model(
             prompt=prompt,
             system_prompt=system_prompt,
             # The C++ side always names one; this default only keeps a
             # hand-written request working, and matches LLMSearchOptions.
-            model=request.get("model", "gpt-5.4-nano:reasoning=none"),
+            model=request.get("model", "gpt-oss-20b:reasoning_effort=low"),
             session=session,
             space=space,
             default_config=default_config,

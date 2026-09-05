@@ -245,10 +245,11 @@ static llvm::cl::opt<std::string> searchTrace(
 
 static llvm::cl::opt<std::string>
     llmModel("llm-model",
-             llvm::cl::desc("Which model proposes the configs, named as "
-                            "`cursor-agent --model` names them, optionally "
-                            "followed by `:name=value` parameters of that "
-                            "model (`gpt-5.4-nano:reasoning=none`)."),
+             llvm::cl::desc("Which model proposes the configs, named as the "
+                            "endpoint behind $ROCMLIR_LLM_TRANSPORT names it, "
+                            "optionally followed by `:name=value` parameters "
+                            "of that model "
+                            "(`gpt-oss-20b:reasoning_effort=low`)."),
              llvm::cl::value_desc("model"),
              llvm::cl::init(rock::LLMSearchOptions{}.model));
 

@@ -35,6 +35,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 # The package is installed beside the performance scripts, at
 # ${ROCMLIR_BIN_DIR}/llm, which is where rocmlir-tuning-driver looks for it.
@@ -48,7 +49,7 @@ _bin_dir = Path(_script).parent
 sys.path.insert(0, str(_bin_dir))
 
 from llm import configs, feedback, parsing, prompting, transport, workload  # noqa: E402
-from llm import proposer, transcript  # noqa: E402
+from llm import cursor_backend, openai_backend, proposer, transcript  # noqa: E402
 
 # A space small enough to read, shaped like a real one: a tile ladder that is
 # not a power-of-two sequence, a kpack, and a tri-state knob.
@@ -379,11 +380,22 @@ class TestFeedback(unittest.TestCase):
         # named it reported "always 64" over two configs while the three
         # fastest, listed directly above, all ran the default 32.
         results = [
-            result({**DEFAULT_CONFIG, "kpack": 8}, 100.0),
-            result({**DEFAULT_CONFIG, "kpack": 2}, 200.0),
-            result({**DEFAULT_CONFIG, "kpack": 1}, 300.0),
-            result({**DEFAULT_CONFIG, "mPerBlock": 64}, 400.0),
-            result({**DEFAULT_CONFIG, "mPerBlock": 64, "kpack": 2}, 500.0),
+            result({
+                **DEFAULT_CONFIG, "kpack": 8
+            }, 100.0),
+            result({
+                **DEFAULT_CONFIG, "kpack": 2
+            }, 200.0),
+            result({
+                **DEFAULT_CONFIG, "kpack": 1
+            }, 300.0),
+            result({
+                **DEFAULT_CONFIG, "mPerBlock": 64
+            }, 400.0),
+            result({
+                **DEFAULT_CONFIG, "mPerBlock": 64,
+                "kpack": 2
+            }, 500.0),
         ]
         text = feedback.analyze_top_configs(results, DEFAULT_CONFIG)
         self.assertNotIn("mPerBlock: always", text)
@@ -526,8 +538,9 @@ class TestWorkloadDescription(unittest.TestCase):
         # Nothing says how many spatial dimensions there are, so tagging them
         # would be a guess.
         text = workload.summarize_problem_for_prompt({
-            **{key: value
-               for key, value in self.CONV.items() if not key.endswith("Layout")},
+            **{
+                key: value for key, value in self.CONV.items() if not key.endswith("Layout")
+            },
             "strides": [2, 1],
         })
         self.assertIn("strides=[2, 1]", text)
@@ -988,8 +1001,8 @@ class TestSystemPromptGating(unittest.TestCase):
         # satisfy beyond the axes is reported per config under Refused Configs,
         # where it is about a config the model actually proposed.
         prompt = self.prompt()
-        for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget",
-                      "compileCostBudget", "ldsBlacklist", "notOnAxis"):
+        for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget", "compileCostBudget",
+                      "ldsBlacklist", "notOnAxis"):
             self.assertNotIn(check, prompt)
 
     def test_names_the_block_tiles_the_way_this_kernel_spells_them(self):
@@ -1099,12 +1112,13 @@ class TestPromptConstruction(unittest.TestCase):
         # The checked-in list holds whole configs, so printed verbatim one
         # convolution's thirty-four seeds spent 5845 of the prompt's 10234
         # characters repeating nineteen fields to say five.
-        prompt = proposer.build_prompt(self.request(seedConfigs=[{
-            "mPerBlock": 64,
-            "nPerBlock": 48,
-            "kpack": DEFAULT_CONFIG["kpack"],
-            "useAsyncCopy": DEFAULT_CONFIG["useAsyncCopy"],
-        }]))
+        prompt = proposer.build_prompt(
+            self.request(seedConfigs=[{
+                "mPerBlock": 64,
+                "nPerBlock": 48,
+                "kpack": DEFAULT_CONFIG["kpack"],
+                "useAsyncCopy": DEFAULT_CONFIG["useAsyncCopy"],
+            }]))
         seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
         self.assertIn('  - {"m":64,"n":48}', seeds)
         self.assertNotIn('"ac"', seeds)
@@ -1116,10 +1130,17 @@ class TestPromptConstruction(unittest.TestCase):
         # prompt that also calls the Configuration Space the authority. One run
         # copied the 256 and another extrapolated to 192, and both were refused.
         off_axis = max(SPACE["mPerBlock"]) * 2
-        prompt = proposer.build_prompt(self.request(seedConfigs=[
-            {"mPerBlock": 48, "nPerBlock": 64},
-            {"mPerBlock": off_axis, "nPerBlock": 64},
-        ]))
+        prompt = proposer.build_prompt(
+            self.request(seedConfigs=[
+                {
+                    "mPerBlock": 48,
+                    "nPerBlock": 64
+                },
+                {
+                    "mPerBlock": off_axis,
+                    "nPerBlock": 64
+                },
+            ]))
         seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
         self.assertIn('"m":48', seeds)
         self.assertNotIn(str(off_axis), seeds)
@@ -1160,8 +1181,7 @@ class TestPromptConstruction(unittest.TestCase):
     def test_a_later_round_asks_for_a_knob_experiment(self):
         # The refinement bullets named seven fields to move and no knob among
         # them, so a knob never got tried once the anchors existed.
-        prompt = proposer.build_prompt(
-            self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
+        prompt = proposer.build_prompt(self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
         self.assertIn("flipped from -1 to 0 or 1", prompt)
         self.assertIn("useAsyncCopy", prompt)
 
@@ -1170,7 +1190,8 @@ class TestPromptConstruction(unittest.TestCase):
         # matrixInstrNonkdim it spent a third of its advice on moves the space
         # refuses.
         prompt = proposer.build_prompt(
-            self.request(round=1, space=dict(SPACE, kpack=[4]),
+            self.request(round=1,
+                         space=dict(SPACE, kpack=[4]),
                          results=[result({"mPerBlock": 64}, 500.0)]))
         advice = prompt.split("attributable effects:")[1].split("\n")[0]
         self.assertNotIn("kpack", advice)
@@ -1314,7 +1335,7 @@ class TestTranscript(unittest.TestCase):
             "resumed": False,
         })
         written = self.text()
-        for expected in ("latency breakdown", "Agent create: 3000.0 ms",
+        for expected in ("latency breakdown", "Conversation create: 3000.0 ms",
                          "First text after send: 5000.0 ms", "Total transport: 12007.0 ms",
                          "1234 chars", "run-1"):
             self.assertIn(expected, written)
@@ -1582,10 +1603,10 @@ class TestAgentOptions(unittest.TestCase):
         )
 
     def build(self, options_class=None, model="composer-2.5"):
-        return transport._text_only_options(self.sdk(options_class),
-                                            api_key="key",
-                                            model=model,
-                                            cwd="/tmp")
+        return cursor_backend.text_only_options(self.sdk(options_class),
+                                                api_key="key",
+                                                model=model,
+                                                cwd="/tmp")
 
     def test_asks_for_an_empty_toolset(self):
         options = self.build()
@@ -1642,6 +1663,174 @@ class TestAgentOptions(unittest.TestCase):
                     self.build(model=spec)
                 self.assertFalse(caught.exception.started)
                 self.assertIn(spec, str(caught.exception))
+
+
+class TestBackendSelection(unittest.TestCase):
+    """Which way out of the process a round takes."""
+
+    def test_asks_an_openai_endpoint_unless_told_otherwise(self):
+        # The gateway a chip is tuned next to, rather than a hosted service.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ROCMLIR_LLM_TRANSPORT", None)
+            self.assertEqual(transport.backend_name(), "openai")
+
+    def test_refuses_a_backend_nobody_implements(self):
+        # Rather than falling back to the default, which would mean a search
+        # reaching a service the operator did not choose -- on a machine that
+        # may have been set up precisely to avoid it.
+        with self.assertRaises(transport.TransportError) as caught:
+            transport.backend_for("telepathy")
+        self.assertFalse(caught.exception.started)
+        self.assertIn("telepathy", str(caught.exception))
+
+    def test_each_backend_answers_for_its_own_memory(self):
+        # The standing instructions go out again unless a conversation is
+        # already holding them, and what counts as one differs: cursor has an
+        # agent to resume, the OpenAI backend has messages to resend.
+        agent = {"agentId": "agent-1"}
+        messages = {"messages": [{"role": "system", "content": "..."}]}
+        for backend, open_session, other in (("cursor", agent, messages), ("openai", messages,
+                                                                           agent)):
+            with self.subTest(backend=backend):
+                with mock.patch.dict(os.environ, {"ROCMLIR_LLM_TRANSPORT": backend}):
+                    self.assertTrue(transport.conversation_is_open(open_session))
+                    self.assertFalse(transport.conversation_is_open(other))
+
+
+class TestOpenAiBackend(unittest.TestCase):
+    """The second way out: any OpenAI-compatible endpoint.
+
+    It has no service holding the conversation, so what the model remembers is
+    what this resends, and choosing that is the substance of the backend."""
+
+    REPLY = '{"configs":[{"m":128}]}'
+
+    def setUp(self):
+        patcher = mock.patch.dict(
+            os.environ, {
+                openai_backend.BASE_URL_VARIABLE: "https://gateway.example/v1",
+                transport.KEY_VARIABLE: "a-key",
+            })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def openai(self, *, reply=REPLY, raises=""):
+        """A stand-in for the openai package, and the requests it was given."""
+        calls = []
+
+        class OpenAIError(Exception):
+            pass
+
+        names = ("APIConnectionError", "AuthenticationError", "PermissionDeniedError",
+                 "NotFoundError")
+        module = SimpleNamespace(OpenAIError=OpenAIError,
+                                 **{name: type(name, (OpenAIError,), {}) for name in names})
+
+        def create(**arguments):
+            # A copy, since a real client serializes the conversation as it
+            # stands now and this one goes on being appended to.
+            calls.append({
+                **arguments, "messages": [dict(message) for message in arguments["messages"]]
+            })
+            if raises:
+                raise getattr(module, raises)("the gateway said no")
+            return SimpleNamespace(
+                id="chatcmpl-1", choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+
+        module.OpenAI = lambda **_: SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create)))
+        return module, calls
+
+    def ask(self, module, *, session=None, prompt="round prompt", model="GPT-oss-20B"):
+        session = {} if session is None else session
+        turn = transport.Turn(prompt=prompt,
+                              system_prompt="standing instructions",
+                              model=model,
+                              session=session,
+                              space={},
+                              default_config={},
+                              configs_requested=15)
+        with mock.patch.dict(sys.modules, {"openai": module}):
+            return openai_backend.OpenAiBackend().reply(turn), session
+
+    def test_gives_the_standing_instructions_a_role_of_their_own(self):
+        # Where the cursor backend glues them onto the first message, because
+        # an agent takes one message and not a conversation.
+        module, calls = self.openai()
+        reply, _ = self.ask(module)
+        self.assertEqual(reply, self.REPLY)
+        messages = calls[-1]["messages"]
+        self.assertEqual(messages[0], {"role": "system", "content": "standing instructions"})
+        self.assertEqual(messages[-1], {"role": "user", "content": "round prompt"})
+
+    def test_remembers_what_it_proposed_and_forgets_what_it_was_asked(self):
+        # The replies are the memory worth having. The prompts that drew them
+        # are a snapshot of a search that has moved on, and resending round 0's
+        # "Best so far" beside round 1's would be two answers to one question.
+        module, calls = self.openai()
+        _, session = self.ask(module, prompt="round 0 prompt")
+        self.ask(module, session=session, prompt="round 1 prompt")
+        messages = calls[-1]["messages"]
+        self.assertEqual([message["role"] for message in messages],
+                         ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[1]["content"], openai_backend.SUPERSEDED_PROMPT)
+        self.assertEqual(messages[2]["content"], self.REPLY)
+        self.assertEqual(messages[3]["content"], "round 1 prompt")
+        self.assertNotIn("round 0 prompt", json.dumps(messages))
+
+    def test_reads_a_specs_parameters_into_the_request(self):
+        # They arrive as text and the endpoint wants them typed.
+        module, calls = self.openai()
+        self.ask(module, model="GPT-oss-20B:temperature=0.2,seed=7,stream=false")
+        request = calls[-1]
+        self.assertEqual(request["model"], "GPT-oss-20B")
+        self.assertEqual(request["temperature"], 0.2)
+        self.assertEqual(request["seed"], 7)
+        self.assertIs(request["stream"], False)
+
+    def test_will_not_start_without_an_endpoint_to_ask(self):
+        module, _ = self.openai()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(openai_backend.BASE_URL_VARIABLE, None)
+            os.environ.pop("OPENAI_BASE_URL", None)
+            with self.assertRaises(transport.TransportError) as caught:
+                self.ask(module)
+        self.assertFalse(caught.exception.started)
+        self.assertIn(openai_backend.BASE_URL_VARIABLE, str(caught.exception))
+
+    def test_will_not_start_without_the_key_every_backend_reads(self):
+        module, _ = self.openai()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in (transport.KEY_VARIABLE, "CURSOR_API_KEY"):
+                os.environ.pop(name, None)
+            with self.assertRaises(transport.TransportError) as caught:
+                self.ask(module)
+        self.assertFalse(caught.exception.started)
+        self.assertIn(transport.KEY_VARIABLE, str(caught.exception))
+
+    def test_tells_a_gateway_it_cannot_reach_from_a_run_that_failed(self):
+        # The two are fixed in different places, so they are reported apart.
+        for raises, started in (("APIConnectionError", False), ("AuthenticationError", False),
+                                ("NotFoundError", False), ("OpenAIError", True)):
+            with self.subTest(raises=raises):
+                module, _ = self.openai(raises=raises)
+                with self.assertRaises(transport.TransportError) as caught:
+                    self.ask(module)
+                self.assertEqual(caught.exception.started, started)
+
+    def test_counts_an_empty_reply_as_a_run_that_failed(self):
+        module, _ = self.openai(reply="  ")
+        with self.assertRaises(transport.TransportError) as caught:
+            self.ask(module)
+        self.assertTrue(caught.exception.started)
+
+    def test_records_a_latency_breakdown_the_transcript_can_print(self):
+        module, _ = self.openai()
+        _, session = self.ask(module)
+        timing = session["lastTransportTiming"]
+        self.assertEqual(timing["responseId"], "chatcmpl-1")
+        self.assertFalse(timing["resumed"])
+        self.assertEqual(timing["responseChars"], len(self.REPLY))
 
 
 if __name__ == "__main__":

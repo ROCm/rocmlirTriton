@@ -2659,9 +2659,10 @@ def parse_arguments(args=None) -> argparse.Namespace:
     llm_group.add_argument("--llm-model",
                            default=None,
                            metavar="MODEL",
-                           help="Which model proposes the configs, named as `cursor-agent "
-                           "--model` names them, optionally followed by `:name=value` "
-                           "parameters of that model (`gpt-5.4-nano:reasoning=none`).")
+                           help="Which model proposes the configs, named as the endpoint behind "
+                           "$ROCMLIR_LLM_TRANSPORT names it, optionally followed by "
+                           "`:name=value` parameters of that model "
+                           "(`gpt-oss-20b:reasoning_effort=low`).")
     llm_group.add_argument("--llm-rounds",
                            type=int,
                            default=None,

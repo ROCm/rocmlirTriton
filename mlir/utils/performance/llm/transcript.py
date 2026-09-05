@@ -181,7 +181,7 @@ class Transcript:
             self._heading("latency breakdown"),
             f"SDK import: {milliseconds('sdkImportMs')}",
             f"Options: {milliseconds('optionsMs')}",
-            f"Agent {'resume' if measurements.get('resumed') else 'create'}: "
+            f"Conversation {'resume' if measurements.get('resumed') else 'create'}: "
             f"{milliseconds('agentOpenMs')}",
             f"Send: {milliseconds('sendMs')}",
             f"First text after send: {milliseconds('firstTextMs')}",
@@ -189,8 +189,13 @@ class Transcript:
             f"Total transport: {milliseconds('totalMs')}",
             f"Prompt: {measurements.get('promptChars', 0)} chars; "
             f"response: {measurements.get('responseChars', 0)} chars",
-            f"Agent: {measurements.get('agentId', '?')}; run: "
-            f"{measurements.get('runId', '?')}",
+            # Whichever of these the backend has: a cursor round is an agent
+            # and a run, an OpenAI-compatible one is a single response.
+            "; ".join(f"{label}: {measurements[key]}" for label, key in (
+                ("Agent", "agentId"),
+                ("Run", "runId"),
+                ("Response", "responseId"),
+            ) if measurements.get(key)) or "(the backend named no run)",
         )
 
     def configs(self, configs: Sequence[str]) -> None:
