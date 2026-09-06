@@ -437,8 +437,8 @@ bool bufferKnobsAgree(int64_t useBufferOps, int64_t useBufferAtomics) {
   return !(useBufferOps == 0 && useBufferAtomics == 1);
 }
 
-// Flags which parameters are knobs, so that `valuesAreAdmissible` can hold them
-// to what is legal rather than to what is worth exploring.
+// Flags which parameters are knobs, so that `firstInadmissibleValue` can hold
+// them to what is legal rather than to what is worth exploring.
 SmallVector<bool> findKnobParams(RockTuningParamAttrInterface exemplar) {
   SmallVector<StringRef> names;
   exemplar.getParamNames(names);
@@ -501,88 +501,90 @@ auto refuseWith(FeasibilityCheck *refusedOn) {
   };
 }
 
-// Whether every value is one its parameter may legally hold. Deliberately
-// weaker than "on the axis the search explores": a knob may also be
-// `kKnobDefault`, which is how every config the tuning space and the quick list
-// hand out spells its knobs, and a search has to recognise such a config to be
-// able to start from it and walk onto the axes. Necessary for membership but
-// not sufficient, since the axes of the interdependent parameters hold the
-// union of their values over the space; each subclass narrows this further.
-bool valuesAreAdmissible(ArrayRef<std::vector<int64_t>> axes,
-                         ArrayRef<bool> knobParams, ArrayRef<int64_t> values) {
-  if (values.size() != axes.size())
-    return false;
-  for (auto [axis, isKnob, value] : llvm::zip_equal(axes, knobParams, values)) {
-    bool legal =
-        (isKnob && value == kKnobDefault) || llvm::is_contained(axis, value);
-    if (!legal)
-      return false;
+// What a tile may hold: any positive number of rows, columns or contracted
+// elements, and a power of two where the kernel is one
+// `rock-decompose-nonpow2-tiles` does not reach.
+//
+// The floor is one rather than the 16 the ladders start at. A tile below 16
+// wastes most of a matrix instruction and no enumerator offers one, but a
+// problem with an M of 1 is a problem where a tile of 1 is what
+// `computeDPerBlock` itself picks, so the floor cannot be higher than that.
+//
+// Whether a power of two is needed is asked per tile and not once per kernel:
+// only a scaled GEMM needs one in M and N, while every GEMM on an arch without
+// `supportsNonPow2KPerBlock` needs one in K.
+TileBounds makeTileBounds(bool requirePow2) {
+  return {/*lo=*/1, /*pow2Only=*/requirePow2};
+}
+
+// Whether every value a search will walk onto is a value `isFeasible` accepts,
+// which is what makes the bounds a widening of the axes rather than a second
+// opinion about them. Asserted at construction: a ladder that fell outside its
+// bounds would have the enumerated search proposing configs the LLM search is
+// told are illegal, and the two would disagree about the same kernel.
+bool axesAreWithinBounds(ArrayRef<std::vector<int64_t>> axes,
+                         ArrayRef<std::optional<TileBounds>> tileBounds) {
+  for (auto [axis, bounds] : llvm::zip_equal(axes, tileBounds)) {
+    if (!bounds)
+      continue;
+    for (int64_t value : axis)
+      if (!bounds->admits(value))
+        return false;
   }
   return true;
 }
 
-// Widens `axes` until every config the quick list spells is on them.
-//
-// The quick list is part of the space these axes describe: `Full` and
-// `Exhaustive` both fall through to `createGemmTuningRangeQuick`, so its
-// configs are enumerated and benchmarked like any other. The ladders here are
-// built from `getRangeGemm` alone, though, and that is shaped by the problem
-// while the quick list is a fixed table distilled from sweeps. Where the two
-// disagree -- an M of 1, whose `computeDPerBlock` collapses to a single tile of
-// 1 while the list still proposes its 64 -- the axes end up not holding a value
-// the space offers.
-//
-// Which matters most for the one config a search starts from. `LLMSearch` takes
-// the list's first config as the default it writes every prompt around and
-// completes every sparse proposal against, so an off-axis default is a default
-// `isFeasible` refuses: in one 938-problem run, 231 problems showed a default
-// naming a value its own axis lacked, and those problems lost 27% of their
-// proposals to `NotOnAxis` against 1% everywhere else.
-//
-// So the axes widen to the space rather than the space narrowing to the axes.
-// The alternative -- moving the shown default onto the axes -- answers a
-// question nobody asked: the heuristic's config is the one measured thing here,
-// and a search told to start somewhere else starts worse.
-//
-// Knobs are left alone. Their axes hold 0 and 1 while every config the list
-// hands out spells `kKnobDefault`, which `valuesAreAdmissible` accepts without
-// listing, deliberately (see `TuningParamAxes::getKnobParams`).
-void admitQuickConfigs(Operation *op, ArrayRef<bool> knobParams,
-                       std::vector<std::vector<int64_t>> &axes) {
-  auto mod = op->getParentOfType<ModuleOp>();
-  if (!mod)
-    return;
-  std::unique_ptr<TuningParamSet> quick(
-      createTunableParamSpace(mod, TuningParamSetKind::Quick));
-  if (!quick)
-    return;
+// Orders the tile bounds as `orderAxes` orders the axes, so that a parameter's
+// bounds sit at the index its values do. Every parameter `byKey` does not name
+// is one whose axis says all there is to say about it.
+std::vector<std::optional<TileBounds>>
+orderTileBounds(RockTuningParamAttrInterface exemplar,
+                const llvm::StringMap<TileBounds> &byKey) {
+  SmallVector<StringRef> names;
+  exemplar.getParamNames(names);
 
-  SmallVector<int64_t> values;
-  for (const PerfConfigString &perfConfig : quick->tuningRange) {
-    RockTuningParamAttrInterface params =
-        parsePerfConfig(op->getContext(), perfConfig);
-    if (!params)
-      continue;
-    values.clear();
-    params.getParamValues(values);
-    if (values.size() != axes.size())
-      continue;
-    for (auto [axis, isKnob, value] :
-         llvm::zip_equal(axes, knobParams, values)) {
-      if (isKnob)
-        continue;
-      // Every axis is built in ascending order, and stays that way: a prompt
-      // reads them, and a ladder that jumped would read as a mistake. Asserted
-      // because the search below is how the value's place is found, and it
-      // would answer an unsorted axis with a duplicate or a value out of order
-      // rather than with a failure.
-      assert(llvm::is_sorted(axis) &&
-             "an axis is read, and searched, in order");
-      auto at = llvm::lower_bound(axis, value);
-      if (at == axis.end() || *at != value)
-        axis.insert(at, value);
-    }
+  std::vector<std::optional<TileBounds>> bounds;
+  bounds.reserve(names.size());
+  for (StringRef name : names) {
+    auto it = byKey.find(name);
+    bounds.push_back(it == byKey.end() ? std::nullopt
+                                       : std::optional<TileBounds>(it->second));
   }
+  assert(llvm::all_of(
+             byKey.keys(),
+             [&](StringRef key) { return llvm::is_contained(names, key); }) &&
+         "bounds were given for something that is not a parameter");
+  return bounds;
+}
+
+// Whether every value is one its parameter may legally hold, and if not, which
+// check to blame. Deliberately weaker than "on the axis the search explores",
+// in the two ways the axes understate what a kernel accepts: a tile has to be
+// within its bounds and nothing more (see `TileBounds`), and a knob may also be
+// `kKnobDefault`, which is how every config the tuning space and the quick list
+// hand out spells its knobs. A search has to recognise such a config to be able
+// to start from it and walk onto the axes.
+//
+// Necessary for membership but not sufficient, since the axes of the
+// interdependent parameters hold the union of their values over the space and
+// no tile is legal in every combination; each subclass narrows this further.
+std::optional<FeasibilityCheck>
+firstInadmissibleValue(ArrayRef<std::vector<int64_t>> axes,
+                       ArrayRef<std::optional<TileBounds>> tileBounds,
+                       ArrayRef<bool> knobParams, ArrayRef<int64_t> values) {
+  if (values.size() != axes.size())
+    return FeasibilityCheck::MalformedConfig;
+  for (auto [axis, bounds, isKnob, value] :
+       llvm::zip_equal(axes, tileBounds, knobParams, values)) {
+    if (bounds) {
+      if (!bounds->admits(value))
+        return FeasibilityCheck::IllegalTile;
+      continue;
+    }
+    if (!((isKnob && value == kKnobDefault) || llvm::is_contained(axis, value)))
+      return FeasibilityCheck::NotOnAxis;
+  }
+  return std::nullopt;
 }
 
 class GemmParamAxes : public TuningParamAxes {
@@ -657,10 +659,19 @@ public:
     exemplar = makeExemplar(gemmOp.getContext(), byKey);
     axes = orderAxes(exemplar, byKey);
     knobParams = findKnobParams(exemplar);
-    admitQuickConfigs(gemmOp, knobParams, axes);
+    tileBounds = orderTileBounds(
+        exemplar, {{"mPerBlock", makeTileBounds(requirePow2.mn)},
+                   {"nPerBlock", makeTileBounds(requirePow2.mn)},
+                   {"kPerBlock", makeTileBounds(requirePow2.k)}});
+    assert(axesAreWithinBounds(axes, tileBounds) &&
+           "a tile ladder left the interval its own kernel accepts");
   }
 
   ArrayRef<std::vector<int64_t>> getAxes() const override { return axes; }
+
+  ArrayRef<std::optional<TileBounds>> getTileBounds() const override {
+    return tileBounds;
+  }
 
   void getParamNames(SmallVectorImpl<StringRef> &names) const override {
     exemplar.getParamNames(names);
@@ -682,8 +693,9 @@ public:
                   FeasibilityCheck *refusedOn) const override {
     auto refuse = refuseWith(refusedOn);
 
-    if (!valuesAreAdmissible(axes, knobParams, values))
-      return refuse(FeasibilityCheck::NotOnAxis);
+    if (auto inadmissible =
+            firstInadmissibleValue(axes, tileBounds, knobParams, values))
+      return refuse(*inadmissible);
     auto params =
         dyn_cast_or_null<GemmParamsAttr>(exemplar.cloneWithParamValues(values));
     if (!params)
@@ -778,10 +790,12 @@ private:
   // are too costly to compile to be worth a trial.
   bool isNonAccel;
   RockTuningParamAttrInterface exemplar;
-  // What to explore, and which of its parameters are knobs, whose legal values
-  // are wider than that; see `valuesAreAdmissible`.
+  // What to explore, which of its parameters are knobs and which are tiles,
+  // both of whose legal values are wider than the axis; see
+  // `firstInadmissibleValue`.
   std::vector<std::vector<int64_t>> axes;
   SmallVector<bool> knobParams;
+  std::vector<std::optional<TileBounds>> tileBounds;
 };
 
 class GemmGemmParamAxes : public TuningParamAxes {
@@ -830,10 +844,33 @@ public:
     exemplar = makeExemplar(gemmGemmOp.getContext(), byKey);
     axes = orderAxes(exemplar, byKey);
     knobParams = findKnobParams(exemplar);
-    admitQuickConfigs(gemmGemmOp, knobParams, axes);
+    // `affixTuningParametersImpl` validates an attention config with
+    // `requirePow2MN` and `requirePow2K` both set, so every tile here is a
+    // power of two whatever the arch: the decomposition pass this kernel would
+    // need does not run on it.
+    tileBounds = orderTileBounds(
+        exemplar, {{"mPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
+                   {"nPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
+                   {"kPerBlock", makeTileBounds(/*requirePow2=*/true)},
+                   // Zero is gemm1 untiled, which is why the floor is zero and
+                   // not one; `validateNPerBlockG1` takes that or a power of
+                   // two. `nPerBlockG1Values` stops offering tiles at the
+                   // padded head dim, since one that wide describes the kernel
+                   // zero already names and is not worth a second benchmark,
+                   // but `getGemm1Params` hands a wider one to gemm1 as its N
+                   // tile like any other and the kernel pads. The quick list is
+                   // looked up by arch and type alone, so it names one on every
+                   // short head dim.
+                   {"nPerBlockG1", {/*lo=*/0, /*pow2Only=*/true}}});
+    assert(axesAreWithinBounds(axes, tileBounds) &&
+           "a tile ladder left the interval its own kernel accepts");
   }
 
   ArrayRef<std::vector<int64_t>> getAxes() const override { return axes; }
+
+  ArrayRef<std::optional<TileBounds>> getTileBounds() const override {
+    return tileBounds;
+  }
 
   void getParamNames(SmallVectorImpl<StringRef> &names) const override {
     exemplar.getParamNames(names);
@@ -855,8 +892,9 @@ public:
                   FeasibilityCheck *refusedOn) const override {
     auto refuse = refuseWith(refusedOn);
 
-    if (!valuesAreAdmissible(axes, knobParams, values))
-      return refuse(FeasibilityCheck::NotOnAxis);
+    if (auto inadmissible =
+            firstInadmissibleValue(axes, tileBounds, knobParams, values))
+      return refuse(*inadmissible);
     auto params = dyn_cast_or_null<GemmGemmParamsAttr>(
         exemplar.cloneWithParamValues(values));
     if (!params)
@@ -912,10 +950,12 @@ private:
   // The head-dim width gemm1 processes when `nPerBlockG1` is zero.
   uint32_t gemm1NUntiled;
   RockTuningParamAttrInterface exemplar;
-  // What to explore, and which of its parameters are knobs, whose legal values
-  // are wider than that; see `valuesAreAdmissible`.
+  // What to explore, which of its parameters are knobs and which are tiles,
+  // both of whose legal values are wider than the axis; see
+  // `firstInadmissibleValue`.
   std::vector<std::vector<int64_t>> axes;
   SmallVector<bool> knobParams;
+  std::vector<std::optional<TileBounds>> tileBounds;
 };
 
 } // namespace
@@ -1037,6 +1077,8 @@ StringRef mlir::rock::getFeasibilityCheckName(FeasibilityCheck check) {
     return "notPerformant";
   case FeasibilityCheck::OverwideNonAccelMNPair:
     return "overwideNonAccelMNPair";
+  case FeasibilityCheck::IllegalTile:
+    return "illegalTile";
   }
   llvm_unreachable("unhandled feasibility check");
 }

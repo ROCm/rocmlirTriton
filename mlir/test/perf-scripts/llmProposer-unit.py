@@ -87,6 +87,25 @@ class TestResponseParsing(unittest.TestCase):
             "useAsyncCopy": 0,
         }])
 
+    def test_keeps_the_split_and_the_pipeline_depth_apart(self):
+        # The two the model confused when they were `s` and `d`.
+        space = {**SPACE, "splitKFactor": [1, 2, 4], "numStages": [1, 2, 3]}
+        self.assertEqual(
+            configs.parse_response_configs('{"configs":[{"sk":4,"st":3}]}', space=space), [{
+                "splitKFactor": 4,
+                "numStages": 3
+            }])
+
+    def test_drops_a_retired_alias_rather_than_reading_it_as_the_wrong_field(self):
+        # `s` no longer names anything. Dropping the field leaves a config the
+        # model half-meant; reading it as either of the two it used to be
+        # confused with would benchmark something nobody proposed.
+        space = {**SPACE, "splitKFactor": [1, 2, 4], "numStages": [1, 2, 3]}
+        self.assertEqual(
+            configs.parse_response_configs('{"configs":[{"m":64,"s":3}]}', space=space), [{
+                "mPerBlock": 64
+            }])
+
     def test_reads_a_bare_list(self):
         # A model told to answer with configs sometimes answers with configs
         # rather than with an object holding them.
@@ -342,6 +361,21 @@ class TestSpaceRendering(unittest.TestCase):
             self.assertIn(name, rendered)
         self.assertIn("default 4", rendered)
 
+    def test_spells_the_two_schedule_parameters_unambiguously(self):
+        # `s` and `d` read as stages to the model: it annotated `s` as "more
+        # stages" and "stages 6" through whole replies, and once caught itself
+        # mid-sentence ("but d3 = stages, okay"). A config meant as a deeper
+        # pipeline that arrives as a three-way split of the contraction is not
+        # a config anybody proposed.
+        rendered = configs.render_response_aliases({
+            **SPACE, "splitKFactor": [1, 2, 4],
+            "numStages": [1, 2, 3]
+        })
+        self.assertIn("sk=splitKFactor", rendered)
+        self.assertIn("st=numStages", rendered)
+        self.assertNotIn("s=splitKFactor", rendered)
+        self.assertNotIn("d=numStages", rendered)
+
     def test_offers_an_alias_for_every_parameter_that_can_move(self):
         rendered = configs.render_response_aliases(SPACE)
         for alias in ("m=mPerBlock", "n=nPerBlock", "p=kpack", "ac=useAsyncCopy"):
@@ -365,6 +399,82 @@ class TestSpaceRendering(unittest.TestCase):
         rendered = configs.render_response_aliases({**SPACE, "mPerBlock": [64], "kpack": [1]})
         self.assertIn("m=mPerBlock", rendered)
         self.assertNotIn("kpack", rendered)
+
+
+class TestTileBounds(unittest.TestCase):
+    """The tiles, which are described by a rule and not by their ladder.
+
+    C++ sends both: the ladder is what the enumerated search walks, shaped by
+    the problem's own dimensions, and the bounds are what a kernel will accept,
+    which is far wider (`TileBounds` in RockTuning.h). Everything here is about
+    reading the second one out loud instead of the first, since a model held to
+    a ladder proposes off it and is refused for naming a tile that compiles.
+    """
+
+    ANY = {"min": 1, "pow2Only": False}
+    POW2 = {"min": 1, "pow2Only": True}
+    UNTILED_OR_POW2 = {"min": 0, "pow2Only": True}
+
+    def test_describes_a_tile_by_its_floor(self):
+        self.assertEqual(configs.render_bounds(self.ANY), "any integer 1 or more")
+
+    def test_says_when_a_tile_has_to_be_a_power_of_two(self):
+        # A scaled GEMM in M and N, and any GEMM on gfx950 in K: the kernels
+        # `rock-decompose-nonpow2-tiles` does not reach, where a tile between
+        # the powers of two is refused by `validatePerfConfig` itself.
+        self.assertEqual(configs.render_bounds(self.POW2), "a power of two, 1 or more")
+
+    def test_spells_the_untiled_second_gemm_as_its_own_value(self):
+        # nPerBlockG1's zero is not a tile of no columns, it is gemm1 untiled.
+        self.assertEqual(configs.render_bounds(self.UNTILED_OR_POW2),
+                         "0, or a power of two, 1 or more")
+
+    def test_names_no_ceiling(self):
+        # There is none to name. A tile is stopped by the LDS it needs or by
+        # Triton's cap on one tensor, both of them facts about the whole
+        # config; the quick tuning list itself spells a kPerBlock of 2048.
+        for bound in (self.ANY, self.POW2, self.UNTILED_OR_POW2):
+            rendered = configs.render_bounds(bound)
+            self.assertNotIn("to ", rendered)
+            self.assertNotIn("most", rendered)
+
+    def test_describes_a_bounded_tile_by_its_rule_and_not_its_ladder(self):
+        rendered = configs.render_space(SPACE, DEFAULT_CONFIG, {"mPerBlock": self.ANY})
+        self.assertIn("mPerBlock: any integer 1 or more   (default 32)", rendered)
+        # Its neighbour has no bounds and so is still enumerated.
+        self.assertIn("nPerBlock: [1, 2, 4, 8, 16, 32*, 48, 64]", rendered)
+
+    def test_describes_a_tile_the_problem_pinned_to_one_rung(self):
+        # The shape the whole split is for: an M of 1 collapses
+        # `computeDPerBlock` to a single tile, and the ladder says so honestly.
+        # What must not reach the model is "fixed at 1", which is a claim about
+        # the kernel and is false -- every wider tile builds and only pads.
+        rendered = configs.render_space({
+            **SPACE, "mPerBlock": [1]
+        }, DEFAULT_CONFIG, {"mPerBlock": self.ANY})
+        self.assertIn("mPerBlock: any integer 1 or more", rendered)
+        self.assertNotIn("fixed at 1", rendered)
+
+    def test_admits_a_tile_between_the_rungs(self):
+        self.assertTrue(configs.space_admits(SPACE, {"mPerBlock": self.ANY}, "mPerBlock", 33))
+        self.assertFalse(configs.space_admits(SPACE, {}, "mPerBlock", 33))
+
+    def test_admits_a_tile_past_the_top_of_the_ladder(self):
+        self.assertTrue(configs.space_admits(SPACE, {"kPerBlock": self.ANY}, "kPerBlock", 2048))
+
+    def test_refuses_a_tile_of_nothing(self):
+        self.assertFalse(configs.space_admits(SPACE, {"mPerBlock": self.ANY}, "mPerBlock", 0))
+        self.assertFalse(configs.space_admits(SPACE, {"mPerBlock": self.ANY}, "mPerBlock", -8))
+
+    def test_refuses_a_non_power_of_two_where_the_kernel_needs_one(self):
+        self.assertFalse(configs.space_admits(SPACE, {"kPerBlock": self.POW2}, "kPerBlock", 48))
+        self.assertTrue(configs.space_admits(SPACE, {"kPerBlock": self.POW2}, "kPerBlock", 64))
+
+    def test_holds_a_parameter_without_bounds_to_its_ladder(self):
+        # Most of them: `numWaves` off its ladder is a workgroup no kernel has,
+        # and there is no interval around it to fall into.
+        self.assertFalse(configs.space_admits(SPACE, {"mPerBlock": self.ANY}, "kpack", 3))
+        self.assertTrue(configs.space_admits(SPACE, {"mPerBlock": self.ANY}, "kpack", 4))
 
 
 class TestFeedback(unittest.TestCase):
@@ -701,17 +811,34 @@ class TestWorkloadDescription(unittest.TestCase):
         self.assertIn("filter=GKCZYX input=NGCDHW", text)
         self.assertIn("ZYX the filter window and DHW the image", text)
 
+    def test_says_a_chip_has_no_matrix_instructions_in_words(self):
+        # `getNameForMatrixAccelKind` spells it "None", which in the middle of
+        # a semicolon-separated line reads as a field nobody filled in. It is
+        # the answer on every f32 problem on gfx1100, and the condition under
+        # which the prompt's talk of matrix instructions does not apply.
+        text = workload.summarize_hardware_for_prompt({**self.HARDWARE, "accelKind": "None"})
+        self.assertIn("no matrix instructions", text)
+        self.assertNotIn("; None;", text)
+
+    def test_keeps_the_matrix_instruction_name_where_there_is_one(self):
+        self.assertIn("MFMA", workload.summarize_hardware_for_prompt(self.HARDWARE))
+
     def test_compact_hardware_summary_keeps_budgets(self):
         text = workload.summarize_hardware_for_prompt(self.HARDWARE)
         for expected in ("gfx942", "304 CUs", "LDS=", "VGPR/EU=", "max kpack="):
             self.assertIn(expected, text)
 
-    def test_says_the_grid_group_size_default_is_a_heuristic_and_reachable(self):
+    def test_says_the_grid_group_size_default_is_a_heuristic_without_naming_it(self):
         # "gridGroupSize=0 selects 7" read as a fact about 0 rather than as one
         # about 7, and a model spent three configs of a run asking for 7.
+        # Saying "asking for 7 changes nothing" did not help either: across a
+        # 938-problem sweep, 7 became two thirds of every grouping the model
+        # asked for. The number is the anchor, so the number is gone and
+        # `without_no_op_values` takes the rung with it.
         text = workload.summarize_hardware_for_prompt({**self.HARDWARE, "defaultGridGroupSize": 7})
         self.assertIn("not ungrouped", text)
-        self.assertIn("a heuristic picks 7, and asking for that value changes nothing", text)
+        self.assertIn("left off the list", text)
+        self.assertNotIn("7", text.split("gridGroupSize=0")[1])
 
     def hints(self, problem):
         return "\n".join(workload.compute_workload_hints(problem, self.HARDWARE))
@@ -734,6 +861,30 @@ class TestWorkloadDescription(unittest.TestCase):
     def test_reads_a_skinny_gemm_as_one(self):
         skinny = {**self.GEMM, "gemmSize": {"g": 1, "m": 64, "n": 64, "k": 65536}}
         self.assertIn("splitKFactor", self.hints(skinny))
+
+    def test_counts_the_grid_once_per_group(self):
+        # The whole M x N tiling runs once per group, so a grouped problem's
+        # grid is G times a plain one's. Left out, a G=256 M=1 N=400 grouped
+        # convolution read as 7 workgroups against 48 CUs and was told to
+        # reach for splitKFactor to fill a machine it oversubscribed 37 times
+        # over -- which it duly did, in most of its proposals.
+        grouped = {**self.CONV, "gemmSize": {"g": 256, "m": 1, "n": 400, "k": 9}}
+        hints = self.hints(grouped)
+        self.assertIn("1792 workgroups", hints)
+        self.assertIn("G=256 times the M and N tiles", hints)
+        self.assertIn("fills all 304 CUs", hints)
+        self.assertNotIn("cannot fill the machine", hints)
+
+    def test_leaves_an_ungrouped_grid_unmultiplied(self):
+        # G of 1 says nothing worth a parenthesis.
+        hints = self.hints(self.GEMM)
+        self.assertIn("256 workgroups", hints)
+        self.assertNotIn("times the M and N tiles", hints)
+
+    def test_still_reads_a_grouped_problem_too_small_to_fill_the_machine(self):
+        # Multiplying by G is not the same as assuming G rescues every grid.
+        tiny = {**self.CONV, "gemmSize": {"g": 2, "m": 16, "n": 16, "k": 64}}
+        self.assertIn("only 2 workgroups", self.hints(tiny))
 
     def test_hints_at_the_k_tiles_a_channels_first_conv_wants(self):
         # K is 1152 = 128 channels x a 3x3 filter, so the tiles that keep the
@@ -879,6 +1030,100 @@ class TestWorkloadDescription(unittest.TestCase):
 
     def test_says_nothing_of_bf16x3_where_the_arch_does_not_prefer_it(self):
         self.assertNotIn("useBf16x3ForF32", workload.describe_hardware(self.HARDWARE))
+
+
+class TestNoOpValues(unittest.TestCase):
+    """The rungs that rebuild a kernel the space already has.
+
+    The prompt used to argue against these in prose, and the arguing is what
+    made the model reach for them: naming a value is what makes it salient. A
+    rung that is not shown cannot be spent.
+    """
+
+    HARDWARE = {
+        "defaultAsyncCopy": False,
+        "defaultBlockPingpong": False,
+        "defaultInThreadTranspose": False,
+        "defaultGridGroupSize": 7,
+    }
+    SPACE = {
+        "mPerBlock": [16, 32, 64],
+        "gridGroupSize": [0, 1, 7, 8],
+        "useBufferOps": [-1, 0, 1],
+        "useBufferAtomics": [-1, 0, 1],
+        "useInThreadTranspose": [-1, 0, 1],
+        "useOptimizeEpilogue": [-1, 0, 1],
+    }
+    DEFAULTS = {
+        "mPerBlock": 32,
+        "gridGroupSize": 0,
+        "useBufferOps": -1,
+        "useBufferAtomics": -1,
+        "useInThreadTranspose": -1,
+        "useOptimizeEpilogue": -1,
+    }
+
+    def pruned(self, problem=None, hardware=None, space=None):
+        return workload.without_no_op_values(problem if problem is not None else {"outType": "f32"},
+                                             {
+                                                 **self.HARDWARE,
+                                                 **(hardware or {})
+                                             }, space or self.SPACE, self.DEFAULTS)
+
+    def test_drops_the_value_minus_one_already_builds(self):
+        # -1 resolves to on for both of these with no architecture or shape in
+        # it, so an explicit 1 compiles the kernel -1 compiles.
+        pruned = self.pruned()
+        self.assertEqual(pruned["useBufferOps"], [-1, 0])
+        self.assertEqual(pruned["useBufferAtomics"], [-1, 0])
+
+    def test_drops_the_explicit_value_a_knob_resolves_to_off(self):
+        # The same rule the other way round: where the prompt prints "-1
+        # resolves to off", 0 is the rung that measures nothing.
+        self.assertEqual(self.pruned()["useInThreadTranspose"], [-1, 1])
+
+    def test_keeps_both_sides_where_the_resolution_is_on(self):
+        pruned = self.pruned(hardware={"defaultInThreadTranspose": True})
+        self.assertEqual(pruned["useInThreadTranspose"], [-1, 0])
+
+    def test_drops_the_number_the_grid_heuristic_would_have_picked(self):
+        self.assertEqual(self.pruned()["gridGroupSize"], [0, 1, 8])
+
+    def test_keeps_the_epilogue_knob_where_the_output_is_16_bits_wide(self):
+        # -1 declines to bypass registers only on a 16-bit store, so that is
+        # the one output width where an explicit 1 is a real change.
+        self.assertEqual(self.pruned({"outType": "f16"})["useOptimizeEpilogue"], [-1, 0, 1])
+        self.assertEqual(self.pruned({"outType": "bf16"})["useOptimizeEpilogue"], [-1, 0, 1])
+
+    def test_drops_the_epilogue_knob_on_any_other_width(self):
+        self.assertEqual(self.pruned({"outType": "f32"})["useOptimizeEpilogue"], [-1, 0])
+        self.assertEqual(self.pruned({"outType": "i8"})["useOptimizeEpilogue"], [-1, 0])
+
+    def test_keeps_a_width_it_cannot_read_as_a_real_choice(self):
+        # Guessing at an unfamiliar type would take away a rung that works.
+        self.assertEqual(
+            self.pruned({"outType": "somethingNew"})["useOptimizeEpilogue"], [-1, 0, 1])
+
+    def test_falls_back_to_the_c_type_where_there_is_no_out_type(self):
+        self.assertEqual(self.pruned({"cType": "f16"})["useOptimizeEpilogue"], [-1, 0, 1])
+
+    def test_leaves_a_parameter_it_knows_nothing_about_alone(self):
+        self.assertEqual(self.pruned()["mPerBlock"], [16, 32, 64])
+
+    def test_never_drops_a_parameter_s_own_default(self):
+        # A default the space does not offer is the contradiction this is
+        # meant to be avoiding, so it wins over every rule here.
+        pruned = workload.without_no_op_values({"outType": "f32"}, self.HARDWARE, self.SPACE, {
+            **self.DEFAULTS, "useBufferOps": 1
+        })
+        self.assertEqual(pruned["useBufferOps"], [-1, 0, 1])
+
+    def test_never_empties_a_ladder(self):
+        # A parameter pinned to its own no-op has nothing to choose, and an
+        # empty ladder would say something else entirely.
+        pruned = workload.without_no_op_values({"outType": "f32"}, self.HARDWARE,
+                                               {"useBufferOps": [1]}, {})
+        self.assertEqual(pruned["useBufferOps"], [1])
 
 
 class TestProblemDetailDescription(unittest.TestCase):
@@ -1125,7 +1370,7 @@ class TestSystemPromptGating(unittest.TestCase):
         # where it is about a config the model actually proposed.
         prompt = self.prompt()
         for check in ("exceedsTritonTensorCap", "wavesPerEURegisterBudget", "compileCostBudget",
-                      "ldsBlacklist", "notOnAxis"):
+                      "ldsBlacklist", "notOnAxis", "illegalTile"):
             self.assertNotIn(check, prompt)
 
     def test_names_the_block_tiles_the_way_this_kernel_spells_them(self):
@@ -1205,6 +1450,43 @@ class TestPromptConstruction(unittest.TestCase):
             self.assertIn(alias, prompt)
         self.assertIn('"m":64', prompt)
 
+    def test_the_first_round_gives_one_bound_on_how_many_fields_to_change(self):
+        # The output contract says "usually change 1-4 fields, at most 6" and
+        # the Search Strategy used to say "2-6 changed fields", so a one-field
+        # config obeyed one and broke the other. The model settled it by
+        # padding: getting on for half of every config it proposed restated a
+        # field at its own default.
+        prompt = proposer.build_prompt(self.request())
+        system = prompting.build_system_prompt(SPACE)
+        self.assertIn("usually change 1-4 fields, at most 6", system)
+        self.assertIn("usually 1-4 changed fields and never more than 6", prompt)
+        self.assertNotIn("2-6 changed fields", prompt)
+
+    def test_the_first_round_does_not_warn_about_a_rung_it_withheld(self):
+        # `without_no_op_values` takes the no-op out of the ladder, and the
+        # prose that argued against it has to go with it: naming the value is
+        # what got it proposed in the first place. The two are built by
+        # different calls, so both have to read the same narrowed space.
+        request = self.request(space={
+            **SPACE,
+            "useBufferOps": [-1, 0, 1],
+            "useBufferAtomics": [-1, 0, 1],
+            "useOptimizeEpilogue": [-1, 0, 1],
+        },
+                               problem={
+                                   **TestWorkloadDescription.GEMM, "outType": "f32"
+                               })
+        prompt = proposer.build_prompt(request)
+        system = prompting.build_system_prompt(proposer.shown_space(request))
+        self.assertIn("useBufferOps: [-1, 0]", prompt)
+        self.assertNotIn("an explicit 1 measures nothing", system)
+
+    def test_still_warns_about_a_rung_it_did_offer(self):
+        # The prose is gated on the ladder, not deleted: a caller that hands
+        # over an unnarrowed space gets the warning it needs.
+        system = prompting.build_system_prompt({**SPACE, "useBufferOps": [-1, 0, 1]})
+        self.assertIn("an explicit 1 measures nothing", system)
+
     def test_the_first_round_keeps_pinned_parameters_out_of_the_aliases(self):
         # The legend and the Configuration Space are three lines apart, so a
         # prompt that offers `p=kpack` above `kpack: fixed at 1` is arguing
@@ -1254,27 +1536,45 @@ class TestPromptConstruction(unittest.TestCase):
         self.assertIn('  - {"m":64,"n":48}', seeds)
         self.assertNotIn('"ac"', seeds)
 
-    def test_the_seeds_leave_out_what_this_problems_axes_refuse(self):
+    def test_the_seeds_leave_out_what_this_problem_refuses(self):
         # The quick list is checked in for no particular chip, so it can name a
-        # tile this problem's space does not carry: on one convolution four
-        # seeds asked for mPerBlock=256 where the axis stopped at 160, in a
-        # prompt that also calls the Configuration Space the authority. One run
-        # copied the 256 and another extrapolated to 192, and both were refused.
-        off_axis = max(SPACE["mPerBlock"]) * 2
+        # value this problem's space does not carry, in a prompt that also
+        # calls the Configuration Space the authority on legal values. A run
+        # that copies one has spent a proposal on a config `accept` refuses.
         prompt = proposer.build_prompt(
             self.request(seedConfigs=[
                 {
                     "mPerBlock": 48,
-                    "nPerBlock": 64
+                    "kpack": 2
                 },
                 {
-                    "mPerBlock": off_axis,
-                    "nPerBlock": 64
+                    "mPerBlock": 48,
+                    "kpack": 3
                 },
             ]))
         seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
-        self.assertIn('"m":48', seeds)
-        self.assertNotIn(str(off_axis), seeds)
+        self.assertIn('"p":2', seeds)
+        self.assertNotIn('"p":3', seeds)
+
+    def test_the_seeds_keep_a_tile_this_problems_ladder_skips(self):
+        # And the converse, which is most of why the tiles have bounds at all:
+        # the list is distilled from real runs and names tiles the enumerators
+        # never offer -- a kPerBlock of 2048 against a ladder that stops at 512
+        # -- while a small problem shrinks its own ladder to a rung or two. A
+        # seed dropped here is the heuristic's best guess withheld from the
+        # model on exactly the problems where it has least else to go on.
+        off_ladder = max(SPACE["mPerBlock"]) * 4
+        prompt = proposer.build_prompt(
+            self.request(bounds={"mPerBlock": {
+                "min": 1,
+                "pow2Only": False
+            }},
+                         seedConfigs=[{
+                             "mPerBlock": off_ladder,
+                             "nPerBlock": 64
+                         }]))
+        seeds = prompt.split("## Heuristic Seed Configs")[1].split("\n## ")[0]
+        self.assertIn(f'"m":{off_ladder}', seeds)
 
     def test_leaves_out_a_chip_limit_the_space_pins_anyway(self):
         # The chip's kpack ceiling and the kpack axis are computed from

@@ -45,11 +45,11 @@ from typing import Any, Dict
 # which has no package context at all.
 if __package__:
     from . import configs as config_utils
-    from . import feedback, prompting, transcript, transport
+    from . import feedback, prompting, transcript, transport, workload
 else:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from llm import configs as config_utils
-    from llm import feedback, prompting, transcript, transport
+    from llm import feedback, prompting, transcript, transport, workload
 
 
 def load_session(path: str) -> Dict[str, Any]:
@@ -82,11 +82,27 @@ def save_session(path: str, session: Dict[str, Any]) -> None:
         print(f"warning: could not write session {path}: {err}", file=sys.stderr)
 
 
+def shown_space(request: Dict[str, Any]) -> Dict[str, Any]:
+    """The space as the prompt puts it, with the no-op rungs taken out.
+
+    Every section that describes the space reads it through here -- the
+    ladders, the alias legend, the knob prose, the shape hints and the system
+    prompt -- because a prompt whose parts disagree about what is on offer is
+    worse than either version of it.
+
+    Only what is *shown* narrows. Replies are parsed against the request's own
+    space, so a model that names one of these anyway is still understood.
+    """
+    return workload.without_no_op_values(request.get("problem", {}), request.get("hardware", {}),
+                                         request.get("space", {}), request.get("defaultConfig", {}))
+
+
 def build_prompt(request: Dict[str, Any]) -> str:
     """The prompt for this round: the initial one, or a refinement."""
     default_config = request.get("defaultConfig", {})
     results = request.get("results", [])
     rejected = request.get("rejected", [])
+    request = {**request, "space": shown_space(request)}
 
     # Round 0 is the only one with nothing measured. Keyed on the results
     # rather than on the round number so that `--llm-wait-for-seeds`, which
@@ -160,7 +176,7 @@ def main(argv=None) -> int:
 
     log = transcript.Transcript(args.transcript, request)
     log.begin()
-    system_prompt = prompting.build_system_prompt(space)
+    system_prompt = prompting.build_system_prompt(shown_space(request))
 
     response: Dict[str, Any]
     started = time.monotonic()

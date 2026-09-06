@@ -237,7 +237,8 @@ std::set<std::vector<int64_t>> configsOf(MLIRContext &ctx,
 // space a search walks, which is the enumerated one, so the quick configs come
 // back out here and the comparisons below stay about the two views of the same
 // ranges. That a search can still start from a quick config is a separate
-// property, and `valuesAreAdmissible` rather than the axes is what carries it.
+// property, and `firstInadmissibleValue` rather than the axes is what carries
+// it.
 std::set<std::vector<int64_t>> enumerateSpace(MLIRContext &ctx, ModuleOp mod,
                                               TuningParamSetKind kind) {
   std::unique_ptr<TuningParamSet> space(createTunableParamSpace(mod, kind));
@@ -374,15 +375,19 @@ TEST(TuningParamAxesTest, AxesAcceptEnumerationGemmGemm) {
 // `computeDPerBlock` collapses to a single tile of 1 and the list still
 // proposes its 64.
 //
-// It is the search that cannot live with that. `LLMSearch` takes the list's
-// first config as the default it writes every prompt around and completes every
-// sparse proposal against, so a default the axes do not hold is a default
-// `isFeasible` refuses, and with it most of what the model proposes.
+// Both halves of the split are asked for here, on the one shape that separates
+// them. The ladder stays as narrow as the problem makes it, because a search
+// has no reason to spend a trial tiling a single row 64 wide. What the list
+// spells stays legal, because `LLMSearch` takes its first config as the default
+// it writes every prompt around and completes every sparse proposal against, so
+// a default `isFeasible` refuses costs most of what the model proposes: in one
+// 938-problem run, the 231 problems with such a default lost 27% of their
+// proposals against 1% everywhere else.
 //
-// Asked of `NotOnAxis` rather than of feasibility, since the checks past the
-// axes are about a config's combination of values and may well turn a
-// heuristic's guess down on a problem this thin.
-TEST(TuningParamAxesTest, AxesHoldWhatTheQuickListSpells) {
+// Asked of the two admissibility checks rather than of feasibility, since the
+// checks past them are about a config's combination of values and may well turn
+// a heuristic's guess down on a problem this thin.
+TEST(TuningParamAxesTest, AdmitsWhatTheQuickListSpells) {
   GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
                /*m=*/1, /*n=*/1024, /*k=*/1024, "gfx942");
   std::unique_ptr<TuningParamAxes> axes =
@@ -395,8 +400,8 @@ TEST(TuningParamAxesTest, AxesHoldWhatTheQuickListSpells) {
   ASSERT_FALSE(quickConfigs.empty());
 
   // The shape that makes this worth testing: an M the enumerator has no reason
-  // to offer more than the one tile for.
-  EXPECT_GT(axes->getAxes()[paramIndex(*axes, "mPerBlock")].size(), 1u);
+  // to offer more than the one tile for, and does not.
+  EXPECT_EQ(axes->getAxes()[paramIndex(*axes, "mPerBlock")].size(), 1u);
 
   for (const std::vector<int64_t> &config : quickConfigs) {
     FeasibilityCheck refusedOn;
@@ -406,6 +411,9 @@ TEST(TuningParamAxesTest, AxesHoldWhatTheQuickListSpells) {
     axes->serialize(config, spelled);
     EXPECT_NE(refusedOn, FeasibilityCheck::NotOnAxis)
         << "the axes lack a value the quick list spells: "
+        << std::string(spelled);
+    EXPECT_NE(refusedOn, FeasibilityCheck::IllegalTile)
+        << "a tile the quick list spells was called illegal: "
         << std::string(spelled);
   }
 }
@@ -1018,16 +1026,92 @@ TEST(TuningParamAxesTest, ReportsAValueThatIsNotOnItsAxis) {
       createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
   ASSERT_TRUE(axes);
 
-  const size_t mIdx = paramIndex(*axes, "mPerBlock");
   std::vector<int64_t> config(axes->getAxes().size());
   for (auto [value, axis] : llvm::zip_equal(config, axes->getAxes()))
     value = axis.front();
-  // 33 is on no tile ladder: they run 1, 2, 4, 8 and then multiples of 16.
-  config[mIdx] = 33;
+  // A workgroup of three waves is on no ladder and no kernel:
+  // `validateNumWaves` wants a power of two, and unlike a tile there is no
+  // interval around the ladder for it to fall into.
+  config[paramIndex(*axes, "numWaves")] = 3;
 
   FeasibilityCheck refusedOn = FeasibilityCheck::NotPerformant;
   EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
   EXPECT_EQ(refusedOn, FeasibilityCheck::NotOnAxis);
+}
+
+// The other side of that: a tile is refused on its own rule, not on its ladder,
+// so a value between two rungs is one the space admits and one far past the top
+// of the ladder is too. What makes the distinction worth drawing is that the
+// tiles are the parameters a config arriving from outside -- the quick list, a
+// model, a user -- most often names a value the enumerators had no reason to
+// offer, and what stops a wide tile is the LDS or the tensor cap it runs into
+// rather than the tile itself.
+TEST(TuningParamAxesTest, AdmitsTilesTheLaddersDoNotList) {
+  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
+               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
+  ASSERT_TRUE(axes);
+
+  const size_t mIdx = paramIndex(*axes, "mPerBlock");
+  std::vector<int64_t> config(axes->getAxes().size());
+  for (auto [value, axis] : llvm::zip_equal(config, axes->getAxes()))
+    value = axis.front();
+  ASSERT_TRUE(axes->isFeasible(config)) << "the smallest config is refused";
+
+  // 33 is on no tile ladder -- they run 1, 2, 4, 8 and then multiples of 16 --
+  // and is a kernel all the same: `validatePerfConfig` asks an f16 GEMM's M
+  // tile only to be positive, and `rock-decompose-nonpow2-tiles` builds it.
+  config[mIdx] = 33;
+  FeasibilityCheck refusedOn = FeasibilityCheck::NotPerformant;
+  EXPECT_TRUE(axes->isFeasible(config, &refusedOn))
+      << "a tile between the rungs was refused on "
+      << getFeasibilityCheckName(refusedOn);
+
+  // And one past the top of every ladder, which is where the quick tuning list
+  // puts its own K tiles: it spells `kPerBlock=2048` against a ladder that
+  // stops at `kMaxKPerBlock`. What stops a tile that wide is the LDS it asks
+  // for, so it is refused where it is too wide *for this config* and not for
+  // being past a number written down here.
+  config[mIdx] = 512;
+  EXPECT_TRUE(axes->isFeasible(config, &refusedOn))
+      << "a tile past the ladder was refused on "
+      << getFeasibilityCheckName(refusedOn);
+
+  // A tile of nothing at all is the one thing the rule does rule out, together
+  // with the negative values a config can be spelled with.
+  config[mIdx] = 0;
+  EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+  EXPECT_EQ(refusedOn, FeasibilityCheck::IllegalTile);
+  EXPECT_EQ(getFeasibilityCheckName(refusedOn), "illegalTile");
+}
+
+// Where the kernel cannot decompose a tile, the bounds have to say so, or the
+// widening would hand the backend configs `validatePerfConfig` refuses. gfx950
+// is the arch without `supportsNonPow2KPerBlock`, so a K tile there has to be a
+// power of two while the M and N tiles beside it still need not be: the
+// interval is the same one, and which of its values are on it is not.
+TEST(TuningParamAxesTest, RefusesNonPow2TilesWhereTheKernelNeedsPow2) {
+  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
+               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx950");
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
+  ASSERT_TRUE(axes);
+
+  std::vector<int64_t> config(axes->getAxes().size());
+  for (auto [value, axis] : llvm::zip_equal(config, axes->getAxes()))
+    value = axis.front();
+
+  config[paramIndex(*axes, "kPerBlock")] = 48;
+  FeasibilityCheck refusedOn = FeasibilityCheck::NotPerformant;
+  EXPECT_FALSE(axes->isFeasible(config, &refusedOn));
+  EXPECT_EQ(refusedOn, FeasibilityCheck::IllegalTile);
+
+  config[paramIndex(*axes, "kPerBlock")] = 64;
+  config[paramIndex(*axes, "mPerBlock")] = 48;
+  EXPECT_TRUE(axes->isFeasible(config, &refusedOn))
+      << "an M tile was held to K's rule, refused on "
+      << getFeasibilityCheckName(refusedOn);
 }
 
 // The enumerated FMA space drops M/N pairs this wide because they account for

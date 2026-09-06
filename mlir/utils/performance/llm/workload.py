@@ -19,6 +19,7 @@ LDS size, where upstream keys on SM count.
 
 from __future__ import annotations
 
+import re
 import textwrap
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -285,6 +286,20 @@ def _describe_masking(problem: Problem) -> List[str]:
     return lines
 
 
+def _accel_kind(hardware: Hardware) -> str:
+    """What the matrix hardware is, in words rather than in the enumerator's.
+
+    `getNameForMatrixAccelKind` spells the absence of a matrix unit "None",
+    which is an answer but does not read as one: dropped into a
+    semicolon-separated line it reads as a field nobody filled in. It is worth
+    saying properly, because it is the condition under which the rest of the
+    prompt's talk of matrix-instruction utilization does not apply -- gfx1100
+    has no f32 WMMA, so every f32 problem on it takes this path.
+    """
+    kind = hardware.get("accelKind")
+    return kind if kind and kind != "None" else "no matrix instructions (SIMD FMA)"
+
+
 def describe_hardware(hardware: Hardware) -> str:
     """The chip, named, and the budgets a config is spent out of."""
     line = "CDNA" if hardware.get("isCDNA") else "RDNA" if hardware.get("isRDNA") else "GCN"
@@ -292,7 +307,7 @@ def describe_hardware(hardware: Hardware) -> str:
         f"  Chip: {hardware.get('chip')} ({line}), full target {hardware.get('arch')}",
         f"  Compute units: {hardware.get('numCUs')} across "
         f"{hardware.get('numChiplets')} chiplet(s)",
-        f"  Matrix instructions: {hardware.get('accelKind')}, "
+        f"  Matrix instructions: {_accel_kind(hardware)}, "
         f"wave size {hardware.get('waveSize')}",
         f"  LDS per workgroup: {_si(hardware.get('ldsSize', 0))}",
         f"  VGPRs per EU: {hardware.get('vgprsPerEU')}, "
@@ -345,13 +360,15 @@ def describe_hardware(hardware: Hardware) -> str:
                       "for useBlockPingpong=1 in the same config to keep it."))
 
     if hardware.get("defaultGridGroupSize"):
+        # Same reason as the compact rendering: the number is what an explicit
+        # value competes with, and printing it is what got it proposed.
         lines.append(
-            _note(f"gridGroupSize=0 is not ungrouped: it hands the choice to the grid "
-                  f"layout, whose own heuristic works out to "
-                  f"{hardware['defaultGridGroupSize']} here, from the CUs per chiplet and "
-                  f"the ratio of output to input element width. That is the number an "
-                  f"explicit value is competing with, so 1 is a real change (no grouping) "
-                  f"and so is anything well above it."))
+            _note("gridGroupSize=0 is not ungrouped: it hands the choice to the grid "
+                  "layout, whose own heuristic reads the CUs per chiplet and the ratio "
+                  "of output to input element width. Its answer is left off the list of "
+                  "values, since asking for it competes with itself, so 1 is a real "
+                  "change (no grouping) and so is anything well above the middle of the "
+                  "list."))
 
     # Kept out of the list above, which is otherwise all things the chip can or
     # cannot do. This one is a claim about which of two kernels wins, and the
@@ -475,6 +492,82 @@ def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
     return "  Window: " + "; ".join(tagged) + (" (padding before, after)" if paired else "")
 
 
+def _element_bits(type_name: Optional[str]) -> Optional[int]:
+    """How wide an element type is, as its own name spells it.
+
+    None where the name carries no width, so that a type this does not know
+    is left alone rather than guessed at.
+    """
+    found = re.match(r"[A-Za-z]*?(\d+)", type_name or "")
+    return int(found.group(1)) if found else None
+
+
+def values_already_built(problem: Problem, hardware: Hardware) -> Dict[str, int]:
+    """Per parameter, the value that builds the kernel another value builds.
+
+    A tri-state knob set to whatever -1 resolves to here compiles the same
+    kernel that -1 compiles, and gridGroupSize set to the number its heuristic
+    would have picked lays out the same grid that 0 lays out. Naming one costs
+    a benchmark and measures nothing.
+
+    Read off this request rather than decided here: the resolutions are the
+    ones C++ sent and the prompt already prints under "What -1 resolves to
+    here", so this cannot claim a duplicate the rest of the prompt denies.
+    """
+    built: Dict[str, int] = {
+        # The only two with no architecture or shape in them: -1 is on, both
+        # here and in the pass that reads them.
+        "useBufferOps": 1,
+        "useBufferAtomics": 1,
+    }
+    for name, key in (("useAsyncCopy", "defaultAsyncCopy"),
+                      ("useBlockPingpong", "defaultBlockPingpong"), ("useInThreadTranspose",
+                                                                     "defaultInThreadTranspose")):
+        if key in hardware:
+            built[name] = 1 if hardware[key] else 0
+    # -1 declines to bypass registers only where the stored element is 16 bits
+    # wide. Anywhere else it agrees with 1, and an output whose width this
+    # cannot read is left as a real choice rather than guessed away.
+    bits = _element_bits(problem.get("outType") or problem.get("cType"))
+    if bits is not None and bits != 16:
+        built["useOptimizeEpilogue"] = 1
+    if hardware.get("defaultGridGroupSize"):
+        built["gridGroupSize"] = hardware["defaultGridGroupSize"]
+    return built
+
+
+def without_no_op_values(problem: Problem, hardware: Hardware, space: Space,
+                         default_config: Dict[str, int]) -> Space:
+    """The space with the values that rebuild an existing kernel taken out.
+
+    The prompt used to argue against these in prose -- "an explicit 1 measures
+    nothing" -- and the arguing is what made the model reach for them. Naming
+    a value is what makes it salient, so across one 938-problem sweep about
+    one proposal in fifteen went to a value the prompt had just called a
+    no-op, and gridGroupSize's heuristic value alone was two thirds of every
+    grouping the model asked for. A rung that is not shown cannot be spent,
+    which is cheaper than any wording.
+
+    This narrows what is *offered*, not what is legal: C++ still accepts every
+    one of these, so nothing here can turn a proposal into a refusal. A
+    parameter's own default is never dropped, whatever else is true of it,
+    since a default the space does not offer is the contradiction this is
+    supposed to be avoiding.
+    """
+    built = values_already_built(problem, hardware)
+    pruned: Space = {}
+    for name, values in space.items():
+        no_op = built.get(name)
+        if no_op is None or no_op == default_config.get(name):
+            pruned[name] = values
+            continue
+        kept = [value for value in values if value != no_op]
+        # An axis pinned to its own no-op is a parameter with nothing to
+        # choose, and an empty ladder would say something else entirely.
+        pruned[name] = kept or values
+    return pruned
+
+
 def summarize_problem_for_prompt(problem: Problem) -> str:
     """Render the problem facts once, leaving interpretation to the hints."""
     kernel = problem.get("kernelType", "unknown")
@@ -544,7 +637,7 @@ def summarize_hardware_for_prompt(hardware: Hardware, space: Optional[Space] = N
         f"  max kpack={hardware.get('maxKpack')}; "
     lines = [
         f"  {hardware.get('chip')} ({family}); {hardware.get('numCUs')} CUs/"
-        f"{hardware.get('numChiplets')} chiplet(s); {hardware.get('accelKind')}; "
+        f"{hardware.get('numChiplets')} chiplet(s); {_accel_kind(hardware)}; "
         f"wave {hardware.get('waveSize')}",
         f"  LDS={_si(hardware.get('ldsSize', 0))}; "
         f"VGPR/EU={hardware.get('vgprsPerEU')}; "
@@ -566,11 +659,16 @@ def summarize_hardware_for_prompt(hardware: Hardware, space: Optional[Space] = N
     if defaults:
         lines.append("  -1 defaults: " + " ".join(defaults))
     if hardware.get("defaultGridGroupSize"):
-        # An explicit value only replaces the heuristic's, so asking for the
-        # number it already picked builds the same kernel.
-        lines.append(f"  gridGroupSize=0 is not ungrouped: a heuristic picks "
-                     f"{hardware['defaultGridGroupSize']}, and asking for that value "
-                     f"changes nothing.")
+        # Deliberately without the number. Naming it made it the most proposed
+        # value on the axis -- two thirds of every grouping the model asked for
+        # across a 938-problem sweep, on the one value guaranteed to rebuild
+        # the grid 0 already builds -- and where the heuristic lands off the
+        # ladder entirely, naming it asked for something unspellable.
+        # `without_no_op_values` takes the rung out; this says why it is gone.
+        lines.append("  gridGroupSize=0 is not ungrouped: it hands the grouping to a "
+                     "heuristic. The number that heuristic picks is left off the list "
+                     "above, since asking for it rebuilds the same grid, so every value "
+                     "listed is a real change.")
     return "\n".join(lines)
 
 
@@ -597,8 +695,8 @@ def compute_workload_hints(problem: Problem,
 
     Split by kernel shape, because the two perf configs tile differently
     enough that one set of readings would be wrong for one of them: a plain
-    GEMM parallelises over M and N, while a gemm+gemm kernel parallelises over
-    G and M and loops over N inside the kernel.
+    GEMM parallelises over G, M and N, while a gemm+gemm kernel parallelises
+    over G and M and loops over N inside the kernel.
     """
     size = problem.get("gemmSize", {})
     g = size.get("g") or 0
@@ -610,10 +708,10 @@ def compute_workload_hints(problem: Problem,
         return []
     if o is not None:
         return _gemm_gemm_hints(g, m, n, k, o, num_cus, space)
-    return _gemm_hints(m, n, k, num_cus, hardware, problem.get("kPerBlockAlignment") or 1, space)
+    return _gemm_hints(g, m, n, k, num_cus, hardware, problem.get("kPerBlockAlignment") or 1, space)
 
 
-def _gemm_hints(m: int, n: int, k: int, num_cus: int, hardware: Hardware, k_alignment: int,
+def _gemm_hints(g: int, m: int, n: int, k: int, num_cus: int, hardware: Hardware, k_alignment: int,
                 space: Optional[Space]) -> List[str]:
     """Readings for a single GEMM, whether written as one or lowered to one."""
     hints: List[str] = []
@@ -627,18 +725,29 @@ def _gemm_hints(m: int, n: int, k: int, num_cus: int, hardware: Hardware, k_alig
     # How many workgroups a mid-sized tile would launch, which is what decides
     # whether the machine is even full. Helion compares its tile count against
     # the SM count for the same reason.
+    #
+    # The whole M x N tiling runs once per group, so G multiplies the grid --
+    # the same product `_gemm_gemm_hints` takes over G and the M tiles. Left
+    # out, a grouped convolution of G=256, M=1, N=400 reads as 7 workgroups
+    # rather than 1792 and is told it cannot fill a 48-CU machine it in fact
+    # oversubscribes 37 times over, which is an argument for splitKFactor
+    # against a grid that was never short.
+    grid = max(g, 1)
+    # Named only where it is doing something, so an ungrouped problem's reading
+    # is the one it always was.
+    per_group = f" (G={g} times the M and N tiles)" if grid > 1 else ""
     for tile in (64, 128, 256):
-        tiles = ((m + tile - 1) // tile) * ((n + tile - 1) // tile)
+        tiles = grid * ((m + tile - 1) // tile) * ((n + tile - 1) // tile)
         if tiles >= num_cus:
-            hints.append(f"A {tile}x{tile} output tile gives {tiles} workgroups, which fills "
-                         f"all {num_cus} CUs, so tiles of that size or smaller keep the "
-                         "machine busy.")
+            hints.append(f"A {tile}x{tile} output tile gives {tiles} workgroups{per_group}, "
+                         f"which fills all {num_cus} CUs, so tiles of that size or smaller "
+                         "keep the machine busy.")
             break
     else:
-        tiles = ((m + 63) // 64) * ((n + 63) // 64)
-        hints.append(f"Even a 64x64 output tile gives only {tiles} workgroups against "
-                     f"{num_cus} CUs, so this problem cannot fill the machine by tiling "
-                     "M and N alone." +
+        tiles = grid * ((m + 63) // 64) * ((n + 63) // 64)
+        hints.append(f"Even a 64x64 output tile gives only {tiles} workgroups{per_group} "
+                     f"against {num_cus} CUs, so this problem cannot fill the machine by "
+                     "tiling M and N alone." +
                      (" splitKFactor above 1 is the way to get more parallelism out of "
                       "it, at the cost of a reduction across the partial results."
                       if can_split else " The Configuration Space pins splitKFactor at 1 "

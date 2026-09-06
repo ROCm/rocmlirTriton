@@ -832,12 +832,13 @@ TEST(LLMSearchTest, GivesEveryRoundTheTranscriptToWriteTo) {
 // cannot see those rules. Refusing has to mean dropping the config, not
 // proposing it anyway and not abandoning the round it came in.
 TEST(LLMSearchTest, DropsProposalsTheSpaceRefuses) {
-  // 33 is not on any tile ladder: the tiles are 1, 2, 4, 8 and then multiples
-  // of 16, so it is refused before anything is compiled. The knob beside it is
-  // admissible and, being a knob, is one no seed can collide with: every quick
-  // config spells all eight of them `kKnobDefault`.
+  // A tile of no rows is refused before anything is compiled. Not a tile the
+  // ladders merely skip, which is a tile a kernel can hold and the space admits
+  // however wide it is (see `TileBounds`). The knob beside it is admissible
+  // and, being a knob, is one no seed can collide with: every quick config
+  // spells all eight of them `kKnobDefault`.
   FixtureProposer fixture(
-      alwaysAnswers("[render(mPerBlock=33), render(useOptimizeEpilogue=0)]"));
+      alwaysAnswers("[render(mPerBlock=0), render(useOptimizeEpilogue=0)]"));
   GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
 
   LLMOptions options = testOptions(fixture);
@@ -852,6 +853,26 @@ TEST(LLMSearchTest, DropsProposalsTheSpaceRefuses) {
 
   EXPECT_EQ(batches[1].size(), 1u) << "the refused config was proposed anyway";
   EXPECT_EQ(valueOf(e.ctx, batches[1].front(), "useOptimizeEpilogue"), 0);
+}
+
+// The converse, and the reason a tile is ruled rather than listed: a tile the
+// ladders skip is still a tile this kernel can hold, so a model that names one
+// has proposed a benchmark and not a mistake. The ladders here run 1, 2, 4, 8
+// and then multiples of 16.
+TEST(LLMSearchTest, BenchmarksATileBetweenTheRungs) {
+  FixtureProposer fixture(alwaysAnswers("[render(mPerBlock=33)]"));
+  GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
+
+  LLMOptions options = testOptions(fixture);
+  options.search.maxRounds = 1;
+  options.search.initialRandomConfigs = 0;
+
+  std::vector<std::vector<PerfConfigString>> batches =
+      runSearch(*e.module, options);
+  ASSERT_GT(batches.size(), 1u) << "the round was abandoned";
+  ASSERT_EQ(batches[1].size(), 1u) << "the tile was refused for being off the "
+                                      "ladder";
+  EXPECT_EQ(valueOf(e.ctx, batches[1].front(), "mPerBlock"), 33);
 }
 
 // Everything the search hands out has to be a config the space admits, since
@@ -917,7 +938,7 @@ TEST(LLMSearchTest, TellsTheModelWhatHappenedToItsLastRound) {
   FixtureProposer fixture(
       ("open(r'" + requestLog +
        "', 'a').write(json.dumps(request) + '\\n')\n"
-       "json.dump({'configs': [render(mPerBlock=33), "
+       "json.dump({'configs': [render(mPerBlock=0), "
        "render(useOptimizeEpilogue=0)]}, open(args.response, 'w'))")
           .str());
   GemmModule e(/*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
@@ -955,6 +976,21 @@ TEST(LLMSearchTest, TellsTheModelWhatHappenedToItsLastRound) {
   EXPECT_FALSE(space->empty());
   ASSERT_TRUE(firstObj->getObject("defaultConfig"));
 
+  // And, for the tiles, the interval they may hold, which is the wider of the
+  // two and the one the prompt describes: a model held to the ladder proposes
+  // off it and is refused for naming a tile that compiles. Only the tiles have
+  // one, since every other parameter's ladder is all there is to say about it.
+  llvm::json::Object *bounds = firstObj->getObject("bounds");
+  ASSERT_TRUE(bounds);
+  llvm::json::Object *mBounds = bounds->getObject("mPerBlock");
+  ASSERT_TRUE(mBounds) << "the model was not told what an M tile may be";
+  EXPECT_EQ(mBounds->getInteger("min"), 1);
+  EXPECT_EQ(mBounds->getBoolean("pow2Only"), false);
+  EXPECT_FALSE(mBounds->get("max"))
+      << "the model was given a ceiling the kernel does not have";
+  EXPECT_FALSE(bounds->getObject("numWaves"))
+      << "a parameter whose axis is exhaustive was given an interval";
+
   // The exemplar, serialized, which is what the helper completes a sparse
   // proposal against; without it nothing it sends back can be spelled.
   std::optional<StringRef> exemplar = firstObj->getString("defaultPerfConfig");
@@ -973,8 +1009,8 @@ TEST(LLMSearchTest, TellsTheModelWhatHappenedToItsLastRound) {
   EXPECT_FALSE(results->empty())
       << "the second round was told nothing about what the first measured";
 
-  // The tile that is not on any ladder was refused, and saying so is the only
-  // way the model learns a rule it cannot read off the ladders.
+  // The tile of no rows was refused, and saying so is the only way the model
+  // learns a rule it cannot read off the ladders.
   llvm::json::Array *rejected = secondObj->getArray("rejected");
   ASSERT_TRUE(rejected);
   ASSERT_FALSE(rejected->empty()) << "the refusal was not reported back";
@@ -982,7 +1018,7 @@ TEST(LLMSearchTest, TellsTheModelWhatHappenedToItsLastRound) {
   ASSERT_TRUE(refusal);
   EXPECT_FALSE(refusal->getString("reason")->empty())
       << "a config was refused without saying why";
-  EXPECT_EQ(refusal->getObject("config")->getInteger("mPerBlock"), 33);
+  EXPECT_EQ(refusal->getObject("config")->getInteger("mPerBlock"), 0);
 }
 
 // A trace is all a finished tuning run can be asked about afterwards, so it has

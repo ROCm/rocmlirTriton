@@ -27,7 +27,7 @@ fallback rather than a config anyone would run.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .parsing import parse_jsonish
 
@@ -58,8 +58,15 @@ RESPONSE_ALIASES = {
     "numCTAs": "c",
     "numWaves": "w",
     "matrixInstrNonkdim": "i",
-    "splitKFactor": "s",
-    "numStages": "d",
+    # Neither of these is a single letter, where every other alias is. `s` and
+    # `d` came from upstream's `num_stages`, and here they read as split and
+    # depth to this side and as stages and something else to the model: it
+    # annotated `s` as "more stages" and "stages 6" repeatedly, and once caught
+    # itself mid-sentence ("but d3 = stages, okay"). A config meant as a deeper
+    # pipeline that arrives as a three-way split of the contraction is not a
+    # config anybody proposed, and the two extra characters buy that back.
+    "splitKFactor": "sk",
+    "numStages": "st",
     "wavesPerEU": "e",
     "gridGroupSize": "g",
     "useAsyncCopy": "ac",
@@ -211,16 +218,74 @@ def render_perf_configs(exemplar: str, configs: Sequence[Config]) -> List[str]:
     return rendered
 
 
+def bound_admits(bound: Dict[str, Any], value: int) -> bool:
+    """Whether `value` is one this parameter may hold, by C++'s `TileBounds`.
+
+    The same arithmetic as `TileBounds::admits`, kept in step with it because
+    both answer the same question and only one of them is the authority: a
+    config this side lets through and C++ refuses costs the round a proposal,
+    while one this side drops never reaches C++ to be measured.
+    """
+    minimum = bound.get("min", 1)
+    if not isinstance(value, int) or value < minimum:
+        return False
+    if not bound.get("pow2Only"):
+        return True
+    return value == 0 or (value & (value - 1)) == 0
+
+
+def space_admits(space: Dict[str, Sequence[int]], bounds: Optional[Dict[str, Any]], name: str,
+                 value: int) -> bool:
+    """Whether this problem accepts `value` for `name`, by whichever rule owns it.
+
+    Two rules, because C++ has two: a tile is held to its bounds and everything
+    else to its ladder. Reading the bounds off the request rather than keeping a
+    list of tile names here, so that the two sides cannot drift over which
+    parameters are tiles.
+    """
+    bound = (bounds or {}).get(name)
+    if isinstance(bound, dict):
+        return bound_admits(bound, value)
+    values = space.get(name)
+    return values is None or value in values
+
+
+def render_bounds(bound: Dict[str, Any]) -> str:
+    """Describe what a tile may be, which is a rule rather than a list.
+
+    A tile is legal wherever it is positive, and a power of two besides on the
+    kernels that cannot decompose one that isn't; the ladder beside it is what
+    the enumerated search walks, capped by the problem's own dimensions (see
+    `TileBounds` in RockTuning.h). Rendering the ladder here would be reading
+    the wrong one of the two out loud: it stops at 16 on a problem with 16 rows
+    while every wider tile still builds, and a model told otherwise spends its
+    proposals asking permission it already has.
+
+    No ceiling is named because there is none to name. What rules out a wide
+    tile is the LDS it needs or Triton's cap on one tensor's elements, both of
+    them facts about the whole config, and both reported back by name when they
+    fire.
+    """
+    minimum = bound.get("min", 1)
+    if bound.get("pow2Only"):
+        described = f"a power of two, {max(minimum, 1)} or more"
+        return described if minimum > 0 else f"0, or {described}"
+    return f"any integer {minimum} or more"
+
+
 def render_ladder(values: Sequence[int], default: int) -> str:
     """Render one parameter's values, marking the one it defaults to.
 
     Enumerated rather than described. Helion renders a type descriptor --
     `power_of_2(min=64, max=1024, default=128)` -- which works because its axes
-    are regular. Ours are not: a tile ladder is 1, 2, 4, 8 and then every
-    multiple of 16 up to its ceiling, and `kPerBlock` is the union of what
-    every (m, n) tile pair allows. A min/max/step descriptor would misdescribe
-    both, and a model that believed it would spend proposals on values that do
-    not exist.
+    are regular. Ours are not: `numWaves` is the powers of two a workgroup can
+    hold, `matrixInstrNonkdim` is two instruction widths and a zero meaning
+    "you choose", and `wavesPerEU` counts up one at a time. A min/max/step
+    descriptor would misdescribe them, and a model that believed it would spend
+    proposals on values that do not exist.
+
+    Which is exactly why the tiles are described instead: theirs is a rule, and
+    `render_bounds` states it.
     """
     if not values:
         return "(no values)"
@@ -241,17 +306,29 @@ def render_ladder(values: Sequence[int], default: int) -> str:
     return "[" + ", ".join(shown) + "]"
 
 
-def render_space(space: Dict[str, Sequence[int]], default_config: Config) -> str:
-    """Describe every parameter, its values, and its default.
+def render_space(space: Dict[str, Sequence[int]],
+                 default_config: Config,
+                 bounds: Optional[Dict[str, Any]] = None) -> str:
+    """Describe every parameter, what it may be, and its default.
 
     Generated, never hand-written: the names and values come from the tuning
     space itself, so a parameter added to or removed from the perf config
     reaches the prompt with no change here. What is worth *saying* about a
     parameter is hand-written prose, in prompting.py.
+
+    A parameter with bounds is described by them and a parameter without by its
+    ladder, which is the same split C++ makes when it decides what to refuse.
     """
     lines = []
     for name, values in space.items():
         default = default_config.get(name)
+        bound = (bounds or {}).get(name)
+        if isinstance(bound, dict):
+            line = f"  {name}: {render_bounds(bound)}"
+            if default is not None:
+                line += f"   (default {default})"
+            lines.append(line)
+            continue
         line = f"  {name}: {render_ladder(values, default)}"
         if len(values) > 1 and default is not None:
             line += f"   (default {default}, marked *)"

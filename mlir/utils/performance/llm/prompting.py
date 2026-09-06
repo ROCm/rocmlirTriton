@@ -40,7 +40,7 @@ from __future__ import annotations
 import textwrap
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .configs import knob_names, render_response_aliases, render_space
+from .configs import knob_names, render_response_aliases, render_space, space_admits
 from .feedback import (
     MAX_CHANGED_FIELDS_PER_CONFIG,
     format_config_diff,
@@ -56,7 +56,13 @@ RETURN_JSON_ONLY = 'Return minified JSON only: {"configs":[...]}'
 
 _INITIAL_STRATEGY_BASE_LINES = (
     "Use about 40% near-default, 40% balanced and 20% aggressive candidates.",
-    "Keep configs sparse: 2-6 changed fields, omitting unchanged defaults.",
+    # The same bound the output contract and the refinement rounds give. It
+    # read "2-6 changed fields" until a sweep showed the two disagreeing: a
+    # one-field config obeys the contract and breaks this, and the model
+    # settled it by padding, restating a field at its own default in getting
+    # on for half of every config it proposed.
+    f"Keep configs sparse: usually 1-4 changed fields and never more than "
+    f"{MAX_CHANGED_FIELDS_PER_CONFIG}, omitting unchanged defaults.",
     "Cover at least 3 coherent M/N/K tile families.",
     "Do not combine the largest tiles, deepest pipeline and highest split.",
 )
@@ -132,6 +138,19 @@ def _is_tunable(space: Optional[Dict[str, Sequence[int]]], name: str) -> bool:
 
 def _any_tunable(space: Optional[Dict[str, Sequence[int]]], *names: str) -> bool:
     return any(_is_tunable(space, name) for name in names)
+
+
+def _offers(space: Optional[Dict[str, Sequence[int]]], name: str, value: int) -> bool:
+    """Whether the space still lists `value` for `name`.
+
+    Distinct from `_is_tunable`, which asks whether the parameter can move at
+    all. This asks about one rung, because `without_no_op_values` drops rungs
+    rather than parameters and the prose about a rung has to go with it.
+    """
+    if space is None:
+        return True
+    values = space.get(name)
+    return values is None or value in values
 
 
 def _may_pipeline_one_stage(space: Optional[Dict[str, Sequence[int]]]) -> bool:
@@ -285,11 +304,15 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
             "The use* knobs are tri-state. Seed -1 values were not compared; Read nothing "
             "into that. Change only one with a reason.\n" + "\n".join(knobs))
 
+        # Only where the ladder still holds the value being warned against.
+        # `without_no_op_values` takes these out of the space it renders, and a
+        # warning about a rung the model was not offered is a rung named twice:
+        # naming one is what made the model reach for it in the first place.
         duplicates = []
-        if _any_tunable(space, "useBufferOps", "useBufferAtomics"):
+        if _offers(space, "useBufferOps", 1) or _offers(space, "useBufferAtomics", 1):
             duplicates.append("- useBufferOps/useBufferAtomics: -1 and 1 produce the same "
                               "kernel, so an explicit 1 measures nothing.")
-        if _is_tunable(space, "useOptimizeEpilogue"):
+        if _offers(space, "useOptimizeEpilogue", 1):
             duplicates.append("- useOptimizeEpilogue: except for a 16 bits wide output, -1 "
                               "and 1 agree and an explicit 1 measures nothing.")
         if _may_pipeline_one_stage(space):
@@ -396,7 +419,8 @@ def _refinement_strategy_lines(
 
 def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
                               default_config: Optional[Dict[str, int]] = None,
-                              space: Optional[Dict[str, Sequence[int]]] = None) -> str:
+                              space: Optional[Dict[str, Sequence[int]]] = None,
+                              bounds: Optional[Dict[str, Any]] = None) -> str:
     """Show the compiler's own heuristic configs as an unmeasured prior.
 
     Helion's `build_compiler_analysis_section`, repointed. Upstream surfaces
@@ -417,12 +441,14 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
     consensus, and the knobs are precisely where a search over the axes can
     find something the sweeps could not.
 
-    A seed naming a value this problem's axes do not carry is left out. The
-    list is checked in for no particular chip, so on one convolution four of
-    its thirty-four seeds asked for mPerBlock=256 where the axis stopped at
-    160 -- held up as starting points by a prompt that also calls the
-    Configuration Space the authority on legal values. One run copied the 256
-    and another extrapolated to 192, and `accept` refused both.
+    A seed naming a value this problem refuses is left out. The list is checked
+    in for no particular chip, so its seeds routinely name values the axes do
+    not carry -- held up as starting points by a prompt that also calls the
+    Configuration Space the authority on legal values, and refused by `accept`
+    when a run copies one. Asked of the bounds where there are bounds, since a
+    tile off the ladder is exactly what such a seed usually names and exactly
+    what the space now admits: dropping those would hide most of the list on
+    the small problems, where it is the only evidence there is.
 
     The seeds are written as diffs against the default, like every other
     config the model is shown. Printed in full they repeat nineteen fields
@@ -439,8 +465,9 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
     default_config = default_config or {}
     if space:
         seed_configs = [
-            config for config in seed_configs
-            if all(value in space[field] for field, value in config.items() if field in space)
+            config for config in seed_configs if all(
+                space_admits(space, bounds, field, value) for field, value in config.items()
+                if field in space)
         ]
     if not seed_configs:
         return ""
@@ -467,6 +494,7 @@ def _build_problem_context(request: Dict[str, Any]) -> Tuple[str, List[str]]:
     problem = request.get("problem", {})
     hardware = request.get("hardware", {})
     space = request.get("space", {})
+    bounds = request.get("bounds", {})
     default_config = request.get("defaultConfig", {})
     hints = compute_workload_hints(problem, hardware, space)
     default_section = _section(
@@ -478,7 +506,7 @@ def _build_problem_context(request: Dict[str, Any]) -> Tuple[str, List[str]]:
         _section("Problem", summarize_problem_for_prompt(problem)),
         _section("GPU Hardware", summarize_hardware_for_prompt(hardware, space)),
         _bullet_section("What The Shapes Suggest", hints) if hints else "",
-        _section("Configuration Space", render_space(space, default_config)),
+        _section("Configuration Space", render_space(space, default_config, bounds)),
         _section("Response Aliases", render_response_aliases(space)),
         default_section,
     ), hints
@@ -502,7 +530,7 @@ def build_initial_prompt(request: Dict[str, Any]) -> str:
     return _join_sections(
         context,
         build_seed_config_section(request.get("seedConfigs", []), request.get("defaultConfig", {}),
-                                  space),
+                                  space, request.get("bounds", {})),
         _bullet_section(
             "Search Strategy",
             _initial_strategy_lines(

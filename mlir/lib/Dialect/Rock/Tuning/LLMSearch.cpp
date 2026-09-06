@@ -922,11 +922,22 @@ llvm::json::Object LLMSearch::buildRequest(unsigned round) const {
   PerfConfigString exemplar;
   axes->serialize(defaultValues, exemplar);
 
-  llvm::json::Object space, defaultConfig;
-  for (auto [name, ladder, value] :
-       llvm::zip_equal(paramNames, ladders, defaultValues)) {
+  llvm::json::Object space, bounds, defaultConfig;
+  for (auto [name, ladder, tile, value] : llvm::zip_equal(
+           paramNames, ladders, axes->getTileBounds(), defaultValues)) {
     space[name] = llvm::json::Array(ladder);
     defaultConfig[name] = value;
+    // A tile is legal by a rule, and its ladder is the part of what that rule
+    // allows which is worth benchmarking rather than the whole of what compiles
+    // (see `TileBounds`). Both go out: the prompt states the rule, since a
+    // model shown a ladder proposes off it and would be refused for no reason,
+    // while everything that picks a value to *try* -- the stub backend, the
+    // no-op filter -- still wants the rungs.
+    if (tile)
+      bounds[name] = llvm::json::Object{
+          {"min", tile->lo},
+          {"pow2Only", tile->pow2Only},
+      };
   }
 
   // How a config reaches the helper: every parameter, by name. Nothing here is
@@ -970,6 +981,7 @@ llvm::json::Object LLMSearch::buildRequest(unsigned round) const {
       {"problem", problemOf(workload)},
       {"hardware", hardwareOf(workload)},
       {"space", std::move(space)},
+      {"bounds", std::move(bounds)},
       {"defaultConfig", std::move(defaultConfig)},
       // The same config again, serialized. This is what the helper completes
       // a sparse proposal against and returns a whole one in, so it never has
