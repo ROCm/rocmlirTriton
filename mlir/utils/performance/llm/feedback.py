@@ -157,14 +157,17 @@ def summarize_failed_configs_for_llm(
     # common was having been generated at random. A config that moves more
     # fields than any proposal is allowed to cannot be a proposal, so it is
     # counted rather than held up as an example.
-    probes = [result for result in unmeasured
-              if len(config_diff(default_config, result["config"])) >
-              MAX_CHANGED_FIELDS_PER_CONFIG]
+    probes = [
+        result for result in unmeasured
+        if len(config_diff(default_config, result["config"])) > MAX_CHANGED_FIELDS_PER_CONFIG
+    ]
     proposals = [result for result in unmeasured if result not in probes]
     if probes:
-        lines = [f"  {len(probes)} of the random configs padding the seed batch could not "
-                 "be run. Each moves most of its fields at once, so there is no pattern "
-                 "in them for you to avoid."]
+        lines = [
+            f"  {len(probes)} of the random configs padding the seed batch could not "
+            "be run. Each moves most of its fields at once, so there is no pattern "
+            "in them for you to avoid."
+        ]
     else:
         lines = []
     if not proposals:

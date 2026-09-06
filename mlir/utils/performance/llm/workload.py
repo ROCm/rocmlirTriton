@@ -421,7 +421,8 @@ def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
     dimension where the others carry one.
     """
     terms = [(name, list(problem[name]))
-             for name in ("strides", "dilations", "padding") if problem.get(name)]
+             for name in ("strides", "dilations", "padding")
+             if problem.get(name)]
     if not terms:
         return None
     letters = _spatial_letters(spatial, False)
@@ -432,10 +433,11 @@ def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
             tagged.append(f"{name}={values}")
             continue
         paired = paired or per_dim == 2
-        groups = (",".join(str(value) for value in values[i * per_dim:(i + 1) * per_dim])
+        groups = (",".join(str(value)
+                           for value in values[i * per_dim:(i + 1) * per_dim])
                   for i in range(spatial))
-        tagged.append(f"{name} " + " ".join(
-            f"{letter}={group}" for letter, group in zip(letters, groups)))
+        tagged.append(f"{name} " +
+                      " ".join(f"{letter}={group}" for letter, group in zip(letters, groups)))
     return "  Window: " + "; ".join(tagged) + (" (padding before, after)" if paired else "")
 
 
@@ -444,16 +446,11 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
     kernel = problem.get("kernelType", "unknown")
     size = problem.get("gemmSize", {})
     dims = " ".join(
-        f"{name.upper()}={size.get(name)}"
-        for name in ("g", "m", "k", "n", "o")
-        if name in size
-    )
-    types = " ".join(
-        f"{name}={problem.get(key)}"
-        for name, key in (("A", "aType"), ("B", "bType"), ("C", "cType"),
-                          ("out", "outType"))
-        if problem.get(key)
-    )
+        f"{name.upper()}={size.get(name)}" for name in ("g", "m", "k", "n", "o") if name in size)
+    types = " ".join(f"{name}={problem.get(key)}" for name, key in (("A", "aType"), ("B", "bType"),
+                                                                    ("C", "cType"), ("out",
+                                                                                     "outType"))
+                     if problem.get(key))
     lines = [f"  {kernel}: {dims}; {types}"]
 
     if kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm"):
@@ -482,10 +479,8 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
         lines.append("  One perf config tiles both chained GEMMs.")
 
     flags = [
-        name
-        for name, key in (("inter-GEMM fusion", "hasPreSecondGemmFusion"),
-                          ("fused reduction", "hasFusedReduction"),
-                          ("causal mask", "causal"))
+        name for name, key in (("inter-GEMM fusion", "hasPreSecondGemmFusion"),
+                               ("fused reduction", "hasFusedReduction"), ("causal mask", "causal"))
         if problem.get(key)
     ]
     if flags:
@@ -520,9 +515,11 @@ def summarize_hardware_for_prompt(hardware: Hardware, space: Optional[Space] = N
         f"non-power-of-two K={'yes' if hardware.get('supportsNonPow2KPerBlock') else 'no'}",
     ]
     defaults = [
-        f"{name}={'on' if hardware[key] else 'off'}"
-        for name, key in (("ac", "defaultAsyncCopy"), ("bp", "defaultBlockPingpong"),
-                          ("it", "defaultInThreadTranspose"))
+        f"{name}={'on' if hardware[key] else 'off'}" for name, key in (("ac", "defaultAsyncCopy"),
+                                                                       ("bp",
+                                                                        "defaultBlockPingpong"),
+                                                                       ("it",
+                                                                        "defaultInThreadTranspose"))
         if key in hardware
     ]
     if defaults:

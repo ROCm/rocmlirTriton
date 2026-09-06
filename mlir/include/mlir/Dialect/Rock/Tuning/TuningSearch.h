@@ -157,9 +157,13 @@ struct LLMSearchOptions {
   /// model, comma-separated. The default is a small mixture-of-experts model
   /// asked for little reasoning, because a round is spent time: the search
   /// buys more by measuring another round than by thinking longer about this
-  /// one. A parameter the endpoint does not offer fails the run rather than
-  /// being dropped, and which models it serves is its own business.
-  std::string model = "GPT-oss-20B:reasoning.effort=low";
+  /// one. It also asks for a summary of that reasoning, which the transcript
+  /// prints: nearly all of a round's tokens are spent there and none of them
+  /// reach the reply, so without it a slow round or an odd proposal has no
+  /// explanation on record. A parameter the endpoint does not offer fails the
+  /// run rather than being dropped, and which models it serves is its own
+  /// business.
+  std::string model = "GPT-oss-20B:reasoning.effort=low,reasoning.summary=auto";
   /// Configs to ask for per round.
   unsigned configsPerRound = 15;
   /// Rounds of proposal, including the first. One means a single call.

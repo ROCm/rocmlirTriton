@@ -142,7 +142,7 @@ _OUTPUT_CONTRACT = textwrap.dedent("""\
     - Return minified JSON on a single line. No markdown, code fences,
       comments, pretty-printing, or trailing commas.
     - Emit exactly one top-level object: {"configs":[...]} and make every
-      config unique.
+      config different from the others.
     - Do not use Python syntax or expressions.
     - Only specify parameters you want to change; unspecified = default.
     - Use the short names in Response Aliases. Full parameter names are also
@@ -348,31 +348,36 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
     blocks = [
         textwrap.dedent("""\
             You are tuning a rocmlirTriton integer perf config for an AMD GPU.
-            Use only the supplied axes and defaults. Return 15 useful, unique,
-            sparse candidates as minified JSON and no prose."""),
+            Use only the supplied axes and defaults. Return 15 useful, sparse
+            candidates, no two alike, as minified JSON and no prose."""),
         tiles,
         _KPERBLOCK_BULLET,
     ]
 
     compact_params = {
-        "numWaves": "- numWaves: waves per workgroup; match it to tile size.",
+        "numWaves":
+            "- numWaves: waves per workgroup; match it to tile size.",
         "matrixInstrNonkdim":
             "- matrixInstrNonkdim: matrix-instruction M/N width; 16 and 32 are distinct families.",
-        "kpack": "- kpack: matrix instructions issued per LDS load.",
-        "numStages": "- numStages: K-loop pipeline depth; more overlap costs more LDS.",
+        "kpack":
+            "- kpack: matrix instructions issued per LDS load.",
+        "numStages":
+            "- numStages: K-loop pipeline depth; more overlap costs more LDS.",
         "splitKFactor":
             "- splitKFactor: splits the contraction across workgroups and pays for a reduction.",
-        "gridGroupSize": "- gridGroupSize: M-grid grouping for cache locality; 0 is heuristic.",
-        "numCTAs": "- numCTAs: workgroups per cooperative cluster.",
-        "wavesPerEU": "- wavesPerEU: occupancy hint that limits registers; 0 means no hint.",
+        "gridGroupSize":
+            "- gridGroupSize: M-grid grouping for cache locality; 0 is heuristic.",
+        "numCTAs":
+            "- numCTAs: workgroups per cooperative cluster.",
+        "wavesPerEU":
+            "- wavesPerEU: occupancy hint that limits registers; 0 means no hint.",
     }
     scheduling = _bullets_for(compact_params, space, gemm_gemm)
     if scheduling:
         blocks.append("Scheduling and layout:\n" + "\n".join(scheduling))
 
     compact_knobs = {
-        name: f"- {name}: tri-state -1=compiler heuristic, 0=off, 1=on."
-        for name in _KNOB_BULLETS
+        name: f"- {name}: tri-state -1=compiler heuristic, 0=off, 1=on." for name in _KNOB_BULLETS
     }
     knobs = _bullets_for(compact_knobs, space, gemm_gemm)
     if knobs:
@@ -397,13 +402,15 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
         if duplicates:
             blocks.append("Avoid duplicate kernels:\n" + "\n".join(duplicates))
 
-    blocks.append(textwrap.dedent("""\
+    blocks.append(
+        textwrap.dedent("""\
         Output contract:
         - Return exactly {"configs":[...]} on one line: no markdown or prose.
         - Use short names from Response Aliases; full names are accepted.
         - Values are scalar integers from the Configuration Space.
         - Omit unchanged/default fields; usually change 1-4 fields, at most 6.
-        - Make every config unique; if unsure, return fewer valid configs."""))
+        - Make every config different from the others; if unsure, return fewer
+          valid configs."""))
     return "\n\n".join(blocks)
 
 
@@ -415,7 +422,7 @@ def _initial_strategy_lines(
 ) -> List[str]:
     """Build the bullet list used for the initial search-strategy section."""
     lines = [
-        f"Propose up to {configs_requested} UNIQUE candidate configs. "
+        f"Propose up to {configs_requested} candidate configs, no two alike. "
         "Fewer is better than invalid JSON.",
         *_INITIAL_STRATEGY_BASE_LINES,
     ]
@@ -434,8 +441,9 @@ def _initial_strategy_lines(
     # knob appears in 29 of 161 winning configs, one of them the second-fastest
     # config measured on any problem here.
     if knobs := knob_names(space):
-        occupancy = [name for name in ("wavesPerEU", "gridGroupSize")
-                     if len(space.get(name, ())) > 1]
+        occupancy = [
+            name for name in ("wavesPerEU", "gridGroupSize") if len(space.get(name, ())) > 1
+        ]
         lines.append("Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
                      "configs. The aggressive fifth is where they belong: give those "
                      "configs an explicit 0 or 1 on a knob" +
@@ -466,13 +474,14 @@ def _refinement_strategy_lines(
     # the advice on moves the space refuses, and left out wavesPerEU and the
     # tri-state knobs, which were free, unexplored and in 29 of the 161 winning
     # configs measured here.
-    movable = [name for name in ("numWaves", "numStages", "kpack", "matrixInstrNonkdim",
-                                 "splitKFactor", "gridGroupSize", "wavesPerEU")
-               if space is None or len(space.get(name, ())) > 1]
-    lines.append("Prefer edits with attributable effects: move the block tiles"
-                 + ("".join(f", {name}" for name in movable[:-1]) + f" or {movable[-1]}"
-                    if movable else "")
-                 + " rather than rewriting every field.")
+    movable = [
+        name for name in ("numWaves", "numStages", "kpack", "matrixInstrNonkdim", "splitKFactor",
+                          "gridGroupSize", "wavesPerEU")
+        if space is None or len(space.get(name, ())) > 1
+    ]
+    lines.append("Prefer edits with attributable effects: move the block tiles" +
+                 ("".join(f", {name}" for name in movable[:-1]) +
+                  f" or {movable[-1]}" if movable else "") + " rather than rewriting every field.")
     if knobs := knob_names(space or {}):
         lines.append("A tri-state knob (" + ", ".join(knobs) + ") flipped from -1 to 0 or "
                      "1 on an otherwise unchanged anchor is a clean experiment, and one "
@@ -531,24 +540,25 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
     if space:
         seed_configs = [
             config for config in seed_configs
-            if all(value in space[field]
-                   for field, value in config.items() if field in space)
+            if all(value in space[field] for field, value in config.items() if field in space)
         ]
     if not seed_configs:
         return ""
-    body = ("rocmlirTriton's tuning heuristic proposes the following configs for "
-            "this problem. They are already being benchmarked while you read this, "
-            "so a config matching one of them is dropped rather than measured: "
-            "propose mutations of them instead.\n"
-            "They are strong starting points on the fields the sweeps behind them "
-            "varied, and evidence about nothing else: the "
-            "block tiles, kpack, numWaves, matrixInstrNonkdim, splitKFactor and "
-            "numStages. Their use* knobs, wavesPerEU and gridGroupSize were held "
-            "fixed throughout those sweeps, so on those fields these configs are "
-            "unmeasured rather than confirmed.\n"
-            "Each is written as its difference from the default config above.\n" +
-            "\n".join(f"  - {format_config_diff(default_config, config)}"
-                      for config in seed_configs))
+    body = (
+        "rocmlirTriton's tuning heuristic proposes the following configs for "
+        "this problem. They are already being benchmarked while you read this, "
+        "so a config matching one of them is dropped rather than measured: "
+        "propose mutations of them instead. A config matches a seed only when "
+        "it changes the same fields to the same values; one field at a "
+        "different value makes it new.\n"
+        "They are strong starting points on the fields the sweeps behind them "
+        "varied, and evidence about nothing else: the "
+        "block tiles, kpack, numWaves, matrixInstrNonkdim, splitKFactor and "
+        "numStages. Their use* knobs, wavesPerEU and gridGroupSize were held "
+        "fixed throughout those sweeps, so on those fields these configs are "
+        "unmeasured rather than confirmed.\n"
+        "Each is written as its difference from the default config above.\n" +
+        "\n".join(f"  - {format_config_diff(default_config, config)}" for config in seed_configs))
     return _section("Heuristic Seed Configs", body)
 
 
@@ -582,8 +592,8 @@ def build_initial_prompt(request: Dict[str, Any]) -> str:
                     f"exploratory candidates. {RETURN_JSON_ONLY}")
     return _join_sections(
         context,
-        build_seed_config_section(request.get("seedConfigs", []),
-                                  request.get("defaultConfig", {}), space),
+        build_seed_config_section(request.get("seedConfigs", []), request.get("defaultConfig", {}),
+                                  space),
         _bullet_section(
             "Search Strategy",
             _initial_strategy_lines(
@@ -611,9 +621,10 @@ def build_refinement_prompt(
 ) -> str:
     """Build the refinement prompt sent after each benchmarking round."""
     configs_requested = request.get("configsRequested", 15)
-    task_section = (f"Propose up to {configs_requested} NEW UNIQUE configs around the "
-                    "anchors above. Avoid the failed and refused patterns above, and favour "
-                    f"targeted edits with attributable effects. {RETURN_JSON_ONLY}")
+    task_section = (f"Propose up to {configs_requested} configs around the anchors above, "
+                    "none of them already measured above and no two alike. Avoid the failed "
+                    "and refused patterns above, and favour targeted edits with attributable "
+                    f"effects. {RETURN_JSON_ONLY}")
     # Ordinarily the initial request established this context and a resumed
     # conversation retains it. With --llm-wait-for-seeds, however, round 0
     # already has measurements and enters this refinement path on the first

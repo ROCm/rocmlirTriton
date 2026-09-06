@@ -243,15 +243,16 @@ static llvm::cl::opt<std::string> searchTrace(
 // this driver gets the same search. See TuningSearch.h.
 //===----------------------------------------------------------------------===//
 
-static llvm::cl::opt<std::string>
-    llmModel("llm-model",
-             llvm::cl::desc("Which model proposes the configs, named as the "
-                            "endpoint behind $ROCMLIR_LLM_TRANSPORT names it, "
-                            "optionally followed by `:name=value` parameters "
-                            "of that model "
-                            "(`GPT-oss-20B:reasoning.effort=low`)."),
-             llvm::cl::value_desc("model"),
-             llvm::cl::init(rock::LLMSearchOptions{}.model));
+static llvm::cl::opt<std::string> llmModel(
+    "llm-model",
+    llvm::cl::desc(
+        "Which model proposes the configs, named as the "
+        "endpoint behind $ROCMLIR_LLM_TRANSPORT names it, "
+        "optionally followed by `:name=value` parameters "
+        "of that model "
+        "(`GPT-oss-20B:reasoning.effort=low,reasoning.summary=auto`)."),
+    llvm::cl::value_desc("model"),
+    llvm::cl::init(rock::LLMSearchOptions{}.model));
 
 static llvm::cl::opt<unsigned> llmRounds(
     "llm-rounds",

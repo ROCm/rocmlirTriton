@@ -80,11 +80,7 @@ def alias_config(config: Config) -> Config:
 
 def render_response_aliases(space: Dict[str, Sequence[int]]) -> str:
     """The aliases available for this problem, as a compact legend."""
-    pairs = [
-        f"{alias}={name}"
-        for name, alias in RESPONSE_ALIASES.items()
-        if name in space
-    ]
+    pairs = [f"{alias}={name}" for name, alias in RESPONSE_ALIASES.items() if name in space]
     return "  " + ", ".join(pairs)
 
 
@@ -128,11 +124,7 @@ def _sparse_config(raw: Any, space: Dict[str, Sequence[int]]) -> Config | None:
     if not isinstance(raw, dict):
         return None
     config: Config = {}
-    names_by_alias = {
-        alias: name
-        for name, alias in RESPONSE_ALIASES.items()
-        if name in space
-    }
+    names_by_alias = {alias: name for name, alias in RESPONSE_ALIASES.items() if name in space}
     for key, value in raw.items():
         key = names_by_alias.get(key, key)
         if key not in space:
@@ -261,5 +253,4 @@ def knob_names(space: Dict[str, Sequence[int]]) -> List[str]:
     same Configuration Space the prompt calls the authority, so setting one is
     refused before it is compiled.
     """
-    return [name for name, values in space.items()
-            if KNOB_DEFAULT in values and len(values) > 1]
+    return [name for name, values in space.items() if KNOB_DEFAULT in values and len(values) > 1]
