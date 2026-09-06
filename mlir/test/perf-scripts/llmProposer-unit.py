@@ -1339,6 +1339,35 @@ class TestTranscript(unittest.TestCase):
                          "First text after send: 5000.0 ms", "Total transport: 12007.0 ms",
                          "1234 chars", "run-1"):
             self.assertIn(expected, written)
+        # A backend whose service reports no token counts says nothing about
+        # them, rather than reporting a round that spent none.
+        self.assertNotIn("Tokens:", written)
+
+    def test_writes_down_what_the_model_reasoned_its_way_through(self):
+        self.log().reasoning("kPerBlock=64 walks the filter twice, so try 32 as well")
+        written = self.text()
+        self.assertIn("round 0/4  reasoning (54 chars)", written)
+        self.assertIn("walks the filter twice", written)
+
+    def test_keeps_quiet_about_reasoning_an_endpoint_withheld(self):
+        # A heading over nothing would read as a model that thought about
+        # nothing, rather than as a service that does not hand it back.
+        log = self.log()
+        log.reasoning("   ")
+        log.received('{"configs":[]}', seconds=1.0)
+        self.assertNotIn("reasoning", self.text())
+
+    def test_says_where_a_slow_round_went_when_it_was_told(self):
+        # A long prompt is this search's to trim and reasoning is the effort
+        # parameter's to turn down, so a round that took its time is only
+        # actionable once the two are apart.
+        self.log().timing({
+            "totalMs": 22852.7,
+            "inputTokens": 2190,
+            "outputTokens": 1002,
+            "reasoningTokens": 640,
+        })
+        self.assertIn("Tokens: input: 2190; output: 1002; of it reasoning: 640", self.text())
 
     def test_notes_standing_instructions_it_resent_without_repeating_them(self):
         # The same thousand words every round would drown the part of a later
@@ -1714,7 +1743,7 @@ class TestOpenAiBackend(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def openai(self, *, reply=REPLY, raises=""):
+    def openai(self, *, reply=REPLY, raises="", usage=None, output=()):
         """A stand-in for the openai package, and the requests it was given."""
         calls = []
         clients = []
@@ -1733,7 +1762,10 @@ class TestOpenAiBackend(unittest.TestCase):
                 raise getattr(module, raises)("the gateway said no")
             # One response per round, so that a session naming the last one is
             # naming something this fake can tell apart.
-            return SimpleNamespace(id=f"resp-{len(calls)}", output_text=reply)
+            return SimpleNamespace(id=f"resp-{len(calls)}",
+                                   output_text=reply,
+                                   output=list(output),
+                                   usage=usage)
 
         def client(**arguments):
             clients.append(arguments)
@@ -1851,6 +1883,44 @@ class TestOpenAiBackend(unittest.TestCase):
         self.assertEqual(timing["responseId"], "resp-1")
         self.assertFalse(timing["resumed"])
         self.assertEqual(timing["responseChars"], len(self.REPLY))
+
+    def test_counts_the_tokens_a_round_spent_reading_and_thinking(self):
+        # Which is what tells a slow round caused by a long prompt from one
+        # caused by a model reasoning its way to a short answer.
+        usage = SimpleNamespace(input_tokens=2190,
+                                output_tokens=1002,
+                                output_tokens_details=SimpleNamespace(reasoning_tokens=640))
+        module, _, _ = self.openai(usage=usage)
+        _, session = self.ask(module)
+        timing = session["lastTransportTiming"]
+        self.assertEqual(timing["inputTokens"], 2190)
+        self.assertEqual(timing["outputTokens"], 1002)
+        self.assertEqual(timing["reasoningTokens"], 640)
+
+    def test_keeps_the_reasoning_an_endpoint_hands_back(self):
+        # Where nearly all of a round's tokens go, and none of it reaches the
+        # reply, so the transcript is the only place it can be read.
+        summary = SimpleNamespace(text="the odd filter wants a small tile")
+        thought = SimpleNamespace(text="15 positions per channel")
+        module, _, _ = self.openai(output=[
+            SimpleNamespace(type="reasoning", summary=[summary], content=[thought]),
+            SimpleNamespace(type="message", summary=None, content=None),
+        ])
+        _, session = self.ask(module)
+        self.assertEqual(session["lastReasoning"],
+                         "the odd filter wants a small tile\n\n15 positions per channel")
+
+    def test_says_nothing_of_reasoning_a_deployment_keeps_to_itself(self):
+        module, _, _ = self.openai()
+        _, session = self.ask(module)
+        self.assertEqual(session["lastReasoning"], "")
+
+    def test_says_nothing_of_tokens_an_endpoint_does_not_count(self):
+        # A gateway answered one of these with no usage at all, and a zero
+        # here would read as a round that spent nothing.
+        module, _, _ = self.openai()
+        _, session = self.ask(module)
+        self.assertNotIn("inputTokens", session["lastTransportTiming"])
 
 
 if __name__ == "__main__":

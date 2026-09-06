@@ -90,6 +90,29 @@ def conversation_input(turn: Turn, previous: str) -> List[Dict[str, str]]:
     ]
 
 
+def reasoning_said(response: Any) -> str:
+    """What the model worked through before answering, if it says.
+
+    Most of a round's tokens go here -- a measured round spent 2531 of 2653
+    output tokens reasoning and 122 answering -- and none of it is in the
+    reply, so a transcript without it cannot show why a proposal was made or
+    why a round took as long as it did.
+
+    What comes back is up to the endpoint: a summary when the request asked
+    for one with `reasoning.summary=auto`, nothing when the deployment keeps
+    its reasoning to itself.
+    """
+    said = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", "") != "reasoning":
+            continue
+        for part in (getattr(item, "summary", None) or []) + (getattr(item, "content", None) or []):
+            text = getattr(part, "text", "") or ""
+            if text.strip():
+                said.append(text)
+    return "\n\n".join(said)
+
+
 def token_counts(response: Any) -> Dict[str, int]:
     """What the round cost, in the units the model is slow in.
 
@@ -191,6 +214,9 @@ class OpenAiBackend(Backend):
         # on the way left where it was: the search wants the configs.
         reply = getattr(response, "output_text", "") or ""
         session["responseId"] = getattr(response, "id", "") or ""
+        # For the transcript to print and then forget: it is this round's, and
+        # the gateway is holding the conversation itself.
+        session["lastReasoning"] = reasoning_said(response)
         session["lastTransportTiming"] = {
             **token_counts(response),
             "sdkImportMs": (import_done - transport_started) * 1000.0,

@@ -169,6 +169,18 @@ class Transcript:
         """
         self._append(self._heading(f"reply after {seconds:.1f}s ({len(reply)} chars)"), reply)
 
+    def reasoning(self, said: str) -> None:
+        """What the model thought its way through, where its endpoint says.
+
+        Ahead of the reply, which is the order it happened in, and skipped
+        entirely when there is nothing: a heading over an empty section would
+        read as a model that thought about nothing rather than as a service
+        that does not hand its reasoning back.
+        """
+        if not said.strip():
+            return
+        self._append(self._heading(f"reasoning ({len(said)} chars)"), said)
+
     def timing(self, measurements: Dict[str, Any]) -> None:
         """Break a model round into transport and generation phases."""
         if not measurements:

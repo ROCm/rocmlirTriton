@@ -186,6 +186,10 @@ def main(argv=None) -> int:
             default_config=default_config,
             configs_requested=request.get("configsRequested", 15),
         )
+        # Popped rather than read: it is for somebody reading the transcript,
+        # and keeping it would carry a round's thinking in every later round's
+        # session file.
+        log.reasoning(session.pop("lastReasoning", ""))
         log.received(reply, seconds=time.monotonic() - started)
         log.timing(session.get("lastTransportTiming", {}))
         # A reply with nothing usable in it is an empty round, not a failure:
