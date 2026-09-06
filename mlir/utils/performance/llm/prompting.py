@@ -267,8 +267,9 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
     blocks = [
         textwrap.dedent("""\
             You are tuning a rocmlirTriton integer perf config for an AMD GPU.
-            Use only the supplied axes and defaults. Return 15 useful, sparse
-            candidates, no two alike, as minified JSON and no prose."""),
+            Use only the supplied Configuration Space and defaults. Return 15
+            useful, sparse candidates, no two alike, as minified JSON and no
+            prose."""),
         tiles,
         _KPERBLOCK_BULLET,
     ]
