@@ -34,6 +34,10 @@ BASE_URL_VARIABLE = "ROCMLIR_LLM_BASE_URL"
 KEY_HEADER = "Ocp-Apim-Subscription-Key"
 UNUSED_SDK_KEY = "unused"
 
+# What an earlier round's prompt is replaced by once its round is over. See
+# `remembered_conversation`.
+SUPERSEDED_PROMPT = "(an earlier round's request, superseded by the one below)"
+
 
 def request_arguments(params: Sequence[Tuple[str, str]]) -> Dict[str, Any]:
     """A model spec's parameters as arguments to the request.
@@ -68,26 +72,37 @@ def request_arguments(params: Sequence[Tuple[str, str]]) -> Dict[str, Any]:
     return arguments
 
 
-def conversation_input(turn: Turn, previous: str) -> List[Dict[str, str]]:
-    """What this round has to say that the gateway is not already holding.
+def remembered_conversation(session: Dict[str, Any], *, system_prompt: str,
+                            prompt: str) -> List[Dict[str, str]]:
+    """The whole conversation, kept here in case the gateway is not keeping it.
 
-    A round that has a response to continue sends its prompt and no more. The
-    first one sends the standing instructions ahead of it, as a message rather
-    than as the request's `instructions`: messages are what a later round's
-    `previous_response_id` carries over, and instructions are not.
+    Naming a `previous_response_id` is the cheaper way to continue, but a
+    deployment that does not store responses answers that with a 404, and a
+    round that cannot be asked stops the tune. So the conversation is kept
+    here too, and is what a round falls back to.
+
+    What is worth remembering is what the model itself proposed, so the
+    assistant's replies are kept word for word. The prompts that drew them are
+    not: a refinement prompt restates the whole search -- state, anchors,
+    results, patterns, refusals -- from scratch every round, so an earlier
+    round's copy of all that is not merely redundant, it disagrees. Round 1
+    saying "Best so far: 193.36 us" and round 3 saying "120.52 us" are two
+    claims about one search, and only the last is true. The turn stays, so
+    that the roles keep alternating; its content does not.
+
+    The standing instructions ride in the conversation rather than in the
+    request's `instructions`, which `previous_response_id` does not carry
+    over. Written into `session`, and returned as the same list.
     """
-    if previous:
-        return [{"role": "user", "content": turn.prompt}]
-    return [
-        {
-            "role": "system",
-            "content": turn.system_prompt
-        },
-        {
-            "role": "user",
-            "content": turn.prompt
-        },
-    ]
+    messages = session.get("messages")
+    if not messages:
+        messages = [{"role": "system", "content": system_prompt}]
+        session["messages"] = messages
+    for message in messages:
+        if message.get("role") == "user":
+            message["content"] = SUPERSEDED_PROMPT
+    messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 def reasoning_said(response: Any) -> str:
@@ -144,7 +159,10 @@ class OpenAiBackend(Backend):
     name = "openai"
 
     def conversation_is_open(self, session: Dict[str, Any]) -> bool:
-        return bool(session.get("responseId"))
+        # Either half of the memory counts: the gateway's, named by a response
+        # id, and this backend's own copy, which is what a round falls back to
+        # when the gateway turns out not to have kept its half.
+        return bool(session.get("messages") or session.get("responseId"))
 
     def reply(self, turn: Turn) -> str:
         session = turn.session
@@ -187,16 +205,38 @@ class OpenAiBackend(Backend):
         )
         client_ready = time.monotonic()
 
-        previous = session.get("responseId", "")
+        conversation = remembered_conversation(session,
+                                               system_prompt=turn.system_prompt,
+                                               prompt=turn.prompt)
+        # An endpoint that answered one `previous_response_id` with a 404 will
+        # answer the rest of them the same way, so it is asked once and then
+        # taken at its word for the rest of the tune.
+        previous = session.get("responseId", "") if session.get("gatewayRemembers", True) else ""
         arguments = request_arguments(params)
-        if previous:
-            arguments["previous_response_id"] = previous
 
         send_started = time.monotonic()
         try:
-            response = client.responses.create(model=model_id,
-                                               input=conversation_input(turn, previous),
-                                               **arguments)
+            sent = conversation
+            if previous:
+                try:
+                    # The cheap way: this round's prompt alone, against a
+                    # conversation the gateway is holding for us.
+                    sent = [conversation[-1]]
+                    response = client.responses.create(model=model_id,
+                                                       input=sent,
+                                                       previous_response_id=previous,
+                                                       **arguments)
+                except openai.NotFoundError:
+                    # It was not holding it. A deployment that does not store
+                    # responses only says so on the round that tries to
+                    # continue one, and a round that cannot be asked stops the
+                    # whole tune, so say the conversation again instead.
+                    session["gatewayRemembers"] = False
+                    previous = ""
+                    sent = conversation
+                    response = client.responses.create(model=model_id, input=sent, **arguments)
+            else:
+                response = client.responses.create(model=model_id, input=sent, **arguments)
         # Told apart by where the fix is. A gateway that cannot be reached,
         # will not take the key, or does not serve this model is an
         # environment to correct; anything else got as far as the model.
@@ -214,30 +254,25 @@ class OpenAiBackend(Backend):
         # on the way left where it was: the search wants the configs.
         reply = getattr(response, "output_text", "") or ""
         session["responseId"] = getattr(response, "id", "") or ""
-        # For the transcript to print and then forget: it is this round's, and
-        # the gateway is holding the conversation itself.
+        conversation.append({"role": "assistant", "content": reply})
+        # For the transcript to print and then forget, rather than to carry
+        # one round's thinking through every later round's session file.
         session["lastReasoning"] = reasoning_said(response)
         session["lastTransportTiming"] = {
             **token_counts(response),
             "sdkImportMs": (import_done - transport_started) * 1000.0,
             "optionsMs": (client_ready - import_done) * 1000.0,
-            "agentOpenMs":
-                0.0,
-            "sendMs":
-                0.0,
+            "agentOpenMs": 0.0,
+            "sendMs": 0.0,
             # Nothing is streamed, so as far as this can tell the first token
             # and the last arrive together.
             "firstTextMs": (completed - send_started) * 1000.0,
             "completionMs": (completed - send_started) * 1000.0,
             "totalMs": (completed - transport_started) * 1000.0,
-            "promptChars":
-                sum(len(message["content"]) for message in conversation_input(turn, previous)),
-            "responseChars":
-                len(reply),
-            "responseId":
-                session["responseId"],
-            "resumed":
-                bool(previous),
+            "promptChars": sum(len(message["content"]) for message in sent),
+            "responseChars": len(reply),
+            "responseId": session["responseId"],
+            "resumed": bool(previous),
         }
         if not reply.strip():
             raise TransportError("the model returned an empty reply", started=True)

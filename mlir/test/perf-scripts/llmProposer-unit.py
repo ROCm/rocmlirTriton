@@ -1743,8 +1743,11 @@ class TestOpenAiBackend(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def openai(self, *, reply=REPLY, raises="", usage=None, output=()):
-        """A stand-in for the openai package, and the requests it was given."""
+    def openai(self, *, reply=REPLY, raises="", usage=None, output=(), forgets=False):
+        """A stand-in for the openai package, and the requests it was given.
+
+        `forgets` is the gateway that does not store responses: it takes the
+        first round and refuses every `previous_response_id` after it."""
         calls = []
         clients = []
 
@@ -1757,9 +1760,12 @@ class TestOpenAiBackend(unittest.TestCase):
                                  **{name: type(name, (OpenAIError,), {}) for name in names})
 
         def create(**arguments):
-            calls.append(arguments)
+            calls.append({**arguments, "input": [dict(item) for item in arguments["input"]]})
             if raises:
                 raise getattr(module, raises)("the gateway said no")
+            if forgets and "previous_response_id" in arguments:
+                raise module.NotFoundError(
+                    f"Response with id '{arguments['previous_response_id']}' not found.")
             # One response per round, so that a session naming the last one is
             # naming something this fake can tell apart.
             return SimpleNamespace(id=f"resp-{len(calls)}",
@@ -1826,6 +1832,50 @@ class TestOpenAiBackend(unittest.TestCase):
         self.assertEqual(calls[-1]["previous_response_id"], "resp-1")
         self.assertEqual(calls[-1]["input"], [{"role": "user", "content": "round 1 prompt"}])
         self.assertNotIn("round 0 prompt", json.dumps(calls[-1]["input"]))
+
+    def test_says_the_conversation_again_when_the_gateway_forgot_it(self):
+        # A deployment that does not store responses answers the round that
+        # names one with a 404, which used to end the tune. The round retries
+        # with the conversation this backend kept, and the search goes on.
+        module, calls, _ = self.openai(forgets=True)
+        _, session = self.ask(module, prompt="round 0 prompt")
+        reply, session = self.ask(module, session=session, prompt="round 1 prompt")
+        self.assertEqual(reply, self.REPLY)
+        self.assertNotIn("previous_response_id", calls[-1])
+        self.assertEqual([message["role"] for message in calls[-1]["input"]],
+                         ["system", "user", "assistant", "user"])
+        self.assertEqual(calls[-1]["input"][-1], {"role": "user", "content": "round 1 prompt"})
+        self.assertFalse(session["lastTransportTiming"]["resumed"])
+
+    def test_stops_naming_responses_to_a_gateway_that_does_not_keep_them(self):
+        # One 404 settles it: a later round goes straight to the conversation
+        # rather than spending a request finding out again.
+        module, calls, _ = self.openai(forgets=True)
+        _, session = self.ask(module, prompt="round 0 prompt")
+        _, session = self.ask(module, session=session, prompt="round 1 prompt")
+        refused = len(calls)
+        self.ask(module, session=session, prompt="round 2 prompt")
+        self.assertEqual(len(calls), refused + 1)
+        self.assertNotIn("previous_response_id", calls[-1])
+
+    def test_keeps_what_the_model_said_and_not_what_it_was_asked(self):
+        # A refinement prompt restates the whole search, so an earlier round's
+        # copy of it is a stale account of the same search rather than more
+        # context. The replies are what the rounds are built on, so they stay.
+        module, calls, _ = self.openai(forgets=True)
+        _, session = self.ask(module, prompt="round 0 prompt")
+        _, session = self.ask(module, session=session, prompt="round 1 prompt")
+        self.ask(module, session=session, prompt="round 2 prompt")
+        remembered = calls[-1]["input"]
+        self.assertNotIn("round 0 prompt", json.dumps(remembered))
+        self.assertNotIn("round 1 prompt", json.dumps(remembered))
+        self.assertEqual([message for message in remembered if message["role"] == "assistant"], [{
+            "role": "assistant",
+            "content": self.REPLY
+        }] * 2)
+        self.assertEqual(
+            [message["content"] for message in remembered if message["role"] == "user"],
+            [openai_backend.SUPERSEDED_PROMPT] * 2 + ["round 2 prompt"])
 
     def test_reads_a_specs_parameters_into_the_request(self):
         # They arrive as text and the endpoint wants them typed. A dotted name
