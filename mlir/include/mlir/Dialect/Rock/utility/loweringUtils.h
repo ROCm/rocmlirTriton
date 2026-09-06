@@ -95,12 +95,17 @@ bool isInputSpatialDimName(StringRef name, size_t dim);
 // the validity mask dependent on the K loop's induction variable. A carry into
 // the channel dim is just a uniform address step.
 //
-// So the factor exists only for a channels-first input (Merge(c, y, x)), where
+// So the factor exists for a channels-first input (Merge(c, y, x)), where
 // pinning the spatial dims takes a multiple of the product of the filter's
 // spatial extents. Any other order puts a spatial dim outermost --
 // channels-last Merge(y, x, c), interleaved Merge(y, c, x) -- and then a
 // spatial dim moves on every step whatever the tile size, so no alignment can
 // buy anything.
+//
+// Except where there is one channel per group, as on a depthwise conv: a unit
+// channel dim carries into nothing and steps over nothing, so the merge is the
+// filter window whatever order the layout lists it in, and the factor is the
+// same product it would be channels-first.
 int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp);
 
 // Heuristic to determine if every element in the output would be written by the

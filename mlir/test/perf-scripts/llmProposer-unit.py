@@ -154,6 +154,25 @@ class TestResponseParsing(unittest.TestCase):
         # batch fails, and it must not take the round's process down.
         self.assertEqual(self.parse('{"configs": [{"mPerBlock": 64}, {"nPer'), [])
 
+    def test_keeps_the_configs_ahead_of_a_misplaced_bracket(self):
+        # The one character that cost this tuner the most: 53 of 938 problems
+        # in one run lost their whole batch to a last config closed with `]`
+        # rather than `}`, and to nothing else.
+        self.assertEqual(self.parse('{"configs": [{"mPerBlock": 64}, {"kpack": 2]}'), [{
+            "mPerBlock": 64
+        }, {
+            "kpack": 2
+        }])
+
+    def test_keeps_the_configs_ahead_of_a_cut(self):
+        # Truncation between configs leaves everything before it intact, which
+        # is most of the batch and no worse a proposal for the tail missing.
+        self.assertEqual(self.parse('{"configs": [{"mPerBlock": 64}, {"kpack": 2}'), [{
+            "mPerBlock": 64
+        }, {
+            "kpack": 2
+        }])
+
     def test_keeps_configs_sparse(self):
         # The search merges a proposal onto the default, so a field the model
         # did not name has to stay unnamed: inventing a value here would turn
@@ -245,6 +264,34 @@ class TestJsonSalvage(unittest.TestCase):
         # The substitution is on word boundaries, so a parameter whose name
         # contains one of the literals survives it.
         self.assertEqual(parsing.fix_python_json('{"NoneOfIt": None}'), '{"NoneOfIt": null}')
+
+    def test_closing_leaves_finished_json_alone(self):
+        text = '{"configs": [{"kpack": 2}]}'
+        self.assertEqual(parsing.close_unfinished_containers(text), text)
+
+    def test_closing_ignores_brackets_inside_strings(self):
+        text = '{"note": "a ] is not a close"}'
+        self.assertEqual(parsing.close_unfinished_containers(text), text)
+
+    def test_closing_finishes_the_container_a_closer_arrived_on_top_of(self):
+        self.assertEqual(parsing.close_unfinished_containers('{"configs": [{"kpack": 2]}'),
+                         '{"configs": [{"kpack": 2}]}')
+
+    def test_closing_drops_a_closer_with_nothing_left_open(self):
+        self.assertEqual(parsing.close_unfinished_containers('{"configs": [{"kpack": 2]}}'),
+                         '{"configs": [{"kpack": 2}]}')
+
+    def test_closing_finishes_what_a_cut_left_open(self):
+        self.assertEqual(parsing.close_unfinished_containers('{"configs": [{"kpack": 2}'),
+                         '{"configs": [{"kpack": 2}]}')
+
+    def test_closing_does_not_make_a_cut_key_look_like_a_config(self):
+        # Closing a string and its object is the honest repair of a reply cut
+        # here, and it has to stay unparseable rather than become `{"nPer"}`
+        # with a value invented for it.
+        repaired = parsing.close_unfinished_containers('{"configs": [{"nPer')
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(repaired)
 
 
 class TestSpaceRendering(unittest.TestCase):
@@ -568,6 +615,58 @@ class TestWorkloadDescription(unittest.TestCase):
             "inputLayout": ["ni", "0i", "1i", "gi", "ci"],
         })
         self.assertIn("filter=GYXCK input=NHWGC", text)
+
+    def test_takes_the_1_long_dimensions_out_of_the_layout_and_names_them(self):
+        # A depthwise convolution's GYKCX filter reads as a window wrapped
+        # around the channels, which is a thing to have an opinion about. K and
+        # C are both 1, so it is a GKC filter of a 3x3 window and there is
+        # nothing there to have an opinion about.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "filterLayout": ["g", "0", "k", "c", "1"],
+            "filterShape": [304, 3, 1, 1, 3],
+            "inputLayout": ["gi", "0i", "ni", "ci", "1i"],
+            "inputShape": [304, 114, 1, 1, 114],
+        })
+        self.assertIn("filter=GYX (K, C are 1)", text)
+        self.assertIn("input=GHW (N, C are 1)", text)
+
+    def test_says_is_of_a_single_1_long_dimension(self):
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
+            "inputShape": [64, 1, 304, 114, 114],
+        })
+        self.assertIn("input=NCHW (G is 1)", text)
+
+    def test_leaves_a_layout_of_real_dimensions_whole(self):
+        # The same odd-looking spelling, but with channels this time: NHWGC
+        # really does interleave its channels, and taking nothing out of it is
+        # the whole of what the model should see.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "inputLayout": ["ni", "0i", "1i", "gi", "ci"],
+            "inputShape": [64, 114, 114, 2, 304],
+        })
+        self.assertIn("input=NHWGC", text)
+        self.assertNotIn("are 1", text)
+
+    def test_leaves_the_layout_alone_when_it_has_no_extents(self):
+        # Every caller but the C++ one supplies a layout and no shape.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "inputLayout": ["gi", "0i", "ni", "ci", "1i"],
+        })
+        self.assertIn("input=GHNCW", text)
+
+    def test_keeps_a_layout_that_is_all_1_long_dimensions(self):
+        # Taking them all out would leave an empty string where a layout goes.
+        text = workload.summarize_problem_for_prompt({
+            **self.CONV,
+            "filterLayout": ["g", "k", "c", "0", "1"],
+            "filterShape": [1, 1, 1, 1, 1],
+        })
+        self.assertIn("filter=GKCYX", text)
 
     def test_names_the_third_spatial_dimension_of_a_3d_convolution(self):
         text = workload.summarize_problem_for_prompt({

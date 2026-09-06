@@ -36,6 +36,12 @@ namespace rock {
 /// ~never optimal, so no ladder here reaches past it whatever the problem's K.
 constexpr uint32_t kMaxKPerBlock = 512;
 
+/// Drop kPerBlock candidates larger than the K dimension rounded up to the next
+/// power of two: a tile bigger than PowerOf2Ceil(K) would only pad K and waste
+/// work. Adds the capping tile so K stays covered, but only when it does not
+/// exceed `kMaxKPerBlock`.
+void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k);
+
 /// The values of each independently tunable parameter, in the order
 /// `createGemmTuningRangeBF` loops over them: mPerBlock, nPerBlock, kpack,
 /// numWaves, matrixInstrNonkdim, numStages, wavesPerEU, gridGroupSize, numCTAs.

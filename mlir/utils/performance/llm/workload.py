@@ -20,7 +20,7 @@ LDS size, where upstream keys on SM count.
 from __future__ import annotations
 
 import textwrap
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 Hardware = Dict[str, Any]
 Problem = Dict[str, Any]
@@ -394,12 +394,46 @@ def _spatial_letters(count: int, filter_tensor: bool) -> Sequence[str]:
     return letters[len(letters) - count:] if 0 < count <= len(letters) else ()
 
 
+def _dim_letters(dims: Sequence[str], filter_tensor: bool) -> Sequence[str]:
+    """One conventional letter per dimension, in the order `dims` names them."""
+    spatial = _spatial_letters(sum(1 for dim in dims if dim[:1].isdigit()), filter_tensor)
+    return [
+        spatial[int(dim[0])] if dim[:1].isdigit() and spatial else _LAYOUT_LETTERS.get(dim, dim)
+        for dim in dims
+    ]
+
+
 def _standard_layout(dims: Sequence[str], filter_tensor: bool) -> str:
     """`dims` written the way convolution layouts usually are, NGCHW and such."""
-    spatial = _spatial_letters(sum(1 for dim in dims if dim[:1].isdigit()), filter_tensor)
-    return "".join(
-        spatial[int(dim[0])] if dim[:1].isdigit() and spatial else _LAYOUT_LETTERS.get(dim, dim)
-        for dim in dims)
+    return "".join(_dim_letters(dims, filter_tensor))
+
+
+def _layout_without_unit_dims(dims: Sequence[str], extents: Sequence[int],
+                              filter_tensor: bool) -> Tuple[str, Sequence[str]]:
+    """The layout with its one-long dimensions taken out, and their names.
+
+    A dimension of extent one sits wherever a layout puts it without moving a
+    byte: there is only one index along it, so nothing is interleaved by having
+    it there. Left in, it makes a layout look like an interleaving that the
+    tensor does not have -- a depthwise convolution's filter is spelled GYKCX,
+    which reads as a window wrapped around the channels, but K and C are both 1
+    and it is a plain GKC filter of a 3x3 window.
+
+    So they come out of the string and are named after it, which says the same
+    thing without the puzzle: `GKC (Y, X are 1)`. Named rather than dropped
+    silently, since the layout has to stay recognisable against the op it came
+    from, and a dimension being 1 is worth knowing on its own.
+    """
+    letters = _dim_letters(dims, filter_tensor)
+    if len(extents) != len(letters):
+        return "".join(letters), ()
+    kept = [letter for letter, extent in zip(letters, extents) if extent != 1]
+    unit = [letter for letter, extent in zip(letters, extents) if extent == 1]
+    if not unit or not kept:
+        # Nothing to take out, or a tensor that is all ones and would be left
+        # as an empty string.
+        return "".join(letters), ()
+    return "".join(kept), unit
 
 
 def _layout_legend(dims: Sequence[str]) -> str:
@@ -456,12 +490,19 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
     if kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm"):
         lines.append("  Implicit GEMM: M=channels, N=batch*spatial, K=channels*filter.")
         dims = problem.get("inputLayout") or problem.get("filterLayout") or ()
-        layouts = [
-            f"{label}={_standard_layout(problem[key], label == 'filter')}"
-            for label, key in (("filter", "filterLayout"), ("input", "inputLayout"),
-                               ("output", "outputLayout"))
-            if problem.get(key)
-        ]
+        layouts = []
+        for label, key in (("filter", "filterLayout"), ("input", "inputLayout"), ("output",
+                                                                                  "outputLayout")):
+            stored = problem.get(key)
+            if not stored:
+                continue
+            shown, unit = _layout_without_unit_dims(stored,
+                                                    problem.get(f"{label}Shape") or (),
+                                                    label == "filter")
+            if unit:
+                verb = "is" if len(unit) == 1 else "are"
+                shown += f" ({', '.join(unit)} {verb} 1)"
+            layouts.append(f"{label}={shown}")
         if layouts:
             lines.append("  Layouts: " + " ".join(layouts))
             lines.append(_layout_legend(dims))

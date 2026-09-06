@@ -98,6 +98,12 @@ struct GemmModule {
 // --out_layout ngkhw` writes it. That layout is the one whose gemmK merges the
 // channel dim outermost, which is what leaves a K tile something to align to
 // (see `kPerBlockAlignmentFactor`); `filterSpatial` of 1 leaves it nothing.
+//
+// `inputLayout` spells the input's dims in memory order and defaults to that
+// channels-first one. The dims of the tensor follow whatever it says, so a
+// layout that interleaves them -- as `tier1-conv-configs` does with its
+// depthwise convs, whose input is `-I G0NC1` -- builds the tensor it describes
+// rather than a channels-first tensor under another name.
 struct ConvModule {
   MLIRContext ctx;
   OwningOpRef<ModuleOp> module;
@@ -105,7 +111,8 @@ struct ConvModule {
   ConvModule(llvm::function_ref<Type(OpBuilder &)> elemType,
              int64_t filterSpatial, StringRef arch, int64_t channels = 64,
              int64_t outChannels = 256, int64_t inSpatial = 14,
-             int64_t batch = 64) {
+             int64_t batch = 64,
+             ArrayRef<StringRef> inputLayout = {"ni", "gi", "ci", "0i", "1i"}) {
     DialectRegistry reg;
     reg.insert<rock::RockDialect>();
     reg.insert<func::FuncDialect>();
@@ -117,8 +124,15 @@ struct ConvModule {
     int64_t outSpatial = inSpatial - filterSpatial + 1;
     auto filType = RankedTensorType::get(
         {1, outChannels, channels, filterSpatial, filterSpatial}, elem);
-    auto inType =
-        RankedTensorType::get({batch, 1, channels, inSpatial, inSpatial}, elem);
+    llvm::StringMap<int64_t> inExtents = {{"ni", batch},
+                                          {"gi", 1},
+                                          {"ci", channels},
+                                          {"0i", inSpatial},
+                                          {"1i", inSpatial}};
+    SmallVector<int64_t> inShape;
+    for (StringRef name : inputLayout)
+      inShape.push_back(inExtents.at(name));
+    auto inType = RankedTensorType::get(inShape, elem);
     auto outType = RankedTensorType::get(
         {batch, 1, outChannels, outSpatial, outSpatial}, elem);
 
@@ -132,8 +146,7 @@ struct ConvModule {
     SmallVector<NamedAttribute> attrs = {
         b.getNamedAttr("filter_layout",
                        b.getStrArrayAttr({"g", "k", "c", "0", "1"})),
-        b.getNamedAttr("input_layout",
-                       b.getStrArrayAttr({"ni", "gi", "ci", "0i", "1i"})),
+        b.getNamedAttr("input_layout", b.getStrArrayAttr(inputLayout)),
         b.getNamedAttr("output_layout",
                        b.getStrArrayAttr({"no", "go", "ko", "0o", "1o"})),
         b.getNamedAttr("dilations", b.getIndexArrayAttr({1, 1})),
@@ -350,6 +363,51 @@ TEST(TuningParamAxesTest, AxesAcceptEnumerationGemmGemm) {
   AttentionModule e("gfx942");
   ASSERT_TRUE(e.module);
   expectAxesAcceptEnumeration(e.ctx, *e.module, TuningParamSetKind::Full);
+}
+
+// `enumerateSpace` hands the tests the enumeration minus the quick list, and
+// that subtraction is over exactly the configs this covers. `Full` and
+// `Exhaustive` both run the quick list on top of their own enumeration, so its
+// configs are benchmarked like any other, while the axes are built from
+// `getRangeGemm` alone -- which the problem shapes and the list, a fixed table
+// distilled from sweeps, ignores. An M of 1 is where the two part company:
+// `computeDPerBlock` collapses to a single tile of 1 and the list still
+// proposes its 64.
+//
+// It is the search that cannot live with that. `LLMSearch` takes the list's
+// first config as the default it writes every prompt around and completes every
+// sparse proposal against, so a default the axes do not hold is a default
+// `isFeasible` refuses, and with it most of what the model proposes.
+//
+// Asked of `NotOnAxis` rather than of feasibility, since the checks past the
+// axes are about a config's combination of values and may well turn a
+// heuristic's guess down on a problem this thin.
+TEST(TuningParamAxesTest, AxesHoldWhatTheQuickListSpells) {
+  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
+               /*m=*/1, /*n=*/1024, /*k=*/1024, "gfx942");
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Full);
+  ASSERT_TRUE(axes);
+  std::unique_ptr<TuningParamSet> quick(
+      createTunableParamSpace(*e.module, TuningParamSetKind::Quick));
+  ASSERT_TRUE(quick);
+  std::set<std::vector<int64_t>> quickConfigs = configsOf(e.ctx, *quick);
+  ASSERT_FALSE(quickConfigs.empty());
+
+  // The shape that makes this worth testing: an M the enumerator has no reason
+  // to offer more than the one tile for.
+  EXPECT_GT(axes->getAxes()[paramIndex(*axes, "mPerBlock")].size(), 1u);
+
+  for (const std::vector<int64_t> &config : quickConfigs) {
+    FeasibilityCheck refusedOn;
+    if (axes->isFeasible(config, &refusedOn))
+      continue;
+    PerfConfigString spelled;
+    axes->serialize(config, spelled);
+    EXPECT_NE(refusedOn, FeasibilityCheck::NotOnAxis)
+        << "the axes lack a value the quick list spells: "
+        << std::string(spelled);
+  }
 }
 
 // The other half: over the values the enumerator itself varies, walking the
@@ -574,48 +632,6 @@ TEST(TuningParamAxesTest, PinsKeptForEnumerationCostAreLifted) {
   EXPECT_EQ(axisOf(*axes, "numWaves"), (std::vector<int64_t>{1, 2, 4, 8, 16}));
 }
 
-// Every tile a kernel can hold up to `ceiling`, which is what an axis carries
-// where the tile need not be a power of two: the powers of two below 16, then
-// every multiple of 16 (`tileValues`, TuningSearch.cpp).
-std::vector<int64_t> tileStepsUpTo(int64_t ceiling) {
-  std::vector<int64_t> steps = {1, 2, 4, 8};
-  for (int64_t tile = 16; tile <= ceiling; tile += 16)
-    steps.push_back(tile);
-  return steps;
-}
-
-// A plain GEMM's tiles need not be powers of two (`pow2TilesRequired`), so all
-// three carry every tile rather than only the ladder the enumerators double
-// their way up. The ceiling is the ladder's own: `MAX_K_PER_BLOCK` for K and
-// `MAX_MN_PER_BLOCK` for M/N.
-TEST(TuningParamAxesTest, TilesOfferEveryStepWhereTheyNeedNotBePow2) {
-  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
-               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx942");
-  std::unique_ptr<TuningParamAxes> axes =
-      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
-  ASSERT_TRUE(axes);
-
-  EXPECT_EQ(axisOf(*axes, "kPerBlock"), tileStepsUpTo(512));
-  EXPECT_EQ(axisOf(*axes, "mPerBlock"), tileStepsUpTo(256));
-  EXPECT_EQ(axisOf(*axes, "nPerBlock"), tileStepsUpTo(256));
-}
-
-// The M/N and K requirements are separate, and gfx950 is where they part
-// company: the peeled K loop miscompiles there, so the K tile is held to a
-// power of two, while `rock-decompose-nonpow2-tiles` still takes any M/N tile
-// apart.
-TEST(TuningParamAxesTest, Pow2KTileLeavesTheMNTilesAlone) {
-  GemmModule e([](OpBuilder &b) { return b.getF16Type(); },
-               /*m=*/1024, /*n=*/1024, /*k=*/1024, "gfx950");
-  std::unique_ptr<TuningParamAxes> axes =
-      createTunableParamAxes(*e.module, TuningParamSetKind::Exhaustive);
-  ASSERT_TRUE(axes);
-
-  EXPECT_EQ(axisOf(*axes, "kPerBlock"),
-            (std::vector<int64_t>{16, 32, 64, 128, 256, 512}));
-  EXPECT_EQ(axisOf(*axes, "mPerBlock"), tileStepsUpTo(256));
-}
-
 // A conv merges the filter's spatial dims into gemmK, and a K tile that is a
 // multiple of their product advances K without moving the padded input window
 // (`kPerBlockAlignmentFactor`). Those are the tiles the ladders miss: a 3x3
@@ -636,6 +652,63 @@ TEST(TuningParamAxesTest, ConvKTilesFollowTheFilterAlignment) {
         << "the 3x3 filter's alignment asks for a K tile of " << tile;
 }
 
+// An aligned tile earns its place by advancing K without moving the input
+// window. One larger than K advances nothing -- the loop it tiles runs once --
+// so it is a padded kernel wearing the filter's alignment, and `kPerBlock`'s
+// own cap drops it wherever it came from. Without this the axis for a K of 27
+// ran to 504, offering 45 tiles that could only pad.
+TEST(TuningParamAxesTest, AlignedKTilesStopAtTheKTheyTile) {
+  ConvModule e([](OpBuilder &b) { return b.getF32Type(); },
+               /*filterSpatial=*/3, "gfx942", /*channels=*/3);
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Full);
+  ASSERT_TRUE(axes);
+
+  // gemmK is 3 channels x a 3x3 filter.
+  std::vector<int64_t> kTiles = axisOf(*axes, "kPerBlock");
+  EXPECT_TRUE(llvm::is_contained(kTiles, 9));
+  EXPECT_TRUE(llvm::is_contained(kTiles, 27));
+  EXPECT_FALSE(llvm::is_contained(kTiles, 36));
+  EXPECT_FALSE(llvm::is_contained(kTiles, 504));
+}
+
+// A channel dim of one is a dim in name only: it has nothing to wrap into and
+// nothing to step over, so a tile that is a multiple of the filter window moves
+// no spatial coordinate however the layout orders the merge. Depthwise convs
+// are all of this shape, and `tier1-conv-configs` writes their input as
+// `-I G0NC1`, which interleaves the unit dims among the spatial ones.
+TEST(TuningParamAxesTest, AUnitChannelDimAlignsWhateverTheLayoutSays) {
+  ConvModule e([](OpBuilder &b) { return b.getF32Type(); },
+               /*filterSpatial=*/3, "gfx942", /*channels=*/1,
+               /*outChannels=*/256, /*inSpatial=*/14, /*batch=*/64,
+               /*inputLayout=*/{"gi", "0i", "ni", "ci", "1i"});
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Full);
+  ASSERT_TRUE(axes);
+
+  // gemmK is the 3x3 filter and nothing else, so the one aligned tile is the
+  // one that consumes it whole.
+  EXPECT_TRUE(llvm::is_contained(axisOf(*axes, "kPerBlock"), 9));
+}
+
+// With channels to walk, the same interleaved layout is the case the alignment
+// cannot help: a spatial dim sits outermost in the merge, so it moves whenever
+// the dims below it wrap, and no tile size stops the input window moving with
+// the K loop. The factor is 1 and the axis keeps to the ladders.
+TEST(TuningParamAxesTest, AnInterleavedLayoutWithChannelsHasNoAlignment) {
+  ConvModule e([](OpBuilder &b) { return b.getF32Type(); },
+               /*filterSpatial=*/3, "gfx942", /*channels=*/64,
+               /*outChannels=*/256, /*inSpatial=*/14, /*batch=*/64,
+               /*inputLayout=*/{"gi", "0i", "ni", "ci", "1i"});
+  std::unique_ptr<TuningParamAxes> axes =
+      createTunableParamAxes(*e.module, TuningParamSetKind::Full);
+  ASSERT_TRUE(axes);
+
+  std::vector<int64_t> kTiles = axisOf(*axes, "kPerBlock");
+  EXPECT_FALSE(llvm::is_contained(kTiles, 9));
+  EXPECT_FALSE(llvm::is_contained(kTiles, 27));
+}
+
 // A 1x1 filter merges only the channel dim into gemmK, which makes it a GEMM as
 // far as the K index computation goes, and a GEMM has no alignment to offer
 // tiles for. The odd multiples of 9 are what tells the two apart: nothing else
@@ -650,21 +723,6 @@ TEST(TuningParamAxesTest, A1x1ConvHasNoFilterAlignmentToFollow) {
   std::vector<int64_t> kTiles = axisOf(*axes, "kPerBlock");
   EXPECT_FALSE(llvm::is_contained(kTiles, 9));
   EXPECT_FALSE(llvm::is_contained(kTiles, 27));
-}
-
-// Where the K tile has to be a power of two there is no honouring the filter's
-// alignment at all, since no multiple of 9 is one: gfx950 miscompiles the
-// peeled K loop, so a conv's K axis stays the pow2 ladder just as a GEMM's
-// does.
-TEST(TuningParamAxesTest, ConvKTilesStayPow2WhereTheyMust) {
-  ConvModule e([](OpBuilder &b) { return b.getF32Type(); },
-               /*filterSpatial=*/3, "gfx950");
-  std::unique_ptr<TuningParamAxes> axes =
-      createTunableParamAxes(*e.module, TuningParamSetKind::Full);
-  ASSERT_TRUE(axes);
-
-  EXPECT_EQ(axisOf(*axes, "kPerBlock"),
-            (std::vector<int64_t>{16, 32, 64, 128}));
 }
 
 // The wave counts are the ones that fit `maxHardwareWorkgroupSize`, so a wave32

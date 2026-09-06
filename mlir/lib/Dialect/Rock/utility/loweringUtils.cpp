@@ -71,37 +71,45 @@ int64_t mlir::rock::kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
     return 1;
 
   ConvolutionDims convDims = ConvolutionDims::fromOp(op);
-  // Walking the input layout in order collects the gemmK-merged dims in the
-  // same order the merge lists them in, so the first entry is the merge's
+  // Walking the input layout in order meets the gemmK-merged dims in the same
+  // order the merge lists them in, so the first one met is the merge's
   // outermost dim.
-  SmallVector<int64_t> mergedExtents;
+  size_t mergedDims = 0;
   bool channelIsOutermost = false;
   for (Attribute nameAttr : inputLayout) {
     StringRef name = cast<StringAttr>(nameAttr).getValue();
     if (name == "ci") {
-      channelIsOutermost = mergedExtents.empty();
-      mergedExtents.push_back(convDims.c);
+      channelIsOutermost = mergedDims == 0;
+      ++mergedDims;
       continue;
     }
     for (auto [i, filLen] : llvm::enumerate(convDims.fil))
       if (isInputSpatialDimName(name, i))
-        mergedExtents.push_back(filLen);
+        ++mergedDims;
   }
-  if (mergedExtents.size() != convDims.fil.size() + 1)
+  if (mergedDims != convDims.fil.size() + 1)
     return 1;
 
   // The spatial dims have to be the fastest changing ones, i.e. the channel dim
   // has to be the merge's outermost. Otherwise a spatial dim sits above another
   // merged dim and moves as soon as that one wraps.
-  if (!channelIsOutermost)
+  //
+  // Unless there is only one channel, in which case the channel dim is a dim in
+  // name only: it has nothing to wrap into and nothing to step over, so the
+  // merge is the filter window on its own however the layout spells it, and a
+  // tile that is a multiple of the window still moves no spatial coordinate. A
+  // depthwise conv is this case -- one channel per group, and its input layouts
+  // park that unit dim wherever they please.
+  if (!channelIsOutermost && convDims.c != 1)
     return 1;
 
   // Only the outermost dim advances without a carry, so the tile has to be a
-  // multiple of everything below it.
-  int64_t trailing = 1;
-  for (int64_t len : llvm::drop_begin(mergedExtents))
-    trailing *= len;
-  return trailing > 0 ? trailing : 1;
+  // multiple of everything below it, which either way is the filter window: the
+  // channel dim is above all of them or it counts for nothing.
+  int64_t window = 1;
+  for (int64_t filLen : convDims.fil)
+    window *= filLen;
+  return window > 0 ? window : 1;
 }
 
 bool mlir::rock::is4GBMemoryType(ShapedType type) {

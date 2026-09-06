@@ -320,16 +320,19 @@ std::vector<uint32_t> kPerBlockValues(RockGemmWrapperInterface gemmOp,
 // where no pow2 tile already tiles K cleanly. Those keep the *enumerated*
 // product small, which is a cost a search does not pay: it pays per benchmark,
 // picks the K tile as one value among many, and finds out by measuring which
-// one a shape wants. So the axis carries them all, and `MAX_K_PER_BLOCK`, the
-// bound every K ladder here answers to, is the only one it keeps.
-std::vector<int64_t>
+// one a shape wants. So the axis carries them all, up to `MAX_K_PER_BLOCK`.
+//
+// Bounded by the problem's K as well, but not here: `capKPerBlockByK` does it
+// to the axis these join, since a tile past K is one to drop wherever it came
+// from.
+std::vector<uint32_t>
 convAlignedKPerBlockValues(RockGemmWrapperInterface gemmOp) {
   int64_t alignment = kPerBlockAlignmentFactor(gemmOp);
   if (alignment <= 1)
     return {};
-  std::vector<int64_t> values;
+  std::vector<uint32_t> values;
   for (int64_t tile = alignment; tile <= kMaxKPerBlock; tile += alignment)
-    values.push_back(tile);
+    values.push_back(static_cast<uint32_t>(tile));
   return values;
 }
 
@@ -518,6 +521,70 @@ bool valuesAreAdmissible(ArrayRef<std::vector<int64_t>> axes,
   return true;
 }
 
+// Widens `axes` until every config the quick list spells is on them.
+//
+// The quick list is part of the space these axes describe: `Full` and
+// `Exhaustive` both fall through to `createGemmTuningRangeQuick`, so its
+// configs are enumerated and benchmarked like any other. The ladders here are
+// built from `getRangeGemm` alone, though, and that is shaped by the problem
+// while the quick list is a fixed table distilled from sweeps. Where the two
+// disagree -- an M of 1, whose `computeDPerBlock` collapses to a single tile of
+// 1 while the list still proposes its 64 -- the axes end up not holding a value
+// the space offers.
+//
+// Which matters most for the one config a search starts from. `LLMSearch` takes
+// the list's first config as the default it writes every prompt around and
+// completes every sparse proposal against, so an off-axis default is a default
+// `isFeasible` refuses: in one 938-problem run, 231 problems showed a default
+// naming a value its own axis lacked, and those problems lost 27% of their
+// proposals to `NotOnAxis` against 1% everywhere else.
+//
+// So the axes widen to the space rather than the space narrowing to the axes.
+// The alternative -- moving the shown default onto the axes -- answers a
+// question nobody asked: the heuristic's config is the one measured thing here,
+// and a search told to start somewhere else starts worse.
+//
+// Knobs are left alone. Their axes hold 0 and 1 while every config the list
+// hands out spells `kKnobDefault`, which `valuesAreAdmissible` accepts without
+// listing, deliberately (see `TuningParamAxes::getKnobParams`).
+void admitQuickConfigs(Operation *op, ArrayRef<bool> knobParams,
+                       std::vector<std::vector<int64_t>> &axes) {
+  auto mod = op->getParentOfType<ModuleOp>();
+  if (!mod)
+    return;
+  std::unique_ptr<TuningParamSet> quick(
+      createTunableParamSpace(mod, TuningParamSetKind::Quick));
+  if (!quick)
+    return;
+
+  SmallVector<int64_t> values;
+  for (const PerfConfigString &perfConfig : quick->tuningRange) {
+    RockTuningParamAttrInterface params =
+        parsePerfConfig(op->getContext(), perfConfig);
+    if (!params)
+      continue;
+    values.clear();
+    params.getParamValues(values);
+    if (values.size() != axes.size())
+      continue;
+    for (auto [axis, isKnob, value] :
+         llvm::zip_equal(axes, knobParams, values)) {
+      if (isKnob)
+        continue;
+      // Every axis is built in ascending order, and stays that way: a prompt
+      // reads them, and a ladder that jumped would read as a mistake. Asserted
+      // because the search below is how the value's place is found, and it
+      // would answer an unsorted axis with a duplicate or a value out of order
+      // rather than with a failure.
+      assert(llvm::is_sorted(axis) &&
+             "an axis is read, and searched, in order");
+      auto at = llvm::lower_bound(axis, value);
+      if (at == axis.end() || *at != value)
+        axis.insert(at, value);
+    }
+  }
+}
+
 class GemmParamAxes : public TuningParamAxes {
 public:
   GemmParamAxes(RockGemmWrapperInterface gemmOp, TuningParamSetKind kind)
@@ -552,13 +619,15 @@ public:
     // non-power-of-two K only to the tiles at its own scale, which keeps the
     // enumerated product small rather than answering what a kernel can hold, so
     // a search takes the union and pairs it with every tile.
-    SmallVector<int64_t> kPerBlocks;
+    // Held as the `uint32_t` the ladders are made of, so that `capKPerBlockByK`
+    // can be asked the same question here it answers for them.
+    std::vector<uint32_t> kPerBlocks;
     for (int64_t mPerBlock : byKey["mPerBlock"]) {
       for (int64_t nPerBlock : byKey["nPerBlock"]) {
         for (int64_t kPerBlock : kTilesFor(mPerBlock, nPerBlock)) {
           if (exceedsTritonTensorCap(mPerBlock, nPerBlock, kPerBlock))
             continue;
-          kPerBlocks.push_back(kPerBlock);
+          kPerBlocks.push_back(static_cast<uint32_t>(kPerBlock));
         }
       }
     }
@@ -567,6 +636,12 @@ public:
     // two at all, since every one of them is one that isn't.
     if (!requirePow2.k)
       llvm::append_range(kPerBlocks, convAlignedKPerBlockValues(gemmOp));
+    // `computeKPerBlock` caps its own ladder by K, but the aligned tiles have
+    // just been added past it: they answer to the filter's footprint and know
+    // nothing of the problem. So the axis is capped once, here, where every K
+    // tile it will offer has arrived.
+    if (!kPerBlocks.empty())
+      capKPerBlockByK(kPerBlocks, gemmOp.getGemmSize().k);
     llvm::sort(kPerBlocks);
     kPerBlocks.erase(llvm::unique(kPerBlocks), kPerBlocks.end());
     byKey["kPerBlock"].assign(kPerBlocks.begin(), kPerBlocks.end());
@@ -582,6 +657,7 @@ public:
     exemplar = makeExemplar(gemmOp.getContext(), byKey);
     axes = orderAxes(exemplar, byKey);
     knobParams = findKnobParams(exemplar);
+    admitQuickConfigs(gemmOp, knobParams, axes);
   }
 
   ArrayRef<std::vector<int64_t>> getAxes() const override { return axes; }
@@ -754,6 +830,7 @@ public:
     exemplar = makeExemplar(gemmGemmOp.getContext(), byKey);
     axes = orderAxes(exemplar, byKey);
     knobParams = findKnobParams(exemplar);
+    admitQuickConfigs(gemmGemmOp, knobParams, axes);
   }
 
   ArrayRef<std::vector<int64_t>> getAxes() const override { return axes; }

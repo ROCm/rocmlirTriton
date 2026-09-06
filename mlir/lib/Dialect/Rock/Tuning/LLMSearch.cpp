@@ -118,6 +118,12 @@ struct Workload {
   //===--------------------------------------------------------------------===//
 
   std::vector<std::string> filterLayout, inputLayout, outputLayout;
+  /// Each tensor's extents, in the order its layout above names them. What
+  /// they add is which dims are one long: a dim of extent one sits wherever a
+  /// layout puts it without changing a byte of the tensor, so two layouts that
+  /// agree once those are set aside describe the same memory. The prompt says
+  /// so rather than making a reader work it out (see `_standard_layout`).
+  std::vector<int64_t> filterShape, inputShape, outputShape;
   std::vector<int64_t> padding, strides, dilations;
   /// The multiple a `kPerBlock` wants to be for the conv's K index to stay
   /// cheap to advance, i.e. `kPerBlockAlignmentFactor`. Worth stating and not
@@ -230,6 +236,15 @@ std::vector<std::string> layoutNames(Operation *op, StringRef attrName) {
   return names;
 }
 
+/// A convolution operand's extents, in the order its layout names them.
+std::vector<int64_t> shapeOf(Value tensor) {
+  auto shaped = dyn_cast<ShapedType>(tensor.getType());
+  if (!shaped || !shaped.hasStaticShape())
+    return {};
+  ArrayRef<int64_t> shape = shaped.getShape();
+  return {shape.begin(), shape.end()};
+}
+
 std::vector<int64_t> intsOf(ArrayAttr values) {
   std::vector<int64_t> result;
   if (!values)
@@ -248,6 +263,9 @@ void gatherConvolution(Workload &workload, RockConvInterface conv) {
   workload.filterLayout = layoutNames(op, "filter_layout");
   workload.inputLayout = layoutNames(op, "input_layout");
   workload.outputLayout = layoutNames(op, "output_layout");
+  workload.filterShape = shapeOf(conv.getConvFilter());
+  workload.inputShape = shapeOf(conv.getConvInput());
+  workload.outputShape = shapeOf(conv.getConvOutput());
   workload.padding = intsOf(conv.getPadding());
   workload.strides = intsOf(conv.getStrides());
   workload.dilations = intsOf(conv.getDilations());
@@ -453,6 +471,12 @@ llvm::json::Object problemOf(const Workload &workload) {
     problem["inputLayout"] = arrayOf(workload.inputLayout);
   if (!workload.outputLayout.empty())
     problem["outputLayout"] = arrayOf(workload.outputLayout);
+  if (!workload.filterShape.empty())
+    problem["filterShape"] = arrayOf(workload.filterShape);
+  if (!workload.inputShape.empty())
+    problem["inputShape"] = arrayOf(workload.inputShape);
+  if (!workload.outputShape.empty())
+    problem["outputShape"] = arrayOf(workload.outputShape);
   if (!workload.padding.empty())
     problem["padding"] = arrayOf(workload.padding);
   if (!workload.strides.empty())

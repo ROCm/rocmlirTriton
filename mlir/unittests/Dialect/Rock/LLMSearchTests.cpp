@@ -574,6 +574,15 @@ TEST(LLMSearchTest, DescribesTheKTileAChannelsFirstConvolutionWants) {
   // The 3x3 filter's footprint: gemmK is Merge(c, 3, 3), and a tile that is
   // not a multiple of 9 lands mid-filter.
   EXPECT_EQ(problem->getInteger("kPerBlockAlignment"), 9);
+
+  // Each layout's extents alongside it, which is what says whether a dim named
+  // mid-layout is a real one or a 1 that could have been written anywhere.
+  const llvm::json::Array *inputShape = problem->getArray("inputShape");
+  ASSERT_TRUE(inputShape);
+  ASSERT_EQ(inputShape->size(), inputLayout->size());
+  EXPECT_EQ((*inputShape)[2].getAsInteger(), 8);
+  EXPECT_TRUE(problem->getArray("filterShape"));
+  EXPECT_TRUE(problem->getArray("outputShape"));
 }
 
 TEST(LLMSearchTest, DescribesAttentionsHeadsMaskingAndSecondGemm) {
