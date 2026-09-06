@@ -72,6 +72,15 @@ RESPONSE_ALIASES = {
     "useBf16x3ForF32": "bf",
 }
 
+# The parameters the system prompt describes whatever the space says about
+# them, because they are what a perf config is mostly about. `build_system_prompt`
+# gates every other bullet on the parameter having more than one value; these
+# it emits unconditionally, so their aliases are worth the handful of
+# characters even where the space pins them. The alternative is a model that
+# has just read a paragraph about mPerBlock and finds no way to spell it.
+ALWAYS_DESCRIBED = ("mPerBlock", "nPerBlock", "mPerBlockG0", "nPerBlockG0", "nPerBlockG1",
+                    "kPerBlock")
+
 
 def alias_config(config: Config) -> Config:
     """Spell known perf-config fields with their short response names."""
@@ -79,8 +88,19 @@ def alias_config(config: Config) -> Config:
 
 
 def render_response_aliases(space: Dict[str, Sequence[int]]) -> str:
-    """The aliases available for this problem, as a compact legend."""
-    pairs = [f"{alias}={name}" for name, alias in RESPONSE_ALIASES.items() if name in space]
+    """The aliases available for this problem, as a compact legend.
+
+    A parameter the space pins to a single value is left out, for the reason
+    `knob_names` gives for leaving out a pinned knob: naming it reads as an
+    invitation, and a config that takes the invitation is refused before it is
+    compiled. Across one conv sweep every prompt offered aliases for numCTAs,
+    kpack, matrixInstrNonkdim, useAsyncCopy and useBlockPingpong while the
+    Configuration Space three lines below said each was fixed.
+    """
+    pairs = [
+        f"{alias}={name}" for name, alias in RESPONSE_ALIASES.items()
+        if name in space and (len(space[name]) > 1 or name in ALWAYS_DESCRIBED)
+    ]
     return "  " + ", ".join(pairs)
 
 

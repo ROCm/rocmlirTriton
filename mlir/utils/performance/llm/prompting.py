@@ -54,15 +54,6 @@ from .workload import (
 
 RETURN_JSON_ONLY = 'Return minified JSON only: {"configs":[...]}'
 
-FEASIBILITY_RULE = ("Every value you choose must appear in that parameter's list in the "
-                    "Configuration Space, but that is necessary and not sufficient: the lists "
-                    "hold each parameter's values independently, and the tuning space also "
-                    "checks combinations of them against LDS capacity, Triton's per-tensor "
-                    "element cap, a compile-cost budget and the register budget behind "
-                    "wavesPerEU. A config can sit entirely on the lists and still be refused "
-                    "before it is ever compiled. Refused configs are reported back to you "
-                    "under Refused Configs, so read them.")
-
 _INITIAL_STRATEGY_BASE_LINES = (
     "Use about 40% near-default, 40% balanced and 20% aggressive candidates.",
     "Keep configs sparse: 2-6 changed fields, omitting unchanged defaults.",
@@ -81,22 +72,6 @@ _DEFAULT_REFINEMENT_LINES = (
     "Use most of the rest for 1-2 field mutations of Anchor 2.",
     "Reserve at most a small minority for one clearly different family, not random noise.",
 )
-
-_SYSTEM_PREAMBLE = textwrap.dedent("""\
-    You are an expert GPU kernel autotuner for AMD GPUs. You are tuning a
-    rocmlirTriton "perf config": a fixed set of integer parameters that decides
-    how a matrix-multiply kernel is tiled, scheduled and lowered.
-
-    rocmlirTriton is an MLIR kernel generator for AMD GPUs: it builds the
-    kernel in its own `rock` dialect and lowers that to Triton's TTIR, and on
-    through TTGIR and LLIR, so a perf config settles the shape of the Triton
-    kernel that comes out.
-
-    Use the provided Configuration Space and Default Configuration as the
-    source of truth for allowed parameter names, the values each may take, and
-    what an unspecified parameter means. Every parameter is a scalar integer.
-
-    The block tiles (the primary knobs):""")
 
 # The same bullet under the two names the tiles go by, rather than one bullet
 # that renames itself halfway through. Which one the kernel uses is in the
@@ -120,37 +95,6 @@ _KPERBLOCK_BULLET = textwrap.dedent("""\
       utilization, but more LDS per stage. The A and B tiles together must fit
       in LDS numStages times over, which is what makes large tiles and deep
       pipelining compete for the same budget.""")
-
-_GENERAL_HEURISTICS = textwrap.dedent("""\
-    General heuristics:
-    - Read the shapes against the CU count before choosing a tile. A tile that
-      leaves most of the machine idle cannot be fast however well scheduled.
-    - Powers of two are the usual tiles, but they are not the only ones the
-      space allows, and its lists are the authority on that rather than this
-      habit. The M and N tiles also take every multiple of 16, and the powers
-      of two below 16. kPerBlock goes further: where the kernel is a
-      convolution whose K index wants an aligned tile, the list carries the
-      multiples of that alignment, which are usually neither powers of two nor
-      multiples of 16 and are the right answer on that kernel. The Problem
-      section says so when it applies.
-    - Deep pipelining and large tiles compete for LDS; do not raise both.
-    - Prefer changes whose effect is attributable: move the tiles, or
-      numStages, or splitKFactor, rather than rewriting every field at once.""")
-
-_OUTPUT_CONTRACT = textwrap.dedent("""\
-    Output contract:
-    - Return minified JSON on a single line. No markdown, code fences,
-      comments, pretty-printing, or trailing commas.
-    - Emit exactly one top-level object: {"configs":[...]} and make every
-      config different from the others.
-    - Do not use Python syntax or expressions.
-    - Only specify parameters you want to change; unspecified = default.
-    - Use the short names in Response Aliases. Full parameter names are also
-      accepted. Use only values from that parameter's Configuration Space list.
-    - Every value is a plain integer. Never a list, a string, or a float.
-    - If you are unsure about a parameter, omit it rather than guessing.
-    - Use null not None, true/false not True/False.
-    - Return ONLY minified JSON: {"configs":[...]}""")
 
 
 def _section(title: str, body: str) -> str:
@@ -254,22 +198,6 @@ _GEMM_GEMM_PARAM_TAILS: Dict[str, str] = {
   the knob is a real option on this kernel.""",
 }
 
-_KNOB_INTRO = textwrap.dedent("""\
-    The use* knobs are tri-state, and this is the part most easily got wrong.
-    Each takes -1, 0 or 1:
-    - -1 means "let the compiler decide", and applies a per-architecture
-      heuristic. It is the default, and it is a reasonable answer. The hardware
-      section says which way it goes here.
-    - 0 forces the transform off; 1 forces it on.
-    Every seed config below spells -1 in all of them, and 0 in wavesPerEU and
-    gridGroupSize. Read nothing into that. Those configs are distilled from
-    sweeps that pinned exactly those fields and varied only the tiles and the
-    schedule, so a column of -1 records what was never tried rather than what
-    won. They are the least explored part of this space, not the settled part.
-    Do not treat these as booleans and do not set them all. Move one when you
-    have a reason to believe the heuristic is wrong for this shape, and leave
-    the rest at -1. What each gates:""")
-
 # The knobs the space left room for. Same rule as `_PARAM_BULLETS`: a knob
 # pinned to -1 builds the one kernel whatever it is asked for.
 _KNOB_BULLETS: Dict[str, str] = {
@@ -299,34 +227,6 @@ _KNOB_BULLETS: Dict[str, str] = {
         """- useBf16x3ForF32: decomposes an f32 dot into three bf16 dots. Only
   relevant to f32 inputs.""",
 }
-
-_DUPLICATE_RULES_INTRO = textwrap.dedent("""\
-    Some knob values build a kernel that has already been timed, and spending a
-    candidate on one measures nothing. Before proposing an explicit 0 or 1,
-    check it against these:""")
-
-_BUFFER_DUPLICATE_RULE = textwrap.dedent("""\
-    - On useBufferOps and useBufferAtomics, -1 resolves to on with no
-      architecture or shape entering into it. So 1 is the same kernel as -1 on
-      both, and 0 is the only value that changes anything.""")
-
-_EPILOGUE_DUPLICATE_RULE = textwrap.dedent("""\
-    - useOptimizeEpilogue at -1 weighs the store tail against the depth of the
-      K loop, and it only ever declines to bypass registers when the stored
-      element is 16 bits wide. On any other output type -1 and 1 agree, and
-      again only 0 differs.""")
-
-# One rule per knob rather than one covering both, so that a space with only
-# one of them open does not carry the other's name into the prompt.
-_PINGPONG_DUPLICATE_RULE = textwrap.dedent("""\
-    - The pingpong pass is not run at all when numStages is 1, so at that depth
-      useBlockPingpong=1 builds the kernel -1 already built. Raise numStages in
-      the same config or leave the knob alone.""")
-
-_ASYNC_COPY_DUPLICATE_RULE = textwrap.dedent("""\
-    - An asynchronous load needs at least two pipeline buffers, so at numStages
-      of 1 useAsyncCopy=1 builds the kernel -1 already built. Again, move
-      numStages in the same config or leave the knob alone.""")
 
 
 def _bullets_for(bullets: Dict[str, str], space: Optional[Dict[str, Sequence[int]]],

@@ -342,6 +342,30 @@ class TestSpaceRendering(unittest.TestCase):
             self.assertIn(name, rendered)
         self.assertIn("default 4", rendered)
 
+    def test_offers_an_alias_for_every_parameter_that_can_move(self):
+        rendered = configs.render_response_aliases(SPACE)
+        for alias in ("m=mPerBlock", "n=nPerBlock", "p=kpack", "ac=useAsyncCopy"):
+            self.assertIn(alias, rendered)
+
+    def test_leaves_out_an_alias_for_a_parameter_the_space_pinned(self):
+        # Same reason the pinned knobs are left out of `knob_names`: a legend
+        # entry reads as an invitation, and a config that takes it is refused
+        # before it is compiled. Across one conv sweep every prompt offered
+        # aliases for five parameters the Configuration Space had fixed.
+        rendered = configs.render_response_aliases({**SPACE, "kpack": [1], "useAsyncCopy": [-1]})
+        self.assertNotIn("kpack", rendered)
+        self.assertNotIn("useAsyncCopy", rendered)
+        self.assertIn("m=mPerBlock", rendered)
+
+    def test_keeps_the_block_tiles_even_where_they_are_pinned(self):
+        # The system prompt describes the tiles whatever the space says about
+        # them, so a model that has just read a paragraph about mPerBlock must
+        # have a way to spell it -- unlike the parameters whose prose is gated
+        # on their being tunable at all.
+        rendered = configs.render_response_aliases({**SPACE, "mPerBlock": [64], "kpack": [1]})
+        self.assertIn("m=mPerBlock", rendered)
+        self.assertNotIn("kpack", rendered)
+
 
 class TestFeedback(unittest.TestCase):
     """What a refinement round is told about the last one."""
@@ -1180,6 +1204,14 @@ class TestPromptConstruction(unittest.TestCase):
         for alias in ("m=mPerBlock", "n=nPerBlock", "p=kpack", "ac=useAsyncCopy"):
             self.assertIn(alias, prompt)
         self.assertIn('"m":64', prompt)
+
+    def test_the_first_round_keeps_pinned_parameters_out_of_the_aliases(self):
+        # The legend and the Configuration Space are three lines apart, so a
+        # prompt that offers `p=kpack` above `kpack: fixed at 1` is arguing
+        # with itself.
+        prompt = proposer.build_prompt(self.request(space={**SPACE, "kpack": [1]}))
+        self.assertIn("kpack: fixed at 1", prompt)
+        self.assertNotIn("p=kpack", prompt)
 
     def test_the_first_round_offers_the_quick_list(self):
         # The seeds are the heuristic's own answer, which is both a decent
