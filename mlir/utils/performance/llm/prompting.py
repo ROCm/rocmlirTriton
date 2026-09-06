@@ -588,8 +588,17 @@ def build_initial_prompt(request: Dict[str, Any]) -> str:
     """Build the full initial user prompt, for the round that has no results."""
     space = request.get("space", {})
     context, hints = _build_problem_context(request)
+    # The shapes and the CU count are argued for in the standing instructions
+    # and worked out in What The Shapes Suggest, both of which the model reads
+    # long before it reads this. What it reads last is a strategy section
+    # asking for coverage and spread, and that is what a round 0 reply looked
+    # like: fifteen configs justified as "vary this field", with the
+    # convolution, its odd filter and the chip's 48 CUs never mentioned. So
+    # this points back at those sections rather than restating them.
     task_section = ("Propose the first batch of configs. Include both near-default and "
-                    f"exploratory candidates. {RETURN_JSON_ONLY}")
+                    "exploratory candidates, and justify every value you change against "
+                    "the Problem, GPU Hardware and What The Shapes Suggest sections rather "
+                    f"than by spreading values. {RETURN_JSON_ONLY}")
     return _join_sections(
         context,
         build_seed_config_section(request.get("seedConfigs", []), request.get("defaultConfig", {}),
