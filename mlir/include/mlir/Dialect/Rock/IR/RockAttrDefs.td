@@ -259,7 +259,7 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
     ];
 
     let assemblyFormat = [{
-        `<` $map `by` ` ` `[` $ops `]` `bounds` `=` ($upperBounds^) : (`[` `]`)? `->` ($lowerBounds^) : (`[` `]`)? `>`
+        `<` $map `by` ` ` `[` $ops `]` `bounds` `=` custom<Bounds>($upperBounds) `->` custom<Bounds>($lowerBounds) `>`
     }];
     let genVerifyDecl = 1;
 }

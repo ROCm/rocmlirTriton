@@ -167,6 +167,52 @@ ArrayAttr noTransformsArray(Builder &b, size_t n) {
 }
 
 //===---------------------------------------------------------
+// Extent printing
+//===---------------------------------------------------------
+
+/// Print a dimension extent, spelling an unknown one `?` as shaped types do.
+/// A transform's bounds are required to agree with the shape of the tensor it
+/// is applied to, so the two should read the same way.
+static void printExtent(AsmPrinter &printer, int64_t extent) {
+  if (ShapedType::isDynamic(extent))
+    printer << "?";
+  else
+    printer << extent;
+}
+
+/// Parse a dimension extent, accepting `?` for an unknown one.
+static ParseResult parseExtent(AsmParser &parser, int64_t &extent) {
+  if (parser.parseOptionalQuestion().succeeded()) {
+    extent = ShapedType::kDynamic;
+    return success();
+  }
+  return parser.parseInteger(extent);
+}
+
+/// The `bounds` of a TransformMapAttr. These are a plain `DenseI64ArrayAttr`,
+/// whose own printer has no notion of shapes and so would spell an unknown
+/// extent as the raw `ShapedType::kDynamic` sentinel.
+static void printBounds(AsmPrinter &printer, DenseI64ArrayAttr bounds) {
+  printer << "[";
+  if (bounds)
+    llvm::interleaveComma(bounds.asArrayRef(), printer, [&](int64_t extent) {
+      printExtent(printer, extent);
+    });
+  printer << "]";
+}
+
+static ParseResult parseBounds(AsmParser &parser, DenseI64ArrayAttr &bounds) {
+  SmallVector<int64_t> extents;
+  if (parser.parseCommaSeparatedList(
+          AsmParser::Delimiter::Square, [&]() -> ParseResult {
+            return parseExtent(parser, extents.emplace_back());
+          }))
+    return failure();
+  bounds = DenseI64ArrayAttr::get(parser.getContext(), extents);
+  return success();
+}
+
+//===---------------------------------------------------------
 // TransformAttr
 //===---------------------------------------------------------
 template <typename T>
@@ -210,7 +256,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
   if (parser.parseOptionalLBrace().succeeded()) {
     if (parseAndGather<int64_t>(parser, AsmParser::Delimiter::None, params,
                                 [&](int64_t &out) -> ParseResult {
-                                  return parser.parseInteger(out);
+                                  return parseExtent(parser, out);
                                 }) ||
         parser.parseRBrace()) {
       return {};
@@ -276,7 +322,8 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   ArrayRef<int64_t> params = getParams();
   if (params.size() > 0) {
     printer << "{";
-    llvm::interleaveComma(params, printer);
+    llvm::interleaveComma(params, printer,
+                          [&](int64_t param) { printExtent(printer, param); });
     printer << "}";
   }
   printer << " [";
