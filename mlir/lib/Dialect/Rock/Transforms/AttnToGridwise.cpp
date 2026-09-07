@@ -305,6 +305,7 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
 
   int64_t gridSize =
       (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g * splitKV;
+  assert(gridSize > 0);
 
   IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
@@ -513,6 +514,12 @@ static LogicalResult commonAttentionGemmElmtGemm(
     lseStores = std::move(lseInfo.stores);
     lseViews = std::move(lseInfo.outputViews);
     fusionInputMapLse = std::move(lseInfo.fusionInputMap);
+  }
+  
+  for (Value operand : {a, b, c}) {
+    if (!cast<ShapedType>(operand.getType()).hasStaticShape())
+      return op.emitError("cannot compute a static grid size for an attention "
+                          "op with dynamically shaped operands");
   }
 
   // Note: the gridwise ops take M x K, K x N and K x N

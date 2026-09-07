@@ -224,9 +224,8 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
         padMatrix(scaleB, rw, loc, "gemmN", extraPad.n, "gemmK", padScaleK);
   }
 
-  if (failed(computeGridSize(rw, op, a, b))) {
-    return op.emitError("failed to compute the grid size of `GemmOp`");
-  }
+  if (failed(computeGridSize(rw, op, a, b)))
+    return failure();
 
   auto newOutputType = RankedTensorType::get(
       cast<ShapedType>(outputViews[0].getType()).getShape(), op.getCType());
@@ -479,6 +478,11 @@ LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,
   auto tuningParams = cast<GemmParamsAttr>(params);
   auto mPerBlock = tuningParams.getMPerBlock();
   auto nPerBlock = tuningParams.getNPerBlock();
+
+  if (ShapedType::isDynamic(G) || ShapedType::isDynamic(M) ||
+      ShapedType::isDynamic(N))
+    return op.emitOpError("cannot compute a static grid size for a gemm with "
+                          "dynamic G, M or N dimensions");
 
   const auto gridSize = (M / mPerBlock) * (N / nPerBlock) * G;
   assert(gridSize > 0);
