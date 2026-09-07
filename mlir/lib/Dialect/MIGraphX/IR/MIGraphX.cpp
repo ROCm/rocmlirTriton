@@ -183,6 +183,13 @@ RankedTensorType MIXRShapedType::asMemoryLayoutTensor() const {
   ArrayRef<int64_t> shape = getShape();
   ArrayRef<int64_t> strides = getStrides();
 
+  // Everything below is integer arithmetic on lengths and strides.
+  // If ShapedType::kDynamic (a large negative number) is passed, it
+  // would yield a wrong layout, reject dynamic shapes now.
+  auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
+  if (llvm::any_of(shape, isDynamic) || llvm::any_of(strides, isDynamic))
+    return nullptr;
+
   size_t nStrides = strides.size();
   SmallVector<int64_t> stridesToStandardPerm;
   getStridePermutation(stridesToStandardPerm);

@@ -150,6 +150,17 @@ static Value createCastOp(PatternRewriter &rewriter, Location loc,
   return res;
 }
 
+static LogicalResult checkStaticShapes(Operation *op) {
+  auto isDynamic = [](Type type) {
+    auto shaped = dyn_cast<ShapedType>(type);
+    return shaped && !shaped.hasStaticShape();
+  };
+  if (llvm::any_of(op->getOperandTypes(), isDynamic) ||
+      llvm::any_of(op->getResultTypes(), isDynamic))
+    return op->emitError("dynamic shapes are not supported");
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // The general one-to-one conversion and
 //===----------------------------------------------------------------------===//
@@ -217,6 +228,9 @@ struct DotConverter final : public OpConversionPattern<DotType> {
 template <typename ConvType>
 LogicalResult ConvConverter<ConvType>::matchAndRewrite(
     ConvType op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op->getLoc();
   Value input = adaptor.getInput();
   auto inputType = cast<ShapedType>(input.getType());
@@ -582,6 +596,9 @@ static Value unbroadcastScale(PatternRewriter &rewriter, Location loc,
 template <typename DotType>
 LogicalResult DotConverter<DotType>::matchAndRewrite(
     DotType op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op->getLoc();
   auto inA = cast<TypedValue<RankedTensorType>>(adaptor.getInA());
   auto inB = cast<TypedValue<RankedTensorType>>(adaptor.getInB());
@@ -816,6 +833,9 @@ struct SliceConverter final : public OpConversionPattern<migraphx::SliceOp> {
 LogicalResult
 BroadcastConverter::matchAndRewrite(migraphx::BroadcastOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter) const {
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op->getLoc();
   ArrayRef<int64_t> inShape = op.getInput().getType().getShape();
   ArrayRef<int64_t> outShape = op.getOutput().getType().getShape();
@@ -851,6 +871,9 @@ BroadcastConverter::matchAndRewrite(migraphx::BroadcastOp op, OpAdaptor adaptor,
 LogicalResult MultiBroadcastConverter::matchAndRewrite(
     migraphx::MultiBroadcastOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op->getLoc();
   auto inType = cast<RankedTensorType>(adaptor.getInput().getType());
   auto outType = cast<RankedTensorType>(
@@ -940,6 +963,9 @@ ReshapeConverter::matchAndRewrite(migraphx::ReshapeOp op, OpAdaptor adaptor,
 LogicalResult
 SliceConverter::matchAndRewrite(migraphx::SliceOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op->getLoc();
   SmallVector<int64_t, 5> start;
   SmallVector<int64_t, 5> size;
@@ -1025,6 +1051,10 @@ tosa::ConstOp ReduceMeanConverter::createNumElementsTosaConst(
 LogicalResult ReduceMeanConverter::matchAndRewrite(
     migraphx::ReduceMeanOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
+  // The reciprocal of the reduced axis length is materialized as a constant.
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Location loc = op.getLoc();
   ArrayRef<Attribute> axes = op.getAxes().getValue();
   if (axes.size() != 1) {
@@ -1437,6 +1467,10 @@ NegConverter::matchAndRewrite(migraphx::NegOp op, OpAdaptor adaptor,
 LogicalResult
 ReluConverter::matchAndRewrite(migraphx::ReluOp op, OpAdaptor adaptor,
                                ConversionPatternRewriter &rewriter) const {
+  // The zero operand is a dense constant sized to the result.
+  if (failed(checkStaticShapes(op)))
+    return failure();
+
   Value inA = adaptor.getInA();
   auto outType = cast<RankedTensorType>(
       getTypeConverter()->convertType(op.getResult().getType()));
@@ -1664,6 +1698,9 @@ LogicalResult AsLogicalShapeConverter::matchAndRewrite(
   // First, expand ourselves back out to the N-D type that we're logically
   // working with in memory.
   RankedTensorType memoryLayoutType = inType.asMemoryLayoutTensor();
+  if (!memoryLayoutType)
+    return op.emitOpError("input type has strides that cannot be represented "
+                          "as a memory layout");
   Value expanded = in;
   if (in.getType() != memoryLayoutType) {
     auto shapeValue =
