@@ -697,9 +697,176 @@ class TestWorkloadDescription(unittest.TestCase):
         })
         # How K is built, rather than what to do about it: the hints argue for
         # the aligned tiles, and this section says what makes them aligned.
-        for expected in ("Conv:", "strides", "K walks the filter's 15 positions for one "
+        # Nothing here says what the convolution is, only what it lowers to, so
+        # the GEMM line is what carries the kernel's name.
+        for expected in ("Conv, tiled as an implicit GEMM", "strides",
+                         "K walks the filter's 15 positions for one "
                          "input channel, then the next channel's 15"):
             self.assertIn(expected, text)
+
+    def test_says_what_the_gemms_group_dimension_is(self):
+        # The layout legend glosses G, but it says in the same breath that its
+        # letters are the tensors' and not the GEMM's, so the G on the line
+        # above it goes unread. The channel counts are per group for the same
+        # reason: a grouped convolution's M is not its output channels.
+        text = workload.summarize_problem_for_prompt({**self.CONV, "gemmSize": {"g": 4, "m": 64}})
+        self.assertIn("G=groups", text)
+        self.assertIn("channels per group", text)
+
+    # A channels-last 7x7 over 9 channels and a 3x3 over 49: gemmK is C*Y*X, so
+    # both are K=441, and `kPerBlockAlignmentFactor` reports nothing for either
+    # (it bails out on any layout but a channels-first one). Without the sizes
+    # the two prompts differ only in their padding.
+    _SAME_GEMM = {
+        "kernelType": "Conv",
+        "gemmSize": {
+            "g": 1,
+            "m": 64,
+            "k": 441,
+            "n": 6400
+        },
+        "aType": "f16",
+        "bType": "f16",
+        "filterLayout": ["g", "k", "0", "1", "c"],
+        "inputLayout": ["ni", "0i", "1i", "gi", "ci"],
+        "outputLayout": ["no", "0o", "1o", "go", "ko"],
+        "outputShape": [1, 80, 80, 1, 64],
+    }
+
+    def test_spells_every_dimension_of_the_convolution(self):
+        text = workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM, "filterShape": [1, 64, 7, 7, 9],
+            "inputShape": [1, 80, 80, 1, 9]
+        })
+        # The output's spatial extent is named apart from the input's, which
+        # wears the same two letters and need not hold the same numbers.
+        self.assertIn("Conv: N=1 G=1 C=9 H=80 W=80; K=64 Y=7 X=7; out H=80 W=80", text)
+
+    def test_tells_apart_two_convolutions_the_gemm_cannot(self):
+        seven, three = (workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM, "filterShape": [1, 64, tap, tap, channels],
+            "inputShape": [1, 80, 80, 1, channels]
+        }) for tap, channels in ((7, 9), (3, 49)))
+        self.assertIn("C=9 H=80 W=80; K=64 Y=7 X=7", seven)
+        self.assertIn("C=49 H=80 W=80; K=64 Y=3 X=3", three)
+
+    def test_spells_a_window_of_one_rather_than_leaving_it_to_the_layout(self):
+        # `filter=KC (Y, X are 1)` says it too, a line away and by its absence.
+        # A 1x1 is the case where the window matters most to read off quickly,
+        # since it is the one with no window at all.
+        text = workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM, "filterShape": [1, 64, 1, 1, 441],
+            "inputShape": [1, 80, 80, 1, 441]
+        })
+        self.assertIn("K=64 Y=1 X=1", text)
+
+    def test_leaves_out_the_sizes_it_was_not_given(self):
+        # Extents that do not match their layout say nothing safely, since the
+        # pairing of letter to number is positional.
+        text = workload.summarize_problem_for_prompt({**self._SAME_GEMM, "filterShape": [7, 7]})
+        self.assertNotIn("Y=7", text)
+        self.assertIn("out H=80 W=80", text)
+
+    def test_does_not_send_a_depthwise_conv_looking_for_a_second_channel(self):
+        # gemmK is Merge(c, y, x), so with one channel per group it is the
+        # window and nothing after it. The channel-major walk would read as a K
+        # larger than the 9 the GEMM line reports.
+        text = workload.summarize_problem_for_prompt({
+            "kernelType": "Conv",
+            "gemmSize": {
+                "g": 256,
+                "m": 1,
+                "k": 9,
+                "n": 12544
+            },
+            "aType": "f16",
+            "bType": "f16",
+            "filterLayout": ["g", "k", "c", "0", "1"],
+            "filterShape": [256, 1, 1, 3, 3],
+            "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
+            "inputShape": [1, 256, 1, 112, 112],
+            "kPerBlockAlignment": 9,
+        })
+        self.assertIn("That K is the filter window itself, all 9 positions of it", text)
+        self.assertNotIn("the next channel's", text)
+
+    _DEPTHWISE = {
+        "kernelType": "Conv",
+        "gemmSize": {
+            "g": 256,
+            "m": 1,
+            "k": 9,
+            "n": 12544
+        },
+        "aType": "f16",
+        "bType": "f16",
+        "filterLayout": ["g", "k", "c", "0", "1"],
+        "filterShape": [256, 1, 1, 3, 3],
+        "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
+        "inputShape": [1, 256, 1, 112, 112],
+        "kPerBlockAlignment": 9,
+    }
+
+    def test_does_not_send_a_depthwise_conv_after_a_second_channel(self):
+        # gemmK is Merge(c, y, x), so with one channel per group it is the
+        # window and nothing after it. The channel-major walk reads as a K
+        # larger than the 9 the GEMM line reports.
+        text = workload.summarize_problem_for_prompt(self._DEPTHWISE)
+        self.assertIn("That K is the filter window itself, all 9 positions of it", text)
+        self.assertNotIn("the next channel's", text)
+
+    def test_says_a_one_by_one_reduces_over_channels_and_nothing_else(self):
+        # The same collapse at the other end: Merge(c, 1, 1) is c. Nothing said
+        # so, and the two numbers that show it sit on different lines.
+        text = workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM, "filterShape": [1, 64, 1, 1, 441],
+            "inputShape": [1, 80, 80, 1, 441]
+        })
+        self.assertIn("That K is the input channels alone", text)
+
+    def test_tells_the_two_directions_apart(self):
+        # `ConvToGemm.cpp` passes `k` through to gemmM for the forward pass and
+        # merges `c` into it for the backward one, so one sentence saying
+        # "channels" for both leaves the reader to work out which.
+        shapes = {"filterShape": [1, 64, 7, 7, 9], "inputShape": [1, 80, 80, 1, 9]}
+        forward = workload.summarize_problem_for_prompt({**self._SAME_GEMM, **shapes})
+        backward = workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM,
+            **shapes, "kernelType": "ConvBwdData"
+        })
+        self.assertIn("M=output channels per group", forward)
+        self.assertIn("K=(input channels per group)*filter", forward)
+        self.assertIn("M=input channels per group", backward)
+        self.assertIn("K=(output channels per group)*filter", backward)
+        # Backward slices both the filter and the image once the stride bites,
+        # so the whole-filter reading is one the sentence has to deny.
+        self.assertIn("Above a stride of 1", backward)
+        self.assertNotIn("Above a stride of 1", forward)
+
+    def test_keeps_the_element_types_off_the_convolutions_line(self):
+        # `C=i32` is the accumulator and `C=9` the channels. On one line they
+        # are two meanings of C a comma apart, so the types go with the GEMM
+        # whose operands they are.
+        text = workload.summarize_problem_for_prompt({
+            **self._SAME_GEMM, "filterShape": [1, 64, 7, 7, 9],
+            "inputShape": [1, 80, 80, 1, 9],
+            "cType": "i32"
+        })
+        conv, gemm = (next(line
+                           for line in text.splitlines()
+                           if line.startswith(head))
+                      for head in ("  Conv:", "  Implicit GEMM"))
+        self.assertNotIn("C=i32", conv)
+        self.assertIn("C=9", conv)
+        self.assertIn("C=i32", gemm)
+
+    def test_leaves_the_backward_pass_out_of_it(self):
+        # Backward data builds gemmK from the output channels and a slice of
+        # the filter, so a sentence about Merge(c, y, x) would not be about it.
+        text = workload.summarize_problem_for_prompt({
+            **self._DEPTHWISE, "kernelType": "ConvBwdData"
+        })
+        self.assertNotIn("That K", text)
 
     def test_says_which_dimension_each_window_number_moves(self):
         # A bare [2, 1] leaves the reader counting positions, and padding's two
@@ -735,11 +902,16 @@ class TestWorkloadDescription(unittest.TestCase):
             "inputLayout": ["ni", "gi", "ci", "0i", "1i"],
             "outputLayout": ["no", "go", "ko", "0o", "1o"],
         })
-        self.assertIn("Layouts: filter=GKCYX input=NGCHW output=NGKHW", text)
+        # Which end of a layout is the outermost is the whole of what it says,
+        # and the letters alone do not carry it.
+        self.assertIn(
+            "Layouts, outermost dimension first: "
+            "filter=GKCYX input=NGCHW output=NGKHW", text)
         self.assertNotIn("nigici", text)
-        # N and K are the GEMM's dimensions two lines up, so the letters say
-        # whose dimensions they are.
-        self.assertIn("not the GEMM's", text)
+        # N and K name a GEMM dimension apiece as well, and the implicit GEMM
+        # is on the next line wearing both for something else.
+        self.assertIn("The implicit GEMM below has its own G, M, K and N, which are not these",
+                      text)
 
     def test_keeps_the_order_the_layout_came_in(self):
         # Which dimension is innermost is the whole content of a layout.

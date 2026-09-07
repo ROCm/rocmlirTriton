@@ -453,18 +453,157 @@ def _layout_without_unit_dims(dims: Sequence[str], extents: Sequence[int],
     return "".join(kept), unit
 
 
-def _layout_legend(dims: Sequence[str]) -> str:
-    """What those letters stand for, since N and K also name GEMM dimensions."""
-    spatial = sum(1 for dim in dims if dim[:1].isdigit())
+# What each implicit-GEMM dimension is built from, per direction. Checked
+# against `ConvToGemm.cpp`, which is the pass that builds them.
+#
+# Forward merges `ci, y, x` into gemmK and `ni, ho, wo` into gemmN, and passes
+# `k` through as gemmM. So M and K count different channels -- M the output's,
+# K the input's -- and saying "channels" for both leaves the reader to work out
+# which is which.
+#
+# Backward data embeds each filter spatial dim into a dot/tilda pair, slices
+# both, and merges `c, tildaslices` into gemmM and `k, dotslices` into gemmK.
+# The tilda slices are length one by construction, so M really is `c` alone;
+# but the dot slices are a portion of the filter, about `ceil(y / stride)` of
+# it, and gemmN likewise covers a slice of the input image rather than all of
+# it. At unit stride the slices are the whole thing and the distinction
+# vanishes, which is why one wording used to serve both.
+_IMPLICIT_GEMM_TERMS = {
+    "Conv": ("G=groups, M=output channels per group, N=batch*output pixels, "
+             "K=(input channels per group)*filter."),
+    "ConvBwdData": ("G=groups, M=input channels per group, N=batch*input pixels, "
+                    "K=(output channels per group)*filter. Above a stride of 1 the "
+                    "convolution splits into several GEMMs, and N and K each cover one "
+                    "slice of the image and the filter rather than the whole of either."),
+}
+_IMPLICIT_GEMM_TERMS["ConvElementwiseGemm"] = _IMPLICIT_GEMM_TERMS["Conv"]
+
+
+def _filter_footprint(problem: Problem) -> Optional[int]:
+    """How many positions the filter window has, or None where it is not given."""
+    extents = _extents_by_letter(problem, "filter", True)
+    spatial = [extents[letter] for letter in _FILTER_SPATIAL_LETTERS if letter in extents]
+    if not spatial:
+        return None
+    footprint = 1
+    for extent in spatial:
+        footprint *= extent
+    return footprint
+
+
+def _spatial_rank(problem: Problem) -> int:
+    """How many spatial dimensions the convolution has, per its layouts."""
+    dims = problem.get("inputLayout") or problem.get("filterLayout") or ()
+    return sum(1 for dim in dims if dim[:1].isdigit())
+
+
+def _layout_legend(problem: Problem) -> str:
+    """What those letters stand for, right where they are first used.
+
+    N and K name a GEMM dimension apiece as well, and the implicit GEMM is
+    four lines down wearing both of them for something else. Saying so here
+    costs a clause and saves the one misreading that matters.
+    """
+    spatial = _spatial_rank(problem)
     window = _spatial_letters(spatial, True)
     image = _spatial_letters(spatial, False)
     tail = (f", {''.join(window)} the filter window and {''.join(image)} the image"
             if window and image else "")
-    return ("  Those letters name the tensors' dimensions, not the GEMM's: N batch, "
-            f"G group, C input channels, K output channels{tail}.")
+    return ("  Those name the convolution's own dimensions: N batch, G group, C input "
+            f"channels, K output channels{tail}. The implicit GEMM below has its own "
+            "G, M, K and N, which are not these.")
 
 
-def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
+def _extents_by_letter(problem: Problem, label: str, filter_tensor: bool) -> Dict[str, int]:
+    """One tensor's extents, keyed by the letter the layout names them with."""
+    dims = problem.get(f"{label}Layout") or ()
+    shape = problem.get(f"{label}Shape") or ()
+    if not dims or len(dims) != len(shape):
+        return {}
+    return dict(zip(_dim_letters(dims, filter_tensor), shape))
+
+
+def _describe_sizes(problem: Problem) -> Optional[str]:
+    """Every dimension of the convolution itself, by name and extent.
+
+    The GEMM dimensions do not determine the convolution: gemmK is C*Y*X, so a
+    7x7 over 64 channels and a 1x1 over 3136 tile the same M, N and K, and yet
+    the 7x7's K walks the window before it walks a channel -- a step along K is
+    a strided step through the image where the 1x1's is the next channel along.
+    The two want different tiles from the same numbers.
+
+    Nothing else in the prompt closes that gap. `kPerBlockAlignment` says the
+    footprint, but `kPerBlockAlignmentFactor` returns 1 for anything but a
+    channels-first forward conv, which leaves a channels-last 3x3 and 7x7
+    reading alike down to their padding; and a footprint of 49 does not say
+    whether it is 7x7 or 49x1. Inferring the likelier one is work this prompt
+    is not written to ask for -- it goes to small models at low reasoning
+    effort, so what decides a tile is stated rather than left to be worked out.
+
+    Deduplicated across the three tensors, which agree wherever they overlap:
+    the filter's C and the input's are both per group, and the filter's K is
+    the output's. Only the output's spatial extent is its own, since padding
+    and stride move it away from the input's.
+    """
+    image = _extents_by_letter(problem, "input", False)
+    window = _extents_by_letter(problem, "filter", True)
+    result = _extents_by_letter(problem, "output", False)
+
+    def spell(extents: Dict[str, int], letters: Sequence[str]) -> str:
+        return " ".join(f"{letter}={extents[letter]}" for letter in letters if letter in extents)
+
+    groups = [
+        spell(image, ("N", "G", "C") + tuple(_IMAGE_SPATIAL_LETTERS)),
+        spell(window, ("K",) + tuple(_FILTER_SPATIAL_LETTERS)),
+    ]
+    # Named apart because H and W already stand for the input's, and a second
+    # bare pair would read as a contradiction rather than as the result.
+    if out_spatial := spell(result, _IMAGE_SPATIAL_LETTERS):
+        groups.append(f"out {out_spatial}")
+    kept = [group for group in groups if group]
+    return "; ".join(kept) if kept else None
+
+
+def _describe_gemm_k(problem: Problem, kernel: str) -> Optional[str]:
+    """How this convolution's gemmK is built, where the general form misleads.
+
+    Forward lowers gemmK to Merge(c, y, x), and the glossary says as much. But
+    the product collapses at either end of the range, and the collapsed form is
+    the one that decides a tile:
+
+      - a window of one position leaves gemmK as the channels alone, so K is
+        contiguous in c and carries none of the filter's structure;
+      - one channel per group leaves gemmK as the window alone, so there is no
+        second channel for a tile to walk into.
+
+    Both were unsaid until the shapes went into the prompt, and the second was
+    said wrongly: the channel-major walk fired off `kPerBlockAlignment`, which
+    is the window, so a depthwise convolution was told its K repeated per
+    channel when it has one channel and a K of nine.
+
+    Only for the forward directions. Backward data builds gemmK from `k` and a
+    slice of the filter instead (`ConvToGemm.cpp`, the `dotslice` merge), so
+    none of this describes it.
+    """
+    if kernel not in ("Conv", "ConvElementwiseGemm"):
+        return None
+    footprint = _filter_footprint(problem)
+    channels = _extents_by_letter(problem, "input", False).get("C")
+    if footprint == 1:
+        return ("  That K is the input channels alone: a window of one position leaves "
+                "the filter out of it.")
+    if channels == 1 and footprint:
+        return (f"  That K is the filter window itself, all {footprint} positions of it, "
+                "there being one input channel per group to walk.")
+    # The fact only; what it means for kPerBlock is one of the hints.
+    alignment = problem.get("kPerBlockAlignment") or 1
+    if alignment > 1:
+        return (f"  That K walks the filter's {alignment} positions for one input channel, "
+                f"then the next channel's {alignment}.")
+    return None
+
+
+def _describe_window(problem: Problem) -> Optional[str]:
     """Strides, dilations and padding, each tagged with the dimension it moves.
 
     Bare lists leave the reader to work out that strides=[2, 1] is a stride
@@ -476,6 +615,7 @@ def _describe_window(problem: Problem, spatial: int) -> Optional[str]:
              if problem.get(name)]
     if not terms:
         return None
+    spatial = _spatial_rank(problem)
     letters = _spatial_letters(spatial, False)
     tagged, paired = [], False
     for name, values in terms:
@@ -578,11 +718,32 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
                                                                     ("C", "cType"), ("out",
                                                                                      "outType"))
                      if problem.get(key))
-    lines = [f"  {kernel}: {dims}; {types}"]
+    is_conv = kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm")
+    sizes = _describe_sizes(problem) if is_conv else None
+    # The convolution first and the GEMM it lowers to last, because the GEMM's
+    # dimensions are derived from the convolution's and not the other way
+    # round, and because the two disagree about the letters they share: the
+    # GEMM's K is the whole reduction, C*Y*X, where the convolution's K is its
+    # output channels, and the GEMM's N counts pixels where the convolution's
+    # counts images. Headed `Conv:`, the GEMM's numbers read as the
+    # convolution's, which is the one reading that is wrong.
+    #
+    # The element types go with the GEMM for the same reason. `C=i32` is the
+    # accumulator, and on a line that also says `C=9` for the channels it is
+    # two meanings of C a comma apart.
+    lines = [f"  {kernel}: {sizes}"] if sizes else []
+    if not is_conv:
+        lines = [f"  {kernel}: {dims}; {types}"]
 
-    if kernel in ("Conv", "ConvBwdData", "ConvElementwiseGemm"):
-        lines.append("  Implicit GEMM: M=channels, N=batch*spatial, K=channels*filter.")
-        dims = problem.get("inputLayout") or problem.get("filterLayout") or ()
+    if is_conv:
+        # Straight after the line that first spends the letters, which is the
+        # convolution's dimensions where we have them and the layouts where we
+        # do not.
+        if sizes:
+            lines.append(_layout_legend(problem))
+        window = _describe_window(problem)
+        if window:
+            lines.append(window)
         layouts = []
         for label, key in (("filter", "filterLayout"), ("input", "inputLayout"), ("output",
                                                                                   "outputLayout")):
@@ -597,16 +758,17 @@ def summarize_problem_for_prompt(problem: Problem) -> str:
                 shown += f" ({', '.join(unit)} {verb} 1)"
             layouts.append(f"{label}={shown}")
         if layouts:
-            lines.append("  Layouts: " + " ".join(layouts))
-            lines.append(_layout_legend(dims))
-        window = _describe_window(problem, sum(1 for dim in dims if dim[:1].isdigit()))
-        if window:
-            lines.append(window)
-        alignment = problem.get("kPerBlockAlignment") or 1
-        if alignment > 1:
-            # The fact only; what it means for kPerBlock is one of the hints.
-            lines.append(f"  K walks the filter's {alignment} positions for one input "
-                         f"channel, then the next channel's {alignment}.")
+            lines.append("  Layouts, outermost dimension first: " + " ".join(layouts))
+            if not sizes:
+                lines.append(_layout_legend(problem))
+        # Where the convolution could not be spelled out, this line is the only
+        # one naming the kernel, so it carries the kernel's name as well.
+        head = "  Implicit GEMM" if sizes else f"  {kernel}, tiled as an implicit GEMM"
+        lines.append(f"{head}, which is what a perf config tiles: {dims}; {types}.")
+        lines.append("  Its " + _IMPLICIT_GEMM_TERMS.get(kernel, _IMPLICIT_GEMM_TERMS["Conv"]))
+        note = _describe_gemm_k(problem, kernel)
+        if note:
+            lines.append(note)
     elif kernel == "Attention":
         lines.append("  gemm0=Q*K^T; gemm1=softmax(gemm0)*V.")
     elif "o" in size:
