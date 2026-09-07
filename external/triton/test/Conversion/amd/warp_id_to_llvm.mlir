@@ -1,36 +1,27 @@
-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942  | FileCheck %s --check-prefixes=CHECK,GFX9
-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950  | FileCheck %s --check-prefixes=CHECK,GFX9
-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,GFX12
-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,GFX12
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a  | FileCheck %s --check-prefixes=CHECK,ARITH
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942  | FileCheck %s --check-prefixes=CHECK,ARITH
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950  | FileCheck %s --check-prefixes=CHECK,ARITH
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s --check-prefixes=CHECK,ARITH
 // gfx1170 has the gfx12 matrix engine but is a gfx11 target and does NOT expose
-// hardware wave-id (supportsWaveId is RDNA4/GFX1250 only), so it lowers
-// ttg.warp_id via the arithmetic (and/udiv) path rather than rocdl.wave.id.
-// Unlike the gfx9 path it does not append a rocdl.readfirstlane.
-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s --check-prefixes=CHECK,GFX1170
+// hardware wave-id (supportsWaveId is RDNA4/GFX1250 only), so it takes the same
+// arithmetic path as the targets above rather than rocdl.wave.id.
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1170 | FileCheck %s --check-prefixes=CHECK,ARITH
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,WAVEID
+// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,WAVEID
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.shared = 0 : i32, "ttg.threads-per-warp" = 64 : i32} {
 
 // CHECK-LABEL: @wave_id
 tt.func public @wave_id() {
-  //       GFX9: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
-  //  GFX9-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
-  //  GFX9-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
-  //  GFX9-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
-  //  GFX9-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
-  //  GFX9-NEXT: %{{.+}} = rocdl.readfirstlane %[[DIV]] : i32
+  //       ARITH: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
+  //  ARITH-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
+  //  ARITH-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
+  //  ARITH-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
+  //  ARITH-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
+  //  ARITH-NEXT: %{{.+}} = rocdl.readfirstlane %[[DIV]] : i32
 
-  // gfx1170 uses the same arithmetic as gfx9 but does not emit readfirstlane
-  // and does not use rocdl.wave.id (no hardware wave-id on this gfx11 target).
-  //     GFX1170: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
-  // GFX1170-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
-  // GFX1170-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
-  // GFX1170-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
-  // GFX1170-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
-  //  GFX1170-NOT: rocdl.readfirstlane
-  //  GFX1170-NOT: rocdl.wave.id
-
-  // GFX12-NEXT: rocdl.wave.id
-  //      CHECK: scf.for
+  // WAVEID-NEXT: rocdl.wave.id
+  //       CHECK: scf.for
 
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
