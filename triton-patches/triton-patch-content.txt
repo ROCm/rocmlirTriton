@@ -12,12 +12,12 @@ patch-preserve-arith-bitcast-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
+patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
-patch-warp-id-readfirstlane.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch

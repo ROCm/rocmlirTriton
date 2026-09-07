@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression guard for triton-patches/patch-warp-id-readfirstlane.patch.
 //
 // Triton lowers `ttg.warp_id` either from a hardware wave id (RDNA4 and
