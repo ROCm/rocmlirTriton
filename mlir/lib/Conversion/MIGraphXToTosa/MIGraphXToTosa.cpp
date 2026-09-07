@@ -482,9 +482,21 @@ struct BatchFlattenInfo {
   bool needsReshape;
 };
 
+/// Multiply the dimensions in `dims`, yielding ShapedType::kDynamic if any of
+/// them is unknown.
+static int64_t productOfDims(ArrayRef<int64_t> dims) {
+  int64_t product = 1;
+  for (int64_t dim : dims) {
+    if (ShapedType::isDynamic(dim))
+      return ShapedType::kDynamic;
+    product *= dim;
+  }
+  return product;
+}
+
 /// Compute batch flattening information for matmul operations.
-/// Returns failure if the batch dimensions can't be handled (e.g., broadcast
-/// A, or a broadcast that would have to fold a dynamic M into the batch).
+/// Returns failure if the batch dimensions can't be handled, which today means
+/// a batched B that A's batch does not match, since only B may be broadcast.
 /// Every extent except M must already be known to be static.
 static FailureOr<BatchFlattenInfo>
 computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
@@ -497,20 +509,18 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
          "matmul operands must be at least rank 2");
 
   // Compute batch sizes by multiplying all dimensions except last 2
-  info.batchSizeA = 1;
-  info.batchSizeB = 1;
-  info.batchSizeOut = 1;
-  for (size_t i = 0; i < outRank - 2; i++)
-    info.batchSizeOut *= outShape[i];
-  for (size_t i = 0; i < rankA - 2; i++)
-    info.batchSizeA *= shapeA[i];
-  for (size_t i = 0; i < rankB - 2; i++)
-    info.batchSizeB *= shapeB[i];
+  info.batchSizeOut = productOfDims(outShape.drop_back(2));
+  info.batchSizeA = productOfDims(shapeA.drop_back(2));
+  info.batchSizeB = productOfDims(shapeB.drop_back(2));
 
   // Get M, K, N dimensions (last 2 dims of each tensor)
   info.mDim = shapeA[rankA - 2];
   info.kDim = shapeA[rankA - 1];
   info.nDim = shapeB[rankB - 1];
+
+  assert(!(ShapedType::isDynamic(info.batchSizeA) &&
+           ShapedType::isDynamic(info.mDim)) &&
+         "a dot operand cannot have two unknown extents");
 
   info.newBatch = info.batchSizeA;
   info.newM = info.mDim;
@@ -518,13 +528,11 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
   // Handle batch dimension mismatch (broadcast)
   if (info.batchSizeA != info.batchSizeB) {
     if (info.batchSizeB == 1) {
-      // Broadcast B - flatten A's batch into M dimension. Unlike the reshapes
-      // below, which can leave one extent for TOSA to infer, this needs both
-      // extents as numbers.
-      if (ShapedType::isDynamic(info.mDim))
-        return failure();
+      // Broadcast B - flatten A's batch into M dimension. Either half may be
+      // unknown, and their product is then the one extent that the reshape
+      // performing the fold leaves for TOSA to infer.
       info.newBatch = 1;
-      info.newM = info.batchSizeA * info.mDim;
+      info.newM = productOfDims({info.batchSizeA, info.mDim});
     } else {
       return failure();
     }
@@ -590,6 +598,10 @@ static Value unbroadcastScale(PatternRewriter &rewriter, Location loc,
   Value scale4D =
       tosa::ReshapeOp::create(rewriter, loc, type4D, scaleFlat, shape4DValue);
 
+  // Only the block dimension is narrowed here; every other entry of sliceSize
+  // is the full extent and every start is 0. A dynamic M therefore reaches the
+  // size operand as TOSA's -1, which paired with a start of 0 means the whole
+  // dimension.
   SmallVector<int64_t> sliceStart(4, 0);
   auto sliceStartValue = tosa::getTosaConstShape(rewriter, loc, sliceStart);
   auto sliceSizeValue = tosa::getTosaConstShape(rewriter, loc, sliceSize);
@@ -640,19 +652,14 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   ArrayRef<int64_t> shapeB = inB.getType().getShape();
   ArrayRef<int64_t> origOutDims = origOutputTy.getShape();
 
-  // M is the only dimension that may be dynamic.
+  // The batch and M extents may be dynamic; K and N may not. Every reshape
+  // below leaves at most one extent for TOSA to infer, and K and N sit
+  // alongside the batch and M in those reshapes, so a second unknown there is
+  // not expressible. K also has to be a number to check the scale block size.
   auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
-  if (llvm::any_of(shapeA.drop_back(2), isDynamic) ||
-      isDynamic(shapeA.back()) || llvm::any_of(shapeB, isDynamic) ||
-      llvm::any_of(origOutDims.drop_back(2), isDynamic) ||
-      isDynamic(origOutDims.back()))
-    return op->emitError("only the M dimension of a dot may be dynamic");
-
-  // The scales are sliced to undo their broadcast, and tosa.slice sizes have
-  // no inference to fall back on the way tosa.reshape does.
-  if (hasScales && isDynamic(shapeA[shapeA.size() - 2]))
-    return op->emitError("scaled quant_dot does not support a dynamic M "
-                         "dimension");
+  if (isDynamic(shapeA.back()) || isDynamic(shapeB[shapeB.size() - 2]) ||
+      isDynamic(shapeB.back()) || isDynamic(origOutDims.back()))
+    return op->emitError("the K and N dimensions of a dot must be static");
 
   // Compute batch flattening info (done once for both scaled and regular)
   auto batchInfoResult = computeBatchFlattenInfo(shapeA, shapeB, origOutDims);

@@ -119,3 +119,83 @@ func.func @dot_add_dynamic_m(%arg0: !migraphx.shaped<?x72xf32, 72x1>,
   %1 = migraphx.add %0, %arg2 : <?x64xf32, 64x1>, <?x64xf32, 64x1> -> <?x64xf32, 64x1>
   return %1 : !migraphx.shaped<?x64xf32, 64x1>
 }
+
+// -----
+
+// Attention with a dynamic batch. 3D so it does not exercise the flattening reshape.
+// CHECK-LABEL: func.func @attention_dynamic_batch
+// CHECK: tosa.matmul {{.*}} : (tensor<?x64x64xf32>, tensor<?x64x64xf32>, {{.*}}) -> tensor<?x64x64xf32>
+// CHECK: tosa.reduce_max {{.*}} -> tensor<?x64x1xf32>
+// CHECK: tosa.matmul {{.*}} : (tensor<?x64x64xf32>, tensor<?x64x64xf32>, {{.*}}) -> tensor<?x64x64xf32>
+func.func @attention_dynamic_batch(%arg0: !migraphx.shaped<?x64x64xf32, 4096x64x1>,
+                                   %arg1: !migraphx.shaped<?x64x64xf32, 4096x64x1>,
+                                   %arg2: !migraphx.shaped<?x64x64xf32, 4096x64x1>)
+    -> !migraphx.shaped<?x64x64xf32, 4096x64x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <?x64x64xf32, 4096x64x1>, <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
+  %1 = migraphx.softmax %0 {axis = 2 : i64} : <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
+  %2 = migraphx.dot %1, %arg2 : <?x64x64xf32, 4096x64x1>, <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
+  return %2 : !migraphx.shaped<?x64x64xf32, 4096x64x1>
+}
+
+// -----
+
+// MHA has two batch dimensions (4D), so it exercises the flattening reshape.
+// The batch dimensions flatten into one, and since
+// the head count is known, TOSA can infer the product from the element count.
+// CHECK-LABEL: func.func @multi_head_attention_dynamic_batch
+// CHECK: %[[FLAT:.*]] = tosa.const_shape {values = dense<[-1, 32, 32]>
+// CHECK: tosa.reshape %{{.*}}, %[[FLAT]] : (tensor<?x4x32x32xf32>, !tosa.shape<3>) -> tensor<?x32x32xf32>
+// CHECK: tosa.matmul {{.*}} -> tensor<?x32x32xf32>
+// CHECK: tosa.reshape {{.*}} -> tensor<?x4x32x32xf32>
+func.func @multi_head_attention_dynamic_batch(%arg0: !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>,
+                                              %arg1: !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>,
+                                              %arg2: !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>)
+    -> !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <?x4x32x32xf32, 4096x1024x32x1>, <?x4x32x32xf32, 4096x1024x32x1> -> <?x4x32x32xf32, 4096x1024x32x1>
+  %1 = migraphx.softmax %0 {axis = 3 : i64} : <?x4x32x32xf32, 4096x1024x32x1> -> <?x4x32x32xf32, 4096x1024x32x1>
+  %2 = migraphx.dot %1, %arg2 : <?x4x32x32xf32, 4096x1024x32x1>, <?x4x32x32xf32, 4096x1024x32x1> -> <?x4x32x32xf32, 4096x1024x32x1>
+  return %2 : !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>
+}
+
+// -----
+
+// An unbatched B is shared across A's batch, so the lowering folds that batch
+// into M rather than emitting a batched matmul.
+// CHECK-LABEL: func.func @dot_dynamic_batch_unbatched_rhs
+// CHECK: %[[FOLD:.*]] = tosa.const_shape {values = dense<[1, -1, 72]>
+// CHECK: tosa.reshape %{{.*}}, %[[FOLD]] : (tensor<?x32x72xf32>, !tosa.shape<3>) -> tensor<1x?x72xf32>
+// CHECK: tosa.matmul {{.*}} : (tensor<1x?x72xf32>, tensor<1x72x64xf32>, {{.*}}) -> tensor<1x?x64xf32>
+// CHECK: tosa.reshape {{.*}} -> tensor<?x32x64xf32>
+func.func @dot_dynamic_batch_unbatched_rhs(%arg0: !migraphx.shaped<?x32x72xf32, 2304x72x1>,
+                                           %arg1: !migraphx.shaped<72x64xf32, 64x1>)
+    -> !migraphx.shaped<?x32x64xf32, 2048x64x1> {
+  %0 = migraphx.dot %arg0, %arg1 : <?x32x72xf32, 2304x72x1>, <72x64xf32, 64x1> -> <?x32x64xf32, 2048x64x1>
+  return %0 : !migraphx.shaped<?x32x64xf32, 2048x64x1>
+}
+
+// -----
+
+// A block-scaled quant_dot carries one scale per 32-element block of K, so the
+// scale tensor tosa.matmul_t_block_scaled wants is [M, 768/32] = [M, 24].
+// MIGraphX instead sends it broadcast to A's shape, [M, 768], with each scale
+// repeated 32 times. The lowering recovers the compact form by splitting K into
+// [24, 32], where every lane of a block now holds the same value, slicing one
+// lane out of each block, and dropping the resulting size-1 axis.
+//
+// Only that lane axis is narrowed, so the dynamic M passes through the slice at
+// full extent, as a -1 that here means "the whole dimension" -- not the "infer
+// this one" that -1 means in the reshape above it.
+// CHECK-LABEL: func.func @scaled_quant_dot_dynamic_m
+// CHECK: tosa.reshape {{.*}} -> tensor<1x?x24x32xf8E8M0FNU>
+// CHECK: %[[START:.*]] = tosa.const_shape {values = dense<0>
+// CHECK: %[[SIZE:.*]] = tosa.const_shape {values = dense<[1, -1, 24, 1]>
+// CHECK: tosa.slice %{{.*}}, %[[START]], %[[SIZE]] : (tensor<1x?x24x32xf8E8M0FNU>, !tosa.shape<4>, !tosa.shape<4>) -> tensor<1x?x24x1xf8E8M0FNU>
+// CHECK: tosa.matmul_t_block_scaled {{.*}} : (tensor<1x?x768xf4E2M1FN>, tensor<1x?x24xf8E8M0FNU>, tensor<1x256x768xf4E2M1FN>, tensor<1x256x24xf8E8M0FNU>) -> tensor<1x?x256xf32>
+func.func @scaled_quant_dot_dynamic_m(%arg0: !migraphx.shaped<?x768xf4E2M1FN, 768x1>,
+                                      %arg1: !migraphx.shaped<?x768xf8E8M0FNU, 768x1>,
+                                      %arg2: !migraphx.shaped<768x256xf4E2M1FN, 256x1>,
+                                      %arg3: !migraphx.shaped<768x256xf8E8M0FNU, 256x1>)
+    -> !migraphx.shaped<?x256xf32, 256x1> {
+  %0 = migraphx.quant_dot %arg0 scaled by %arg1, %arg2 scaled by %arg3 : <?x768xf4E2M1FN, 768x1> scaled by !migraphx.shaped<?x768xf8E8M0FNU, 768x1>, <768x256xf4E2M1FN, 256x1> scaled by !migraphx.shaped<768x256xf8E8M0FNU, 256x1> -> <?x256xf32, 256x1>
+  return %0 : !migraphx.shaped<?x256xf32, 256x1>
+}
