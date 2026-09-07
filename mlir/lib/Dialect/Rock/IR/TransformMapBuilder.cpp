@@ -26,6 +26,15 @@
 using namespace mlir;
 using namespace mlir::rock;
 
+/// A product that stays dynamic once any factor is, so that an extent derived
+/// from an unknown one is itself unknown rather than a wrapped-around
+/// `kDynamic`.
+static int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
+  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
+    return ShapedType::kDynamic;
+  return lhs * rhs;
+}
+
 AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
                                          ArrayRef<TransformAttr> transforms,
                                          ArrayRef<int64_t> upperBounds,
@@ -96,10 +105,10 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       int64_t totalStride = 1;
       lowerDimStrides.push_back(totalStride);
       for (unsigned i = params.size() - 1; i > 0; --i) {
-        totalStride *= params[i];
+        totalStride = dynAwareMul(totalStride, params[i]);
         lowerDimStrides.push_back(totalStride);
       }
-      totalStride *= params[0];
+      totalStride = dynAwareMul(totalStride, params[0]);
       std::reverse(lowerDimStrides.begin(), lowerDimStrides.end());
 
       // The Merge can be decomposed in two equivalent ways. Writing
@@ -154,8 +163,14 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
           thisDim = b.getAffineDimExpr(upperDims[0]).floorDiv(stride);
           // Only mod when needed. The coordinate is below totalStride, so the
           // quotient stays under params[i] on its own when stride * params[i]
-          // spans the whole merge.
-          if (lowerDimStrides[i] * params[i] < totalStride)
+          // spans the whole merge. An unknown totalStride is larger than any
+          // span assembled from the known extents, and equal only to the span
+          // that is itself unknown.
+          int64_t thisSpan = dynAwareMul(lowerDimStrides[i], params[i]);
+          bool spansPartOfMerge = ShapedType::isDynamic(totalStride)
+                                      ? !ShapedType::isDynamic(thisSpan)
+                                      : thisSpan < totalStride;
+          if (spansPartOfMerge)
             thisDim = thisDim % b.getAffineConstantExpr(params[i]);
         } else {
           thisDim = remainder.floorDiv(stride);
@@ -633,7 +648,7 @@ void TopDownTMBuilder::unmerge(StringRef lowerName, uint32_t lowerDim,
   }
   int64_t size = 1;
   for (auto length : lengths) {
-    size *= length;
+    size = dynAwareMul(size, length);
   }
   defineDim(lowerName, lowerDim, size);
   addTransform(TransformType::Unmerge, lengths, upperNames, upperDims,
@@ -653,9 +668,11 @@ void TopDownTMBuilder::merge(ArrayRef<StringRef> lowerNames,
 
   int64_t totalLowerSize = 1;
   for (const int64_t s : sizes) {
-    totalLowerSize *= s;
+    totalLowerSize = dynAwareMul(totalLowerSize, s);
   }
-  assert(upperSize == totalLowerSize &&
+  assert((ShapedType::isDynamic(upperSize) ||
+          ShapedType::isDynamic(totalLowerSize) ||
+          upperSize == totalLowerSize) &&
          "Upper dimension to merge must have same size as combined lower "
          "dimensions");
   for (auto triple : llvm::zip(lowerNames, lowerDims, sizes)) {
@@ -897,9 +914,10 @@ void BottomUpTMBuilder::unmerge(ArrayRef<StringRef> upperNames,
   int64_t totalLength = startSize(lowerDim);
   int64_t lengthsProd = 1;
   for (int64_t length : lengths) {
-    lengthsProd *= length;
+    lengthsProd = dynAwareMul(lengthsProd, length);
   }
-  assert(lengthsProd == totalLength &&
+  assert((ShapedType::isDynamic(lengthsProd) ||
+          ShapedType::isDynamic(totalLength) || lengthsProd == totalLength) &&
          "failed to partition unmerge length among upper dimensions");
 
   for (auto triple : llvm::zip(upperNames, upperDims, lengths)) {
@@ -921,7 +939,7 @@ void BottomUpTMBuilder::merge(StringRef upperName, uint32_t upperDim,
   for (const StringRef name : lowerNames) {
     uint32_t dim = startIndex(name);
     int64_t size = startSize(dim);
-    upperSize *= size;
+    upperSize = dynAwareMul(upperSize, size);
     lowerDims.push_back(dim);
     lowerSizes.push_back(size);
   }

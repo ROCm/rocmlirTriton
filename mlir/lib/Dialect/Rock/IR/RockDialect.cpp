@@ -383,7 +383,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Unmerge must specify one length per input dimension";
     }
     for (int64_t p : params) {
-      if (p <= 0)
+      if (p <= 0 && !ShapedType::isDynamic(p))
         return emitError() << "Unmerge dimension length " << p
                            << " must be positive";
     }
@@ -398,7 +398,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Merge must have one parameter per output dimension (its size)";
     }
     for (int64_t p : params) {
-      if (p <= 0)
+      if (p <= 0 && !ShapedType::isDynamic(p))
         return emitError() << "Merge dimension size " << p
                            << " must be positive";
     }
@@ -471,6 +471,22 @@ TransformMapAttr getTransformMapAttrChecked(
                                       lowerBounds);
 }
 
+/// A product that stays dynamic once any factor is, so that a bound derived
+/// from an unknown extent is itself unknown rather than a wrapped-around
+/// `kDynamic`.
+static int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
+  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
+    return ShapedType::kDynamic;
+  return lhs * rhs;
+}
+
+/// Whether a consistency check relating `values` can be decided at all. A
+/// check involving an unknown extent holds vacuously: there is no compile-time
+/// value to contradict it.
+static bool anyDynamic(std::initializer_list<int64_t> values) {
+  return llvm::any_of(values, [](int64_t v) { return ShapedType::isDynamic(v); });
+}
+
 LogicalResult TransformMapAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     ::llvm::ArrayRef<::mlir::rock::TransformAttr> ops, AffineMapAttr map,
@@ -492,13 +508,13 @@ LogicalResult TransformMapAttr::verify(
   }
 
   for (int64_t v : upperBounds.asArrayRef()) {
-    if (v <= 0) {
+    if (v <= 0 && !ShapedType::isDynamic(v)) {
       return emitError() << "Upper bound/shape component must be positive, got "
                          << v;
     }
   }
   for (int64_t v : lowerBounds.asArrayRef()) {
-    if (v <= 0) {
+    if (v <= 0 && !ShapedType::isDynamic(v)) {
       return emitError() << "Lower bound/shape component must be positive, got "
                          << v;
     }
@@ -534,9 +550,9 @@ LogicalResult TransformMapAttr::verify(
                  << "Unmerge: upper bound " << ub[dim] << " at dimension "
                  << dim << " does not match parameter " << param;
         }
-        product *= param;
+        product = dynAwareMul(product, param);
       }
-      if (product != lb[lDims[0]]) {
+      if (!anyDynamic({product, lb[lDims[0]]}) && product != lb[lDims[0]]) {
         return emitError() << "Unmerge: product of parameters (" << product
                            << ") does not match lower bound (" << lb[lDims[0]]
                            << ")";
@@ -551,9 +567,9 @@ LogicalResult TransformMapAttr::verify(
                  << "Merge: lower bound " << lb[dim] << " at dimension " << dim
                  << " does not match parameter " << param;
         }
-        product *= param;
+        product = dynAwareMul(product, param);
       }
-      if (product != ub[uDims[0]]) {
+      if (!anyDynamic({product, ub[uDims[0]]}) && product != ub[uDims[0]]) {
         return emitError() << "Merge: product of parameters (" << product
                            << ") does not match upper bound (" << ub[uDims[0]]
                            << ")";
@@ -573,6 +589,8 @@ LogicalResult TransformMapAttr::verify(
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
         int64_t leftPad = params[i * 2];
         int64_t rightPad = params[i * 2 + 1];
+        if (anyDynamic({ub[uDims[i]], lb[lDims[i]]}))
+          continue;
         int64_t expected = lb[lDims[i]] + leftPad + rightPad;
         if (ub[uDims[i]] != expected) {
           return emitError() << "Pad: upper bound " << ub[uDims[i]]
@@ -596,6 +614,8 @@ LogicalResult TransformMapAttr::verify(
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
         int64_t begin = params[i * 2];
         int64_t end = params[i * 2 + 1];
+        if (anyDynamic({ub[uDims[i]], lb[lDims[i]]}))
+          continue;
         if (end > lb[lDims[i]])
           return emitError()
                  << "Slice: end (" << end << ") exceeds lower bound ("

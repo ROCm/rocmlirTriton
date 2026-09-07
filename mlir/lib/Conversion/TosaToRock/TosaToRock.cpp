@@ -3387,8 +3387,13 @@ typename std::enable_if_t<
   Location loc = op->getLoc();
 
   int32_t blockSize = 256;
-  auto elementCount =
-      cast<ShapedType>(op.getInput().getType()).getNumElements();
+  auto inputType = cast<ShapedType>(op.getInput().getType());
+  // The grid covers one element per lane, so a reduction over an unknown
+  // number of elements has no grid size to compute here.
+  if (!inputType.hasStaticShape())
+    return rw.notifyMatchFailure(
+        op, "cannot size the reduction grid over a dynamic shape");
+  auto elementCount = inputType.getNumElements();
   int32_t gridSize = (elementCount + blockSize - 1) / blockSize;
   auto numCU = rock::getNumCU(op);
   if (succeeded(numCU)) {
