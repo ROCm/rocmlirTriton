@@ -1,30 +1,28 @@
 // RUN: rocmlir-opt --migraphx-to-tosa -verify-diagnostics -split-input-file %s
 
-// Only M may be dynamic
-func.func @dot_dynamic_batch(%arg0: !migraphx.shaped<?x32x72xf32, 2304x72x1>,
-                             %arg1: !migraphx.shaped<?x72x64xf32, 4608x64x1>)
-    -> !migraphx.shaped<?x32x64xf32, 2048x64x1> {
-  // expected-error @+2 {{only the M dimension of a dot may be dynamic}}
+// K and N have to be numbers. Here a transposed A puts K on the slowest-moving
+// axis, so a dynamic K gets past the memory layout and reaches the dot.
+func.func @dot_dynamic_k(%arg0: !migraphx.shaped<32x?xf32, 1x32>,
+                         %arg1: !migraphx.shaped<?x64xf32, 64x1>)
+    -> !migraphx.shaped<32x64xf32, 64x1> {
+  // expected-error @+2 {{the K and N dimensions of a dot must be static}}
   // expected-error @+1 {{failed to legalize operation 'migraphx.dot' that was explicitly marked illegal}}
-  %0 = migraphx.dot %arg0, %arg1 : <?x32x72xf32, 2304x72x1>, <?x72x64xf32, 4608x64x1> -> <?x32x64xf32, 2048x64x1>
-  return %0 : !migraphx.shaped<?x32x64xf32, 2048x64x1>
+  %0 = migraphx.dot %arg0, %arg1 : <32x?xf32, 1x32>, <?x64xf32, 64x1> -> <32x64xf32, 64x1>
+  return %0 : !migraphx.shaped<32x64xf32, 64x1>
 }
 
 // -----
 
-// Attention is a batched dot, a softmax and a second batched dot. The softmax
-// handles a dynamic batch, but the dots flatten their batch extents into one,
-// which needs a number.
-func.func @attention_dynamic_batch(%q: !migraphx.shaped<?x64x64xf32, 4096x64x1>,
-                                   %k: !migraphx.shaped<?x64x64xf32, 4096x64x1>,
-                                   %v: !migraphx.shaped<?x64x64xf32, 4096x64x1>)
-    -> !migraphx.shaped<?x64x64xf32, 4096x64x1> {
-  // expected-error @+2 {{only the M dimension of a dot may be dynamic}}
+// A dynamic batch against a static batch of 2 is genuinely ambiguous: if it is
+// 1 at runtime this is a broadcast that folds into M, and if it is 2 it is a
+// plain batched matmul. Those need different code, so neither can be emitted.
+func.func @dot_dynamic_batch_vs_static(%arg0: !migraphx.shaped<?x32x72xf32, 2304x72x1>,
+                                       %arg1: !migraphx.shaped<2x72x64xf32, 4608x64x1>)
+    -> !migraphx.shaped<?x32x64xf32, 2048x64x1> {
+  // expected-error @+2 {{tosa.matmul can't broadcast input}}
   // expected-error @+1 {{failed to legalize operation 'migraphx.dot' that was explicitly marked illegal}}
-  %0 = migraphx.dot %q, %k : <?x64x64xf32, 4096x64x1>, <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
-  %1 = migraphx.softmax %0 {axis = 2 : i64} : <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
-  %2 = migraphx.dot %1, %v : <?x64x64xf32, 4096x64x1>, <?x64x64xf32, 4096x64x1> -> <?x64x64xf32, 4096x64x1>
-  return %2 : !migraphx.shaped<?x64x64xf32, 4096x64x1>
+  %0 = migraphx.dot %arg0, %arg1 : <?x32x72xf32, 2304x72x1>, <2x72x64xf32, 4608x64x1> -> <?x32x64xf32, 2048x64x1>
+  return %0 : !migraphx.shaped<?x32x64xf32, 2048x64x1>
 }
 
 // -----

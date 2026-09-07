@@ -270,7 +270,7 @@ RankedTensorType MIXRShapedType::asFlatMemoryTensor() const {
   RankedTensorType memoryTensorType = asMemoryLayoutTensor();
   if (!memoryTensorType)
     return nullptr;
-  
+
   // asMemoryLayoutTensor() permits a dynamic slowest moving length.
   int64_t flatLength = memoryTensorType.hasStaticShape()
                            ? memoryTensorType.getNumElements()
