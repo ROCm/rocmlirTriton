@@ -95,6 +95,20 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
         uint32_t upperDim;
         int64_t length;
         std::tie(upperDim, length) = pair;
+        if (ShapedType::isDynamic(length)) {
+          // The dimensions outer to an unknown extent contribute a stride that
+          // is itself unknown, so they cannot appear in an affine map. Only an
+          // unknown slowest-moving extent is supported, which makes every such
+          // dimension unit-sized and its coordinate always zero, so the terms
+          // accumulated so far drop out rather than being multiplied.
+          assert(
+              llvm::all_of(upperDims.take_while(
+                               [&](uint32_t d) { return d != upperDim; }),
+                           [&](uint32_t d) { return upperBounds[d] == 1; }) &&
+              "an unknown unmerge extent must be the slowest-moving one");
+          expr = b.getAffineDimExpr(upperDim);
+          continue;
+        }
         expr = expr * b.getAffineConstantExpr(length) +
                b.getAffineDimExpr(upperDim);
       }

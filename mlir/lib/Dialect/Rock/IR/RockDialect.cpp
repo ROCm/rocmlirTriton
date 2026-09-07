@@ -531,7 +531,8 @@ static int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
 /// check involving an unknown extent holds vacuously: there is no compile-time
 /// value to contradict it.
 static bool anyDynamic(std::initializer_list<int64_t> values) {
-  return llvm::any_of(values, [](int64_t v) { return ShapedType::isDynamic(v); });
+  return llvm::any_of(values,
+                      [](int64_t v) { return ShapedType::isDynamic(v); });
 }
 
 LogicalResult TransformMapAttr::verify(
