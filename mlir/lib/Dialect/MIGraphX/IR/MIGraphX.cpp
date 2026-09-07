@@ -184,10 +184,9 @@ RankedTensorType MIXRShapedType::asMemoryLayoutTensor() const {
   ArrayRef<int64_t> strides = getStrides();
 
   // Everything below is integer arithmetic on lengths and strides.
-  // If ShapedType::kDynamic (a large negative number) is passed, it
-  // would yield a wrong layout, reject dynamic shapes now.
+  // Reject dynamic strides now.
   auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
-  if (llvm::any_of(shape, isDynamic) || llvm::any_of(strides, isDynamic))
+  if (llvm::any_of(strides, isDynamic))
     return nullptr;
 
   size_t nStrides = strides.size();
@@ -204,6 +203,11 @@ RankedTensorType MIXRShapedType::asMemoryLayoutTensor() const {
     if (strides[from] == 0)
       orderedShape[to] = 1;
   }
+  // At most one length may be dynamic, and it must be the slowest moving
+  // dimension.
+  if (llvm::any_of(llvm::drop_begin(orderedShape), isDynamic))
+    return nullptr;
+
   // Ensure we have a unit stride.
   for (auto stride : llvm::reverse(orderedStrides)) {
     if (stride == 0)
@@ -266,7 +270,12 @@ RankedTensorType MIXRShapedType::asFlatMemoryTensor() const {
   RankedTensorType memoryTensorType = asMemoryLayoutTensor();
   if (!memoryTensorType)
     return nullptr;
-  return memoryTensorType.clone(memoryTensorType.getNumElements());
+  
+  // asMemoryLayoutTensor() permits a dynamic slowest moving length.
+  int64_t flatLength = memoryTensorType.hasStaticShape()
+                           ? memoryTensorType.getNumElements()
+                           : ShapedType::kDynamic;
+  return memoryTensorType.clone(flatLength);
 }
 
 void MIXRShapedType::getStridePermutation(SmallVectorImpl<int64_t> &ret) const {

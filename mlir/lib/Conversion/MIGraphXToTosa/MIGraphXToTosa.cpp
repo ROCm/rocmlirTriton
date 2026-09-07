@@ -228,9 +228,6 @@ struct DotConverter final : public OpConversionPattern<DotType> {
 template <typename ConvType>
 LogicalResult ConvConverter<ConvType>::matchAndRewrite(
     ConvType op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
-  if (failed(checkStaticShapes(op)))
-    return failure();
-
   Location loc = op->getLoc();
   Value input = adaptor.getInput();
   auto inputType = cast<ShapedType>(input.getType());
@@ -246,6 +243,14 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
 
   if (outElementTy.isUnsignedInteger())
     return op.emitError("No support for unsigned convolution.\n");
+
+  // The batch is the only dimension that may be dynamic.
+  auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
+  if (llvm::any_of(inputType.getShape().drop_front(), isDynamic) ||
+      llvm::any_of(filterType.getShape(), isDynamic) ||
+      llvm::any_of(outputTy.getShape().drop_front(), isDynamic))
+    return op->emitError(
+        "only the batch dimension of a convolution may be dynamic");
 
   int dims = outputTy.getShape().size() - 2;
   SmallVector<int32_t> toChannelLast{0};
@@ -479,7 +484,8 @@ struct BatchFlattenInfo {
 
 /// Compute batch flattening information for matmul operations.
 /// Returns failure if the batch dimensions can't be handled (e.g., broadcast
-/// A).
+/// A, or a broadcast that would have to fold a dynamic M into the batch).
+/// Every extent except M must already be known to be static.
 static FailureOr<BatchFlattenInfo>
 computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
                         ArrayRef<int64_t> outShape) {
@@ -512,7 +518,11 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
   // Handle batch dimension mismatch (broadcast)
   if (info.batchSizeA != info.batchSizeB) {
     if (info.batchSizeB == 1) {
-      // Broadcast B - flatten A's batch into M dimension
+      // Broadcast B - flatten A's batch into M dimension. Unlike the reshapes
+      // below, which can leave one extent for TOSA to infer, this needs both
+      // extents as numbers.
+      if (ShapedType::isDynamic(info.mDim))
+        return failure();
       info.newBatch = 1;
       info.newM = info.batchSizeA * info.mDim;
     } else {
@@ -596,9 +606,6 @@ static Value unbroadcastScale(PatternRewriter &rewriter, Location loc,
 template <typename DotType>
 LogicalResult DotConverter<DotType>::matchAndRewrite(
     DotType op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const {
-  if (failed(checkStaticShapes(op)))
-    return failure();
-
   Location loc = op->getLoc();
   auto inA = cast<TypedValue<RankedTensorType>>(adaptor.getInA());
   auto inB = cast<TypedValue<RankedTensorType>>(adaptor.getInB());
@@ -632,6 +639,20 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   ArrayRef<int64_t> shapeA = inA.getType().getShape();
   ArrayRef<int64_t> shapeB = inB.getType().getShape();
   ArrayRef<int64_t> origOutDims = origOutputTy.getShape();
+
+  // M is the only dimension that may be dynamic.
+  auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
+  if (llvm::any_of(shapeA.drop_back(2), isDynamic) ||
+      isDynamic(shapeA.back()) || llvm::any_of(shapeB, isDynamic) ||
+      llvm::any_of(origOutDims.drop_back(2), isDynamic) ||
+      isDynamic(origOutDims.back()))
+    return op->emitError("only the M dimension of a dot may be dynamic");
+
+  // The scales are sliced to undo their broadcast, and tosa.slice sizes have
+  // no inference to fall back on the way tosa.reshape does.
+  if (hasScales && isDynamic(shapeA[shapeA.size() - 2]))
+    return op->emitError("scaled quant_dot does not support a dynamic M "
+                         "dimension");
 
   // Compute batch flattening info (done once for both scaled and regular)
   auto batchInfoResult = computeBatchFlattenInfo(shapeA, shapeB, origOutDims);
@@ -1740,6 +1761,11 @@ LogicalResult AsLogicalShapeConverter::matchAndRewrite(
 
   Value maybeSliced = transposed;
   if (transposedType.getShape() != ArrayRef(slicingShape)) {
+    // Unlike tosa.reshape, tosa.slice sizes have no inference to fall back on,
+    // so every dimension has to be a number here.
+    if (llvm::any_of(slicingShape,
+                     [](int64_t val) { return ShapedType::isDynamic(val); }))
+      return op.emitOpError("cannot slice a dynamic shape");
     SmallVector<int64_t, 4> starts(permutation.size(), 0);
     RankedTensorType sliceType = resultType.clone(slicingShape);
     auto startsValue = tosa::getTosaConstShape(rewriter, loc, starts);
@@ -1750,7 +1776,11 @@ LogicalResult AsLogicalShapeConverter::matchAndRewrite(
   }
   Value maybeBroadcast = maybeSliced;
   if (maybeSliced.getType() != resultType) {
-    // We need a broadcast
+    // We need a broadcast. It is expressed as a multiplication against a
+    // constant tensor of ones sized to the result, and a dense constant cannot
+    // have a dynamic type.
+    if (!resultType.hasStaticShape())
+      return op.emitOpError("cannot broadcast out to a dynamic shape");
     Value oneTensor = rock::tosa::getOneTensor(rewriter, loc, resultType);
     maybeBroadcast =
         rock::tosa::getMulOp(rewriter, loc, oneTensor, maybeSliced, resultType);
@@ -1795,6 +1825,10 @@ LogicalResult AsUnderlyingShapeConverter::matchAndRewrite(
           "writing to tensors with broadcasts is unsupported");
 
     auto transposedType = cast<RankedTensorType>(transposed.getType());
+    // The comparison below and the padded buffer the custom op writes into
+    // both need every extent as a number.
+    if (!memoryLayoutType.hasStaticShape() || !transposedType.hasStaticShape())
+      return op.emitOpError("cannot expand the strides of a dynamic shape");
 
     for (auto [memDim, transDim] : llvm::zip_equal(memoryLayoutType.getShape(),
                                                    transposedType.getShape())) {
