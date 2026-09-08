@@ -479,15 +479,23 @@ LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,
   auto mPerBlock = tuningParams.getMPerBlock();
   auto nPerBlock = tuningParams.getNPerBlock();
 
-  if (ShapedType::isDynamic(G) || ShapedType::isDynamic(M) ||
-      ShapedType::isDynamic(N))
-    return op.emitOpError("cannot compute a static grid size for a gemm with "
-                          "dynamic G, M or N dimensions");
+  func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
+
+  if (ShapedType::isDynamic(G) || ShapedType::isDynamic(N))
+    return op.emitOpError("cannot compute a grid size for a gemm with a "
+                          "dynamic G or N dimension");
+
+  if (ShapedType::isDynamic(M)) {
+    const int64_t gnBlocks = (N / nPerBlock) * G;
+    assert(gnBlocks > 0);
+    funcOp->setAttr(rock::DynGridSizeAttr::getMnemonic(),
+                    rock::makeDynGridSizeAttr(rw, {mPerBlock, gnBlocks}));
+    return success();
+  }
 
   const auto gridSize = (M / mPerBlock) * (N / nPerBlock) * G;
   assert(gridSize > 0);
 
-  func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
   funcOp->setAttr(rock::GridSizeAttr::getMnemonic(),
                   rw.getI32IntegerAttr(gridSize));
   return success();

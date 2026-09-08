@@ -33,7 +33,10 @@ extern "C" {
 // Version 6: Adds mlirMIGraphXLDSUsageFitsArch() to check whether the
 // estimated LDS usage of a GEMM+GEMM/attention problem fits within the target
 // arch's shared-memory capacity.
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 6
+// Version 7: Adds mlirGetDynamicGridSize() to size the launch of a kernel
+// compiled for a gemm whose M extent is only known at run time, for which
+// mlirGetKernelAttrs() reports no grid size.
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 7
 
 typedef struct MlirMIGraphXBackendOptions {
   const char *arch;
@@ -58,6 +61,16 @@ MLIR_CAPI_EXPORTED MlirType rocmlirMIXRShapedTypeAsTensor(MlirType type);
 
 // Returns block_size, grid_size and cluster_size as uint32_t[3]
 MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs);
+
+// Writes to *gridSize the grid size, in workgroups, that the module's kernel
+// must be launched with for a gemm of M rows, and returns true. The block and
+// cluster sizes still come from mlirGetKernelAttrs(), which reports no grid
+// size for such a kernel.
+//
+// Returns false, leaving *gridSize alone, if the kernel's grid size does not
+// depend on M, in which case mlirGetKernelAttrs() reports it directly.
+MLIR_CAPI_EXPORTED bool mlirGetDynamicGridSize(MlirModule module, uint32_t m,
+                                               uint32_t *gridSize);
 
 // Returns the size of compiled binary if called with null ptr
 // and return the compiled binary when buffer is provided

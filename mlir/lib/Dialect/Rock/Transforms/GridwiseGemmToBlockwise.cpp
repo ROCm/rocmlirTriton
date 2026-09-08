@@ -151,6 +151,18 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
                                 PatternRewriter &b) const override {
     Location loc = op.getLoc();
 
+    // The block id is mapped onto a tile below using compile-time tile counts,
+    // and the K loop trip count is a constant, so a dimension that is only
+    // known at run time cannot be lowered yet -- even though
+    // `rock-gemm-to-gridwise` can already describe the launch for a dynamic M.
+    // Bail out before anything that measures the operands, which asserts on a
+    // dynamic extent.
+    if (!op.getA().getType().hasStaticShape() ||
+        !op.getB().getType().hasStaticShape())
+      return op->emitOpError()
+             << "lowering a gemm with a dynamic dimension to blockwise "
+                "operations is not implemented yet";
+
     // Obtain data types of inputs.
     auto elementTypeA = op.getA().getType().getElementType();
     auto maybeElementTypeALoad = getInputFusionElementType(op.getA());

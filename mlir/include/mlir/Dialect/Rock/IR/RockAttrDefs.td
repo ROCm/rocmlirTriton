@@ -695,6 +695,21 @@ def Rock_GridSize : Rock_Attr<"GridSize"> {
   }];
 }
 
+def Rock_DynGridSize : Rock_Attr<"DynGridSize"> {
+  let mnemonic = "rock.dyn_grid_size";
+
+  let description = [{
+    Set on a kernel function by `rock-gemm-to-gridwise` in place of
+    `rock.grid_size` when M is dynamic.
+  }];
+
+  let extraClassDeclaration = [{
+    static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {
+      return (::llvm::Twine(getMnemonic()) + "." + kernelName).str();
+    }
+  }];
+}
+
 def Rock_ClusterSize : Rock_Attr<"ClusterSize"> {
   let mnemonic = "rock.cluster_size";
 }

@@ -87,9 +87,17 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     metadataEntries.push_back(
         builder.getNamedAttr(rock::BlockSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.blockSize)));
-    metadataEntries.push_back(
-        builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
-                             builder.getI64IntegerAttr(kernel.gridSize)));
+    // A kernel sized from a runtime M publishes the two factors of its grid
+    // instead of a grid size, so that a consumer computing the launch itself
+    // cannot mistake a stale constant for the real thing.
+    if (kernel.dynGridSize)
+      metadataEntries.push_back(builder.getNamedAttr(
+          rock::DynGridSizeAttr::getMnemonic(),
+          rock::makeDynGridSizeAttr(builder, *kernel.dynGridSize)));
+    else
+      metadataEntries.push_back(
+          builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
+                               builder.getI64IntegerAttr(kernel.gridSize)));
     metadataEntries.push_back(
         builder.getNamedAttr(rock::ClusterSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.clusterSize)));
@@ -140,6 +148,48 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
       hsacoAttr,
       /*properties=*/nullptr, kernelTable);
   return std::make_pair(objectAttr, kernelMap);
+}
+
+/// The number of workgroups, in the x dimension, that one launch of `kernel`
+/// from `callOp` needs. For a kernel whose M is only known at run time this
+/// evaluates `ceilDiv(M, mPerBlock) * gnBlocks` on the M that the caller is
+/// already passing to the kernel, rather than reading a constant.
+static FailureOr<Value> emitGridSizeX(OpBuilder &b, Location loc,
+                                      func::CallOp callOp,
+                                      const rock::KernelInfo &kernel) {
+  if (!kernel.dynGridSize)
+    return arith::ConstantIndexOp::create(b, loc,
+                                          kernel.gridSize * kernel.clusterSize)
+        .getResult();
+
+  const rock::DynGridSize &grid = *kernel.dynGridSize;
+  unsigned numOperands = callOp.getNumOperands();
+  if (numOperands < rock::kNumRuntimeGemmDims)
+    return callOp.emitError()
+           << "a kernel with a dynamic grid size must be called with the "
+           << rock::kNumRuntimeGemmDims
+           << " trailing gemm dimension arguments, found " << numOperands
+           << " operands in total";
+
+  Value m = callOp.getOperand(
+      rock::getRuntimeGemmDimIndex(numOperands, rock::RuntimeGemmDim::M));
+  if (!isa<IntegerType>(m.getType()))
+    return callOp.emitError()
+           << "expected the M argument of a kernel with a dynamic grid size "
+              "to be an integer, got "
+           << m.getType();
+
+  // Spelled out rather than using arith.ceildivui, which needs arith-expand to
+  // run afterwards; only the directly LLVM-convertible arith ops are safe to
+  // create this late.
+  Value mIndex = arith::IndexCastOp::create(b, loc, b.getIndexType(), m);
+  Value roundUp = arith::ConstantIndexOp::create(b, loc, grid.mPerBlock - 1);
+  Value mPerBlock = arith::ConstantIndexOp::create(b, loc, grid.mPerBlock);
+  Value mBlocks = arith::DivUIOp::create(
+      b, loc, arith::AddIOp::create(b, loc, mIndex, roundUp), mPerBlock);
+  Value otherBlocks = arith::ConstantIndexOp::create(
+      b, loc, grid.gnBlocks * kernel.clusterSize);
+  return arith::MulIOp::create(b, loc, mBlocks, otherBlocks).getResult();
 }
 
 namespace {
@@ -255,8 +305,9 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
 
     // Create grid and block dimensions
     Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
-    Value gridX = arith::ConstantIndexOp::create(
-        builder, callLoc, kernel.gridSize * kernel.clusterSize);
+    FailureOr<Value> gridX = emitGridSizeX(builder, callLoc, callOp, kernel);
+    if (failed(gridX))
+      return failure();
     Value blockX =
         arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
 
@@ -315,7 +366,7 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         builder, callLoc,
         SymbolRefAttr::get(ctx, binaryOp.getName(),
                            {SymbolRefAttr::get(ctx, kernel.name)}),
-        gpu::KernelDim3{gridX, one, one},  // grid dimensions
+        gpu::KernelDim3{*gridX, one, one}, // grid dimensions
         gpu::KernelDim3{blockX, one, one}, // block dimensions
         /*dynamicSharedMemorySize=*/nullptr, launchArgs,
         /*asyncTokenType=*/nullptr,

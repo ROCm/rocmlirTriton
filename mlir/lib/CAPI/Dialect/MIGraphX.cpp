@@ -78,15 +78,37 @@ MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
           mlir::rock::GridSizeAttr::getMnemonic());
       auto cluster = kernel.getAttr<mlir::IntegerAttr>(
           mlir::rock::ClusterSizeAttr::getMnemonic());
-      if (!block || !grid || !cluster)
+      if (!block || !cluster)
         continue;
       attrs[0] = block.getInt();
-      attrs[1] = grid.getInt();
+      // A kernel whose grid depends on a runtime M reports no grid size here;
+      // the caller obtains it from mlirGetDynamicGridSize() instead.
+      attrs[1] = grid ? grid.getInt() : 0;
       attrs[2] = cluster.getInt();
       ++count;
     }
   });
   assert(count == 1 && "invalid number of kernels");
+}
+
+MLIR_CAPI_EXPORTED bool mlirGetDynamicGridSize(MlirModule module, uint32_t m,
+                                               uint32_t *gridSize) {
+  auto mod = unwrap(module);
+  bool found = false;
+  mod.walk([&](mlir::gpu::BinaryOp binary) {
+    mlir::gpu::KernelTableAttr metadata =
+        mlir::cast<mlir::gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
+    for (auto kernel : metadata) {
+      std::optional<mlir::rock::DynGridSize> grid = mlir::rock::getDynGridSize(
+          kernel.getAttr(mlir::rock::DynGridSizeAttr::getMnemonic()));
+      if (!grid)
+        continue;
+      *gridSize =
+          ((m + grid->mPerBlock - 1) / grid->mPerBlock) * grid->gnBlocks;
+      found = true;
+    }
+  });
+  return found;
 }
 
 // Returns the size of compiled binary if called with null ptr

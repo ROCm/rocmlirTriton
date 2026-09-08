@@ -7,6 +7,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/PatternMatch.h"
@@ -45,6 +46,9 @@ struct KernelInfo {
   int64_t gridSize = -1;
   int64_t blockSize = -1;
   int64_t clusterSize = -1;
+  /// Set instead of `gridSize` when M is only known at run time, in which case
+  /// the launch has to evaluate the grid rather than read it.
+  std::optional<DynGridSize> dynGridSize;
   SmallVector<Type> argTypes;
   SmallVector<PrefillInfo> prefillArgs;
 };

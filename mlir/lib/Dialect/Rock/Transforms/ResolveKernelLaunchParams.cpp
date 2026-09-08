@@ -57,8 +57,10 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
   bool hasGridMetadata = llvm::any_of(
       moduleOp.getOps<LLVM::LLVMFuncOp>(), [&](LLVM::LLVMFuncOp funcOp) {
         return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
-               moduleOp->hasAttr(
-                   rock::GridSizeAttr::getModuleAttrName(funcOp.getName()));
+               (moduleOp->hasAttr(
+                    rock::GridSizeAttr::getModuleAttrName(funcOp.getName())) ||
+                moduleOp->hasAttr(rock::DynGridSizeAttr::getModuleAttrName(
+                    funcOp.getName())));
       });
   if (!hasGridMetadata)
     return success();
@@ -72,9 +74,14 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
   // The dispatch packet counts work-items, not workgroups, so it is the whole
   // grid * block * cluster product that has to fit in a uint32.
   for (rock::KernelInfo &kernel : kernels) {
-    assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
     assert(kernel.blockSize > 0 && "expected a positive kernel block size");
     assert(kernel.clusterSize > 0 && "expected a positive kernel cluster size");
+
+    // A grid that scales with a runtime value cannot be bounds-checked here
+    if (kernel.dynGridSize)
+      continue;
+
+    assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
     if (kernel.gridSize > rock::maxHardwareGridSize) {
       rock::markAsNotApplicable(moduleOp);
       return kernel.llvmFunc.emitOpError()

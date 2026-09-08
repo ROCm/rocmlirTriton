@@ -107,6 +107,42 @@ FailureOr<IntegerAttr> getGridSize(Operation *op);
 // Get blockSize
 FailureOr<IntegerAttr> getBlockSize(Operation *op);
 
+/// A gemm dimension carried by one of the scalar arguments that
+/// `rock-add-dynamic-dim-args` appends to a kernel with a dynamic shape. The
+/// enumerator values are the positions within that trailing group, which is
+/// the only thing that identifies these arguments: nothing in the IR records
+/// what they hold.
+enum class RuntimeGemmDim : unsigned { G = 0, M = 1, N = 2, K = 3 };
+constexpr unsigned kNumRuntimeGemmDims = 4;
+
+/// Name of `dim`, for diagnostics.
+StringRef getRuntimeGemmDimName(RuntimeGemmDim dim);
+
+/// Position of `dim` in an argument or operand list of `numArgs` entries whose
+/// last `kNumRuntimeGemmDims` entries are the runtime gemm dimensions. Every
+/// pass that produces or consumes those arguments must go through here, so
+/// that the ordering is written down exactly once.
+unsigned getRuntimeGemmDimIndex(unsigned numArgs, RuntimeGemmDim dim);
+
+/// The grid size of a kernel whose M is only known at runtime, as
+/// `ceilDiv(M, mPerBlock) * gnBlocks`. Published by `rock-gemm-to-gridwise`
+/// under `rock.dyn_grid_size` in place of the static `rock.grid_size`, because
+/// the tile sizes it is derived from are gone by the time the launch is
+/// emitted.
+struct DynGridSize {
+  /// Tile height the runtime M is divided by.
+  int64_t mPerBlock;
+  /// Product of the (static) G and N block counts.
+  int64_t gnBlocks;
+};
+
+/// Build the attribute value stored under `rock.dyn_grid_size`.
+DictionaryAttr makeDynGridSizeAttr(Builder &b, DynGridSize gridSize);
+
+/// Read back an attribute built by `makeDynGridSizeAttr`, or `std::nullopt` if
+/// `attr` is not one.
+std::optional<DynGridSize> getDynGridSize(Attribute attr);
+
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
 // Check that `newStoreMethod` is compatible with the store's current method,

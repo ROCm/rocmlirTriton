@@ -374,3 +374,39 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies a kernel whose M is only known at run time gets its grid evaluated
+// from the M the caller is already passing, as ceilDiv(M, 64) * 2, and that the
+// binary carries those factors instead of a grid size.
+// CHECK: gpu.binary @rock_kernels
+// CHECK-SAME: #gpu.kernel_metadata<"test_dyn_grid_kernel"
+// CHECK-NOT: grid_size =
+// CHECK-SAME: rock.dyn_grid_size = {gnBlocks = 2 : i64, mPerBlock = 64 : i64}
+// The M the grid is derived from is the second of the four trailing scalars.
+// CHECK: func.func @host_dyn_grid(%{{[^:]*}}: tensor<1024xf32>, %{{[^:]*}}: tensor<1024xf32>, %{{[^:]*}}: i32, %[[M:[^:]*]]: i32,
+// CHECK: %[[MIDX:.*]] = arith.index_cast %[[M]] : i32 to index
+// CHECK-DAG: %[[ROUNDUP:.*]] = arith.constant 63 : index
+// CHECK-DAG: %[[MPERBLOCK:.*]] = arith.constant 64 : index
+// CHECK: %[[SUM:.*]] = arith.addi %[[MIDX]], %[[ROUNDUP]]
+// CHECK: %[[MBLOCKS:.*]] = arith.divui %[[SUM]], %[[MPERBLOCK]]
+// CHECK: %[[GNBLOCKS:.*]] = arith.constant 2 : index
+// CHECK: %[[GRID:.*]] = arith.muli %[[MBLOCKS]], %[[GNBLOCKS]]
+// CHECK: gpu.launch_func @rock_kernels::@test_dyn_grid_kernel blocks in (%[[GRID]],
+module attributes {
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.dyn_grid_size.test_dyn_grid_kernel" = {mPerBlock = 64 : i64, gnBlocks = 2 : i64},
+    "triton.hsaco" = "DUMMY_HSACO",
+    "rock.host_functions" = [
+        "func.func @host_dyn_grid(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %g: i32, %m: i32, %n: i32, %k: i32) {\n  func.call @test_dyn_grid_kernel(%arg0, %arg1, %g, %m, %n, %k) : (tensor<1024xf32>, tensor<1024xf32>, i32, i32, i32, i32) -> ()\n  return\n}"
+    ]
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+  llvm.func @test_dyn_grid_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32)
+      attributes {rock.kernel} {
+    llvm.return
+  }
+}

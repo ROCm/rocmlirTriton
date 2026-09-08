@@ -93,6 +93,18 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
       info.gridSize = gridAttr.getInt();
 
+    // A kernel with a dynamic M has the two factors of its grid size instead.
+    std::string dynGridAttrName = DynGridSizeAttr::getModuleAttrName(info.name);
+    if (Attribute dynGridAttr = moduleOp->getAttr(dynGridAttrName)) {
+      info.dynGridSize = getDynGridSize(dynGridAttr);
+      if (!info.dynGridSize) {
+        funcOp.emitOpError("malformed ")
+            << dynGridAttrName << ": expected a {mPerBlock, gnBlocks} "
+            << "dictionary of integers";
+        return WalkResult::interrupt();
+      }
+    }
+
     // Get prefill arg info from module attribute (set by RockTensorToTritonPtr)
     std::string prefillAttrName = "rock.prefill_args." + info.name;
     if (auto prefillArr = moduleOp->getAttrOfType<ArrayAttr>(prefillAttrName)) {
@@ -144,7 +156,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     return failure();
 
   for (KernelInfo &k : kernels) {
-    if (k.gridSize <= 0) {
+    if (k.gridSize <= 0 && !k.dynGridSize) {
       return k.llvmFunc.emitOpError("missing rock.grid_size." + k.name +
                                     " module attribute");
     }

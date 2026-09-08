@@ -262,6 +262,16 @@ void RockTensorToTritonPtrPass::runOnOperation() {
             rock::GridSizeAttr::getMnemonic())) {
       moduleOp->setAttr(rock::GridSizeAttr::getModuleAttrName(kernelName),
                         gridAttr);
+    } else if (auto dynGridAttr = funcOp->getAttrOfType<DictionaryAttr>(
+                   rock::DynGridSizeAttr::getMnemonic())) {
+      moduleOp->setAttr(rock::DynGridSizeAttr::getModuleAttrName(kernelName),
+                        dynGridAttr);
+    } else {
+      funcOp.emitOpError() << "has neither a "
+                           << rock::GridSizeAttr::getMnemonic() << " nor a "
+                           << rock::DynGridSizeAttr::getMnemonic()
+                           << " attribute";
+      return signalPassFailure();
     }
 
     // Collect rock.prefill arg attributes.

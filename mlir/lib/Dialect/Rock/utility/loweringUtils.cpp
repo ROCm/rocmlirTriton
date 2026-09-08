@@ -473,6 +473,49 @@ FailureOr<IntegerAttr> mlir::rock::getBlockSize(Operation *op) {
       op, rock::BlockSizeAttr::getMnemonic());
 }
 
+StringRef mlir::rock::getRuntimeGemmDimName(RuntimeGemmDim dim) {
+  switch (dim) {
+  case RuntimeGemmDim::G:
+    return "G";
+  case RuntimeGemmDim::M:
+    return "M";
+  case RuntimeGemmDim::N:
+    return "N";
+  case RuntimeGemmDim::K:
+    return "K";
+  }
+  llvm_unreachable("unhandled RuntimeGemmDim");
+}
+
+unsigned mlir::rock::getRuntimeGemmDimIndex(unsigned numArgs,
+                                            RuntimeGemmDim dim) {
+  assert(numArgs >= kNumRuntimeGemmDims &&
+         "argument list is too short to hold the runtime gemm dimensions");
+  return numArgs - kNumRuntimeGemmDims + static_cast<unsigned>(dim);
+}
+
+/// Keys of the `rock.dyn_grid_size` dictionary.
+static constexpr StringLiteral kMPerBlockKey = "mPerBlock";
+static constexpr StringLiteral kGnBlocksKey = "gnBlocks";
+
+DictionaryAttr mlir::rock::makeDynGridSizeAttr(Builder &b,
+                                               DynGridSize gridSize) {
+  return b.getDictionaryAttr(
+      {b.getNamedAttr(kMPerBlockKey, b.getI64IntegerAttr(gridSize.mPerBlock)),
+       b.getNamedAttr(kGnBlocksKey, b.getI64IntegerAttr(gridSize.gnBlocks))});
+}
+
+std::optional<DynGridSize> mlir::rock::getDynGridSize(Attribute attr) {
+  auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
+  if (!dict)
+    return std::nullopt;
+  auto mPerBlock = dict.getAs<IntegerAttr>(kMPerBlockKey);
+  auto gnBlocks = dict.getAs<IntegerAttr>(kGnBlocksKey);
+  if (!mPerBlock || !gnBlocks)
+    return std::nullopt;
+  return DynGridSize{mPerBlock.getInt(), gnBlocks.getInt()};
+}
+
 FailureOr<SetVector<StoreOp>>
 mlir::rock::traceRootOutputToStoreOps(Value output) {
   SetVector<StoreOp> stores;

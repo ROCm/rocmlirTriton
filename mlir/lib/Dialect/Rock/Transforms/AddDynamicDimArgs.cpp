@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
@@ -71,11 +72,6 @@ struct RockAddDynamicDimArgsPass
 };
 
 } // end anonymous namespace
-
-/// The gemm dimensions, in the order the appended arguments carry them.
-static constexpr unsigned kNumGemmDims = 4;
-static constexpr llvm::StringLiteral kGemmDimNames[kNumGemmDims] = {"G", "M",
-                                                                    "N", "K"};
 
 /// Whether `transforms` only reshuffles coordinates, so that the view and the
 /// buffer underneath it hold the same number of elements. That equality is what
@@ -164,12 +160,15 @@ buildGemmExtentRecipes(func::FuncOp funcOp) {
   GemmOp gemmOp = gemmOps.front();
   Value a = gemmOp.getA(), b = gemmOp.getB();
 
-  // A is G x M x K and B is G x K x N once the gemm has been normalized.
-  const std::pair<Value, unsigned> sources[kNumGemmDims] = {
+  // A is G x M x K and B is G x K x N once the gemm has been normalized, in
+  // RuntimeGemmDim order.
+  const std::pair<Value, unsigned> sources[kNumRuntimeGemmDims] = {
       {a, 0}, {a, 1}, {b, 2}, {a, 2}};
 
   SmallVector<ExtentRecipe> recipes;
-  for (auto [dimName, source] : llvm::zip_equal(kGemmDimNames, sources)) {
+  for (auto [index, source] : llvm::enumerate(sources)) {
+    StringRef dimName =
+        getRuntimeGemmDimName(static_cast<RuntimeGemmDim>(index));
     FailureOr<ExtentRecipe> recipe =
         buildExtentRecipe(gemmOp, dimName, source.first, source.second);
     if (failed(recipe))
@@ -291,7 +290,7 @@ void RockAddDynamicDimArgsPass::runOnOperation() {
                << "appending G, M, N, K args to " << funcOp.getName() << "\n");
 
     unsigned firstExtentArg = funcOp.getNumArguments();
-    for (unsigned offset = 0; offset < kNumGemmDims; ++offset) {
+    for (unsigned offset = 0; offset < kNumRuntimeGemmDims; ++offset) {
       if (failed(funcOp.insertArgument(firstExtentArg + offset, extentType,
                                        /*argAttrs=*/nullptr, funcOp.getLoc())))
         return signalPassFailure();

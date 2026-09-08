@@ -332,3 +332,18 @@ func.func @gemm_scaled_fp4_splitk_odd(%arg0: tensor<589824xf4E2M1FN>, %arg1: ten
   %out = rock.store %result to %2 by set : tensor<3x256x256xf32> -> tensor<196608xf32> to tensor<3x256x256xf32>
   func.return %out : tensor<196608xf32>
 }
+
+// A gemm whose M is only known at run time cannot have its grid size folded to
+// a constant, so it gets the two factors the launch needs to evaluate it
+// instead: G * (N / nPerBlock) = 1 blocks per M tile of 64 rows.
+// CHECK-LABEL: func.func @gemm_dynamic_m
+// CHECK-NOT: rock.grid_size
+// CHECK-SAME: rock.dyn_grid_size = {gnBlocks = 1 : i64, mPerBlock = 64 : i64}
+func.func @gemm_dynamic_m(%a: tensor<1x?x64xf32>, %b: tensor<1x64x64xf32>, %c: tensor<1x?x64xf32>) -> tensor<1x?x64xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+  // CHECK: rock.gridwise_gemm({{.*}}, {{.*}})
+  %result = rock.gemm %a * %b {
+    params = #general_gemm_params1
+  } : tensor<1x?x64xf32> * tensor<1x64x64xf32> -> tensor<1x?x64xf32>
+  %out = rock.store %result to %c by set : tensor<1x?x64xf32> -> tensor<1x?x64xf32> to tensor<1x?x64xf32>
+  func.return %out : tensor<1x?x64xf32>
+}

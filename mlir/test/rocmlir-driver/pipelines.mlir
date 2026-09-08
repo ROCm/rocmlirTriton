@@ -54,6 +54,7 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-fusion-splitk-regularization),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:rock-add-dynamic-dim-args,
 // GPU-NEXT:func.func(rock-gemm-to-gridwise),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-attn-to-gridwise),
