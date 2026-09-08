@@ -148,9 +148,10 @@ static int64_t getEffectiveNumCU(StringRef targetArch) {
   return rock::getDefaultNumCU(targetArch);
 }
 
+// Always carries a count, the way the plain GEMM generator does. Leaving the
+// attribute off when nothing was queried would make its presence depend on the
+// host's GPU, and a consumer that finds no count assumes one anyway.
 static IntegerAttr getNumCUAttr(OpBuilder &builder, StringRef targetArch) {
-  if (num_cu.getNumOccurrences() == 0 && !nativeNumCU)
-    return nullptr;
   return builder.getI32IntegerAttr(getEffectiveNumCU(targetArch));
 }
 
