@@ -8,6 +8,8 @@
 #include "triton/Dialect/TritonGPU/IR/CGAEncodingAttr.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/GenericSwizzling.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Debug.h"
 #include <variant>
 
@@ -182,6 +184,168 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
   return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
 }
 
+// Widest sizePerThread a blocked layout could still hold along dimIdx: lanes
+// and warps claim their share of the dim first. Returns 0 for layouts that are
+// not blocked.
+unsigned getMaxSizePerThread(RankedTensorType type, int dimIdx) {
+  auto blockedEnc = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding());
+  if (!blockedEnc)
+    return 0;
+  auto lanes = blockedEnc.getThreadsPerWarp();
+  auto warps = blockedEnc.getWarpsPerCTA();
+  int maxSize = type.getShape()[dimIdx] / (lanes[dimIdx] * warps[dimIdx]);
+  return std::max(1, maxSize);
+}
+
+struct LDSAccessCost {
+  // Estimated wave level LDS transactions to move the whole tile.
+  int64_t transactions;
+  int conflicts;
+  int elemsPerVec;
+};
+
+// Estimate the wave level LDS transactions needed to move one tile between a
+// distributed register layout and a shared memory layout.
+LDSAccessCost estimateLDSAccessCost(RankedTensorType regTy,
+                                    ttg::SharedEncodingTrait sharedEnc,
+                                    const tt::AMD::TargetInfo &targetInfo,
+                                    bool isLoad) {
+  auto *ctx = regTy.getContext();
+  auto regLayout = ttg::toLinearLayout(regTy);
+  auto sharedLayout = ttg::toLinearLayout(regTy.getShape(), sharedEnc);
+  auto regNoBroadcast =
+      tt::actionRemoveBroadcastedRegs(regLayout).apply(regLayout);
+
+  int bitWidth = regTy.getElementTypeBitWidth();
+  int elemsPerVec =
+      tt::largestVectorisation(
+          ctx, regNoBroadcast.invertAndCompose(sharedLayout), bitWidth)
+          .first;
+  assert(elemsPerVec > 0 && "expected at least one element per LDS access");
+
+  auto [loadTile, storeTile] =
+      targetInfo.getSharedLdStTiles(elemsPerVec * bitWidth);
+  // Takes the raw layout: bankConflictsMemDesc strips broadcasted registers
+  // and re-derives the vectorization itself, arriving at the same elemsPerVec
+  // as above.
+  int conflicts = ttg::bankConflictsMemDesc(regLayout, sharedLayout, bitWidth,
+                                            targetInfo.getSharedMemoryBanks(),
+                                            isLoad ? loadTile : storeTile);
+
+  auto kRegister = StringAttr::get(ctx, "register");
+  auto kWarp = StringAttr::get(ctx, "warp");
+  int64_t numOps = regNoBroadcast.getInDimSize(kRegister) / elemsPerVec *
+                   regNoBroadcast.getInDimSize(kWarp);
+  return {numOps * (conflicts + 1), conflicts, elemsPerVec};
+}
+
+// Build the K-contiguous rotating buffer for a matrix core dot operand. The
+// write keeps the global load's order while the read runs K-major, and the
+// rotating swizzle is the one built for a write and a read that disagree on
+// order.
+ttg::SharedEncodingTrait createKMajorSharedEncoding(RankedTensorType operandTy) {
+  auto ctx = operandTy.getContext();
+  auto dotOpEnc =
+      cast<ttg::DotOperandEncodingAttr>(operandTy.getEncoding());
+  auto cgaLayout = ttg::getCGALayout(dotOpEnc);
+  auto order = ttg::getOrderForDotOperand(dotOpEnc.getOpIdx(), /*rank=*/2,
+                                          /*kContig=*/true);
+
+  // Borrow the swizzle parameters the swizzled encoding would pick for this
+  // operand at this order, then re-home them on the rotating layout.
+  auto swizzled = ttg::SwizzledSharedEncodingAttr::get(
+      ctx, dotOpEnc, operandTy.getShape(), order, cgaLayout,
+      operandTy.getElementTypeBitWidth(), /*needTrans=*/false);
+  return ttg::AMDRotatingSharedEncodingAttr::get(
+      ctx, swizzled.getVec(), swizzled.getPerPhase(), swizzled.getMaxPhase(),
+      order, cgaLayout);
+}
+
+// A matrix core reads its dot operand K-contiguous unless the target has an LDS
+// transpose load, but the shared order here is inherited from the global load.
+// When the load delivers the tile the other way around, tritonamdgpu-in-thread-
+// transpose normally widens the load across K and transposes in registers; it
+// can only do that when the load layout has room across K. Where it does not,
+// re-orienting the buffer on its own is still open to us: the write runs at the
+// load's order and the read runs K-major.
+//
+// Returns the K-contiguous encoding when it costs fewer LDS transactions than
+// currentEnc, and nullptr otherwise.
+ttg::SharedEncodingTrait
+getKMajorSharedEncIfProfitable(RankedTensorType storedTy,
+                               RankedTensorType operandTy,
+                               ttg::SwizzledSharedEncodingAttr currentEnc,
+                               const TargetFeatures &targetFeatures,
+                               const tt::AMD::TargetInfo &targetInfo) {
+  auto dotOpEnc = cast<ttg::DotOperandEncodingAttr>(operandTy.getEncoding());
+  if (!isa<ttg::AMDMfmaEncodingAttr, ttg::AMDWmmaEncodingAttr>(
+          dotOpEnc.getParent()))
+    return nullptr;
+  if (storedTy.getRank() != 2 || operandTy.getRank() != 2)
+    return nullptr;
+
+  // A single element per ds_read cannot be packed any further, so a K-major
+  // buffer buys nothing on the read side.
+  if (dotOpEnc.getKWidth() < 2) {
+    LDBG("kWidth is 1, a K-major shared layout cannot vectorize reads");
+    return nullptr;
+  }
+
+  unsigned bitWidth = storedTy.getElementTypeBitWidth();
+  // Targets with an LDS transpose load for this element width (gfx950
+  // ds_read_tr, gfx1250 ds_read_tr V2) read the non-K-contiguous layout
+  // directly, and their swizzling is already chosen for that instruction.
+  if (targetFeatures.queryLDSTransLoadParams(bitWidth)) {
+    LDBG("Target has an LDS transpose load for " << bitWidth
+                                                 << " bit elements");
+    return nullptr;
+  }
+
+  // Leave the operands in-thread-transpose will claim alone: it rewrites the
+  // global load as well, and picks its own buffer to match.
+  int kDimNum = dotOpEnc.getOpIdx() == 0 ? 1 : 0;
+  if (getMaxSizePerThread(storedTy, kDimNum) > 1) {
+    LDBG("Load layout has room across K, leaving this operand to "
+         "tritonamdgpu-in-thread-transpose");
+    return nullptr;
+  }
+
+  auto flippedEnc = createKMajorSharedEncoding(operandTy);
+  auto shape = operandTy.getShape();
+  // Nothing to re-orient when the buffer is already K-contiguous: the dot reads
+  // it packed as is, and re-tuning the swizzle of an already correctly oriented
+  // buffer is not this heuristic's job.
+  if (ttg::getOrder(currentEnc, shape) == ttg::getOrder(flippedEnc, shape)) {
+    LDBG("Shared layout is already K-contiguous");
+    return nullptr;
+  }
+
+  auto currentStore = estimateLDSAccessCost(storedTy, currentEnc, targetInfo,
+                                            /*isLoad=*/false);
+  auto currentLoad = estimateLDSAccessCost(operandTy, currentEnc, targetInfo,
+                                           /*isLoad=*/true);
+  auto flippedStore = estimateLDSAccessCost(storedTy, flippedEnc, targetInfo,
+                                            /*isLoad=*/false);
+  auto flippedLoad = estimateLDSAccessCost(operandTy, flippedEnc, targetInfo,
+                                           /*isLoad=*/true);
+
+  int64_t currentCost = currentStore.transactions + currentLoad.transactions;
+  int64_t flippedCost = flippedStore.transactions + flippedLoad.transactions;
+
+  auto report = [](StringRef name, const LDSAccessCost &store,
+                   const LDSAccessCost &load, int64_t total) {
+    LDBG(name << " layout costs " << total << " transactions (store "
+              << store.transactions << ", conflicts " << store.conflicts
+              << ", vec " << store.elemsPerVec << "; load " << load.transactions
+              << ", conflicts " << load.conflicts << ", vec "
+              << load.elemsPerVec << ")");
+  };
+  report("original", currentStore, currentLoad, currentCost);
+  report("K-major", flippedStore, flippedLoad, flippedCost);
+
+  return flippedCost < currentCost ? flippedEnc : nullptr;
+}
+
 // Adapted from
 // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
 // to support AMDMfmaEncodingAttr.
@@ -197,6 +361,11 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
   assert(loadOp);
   Value loadedValue = loadOp->getResult(0);
   llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
+  // Parallel to sharedEncs: the K-contiguous buffer this user would rather
+  // have, or null when it is happy with the inherited order. Kept apart from
+  // sharedEncs so the compatibility check below still compares like with like,
+  // and only honoured when every user agrees.
+  llvm::SmallVector<ttg::SharedEncodingTrait> kMajorEncs;
   for (Operation *user : loadedValue.getUsers()) {
     LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
     if (user->getNumResults() != 1)
@@ -219,6 +388,7 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
       }
       LDBG("Deduced shared encoding candidate from memDesc: " << tempAttr);
       sharedEncs.push_back(tempAttr);
+      kMajorEncs.push_back(nullptr);
     } else {
       if (!(isa<ttg::ConvertLayoutOp>(user) ||
             user->hasTrait<OpTrait::LocalLoadTrait>()))
@@ -311,6 +481,17 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
         }
         LDBG("Deduced shared encoding candidate from dot layout: " << tempAttr);
         sharedEncs.push_back(tempAttr);
+        // Only swizzled buffers are candidates for the K-major flip; a padded
+        // layout has already picked its own answer to bank conflicts.
+        auto srcTensorTy = dyn_cast<RankedTensorType>(srcTy);
+        auto swizzledAttr =
+            dyn_cast<ttg::SwizzledSharedEncodingAttr>(tempAttr);
+        kMajorEncs.push_back(
+            srcTensorTy && swizzledAttr
+                ? getKMajorSharedEncIfProfitable(
+                      srcTensorTy, cast<RankedTensorType>(userResType),
+                      swizzledAttr, targetFeatures, targetInfo)
+                : nullptr);
       } else if (auto llEnc = dyn_cast<ttg::LinearEncodingAttr>(userResEnc)) {
         // We use linear layout directly for scaled dot fp8 operands. For such
         // cases, we need to look further down the def-use chain to find the dot
@@ -326,6 +507,7 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
           LDBG("Deduced shared encoding candidate from mfma layout: "
                << tempAttr);
           sharedEncs.push_back(tempAttr);
+          kMajorEncs.push_back(nullptr);
         } else if (auto dotEnc = getDotEncoding<ttg::AMDWmmaEncodingAttr>(
                        userResult, &opIdx, &vecSize)) {
           LDBG("deduced opIdx: " << opIdx << "; deduced vecSize: " << vecSize);
@@ -335,6 +517,7 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
           LDBG("Deduced shared encoding candidate from wmma layout: "
                << tempAttr);
           sharedEncs.push_back(tempAttr);
+          kMajorEncs.push_back(nullptr);
         }
       }
     }
@@ -352,10 +535,11 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
   if (sharedEncs.empty() || !sharedEncs.front())
     return std::nullopt;
   auto maxVecSharedEnc = sharedEncs.front();
+  size_t maxVecIdx = 0;
 
   // TODO add support for padded layouts. Right now they will use a separate
   // allocation
-  for (auto sharedEnc : llvm::drop_begin(sharedEncs, 1)) {
+  for (auto [idx, sharedEnc] : llvm::enumerate(llvm::drop_begin(sharedEncs, 1))) {
     auto maybeSwizzShared =
         dyn_cast<ttg::SwizzledSharedEncodingAttr>(sharedEnc);
     auto maybeSwizzMaxVec =
@@ -367,7 +551,17 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
     }
     if (maybeSwizzShared.getVec() > maybeSwizzMaxVec.getVec()) {
       maxVecSharedEnc = sharedEnc;
+      maxVecIdx = idx + 1;
     }
+  }
+
+  // The buffer is shared, so it can only go K-major if every user wants it
+  // that way.
+  if (llvm::all_of(kMajorEncs, [](ttg::SharedEncodingTrait enc) {
+        return enc != nullptr;
+      })) {
+    LDBG("Deduced shared encoding (K-major): " << kMajorEncs[maxVecIdx]);
+    return kMajorEncs[maxVecIdx];
   }
 
   LDBG("Deduced shared encoding: " << maxVecSharedEnc);
