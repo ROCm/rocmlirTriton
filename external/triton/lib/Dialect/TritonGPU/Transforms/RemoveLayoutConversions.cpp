@@ -35,6 +35,42 @@ namespace mlir::triton::gpu {
 
 namespace {
 
+static int64_t getByteCount(Value result, int64_t minElementCount = 0,
+                            int64_t minBitWidth = 0) {
+  int64_t elementCount = 0;
+  int64_t dtypeBitWidth = 0;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(result.getType())) {
+    elementCount = tensorTy.getNumElements();
+    auto elemType = tensorTy.getElementType();
+    if (elemType.isIntOrFloat()) {
+      dtypeBitWidth = elemType.getIntOrFloatBitWidth();
+    }
+  }
+  if (elementCount < minElementCount) {
+    elementCount = minElementCount;
+  }
+  if (dtypeBitWidth < minBitWidth) {
+    dtypeBitWidth = minBitWidth;
+  }
+  return (elementCount * dtypeBitWidth) >> 3;
+}
+
+/// The amount of data, in bytes, whose access pattern \p anchor's layout
+/// decides: the largest tensor its op reads, writes or computes with. A layout
+/// picked to serve a small access describes little of the data it will be
+/// combined with, which makes it a poor choice for the values downstream of it.
+static int64_t getAnchorTraffic(Value anchor) {
+  // Block arguments are anchored too, and have no op to inspect.
+  int64_t traffic = getByteCount(anchor);
+  if (Operation *op = anchor.getDefiningOp()) {
+    for (Value operand : op->getOperands())
+      traffic = std::max(traffic, getByteCount(operand));
+    for (Value result : op->getResults())
+      traffic = std::max(traffic, getByteCount(result));
+  }
+  return traffic;
+}
+
 // -----------------------------------------------------------------------------
 //
 // -----------------------------------------------------------------------------
@@ -61,9 +97,31 @@ class LayoutPropagation {
 public:
   // Structure to keep track of the layout associated to a value.
   struct LayoutInfo {
-    LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
+    LayoutInfo(Attribute encoding, int64_t traffic) {
+      encodings.insert(encoding);
+      addTraffic(encoding, traffic);
+    }
     LayoutInfo() {}
     llvm::SmallSetVector<Attribute, 8> encodings;
+
+    // For each candidate encoding, the traffic of the heaviest anchor asking
+    // for it, carried along as the layout propagates and read back by
+    // resolveConflicts.
+    llvm::SmallDenseMap<Attribute, int64_t, 8> traffic;
+
+    int64_t trafficOf(Attribute encoding) const {
+      auto it = traffic.find(encoding);
+      return it == traffic.end() ? 0 : it->second;
+    }
+    // Returns true if this raised the recorded traffic, which makes the value
+    // worth revisiting so that the higher figure reaches its users too.
+    bool addTraffic(Attribute encoding, int64_t bytes) {
+      int64_t &recorded = traffic[encoding];
+      if (bytes <= recorded)
+        return false;
+      recorded = bytes;
+      return true;
+    }
   };
   LayoutPropagation(FuncOp F) : funcOp(F) {}
   // Find the anchor ops and set their layout in the data structure.
@@ -222,7 +280,8 @@ bool isLayoutAnchor(Operation *op) {
 void LayoutPropagation::initAnchorLayout() {
   auto addAnchor = [&](Value v) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
-      layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
+      layouts.insert(
+          {v, LayoutInfo(tensorType.getEncoding(), getAnchorTraffic(v))});
     }
   };
 
@@ -245,11 +304,18 @@ void LayoutPropagation::initAnchorLayout() {
 void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
                                     SmallVector<Value> &changed,
                                     Operation *op) {
+  // Snapshot the source candidates and their traffic, as writing to `layouts`
+  // below can grow it and invalidate `info`, which aliases one of its entries.
+  SmallVector<std::pair<Attribute, int64_t>> srcEncodings;
+  srcEncodings.reserve(info.encodings.size());
+  for (Attribute encoding : info.encodings)
+    srcEncodings.emplace_back(encoding, info.trafficOf(encoding));
+
   for (Value value : values) {
     if (!isa<RankedTensorType>(value.getType()))
       continue;
     bool hasChanged = false;
-    for (auto encoding : info.encodings) {
+    for (auto [encoding, traffic] : srcEncodings) {
       Attribute dstEncoding;
       if (isa<ConvertLayoutOp>(op)) {
         // Try to remove the convert by making the dst encoding match the source
@@ -258,8 +324,11 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       } else {
         dstEncoding = inferDstEncoding(op, encoding);
       }
-      if (dstEncoding)
-        hasChanged |= layouts[value].encodings.insert(dstEncoding);
+      if (dstEncoding) {
+        LayoutInfo &dstInfo = layouts[value];
+        hasChanged |= dstInfo.encodings.insert(dstEncoding);
+        hasChanged |= dstInfo.addTraffic(dstEncoding, traffic);
+      }
     }
     if (hasChanged)
       changed.push_back(value);
@@ -356,21 +425,51 @@ void LayoutPropagation::propagateLayout() {
 }
 
 void LayoutPropagation::resolveConflicts() {
+  ModuleOp moduleOp = funcOp->getParentOfType<ModuleOp>();
+  // The most traffic an anchor can govern while still saying nothing about how
+  // the larger tensors it is combined with should be laid out: one dword per
+  // thread leaves a layout no coalescing or vectorization choice to encode.
+  // Counted in bytes rather than in elements as isExpensiveLoadOrStore does,
+  // since what a layout can express of an access depends on how wide it is.
+  constexpr int64_t bytesPerDword = 4;
+  int64_t negligibleTraffic = bytesPerDword * lookupNumWarps(funcOp) *
+                              TritonGPUDialect::getThreadsPerWarp(moduleOp);
+
   for (auto &it : layouts) {
     Operation *op = it.first.getDefiningOp();
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
-    // Hacky resolve, prefer block encoding.
-    // TODO: add a proper heuristic.
-    Attribute encoding = *info.encodings.begin();
+    // Prefer a blocked encoding for a memory access, whose layout decides how
+    // it coalesces, and an mma encoding everywhere else, so that a dot result
+    // stays in the accumulator layout.
+    //
+    // That leaves ties, and before accelerate-matmul runs no candidate is an
+    // mma encoding at all, so this is where the epilogue of a dot gets settled.
+    // Break those ties by demoting a layout whose anchor governs negligible
+    // traffic: it gives every value downstream of it one element per thread,
+    // and converting the tensors it is broadcast into costs far more than
+    // laying the small access out differently would.
+    //
+    // Traffic does not rank candidates beyond that, because a heavier anchor is
+    // not reliably the better choice: converting to its layout can be paid for
+    // in register permutes rather than shared memory, and this pass cannot see
+    // those (getConvertCost, for one, prices them at zero).
     bool isLoadOrStore =
         op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
+    // Compared lexicographically, so the kind decides and traffic breaks ties.
+    auto rank = [&](Attribute e) {
+      bool isPreferredKind = (isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
+                             (!isLoadOrStore && isa<MmaEncodingTrait>(e));
+      bool hasSubstantialTraffic = info.trafficOf(e) > negligibleTraffic;
+      return std::make_pair(isPreferredKind, hasSubstantialTraffic);
+    };
+    Attribute encoding;
+    std::pair<bool, bool> best;
     for (Attribute e : info.encodings) {
-      if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
-          (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
+      if (auto candidate = rank(e); !encoding || best < candidate) {
+        best = candidate;
         encoding = e;
-        break;
       }
     }
     info.encodings.clear();
@@ -995,26 +1094,6 @@ static bool isExpensiveMathOp(Operation *op) {
              math::Log1pOp, math::SinOp, math::CosOp, math::TanOp, math::AsinOp,
              math::AcosOp, math::AtanOp, math::Atan2Op, math::PowFOp,
              math::SqrtOp, math::RsqrtOp, math::ErfOp, math::CbrtOp>(op);
-}
-
-static int64_t getByteCount(Value result, int64_t minElementCount = 0,
-                            int64_t minBitWidth = 0) {
-  int64_t elementCount = 0;
-  int64_t dtypeBitWidth = 0;
-  if (auto tensorTy = dyn_cast<RankedTensorType>(result.getType())) {
-    elementCount = tensorTy.getNumElements();
-    auto elemType = tensorTy.getElementType();
-    if (elemType.isIntOrFloat()) {
-      dtypeBitWidth = elemType.getIntOrFloatBitWidth();
-    }
-  }
-  if (elementCount < minElementCount) {
-    elementCount = minElementCount;
-  }
-  if (dtypeBitWidth < minBitWidth) {
-    dtypeBitWidth = minBitWidth;
-  }
-  return (elementCount * dtypeBitWidth) >> 3;
 }
 
 /// Compute the cost of a ConvertLayoutOp with source \p convertSrc and result
