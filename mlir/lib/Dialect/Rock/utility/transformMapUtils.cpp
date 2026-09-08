@@ -1040,8 +1040,7 @@ void mlir::rock::collapseContiguousMerges(Value transformed) {
       }
       newOps.push_back(TransformAttr::get(t.getContext(), t.getType(), params,
                                           t.getUpperNames(), t.getUpperDims(),
-                                          t.getLowerNames(), t.getLowerDims(),
-                                          t.getIsTileAlignment()));
+                                          t.getLowerNames(), t.getLowerDims()));
     }
     TransformMapAttr newMap = TransformMapAttr::get(newOps, newUpper, newLower);
     ret = TransformOp::create(b, op.getLoc(), ret, newMap);
@@ -1068,14 +1067,11 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
 }
 
 SmallVector<unsigned>
-mlir::rock::validityImpactingUpperDims(TransformMapAttr map,
-                                       bool ignoreTileAlignmentPads) {
+mlir::rock::validityImpactingUpperDims(TransformMapAttr map) {
   SmallVector<unsigned> dims;
   for (TransformAttr op : map.getOps()) {
     TransformType type = op.getType();
     if (type == TransformType::Pad) {
-      if (ignoreTileAlignmentPads && op.getIsTileAlignment())
-        continue;
       ArrayRef<int64_t> params = op.getParams();
       ArrayRef<uint32_t> upper = op.getUpperDims();
       for (size_t i = 0, e = upper.size(); i < e; ++i)
@@ -1106,29 +1102,8 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
   return result;
 }
 
-bool mlir::rock::transformChainDependsOnAnyDim(
-    ArrayRef<TransformMapAttr> transforms, ArrayRef<unsigned> dims) {
-  if (dims.empty())
-    return false;
-
-  // An empty chain passes its coordinates through unchanged, so the lower
-  // coordinates depend on every upper dim. It also has no domain to check
-  // `dims` against.
-  AffineMap composed = composeTransforms(transforms);
-  if (!composed)
-    return true;
-
-  assert(llvm::all_of(
-             dims, [&](unsigned dim) { return dim < composed.getNumDims(); }) &&
-         "queried dim is not an upper coordinate of the transform chain");
-
-  return llvm::any_of(
-      dims, [&](unsigned dim) { return composed.isFunctionOfDim(dim); });
-}
-
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
-                                         ArrayRef<unsigned> dims,
-                                         bool ignoreTileAlignmentPads) {
+                                         ArrayRef<unsigned> dims) {
   // An empty chain generates no validity checks, and has no upper coordinate
   // space to check `dims` against.
   if (dims.empty() || transforms.empty())
@@ -1143,8 +1118,7 @@ bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
          "queried dim is not an upper coordinate of the transform chain");
 
   for (auto [index, transform] : llvm::enumerate(transforms)) {
-    SmallVector<unsigned> upperDims =
-        validityImpactingUpperDims(transform, ignoreTileAlignmentPads);
+    SmallVector<unsigned> upperDims = validityImpactingUpperDims(transform);
     if (upperDims.empty())
       continue;
 
@@ -1218,10 +1192,10 @@ TransformMapAttr mlir::rock::invertTransformMap(
         begins.push_back(leftPad);
         fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
       }
-      transform.slice(
-          SmallVector<StringRef>(tattr.getUpperNames()),
-          SmallVector<uint32_t>(tattr.getUpperDims()),
-          SmallVector<StringRef>(tattr.getLowerNames()), begins, fullLowerSizes);
+      transform.slice(SmallVector<StringRef>(tattr.getUpperNames()),
+                      SmallVector<uint32_t>(tattr.getUpperDims()),
+                      SmallVector<StringRef>(tattr.getLowerNames()), begins,
+                      fullLowerSizes);
       break;
     }
     case rock::TransformType::Slice: {
@@ -1448,10 +1422,20 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
   return transform.get();
 }
 
-static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
-                                                 ArrayRef<StringRef> dimNames,
-                                                 ArrayRef<int64_t> shape,
-                                                 int64_t numElements) {
+TransformMapAttr
+mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                                ArrayRef<StringRef> dimNames,
+                                                ArrayRef<int64_t> shape) {
+  assert(dimNames.size() == shape.size() &&
+         "expected one name for each shaped dimension");
+  if (shape.empty()) {
+    // An empty shape represents a rank-0 tensor. Its scalar value still has
+    // one element of flat storage, so drop that sole lower dimension.
+    BottomUpTMBuilder flattener(b, {"raw"}, 1, loc);
+    flattener.dropDimAtIndex("raw", 0);
+    return flattener.get();
+  }
+
   int64_t rank = shape.size();
   SmallVector<uint32_t> upperDims(rank);
   std::iota(upperDims.begin(), upperDims.end(), 0);
@@ -1473,6 +1457,9 @@ static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
     nonUnitUpperSize.push_back(shape.back());
   }
 
+  int64_t numElements = 1;
+  for (int64_t size : shape)
+    numElements *= size;
   BottomUpTMBuilder flattener(b, {"raw"}, numElements, loc);
   flattener.unmerge(nonUnitUpperName, nonUnitUpperDim, "raw", nonUnitUpperSize);
   for (auto dim : upperDims) {
@@ -1481,6 +1468,32 @@ static TransformMapAttr buildFlattenTransformMap(OpBuilder &b, Location loc,
     }
   }
   return flattener.get();
+}
+
+TransformMapAttr
+mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                                ArrayRef<int64_t> shape) {
+  SmallVector<SmallString<16>> nameStorage;
+  SmallVector<StringRef> dimNames;
+  nameStorage.reserve(shape.size());
+  dimNames.reserve(shape.size());
+  for (size_t dim = 0; dim < shape.size(); ++dim) {
+    nameStorage.emplace_back();
+    (Twine("dim") + Twine(dim)).toVector(nameStorage.back());
+    dimNames.push_back(nameStorage.back());
+  }
+  return buildRowMajorFlatteningTransformMap(b, loc, dimNames, shape);
+}
+
+FailureOr<TransformMapAttr>
+mlir::rock::buildDenseConstantRowMajorTransformMap(OpBuilder &b, Location loc,
+                                                   Value value) {
+  if (!getDenseTensorConstantAttr(value))
+    return failure();
+  auto tensorType = cast<RankedTensorType>(value.getType());
+  if (tensorType.getRank() <= 1 || tensorType.getNumElements() == 0)
+    return failure();
+  return buildRowMajorFlatteningTransformMap(b, loc, tensorType.getShape());
 }
 
 void mlir::rock::expandFlatFunctionArguments(
@@ -1497,23 +1510,22 @@ void mlir::rock::expandFlatFunctionArguments(
       logicalVal = arg;
       continue;
     }
-    TransformMapAttr expandMap =
-        buildFlattenTransformMap(b, loc, nameList, logicalShapedTy.getShape(),
-                                 logicalShapedTy.getNumElements());
-    logicalVal = rock::TransformOp::create(b, loc, arg, expandMap);
+    TransformMapAttr rowMajorMap = buildRowMajorFlatteningTransformMap(
+        b, loc, nameList, logicalShapedTy.getShape());
+    logicalVal = rock::TransformOp::create(b, loc, arg, rowMajorMap);
   }
 }
 
 Value mlir::rock::flattenOutput(OpBuilder &b, Location loc, Value logicalVal,
                                 ArrayRef<StringRef> dimNames) {
   auto shapedType = cast<ShapedType>(logicalVal.getType());
-  // buildFlattenTransformMap builds a map with upper=logical, lower=flat
-  // (the "expand" direction). We need to invert it so that the TransformOp
-  // follows the standard convention: input=lower=logical, output=upper=flat.
-  TransformMapAttr expandMap = buildFlattenTransformMap(
-      b, loc, dimNames, shapedType.getShape(), shapedType.getNumElements());
-  TransformMapAttr flattenMap = invertTransformMap(b, expandMap, loc);
-  assert(flattenMap && "failed to invert expand map into flatten map");
+  // buildRowMajorFlatteningTransformMap builds a map with upper=logical and
+  // lower=flat. We need to invert it so that the TransformOp follows the
+  // standard convention: input=lower=logical, output=upper=flat.
+  TransformMapAttr rowMajorMap = buildRowMajorFlatteningTransformMap(
+      b, loc, dimNames, shapedType.getShape());
+  TransformMapAttr flattenMap = invertTransformMap(b, rowMajorMap, loc);
+  assert(flattenMap && "failed to invert contiguous flattening map");
   return rock::TransformOp::create(b, loc, logicalVal, flattenMap);
 }
 
@@ -1606,9 +1618,9 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
         if (upperDims[i] >= pos)
           upperDims[i] += numberOfIndices;
       }
-      newOps.push_back(TransformAttr::get(
-          context, t.getType(), t.getParams(), t.getUpperNames(), upperDims,
-          t.getLowerNames(), lowerDims, t.getIsTileAlignment()));
+      newOps.push_back(TransformAttr::get(context, t.getType(), t.getParams(),
+                                          t.getUpperNames(), upperDims,
+                                          t.getLowerNames(), lowerDims));
     }
 
     // Add the passthrough transforms
@@ -1662,7 +1674,6 @@ struct TransformAttrArgs {
   std::pair<SmallVector<StringRef>, SmallVector<StringRef>> preservedNames;
   std::pair<SmallVector<uint32_t>, SmallVector<uint32_t>> preservedDims;
   SmallVector<int64_t> params;
-  bool isTileAlignment = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &stream,
@@ -1808,7 +1819,6 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
   for (auto tr : trMap.getOps()) {
     TransformAttrArgs args;
     args.type = tr.getType();
-    args.isTileAlignment = tr.getIsTileAlignment();
     SmallVector<uint32_t> &preservedUpperDims =
         std::get<DimType::Upper>(args.preservedDims);
     SmallVector<uint32_t> &preservedLowerDims =
@@ -2130,12 +2140,12 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
     LLVM_DEBUG(llvm::interleaveComma(
                    std::get<DimType::Lower>(args.preservedDims), llvm::dbgs());
                llvm::dbgs() << "\n");
-    auto newTr = TransformAttr::get(
-        b.getContext(), args.type, args.params,
-        std::get<DimType::Upper>(args.preservedNames),
-        std::get<DimType::Upper>(args.preservedDims),
-        std::get<DimType::Lower>(args.preservedNames),
-        std::get<DimType::Lower>(args.preservedDims), args.isTileAlignment);
+    auto newTr =
+        TransformAttr::get(b.getContext(), args.type, args.params,
+                           std::get<DimType::Upper>(args.preservedNames),
+                           std::get<DimType::Upper>(args.preservedDims),
+                           std::get<DimType::Lower>(args.preservedNames),
+                           std::get<DimType::Lower>(args.preservedDims));
     newOps.push_back(newTr);
   }
 

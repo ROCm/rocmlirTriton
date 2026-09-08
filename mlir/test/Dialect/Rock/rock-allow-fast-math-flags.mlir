@@ -6,13 +6,16 @@
 //   math.{absf,copysign,clampf}             -> nsz                      (±0 peepholes only; not approximated)
 //   math.* transcendental (incl. sincos)    -> nsz + contract + afn     (hw approximate impl)
 //
-// The per-op tests live inside a nested `module @perop_tests`. The pass is
-// gated on `rock.kernel`, so the per-op funcs carry that attribute and the
-// pass-pipeline below explicitly descends into the nested module to run the
-// pass on them. The migraphx pipeline used by the TOSA/ROCK/FAST runs only
-// walks top-level funcs (via `module.getOps<func::FuncOp>()`), so the nested
-// module is opaque to it and only the single MIGraphX kernel at the bottom
-// of this file is lowered through that pipeline.
+// The pass is gated on `rock.kernel` and silently skips any other func, which
+// is what keeps the host/CPU path free of these flags: `buildKernelPipeline`
+// schedules it while the host funcs are still in the module, so the gate rather
+// than the schedule is what excludes them.
+//
+// The per-op tests live inside a nested `module @perop_tests` so that the
+// migraphx pipeline used by the TOSA/ROCK/FAST runs cannot see them: that
+// pipeline only walks top-level funcs (via `module.getOps<func::FuncOp>()`), so
+// only the single MIGraphX kernel at the bottom of this file is lowered through
+// it. The pass-pipeline below explicitly descends into the nested module.
 // RUN: rocmlir-opt --pass-pipeline='builtin.module(func.func(rock-allow-fast-math-flags),builtin.module(func.func(rock-allow-fast-math-flags)))' -mlir-print-local-scope %s | FileCheck %s
 
 // End-to-end check
@@ -24,6 +27,11 @@
 
 // rock-allow-fast-math-flags
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope | FileCheck %s --check-prefix=FAST
+
+// The same two stages with `-disable-fast-math`, which the driver has to thread
+// all the way back to migraphx-to-tosa in phase 1 for the NaN mode to change.
+// RUN: rocmlir-driver -disable-fast-math -kernel-pipeline=migraphx,highlevel %s | FileCheck %s --check-prefix=ROCK_IEEE
+// RUN: rocmlir-driver -disable-fast-math -kernel-pipeline=migraphx,highlevel %s | rocmlir-opt -rock-allow-fast-math-flags -mlir-print-local-scope | FileCheck %s --check-prefix=FAST_IEEE
 
 // CHECK-LABEL: module @perop_tests
 module @perop_tests {
@@ -69,17 +77,23 @@ module @perop_tests {
   }
 
   // arith ops in the `nszOnly` bucket: `negf` (sign-bit XOR for `0 - x`),
-  // `remf` (±0 peepholes around the IEEE remainder), and
-  // `maximumf`/`maxnumf`/`minimumf`. `nsz` does not imply `nnan`, so maximumf
-  // still propagates NaNs.
-  // These must NOT receive `contract`/`arcp`/`afn` -- a wrong flag set on the
-  // registration would show up as extra bits here.
+  // `remf` (±0 peepholes around the IEEE remainder), and the whole min/max
+  // family. These must NOT receive `contract`/`arcp`/`afn` -- a wrong flag set
+  // on the registration would show up as extra bits here.
+  //
+  // The already-non-propagating maxnumf/minnumf additionally get `nnan`, which
+  // is what lets a clamp pair fold into one v_med3 later. The propagating
+  // maximumf/minimumf are deliberately left alone: `nsz` does not imply `nnan`,
+  // and flagging them would quietly undo a request to propagate. Reaching this
+  // pass at all already means fast math is on, since `-disable-fast-math` makes
+  // the kernel pipeline skip it entirely.
   // CHECK-LABEL: func.func @nsz_only_arith_ops_add_nsz
   // CHECK: arith.negf %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.remf %{{.*}}, %{{.*}} fastmath<nsz> : f32
   // CHECK: arith.maximumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
-  // CHECK: arith.maxnumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  // CHECK: arith.maxnumf %{{.*}}, %{{.*}} fastmath<nnan,nsz> : f32
   // CHECK: arith.minimumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  // CHECK: arith.minnumf %{{.*}}, %{{.*}} fastmath<nnan,nsz> : f32
   func.func @nsz_only_arith_ops_add_nsz(%a: f32, %b: f32) -> f32
       attributes {rock.kernel} {
     %0 = arith.negf %a : f32
@@ -87,7 +101,8 @@ module @perop_tests {
     %2 = arith.maximumf %1, %b : f32
     %3 = arith.maxnumf %2, %b : f32
     %4 = arith.minimumf %3, %a : f32
-    return %4 : f32
+    %5 = arith.minnumf %4, %a : f32
+    return %5 : f32
   }
 
   // Non-transcendental math ops (`absf`, `copysign`, `clampf`) are exact
@@ -146,14 +161,32 @@ module @perop_tests {
     return %0 : f32
   }
 
-  // Sanity check that the pass leaves non-kernel funcs alone (the `rock.kernel`
-  // gate is what makes the per-op tests above meaningful).
-  // CHECK-LABEL: func.func @non_kernel_is_skipped
-  // CHECK: arith.divf %{{.*}}, %{{.*}} : f32
-  // CHECK-NOT: fastmath
-  func.func @non_kernel_is_skipped(%a: f32, %b: f32) -> f32 {
+  // Combiners nested in a `tt.reduce` region are added by RockToTTIR. Make sure
+  // that they can get the proper flags added.
+  // CHECK-LABEL: func.func @reduce_combiner_is_reached
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  func.func @reduce_combiner_is_reached(%arg0: tensor<64x64xf32>) -> tensor<64xf32>
+      attributes {rock.kernel} {
+    %0 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
+    ^bb0(%lhs: f32, %rhs: f32):
+      %1 = arith.addf %lhs, %rhs : f32
+      "tt.reduce.return"(%1) : (f32) -> ()
+    }) : (tensor<64x64xf32>) -> tensor<64xf32>
+    return %0 : tensor<64xf32>
+  }
+
+  // A func without `rock.kernel` is left exactly as it came in, even for the two
+  // ops the kernels above get the most aggressive flags on. This is what the CPU
+  // reference relies on: it is still in the module when the pass runs, and it
+  // has to keep its IEEE division and its NaN-clamping maxnum  f to be worth
+  // comparing the kernel against.
+  // CHECK-LABEL: func.func @no_kernel_attr_is_untouched
+  // CHECK: arith.divf %{{[^ ]+}}, %{{[^ ]+}} : f32
+  // CHECK: arith.maxnumf %{{[^ ]+}}, %{{[^ ]+}} : f32
+  func.func @no_kernel_attr_is_untouched(%a: f32, %b: f32) -> f32 {
     %0 = arith.divf %a, %b : f32
-    return %0 : f32
+    %1 = arith.maxnumf %0, %b : f32
+    return %1 : f32
   }
 }
 
@@ -194,18 +227,32 @@ func.func @migraphx_pipeline_adds_per_op_flags(
   return %neg : !migraphx.shaped<2x3xf32, 3x1>
 }
 
-// Max requests NaN propagation through TOSA and lowers to `maximumf`. The
-// fast-math pass adds only `nsz`, which permits signed-zero optimizations but
-// does not imply `nnan`.
-// TOSA-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
+// Which `arith` op a `migraphx.max` becomes is decided back in phase 1, by the
+// NaN mode migraphx-to-tosa puts on the `tosa.maximum`. This is the end-to-end
+// check that `-disable-fast-math` actually reaches that far: the driver has to
+// carry the flag into the migraphx phase, not just into the kernel/backend
+// phases, or the two runs below would be identical.
+//
+// By default the kernel assumes no NaN occurs, so the max is the
+// non-propagating `maxnumf` and the fast-math pass gives it `nnan` on top of
+// `nsz`. Under `-disable-fast-math` it is the propagating `maximumf`, which
+// gets `nsz` only -- `nsz` permits signed-zero optimizations but does not imply
+// `nnan`.
+// TOSA-LABEL: func.func @migraphx_max_nan_mode_follows_fast_math
 // TOSA: tosa.maximum
 
-// ROCK-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
-// ROCK: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
+// ROCK-LABEL: func.func @migraphx_max_nan_mode_follows_fast_math
+// ROCK: arith.maxnumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
 
-// FAST-LABEL: func.func @migraphx_max_propagates_nan_with_nsz
-// FAST: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} fastmath<nsz> : tensor<2x3xf32>
-func.func @migraphx_max_propagates_nan_with_nsz(
+// FAST-LABEL: func.func @migraphx_max_nan_mode_follows_fast_math
+// FAST: arith.maxnumf %{{[^,]+}}, %{{[^ ]+}} fastmath<nnan,nsz> : tensor<2x3xf32>
+
+// ROCK_IEEE-LABEL: func.func @migraphx_max_nan_mode_follows_fast_math
+// ROCK_IEEE: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} : tensor<2x3xf32>
+
+// FAST_IEEE-LABEL: func.func @migraphx_max_nan_mode_follows_fast_math
+// FAST_IEEE: arith.maximumf %{{[^,]+}}, %{{[^ ]+}} fastmath<nsz> : tensor<2x3xf32>
+func.func @migraphx_max_nan_mode_follows_fast_math(
     %a: !migraphx.shaped<2x3xf32, 3x1>,
     %b: !migraphx.shaped<2x3xf32, 3x1>)
     -> !migraphx.shaped<2x3xf32, 3x1>

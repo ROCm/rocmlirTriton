@@ -1,11 +1,16 @@
-// Verify that the two ReLUs in this input-fused convolution remain
-// arith.maximumf operations through Rock-to-TTIR. This guards the GPU
-// pipeline's disabled floating-point min/max expansion.
+// Verify that the two ReLUs in this input-fused convolution remain single
+// min/max operations through Rock-to-TTIR. This guards the GPU pipeline's
+// disabled floating-point min/max expansion (into cmpf/select chains).
+//
+// The kernel path assumes no NaNs by default, so `migraphx.relu` lowers via
+// `tosa.maximum` with `nan_mode = IGNORE` and lands on `arith.maxnumf`; under
+// `-disable-fast-math` it would be `arith.maximumf` instead. Either way the
+// point of this test is that the op is not expanded.
 
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut mlir_test %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -arch %arch | rocmlir-driver -c -arch %arch -mlir-print-ir-after=rock-to-ttir -o /dev/null 2>&1 | FileCheck %s --check-prefix=TTIR
 // TTIR-LABEL: IR Dump After {{.*}}rock-to-ttir
 // Both ReLUs must survive as maximum operations.
-// TTIR-COUNT-2: arith.maximumf
+// TTIR-COUNT-2: arith.maxnumf
 
 module {
   func.func @mlir_test(%arg0: !migraphx.shaped<544x1x1xf16, 1x1x1>, %arg1: !migraphx.shaped<32x544x7x7xf16, 28224x49x7x1>, %arg2: !migraphx.shaped<544xf16, 1>, %arg3: !migraphx.shaped<128x544x1x1xf16, 544x1x1x1>, %arg4: !migraphx.shaped<128xf16, 1>) -> !migraphx.shaped<32x128x7x7xf16, 6272x49x7x1> attributes {rock.kernel} {

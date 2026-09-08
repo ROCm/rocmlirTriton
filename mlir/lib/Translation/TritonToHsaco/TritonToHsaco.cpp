@@ -38,10 +38,12 @@
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/Targets.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -80,6 +82,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Transforms/Scalar/ADCE.h"
 
 #include <array>
 #include <mutex>
@@ -284,8 +287,19 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
                    enableExpertScheduling ? "true" : "false");
   }
 
-  std::string denormalMode = allowFlushDenorm ? "preserve-sign" : "ieee";
-  kernelFn->addFnAttr("denormal-fp-math-f32", denormalMode);
+  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
+  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
+  // controls to the `denormal_fpenv` enum attribute and only honours the string
+  // spelling through the auto-upgrade that runs when a module is parsed. A
+  // module built in memory therefore keeps it as an inert string and stays on
+  // the IEEE default. Express upstream's intended mode explicitly instead.
+  llvm::DenormalMode floatMode = allowFlushDenorm
+                                     ? llvm::DenormalMode::getPreserveSign()
+                                     : llvm::DenormalMode::getIEEE();
+  llvm::AttrBuilder denormalAttr(module.getContext());
+  denormalAttr.addDenormalFPEnvAttr(
+      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
+  kernelFn->addFnAttrs(denormalAttr);
 
   // ASan support
   // Only stamp `target-features` on the kernel when the caller actually has
@@ -457,6 +471,24 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   }
 
   mpm.addPass(pb.buildPerModuleDefaultPipeline(optLevel));
+
+  // --- rocmlirTriton pass ----
+  // Upstream's optimize_module adds nothing after the default pipeline, so keep
+  // this when reconciling with llvm.cc.
+  //
+  // A GEMM whose M overhangs mPerBlock has accumulator tiles that lie entirely
+  // outside the output, leaving a closed K-loop cycle of phi, insertelement,
+  // wmma and extractelement. Every instruction in it has a use - the next one
+  // around the cycle - so only ADCE, which holds instructions dead until proven
+  // live from a side-effecting root, can reclaim it.
+  //
+  // It has to run after buildPerModuleDefaultPipeline: the dead lanes only
+  // become separable once BreakStructPhiNodesPass splits the aggregate
+  // accumulator phi, which happens after the pipeline's own ADCE.
+  if (optLevel != llvm::OptimizationLevel::O0)
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ADCEPass()));
+  // --- rocmlirTriton pass ----
+
   mpm.run(module, mam);
 }
 

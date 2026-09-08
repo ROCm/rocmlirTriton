@@ -31,8 +31,32 @@ ATTENTION_COLUMNS = [
     'SlidingWindowLookBack', 'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ',
     'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
 ]
+GEMM_GEMM_COLUMNS = ['TransA', 'TransB', 'TransC', 'TransO', 'G', 'M', 'K', 'N', 'O']
+CONV_GEMM_COLUMNS = [
+    'FilterLayout', 'InputLayout', 'TransC', 'TransO', 'N', 'C', 'H', 'W', 'K', 'Y', 'X',
+    'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW', 'O'
+]
 
-# Regex pattern for lookup table entries: {"arch_op_dtype", {Class::params, Class::count}}, // optional comment
+# Operations that share the attention (GemmGemm) tuning code path
+GEMM_GEMM_OPS = {'attention', 'gemm_gemm', 'conv_gemm'}
+
+# Maps the user-facing --op value to its C++ KernelType name
+OP_TO_KERNEL_TYPE = {
+    'gemm': 'Gemm',
+    'conv': 'Conv',
+    'attention': 'Attention',
+    'gemm_gemm': 'GemmElementwiseGemm',
+    'conv_gemm': 'ConvElementwiseGemm',
+}
+
+# Operations whose problems may or may not permit split-K depending on the
+# fusion they end up in (including gemm+gemm and conv+gemm). Attention is
+# excluded: it parallelizes over the KV sequence via the -split_kv kernel
+# argument, never via the perf-config's splitKFactor, so a split-K-free
+# duplicate would be the same problem twice.
+SPLIT_K_AWARE_OPS = frozenset({'gemm', 'conv', 'gemm_gemm', 'conv_gemm'})
+
+# Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
 LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
 
 # =============================================================================
@@ -40,13 +64,24 @@ LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},
 # =============================================================================
 
 
+def op_from_kernel(kernel):
+    """Reverse-search the --op value for a kernel type via OP_TO_KERNEL_TYPE.
+
+    The match is case-insensitive, so `kernel` may be either a PascalCase KernelType name
+    (e.g. 'GemmElementwiseGemm') or its lowercase lookup-key segment (e.g. 'gemmelementwisegemm').
+    """
+    kernel = kernel.lower()
+    for op, kernel_type in OP_TO_KERNEL_TYPE.items():
+        if kernel_type.lower() == kernel:
+            return op
+    raise ValueError(f"Unknown kernel type: {kernel}")
+
+
 def get_instruction_type(arch, dtype, op):
     """Determine instruction type based on architecture, data type, and operation."""
-    if op == "attention":
+    if op in GEMM_GEMM_OPS:
         return "GemmGemm"
-    else:
-        return "Gemm"
-    raise ValueError(f"Unsupported architecture for quick tuning: {arch}")
+    return "Gemm"
 
 
 def get_class_name(arch, dtype, op):
@@ -56,7 +91,8 @@ def get_class_name(arch, dtype, op):
 
 def get_param_names(arch, dtype, op):
     """Generate array and count variable names."""
-    base = f"initParameters{dtype.capitalize()}{op.capitalize()}{arch.capitalize()}"
+    kernel_type = OP_TO_KERNEL_TYPE[op]
+    base = f"initParameters{dtype.capitalize()}{kernel_type}{arch.capitalize()}"
     return base, f"n{base[0].upper()}{base[1:]}"
 
 
@@ -68,6 +104,10 @@ def get_target_columns(op):
         return CONV_COLUMNS
     elif op == "attention":
         return ATTENTION_COLUMNS
+    elif op == "gemm_gemm":
+        return GEMM_GEMM_COLUMNS
+    elif op == "conv_gemm":
+        return CONV_GEMM_COLUMNS
     else:
         raise ValueError(f"Unknown operation: {op}")
 
@@ -153,6 +193,42 @@ def load_data(files, no_splitk):
     return df
 
 
+def build_coverage(df_typed, target_cols, op, threshold):
+    """Map each problem to the perfconfigs performing within ``threshold`` of its best.
+
+    Keys are ``(problem, split_k_allowed)``. A problem whose fusion forbids
+    split-K can only run a ``splitKFactor == 1`` config, so covering it well
+    needs a second entry whose candidates are restricted to those. Both entries
+    come from the same measurements, so the extra accuracy costs no tuning time.
+
+    The restricted entry is dropped when it would duplicate the unrestricted one,
+    which happens whenever split-K did not win the problem in the first place.
+    """
+    coverage = {}
+    for name, group in df_typed.groupby(target_cols):
+        max_tflops = group['TFlops'].max()
+        top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
+        coverage[name, True] = top
+
+        if op not in SPLIT_K_AWARE_OPS:
+            continue
+
+        is_split_k_free = group['PerfConfig'].apply(lambda config: get_splitk_value(config) in
+                                                    (None, '1'))
+        no_splitk = group[is_split_k_free]
+        if no_splitk.empty:
+            print(f"WARNING: no splitKFactor=1 config measured for {name}; the quick list "
+                  "cannot cover it when split-K is illegal")
+            continue
+
+        cutoff = no_splitk['TFlops'].max() * threshold
+        top_no_splitk = no_splitk[no_splitk['TFlops'] >= cutoff]['PerfConfig'].tolist()
+        if set(top_no_splitk) != set(top):
+            coverage[name, False] = top_no_splitk
+
+    return coverage
+
+
 def find_perfconfigs(df, op, threshold):
     """Find minimal covering set of perfconfigs using set cover optimization.
 
@@ -176,12 +252,7 @@ def find_perfconfigs(df, op, threshold):
         # Aggregate by keeping only the best TFlops per (problem, config)
         df_typed = df_typed.groupby(target_cols + ['PerfConfig'], as_index=False)['TFlops'].max()
 
-        # Build coverage: for each problem, which configs are "good enough"?
-        coverage = {}
-        for name, group in df_typed.groupby(target_cols):
-            max_tflops = group['TFlops'].max()
-            top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
-            coverage[name] = top
+        coverage = build_coverage(df_typed, target_cols, op, threshold)
 
         problems = sorted(coverage.keys())
         configs = sorted({c for cs in coverage.values() for c in cs})
@@ -322,7 +393,7 @@ def add_lookup_entry(content, section_name, entry):
 
 def get_lookup_section(arch, op, dtype):
     """Get the appropriate lookup table section name."""
-    if op == "attention":
+    if op in GEMM_GEMM_OPS:
         return "GemmGemm_LOOKUP_TABLE_GEN"
     return "Gemm_LOOKUP_TABLE_GEN"
 
@@ -334,6 +405,10 @@ def update_inc_file(results, arch, op):
         init_inc_file(path)
 
     content = path.read_text()
+
+    # Identifiers and section markers use the PascalCase KernelType; the lookup key uses its
+    # lowercase form
+    kernel_type = OP_TO_KERNEL_TYPE[op]
 
     for dtype, configs in results.items():
         instr = get_instruction_type(arch, dtype, op)
@@ -350,8 +425,8 @@ def update_inc_file(results, arch, op):
         def_lines.append("};")
 
         content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
-                                  f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
                                   "\n".join(def_lines))
 
         # Generate declaration
@@ -361,13 +436,13 @@ def update_inc_file(results, arch, op):
         ]
 
         content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
-                                  f"// BEGIN_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  f"// END_{op.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
                                   "\n".join(dec_lines))
 
         # Add lookup entry
         section_name = get_lookup_section(arch, op, dtype)
-        key = f"{arch}_{op}_{dtype}"
+        key = f"{arch}_{kernel_type.lower()}_{dtype}"
         value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
         entry = f'{{"{key}", {value}}},'
         content = add_lookup_entry(content, section_name, entry)
@@ -387,19 +462,21 @@ def add_type_aliases(from_type, to_type):
     aliases_added = 0
     for match in LOOKUP_ENTRY_PATTERN.finditer(content):
         arch = match.group(2)  # e.g., "gfx942"
-        op = match.group(3)  # e.g., "gemm"
+        kernel = match.group(3)  # e.g., "gemm"
         dtype = match.group(4)  # e.g., "f16"
         value = match.group(5)  # e.g., "{PopulateParamsGemm::..., ...}"
 
         if dtype != to_type:
             continue
 
-        from_key = f"{arch}_{op}_{from_type}"
+        from_key = f"{arch}_{kernel}_{from_type}"
 
         # Don't overwrite existing entries - aliases are fallbacks only
         if f'"{from_key}"' in content:
             print(f"Skipping {from_key}: already exists")
             continue
+
+        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
 
         section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
@@ -466,7 +543,9 @@ Examples:
         nargs='*',
         metavar='FILE',
         help='.debug files produced by tuningRunner.py (reads TSV from stdin if none provided)')
-    parser.add_argument('--op', choices=['gemm', 'conv', 'attention'], help='Operation')
+    parser.add_argument('--op',
+                        choices=['gemm', 'conv', 'attention', 'gemm_gemm', 'conv_gemm'],
+                        help='Operation')
     parser.add_argument('--th',
                         type=float,
                         default=0.93,

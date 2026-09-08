@@ -98,6 +98,11 @@ def MIGraphXToTosaPass : Pass<"migraphx-to-tosa", "::mlir::func::FuncOp"> {
     Pass that converts MIGraphX operations to TOSA operations.
   }];
 
+  let options = [Option<
+                     "disableFastMath", "disable-fast-math", "bool", "false",
+                     "Preserve IEEE NaN semantics in min/max/clamp lowerings">,
+  ];
+
   let dependentDialects = ["func::FuncDialect", "tosa::TosaDialect", ];
 }
 

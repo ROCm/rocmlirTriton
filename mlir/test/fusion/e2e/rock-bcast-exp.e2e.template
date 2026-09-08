@@ -9,7 +9,7 @@
 #tf_bias_exp = #rock.transform_map<#map_bias_exp by [<AddDim{{1}} ["go"] at [0] -> [] at []>, <AddDim{{1}} ["no"] at [1] -> [] at []>, <AddDim{{1}} ["ho"] at [2] -> [] at []>, <AddDim{{1}} ["wo"] at [3] -> [] at []>, <PassThrough ["ko"] at [4] -> ["ko"] at [0]>] bounds = [1, 1, 1, 1, 16] -> [16]>
 #map_bias_bcast = affine_map<(d0, d1, d2, d3, d4) -> (0, 0, 0, 0, d4)>
 #tf_bias_bcast = #rock.transform_map<#map_bias_bcast by [<Broadcast{{1}} ["go"] at [0] -> ["go"] at [0]>, <Broadcast{{1}} ["no"] at [1] -> ["no"] at [1]>, <Broadcast{{1}} ["ho"] at [2] -> ["ho"] at [2]>, <Broadcast{{1}} ["wo"] at [3] -> ["wo"] at [3]>, <PassThrough ["ko"] at [4] -> ["ko"] at [4]>] bounds = [1, 1, 30, 30, 16] -> [1, 1, 1, 1, 16]>
-#map_out = affine_map<(d0) -> (0, 0, d0 floordiv 480, (d0 mod 480) floordiv 16, d0 mod 16)>
+#map_out = affine_map<(d0) -> (0, 0, d0 floordiv 480, (d0 floordiv 16) mod 30, d0 mod 16)>
 #tf_out = #rock.transform_map<#map_out by [<Merge{{1, 1, 30, 30, 16}} ["raw"] at [0] -> ["go", "no", "ho", "wo", "ko"] at [0, 1, 2, 3, 4]>] bounds = [14400] -> [1, 1, 30, 30, 16]>
 module {{
   func.func @test_fusion(%arg0: tensor<8192x{type}>, %arg1: tensor<1152x{type}>, %arg2: tensor<16x{type}>, %arg3: tensor<14400x{type}>) -> tensor<14400x{type}> attributes {{rock.kernel, rock.arch = "##TOKEN_ARCH##"}} {{

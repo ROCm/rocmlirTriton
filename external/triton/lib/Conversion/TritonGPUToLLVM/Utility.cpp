@@ -1135,7 +1135,7 @@ std::optional<LLVM::AtomicOrdering> getMemoryOrdering(MemSemantic memOrdering) {
 
 llvm::MapVector<StringAttr, int32_t> getAllFreeVarMasks(MLIRContext *ctx) {
   // Mask where all elements are redundant
-  auto kReg = str_attr("reg");
+  auto kReg = str_attr("register");
   auto kLane = str_attr("lane");
   auto kWarp = str_attr("warp");
   auto kBlock = str_attr("block");

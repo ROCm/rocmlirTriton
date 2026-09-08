@@ -4,9 +4,9 @@
 // CHECK: elemTypeQLoad: f16
 // CHECK: elemTypeKLoad: i4
 // CHECK: elemTypeVLoad: f16
-// VECTORIZATION-DAG: #[[Q_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [16], order = [0]}>
+// VECTORIZATION-DAG: #[[Q_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [64, 1], warpsPerCTA = [2, 8], order = [0, 1]}>
 // VECTORIZATION-DAG: #[[V_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [1, 64], warpsPerCTA = [2, 8], order = [1, 0]}>
-// VECTORIZATION: tt.load {{.*}} : tensor<128x!tt.ptr<f16>, #[[Q_LAYOUT]]>
+// VECTORIZATION: tt.load {{.*}} : tensor<128x1x!tt.ptr<f16>, #[[Q_LAYOUT]]>
 // VECTORIZATION: tt.load {{.*}} : tensor<64x4096x!tt.ptr<f16>, #[[V_LAYOUT]]>
 module {
   func.func @mlir_attention_int4(%arg0: !migraphx.shaped<4096x4096xf16, 8192x1>, %arg1: !migraphx.shaped<4096xf16, 1>, %arg2: !migraphx.shaped<4096xf16, 1>, %arg3: !migraphx.shaped<4096x2048xui8, 2048x1>, %arg4: !migraphx.shaped<4096x4096xf16, 4096x1>) -> !migraphx.shaped<4096x4096xf16, 4096x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {

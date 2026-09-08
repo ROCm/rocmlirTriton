@@ -28,6 +28,8 @@
 // triton::AMD::TargetInfo
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
+#include <cassert>
+
 #define DEBUG_TYPE "rock-amd-arch-db"
 
 using namespace mlir;
@@ -59,9 +61,25 @@ std::tuple<ISAFamily, StringRef> mlir::rock::getArch(StringRef arch) {
   return std::make_tuple(isaFamily, chip);
 }
 
+bool mlir::rock::isCDNA(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return triton::amdgpu::isCDNA(isaFamily);
+}
+
+bool mlir::rock::isRDNA(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return triton::amdgpu::isRDNA(isaFamily);
+}
+
 //===----------------------------------------------------------------------===//
 // Matrix Acceleration Support Detection (using Triton APIs)
 //===----------------------------------------------------------------------===//
+
+/// The M and N extent of every WMMA intrinsic, across RDNA3/RDNA4 and both the
+/// plain and scaled flavours: only kDim varies (16, 32, 64, 128).
+/// Mirror of the `wmmaMap` entries in
+/// `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/WmmaGroup.cpp`
+static constexpr unsigned kWmmaNonKDim = 16;
 
 /// Check if MFMA is supported for the given types on the specified version.
 /// Triton's MfmaIntrinsic::selectFor() requires tile dimensions, but we only
@@ -122,21 +140,19 @@ static bool hasScaledWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
   // Use large K to match any intrinsic - gfx1250 fp8 WMMA uses kDim=128
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
 /// Check if WMMA is supported for the given types on the specified version.
-/// All WMMA intrinsics across RDNA3/RDNA4 use 16x16 tiles (only kDim varies).
 static bool hasWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
                            Type elemOut) {
-  // WMMA has consistently used 16x16 tiles across all RDNA architectures.
-  // The kDim varies (16, 32, 64, 128) but selectFor handles that internally.
+  // Use a large K so selectFor() matches whichever kDim the table offers.
   constexpr unsigned largeK = 512;
 
-  auto result = WmmaIntrinsic::selectFor(wmmaVersion, /*mDim=*/16, /*nDim=*/16,
-                                         largeK, elemA, elemB, elemOut);
+  auto result = WmmaIntrinsic::selectFor(
+      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
 }
 
@@ -247,6 +263,55 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
   return getMatrixAccelKind(arch, gemmOp) != MatrixAccelKind::None;
 }
 
+FailureOr<int64_t>
+mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                 Type inputTypeB, uint32_t instrNonKDim,
+                                 Type scaleAType, Type scaleBType) {
+  MatrixAccelKind accelKind =
+      getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
+  if (accelKind == MatrixAccelKind::None)
+    return failure();
+
+  Type elemA = getElementTypeOrSelf(inputTypeA);
+  Type elemB = getElementTypeOrSelf(inputTypeB);
+  Type elemOut = rock::getAccType(elemA, elemB);
+  auto [isaFamily, _] = getArch(arch);
+
+  // Both selectFor()s walk their candidates widest-K first and then fall
+  // through to "the only / smallest-K intrinsic", so an input K of zero skips
+  // every candidate and lands on exactly the one we are asking for.
+  constexpr unsigned narrowest = 0;
+
+  if (accelKind == MatrixAccelKind::WMMA ||
+      accelKind == MatrixAccelKind::ScaledWMMA) {
+    auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
+                                          kWmmaNonKDim, kWmmaNonKDim, narrowest,
+                                          elemA, elemB, elemOut);
+
+    assert(succeeded(instr) && "WMMA arch has no intrinsic for its own types");
+    if (failed(instr))
+      return failure();
+    return instr->kDim;
+  }
+
+  MLIRContext *ctx = elemA.getContext();
+  auto instr = MfmaIntrinsic::selectFor(
+      UnknownLoc::get(ctx), rock::getMfmaVersion(isaFamily), instrNonKDim,
+      instrNonKDim, narrowest, elemA, elemB,
+      /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
+      /*useTF32=*/false);
+  if (failed(instr))
+    return failure();
+  return instr->kDim;
+}
+
+FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(
+    StringRef arch, RockGemmWrapperInterface gemmOp, uint32_t instrNonKDim) {
+  return getAccelInstrMinKDim(arch, gemmOp.getAType(), gemmOp.getBType(),
+                              instrNonKDim, gemmOp.getScaleAType(),
+                              gemmOp.getScaleBType());
+}
+
 bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   // Hardware-capability check via the underlying MFMA / WMMA version tables.
   // We deliberately do NOT probe through getMatrixAccelKind here, because
@@ -322,6 +387,8 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
   case ISAFamily::CDNA3:
     if (numCUs == 304)
       return 8;
+    if (numCUs == 228) // MI300A: 6 XCDs of 38 CUs
+      return 6;
     if (numCUs == 80)
       return 4;
     return 1;
@@ -366,8 +433,9 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::CDNA4:
     return 256;
   case ISAFamily::RDNA1:
+    return 20;
   case ISAFamily::RDNA2:
-    return 30;
+    return 2;
   case ISAFamily::RDNA3:
   case ISAFamily::GFX1170:
     return 2;
@@ -375,9 +443,10 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 12;
   case ISAFamily::GFX1250:
     return 256;
-  default:
+  case ISAFamily::Unknown:
     return 1;
   }
+  llvm_unreachable("unhandled ISAFamily in getMinNumCU");
 }
 
 int64_t mlir::rock::getWaveSize(StringRef arch) {
@@ -393,10 +462,78 @@ int64_t mlir::rock::getLDSSize(StringRef arch) {
 }
 
 int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
-  auto [isaFamily, _] = getArch(arch);
+  auto [isaFamily, chip] = getArch(arch);
 
-  constexpr int64_t kMiB = 1024 * 1024;
+  constexpr int64_t kKiB = 1024;
+  constexpr int64_t kMiB = 1024 * kKiB;
 
+  // The gfx10xx / gfx11xx / gfx12xx ISA families each span both discrete parts
+  // with a memory-attached last level cache (Infinity Cache / MALL) and APUs,
+  // most of which stop at an L2 of 2 MiB or less - though gfx1151 shows an APU
+  // can carry a MALL too. Either way the answer is not a property of the
+  // family, whose maximum overshoots a MALL-less APU by up to 512x. Chips whose
+  // configuration is published are therefore listed individually. Where a chip
+  // ships in several cache configurations (gfx1100 at 96/80/64 MiB, gfx1201 at
+  // 64/48 MiB, ...) the largest is used, so that a cache-flush buffer sized
+  // from this always covers the live device.
+  //
+  // gfx11xx / gfx12xx sizes from
+  // https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html, which
+  // does not cover gfx10xx; those come from the per-chip tables amdgpu reports
+  // to userspace in drivers/gpu/drm/amd/amdkfd/kfd_crat.c (cache_level 3 where
+  // a chip has a MALL, otherwise cache_level 2). Both sources index by product
+  // or codename rather than by gfx number, so looking a figure up again means
+  // mapping the target back to its chip first.
+  int64_t perChipSize =
+      llvm::StringSwitch<int64_t>(chip)
+          // RDNA1: no MALL anywhere in the family, L2 is the last level.
+          .Case("gfx1010", 4 * kMiB)
+          .Case("gfx1011", 4 * kMiB)
+          .Case("gfx1012", 2 * kMiB)
+          .Case("gfx1013", 4 * kMiB)
+          // RDNA2 discrete: Infinity Cache.
+          .Case("gfx1030", 128 * kMiB)
+          .Case("gfx1031", 96 * kMiB)
+          .Case("gfx1032", 32 * kMiB)
+          .Case("gfx1034", 16 * kMiB)
+          // RDNA2 APUs: no MALL. gfx1036 is a 2 CU part and its L2 is sized to
+          // match, so it is the smallest last level cache of any target here.
+          .Case("gfx1033", 1 * kMiB)
+          .Case("gfx1035", 2 * kMiB)
+          .Case("gfx1036", 256 * kKiB)
+          // RDNA3 discrete: Infinity Cache.
+          .Case("gfx1100", 96 * kMiB)
+          .Case("gfx1101", 64 * kMiB)
+          .Case("gfx1102", 32 * kMiB)
+          // RDNA3 / RDNA3.5 APUs. An APU is not automatically MALL-less: of
+          // these, only gfx1151 has one and the rest stop at their L2.
+          .Case("gfx1103", 2 * kMiB)
+          .Case("gfx1150", 2 * kMiB)
+          .Case("gfx1151", 32 * kMiB) // MALL over a 2 MiB L2
+          .Case("gfx1152", 1 * kMiB)
+          // TODO(gfx1153): guess, AMD has not published this chip's cache. It
+          // is the smallest RDNA3.5 APU, which bounds its L2 above by gfx1152's
+          // 1 MiB, and gfx1151 is the only RDNA3.5 APU *known* to carry a MALL
+          // - a MALL here would make this value far too small. Replace it once
+          // real numbers exist.
+          .Case("gfx1153", 1 * kMiB)
+          // RDNA4 discrete: Infinity Cache.
+          .Case("gfx1200", 32 * kMiB)
+          .Case("gfx1201", 64 * kMiB)
+          .Default(0);
+  if (perChipSize != 0)
+    return perChipSize;
+
+  // Chips absent from the table above fall back to their ISA family. This is
+  // exact for the single-chip CDNA / GCN5 families and an upper bound
+  // elsewhere.
+  //
+  // TODO(gfx1170, gfx1171, gfx1172): AMD has not published the caches of the
+  // gfx117x parts, and being APUs settles nothing - gfx1151 is an APU with a
+  // 32 MiB MALL. The family value below is a guess at a bare APU L2, so it
+  // under-reports any of these that turns out to carry a MALL, which would
+  // under-size a cache-flush buffer rather than merely blunt a load hint. Give
+  // each one a per-chip entry as soon as real numbers exist.
   switch (isaFamily) {
   // No Infinity Cache: L2 is the last level (largest L2 in the family).
   case ISAFamily::GCN5_1:
@@ -405,22 +542,24 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2: // per-GCD
     return 8 * kMiB;
-  // Infinity Cache. TODO(gfx1250): confirm once AMD publishes a number.
+  // Infinity Cache.
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
-  case ISAFamily::GFX1250: // assumed
     return 256 * kMiB;
+  case ISAFamily::GFX1250:
+    return 192 * kMiB;
   case ISAFamily::RDNA2:
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
-  case ISAFamily::GFX1170:
+  case ISAFamily::GFX1170: // guess, see the TODO above
     return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
     return 256 * kMiB;
   }
+  llvm_unreachable("unhandled ISAFamily in getLastLevelCacheSize");
 }
 
 int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
@@ -473,8 +612,9 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::GFX1170:
     return 1024;
   case ISAFamily::RDNA4:
-  case ISAFamily::GFX1250:
     return 1536;
+  case ISAFamily::GFX1250:
+    return 1024;
   case ISAFamily::Unknown:
     return 512;
   }

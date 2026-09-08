@@ -5,12 +5,9 @@
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
-#include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
-#include "mlir/Dialect/Rock/Tuning/ConvContext.h"
-#include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -285,37 +282,6 @@ Type ConvGenerator::getOutputDataType(OpBuilder &builder) const {
       return builder.getIntegerType(32);
   }
   return strToType(config.outputDataTypeStr, builder);
-}
-
-LogicalResult ConvGenerator::needExtraPadBwdWeight(OpBuilder &builder,
-                                                   bool &needExtraPad) const {
-  Type dataType = getInputDataType(builder);
-  ConvOpType dir = config.operation.value();
-  assert(dir == ConvOpType::BwdWeight &&
-         "This method should only be called for wrw ops");
-
-  ConvolutionDims convDims = getConvolutionDims(&config);
-  GemmSize gemmSize = GemmSize::fromConvolution(dir, convDims);
-
-  needExtraPad = false;
-  // TODO: support mixed-type fp8 here too.
-  PopulateParamsInfo info{/*gemmSize=*/gemmSize,
-                          /*arch*=*/config.arch,
-                          /*gemmAType=*/dataType,
-                          /*gemmBType=*/dataType,
-                          /*kernelType=*/KernelType::ConvBwdWeight,
-                          /*batchSize=*/convDims.n,
-                          /*numCU=*/getNumCU()};
-
-  auto populateParamsPtr = std::make_unique<PopulateParams>();
-  auto maybeValidParams = populateParamsPtr->obtainTuningParameters(
-      builder, info, config.perfConfig);
-  if (succeeded(maybeValidParams)) {
-    needExtraPad = (populateParamsPtr->calculatePaddingAmount(
-                        maybeValidParams.value(), gemmSize) != 0);
-    return success();
-  }
-  return failure();
 }
 
 uint32_t ConvGenerator::getNumCU() const {
@@ -773,7 +739,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
   // args[1], and the store destination is args[storeDestIdx] (the last arg).
   //   ConvOp:         (filter=args[0], input=args[1])   -> store to output
   //   ConvBwdDataOp:  (filter=args[0], gradient=args[1]) -> store to input
-  //   ConvBwdWeightOp:(input=args[0], gradient=args[1])  -> store to filter
   Type resultType = logicalFuncArgTypes[storeDestIdx];
   Value convResult;
   switch (config.operation.value()) {
@@ -793,23 +758,6 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
     SmallVector<Value, 2> convArgs = {args[0], args[1]};
     auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
                                         resultType, convArgs, attributes);
-    convResult = convOp.getResult();
-  } break;
-  case ConvOpType::BwdWeight: {
-    bool needsZeroInit = false;
-    bool needExtraPad = false;
-    if (succeeded(needExtraPadBwdWeight(builder, needExtraPad))) {
-      if (!needExtraPad) {
-        auto dataType = getInputDataType(builder);
-        needsZeroInit = dataType.isF32() || dataType.isF16();
-      }
-    }
-    if (needsZeroInit)
-      zeroInitArg(builder, func, storeDestIdx);
-
-    SmallVector<Value, 2> convArgs = {args[0], args[1]};
-    auto convOp = ConvBwdWeightOp::create(builder, builder.getUnknownLoc(),
-                                          resultType, convArgs, attributes);
     convResult = convOp.getResult();
   } break;
   }

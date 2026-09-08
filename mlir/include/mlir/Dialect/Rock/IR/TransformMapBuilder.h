@@ -71,12 +71,6 @@ public:
   void pad(ArrayRef<StringRef> outNames, ArrayRef<uint32_t> outDims,
            ArrayRef<StringRef> inNames, ArrayRef<int64_t> params);
 
-  // Pad `inName` on the right to align a gemm dimension to the tile size. The
-  // resulting transform records that provenance, which tells consumers the
-  // padding belongs to the gemm lowering rather than to the program, and so
-  // may be discarded along with the output lanes the lowering masks off.
-  void padForTileAlignment(StringRef outName, StringRef inName, int64_t right);
-
 protected:
   TransformMapBuilder(mlir::Builder &builder, ArrayRef<StringRef> startNames,
                       ArrayRef<int64_t> startShape, mlir::Location loc);

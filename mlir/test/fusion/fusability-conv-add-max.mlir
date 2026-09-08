@@ -2,6 +2,8 @@
 // CHECK-SPLITK: fusible:0
 // RUN: rocmlir-gen -emit-module-fusibility-for=gemm:v1:64,64,16,1,1,4,16,1,2,0,0 - < %s | FileCheck %s --check-prefixes=CHECK-NONSPLITK
 // CHECK-NONSPLITK: fusible:1
+// RUN: rocmlir-gen --emit-tuning-key - < %s | FileCheck %s --check-prefix=CHECK-TUNING-KEY
+// CHECK-TUNING-KEY: -supportsSplitK false
 module {
   func.func @mlir_convolution_add_relu(%arg0: tensor<64x1x1x1xf32>, %arg1: tensor<1x256x56x56xf32>, %arg2: tensor<64x256x1x1xf32>, %arg3: tensor<1x64x56x56xf32>) -> tensor<1x64x56x56xf32> attributes {rock.enable_splitk_for_tuning, rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"} {
     %cst = arith.constant dense<0.000000e+00> : tensor<1x64x56x56xf32>

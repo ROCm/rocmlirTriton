@@ -8,7 +8,7 @@
 #tf_fil = #rock.transform_map<#map_fil by [<AddDim{1} ["g"] at [0] -> [] at []>, <Unmerge{16, 3, 3, 8} ["k", "y", "x", "c"] at [1, 2, 3, 4] -> ["raw"] at [0]>] bounds = [1, 16, 3, 3, 8] -> [1152]>
 #map_bias = affine_map<(d0, d1, d2, d3, d4) -> (d4)>
 #tf_bias = #rock.transform_map<#map_bias by [<AddDim{1} ["exp0"] at [0] -> [] at []>, <AddDim{1} ["exp1"] at [1] -> [] at []>, <AddDim{30} ["exp2"] at [2] -> [] at []>, <AddDim{30} ["exp3"] at [3] -> [] at []>, <PassThrough ["dim0"] at [4] -> ["dim0"] at [0]>] bounds = [1, 1, 30, 30, 16] -> [16]>
-#map_out = affine_map<(d0) -> (0, 0, d0 floordiv 480, (d0 mod 480) floordiv 16, d0 mod 16)>
+#map_out = affine_map<(d0) -> (0, 0, d0 floordiv 480, (d0 floordiv 16) mod 30, d0 mod 16)>
 #tf_out = #rock.transform_map<#map_out by [<Merge{1, 1, 30, 30, 16} ["raw"] at [0] -> ["go", "no", "ho", "wo", "ko"] at [0, 1, 2, 3, 4]>] bounds = [14400] -> [1, 1, 30, 30, 16]>
 module {
   func.func @test_fusion(%arg0: tensor<8192xf32>, %arg1: tensor<1152xf32>, %arg2: tensor<16xf32>, %arg3: tensor<14400xf32>) -> tensor<14400xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {

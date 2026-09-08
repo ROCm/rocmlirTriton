@@ -114,6 +114,10 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
 
   WalkResult gemmGemmWalkResult = func.walk(
       [&](rock::RockGemmGemmWrapperInterface gemmGemmOp) -> WalkResult {
+        // Attention uses splitKV rather than the perf-config splitKFactor.
+        if (isa<AttentionOp>(gemmGemmOp))
+          return WalkResult::interrupt();
+
         // We have two results for attention (output + LSE)
         // But we only support split-k for gemm+gemm, so there's a single result
         // here

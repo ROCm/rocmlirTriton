@@ -816,10 +816,10 @@ func.func @cast_to_ptr_shape_mismatch(%src: tensor<32x64xi32>) -> tensor<64x64x!
 // rock.extract_ptr tests
 // =============================================================================
 
-// Source is not a block argument
+// Splat constants are register values and cannot be pointer sources.
 func.func @extract_ptr_not_block_arg(%src: tensor<64x64xf32>) -> i32 attributes {rock.arch = "##TOKEN_ARCH##"} {
   %cst = arith.constant dense<0.0> : tensor<64x64xf32>
-  // expected-error @+1 {{source must be a block argument}}
+  // expected-error @+1 {{source must be a block argument or a non-splat dense constant}}
   %0 = rock.extract_ptr %cst : tensor<64x64xf32> -> i32
   return %0 : i32
 }
@@ -1181,13 +1181,6 @@ func.func @load_marker_cache_modifier_wt(%src: tensor<256x128xf16>, %i0: i32) ->
   return %0 : tensor<64x128xf16>
 }
 
-// Reduction tile axis must refer to an axis of the rank-2 loaded tile
-func.func @load_marker_reduction_tile_axis_out_of_bounds(%src: tensor<256x128xf16>, %i0: i32) -> tensor<64x128xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{reduction tile axis 2 is not an axis of the loaded tile}}
-  %0 = rock.load_marker %src views [#load_marker_tmap] [%i0] {cacheModifier = #rock<CacheModifier none>, reductionTileAxes = array<i64: 2>} : tensor<256x128xf16> -> tensor<64x128xf16>
-  return %0 : tensor<64x128xf16>
-}
-
 // =============================================================================
 // rock.store_marker tests
 // =============================================================================
@@ -1453,6 +1446,125 @@ func.func @conv_elementwise_gemm_pre_second_gemm_multi_block(
    out = ab * %c : tensor<1x4x3xf32>
   } {dilations = [1 : index, 1 : index],
      filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+
+// =============================================================================
+// rock.conv_elementwise_gemm convolution-operand verification
+//
+// `verifyGemmPlusGemmLikeOp` only ever sees the synthetic GEMM operand types
+// from `getAType()` / `getBType()`, which `ConvolutionDims::fromOp` derives
+// from the filter layout alone. Nothing there compares the filter against the
+// input, and nothing bounds-checks the layouts, so these cases used to either
+// slip through to a post-ConvToGemm error about the lowered GEMM or crash the
+// verifier outright.
+// =============================================================================
+
+// The filter carries 2 channels per group while the input carries 4. Reported
+// against the operands rather than as "reduction dimensions of first gemm do
+// not match" after lowering.
+func.func @conv_elementwise_gemm_channel_mismatch(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x4xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{filter and input must agree on the channels per group (filter 'c' = 2, input 'ci' = 4)}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x4xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+
+// Likewise for the group dimension: the filter says one group, the input two.
+func.func @conv_elementwise_gemm_group_mismatch(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x2x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{filter and input must agree on the group count (filter 'g' = 1, input 'gi' = 2)}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x2x2xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+
+// A grouped convolution, with filter and input in agreement, is still rejected.
+// Lowering would pass 'g' through to 'gemmG' and emit two independent GEMMs
+// reducing over one group's channels each, rather than one GEMM contracting
+// over all 'g * k' channels the convolution produced. That miscompile is
+// silent: nothing downstream objects, so the op has to be refused here.
+func.func @conv_elementwise_gemm_grouped(
+    %filter: tensor<2x4x1x1x2xf32>, %input: tensor<2x2x2x2x2xf32>,
+    %c: tensor<2x4x3xf32>) -> tensor<2x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{does not support grouped convolution (filter 'g' = 2)}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<2x4x1x1x2xf32>, tensor<2x2x2x2x2xf32>
+   out = ab * %c : tensor<2x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<2x8x3xf32>
+  return %r : tensor<2x8x3xf32>
+}
+
+// A layout shorter than its tensor used to walk off the end of the layout
+// array inside `ConvolutionDims::fromOp` and abort the verifier.
+func.func @conv_elementwise_gemm_short_input_layout(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{'input_layout' must have one entry per tensor dimension (layout size = 4, rank = 5)}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+
+// A missing layout used to be a null-attribute dereference for the same reason.
+func.func @conv_elementwise_gemm_missing_filter_layout(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{requires a 'filter_layout' array attribute}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
+  return %r : tensor<1x8x3xf32>
+}
+
+// The layout entries are cast to `StringAttr` unconditionally downstream.
+func.func @conv_elementwise_gemm_non_string_layout(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<2x2x2x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x8x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{'filter_layout' must contain only strings}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<2x2x2x1x2xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", 1 : i64, "c"],
      input_layout = ["ni", "0i", "1i", "gi", "ci"],
      padding = [0 : index, 0 : index, 0 : index, 0 : index],
      strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>

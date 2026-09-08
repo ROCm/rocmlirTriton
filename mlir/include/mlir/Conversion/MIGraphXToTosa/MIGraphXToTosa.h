@@ -52,7 +52,8 @@ void populateMIGraphXToTosaDialectConversion(ConversionTarget &target,
 
 /// Populates conversion passes from MIGraphX dialect to TOSA dialect.
 void populateMIGraphXToTosaConversionPatterns(RewritePatternSet &patterns,
-                                              TypeConverter &typeConverter);
+                                              TypeConverter &typeConverter,
+                                              bool disableFastMath);
 
 /// Configure dialect conversion for MIXR functions, converting shaped types to
 /// tensors that represent the underlying memory layout.

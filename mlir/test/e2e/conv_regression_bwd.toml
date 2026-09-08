@@ -4,7 +4,7 @@ suffix = "-rand_type float -arch %arch %pv %random_data %rocmlir_gen_flags | roc
 
 [[axis]]
 name = "operation"
-values = ["conv_bwd_data", "conv_bwd_weight"]
+values = ["conv_bwd_data"]
 prefix = "--operation "
 
 [[axis]]
@@ -15,15 +15,6 @@ values = ["-fil_layout=kcyx -in_layout=nchw -out_layout=nkhw", "-fil_layout=kyxc
 name = "data type"
 values = ["f32", "f16"]
 prefix = "-t "
-
-[[require]]
-feature = "random_data"
-[[require.match]]
-name = "operation"
-values = ["conv_bwd_weight"]
-[[require.match]]
-name = "data type"
-values = ["f16"]
 
 [[suite]]
 name = "config"
@@ -46,7 +37,8 @@ config = "-groupsize=1 -batchsize=32 -in_channels=256 -out_channels=128 -in_h=28
 [[suite.test]]
 config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=256 -in_h=14 -in_w=14 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
 
-## The following config is extracted from conv_f16_wrw_kblocks.mlir
+# Stride 2 on both axes with asymmetric padding, so bwd_data does not write
+# every element of its output and the lowering has to zero-fill the destination.
 [[suite.test]]
 config = "-groupsize=1 -batchsize=64 -in_channels=64 -out_channels=64 -in_h=4 -in_w=4 -fil_h=2 -fil_w=2 -dilation_h=1 -dilation_w=1 -conv_stride_h=2 -conv_stride_w=2 -padding_h_l=2 -padding_h_r=1 -padding_w_l=2 -padding_w_r=0"
 
@@ -84,27 +76,8 @@ config = "-groupsize=1 -batchsize=128 -in_channels=256 -out_channels=128 -in_h=2
 [[suite.test]]
 config = "-groupsize=1 -batchsize=512 -in_channels=256 -out_channels=512 -in_h=7 -in_w=7 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
 
-# Split by data type: -atol replaces the K-scaled default rather than raising it,
-# and the correct value differs by ~100x between f32 and f16 for this config.
-# The two excludes partition the "data type" axis: a new dtype must join exactly
-# one of them, or this config is generated twice at conflicting tolerances.
 [[suite.test]]
-# f32: bwd_weight is the calibrated case, with a random-data K-scaled default of
-# 2.007 against an observed worst case of 2.17, so 2.5 gives ~15% headroom.
-# bwd_data inherits the same override. Its own default is 0.023, so 2.5 means
-# that it fits comfortably.
-config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1 --atol 2.5"
-[[suite.test.exclude]]
-name = "data type"
-values = ["f16"]
-
-[[suite.test]]
-# f16: no override, deliberately, so each operation keeps its own K-scaled
-# default, which already covers the error observed for this config.
 config = "-groupsize=1 -batchsize=64 -in_channels=256 -out_channels=64 -in_h=56 -in_w=56 -fil_h=3 -fil_w=3 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=1 -padding_h_r=1 -padding_w_l=1 -padding_w_r=1"
-[[suite.test.exclude]]
-name = "data type"
-values = ["f32"]
 
 # Cases reported in rocMLIR-internal/issues/71
 [[suite.test]]

@@ -6,6 +6,13 @@
 // The max has to come after the clip: fed into it instead, the two adjacent
 // maxima fuse into one three-operand instruction and the fused max/min pair
 // never appears.
+//
+// Every run below passes `-disable-fast-math`, which is what puts the ops on
+// the propagating forms in the first place: by default the kernel path assumes
+// no NaN occurs and emits the non-propagating maxnumf/minnumf, which fold to a
+// v_med3 instead (see clip-nnan-isa.mlir for that contrast). The flag has to
+// reach both driver invocations, since the choice is made in phase 1 by
+// migraphx-to-tosa's NaN mode and again in phase 3 by rock-allow-fast-math-flags.
 
 // CDNA3 has no IEEE-2019 min/max in any form, packed or not. LLVM lowers each
 // operation to a legacy non-propagating min/max followed by compare/select
@@ -13,8 +20,8 @@
 // Keep absence checks in a separate FileCheck invocation: implicit negative
 // checks do not cover the interior of a single CHECK-DAG group.
 // RUN: rocmlir-gen --clone-harness -arch gfx942 -fut mlir_minmax_f32 %s \
-// RUN: | rocmlir-driver -arch=gfx942 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx942 2>&1
+// RUN: | rocmlir-driver -disable-fast-math -arch=gfx942 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx942 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx942 2>&1
 // RUN: FileCheck %s --check-prefix=GFX942 < %t.gfx942
 // RUN: FileCheck /dev/null \
 // RUN:   --implicit-check-not=v_maximum --implicit-check-not=v_pk_maximum \
@@ -33,8 +40,8 @@
 // packed included, so there is no two-operand pair for the backend to fuse and
 // each op selects its own instruction with a duplicated operand.
 // RUN: rocmlir-gen --clone-harness -arch gfx950 -fut mlir_minmax_f32 %s \
-// RUN: | rocmlir-driver -arch=gfx950 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx950 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx950 2>&1
+// RUN: | rocmlir-driver -disable-fast-math -arch=gfx950 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx950 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx950 2>&1
 // RUN: FileCheck %s --check-prefix=GFX950 < %t.gfx950
 // RUN: FileCheck /dev/null --implicit-check-not=v_maximumminimum \
 // RUN:   --implicit-check-not=v_minimummaximum < %t.gfx950
@@ -48,8 +55,8 @@
 // the clip's pair fuses into one three-operand instruction, while the f16 tail
 // takes the packed two-operand form. Nothing falls back to a compare/select.
 // RUN: rocmlir-gen --clone-harness -arch gfx1170 -fut mlir_minmax_f32 %s \
-// RUN: | rocmlir-driver -arch=gfx1170 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1170 2>&1
+// RUN: | rocmlir-driver -disable-fast-math -arch=gfx1170 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1170 2>&1
 // RUN: FileCheck %s --check-prefix=GFX1170 < %t.gfx1170
 // RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1170
 
@@ -61,8 +68,8 @@
 // gfx1250 matches gfx1170 at f32, but its packed f16 ops come out in the
 // three-operand form.
 // RUN: rocmlir-gen --clone-harness -arch gfx1250 -fut mlir_minmax_f32 %s \
-// RUN: | rocmlir-driver -arch=gfx1250 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1250 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1250 2>&1
+// RUN: | rocmlir-driver -disable-fast-math -arch=gfx1250 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1250 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1250 2>&1
 // RUN: FileCheck %s --check-prefix=GFX1250 < %t.gfx1250
 // RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1250
 

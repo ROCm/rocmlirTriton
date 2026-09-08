@@ -36,8 +36,7 @@ def RockConvToGemmPass : Pass<"rock-conv-to-gemm", "::mlir::func::FuncOp"> {
   let summary = "expand convolution into coordinate transformations and gemm. "
                 "Additionally, it also convert rock.conv_elementwise_gemm into "
                 "rock.gemm_elementwise_gemm";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "scf::SCFDialect", "gpu::GPUDialect"];
+  let dependentDialects = ["rock::RockDialect", "gpu::GPUDialect"];
 }
 
 def RockAffixTuningParametersPass
@@ -480,14 +479,19 @@ def RockTensorToTritonPtrPass
     Key transformations:
     1. Converts `arith.addi` on pointer tensors to `tt.addptr`
     2. Replaces tensor arguments with `!tt.ptr<element_type>` Triton pointers
-    3. Eliminates rock.extract_ptr and adapts the users to use the !tt.ptr directly.
-    4. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
-    5. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
-    6. Stores host functions (wrappers, main) as module attributes for later restoration
-    7. Preserves grid size as module attributes for gpu.launch_func
+    3. Stores dense non-splat tensor constants in deduplicated, internal LLVM
+       globals using rightmost-dimension-contiguous (row-major) flat storage,
+       GPU address space 1, and 16-byte alignment
+    4. Eliminates rock.extract_ptr and adapts its users to use either a kernel
+       argument pointer or a pointer to a compiler-owned global
+    5. Adds attributes to the tt.func, such as `tt.divisibility` and `tt.pointer_range`
+    6. Converts `func.func` to `tt.func` and `func.return` to `tt.return`
+    7. Stores host functions (wrappers, main) as module attributes for later restoration
+    8. Preserves grid size as module attributes for gpu.launch_func
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "triton::TritonDialect",
+                           "arith::ArithDialect", "LLVM::LLVMDialect",
+                           "triton::TritonDialect",
   ];
 }
 
@@ -649,8 +653,8 @@ def RockRegularizeInputPass
 
     For each rock.load_marker whose source traces through fusion ops:
     1. Walk backwards collecting transforms between the marker and the fusions
-    2. For each leaf of the fusion DAG (transform chains to block args):
-       apply the collected transforms, isolate the chain, create a new
+    2. For each block-argument or dense non-splat constant leaf of the fusion
+       DAG: apply the collected transforms, isolate the chain, and create a new
        rock.load_marker
     3. For splat constants: create a tile-shaped constant (no load_marker)
     4. Clone the fusion ops after the load_markers, operating on tile types
@@ -674,8 +678,7 @@ def RockRegularizeInputPass
         %res = arith.addf %A0, %A1
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
-                           "arith::ArithDialect", "math::MathDialect",
-                           "triton::TritonDialect"];
+                           "arith::ArithDialect", "math::MathDialect"];
 }
 
 def RockLowerLoadsPass : Pass<"rock-lower-loads", "::mlir::func::FuncOp"> {
@@ -715,6 +718,10 @@ def RockTosaToElementwisePass
   }];
   let dependentDialects = ["arith::ArithDialect", "math::MathDialect",
                            "tensor::TensorDialect", "tosa::TosaDialect"];
+  let options =
+      [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+              "Preserve IEEE NaN semantics in float-to-int cast lowerings">,
+  ];
 }
 
 def RockFlattenTosaFuncArgsPass
@@ -855,6 +862,48 @@ def RockSetReductionLayoutPass
       "every kernel.">];
 }
 
+def RockNarrowRedundantLoadsPass
+    : Pass<"rock-narrow-redundant-loads", "::mlir::ModuleOp"> {
+  let summary = "Replace a tt.load that reads the same value along a dimension "
+                "with a narrow load plus a broadcast";
+  let description = [{
+    Runs on TTIR, before layouts are assigned. A `tt.load` whose address is
+    invariant along a tensor dimension reads the same value once per position
+    along that dimension. Left alone, the redundant copies survive into TTGIR,
+    where a layout conversion or a pipeliner stage can spill the whole tile
+    through shared memory: for a group-quantized GEMM whose per-group scale is
+    constant across a K tile, that costs a scalar `ds_write_b16`/`ds_read_u16`
+    pair per redundant copy, because the tile's blocked layout holds one element
+    per thread and so cannot be vectorized.
+
+    This pass loads only the index-0 slice along each invariant dimension and
+    rebuilds the full tile with `tt.broadcast`:
+
+      Before:
+        %ptr = tt.addptr %base, %off : tensor<32x128x!tt.ptr<f16>>  // uniform
+        %val = tt.load %ptr : tensor<32x128x!tt.ptr<f16>>           //   along
+                                                                   //   dim 0
+      After:
+        %ptr0 = tt.addptr %base0, %off0 : tensor<1x128x!tt.ptr<f16>>
+        %val0 = tt.load %ptr0 : tensor<1x128x!tt.ptr<f16>>
+        %val = tt.broadcast %val0 : tensor<1x128xf16> -> tensor<32x128xf16>
+
+    Invariance comes from Triton's alignment analysis: a dimension qualifies
+    when the load result's `constancy` equals the tensor's extent along it.
+    Because that constancy is the gcd of the address and mask constancies, one
+    query covers both. `other` is checked separately, since the analysis does
+    not account for it.
+
+    The rewrite re-materializes the address computation at the narrow shape,
+    which is value-preserving because slicing any tensor is. Only splats,
+    broadcasts, `tt.expand_dims`, `tt.make_range`, `tt.addptr` and
+    side-effect-free elementwise arithmetic are re-materialized; a load whose
+    address involves anything else is left alone.
+  }];
+  let dependentDialects = ["triton::TritonDialect", "arith::ArithDialect",
+                           "math::MathDialect"];
+}
+
 def RockAnalyzeMemoryUsePass
     : Pass<"rock-analyze-memory-use", "::mlir::func::FuncOp"> {
   let summary = "Analyze kernel argument memory usage and set attributes";
@@ -924,6 +973,39 @@ def RockPrepareLLVMPass
                         /*default=*/"true",
                         "Set ignore_denormal_mode on atomic RMW ops">];
   let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
+}
+
+def RockFoldOobBufferOpsPass
+    : Pass<"rock-fold-oob-buffer-ops", "::mlir::LLVM::LLVMFuncOp"> {
+  let summary = "Drop raw buffer accesses whose predicate is statically false";
+  let description = [{
+    Triton's AMD backend predicates buffer accesses branchlessly: a masked-off
+    lane is given a `voffset` past the descriptor's `NumRecords`, which the
+    hardware discards. That hides the predicate from dead code elimination, so
+    the stored value and everything behind it stay artificially alive. A GEMM
+    whose M dimension is padded up to `mPerBlock` keeps its entire padded-tile
+    epilogue this way.
+
+    When the `voffset` of a raw buffer access is the out-of-bounds arm of the
+    emitter's predicating select, the condition is provably false, and that arm
+    is past the descriptor's `numRecords`, the access does nothing: stores and
+    unread atomics are erased, loads fold to the zero a discarded raw load
+    returns. Both bounds are read out of the IR, so no sentinel value is
+    assumed, and LLVM's own dead code elimination reclaims the rest.
+
+    Two abstract domains run over the LLVM and ROCDL dialects, since neither
+    implements `InferIntRangeInterface`, and a predicate is dead if either
+    proves it false: integer ranges for interval facts, known bits for the
+    per-bit facts of Triton's `xor`-based `LinearLayout` index math.
+  }];
+  let dependentDialects = ["LLVM::LLVMDialect", "ROCDL::ROCDLDialect"];
+  let statistics =
+      [Statistic<"numErasedStores", "num-erased-stores",
+                 "Number of raw buffer stores erased">,
+       Statistic<"numFoldedLoads", "num-folded-loads",
+                 "Number of raw buffer loads folded to zero">,
+       Statistic<"numErasedAtomics", "num-erased-atomics",
+                 "Number of raw buffer atomics with unread results erased">];
 }
 
 #endif // MLIR_DIALECT_ROCK_PASSES

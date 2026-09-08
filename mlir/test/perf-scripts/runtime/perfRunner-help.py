@@ -10,7 +10,7 @@
 #
 # CHECK: usage: rocMLIR performance test runner
 # CHECK-DAG: --op {{.*}}{conv,gemm,fusion,attention,gemm_gemm,conv_gemm}
-# CHECK-DAG: --batch_mlir
-# CHECK-DAG: --configs_file
-# CHECK-DAG: --tuning_db
+# CHECK-DAG: --batch-mlir
+# CHECK-DAG: --configs-file
+# CHECK-DAG: --tuning-db
 # CHECK-DAG: --mlir-build-dir

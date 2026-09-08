@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -split-input-file -rock-gridwise-gemm-to-blockwise -rock-decompose-nonpow2-k -canonicalize -verify-diagnostics %s
 
 #gemm_params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 18, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 32, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>

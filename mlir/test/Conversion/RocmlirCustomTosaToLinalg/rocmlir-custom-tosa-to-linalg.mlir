@@ -70,9 +70,11 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
 // 11 >= dstWidth 8, so both 0 and 255 are exactly representable in f16).
 // First a NaN-sanitization prologue (cmpf uno + select to 0), then the
 // in-float-domain min/max clamp, then the truncating fptoui. The min comes
-// before the max because the helper emits `minimumf(in, intMax)` first and
-// `maximumf(hi, intMin)` second; this differs from the GPU/MIGraphX path
-// only in being inside a linalg.generic body.
+// before the max because the helper emits `minnumf(in, intMax)` first and
+// `maxnumf(hi, intMin)` second; this differs from the GPU/MIGraphX path
+// only in being inside a linalg.generic body. The clamp uses the
+// non-propagating num forms because the select above has already removed any
+// NaN, leaving nothing for the IEEE-2019 spelling to propagate.
 // CHECK-LABEL: @floats_f16_to_i8
 // CHECK-SAME: (%[[arg0:.+]]: tensor<8x8x2xf16>)
 // CHECK: %[[empty:.+]] = tensor.empty() : tensor<8x8x2xi8>
@@ -82,8 +84,8 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
 // CHECK-NEXT: %[[in:.+]]: f16
 // CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f16
 // CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f16
-// CHECK:      %[[hi:.+]] = arith.minimumf %[[san]], {{.*}} : f16
-// CHECK:      %[[clamped:.+]] = arith.maximumf %[[hi]], {{.*}} : f16
+// CHECK:      %[[hi:.+]] = arith.minnumf %[[san]], {{.*}} : f16
+// CHECK:      %[[clamped:.+]] = arith.maxnumf %[[hi]], {{.*}} : f16
 // CHECK:      %[[res:.+]] = arith.fptoui %[[clamped]] : f16 to i8
 // CHECK:      linalg.yield %[[res]]
 // CHECK:      -> tensor<8x8x2xi8>
@@ -113,7 +115,7 @@ func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
 // CHECK-NEXT: %[[in:.+]]: f32
 // CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f32
 // CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f32
-// CHECK:      %[[clamped:.+]] = arith.maximumf %[[san]], {{.*}} : f32
+// CHECK:      %[[clamped:.+]] = arith.maxnumf %[[san]], {{.*}} : f32
 // CHECK:      %[[conv:.+]] = arith.fptosi %[[clamped]] : f32 to i32
 // CHECK:      %[[ovf:.+]] = arith.cmpf uge, %[[san]], {{.*}} : f32
 // CHECK:      %[[res:.+]] = arith.select %[[ovf]], {{.*}}, %[[conv]] : i32
@@ -137,8 +139,8 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi
 // CHECK-NEXT: %[[in:.+]]: f16
 // CHECK:      %[[isnan:.+]] = arith.cmpf uno, %[[in]], %[[in]] : f16
 // CHECK:      %[[san:.+]] = arith.select %[[isnan]], {{.*}}, %[[in]] : f16
-// CHECK:      %[[hi:.+]] = arith.minimumf %[[san]], {{.*}} : f16
-// CHECK:      %[[clamped:.+]] = arith.maximumf %[[hi]], {{.*}} : f16
+// CHECK:      %[[hi:.+]] = arith.minnumf %[[san]], {{.*}} : f16
+// CHECK:      %[[clamped:.+]] = arith.maxnumf %[[hi]], {{.*}} : f16
 // CHECK:      %[[res:.+]] = arith.fptosi %[[clamped]] : f16 to i8
 // CHECK:      linalg.yield %[[res]]
 // CHECK:      -> tensor<16xi8>

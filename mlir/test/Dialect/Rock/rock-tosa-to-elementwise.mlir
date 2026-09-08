@@ -1,4 +1,18 @@
 // RUN: rocmlir-opt --rock-tosa-to-elementwise --split-input-file %s | FileCheck %s
+// RUN: rocmlir-opt --rock-tosa-to-elementwise="disable-fast-math=true" --split-input-file %s | FileCheck %s --check-prefix=IEEE
+
+// The saturating float-to-int casts below are the only lowerings in this pass
+// that depend on `disable-fast-math`, so they are the only ones carrying IEEE
+// check lines. By default the kernel path assumes no NaN occurs anywhere in its
+// floating-point dataflow and drops the NaN -> 0 sanitize pair that otherwise
+// guards `arith.fptosi`/`fptoui`; `-disable-fast-math` restores it. That
+// assumption covers intermediates, not just kernel arguments: the value being
+// converted is typically already the result of arithmetic (a
+// `migraphx.quantizelinear` divides by a scale first), so a manufactured NaN
+// breaks the assumption as surely as an incoming one would. Without the pair a
+// NaN no longer maps to 0; what it maps to instead depends on which of the
+// three range cases the (float, int) pair takes, and the `nnan` added later
+// leaves it unspecified anyway.
 
 // CHECK-LABEL: @add_f32
 // CHECK-NOT:   tosa.add
@@ -76,6 +90,36 @@ func.func @maximum_i32(%arg0: tensor<4x8xi32>, %arg1: tensor<4x8xi32>) -> tensor
 func.func @minimum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
   %0 = tosa.minimum %arg0, %arg1 : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @minimum_f32_ignore_nan
+// CHECK-NOT:   tosa.minimum
+// CHECK:       arith.minnumf %arg0, %arg1 : tensor<4x8xf32>
+func.func @minimum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.minimum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @minimum_f32_propagate_nan
+// CHECK-NOT:   tosa.minimum
+// CHECK:       arith.minimumf %arg0, %arg1 : tensor<4x8xf32>
+func.func @minimum_f32_propagate_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
+  %0 = tosa.minimum %arg0, %arg1 {nan_mode = PROPAGATE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  return %0 : tensor<4x8xf32>
+}
+
+// -----
+
+// CHECK-LABEL: @minimum_i32
+// CHECK-NOT:   tosa.minimum
+// CHECK:       arith.minsi %arg0, %arg1 : tensor<4x8xi32>
+func.func @minimum_i32(%arg0: tensor<4x8xi32>, %arg1: tensor<4x8xi32>) -> tensor<4x8xi32> attributes {rock.kernel} {
+  %0 = tosa.minimum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xi32>, tensor<4x8xi32>) -> tensor<4x8xi32>
+  return %0 : tensor<4x8xi32>
 }
 
 // -----
@@ -287,6 +331,50 @@ func.func @select_op(%arg0: tensor<4x8xi1>, %arg1: tensor<4x8xf32>, %arg2: tenso
 func.func @clamp_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
   %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<16xf32>) -> tensor<16xf32>
   return %0 : tensor<16xf32>
+}
+
+// -----
+
+// An explicit PROPAGATE is the default spelling and keeps the NaN-propagating
+// ops.
+
+// CHECK-LABEL: @clamp_f32_propagate
+// CHECK-NOT:   tosa.clamp
+// CHECK:       %[[CLAMPED:.*]] = arith.minimumf %arg0, %{{.*}} : tensor<16xf32>
+// CHECK:       arith.maximumf %[[CLAMPED]], %{{.*}} : tensor<16xf32>
+func.func @clamp_f32_propagate(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32, nan_mode = PROPAGATE} : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// IGNORE selects the non-propagating ops. RockAllowFastMathFlags later marks
+// them nnan on kernels that promised no NaN, which is what lets RockToTTIR
+// fold the pair into a single tt.clampf.
+
+// CHECK-LABEL: @clamp_f32_ignore
+// CHECK-NOT:   tosa.clamp
+// CHECK-DAG:   %[[MIN:.*]] = arith.constant dense<0.000000e+00> : tensor<16xf32>
+// CHECK-DAG:   %[[MAX:.*]] = arith.constant dense<6.000000e+00> : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.minnumf %arg0, %[[MAX]] : tensor<16xf32>
+// CHECK:       arith.maxnumf %[[CLAMPED]], %[[MIN]] : tensor<16xf32>
+func.func @clamp_f32_ignore(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
+  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32, nan_mode = IGNORE} : (tensor<16xf32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// -----
+
+// The integer clamp has no NaN to reason about, so IGNORE changes nothing.
+
+// CHECK-LABEL: @clamp_i32_ignore
+// CHECK-NOT:   tosa.clamp
+// CHECK:       %[[CLAMPED:.*]] = arith.minsi %arg0, %{{.*}} : tensor<16xi32>
+// CHECK:       arith.maxsi %[[CLAMPED]], %{{.*}} : tensor<16xi32>
+func.func @clamp_i32_ignore(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.clamp %arg0 {min_val = -128 : i32, max_val = 127 : i32, nan_mode = IGNORE} : (tensor<16xi32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
 }
 
 // -----
@@ -552,18 +640,84 @@ func.func @add_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> 
 // -----
 
 // unsigned_cast float->uint: f32 -> i32 hits case 3 (mantissa too narrow for
-// uint max). NaN-sanitize, clamp lower bound to 0 in float domain, convert,
-// then fix up overflow with a select against (uintMax + 1) = 2^32.
+// uint max). Clamp the lower bound to 0 in the float domain, convert, then fix
+// up overflow with a select against (uintMax + 1) = 2^32.
 // CHECK-LABEL: @unsigned_cast_fptoui
 // CHECK-NOT:   tosa.custom
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
-// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[SAN]], {{.*}} : tensor<16xf32>
+// CHECK-NOT:   arith.cmpf uno
+// CHECK:       %[[MINCLAMP:.*]] = arith.maxnumf %arg0, {{.*}} : tensor<16xf32>
 // CHECK:       %[[CONV:.*]] = arith.fptoui %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
-// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %arg0, {{.*}} : tensor<16xf32>
 // CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+
+// IEEE-LABEL: @unsigned_cast_fptoui
+// IEEE-NOT:   tosa.custom
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
+// IEEE:       %[[MINCLAMP:.*]] = arith.maxnumf %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       %[[CONV:.*]] = arith.fptoui %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// IEEE:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @unsigned_cast_fptoui(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// f32 -> i8 hits case 2 (both 0 and 255 are exactly representable), so the
+// whole cast is a two-sided clamp. This is the shape that matters for codegen:
+// with nothing to sanitize, the pair also earns an nnan from
+// RockAllowFastMathFlags and folds to a single tt.clampf (one v_med3).
+// CHECK-LABEL: @unsigned_cast_fptoui_f32_to_i8
+// CHECK-NOT:   tosa.custom
+// CHECK-NOT:   arith.cmpf
+// CHECK-NOT:   arith.select
+// CHECK:       %[[HI:.*]] = arith.minnumf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
+// CHECK:       arith.fptoui %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
+
+// IEEE-LABEL: @unsigned_cast_fptoui_f32_to_i8
+// IEEE-NOT:   tosa.custom
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
+// IEEE:       %[[HI:.*]] = arith.minnumf %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
+// IEEE:       arith.fptoui %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
+func.func @unsigned_cast_fptoui_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi8>
+  return %0 : tensor<16xi8>
+}
+
+// -----
+
+// f16 -> uint32 is the only one of the three cases where the destination range
+// swallows the whole float exponent range, so no finite input can overflow and
+// the cast needs a clamp on one side only: negatives (including -inf) go to 0
+// before converting, and +inf is patched to uintMax afterwards.
+//
+// Only the sanitization is conditional. The +inf fix-up stays either way,
+// because the no-NaN assumption says nothing about infinities, and running its
+// UEQ compare on the raw input is safe for the same reason it was safe on the
+// sanitized value.
+// CHECK-LABEL: @unsigned_cast_fptoui_f16_to_i32
+// CHECK-NOT:   tosa.custom
+// CHECK-NOT:   arith.cmpf uno
+// CHECK:       %[[OVF:.*]] = arith.cmpf ueq, %arg0, {{.*}} : tensor<16xf16>
+// CHECK:       %[[POS:.*]] = arith.maxnumf %arg0, {{.*}} : tensor<16xf16>
+// CHECK:       %[[CONV:.*]] = arith.fptoui %[[POS]] : tensor<16xf16> to tensor<16xi32>
+// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+
+// IEEE-LABEL: @unsigned_cast_fptoui_f16_to_i32
+// IEEE-NOT:   tosa.custom
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf16>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf16>
+// IEEE:       %[[OVF:.*]] = arith.cmpf ueq, %[[SAN]], {{.*}} : tensor<16xf16>
+// IEEE:       %[[POS:.*]] = arith.maxnumf %[[SAN]], {{.*}} : tensor<16xf16>
+// IEEE:       %[[CONV:.*]] = arith.fptoui %[[POS]] : tensor<16xf16> to tensor<16xi32>
+// IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+func.func @unsigned_cast_fptoui_f16_to_i32(%arg0: tensor<16xf16>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf16>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -677,12 +831,21 @@ func.func @unsigned_max(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 // CHECK-LABEL: @fp_to_int_cast_f32_to_i32
 // CHECK-NOT:   tosa.custom
 // CHECK-NOT:   math.roundeven
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
-// CHECK:       %[[MINCLAMP:.*]] = arith.maximumf %[[SAN]], {{.*}} : tensor<16xf32>
+// CHECK-NOT:   arith.cmpf uno
+// CHECK:       %[[MINCLAMP:.*]] = arith.maxnumf %arg0, {{.*}} : tensor<16xf32>
 // CHECK:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
-// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %arg0, {{.*}} : tensor<16xf32>
 // CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+
+// IEEE-LABEL: @fp_to_int_cast_f32_to_i32
+// IEEE-NOT:   tosa.custom
+// IEEE-NOT:   math.roundeven
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
+// IEEE:       %[[MINCLAMP:.*]] = arith.maxnumf %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// IEEE:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
@@ -691,15 +854,25 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> at
 // -----
 
 // f32 -> i8 (signed): Case 2 of rock::createClampedFPToInt (f32 mantissa
-// (24) >= dstWidth-1 (7), so both -128 and 127 are exactly representable).
-// NaN-sanitize, fully clamp in-float (min then max), then fptosi.
+// (24) >= dstWidth-1 (7), so both -128 and 127 are exactly representable), so
+// the cast is a two-sided in-float clamp followed by fptosi. With no sanitize
+// pair in front, the clamp also earns an nnan from RockAllowFastMathFlags and
+// folds to a single tt.clampf (one v_med3).
 // CHECK-LABEL: @fp_to_int_cast_f32_to_i8
 // CHECK-NOT:   tosa.custom
-// CHECK:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
-// CHECK:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
-// CHECK:       %[[HI:.*]] = arith.minimumf %[[SAN]], {{.*}} : tensor<16xf32>
-// CHECK:       %[[CLAMPED:.*]] = arith.maximumf %[[HI]], {{.*}} : tensor<16xf32>
+// CHECK-NOT:   arith.cmpf
+// CHECK-NOT:   arith.select
+// CHECK:       %[[HI:.*]] = arith.minnumf %arg0, {{.*}} : tensor<16xf32>
+// CHECK:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
 // CHECK:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
+
+// IEEE-LABEL: @fp_to_int_cast_f32_to_i8
+// IEEE-NOT:   tosa.custom
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %arg0, %arg0 : tensor<16xf32>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %arg0 : tensor<16xi1>, tensor<16xf32>
+// IEEE:       %[[HI:.*]] = arith.minnumf %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
+// IEEE:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
 func.func @fp_to_int_cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
   %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>

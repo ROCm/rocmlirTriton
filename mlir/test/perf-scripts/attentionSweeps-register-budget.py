@@ -10,14 +10,14 @@ come from the AmdArchDB pybind module (``amd_arch_db.get_wave_size`` /
   (wave_size, vgprs_per_eu)   archs                                 budget/thr at wpe=8
   ---------------------------------------------------------------------------
   (64, 512)                   gfx9xx (CDNA2-4)                      64
-  (32, 1024)                  gfx10xx (RDNA1/2)                     128
-  (32, 1536)                  gfx11xx-gfx12xx (RDNA3/4 + gfx1250)   192
+  (32, 1024)                  gfx10xx (RDNA1/2), gfx1250            128
+  (32, 1536)                  gfx11xx-gfx12xx (RDNA3/4)             192
 
 Each regime gets a just-fits ACCEPT and a just-overflows REJECT pair so a
 future calibration tweak fails fast. ``wavesPerEU == 0`` (treated as
 ``wpe == 1``) and the multi-wave path are exercised on multiple archs.
-Both arch-string forms ``_arch_id`` accepts are covered: HIP gcnArchName
-(``gfx950:sramecc+:xnack-``) and LLVM-triple
+Both arch-string forms ``rock::parseArchString`` accepts are covered: HIP
+gcnArchName (``gfx950:sramecc+:xnack-``) and LLVM-triple
 (``amdgcn-amd-amdhsa:gfx950:sramecc+:xnack-``).
 
 Doesn't need a GPU: only exercises the pure-Python predicate.
@@ -58,7 +58,7 @@ CASES = [
     ("cfg3 f16", GFX950_HIP, (256, 128, 0, 16, 1, 1, 1, 16, 1, 3, 8, 0), False),
     # (32*256)/64 = 128 > 64 -> REJECT.
     ("cfg4 i8", GFX950_HIP, (32, 256, 0, 16, 2, 1, 1, 16, 1, 2, 8, 8), False),
-    # cfg1 via the LLVM-triple form -- exercises that branch of _arch_id.
+    # cfg1 via the LLVM-triple form -- exercises that arch-string branch.
     ("cfg1 llvm-triple", GFX950_LLVM, (256, 32, 0, 16, 1, 1, 1, 0, 1, 2, 8, 1), False),
 
     # gfx942 (CDNA3): same regime as gfx950.
@@ -80,9 +80,12 @@ CASES = [
     ("gfx1201 fits", "gfx1201", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1201 overflow", "gfx1201", (128, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1250 (wave=32, vgprs=1536): same regime as gfx1100/gfx1201; pinned
-    # separately so a future getWaveSize tweak that mis-classifies gfx1250 as
-    # wave=64 (its older mistake -- see AmdArchDbTests.WaveSize) fails this test.
+    # gfx1250 (wave=32, vgprs=1024): the gfx1030 regime, not the gfx1100 one --
+    # gfx1250 has Feature1024AddressableVGPRs, not Feature1536VGPRs. wpe=8
+    # budget=128, so (64*64)/32 = 128 fits exactly -> ACCEPT and (128*64)/32 =
+    # 256 -> REJECT. Pinned separately so a future getWaveSize tweak that
+    # mis-classifies gfx1250 as wave=64 (its older mistake -- see
+    # AmdArchDbTests.WaveSize) fails this test.
     ("gfx1250 fits", "gfx1250", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx1250 overflow", "gfx1250", (128, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 

@@ -1,8 +1,8 @@
-# Kernel Memory Assumptions
+# Kernel Memory and Floating-Point Assumptions
 
-This document describes the memory and pointer assumptions that
-rocmlirTriton makes about GPU kernels it generates. These assumptions
-are split into two categories:
+This document describes the memory, pointer, and floating-point
+assumptions that rocmlirTriton makes about GPU kernels it generates.
+These assumptions are split into two categories:
 
 1. **Internal** -- guaranteed by how rocmlirTriton generates kernels.
 2. **External** -- requirements on the runtime/caller (e.g. MIGraphX).
@@ -89,7 +89,30 @@ backend the full extent of valid memory behind the pointer.
 | `tt.divisibility` | 16 | Pointers are 16-byte aligned (128-bit), enabling maximum-width vector loads/stores. |
 | `tt.pointer_range` | 32 | Set when tensor size < 2 GB; tells Triton's `ConvertToBufferOps` pass that the tensor fits in a 32-bit offset range, enabling buffer instructions. |
 
-### 1.10 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
+### 1.10 Compiler-owned dense constants
+
+Dense non-splat tensor constants are stored in internal, read-only LLVM globals
+in GPU address space 1. Their logical tensor values are flattened with the
+rightmost dimension contiguous (row-major), and each global is aligned to at
+least 16 bytes. Compatible globals with the same type and value are
+deduplicated.
+
+These constants are compiler-owned storage, not kernel arguments, so they do
+not change the kernel ABI or impose allocation requirements on the caller.
+The representation remains memory-backed: consumers load from address space 1,
+and lowering paths that stage operands through LDS continue to do so. It does
+not make the constant register-resident or bypass LDS. The LLVM AMDGPU backend
+makes the final instruction and register choices for loaded addresses and
+values. Splat constants remain SSA constants and do not use compiler-owned
+global storage; LLVM selects their final immediate or register representation.
+Sub-byte non-splat constants that would require compiler-owned storage are
+rejected because packed storage is not yet supported. Non-memory-backed 4-bit
+non-splat constants are also rejected because the legalization pass cannot pack
+them; other constants that need no packing, such as `i1` masks, remain
+supported. Zero-sized constants cannot provide addressable storage and are
+also rejected when used as memory sources.
+
+### 1.11 No device-side dynamic allocation (`amdgpu-no-heap-ptr`)
 
 Rock kernels never call device-side `malloc`/`free`/`new` (nor the
 `__ockl_dm_*` allocator family), so they never touch the rocclr device heap.
@@ -112,7 +135,8 @@ this is MIGraphX or the rocmlirTriton test harness.
 
 ### 2.1 Coarse-grained device memory (`no_fine_grained_memory`)
 
-All tensor pointers must point to **coarse-grained device-local memory**
+All caller-provided tensor pointers must point to **coarse-grained
+device-local memory**
 (i.e. `hipMalloc` or equivalent). Fine-grained memory (system memory,
 `hipMallocManaged` with fine-grained coherence, or memory allocated with
 `hipExtMallocWithFlags(..., hipDeviceMallocFinegrained)`) is **not
@@ -138,23 +162,38 @@ This is encoded as `rocdl.no_remote_memory` on atomic operations.
 
 ### 2.3 Denormal flushing on f32 (`allow-flush-denorm`)
 
-We set `denormal-fp-math-f32` to `preserve-sign` on every kernel
-function, allowing the hardware to **flush f32 denormals to zero** for
-all f32 operations (not just atomics). Additionally, atomic
-read-modify-write operations are annotated with
-`rocdl.ignore_denormal_mode`, which is needed for native `f32` atomic
-add on older architectures (e.g. gfx90a) where the hardware atomic unit
-unconditionally flushes f32 denormals regardless of the mode register.
-Without this metadata, LLVM would fall back to CAS loops on those
-targets. Newer architectures (gfx11+, gfx94x) support denormals in
-their atomic units natively, so the metadata is redundant but harmless.
+This is gated by the `allow-flush-denorm` pipeline option (default
+`true`). There are two independent encodings: the kernel-wide mode
+register, and a per-atomic override.
 
-This matches rocMLIR's behavior and is gated by the `allow-flush-denorm`
-pipeline option (currently set to `true`).
+**Kernel-wide f32 mode.** `TritonToHsaco.cpp` stamps LLVM's
+`denormal_fpenv` enum attribute (not the legacy
+`"denormal-fp-math-f32"` string; that spelling is only auto-upgraded
+when a module is parsed from IR text, so it is inert on an in-memory
+module). With flushing enabled the f32 mode is `preservesign` — flush
+both denormal *inputs* and *outputs* to signed zero, which is upstream
+Triton's intended `"preserve-sign"`. The AMDGPU backend programs that
+as `.amdhsa_float_denorm_mode_32 0`. f16/f64 stay IEEE. With flushing
+disabled the f32 mode is IEEE as well (hardware value `3`).
+
+This is **not** what rocMLIR does. rocMLIR never stamps a denormal
+attribute on the kernel, so LLVM's compute-kernel default applies:
+IEEE in and out (hardware value `3`) for ordinary arithmetic.
+
+**Atomics.** Atomic RMW ops are annotated with
+`rocdl.ignore_denormal_mode` when flushing is enabled. That is needed
+for native `f32` atomic add on older architectures (e.g. gfx90a),
+where the hardware atomic unit unconditionally flushes f32 denormals
+regardless of the mode register. Without this metadata, LLVM would
+fall back to CAS loops on those targets. Newer architectures (gfx11+,
+gfx94x) support denormals in their atomic units natively, so the
+metadata is redundant but harmless. This atomic annotation *does*
+match rocMLIR, which always sets it.
 
 ### 2.4 Pointer alignment (16 bytes)
 
-All tensor pointers must be aligned to at least **16 bytes** (128 bits).
+All caller-provided tensor pointers must be aligned to at least **16 bytes**
+(128 bits).
 This is the natural alignment of GPU memory allocations from
 `hipMalloc` and is encoded as `llvm.align = 16` and `tt.divisibility = 16`.
 
@@ -227,6 +266,23 @@ the softmax result.
 - `lastValidKVIndex` is a 1-D tensor with one element per batch, matching
   the output batch dimension.
 
+### 2.10 No NaN in the floating-point dataflow (`nnan`)
+
+No NaN may appear anywhere in the floating-point dataflow -- not just in the
+kernel arguments, but at any intermediate. A zero quantization scale making
+`0 * inf`, an accumulation overflowing to `inf + (-inf)`, or a division by a zero
+softmax row-sum all violate this even when every input tensor is finite.
+
+Unlike the memory assumptions above, violating it is not undefined behavior: the
+result stays defined but stops matching IEEE. Where a NaN would have propagated,
+the kernel produces a bound instead, so a clamp saturates to one of its limits.
+In particular, `migraphx.max` does not propagate NaNs the way its operator
+contract specifies.
+
+The assumption is unconditional -- there is no option to turn it off. It is what
+lets min/max ops carry the `nnan` fast-math flag, which in turn lets a clamp
+become a single `v_med3`.
+
 ---
 
 ## Summary Table
@@ -242,13 +298,15 @@ the softmax result.
 | Relaxed atomics | Internal | `monotonic`, `agent-one-as` |
 | Dereferenceable extent | Internal | `dereferenceable` |
 | Vectorization hints | Internal | `tt.divisibility`, `tt.pointer_range` |
+| Compiler-owned dense constants | Internal | AS1 `llvm.mlir.global`, alignment 16 |
 | No device heap (skips initHeap) | Internal | `amdgpu-no-heap-ptr` |
 | Coarse-grained memory | **External** | `rocdl.no_fine_grained_memory` |
 | Device-local memory | **External** | `rocdl.no_remote_memory` |
-| Denormal flushing allowed | **External** | `rocdl.ignore_denormal_mode` |
+| Denormal flushing allowed | **External** | `denormal_fpenv(float: preservesign)` + `rocdl.ignore_denormal_mode` |
 | 16-byte alignment | **External** | `llvm.align = 16` |
 | Non-overlapping regions | **External** | `noalias` |
 | Valid pointers | **External** | `nonnull`, `dereferenceable` |
 | No concurrent external writes | **External** | `agent-one-as`, `invariant` |
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
 | KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |
+| No NaN in float dataflow | **External** | `nan_mode = IGNORE`, `nnan` fast-math flag |

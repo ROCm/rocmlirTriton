@@ -1,5 +1,5 @@
 // RUN: rocmlir-gen --arch gfx908 --operation gemm -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=GEMM
-// RUN: rocmlir-gen --arch gfx942 -pv --operation conv_bwd_weight -t f32 --fil_layout k01c --in_layout n01c --out_layout n01k --batchsize 64 --in_channels 1024 --in_h 14 --in_w 14 --out_channels 256 --fil_h 1 --fil_w 1 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 0 --padding_w 0 --groupsize 1 --kernel-repeats 5 | FileCheck %s --check-prefix=CONV_WRW
+// RUN: rocmlir-gen --arch gfx908 --operation conv -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=CONV
 
 // GEMM-LABEL: @rock_gemm_gpu
 // GEMM-DAG: %[[zero:.*]] = arith.constant 0 : index
@@ -9,13 +9,10 @@
 // GEMM: func.call @rock_gemm
 // GEMM: }
 
-// CONV_WRW-LABEL: func.func @rock_conv_bwd_weight_gk01c_ng01c_ng01k
-// CONV_WRW-SAME: %arg2: tensor<262144xf32> {rock.prefill = 0.000000e+00 : f32}
-// CONV_WRW: rock.conv_bwd_weight
-// CONV_WRW-LABEL: func.func @rock_conv_bwd_weight_gk01c_ng01c_ng01k_gpu
-// CONV_WRW-DAG: %[[one:.*]] = arith.constant 1 : index
-// CONV_WRW-DAG: %[[five:.*]] = arith.constant 5 : index
-// CONV_WRW-DAG: %[[zero:.*]] = arith.constant 0 : index
-// CONV_WRW: scf.for %{{.*}} = %[[zero]] to %[[five]] step %[[one]] {
-// CONV_WRW: func.call @rock_conv_bwd_weight_gk01c_ng01c_ng01k
-// CONV_WRW: }
+// CONV-LABEL: @rock_conv_gkc01_ngc01_ngk01_gpu
+// CONV-DAG: %[[zero:.*]] = arith.constant 0 : index
+// CONV-DAG: %[[one:.*]] = arith.constant 1 : index
+// CONV-DAG: %[[five:.*]] = arith.constant 5 : index
+// CONV: scf.for %{{.*}} = %[[zero]] to %[[five]] step %[[one]] {
+// CONV: func.call @rock_conv_gkc01_ngc01_ngk01
+// CONV: }

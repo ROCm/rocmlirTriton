@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Error tests for the rock-decompose-nonpow2-k pass.
 //
 // The pass runs at the blockwise layer, so each case is a rock.blockwise_gemm

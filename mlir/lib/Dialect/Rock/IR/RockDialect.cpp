@@ -217,9 +217,6 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     }
   }
 
-  bool isTileAlignment =
-      parser.parseOptionalKeyword("tileAlignment").succeeded();
-
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
   if (parseAndGather<std::string>(parser, AsmParser::Delimiter::Square,
@@ -269,7 +266,7 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims, isTileAlignment);
+      upperDims, lowerNames, lowerDims);
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -282,8 +279,6 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
     llvm::interleaveComma(params, printer);
     printer << "}";
   }
-  if (getIsTileAlignment())
-    printer << " tileAlignment";
   printer << " [";
   llvm::interleaveComma(getUpperNames(), printer,
                         [&](StringRef s) { printer << "\"" << s << "\""; });
@@ -297,41 +292,13 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   printer << "]>";
 }
 
-TransformAttr TransformAttr::get(mlir::MLIRContext *context, TransformType type,
-                                 llvm::ArrayRef<int64_t> params,
-                                 llvm::ArrayRef<llvm::StringRef> upperNames,
-                                 llvm::ArrayRef<uint32_t> upperDims,
-                                 llvm::ArrayRef<llvm::StringRef> lowerNames,
-                                 llvm::ArrayRef<uint32_t> lowerDims) {
-  return TransformAttr::get(context, type, params, upperNames, upperDims,
-                            lowerNames, lowerDims,
-                            /*isTileAlignment=*/false);
-}
-
-TransformAttr TransformAttr::getChecked(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    mlir::MLIRContext *context, TransformType type,
-    llvm::ArrayRef<int64_t> params, llvm::ArrayRef<llvm::StringRef> upperNames,
-    llvm::ArrayRef<uint32_t> upperDims,
-    llvm::ArrayRef<llvm::StringRef> lowerNames,
-    llvm::ArrayRef<uint32_t> lowerDims) {
-  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims,
-                                   /*isTileAlignment=*/false);
-}
-
 LogicalResult
 TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       TransformType type, llvm::ArrayRef<int64_t> params,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims,
-                      bool isTileAlignment) {
-  if (isTileAlignment && type != TransformType::Pad) {
-    return emitError() << "Only a Pad can align a gemm dimension to the tile "
-                          "size";
-  }
+                      llvm::ArrayRef<unsigned> lowerDims) {
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -487,11 +454,9 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
-    bool isTileAlignment) {
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims,
-                                   isTileAlignment);
+                                   upperDims, lowerNames, lowerDims);
 }
 
 //===---------------------------------------------------------
@@ -818,8 +783,6 @@ ConvOpType mlir::rock::convOpTypeFromKernelType(KernelType kernelType) {
     return ConvOpType::Fwd;
   case KernelType::ConvBwdData:
     return ConvOpType::BwdData;
-  case KernelType::ConvBwdWeight:
-    return ConvOpType::BwdWeight;
   case KernelType::Gemm:
     llvm_unreachable(
         "GEMM ops shouldn't be in convolution-specific lowering passes");
@@ -839,8 +802,6 @@ KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
     return KernelType::Conv;
   case ConvOpType::BwdData:
     return KernelType::ConvBwdData;
-  case ConvOpType::BwdWeight:
-    return KernelType::ConvBwdWeight;
   }
   llvm_unreachable("Unsupported ConvOpType");
 }
@@ -859,12 +820,6 @@ GemmSize GemmSize::fromConvolution(ConvOpType type,
     gemmKSize = sizes.c * sizes.fil[0] * sizes.fil[1];
     gemmNSize = sizes.n * sizes.out[0] * sizes.out[1];
     break;
-  case ConvOpType::BwdWeight:
-    gemmGSize = sizes.g;
-    gemmMSize = sizes.k;
-    gemmKSize = sizes.n * sizes.out[0] * sizes.out[1];
-    gemmNSize = sizes.c * sizes.fil[0] * sizes.fil[1];
-    break;
   case ConvOpType::BwdData:
     llvm_unreachable("Should've been caught be an assert");
   }
@@ -875,18 +830,10 @@ KernelType ConvOp::getKernelType() { return KernelType::Conv; }
 
 KernelType ConvBwdDataOp::getKernelType() { return KernelType::ConvBwdData; }
 
-KernelType ConvBwdWeightOp::getKernelType() {
-  return KernelType::ConvBwdWeight;
-}
-
 Type ConvOp::getAType() { return getFilter().getType().getElementType(); }
 
 Type ConvBwdDataOp::getAType() {
   return getFilter().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getAType() {
-  return getGradient().getType().getElementType();
 }
 
 Type ConvOp::getBType() { return getInput().getType().getElementType(); }
@@ -895,17 +842,9 @@ Type ConvBwdDataOp::getBType() {
   return getGradient().getType().getElementType();
 }
 
-Type ConvBwdWeightOp::getBType() {
-  return getInput().getType().getElementType();
-}
-
 Type ConvOp::getCType() { return getResult().getType().getElementType(); }
 
 Type ConvBwdDataOp::getCType() {
-  return getResult().getType().getElementType();
-}
-
-Type ConvBwdWeightOp::getCType() {
   return getResult().getType().getElementType();
 }
 
@@ -921,14 +860,6 @@ TypedValue<ShapedType> ConvBwdDataOp::getConvInput() {
   return cast<TypedValue<ShapedType>>(getResult());
 }
 TypedValue<ShapedType> ConvBwdDataOp::getConvOutput() { return getGradient(); }
-
-TypedValue<ShapedType> ConvBwdWeightOp::getConvFilter() {
-  return cast<TypedValue<ShapedType>>(getResult());
-}
-TypedValue<ShapedType> ConvBwdWeightOp::getConvInput() { return getInput(); }
-TypedValue<ShapedType> ConvBwdWeightOp::getConvOutput() {
-  return getGradient();
-}
 
 GemmSize ConvOp::getGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this);
@@ -1032,11 +963,6 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   return biggest;
 }
 
-GemmSize ConvBwdWeightOp::getGemmSize() {
-  auto sizes = ConvolutionDims::fromOp(*this);
-  return GemmSize::fromConvolution(ConvOpType::BwdWeight, sizes);
-}
-
 //===-----------------------------------------------------===//
 // Conv Op Verification
 //===-----------------------------------------------------===//
@@ -1095,47 +1021,6 @@ static LogicalResult verifyConvLikeOp(RockConvInterface op) {
 LogicalResult ConvOp::verify() { return verifyConvLikeOp(*this); }
 
 LogicalResult ConvBwdDataOp::verify() { return verifyConvLikeOp(*this); }
-
-LogicalResult ConvBwdWeightOp::verify() {
-  if (failed(verifyConvLikeOp(*this)))
-    return failure();
-
-  // kBlocks is optional pre-lowering (affix-tuning-params sets it for the
-  // atomic backward-weight path). When present, the lowering in ConvToGemm
-  // splits the batch dimension N into (kBlocks, N / kBlocks), so kBlocks must
-  // satisfy the same structural invariant that `calculateKBlockNum` enforces.
-  IntegerAttr kBlocksAttr = getKBlocksAttr();
-  if (!kBlocksAttr)
-    return success();
-  int64_t kBlocks = kBlocksAttr.getInt();
-
-  // Recover N from the input tensor's layout. The layout attributes are not
-  // formally part of the op definition, so skip the divisibility check when
-  // they're absent or malformed rather than asserting.
-  auto inputLayoutAttr = (*this)->getAttrOfType<ArrayAttr>("input_layout");
-  ArrayRef<int64_t> inputShape = getInput().getType().getShape();
-  if (!inputLayoutAttr ||
-      inputLayoutAttr.size() != static_cast<size_t>(inputShape.size()))
-    return success();
-
-  int64_t batchSize = -1;
-  for (auto [layoutAttr, dimSize] : llvm::zip(inputLayoutAttr, inputShape)) {
-    auto nameAttr = dyn_cast<StringAttr>(layoutAttr);
-    if (nameAttr && nameAttr.getValue() == "ni") {
-      batchSize = dimSize;
-      break;
-    }
-  }
-  if (batchSize <= 0)
-    return success();
-
-  if (!isValidKBlocks(kBlocks, batchSize))
-    return emitOpError("kBlocks (")
-           << kBlocks << ") must be positive and evenly divide batch size N ("
-           << batchSize << ")";
-
-  return success();
-}
 
 //===-----------------------------------------------------===//
 // StoreOp
@@ -1228,9 +1113,12 @@ LogicalResult CastToPtrOp::verify() {
 //===-----------------------------------------------------===//
 
 LogicalResult ExtractPtrOp::verify() {
-  if (!isa<BlockArgument>(getSource()))
-    return emitOpError("source must be a block argument");
-  return success();
+  if (isa<BlockArgument>(getSource()) ||
+      rock::isDenseNonSplatConstant(getSource()))
+    return success();
+
+  return emitOpError(
+      "source must be a block argument or a non-splat dense constant");
 }
 
 //===-----------------------------------------------------===//
@@ -1373,12 +1261,6 @@ static LogicalResult verifyLoadCacheModifier(Operation *op,
 LogicalResult LoadMarkerOp::verify() {
   if (failed(verifyLoadCacheModifier(*this, getCacheModifier())))
     return failure();
-  int64_t resultRank = cast<RankedTensorType>(getResult().getType()).getRank();
-  if (std::optional<ArrayRef<int64_t>> axes = getReductionTileAxes())
-    for (int64_t axis : *axes)
-      if (axis < 0 || axis >= resultRank)
-        return emitOpError() << "reduction tile axis " << axis
-                             << " is not an axis of the loaded tile";
   return verifyMarkerOp(
       *this, getExtraViews(),
       cast<RankedTensorType>(getSource().getType()).getShape(),
@@ -1911,8 +1793,20 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
   // downstream).
   SmallVector<TransformMapAttr> transforms;
   bool needs64Bit;
-  std::tie(std::ignore, needs64Bit) =
-      untransform(adaptor.getSource(), transforms);
+  Value root;
+  std::tie(root, needs64Bit) = untransform(adaptor.getSource(), transforms);
+  OpBuilder builder(context);
+  Location loc = location.value_or(UnknownLoc::get(context));
+  if (DenseElementsAttr constant = getDenseTensorConstantAttr(root);
+      constant && constant.getNumElements() == 0)
+    return emitOptionalError(
+        location,
+        "zero-sized dense constants cannot provide compiler-owned storage");
+  if (FailureOr<TransformMapAttr> flattening =
+          buildDenseConstantRowMajorTransformMap(builder, loc, root);
+      succeeded(flattening)) {
+    needs64Bit |= needs64BitIndices(*flattening);
+  }
   unsigned offsetWidth = needs64Bit ? 64 : 32;
 
   inferredReturnTypes.push_back(
@@ -2277,7 +2171,106 @@ GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
   return GemmGemmSize(g, m, k, n, o);
 }
 
+/// Look up the extent of the dimension named `name` in `type`, according to
+/// `layout`. Returns nullopt when the layout doesn't name that dimension.
+/// `layout` is assumed to have already been checked for length and element
+/// type by `verifyConvElementwiseGemmConvOperands`.
+static std::optional<int64_t> convDimSize(ArrayAttr layout, ShapedType type,
+                                          StringRef name) {
+  for (auto [i, attr] : llvm::enumerate(layout))
+    if (cast<StringAttr>(attr).getValue() == name)
+      return type.getShape()[i];
+  return std::nullopt;
+}
+
+/// Verify the convolution half of a `rock.conv_elementwise_gemm`, which
+/// `verifyGemmPlusGemmLikeOp` cannot see. That verifier reasons about the
+/// synthetic GEMM operand types from `getAType()` / `getBType()`, and both are
+/// built out of `ConvolutionDims::fromOp`, which reads `c` and `g` from the
+/// *filter* layout alone and never consults the input's `ci` / `gi`. A filter
+/// and input that disagree about channels or groups thus yield two mutually
+/// consistent GEMM types and pass, only to fail after ConvToGemm with a
+/// complaint about the lowered GEMM's reduction or batch dimensions rather
+/// than about the operands that are actually inconsistent.
+///
+/// The layout checks are equally load-bearing: `ConvolutionDims::fromOp`
+/// indexes both layout arrays over the *filter* layout's length and casts
+/// every entry to `StringAttr`, so a missing, short, or non-string layout
+/// takes the verifier itself down before it can diagnose anything.
+static LogicalResult
+verifyConvElementwiseGemmConvOperands(ConvElementwiseGemmOp op) {
+  auto filterType = cast<ShapedType>(op.getFilter().getType());
+  auto inputType = cast<ShapedType>(op.getInput().getType());
+
+  auto filterLayout = op->getAttrOfType<ArrayAttr>("filter_layout");
+  if (!filterLayout)
+    return op.emitOpError("requires a 'filter_layout' array attribute");
+  auto inputLayout = op->getAttrOfType<ArrayAttr>("input_layout");
+  if (!inputLayout)
+    return op.emitOpError("requires an 'input_layout' array attribute");
+
+  if (filterType.getRank() != inputType.getRank())
+    return op.emitOpError("filter and input must have the same rank")
+           << " (filter rank = " << filterType.getRank()
+           << ", input rank = " << inputType.getRank() << ")";
+
+  for (auto [name, layout, type] :
+       {std::tuple{"filter_layout", filterLayout, filterType},
+        std::tuple{"input_layout", inputLayout, inputType}}) {
+    if (static_cast<int64_t>(layout.size()) != type.getRank())
+      return op.emitOpError("'")
+             << name << "' must have one entry per tensor dimension (layout "
+             << "size = " << layout.size() << ", rank = " << type.getRank()
+             << ")";
+    if (!llvm::all_of(layout, llvm::IsaPred<StringAttr>))
+      return op.emitOpError("'") << name << "' must contain only strings";
+  }
+
+  std::optional<int64_t> filterG = convDimSize(filterLayout, filterType, "g");
+  std::optional<int64_t> filterC = convDimSize(filterLayout, filterType, "c");
+  if (!filterG || !filterC)
+    return op.emitOpError(
+        "'filter_layout' must name both a 'g' and a 'c' dimension");
+
+  std::optional<int64_t> inputG = convDimSize(inputLayout, inputType, "gi");
+  std::optional<int64_t> inputC = convDimSize(inputLayout, inputType, "ci");
+  if (!inputG || !inputC)
+    return op.emitOpError(
+        "'input_layout' must name both a 'gi' and a 'ci' dimension");
+
+  if (*filterG != *inputG)
+    return op.emitOpError("filter and input must agree on the group count")
+           << " (filter 'g' = " << *filterG << ", input 'gi' = " << *inputG
+           << ")";
+  if (*filterC != *inputC)
+    return op.emitOpError(
+               "filter and input must agree on the channels per group")
+           << " (filter 'c' = " << *filterC << ", input 'ci' = " << *inputC
+           << ")";
+
+  // A grouped convolution has no conv+gemm form. The GEMM that follows the
+  // convolution has to contract over every channel the convolution produced,
+  // i.e. over all `g * k` of them. What the lowering does instead is pass `g`
+  // through to `gemmG` (see `ConvGemmRewritePattern` in
+  // Rock/Transforms/ConvToGemm.cpp), giving `g` independent GEMMs that each
+  // reduce over one group's `k` channels and never sum across groups. That
+  // silently computes something other than this op's own
+  // `conv_forward(filter, input) * c`, and it does so without tripping any
+  // later check, so reject it here. `ConvElementwiseGemmRewritePattern` turns
+  // away the same fusion at the TOSA level; this covers hand-written IR and
+  // any other producer.
+  if (*filterG != 1)
+    return op.emitOpError("does not support grouped convolution")
+           << " (filter 'g' = " << *filterG << ")";
+
+  return success();
+}
+
 LogicalResult ConvElementwiseGemmOp::verify() {
+  // Must run first: verifyGemmPlusGemmLikeOp reaches getGemmGemmSize(), which
+  // walks the layouts unchecked.
+  if (failed(verifyConvElementwiseGemmConvOperands(*this)))
+    return failure();
   return verifyGemmPlusGemmLikeOp(*this, /*lastValidKVIndex=*/nullptr,
                                   /*lse=*/nullptr, /*numHeadsQ=*/1,
                                   /*numHeadsKV=*/1);

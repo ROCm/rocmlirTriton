@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -split-input-file -rock-decompose-nonpow2-k -canonicalize %s | FileCheck %s
 
 // A K tile of 48 decomposes into {32, 16}.

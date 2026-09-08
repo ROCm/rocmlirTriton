@@ -21,7 +21,7 @@ module {
   // CHECK: %[[SM:.*]] = rock.store_marker
   // CHECK: rock.transform %{{.*}} by
   // CHECK: %[[LM:.*]] = rock.load_marker %{{.*}} views
-  // CHECK-SAME: {cacheModifier = #rock<CacheModifier cs>, reductionTileAxes = array<i64>}
+  // CHECK-SAME: {cacheModifier = #rock<CacheModifier cs>}
   // CHECK-SAME: tensor<1x16x16xf32> -> tensor<16x16xf32>
   // CHECK: %[[UT:.*]] = rock.untile %[[LM]] : tensor<16x16xf32> -> tensor<1x16x16xf32>
   // CHECK: %[[ADD:.*]] = arith.addf %[[SM]], %[[UT]] : tensor<1x16x16xf32>

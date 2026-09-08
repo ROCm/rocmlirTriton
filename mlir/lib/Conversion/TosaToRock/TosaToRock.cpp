@@ -287,9 +287,6 @@ makeRockConv(ConversionPatternRewriter &rw, Operation *op, Value input,
   } else {
     // Handle forwards convolution.
     // ConvOp takes (filter, input) and produces the output as the result.
-    assert((!convBackwardKind.has_value() ||
-            convBackwardKind.value() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT) &&
-           "bwd_weight currently not implemented");
     cop = rock::ConvOp::create(rw, loc, convFields.expandedOutputType,
                                convFields.filterExp, convFields.inputExp,
                                convFields.pad, convFields.stride,
@@ -350,8 +347,7 @@ static SetVector<int64_t> traceToRes(Value expectedTensor, func::FuncOp func) {
 }
 
 template <typename OpT>
-static LogicalResult setSplitKAttrs(OpT op, 
-                                    PatternRewriter &rw) {
+static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
   auto perfConfig = op->template getAttrOfType<StringAttr>("perf_config");
   if (perfConfig && rock::isSplitKRequested(perfConfig)) {
     func::FuncOp func = op->template getParentOfType<func::FuncOp>();
@@ -476,8 +472,14 @@ struct ElementwiseRegionFinder {
       blockArgCandidates.insert(blockArgCandidates.begin(), input);
       return;
     }
-    if (op && dyn_cast<tosa::ConstOp>(op)) {
-      constantVals.push_back(input);
+    if (auto constOp = dyn_cast_or_null<tosa::ConstOp>(op)) {
+      // Splat constants can be freely reshaped to any tile shape; dense
+      // non-splat constants require the same transform and tiled-load path as
+      // tensor inputs.
+      if (isa<SplatElementsAttr>(constOp.getValuesAttr()))
+        constantVals.push_back(input);
+      else
+        blockArgCandidates.push_back(input);
       return;
     }
     // Right now, this is a bit restricted that we only allow reshape-like
@@ -643,15 +645,12 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->template getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->template getAttrOfType<DenseI64ArrayAttr>("pad");
     auto dilationAttr =
         op->template getAttrOfType<DenseI64ArrayAttr>("dilation");
 
     // Verify all required attributes are present
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     if (!padAttr)
       return op->emitError(
@@ -698,8 +697,7 @@ public:
     // Make sure its a valid CustomOp representing a convolution.
     if (op.getDomainName() != ROCK_CUSTOMOP_DOMAIN_NAME)
       return op->emitError("domain isn't rock");
-    if (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA &&
-        op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_WEIGHT)
+    if (op.getOperatorName() != ROCK_CUSTOMOP_CONV_BWD_DATA)
       return op->emitError("has an invalid operator_name");
     if (op.getNumOperands() < 5)
       return op->emitError("must have 5 or more operands");
@@ -724,21 +722,11 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->getAttrOfType<DenseI64ArrayAttr>("pad");
     auto strideAttr = op->getAttrOfType<DenseI64ArrayAttr>("stride");
     auto dilationAttr = op->getAttrOfType<DenseI64ArrayAttr>("dilation");
 
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
-
-    // If we are trying to convert bwd_weight, fail as it's currently not
-    // supported.
-    if (op.getOperatorName() == ROCK_CUSTOMOP_CONV_BWD_WEIGHT) {
-      return op->emitError(
-          "TosaToRock lowering support for bwd_weight not supported");
-    }
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     FailureOr<rock::RockConvInterface> rockConv =
         makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
@@ -1460,6 +1448,20 @@ struct ConvElementwiseGemmRewritePattern
       op.emitOpError("bias not supported yet");
       return failure();
     }
+    // A grouped convolution cannot be fused with the GEMM that follows it. The
+    // `rock.conv_elementwise_gemm` emitted below is lowered by
+    // `ConvGemmRewritePattern` in Rock/Transforms/ConvToGemm.cpp, which passes
+    // the group dimension through to `gemmG`, the batch dimension of both
+    // GEMMs. Each group's output channels would therefore reach the second GEMM
+    // as their own tile, contracted against their own slice of `c`. A dot
+    // applied to a grouped convolution instead contracts over every output
+    // channel at once, which means summing those per-group products: a
+    // reduction over a dimension the GEMM+GEMM form treats as parallel.
+    if (rock::tosa::isGroupedConv(firstConv)) {
+      op.emitOpError("fusing a grouped convolution into conv+gemm is not "
+                     "supported");
+      return failure();
+    }
     return elementwiseRegionFinder;
   }
 
@@ -1477,13 +1479,12 @@ struct ConvElementwiseGemmRewritePattern
     SmallVector<Value> elementwiseOtherArgs =
         elementwiseRegionFinder.getElementwiseArgs();
 
-    int64_t group = 1;
-    if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
-      group = attr.getInt(); // Use op.getGroup() when all OpT have it.
+    assert(!rock::tosa::isGroupedConv(firstConv) &&
+           "the matcher rejects grouped convolutions");
     ConvFields convFields = commonConv(
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
         /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
-        firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
+        firstConv.getStrideAttr(), firstConv.getDilationAttr(), /*group=*/1);
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
 
@@ -3495,9 +3496,8 @@ public:
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
     // Only handle TOSA elementwise ops with 2+ operands and a single result.
-    if (!isa<tosa::TosaDialect>(op->getDialect()) ||
-        !isElementwiseOp(op) || op->getNumOperands() < 2 ||
-        op->getNumResults() != 1)
+    if (!isa<tosa::TosaDialect>(op->getDialect()) || !isElementwiseOp(op) ||
+        op->getNumOperands() < 2 || op->getNumResults() != 1)
       return failure();
 
     auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
@@ -3555,16 +3555,14 @@ public:
           rw.getStringAttr("exp" + std::to_string(i)).getValue());
     }
 
-    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(),
-                                       loc);
+    rock::BottomUpTMBuilder padBuilder(rw, dimNames, inputType.getShape(), loc);
     for (int64_t i = 0; i < rank; ++i) {
       if (inputType.getDimSize(i) == outputType.getDimSize(i)) {
         padBuilder.passThrough(dimNames[i]);
       } else {
         if (outputType.getDimSize(i) < inputType.getDimSize(i))
-          return rw.notifyMatchFailure(
-              op, "output dim " + std::to_string(i) +
-                      " is smaller than input dim");
+          return rw.notifyMatchFailure(op, "output dim " + std::to_string(i) +
+                                               " is smaller than input dim");
         int64_t rightPad = outputType.getDimSize(i) - inputType.getDimSize(i);
         padBuilder.pad(outDimNames[i], dimNames[i], /*left=*/0, rightPad);
       }

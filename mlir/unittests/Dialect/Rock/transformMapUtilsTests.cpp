@@ -38,6 +38,83 @@ struct TestEnv {
   }
 };
 
+TEST(BuildRowMajorFlatteningTransformMapTest, RankZero) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(b, loc, {});
+
+  EXPECT_TRUE(transform.getUpperBounds().empty());
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(0, 0, b.getAffineConstantExpr(0)));
+
+  TransformMapAttr inverse = invertTransformMap(b, transform, loc);
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_TRUE(inverse.getLowerBounds().empty());
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, RankOne) {
+  TestEnv env;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      env.builder, env.builder.getUnknownLoc(), {4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::getMultiDimIdentityMap(1, &env.ctx));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, PreservesUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(
+      b, b.getUnknownLoc(), {"batch", "head", "row", "column"}, {1, 1, 4, 4});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({1, 1, 4, 4}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({16}));
+  AffineExpr row = b.getAffineDimExpr(2);
+  AffineExpr column = b.getAffineDimExpr(3);
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(4, 0, row * 4 + column));
+}
+
+TEST(BuildRowMajorFlatteningTransformMapTest, HandlesAllUnitDimensions) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  TransformMapAttr transform =
+      buildRowMajorFlatteningTransformMap(b, b.getUnknownLoc(), {1, 1});
+
+  EXPECT_EQ(transform.getUpperBounds().asArrayRef(), ArrayRef<int64_t>({1, 1}));
+  EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
+  EXPECT_EQ(transform.getMap().getAffineMap(),
+            AffineMap::get(2, 0, b.getAffineDimExpr(1)));
+}
+
+TEST(BuildDenseConstantRowMajorTransformMapTest, ReportsMapApplicability) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  auto rankTwoType = RankedTensorType::get({2, 2}, b.getF32Type());
+  Value rankTwoConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankTwoType, b.getF32FloatAttr(1.0)));
+  FailureOr<TransformMapAttr> flattening =
+      buildDenseConstantRowMajorTransformMap(b, loc, rankTwoConstant);
+  ASSERT_TRUE(succeeded(flattening));
+  EXPECT_EQ(flattening->getUpperBounds().asArrayRef(),
+            ArrayRef<int64_t>({2, 2}));
+  EXPECT_EQ(flattening->getLowerBounds().asArrayRef(), ArrayRef<int64_t>({4}));
+
+  auto rankOneType = RankedTensorType::get({4}, b.getF32Type());
+  Value rankOneConstant = arith::ConstantOp::create(
+      b, loc, DenseElementsAttr::get(rankOneType, b.getF32FloatAttr(1.0)));
+  EXPECT_TRUE(
+      failed(buildDenseConstantRowMajorTransformMap(b, loc, rankOneConstant)));
+}
+
 // Helper to create a transformed tensor with a simple identity transformation
 Value createTransformedTensor(OpBuilder &b, Location loc,
                               ArrayRef<int64_t> shape, Type elemType) {
@@ -154,8 +231,7 @@ TEST(AddPassThroughIndicesTest, MultiBufferAtPositionZero) {
   Location loc = b.getUnknownLoc();
 
   // Create a 2D tensor<2x16xf16> (multi-buffer case)
-  Value transformed =
-      createTransformedTensor(b, loc, {2, 16}, b.getF16Type());
+  Value transformed = createTransformedTensor(b, loc, {2, 16}, b.getF16Type());
 
   // Add extra indices at position 0 with sizes [2]
   FailureOr<Value> result = addPassThroughIndices(b, transformed, {2}, 0);
@@ -181,8 +257,7 @@ TEST(AddPassThroughIndicesTest, MultipleDimensionsAtPositionZero) {
       createTransformedTensor(b, loc, {8, 2, 4}, b.getF32Type());
 
   // Add 3 dimensions at position 0 with sizes [1, 2, 3]
-  FailureOr<Value> result =
-      addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
+  FailureOr<Value> result = addPassThroughIndices(b, transformed, {1, 2, 3}, 0);
 
   ASSERT_TRUE(succeeded(result));
   auto resultType = cast<ShapedType>(result.value().getType());
@@ -292,8 +367,8 @@ TEST(IsIdentityOnShapeTest, BroadcastingOnUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_TRUE(isIdentityOnShape(map, {1, 124, 664}));
 }
@@ -307,8 +382,8 @@ TEST(IsIdentityOnShapeTest, BroadcastingOnNonUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {2, 124, 664}));
 }
@@ -322,8 +397,8 @@ TEST(IsIdentityOnShapeTest, TransposeIsNotIdentity) {
   SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
                                    getAffineDimExpr(2, &ctx),
                                    getAffineDimExpr(1, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
   EXPECT_FALSE(isIdentityOnShape(map, {4, 4, 4}));
@@ -338,8 +413,8 @@ TEST(IsIdentityOnShapeTest, WrongConstantOnUnitDim) {
   SmallVector<AffineExpr> exprs = {getAffineConstantExpr(1, &ctx),
                                    getAffineDimExpr(1, &ctx),
                                    getAffineDimExpr(2, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {1, 124, 664}));
 }
@@ -368,8 +443,8 @@ TEST(IsIdentityOnShapeTest, NonSquareMap) {
 
   SmallVector<AffineExpr> exprs = {getAffineDimExpr(0, &ctx),
                                    getAffineDimExpr(1, &ctx)};
-  AffineMap map = AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs,
-                                 &ctx);
+  AffineMap map =
+      AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0, exprs, &ctx);
 
   EXPECT_FALSE(isIdentityOnShape(map, {4, 8}));
 }
@@ -534,33 +609,6 @@ TEST(GetLowerSubDimensionsTest, PadIsUnsupported) {
 
   ArrayAttr transforms = b.getArrayAttr({padAttr});
   EXPECT_TRUE(failed(getLowerSubDimensions(b, transforms, /*dim=*/1)));
-}
-
-//===----------------------------------------------------------------------===//
-// transformChainDependsOnAnyDim Tests
-//===----------------------------------------------------------------------===//
-
-TEST(TransformChainDependsOnAnyDimTest, DetectsIgnoredDimension) {
-  TestEnv env;
-  OpBuilder &b = env.builder;
-  Location loc = b.getUnknownLoc();
-
-  BottomUpTMBuilder transform(b, {"m"}, {8}, loc);
-  transform.addDim("k", 1, 16);
-  transform.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
-
-  SmallVector<TransformMapAttr> transforms{transform.get()};
-  SmallVector<unsigned> mDim{0};
-  SmallVector<unsigned> kDim{1};
-  SmallVector<unsigned> bothDims{0, 1};
-  SmallVector<unsigned> noDims;
-  SmallVector<TransformMapAttr> noTransforms;
-
-  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, mDim));
-  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, kDim));
-  EXPECT_TRUE(transformChainDependsOnAnyDim(transforms, bothDims));
-  EXPECT_FALSE(transformChainDependsOnAnyDim(transforms, noDims));
-  EXPECT_TRUE(transformChainDependsOnAnyDim(noTransforms, mDim));
 }
 
 //===----------------------------------------------------------------------===//

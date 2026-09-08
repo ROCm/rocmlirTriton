@@ -22,7 +22,7 @@ struct ArchTestEnv {
   MLIRContext ctx;
   OpBuilder b;
   Type f32, f16, bf16, i32, i8;
-  Type f8e4m3fn, f8e5m2, f6e3m2fn, f6e2m3fn, f4e2m1fn;
+  Type f8e4m3fn, f8e4m3fnuz, f8e5m2, f6e3m2fn, f6e2m3fn, f4e2m1fn;
 
   ArchTestEnv() : b(&ctx) {
     f32 = b.getF32Type();
@@ -31,6 +31,7 @@ struct ArchTestEnv {
     i32 = b.getI32Type();
     i8 = b.getIntegerType(8);
     f8e4m3fn = Float8E4M3FNType::get(&ctx);
+    f8e4m3fnuz = Float8E4M3FNUZType::get(&ctx);
     f8e5m2 = Float8E5M2Type::get(&ctx);
     f6e3m2fn = Float6E3M2FNType::get(&ctx);
     f6e2m3fn = Float6E2M3FNType::get(&ctx);
@@ -82,6 +83,7 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
 
 TEST(AmdArchDbTest, InferNumChiplets) {
   EXPECT_EQ(inferNumChiplets("gfx942", 304), 8);
+  EXPECT_EQ(inferNumChiplets("gfx942", 228), 6); // MI300A
   EXPECT_EQ(inferNumChiplets("gfx942", 80), 4);
   EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
   EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
@@ -116,18 +118,23 @@ TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
 
 // --- getMinNumCU ---
 
+// This is a hard floor: getNumCUOnFunc rejects a smaller rock.num_cu, so a
+// family that spans APUs has to admit its smallest APU.
 TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx906"), 10);   // GCN5_1
   EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
   EXPECT_EQ(getMinNumCU("gfx950"), 256);  // CDNA4
-  EXPECT_EQ(getMinNumCU("gfx1010"), 30);  // RDNA1
-  EXPECT_EQ(getMinNumCU("gfx1030"), 30);  // RDNA2
+  EXPECT_EQ(getMinNumCU("gfx1010"), 20);  // RDNA1
+  EXPECT_EQ(getMinNumCU("gfx1030"), 2);   // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
   EXPECT_EQ(getMinNumCU("gfx1170"), 2);   // GFX1170
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
   EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
+  // The RDNA2 APUs the old family floor of 30 rejected outright.
+  EXPECT_LE(getMinNumCU("gfx1036"), 2); // 2 CUs
+  EXPECT_LE(getMinNumCU("gfx1033"), 8); // 8 CUs
 }
 
 // --- getMaxWavesPerEU ---
@@ -160,7 +167,9 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
   EXPECT_EQ(getVGPRsPerEU("gfx1170"), 1024); // GFX1170, no Feature1536VGPRs
   EXPECT_EQ(getVGPRsPerEU("gfx1200"), 1536); // RDNA4
-  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1536); // GFX1250
+  // GFX1250 has Feature1024AddressableVGPRs, not Feature1536VGPRs.
+  EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1024);
+  EXPECT_EQ(getVGPRsPerEU("gfx1251"), 1024);
 }
 
 // --- getWaveSize ---
@@ -205,9 +214,54 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // APU L2, no MALL
-  EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 64 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // guess, see below
+  EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 32 * kMiB);
+  // gfx125x has no Infinity Cache; its last level is 2x96 MiB of L2 on the
+  // Fabric Cache Dies.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 192 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1251"), 192 * kMiB);
+}
+
+// Within one ISA family the discrete parts differ from each other and, above
+// all, from the APUs: an APU's L2 is its last level cache unless it has a MALL.
+// Pinned per chip so that a family-wide value can never creep back in.
+TEST(AmdArchDbTest, LastLevelCacheSizePerChip) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  // RDNA1, no MALL in the family.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1012"), 2 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1013"), 4 * kMiB);
+  // RDNA2: Infinity Cache on the discrete parts, L2 only on the APUs.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1031"), 96 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1032"), 32 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1034"), 16 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1033"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1035"), 2 * kMiB);
+  // 2 CU part: 256 KiB, the smallest last level cache of any target.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1036"), 256 * 1024);
+  // RDNA3 / RDNA3.5. gfx1151 is the only APU here known to have a MALL.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1101"), 64 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1102"), 32 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1103"), 2 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1150"), 2 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1151"), 32 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1152"), 1 * kMiB);
+  // gfx1153's L2 is unpublished; estimated from gfx1152, which bounds it from
+  // above.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1153"), 1 * kMiB);
+  // RDNA4.
+  EXPECT_EQ(getLastLevelCacheSize("gfx1201"), 64 * kMiB);
+}
+
+// The gfx117x caches are unpublished, so they fall back to their ISA family,
+// whose value is a guess at a bare APU L2. Pinned so that the guess is a
+// deliberate choice: if any of these turns out to carry a MALL, as the APU
+// gfx1151 does, the real value is much larger. These and gfx1153, pinned
+// above, are the only chips not on a published number.
+TEST(AmdArchDbTest, LastLevelCacheSizeUnpublishedChips) {
+  constexpr int64_t kMiB = 1024 * 1024;
+  EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1171"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1172"), 1 * kMiB);
 }
 
 TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
@@ -376,6 +430,108 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
             MatrixAccelKind::WMMA);
 }
 
+// Tests for getAccelInstrMinKDim
+
+// Unwraps the query so the expected K extents below stay readable. Only for
+// cases that must succeed; the failing ones are checked with failed() directly.
+static int64_t minKDim(StringRef arch, Type inputTypeA, Type inputTypeB,
+                       uint32_t instrNonKDim) {
+  FailureOr<int64_t> kDim =
+      getAccelInstrMinKDim(arch, inputTypeA, inputTypeB, instrNonKDim);
+  EXPECT_TRUE(succeeded(kDim)) << arch << " has no matrix instruction at "
+                               << instrNonKDim << "x" << instrNonKDim;
+  return succeeded(kDim) ? *kDim : 0;
+}
+
+TEST(AmdArchDbTest, AccelInstrMinKDimMfma) {
+  ArchTestEnv e;
+  // CDNA3 f16: mfma_f32_16x16x16f16 at a 16x16 instruction tile,
+  // mfma_f32_32x32x8f16 at 32x32. The tuner sweeps matrixInstrNonkdim over
+  // {16,32} and keeps the smaller of the two, so 8 is the bar a kPerBlock has
+  // to clear for an f16 GEMM on gfx942.
+  EXPECT_EQ(minKDim("gfx942", e.f16, e.f16, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.f16, e.f16, 32), 8);
+  // bf16 selects the _1k intrinsics on CDNA3, which have the same K extents.
+  EXPECT_EQ(minKDim("gfx942", e.bf16, e.bf16, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.bf16, e.bf16, 32), 8);
+  // i8 consumes twice the K of f16 at both tiles (mfma_i32_16x16x32_i8 /
+  // mfma_i32_32x32x16_i8).
+  EXPECT_EQ(minKDim("gfx942", e.i8, e.i8, 16), 32);
+  EXPECT_EQ(minKDim("gfx942", e.i8, e.i8, 32), 16);
+  // The f32 MFMAs are very narrow (mfma_f32_16x16x4f32 / mfma_f32_32x32x2f32),
+  // so they barely constrain kPerBlock at all.
+  EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 16), 4);
+  EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 32), 2);
+  // CDNA1 / CDNA2 carry the same f16 intrinsics as CDNA3.
+  EXPECT_EQ(minKDim("gfx908", e.f16, e.f16, 16), 16);
+  EXPECT_EQ(minKDim("gfx90a", e.f16, e.f16, 32), 8);
+  // A triple-prefixed arch string resolves identically.
+  EXPECT_EQ(minKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32), 8);
+}
+
+// CDNA4 lists two intrinsics per (tile, type) -- a wide one and the CDNA3-era
+// narrow one, widest first. The probe asks selectFor() for an input K of zero
+// precisely so that it skips every candidate and falls through to the narrow
+// end of that list, which is the property the heuristic rests on: a kPerBlock
+// only has to be a multiple of the *narrowest* instruction to fill some
+// instruction. If selectFor() ever stops falling through, these values flip to
+// the wide ones and the tuning space silently loses candidates.
+TEST(AmdArchDbTest, AccelInstrMinKDimMfmaFallsThroughToNarrowest) {
+  ArchTestEnv e;
+  // f16 at 16x16: {mfma_f32_16x16x32_f16 (K=32), mfma_f32_16x16x16f16 (K=16)}.
+  EXPECT_EQ(minKDim("gfx950", e.f16, e.f16, 16), 16);
+  // f16 at 32x32: {mfma_f32_32x32x16_f16 (K=16), mfma_f32_32x32x8f16 (K=8)}.
+  EXPECT_EQ(minKDim("gfx950", e.f16, e.f16, 32), 8);
+  // i8 at 16x16: {mfma_i32_16x16x64_i8 (K=64), mfma_i32_16x16x32_i8 (K=32)}.
+  EXPECT_EQ(minKDim("gfx950", e.i8, e.i8, 16), 32);
+  // i8 at 32x32: {mfma_i32_32x32x32_i8 (K=32), mfma_i32_32x32x16_i8 (K=16)}.
+  EXPECT_EQ(minKDim("gfx950", e.i8, e.i8, 32), 16);
+}
+
+TEST(AmdArchDbTest, AccelInstrMinKDimWmma) {
+  ArchTestEnv e;
+  // All WMMA instructions are 16x16, so instrNonKDim makes no difference.
+  EXPECT_EQ(minKDim("gfx1100", e.f16, e.f16, 16), 16); // RDNA3
+  EXPECT_EQ(minKDim("gfx1100", e.f16, e.f16, 32), 16); // RDNA3
+  EXPECT_EQ(minKDim("gfx1170", e.f16, e.f16, 16), 16); // WMMA v2
+  EXPECT_EQ(minKDim("gfx1200", e.f16, e.f16, 16), 16); // RDNA4
+  // gfx1250 doubles the f16 instruction to wmma_f32_16x16x32_f16.
+  EXPECT_EQ(minKDim("gfx1250", e.f16, e.f16, 16), 32);
+  EXPECT_EQ(minKDim("gfx1100", e.i8, e.i8, 16), 16); // iu8 16
+  EXPECT_EQ(minKDim("gfx1250", e.i8, e.i8, 16), 64); // iu8 64
+  // gfx1250 is the only arch with an f32 WMMA input path
+  // (wmma_f32_16x16x4_f32).
+  EXPECT_EQ(minKDim("gfx1250", e.f32, e.f32, 16), 4);
+}
+
+TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {
+  ArchTestEnv e;
+  // No matrix core at all.
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx906", e.f16, e.f16, 16)));
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx1010", e.f16, e.f16, 16)));
+  // A matrix core that has no instruction for these inputs: RDNA3 WMMA takes no
+  // f32 operands. This is the FMA path, which the widened kPerBlock range
+  // treats as having no instruction-alignment requirement.
+  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx1100", e.f32, e.f32, 16)));
+}
+
+// Triton's composeMfmaKeyFor silently rewrites OCP FP8 (E4M3FN / E5M2) inputs
+// to f16 on any MFMA v<=3 (see MfmaGroup.cpp, and the note on
+// archSupportsAccelFp8 below), so on CDNA3 an OCP-spelled fp8 GEMM is held to
+// f16's K extents rather than to those of the native FNUZ intrinsics.
+TEST(AmdArchDbTest, AccelInstrMinKDimOcpFp8EmulatedAsF16OnCdna3) {
+  ArchTestEnv e;
+  // Native FNUZ fp8: mfma_f32_16x16x32_fp8_fp8 / mfma_f32_32x32x16_fp8_fp8.
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 16), 32);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fnuz, e.f8e4m3fnuz, 32), 16);
+  // Same arch, OCP spelling: emulated with f16, so it reports f16's extents.
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 16), 16);
+  EXPECT_EQ(minKDim("gfx942", e.f8e4m3fn, e.f8e4m3fn, 32), 8);
+  // CDNA4 has native OCP fp8, so no substitution happens there.
+  EXPECT_EQ(minKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 16), 32);
+  EXPECT_EQ(minKDim("gfx950", e.f8e4m3fn, e.f8e4m3fn, 32), 16);
+}
+
 // --- supportsTDM ---
 
 TEST(AmdArchDbTest, SupportsTDM) {
@@ -390,6 +546,45 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_FALSE(supportsTDM("gfx1170")); // GFX1170
   EXPECT_FALSE(supportsTDM("gfx1200")); // RDNA4
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
+}
+
+// --- isCDNA / isRDNA ---
+
+TEST(AmdArchDbTest, IsCDNA) {
+  // Mirrors Triton's isCDNA(): gfx1250 counts as CDNA despite issuing WMMA.
+  EXPECT_FALSE(isCDNA("gfx906"));  // GCN5_1: neither line
+  EXPECT_TRUE(isCDNA("gfx908"));   // CDNA1
+  EXPECT_TRUE(isCDNA("gfx90a"));   // CDNA2
+  EXPECT_TRUE(isCDNA("gfx942"));   // CDNA3
+  EXPECT_TRUE(isCDNA("gfx950"));   // CDNA4
+  EXPECT_FALSE(isCDNA("gfx1010")); // RDNA1
+  EXPECT_FALSE(isCDNA("gfx1030")); // RDNA2
+  EXPECT_FALSE(isCDNA("gfx1100")); // RDNA3
+  EXPECT_FALSE(isCDNA("gfx1170")); // GFX1170
+  EXPECT_FALSE(isCDNA("gfx1200")); // RDNA4
+  EXPECT_TRUE(isCDNA("gfx1250"));  // GFX1250
+
+  EXPECT_TRUE(isCDNA("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-"));
+  EXPECT_FALSE(isCDNA("amdgcn-amd-amdhsa:gfx1200"));
+}
+
+TEST(AmdArchDbTest, IsRDNA) {
+  // gfx1250 is a gfx12 chip but not RDNA, so the two predicates do not
+  // partition the gfx12 line; gfx906 is in neither.
+  EXPECT_FALSE(isRDNA("gfx906"));  // GCN5_1: neither line
+  EXPECT_FALSE(isRDNA("gfx908"));  // CDNA1
+  EXPECT_FALSE(isRDNA("gfx90a"));  // CDNA2
+  EXPECT_FALSE(isRDNA("gfx942"));  // CDNA3
+  EXPECT_FALSE(isRDNA("gfx950"));  // CDNA4
+  EXPECT_TRUE(isRDNA("gfx1010"));  // RDNA1
+  EXPECT_TRUE(isRDNA("gfx1030"));  // RDNA2
+  EXPECT_TRUE(isRDNA("gfx1100"));  // RDNA3
+  EXPECT_TRUE(isRDNA("gfx1170"));  // GFX1170
+  EXPECT_TRUE(isRDNA("gfx1200"));  // RDNA4
+  EXPECT_FALSE(isRDNA("gfx1250")); // GFX1250
+
+  EXPECT_TRUE(isRDNA("amdgcn-amd-amdhsa:gfx1200"));
+  EXPECT_FALSE(isRDNA("amdgcn-amd-amdhsa:gfx942"));
 }
 
 // --- getArch (arch-string parsing) ---

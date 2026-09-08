@@ -104,25 +104,6 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
   }];
 }
 
-
-def Rock_ConvBwdWeightOp : Rock_ConvOpBase<"conv_bwd_weight">
-{
-  let arguments = !con((ins RankedTensorOf<GemmInputTypes>:$input,
-                           RankedTensorOf<GemmInputTypes>:$gradient),
-                       commonConvAttrs, (ins OptionalAttr<IndexAttr>:$kBlocks));
-  let summary = "N-D convolution backward weight";
-  let description = [{
-    The `rock.conv_bwd_weight` op computes N-D convolution backward weight.
-    Takes input and gradient (from the forward output) tensors, produces the
-    gradient with respect to the filter weights as $result.
-  }];
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    `(` operands `)` attr-dict
-    `:` type(operands) `->` type($result)
-  }];
-}
-
 def Rock_GemmOp
     : Rock_Op<"gemm", [Pure,
                        DeclareOpInterfaceMethods<RockGemmWrapperInterface>,
@@ -342,6 +323,13 @@ def Rock_ConvElementwiseGemmOp
     [G] x M x O, where G is the optional group dimension (which is assumed to be 1 if not set).
     Note that input and filter layouts are defined by attributes "input_layout" and "filter_layout".
 
+    The convolution must be ungrouped: the verifier requires the filter's `g`
+    dimension to be 1, and the filter and input to agree on `g` and on the
+    channels per group. A grouped convolution has no conv+gemm form, because
+    the second GEMM has to contract over all `g * k` channels the convolution
+    produced, whereas lowering makes `g` a batch dimension and reduces within
+    each group separately.
+
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `cTransposed` is set, then the argument `c` should be
     a [G] x O x M memory.
@@ -442,15 +430,14 @@ def Rock_LoadMarkerOp
     : Rock_Op<"load_marker", [Pure,
                               AllElementTypesMatch<["source", "result"]>]>,
       Arguments<(ins AnyRankedTensor:$source, TransformMapArrayAttr:$extraViews,
-          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier,
-          OptionalAttr<DenseI64ArrayAttr>:$reductionTileAxes)>,
+          Variadic<I32>:$extraIndices, CacheModifierAttr:$cacheModifier)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Mark a tensor with tiling transforms for later load lowering";
   let description = [{
     The rock.load_marker op is the dual of rock.store_marker. It marks a source
     tensor (which may be the result of transforms and/or fusion ops tracing back
-    to a block argument) with the tiling information needed to create an actual
-    rock.blockwise_load.
+    to a block argument or dense non-splat constant) with the tiling information
+    needed to create an actual rock.blockwise_load.
 
     This op is a placeholder introduced by:
     1. ToBlockwise passes (GridwiseGemmToBlockwise, GridwiseAttnToBlockwise)
@@ -464,15 +451,8 @@ def Rock_LoadMarkerOp
        type is the full tensor type (consumed by fusion ops).
 
     LowerLoads converts this op into an actual rock.blockwise_load by tracing
-    back through the source chain (transforms, fusion ops, block argument)
-    and combining all transforms.
-
-    `reductionTileAxes` records what the loaded tile feeds, which decides
-    whether tile-alignment padding may be dropped when the load is narrowed to
-    the dimensions it depends on. An absent attribute means the producer does
-    not know and consumers must stay conservative, an empty array means the
-    tile never reaches a reduction, and otherwise it lists the tile axes that
-    are reduced over.
+    back through the source chain (transforms, fusion ops, and a block argument
+    or dense non-splat constant root) and combining all transforms.
 
     Example (GEMM input, tile result):
       %a = rock.transform %arg0 by <pre_transforms>
@@ -886,7 +866,8 @@ def Rock_ExtractPtrOp : Rock_Op<"extract_ptr", [Pure]> {
     returns it as an i32 or i64 placeholder for the real !tt.ptr. Its width is
     chosen to match the offset arithmetic it feeds (i64 when 64-bit indexing is
     required) so the base+offset add type-checks; RockTensorToTritonPtr later
-    replaces it with the actual !tt.ptr kernel argument.
+    replaces it with either the actual !tt.ptr kernel argument or a pointer to
+    an internal GPU global for a dense non-splat constant.
   }];
 
   let arguments = (ins AnyRankedTensor:$source);

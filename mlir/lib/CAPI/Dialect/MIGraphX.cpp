@@ -224,8 +224,13 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
-    mlir::migraphx::addMIGraphXPipeline(pm);
-    mlir::rock::buildHighlevelPipeline(pm);
+    // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI so
+    // MIGraphX can request IEEE NaN semantics; until then every entry point
+    // assumes no NaN operands.
+    mlir::migraphx::addMIGraphXPipeline(pm, /*disableFastMath=*/false);
+    mlir::rock::HighlevelOptions hlOpts;
+    hlOpts.disableFastMath = false;
+    mlir::rock::buildHighlevelPipeline(pm, hlOpts);
     if (mlir::failed(pm.run(clonedMod))) {
       llvm::errs()
           << "could not check module LDS usage: failed to lower to Rock\n";
@@ -276,6 +281,9 @@ static bool ldsUsageFitsForModule(MlirModule module) {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
     mlir::rock::KernelOptions kOpts;
+    // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI (see
+    // above).
+    kOpts.disableFastMath = false;
     mlir::rock::buildKernelPipeline(pm, kOpts);
     mlir::rock::buildTritonPipeline(pm, tritonOpts);
     mlir::rock::buildBackendPipeline(pm, backendOpts);
@@ -344,8 +352,12 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
   if (failed(applyPassManagerCLOptions(*passMan)))
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  mlir::migraphx::addMIGraphXPipeline(*passMan);
-  mlir::rock::buildHighlevelPipeline(*passMan);
+  // TODO: expose fast-math control through this entry point so MIGraphX can
+  // request IEEE NaN semantics; for now the lowering assumes no NaN operands.
+  mlir::migraphx::addMIGraphXPipeline(*passMan, /*disableFastMath=*/false);
+  mlir::rock::HighlevelOptions hlOpts;
+  hlOpts.disableFastMath = false;
+  mlir::rock::buildHighlevelPipeline(*passMan, hlOpts);
 }
 
 static bool parseBackendOptions(MlirPassManager pm,
@@ -395,6 +407,9 @@ mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
     return false;
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
   mlir::rock::KernelOptions kOpts;
+  // TODO: add a fast-math field to MlirMIGraphXBackendOptions and plumb it
+  // here; for now the kernel and backend pipelines assume no NaN operands.
+  kOpts.disableFastMath = false;
   mlir::rock::buildKernelPipeline(*passMan, kOpts);
 
   mlir::rock::TritonOptions tritonOpts;

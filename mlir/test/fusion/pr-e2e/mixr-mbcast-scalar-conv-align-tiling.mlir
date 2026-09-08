@@ -3,7 +3,8 @@ module {
   // CHECK-COUNT-2: rock.blockwise_load
   // CHECK: rock.blockwise_load
   // CHECK: arith.addf
-  // CHECK: arith.maximumf
+  // `migraphx.relu` becomes maxnumf under the default no-NaN assumption.
+  // CHECK: arith.maxnumf
   // CHECK: rock.blockwise_store
   // CHECK-NOT: memref.copy
 

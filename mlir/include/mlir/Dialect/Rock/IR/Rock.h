@@ -98,8 +98,7 @@ TransformAttr getTransformAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     MLIRContext *context, TransformType type, ArrayRef<int64_t> params,
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
-    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims,
-    bool isTileAlignment = false);
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims);
 
 TransformMapAttr getTransformMapAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,

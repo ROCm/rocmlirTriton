@@ -4,7 +4,8 @@ module {
     // CHECK-COUNT-2: rock.blockwise_load
     // CHECK: rock.blockwise_load
     // CHECK: arith.addf
-    // CHECK: arith.maximumf
+    // `migraphx.relu` becomes maxnumf under the default no-NaN assumption.
+    // CHECK: arith.maxnumf
     // CHECK: rock.blockwise_store
     // CHECK-NOT: memref.copy
     func.func @test(%arg0: !migraphx.shaped<1x64x1x1xf32, 64x1x1x1>, %arg1: !migraphx.shaped<1x3x224x224xf32, 150528x50176x224x1>, %arg2: !migraphx.shaped<64x3x7x7xf32, 147x49x7x1>) -> !migraphx.shaped<1x64x112x112xf32, 802816x12544x112x1> attributes{rock.kernel, rock.arch = "##TOKEN_ARCH##"} {

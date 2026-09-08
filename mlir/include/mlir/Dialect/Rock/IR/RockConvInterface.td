@@ -26,7 +26,6 @@ def RockConvInterface : OpInterface<"RockConvInterface"> {
     operand or the computed result of the operation:
     - ConvOp:          filter=operand, input=operand,  output=result
     - ConvBwdDataOp:   filter=operand, input=result,   output=operand($gradient)
-    - ConvBwdWeightOp: filter=result,  input=operand,  output=operand($gradient)
   }];
   let cppNamespace = "::mlir::rock";
 

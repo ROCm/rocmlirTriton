@@ -52,15 +52,14 @@ class Rock_Attr<string name, list<Trait> traits = []> :
 /// ConvOpType
 def ConvOpType : I32EnumAttrCase<"Fwd", 0, "conv">;
 def ConvOpBwdDataType : I32EnumAttrCase<"BwdData", 1, "conv_bwd_data">;
-def ConvOpBwdWeightType : I32EnumAttrCase<"BwdWeight", 2, "conv_bwd_weight">;
 
-def ConvOpTypes : Rock_I32Enum<"ConvOpType", "The type of a convolution operation",
-  [ConvOpType, ConvOpBwdDataType, ConvOpBwdWeightType]>;
+def ConvOpTypes
+    : Rock_I32Enum<"ConvOpType", "The type of a convolution operation",
+                   [ConvOpType, ConvOpBwdDataType]>;
 
 /// Kerneltype
 def KernelTypeConv : I32EnumAttrCase<"Conv", 0>;
 def KernelTypeConvBwdData : I32EnumAttrCase<"ConvBwdData", 1>;
-def KernelTypeConvBwdWeight : I32EnumAttrCase<"ConvBwdWeight", 2>;
 def KernelTypeGemm : I32EnumAttrCase<"Gemm", 3>;
 def KernelTypeAttention : I32EnumAttrCase<"Attention", 4>;
 def KernelTypeGemmElementwiseGemm : I32EnumAttrCase<"GemmElementwiseGemm", 5>;
@@ -68,8 +67,7 @@ def KernelTypeConvElementwiseGemm : I32EnumAttrCase<"ConvElementwiseGemm", 6>;
 
 def KernelType
     : Rock_I32Enum<"KernelType", "Any of the possible types of a rock kernel",
-                   [KernelTypeConv, KernelTypeConvBwdData,
-                    KernelTypeConvBwdWeight, KernelTypeGemm,
+                   [KernelTypeConv, KernelTypeConvBwdData, KernelTypeGemm,
                     KernelTypeAttention, KernelTypeGemmElementwiseGemm,
                     KernelTypeConvElementwiseGemm]>;
 
@@ -182,16 +180,6 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
         ```
         where the params block may be omitted for transforms that don't take parameters.
 
-        A Pad may carry the additional marker `tileAlignment`, as in
-        ```
-          #rock.transform<Pad{0, 15} tileAlignment ["gemmNPad"] at [2] -> ["gemmN"] at [2]>
-        ```
-        recording that the gemm lowering added this padding to align a gemm
-        dimension to the tile size instead of the padding coming from the
-        kernel. The lowering masks the matching output lanes off, so this
-        padding may be discarded when a load is narrowed to the dimensions it
-        actually depends on. Regular padding may not.
-
         The available transform types are
         - PassThrough, which maps N lower dimensions to N upper dimensions
             without changing the coordinates in those dimensions
@@ -236,20 +224,7 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
                 "transformation">:$lowerNames,
             ArrayRefParameter<"uint32_t",
                               "The indices of the lower dimensions (outputs) "
-                              "of this transformation">:$lowerDims,
-            DefaultValuedParameter<"bool", "false",
-                                   "Whether this Pad aligns a gemm dimension "
-                                   "to the tile size">:$isTileAlignment);
-
-    let builders = [
-        // Convenience builder for the transforms that are never tile alignment.
-        AttrBuilder<(ins "::mlir::rock::TransformType":$type,
-            "::llvm::ArrayRef<int64_t>":$params,
-            "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
-            "::llvm::ArrayRef<uint32_t>":$upperDims,
-            "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
-            "::llvm::ArrayRef<uint32_t>":$lowerDims)>,
-    ];
+                              "of this transformation">:$lowerDims);
 
     let genVerifyDecl = 1;
     let hasCustomAssemblyFormat = 1;
@@ -652,7 +627,7 @@ def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
   let mnemonic = "rock.conv_kernel";
   let description = [{
     Marker attribute indicating that a kernel function was lowered from a
-    convolution (`rock.conv`, `rock.conv_bwd_data`, `rock.conv_bwd_weight`, or
+    convolution (`rock.conv`, `rock.conv_bwd_data`, or
     `rock.conv_elementwise_gemm`).
   }];
 }
@@ -662,7 +637,7 @@ def Rock_NumCU : Rock_Attr<"NumCU"> {
   let description = [{
     The number of compute units on the target GPU device. Must be at least the
     per-arch minimum returned by `rock::getMinNumCU` (e.g. gfx906=10,
-    gfx908=120, gfx90a=104, gfx942=20, gfx950=256, gfx1010/gfx1030=30,
+    gfx908=120, gfx90a=104, gfx942=20, gfx950=256, gfx1010=20, gfx1030=2,
     gfx1100=2, gfx1200=12, gfx1250=256); any larger value is accepted.
   }];
 }

@@ -25,6 +25,12 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
   include(librockcompiler_deps.cmake)
   set(__rocmlir_targets ${__rocmlir_libs})
+  # Capture the LLVM/MLIR member target names before the Linux branch below
+  # rewrites __mlir_libs into archive file paths. The fat-library archive step
+  # bundles these members but must also depend on them: members that are not in
+  # rocMLIR's own link closure (e.g. LLVMX86*, MLIRFuncInlinerExtension) are
+  # otherwise unordered relative to llvm-ar and may not be built when it runs.
+  set(__mlir_targets ${__mlir_libs})
 
   # Static libraries on Windows have a 4GB size limit. The Debug version of the FAT library
   # exceeds that limit significantly. Therefore, the change is to expose CMake's INTERFACE
@@ -102,7 +108,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
                        COMMAND for archive in ${__rocmlir_libs} ${__mlir_libs} \; do echo "addlib $$archive" >> ${mri_file} \; done
                        COMMAND echo "save" >> ${mri_file}
                        COMMAND echo "end" >> ${mri_file}
-                       DEPENDS ${__rocmlir_targets})
+                       DEPENDS ${__rocmlir_targets} ${__mlir_targets})
 
     # Step two: use mri file to generate the fat library.
     add_custom_command(OUTPUT ${full_output_path}
