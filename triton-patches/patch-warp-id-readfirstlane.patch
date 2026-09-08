@@ -1,0 +1,83 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/WarpIdOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/WarpIdOpToLLVM.cpp
+index da3e644d74..6a13e3b419 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/WarpIdOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/WarpIdOpToLLVM.cpp
+@@ -11,7 +11,6 @@
+ using namespace mlir;
+ using namespace mlir::triton;
+ using namespace mlir::triton::gpu;
+-using triton::amdgpu::ISAFamily;
+ 
+ namespace {
+ 
+@@ -48,21 +47,15 @@ public:
+       Value warpSizeVal = b.i32_val(threadsPerWarp);
+       Value tid = getThreadId(rewriter, loc);
+       warpId = b.udiv(tid, warpSizeVal);
+-      auto isaFamily = targetInfo.getISAFamily();
+-      if (ISAFamily::CDNA3 == isaFamily || ISAFamily::CDNA4 == isaFamily) {
+-        // On GFX9, there is no dedicated hardware instruction to read
+-        // `wave_id`. The value is instead computed from `workitem.id.x`. Per
+-        // the GFX9 ABI, `workitem.id.x` is initialized in a vector register,
+-        // and vector instructions are generated for IR operations that depend
+-        // on `wave_id`.
+-        //
+-        // A `v_readfirstlane` instruction is inserted at the end of these
+-        // vector sequences to transfer the value from a vector register to a
+-        // scalar register, initializing `$m0`.
+-        auto call =
+-            ROCDL::ReadfirstlaneOp::create(rewriter, loc, {i32_ty}, warpId);
+-        warpId = call.getRes();
+-      }
++
++      // `warpId` is derived from the thread id, so LLVM's uniformity analysis
++      // conservatively treats it as divergent even though every lane in a wave
++      // computes the same value. `v_readfirstlane` moves it into an SGPR and
++      // lets LLVM propagate uniformity to dependent ops, selecting SALU/SGPRs
++      // instead of VALU/VGPRs.
++      auto call =
++          ROCDL::ReadfirstlaneOp::create(rewriter, loc, {i32_ty}, warpId);
++      warpId = call.getRes();
+     }
+ 
+     if (startWarpId) {
+diff --git a/test/Conversion/amd/warp_id_to_llvm.mlir b/test/Conversion/amd/warp_id_to_llvm.mlir
+index 2227c50..3ddf818 100644
+--- a/test/Conversion/amd/warp_id_to_llvm.mlir
++++ b/test/Conversion/amd/warp_id_to_llvm.mlir
+@@ -1,21 +1,23 @@
+-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942  | FileCheck %s --check-prefixes=CHECK,GFX9
+-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950  | FileCheck %s --check-prefixes=CHECK,GFX9
+-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,GFX12
+-// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,GFX12
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx90a  | FileCheck %s --check-prefixes=CHECK,ARITH
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942  | FileCheck %s --check-prefixes=CHECK,ARITH
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx950  | FileCheck %s --check-prefixes=CHECK,ARITH
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s --check-prefixes=CHECK,ARITH
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1200 | FileCheck %s --check-prefixes=CHECK,WAVEID
++// RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1250 | FileCheck %s --check-prefixes=CHECK,WAVEID
+ 
+ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.shared = 0 : i32, "ttg.threads-per-warp" = 64 : i32} {
+ 
+ // CHECK-LABEL: @wave_id
+ tt.func public @wave_id() {
+-  //       GFX9: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
+-  //  GFX9-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
+-  //  GFX9-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
+-  //  GFX9-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
+-  //  GFX9-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
+-  //  GFX9-NEXT: %{{.+}} = rocdl.readfirstlane %[[DIV]] : i32
++  //       ARITH: %[[C64:.+]] = llvm.mlir.constant(64 : i32) : i32
++  //  ARITH-NEXT: %[[IDX:.+]] = rocdl.workitem.id.x : i32
++  //  ARITH-NEXT: %[[C63:.+]] = llvm.mlir.constant(63 : i32) : i32
++  //  ARITH-NEXT: %[[AND:.+]] = llvm.and %[[IDX]], %[[C63]] : i32
++  //  ARITH-NEXT: %[[DIV:.+]] = llvm.udiv %[[AND]], %[[C64]] : i32
++  //  ARITH-NEXT: %{{.+}} = rocdl.readfirstlane %[[DIV]] : i32
+ 
+-  // GFX12-NEXT: rocdl.wave.id
+-  //      CHECK: scf.for
++  // WAVEID-NEXT: rocdl.wave.id
++  //       CHECK: scf.for
+ 
+   %c0 = arith.constant 0 : index
+   %c1 = arith.constant 1 : index

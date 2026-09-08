@@ -7,6 +7,8 @@
 
 #tmap = #rock.transform_map<affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 * 16 + d3, d2 * 16 + d4)> by [<PassThrough ["g_block"] at [0] -> ["gemmG"] at [0]>, <Unmerge{1, 16} ["m_block", "m_iter"] at [1, 3] -> ["gemmM"] at [1]>, <Unmerge{1, 16} ["n_block", "n_iter"] at [2, 4] -> ["gemmN"] at [2]>] bounds = [1, 1, 1, 16, 16] -> [1, 16, 16]>
 
+#tmap_small = #rock.transform_map<affine_map<(d0, d1, d2) -> (d0, d1 * 2 + d2)> by [<PassThrough ["g"] at [0] -> ["g"] at [0]>, <Unmerge{1, 2} ["m_block", "m_iter"] at [1, 2] -> ["m"] at [1]>] bounds = [1, 1, 2] -> [1, 2]>
+
 #tmap_6d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <PassThrough ["b"] at [1] -> ["b"] at [1]>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [2, 3]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [4, 5]>] bounds = [1, 1, 16, 16] -> [1, 1, 4, 4, 4, 4]>
 
 #tmap_5d_to_4d = #rock.transform_map<affine_map<(d0, d1, d2, d3) -> (d0, d2 floordiv 4, d2 mod 4, d3 floordiv 4, d3 mod 4)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>, <AddDim{1} ["b"] at [1] -> [] at []>, <Merge{4, 4} ["m"] at [2] -> ["m0", "m1"] at [1, 2]>, <Merge{4, 4} ["n"] at [3] -> ["n0", "n1"] at [3, 4]>] bounds = [1, 1, 16, 16] -> [1, 4, 4, 4, 4]>
@@ -411,5 +413,44 @@ module {
     %fused = arith.addf %A, %B : tensor<1x16x16xf16>
     %lm = rock.load_marker %fused views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier cs>} : tensor<1x16x16xf16> -> tensor<16x16xf16>
     return %lm : tensor<16x16xf16>
+  }
+
+  // CHECK-LABEL: func.func @test_non_splat_constant_fusion
+  // CHECK-DAG: %[[LHS:.*]] = arith.constant dense<{{.*1.*2.*}}> : tensor<1x2xf32>
+  // CHECK-DAG: %[[RHS:.*]] = arith.constant dense<{{.*3.*4.*}}> : tensor<1x2xf32>
+  // CHECK: %[[LHS_LOAD:.*]] = rock.load_marker %[[LHS]] views
+  // CHECK-SAME: tensor<1x2xf32> -> tensor<2xf32>
+  // CHECK: %[[RHS_LOAD:.*]] = rock.load_marker %[[RHS]] views
+  // CHECK-SAME: tensor<1x2xf32> -> tensor<2xf32>
+  // CHECK: %[[TILE_ADD:.*]] = arith.addf %[[LHS_LOAD]], %[[RHS_LOAD]] : tensor<2xf32>
+  // CHECK: %[[UNTILE:.*]] = rock.untile %[[TILE_ADD]]
+  // CHECK: arith.addf %{{.*}}, %[[UNTILE]] : tensor<1x2xf32>
+  func.func @test_non_splat_constant_fusion(%tile: tensor<2xf32>, %dest: tensor<1x2xf32>, %g: i32, %m: i32) -> tensor<1x2xf32> attributes {rock.kernel} {
+    %sm = rock.store_marker %tile views [#tmap_small] [%g, %m] : tensor<2xf32> -> tensor<1x2xf32>
+    %lhs = arith.constant dense<[[1.0, 2.0]]> : tensor<1x2xf32>
+    %rhs = arith.constant dense<[[3.0, 4.0]]> : tensor<1x2xf32>
+    %sum = arith.addf %lhs, %rhs : tensor<1x2xf32>
+    %lm = rock.load_marker %sum views [#tmap_small] [%g, %m] {cacheModifier = #rock<CacheModifier none>} : tensor<1x2xf32> -> tensor<2xf32>
+    %ut = rock.untile %lm : tensor<2xf32> -> tensor<1x2xf32>
+    %fused = arith.addf %sm, %ut : tensor<1x2xf32>
+    %r = rock.store %fused to %dest by set : tensor<1x2xf32> -> tensor<1x2xf32> to tensor<1x2xf32>
+    return %r : tensor<1x2xf32>
+  }
+
+  // CHECK-LABEL: func.func @test_non_splat_constant_transform_chain
+  // CHECK: %[[VALUES:.*]] = arith.constant dense<{{.*}}> : tensor<16xf32>
+  // CHECK: %[[BROADCAST:.*]] = rock.transform %[[VALUES]]
+  // CHECK-SAME: tensor<16xf32> to tensor<1x16x16xf32>
+  // CHECK: %[[TRANSPOSE:.*]] = rock.transform %[[BROADCAST]]
+  // CHECK-SAME: tensor<1x16x16xf32> to tensor<1x16x16xf32>
+  // CHECK: rock.load_marker %[[TRANSPOSE]] views
+  func.func @test_non_splat_constant_transform_chain(
+      %g: i32, %m: i32, %n: i32) -> tensor<16x16xf32>
+      attributes {rock.kernel} {
+    %values = arith.constant dense<[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0]> : tensor<16xf32>
+    %broadcast = rock.transform %values by #tmap_broadcast_1d : tensor<16xf32> to tensor<1x16x16xf32>
+    %transposed = rock.transform %broadcast by #tmap_transpose_3d : tensor<1x16x16xf32> to tensor<1x16x16xf32>
+    %loaded = rock.load_marker %transposed views [#tmap] [%g, %m, %n] {cacheModifier = #rock<CacheModifier none>} : tensor<1x16x16xf32> -> tensor<16x16xf32>
+    return %loaded : tensor<16x16xf32>
   }
 }
