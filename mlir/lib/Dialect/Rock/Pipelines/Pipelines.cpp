@@ -432,9 +432,17 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // single shared funcPm, because DCE needs to run at the module level
   // to see function callers. Running it at function level causes it to
   // incorrectly remove the host function, which breaks the IR.
+  //
+  // TODO: re-enable the module-level DCE. Its liveness analysis
+  // is interprocedural, and at this point the kernel body still sits in the
+  // module next to the host code that calls it. A kernel with a dynamic shape
+  // takes the gemm dimensions as trailing arguments but does not read them yet,
+  // because the out-of-bounds masks that will consume M are not generated, so
+  // the analysis calls those arguments dead and replaces the caller's operands
+  // with ub.poison -- including the M that the launch needs to size the grid.
+  // Once the masks read M, the arguments become live and this can come back.
   auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
     pm.nest<func::FuncOp>().addPass(std::move(pass));
-    pm.addPass(createRemoveDeadValuesPass());
   };
   auto addWithCSE = [&pm](std::unique_ptr<Pass> pass) {
     pm.nest<func::FuncOp>().addPass(std::move(pass));

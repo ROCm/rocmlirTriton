@@ -143,6 +143,48 @@ DictionaryAttr makeDynGridSizeAttr(Builder &b, DynGridSize gridSize);
 /// `attr` is not one.
 std::optional<DynGridSize> getDynGridSize(Attribute attr);
 
+/// How a caller obtains one gemm dimension. A static dimension is a literal; a
+/// dynamic one is recovered by dividing the element count of the buffer the
+/// gemm operand is a view of by the product of the operand's other extents.
+struct ExtentRecipe {
+  /// Set unless the dimension is dynamic.
+  int64_t staticSize = ShapedType::kDynamic;
+  /// Kernel argument the gemm operand is a view of.
+  unsigned bufferArgIndex = 0;
+  /// Product of the operand's remaining, static, extents.
+  int64_t divisor = 1;
+};
+
+/// Collect a recipe for each of G, M, N and K of the single gemm in `funcOp`,
+/// in `RuntimeGemmDim` order. Emits a diagnostic and fails if the kernel does
+/// not hold exactly one gemm, or if an unknown extent cannot be recovered from
+/// the element count of a kernel argument.
+FailureOr<SmallVector<ExtentRecipe>>
+buildGemmExtentRecipes(func::FuncOp funcOp);
+
+/// How large one kernel argument must be once a gemm dimension that is only
+/// known at run time has been given a value: `dimValue * factor` elements.
+struct DynamicArgExtent {
+  /// Argument whose type carries the unknown extent.
+  unsigned argIndex;
+  /// Gemm dimension the unknown extent comes from.
+  RuntimeGemmDim dim;
+  /// Product of the other extents of the gemm view of this argument.
+  int64_t factor;
+};
+
+/// Describe every argument of `funcOp` whose type has an extent that is only
+/// known at run time.
+///
+/// This reads the gemm the opposite way round from `buildGemmExtentRecipes`:
+/// that one answers "which argument do I measure to recover M", while this one
+/// answers "how big must this argument be once M is chosen", which is what a
+/// test harness needs before it can allocate. Fails if such an argument is not
+/// an element-count-preserving view of a gemm operand or of the gemm result,
+/// because guessing a size there would silently compute the wrong thing.
+FailureOr<SmallVector<DynamicArgExtent>>
+getDynamicArgExtents(func::FuncOp funcOp);
+
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
 // Check that `newStoreMethod` is compatible with the store's current method,

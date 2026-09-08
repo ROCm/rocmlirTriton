@@ -53,18 +53,6 @@ using namespace mlir::rock;
 
 namespace {
 
-/// How a caller obtains one gemm dimension. A static dimension is a literal; a
-/// dynamic one is recovered by dividing the element count of the buffer the
-/// gemm operand is a view of by the product of the operand's other extents.
-struct ExtentRecipe {
-  /// Set unless the dimension is dynamic.
-  int64_t staticSize = ShapedType::kDynamic;
-  /// Kernel argument the gemm operand is a view of.
-  unsigned bufferArgIndex = 0;
-  /// Product of the operand's remaining, static, extents.
-  int64_t divisor = 1;
-};
-
 struct RockAddDynamicDimArgsPass
     : public rock::impl::RockAddDynamicDimArgsPassBase<
           RockAddDynamicDimArgsPass> {
@@ -72,111 +60,6 @@ struct RockAddDynamicDimArgsPass
 };
 
 } // end anonymous namespace
-
-/// Whether `transforms` only reshuffles coordinates, so that the view and the
-/// buffer underneath it hold the same number of elements. That equality is what
-/// lets a dynamic extent be recovered from the buffer's element count.
-static bool preservesElementCount(ArrayRef<TransformMapAttr> transforms) {
-  for (TransformMapAttr map : transforms) {
-    ArrayRef<int64_t> upperBounds = map.getUpperBounds().asArrayRef();
-    for (TransformAttr transform : map.getOps()) {
-      switch (transform.getType()) {
-      case TransformType::PassThrough:
-      case TransformType::Unmerge:
-      case TransformType::Merge:
-        break;
-      case TransformType::AddDim:
-        // A unit dimension mapped to nothing leaves the count alone; a wider
-        // one repeats the data underneath it.
-        for (uint32_t upperDim : transform.getUpperDims())
-          if (upperBounds[upperDim] != 1)
-            return false;
-        break;
-      case TransformType::Pad:
-      case TransformType::Slice:
-      case TransformType::Embed:
-      case TransformType::Broadcast:
-      case TransformType::ConstDim:
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-/// Work out how a caller can obtain dimension `dimIndex` of gemm operand
-/// `operand`.
-static FailureOr<ExtentRecipe> buildExtentRecipe(Operation *gemmOp,
-                                                 StringRef dimName,
-                                                 Value operand,
-                                                 unsigned dimIndex) {
-  ArrayRef<int64_t> shape = cast<ShapedType>(operand.getType()).getShape();
-  if (!ShapedType::isDynamic(shape[dimIndex]))
-    return ExtentRecipe{shape[dimIndex], 0, 1};
-
-  // With two unknowns in one view, the buffer's element count is one equation
-  // short of pinning either of them down.
-  if (llvm::count_if(
-          shape, [](int64_t dim) { return ShapedType::isDynamic(dim); }) != 1)
-    return gemmOp->emitOpError()
-           << "cannot recover the runtime value of dimension " << dimName
-           << " because more than one extent of that operand is dynamic";
-
-  int64_t divisor = 1;
-  for (auto [index, dim] : llvm::enumerate(shape))
-    if (index != dimIndex)
-      divisor *= dim;
-
-  SmallVector<TransformMapAttr> transforms;
-  auto [root, unused] = untransform(operand, transforms);
-  if (!preservesElementCount(transforms))
-    return gemmOp->emitOpError()
-           << "cannot recover the runtime value of dimension " << dimName
-           << " because the operand is not an element-count-preserving view of "
-              "a kernel argument";
-
-  auto blockArg = dyn_cast<BlockArgument>(root);
-  if (!blockArg)
-    return gemmOp->emitOpError()
-           << "cannot recover the runtime value of dimension " << dimName
-           << " because the operand does not trace back to a kernel argument";
-
-  return ExtentRecipe{ShapedType::kDynamic, blockArg.getArgNumber(), divisor};
-}
-
-/// Collect a recipe for each of G, M, N and K of the single gemm in `funcOp`.
-static FailureOr<SmallVector<ExtentRecipe>>
-buildGemmExtentRecipes(func::FuncOp funcOp) {
-  SmallVector<GemmOp> gemmOps;
-  funcOp.walk([&](GemmOp gemmOp) { gemmOps.push_back(gemmOp); });
-
-  if (gemmOps.size() != 1)
-    return funcOp.emitOpError()
-           << "dynamic shapes are only supported for kernels with exactly one "
-              "rock.gemm, found "
-           << gemmOps.size()
-           << "; the appended G, M, N, K arguments would be ambiguous";
-
-  GemmOp gemmOp = gemmOps.front();
-  Value a = gemmOp.getA(), b = gemmOp.getB();
-
-  // A is G x M x K and B is G x K x N once the gemm has been normalized, in
-  // RuntimeGemmDim order.
-  const std::pair<Value, unsigned> sources[kNumRuntimeGemmDims] = {
-      {a, 0}, {a, 1}, {b, 2}, {a, 2}};
-
-  SmallVector<ExtentRecipe> recipes;
-  for (auto [index, source] : llvm::enumerate(sources)) {
-    StringRef dimName =
-        getRuntimeGemmDimName(static_cast<RuntimeGemmDim>(index));
-    FailureOr<ExtentRecipe> recipe =
-        buildExtentRecipe(gemmOp, dimName, source.first, source.second);
-    if (failed(recipe))
-      return failure();
-    recipes.push_back(*recipe);
-  }
-  return recipes;
-}
 
 /// Emit the number of elements of `buffer` at the builder's insertion point.
 static Value emitNumElements(OpBuilder &builder, Location loc, Value buffer) {

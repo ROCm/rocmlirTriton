@@ -941,6 +941,134 @@ struct KernelIF {
   }
 };
 
+/// Product of every extent of `shape` other than `skipped`.
+static int64_t productOfOtherDims(ArrayRef<int64_t> shape, unsigned skipped) {
+  int64_t product = 1;
+  for (auto [index, dim] : llvm::enumerate(shape))
+    if (index != skipped)
+      product *= dim;
+  return product;
+}
+
+/// Replace the unknown extents in the captured parameter types of `ifs` with
+/// concrete ones taken from `-m`.
+///
+/// A kernel compiled for a dynamic M keeps its dynamic signature; it is only
+/// the harness that has to commit to one size in order to allocate, fill and
+/// verify buffers. Making that substitution here means every part of the
+/// harness downstream keeps working on static shapes, and only the calls into
+/// the kernel have to cast the sizes away again.
+static LogicalResult materializeDynamicParams(MutableArrayRef<KernelIF> ifs) {
+  auto isDynamic = [](Type type) {
+    auto shapedType = dyn_cast<ShapedType>(type);
+    return shapedType && !shapedType.hasStaticShape();
+  };
+
+  for (KernelIF &kernelIF : ifs) {
+    if (llvm::none_of(kernelIF.params, isDynamic))
+      continue;
+
+    if (gemmM <= 0)
+      return kernelIF.func.emitOpError()
+             << "M dimension is dynamic, so -m is "
+                "required to specify the runtime value of M";
+
+    FailureOr<SmallVector<rock::DynamicArgExtent>> extents =
+        rock::getDynamicArgExtents(kernelIF.func);
+    if (failed(extents))
+      return failure();
+
+    for (const rock::DynamicArgExtent &extent : *extents) {
+      if (extent.dim != rock::RuntimeGemmDim::M)
+        return kernelIF.func.emitOpError()
+               << "argument " << extent.argIndex << " is dynamic along "
+               << rock::getRuntimeGemmDimName(extent.dim)
+               << ", but only M can be given a value on the command line";
+
+      auto shapedType = cast<ShapedType>(kernelIF.params[extent.argIndex]);
+      ArrayRef<int64_t> shape = shapedType.getShape();
+      auto dynamicDim = static_cast<unsigned>(std::distance(
+          shape.begin(), llvm::find_if(shape, ShapedType::isDynamic)));
+
+      // The gemm view of this argument holds `M * factor` elements, which the
+      // argument's own remaining extents divide up.
+      int64_t elements = gemmM * extent.factor;
+      int64_t otherDims = productOfOtherDims(shape, dynamicDim);
+      if (elements % otherDims != 0)
+        return kernelIF.func.emitOpError()
+               << "argument " << extent.argIndex << " cannot hold " << elements
+               << " elements with an integral extent, so -m " << gemmM
+               << " does not describe a valid buffer";
+
+      SmallVector<int64_t> staticShape(shape);
+      staticShape[dynamicDim] = elements / otherDims;
+      kernelIF.params[extent.argIndex] =
+          shapedType.cloneWith(staticShape, shapedType.getElementType());
+    }
+  }
+  return success();
+}
+
+/// Present the concrete buffer `memrefArg` to a callee that declares `expected`
+/// for it, as a tensor.
+///
+/// Where the callee leaves an extent unknown the shapes have to be reconciled
+/// on the memref, before it becomes a tensor. A `tensor.cast` here would work
+/// on paper, but it stops `bufferization.to_buffer` from folding back to the
+/// original buffer, so a kernel argument would be rebuilt as a fresh host
+/// allocation and the launch would hand the GPU a host pointer. `memref.cast`
+/// only rewrites the type, leaving the base pointer to be recovered.
+static Value getAsTensorForCallee(OpBuilder &b, Location loc, Value memrefArg,
+                                  Type expected, bool isWritable) {
+  auto expectedType = dyn_cast<RankedTensorType>(expected);
+  auto memrefType = dyn_cast<MemRefType>(memrefArg.getType());
+  if (expectedType && memrefType && !expectedType.hasStaticShape() &&
+      expectedType.getElementType() == memrefType.getElementType())
+    memrefArg = memref::CastOp::create(
+        b, loc,
+        MemRefType::get(expectedType.getShape(), memrefType.getElementType()),
+        memrefArg);
+  return rock::getAsTensor(b, loc, memrefArg, isWritable);
+}
+
+/// Convert every buffer in `memrefArgs` to the tensor type `callee` declares
+/// for it.
+static void getAsTensorsForCallee(OpBuilder &b, Location loc,
+                                  func::FuncOp callee, ValueRange memrefArgs,
+                                  bool isWritable,
+                                  SmallVectorImpl<Value> &tensorArgs) {
+  ArrayRef<Type> calleeTypes = callee.getArgumentTypes();
+  for (auto [index, memrefArg] : llvm::enumerate(memrefArgs)) {
+    Type expected = index < calleeTypes.size() ? calleeTypes[index] : Type();
+    tensorArgs.push_back(
+        getAsTensorForCallee(b, loc, memrefArg, expected, isWritable));
+  }
+}
+
+/// Bufferize `result` as a buffer of type `bufferType`, which the harness
+/// allocated with a concrete shape while the callee's result type may leave an
+/// extent unknown. As above, the shapes are reconciled on the memref so that
+/// the bufferization of `result` can still fold.
+static Value bufferizeResultAs(OpBuilder &b, Location loc, Value result,
+                               MemRefType bufferType) {
+  auto resultType = cast<RankedTensorType>(result.getType());
+  auto resultBufferType =
+      MemRefType::get(resultType.getShape(), resultType.getElementType());
+  Value resultBuffer =
+      bufferization::ToBufferOp::create(b, loc, resultBufferType, result);
+  if (resultBufferType == bufferType)
+    return resultBuffer;
+  return memref::CastOp::create(b, loc, bufferType, resultBuffer).getResult();
+}
+
+/// Copy `result` into the buffer the harness allocated to receive it.
+static void copyResultIntoBuffer(OpBuilder &b, Location loc, Value result,
+                                 Value buffer) {
+  auto bufferType = cast<MemRefType>(buffer.getType());
+  memref::CopyOp::create(b, loc, bufferizeResultAs(b, loc, result, bufferType),
+                         buffer);
+}
+
 // This helper struct defines the argument ordering for
 // quantized attention operator.
 struct AttentionQuantizedArgIndex {
@@ -1557,9 +1685,8 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
       if (expectsTensors) {
         SmallVector<Value, 4> tensorArgs;
-        for (Value memrefArg : gpuMem) {
-          tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, true));
-        }
+        getAsTensorsForCallee(b, loc, kernel.func, gpuMem, /*isWritable=*/true,
+                              tensorArgs);
 
         auto callOp = func::CallOp::create(b, loc, kernel.func, tensorArgs);
 
@@ -1569,10 +1696,7 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
         // argument.
         for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
           int32_t outIdx = outIndices[resultIdx];
-          auto outMemrefType = cast<MemRefType>(gpuMem[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-          memref::CopyOp::create(b, loc, resultMemref, gpuMem[outIdx]);
+          copyResultIntoBuffer(b, loc, result, gpuMem[outIdx]);
         }
       } else {
         // Legacy memref-based kernel - call directly
@@ -5704,19 +5828,16 @@ static void callCpuHostWithMemrefs(OpBuilder &b, Location loc,
                                    ArrayRef<int32_t> outIndices) {
   size_t numCpuHostArgs = cpuHostFunc.getNumArguments();
   SmallVector<Value, 8> tensorArgs;
-  for (size_t i = 0; i < numCpuHostArgs; ++i) {
-    tensorArgs.push_back(rock::getAsTensor(b, loc, valVars[i], false));
-  }
+  getAsTensorsForCallee(b, loc, cpuHostFunc,
+                        ValueRange(valVars).take_front(numCpuHostArgs),
+                        /*isWritable=*/false, tensorArgs);
 
   auto callOp = func::CallOp::create(b, loc, cpuHostFunc, tensorArgs);
 
   for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
     if (resultIdx < outIndices.size()) {
       int32_t outIdx = outIndices[resultIdx];
-      auto outMemrefType = cast<MemRefType>(valVars[outIdx].getType());
-      Value resultMemref =
-          bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-      memref::CopyOp::create(b, loc, resultMemref, valVars[outIdx]);
+      copyResultIntoBuffer(b, loc, result, valVars[outIdx]);
     }
   }
 }
@@ -6162,9 +6283,12 @@ static LogicalResult populateHostHarnessLogic(
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
       SmallVector<Value, 8> tensorArgs;
+      ArrayRef<Type> calleeTypes = callee.getArgumentTypes();
       for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
         bool isWritable = llvm::is_contained(outputIndices, idx);
-        tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
+        Type expected = idx < calleeTypes.size() ? calleeTypes[idx] : Type();
+        tensorArgs.push_back(
+            getAsTensorForCallee(b, loc, memrefArg, expected, isWritable));
       }
 
       // Call the function with tensor arguments
@@ -6176,9 +6300,7 @@ static LogicalResult populateHostHarnessLogic(
           int32_t outIdx = outputIndices[resultIdx];
           // Convert result tensor to memref
           auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
-          Value resultMemref =
-              bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-          memrefArgs[outIdx] = resultMemref;
+          memrefArgs[outIdx] = bufferizeResultAs(b, loc, result, outMemrefType);
         }
       }
     } else if (willBeWrapped) {
@@ -6791,6 +6913,14 @@ int main(int argc, char **argv) {
 
   // populate host logic.
   if (genHostHarness.getValue()) {
+    // Replace any dynamic shape with the static sizes passed via command line (i.e., with -m)
+    // that the harness below only ever sees static shapes to allocate, fill
+    // and verify.
+    if (failed(materializeDynamicParams(kernels)) ||
+        failed(materializeDynamicParams(rootIFs))) {
+      llvm::errs() << "Could not size the buffers for a dynamic kernel.\n";
+      exit(1);
+    }
     if (failed(
             populateHostHarnessLogic(*module, kernels, rootIFs, genParams))) {
       llvm::errs() << "Host logic populated failed.\n";

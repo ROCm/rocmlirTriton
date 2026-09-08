@@ -386,11 +386,22 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
       SmallVector<Operation *> redundantOpsToErase;
       for (Value result : callOp.getResults()) {
         for (Operation *user : result.getUsers()) {
-          if (isa<bufferization::ToBufferOp>(user)) {
-            redundantOpsToErase.push_back(user);
-            for (Operation *copyUser : user->getResult(0).getUsers())
-              if (isa<memref::CopyOp>(copyUser))
-                redundantOpsToErase.push_back(copyUser);
+          if (!isa<bufferization::ToBufferOp>(user))
+            continue;
+          redundantOpsToErase.push_back(user);
+          // A caller that allocated a concrete buffer for a kernel whose
+          // result type leaves an extent unknown reconciles the two with a
+          // memref.cast, so the copy need not use the to_buffer directly.
+          SmallVector<Operation *> worklist =
+              llvm::to_vector(user->getResult(0).getUsers());
+          while (!worklist.empty()) {
+            Operation *op = worklist.pop_back_val();
+            if (isa<memref::CopyOp>(op)) {
+              redundantOpsToErase.push_back(op);
+            } else if (isa<memref::CastOp>(op)) {
+              redundantOpsToErase.push_back(op);
+              llvm::append_range(worklist, op->getResult(0).getUsers());
+            }
           }
         }
       }

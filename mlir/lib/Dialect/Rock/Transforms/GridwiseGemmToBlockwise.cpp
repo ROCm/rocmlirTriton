@@ -118,7 +118,8 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
                              int64_t mBlocks, int64_t nBlocks, bool aReloads,
                              bool bReloads) {
   // A dynamic M makes both the memory footprint and the m block count
-  // unknown, so we cannot infer the cache pressure, return the default cache behaviour.
+  // unknown, so we cannot infer the cache pressure, return the default cache
+  // behaviour.
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(mBlocks))
     return {rock::CacheModifier::NONE, rock::CacheModifier::NONE};
 
