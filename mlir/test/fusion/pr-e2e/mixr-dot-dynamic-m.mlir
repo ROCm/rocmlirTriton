@@ -4,6 +4,9 @@
 // and the launch derives its grid from that. `-m` picks the M this run
 // allocates and verifies against. It has to be a multiple of the tile height,
 // because the kernel does not yet mask the tail of the M axis.
+// 
+// NOTE: Currently limited to M % mPerBlock == 0, otherwise it will give
+// wrong results. We need to work on masking if we want to support other values.
 
 // CHECK: [1 1 1]
 module {
