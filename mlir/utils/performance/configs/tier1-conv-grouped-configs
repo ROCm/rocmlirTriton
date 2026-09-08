@@ -1,5 +1,0 @@
-convfp16 -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 2560 -H 12 -W 12 -k 2560 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 2 -perf_priority 1
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 4 -H 3 -W 3 -k 4096 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 2 -perf_priority 2
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 4 -H 3 -W 3 -k 1024 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 2 -perf_priority 2
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 4 -H 3 -W 3 -k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 2 -perf_priority 2
-conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 4 -H 3 -W 3 -k 128 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -g 2 -perf_priority 2
