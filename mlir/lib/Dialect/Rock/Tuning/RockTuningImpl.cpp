@@ -162,11 +162,16 @@ static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
 // the validity mask dependent on the K loop's induction variable. A carry into
 // the channel dim is just a uniform address step.
 //
-// So the factor exists only for a channels-first input (Merge(c, y, x)), where
-// pinning the spatial dims takes a multiple of Y*X. Any other order puts a
-// spatial dim outermost -- channels-last Merge(y, x, c), interleaved
-// Merge(y, c, x) -- and then a spatial dim moves on every step whatever the
-// tile size, so no alignment can buy anything.
+// So the factor is the product of the merged dims below the channel one: a tile
+// that is a multiple of it advances the channel and leaves those dims where
+// they are. Channels-first Merge(c, y, x) has the whole filter window below, so
+// it pins every spatial dim. Interleaved Merge(y, c, x) has X, which pins x and
+// moves y only on the steps where c wraps. Channels-last Merge(y, x, c) has
+// nothing below, and no tile size stops x moving on every step.
+//
+// One channel is the exception: it carries on every step, so the merge is the
+// filter window however the layout orders it, and the factor is that window.
+// Depthwise convs are that case.
 static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
   // Only forward convs supported for now.
   if (gemmOp.getKernelType() != KernelType::Conv)
@@ -178,16 +183,16 @@ static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
     return 1;
 
   ConvolutionDims convDims = ConvolutionDims::fromOp(op);
-  // Walking the input layout in order collects the gemmK-merged dims in the
-  // same order the merge lists them in, so the first entry is the merge's
-  // outermost dim.
-  SmallVector<int64_t> mergedExtents;
-  bool channelIsOutermost = false;
+  // Walking the input layout in order meets the merged dims in the merge's own
+  // order, outermost first.
+  size_t mergedDims = 0;
+  bool seenChannel = false;
+  int64_t belowChannel = 1;
   for (Attribute nameAttr : inputLayout) {
     StringRef name = cast<StringAttr>(nameAttr).getValue();
     if (name == "ci") {
-      channelIsOutermost = mergedExtents.empty();
-      mergedExtents.push_back(convDims.c);
+      seenChannel = true;
+      ++mergedDims;
       continue;
     }
     for (auto [i, filLen] : llvm::enumerate(convDims.fil)) {
@@ -195,25 +200,26 @@ static int64_t kPerBlockAlignmentFactor(RockGemmWrapperInterface gemmOp) {
       (Twine(i) + "i").toVector(spatial);
       // "hi"/"wi" are the legacy spellings of "0i"/"1i".
       bool isLegacy = (i == 0 && name == "hi") || (i == 1 && name == "wi");
-      if (name == spatial || isLegacy)
-        mergedExtents.push_back(filLen);
+      if (name != spatial && !isLegacy)
+        continue;
+      ++mergedDims;
+      if (seenChannel)
+        belowChannel *= filLen;
     }
   }
-  if (mergedExtents.size() != convDims.fil.size() + 1)
+  if (mergedDims != convDims.fil.size() + 1)
     return 1;
 
-  // The spatial dims have to be the fastest changing ones, i.e. the channel dim
-  // has to be the merge's outermost. Otherwise a spatial dim sits above another
-  // merged dim and moves as soon as that one wraps.
-  if (!channelIsOutermost)
-    return 1;
+  // A channel dim of one carries on every step, so the merge is the filter
+  // window wherever the layout puts that dim (the depthwise case).
+  if (convDims.c == 1) {
+    int64_t window = 1;
+    for (int64_t filLen : convDims.fil)
+      window *= filLen;
+    return window > 0 ? window : 1;
+  }
 
-  // Only the outermost dim advances without a carry, so the tile has to be a
-  // multiple of everything below it.
-  int64_t trailing = 1;
-  for (int64_t len : llvm::drop_begin(mergedExtents))
-    trailing *= len;
-  return trailing > 0 ? trailing : 1;
+  return belowChannel > 0 ? belowChannel : 1;
 }
 
 // Triton caps every tensor at 2^20 elements and enforces it via
