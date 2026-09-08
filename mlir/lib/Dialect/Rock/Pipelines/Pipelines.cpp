@@ -417,6 +417,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
    *   --rock-regularize-inter-gemm-fusion
    *   --rock-conv-to-gemm
    *   --rock-fusion-splitk-regularization
+   *   --rock-add-dynamic-dim-args
    *   --rock-gemm-to-gridwise
    *   --rock-attn-to-gridwise
    *   --rock-gridwise-attn-to-blockwise
@@ -452,6 +453,11 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
+
+  // Add the function arguments for the dynamic dimensions. 
+  // A no-op on static shape kernels.
+  pm.addPass(rock::createRockAddDynamicDimArgsPass());
+
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());
 

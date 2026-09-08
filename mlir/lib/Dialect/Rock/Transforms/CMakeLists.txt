@@ -1,4 +1,5 @@
 add_rocmlir_dialect_library(MLIRRockTransforms
+  AddDynamicDimArgs.cpp
   AddTritonMetadata.cpp
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp

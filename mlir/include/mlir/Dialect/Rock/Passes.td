@@ -52,6 +52,23 @@ def RockGemmToGridwisePass
                            "arith::ArithDialect"];
 }
 
+def RockAddDynamicDimArgsPass
+    : Pass<"rock-add-dynamic-dim-args", "::mlir::ModuleOp"> {
+  let summary = "Append scalar arguments carrying the runtime gemm dimensions "
+                "of a kernel with a dynamic shape";
+  let description = [{
+    A kernel with a dynamic shape needs its unknown dims as runtime values,
+    because the grid size, the block id to tile mapping and the out-of-bounds
+    masks are all derived from them.
+
+    Must run before `rock-gemm-to-gridwise`, the first pass that needs the
+    extents, and before `rock-serialize-host-funcs`, which freezes the host
+    call.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
+                           "arith::ArithDialect", "tensor::TensorDialect"];
+}
+
 def RockAttnToGridwisePass
     : Pass<"rock-attn-to-gridwise", "::mlir::func::FuncOp"> {
   let summary =
