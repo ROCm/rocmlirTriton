@@ -394,9 +394,8 @@ TEST(LookupTest, Gfx1100GemmAndConvServeGfx1101Lists) {
       auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType);
       auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType);
       EXPECT_FALSE(navi31.empty());
-      EXPECT_TRUE(navi31 == navi32)
-          << "for " << stringifyEnum(kernel).lower() << " at "
-          << getDataTypeString(dataType);
+      EXPECT_TRUE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
+                                    << " at " << getDataTypeString(dataType);
     }
   }
 
