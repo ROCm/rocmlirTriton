@@ -40,6 +40,19 @@ func.func @dot_dynamic_batches_differ(%arg0: !migraphx.shaped<?x4x32x32xf32, 409
 
 // -----
 
+// The reshape to 3-D puts the batch and M side by side, and TOSA infers at most
+// one dynamic shape per reshape, so an operand cannot have both dynamic.
+func.func @dot_two_dynamic_dims(%arg0: !migraphx.shaped<?x?x72xf32, 2304x72x1>,
+                                %arg1: !migraphx.shaped<?x72x64xf32, 4608x64x1>)
+    -> !migraphx.shaped<?x?x64xf32, 2048x64x1> {
+  // expected-error @+2 {{a dot operand cannot have two dynamic dimensions}}
+  // expected-error @+1 {{failed to legalize operation 'migraphx.dot' that was explicitly marked illegal}}
+  %0 = migraphx.dot %arg0, %arg1 : <?x?x72xf32, 2304x72x1>, <?x72x64xf32, 4608x64x1> -> <?x?x64xf32, 2048x64x1>
+  return %0 : !migraphx.shaped<?x?x64xf32, 2048x64x1>
+}
+
+// -----
+
 // The channel dimension is not the slowest-moving one, so reject it.
 func.func @conv_dynamic_channel(%arg0: !migraphx.shaped<2x?x5x5xf32, 75x25x5x1>,
                                 %arg1: !migraphx.shaped<64x3x2x2xf32, 12x4x2x1>)

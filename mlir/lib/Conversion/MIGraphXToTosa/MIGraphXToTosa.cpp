@@ -498,15 +498,9 @@ static int64_t productOfDims(ArrayRef<int64_t> dims) {
 /// Returns failure if the batch dimensions can't be handled, which today means
 /// a batched B that A's batch does not match, since only B may be broadcast.
 /// Every extent except M must already be known to be static.
-///
-/// Two batches match when their flattened sizes are equal, or, once an unknown
-/// extent is involved, when the batch dimensions are identical position by
-/// position. Comparing the flattened sizes alone would not do: they are both
-/// ShapedType::kDynamic as soon as either side has an unknown extent, so
-/// [?, 4] and [?, 2] would compare equal even though they never can be.
 static FailureOr<BatchFlattenInfo>
-computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
-                        ArrayRef<int64_t> outShape) {
+computeBatchFlattenInfo(Operation *op, ArrayRef<int64_t> shapeA,
+                        ArrayRef<int64_t> shapeB, ArrayRef<int64_t> outShape) {
   BatchFlattenInfo info;
   size_t rankA = shapeA.size();
   size_t rankB = shapeB.size();
@@ -526,9 +520,13 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
   info.kDim = shapeA[rankA - 1];
   info.nDim = shapeB[rankB - 1];
 
-  assert(!(ShapedType::isDynamic(info.batchSizeA) &&
-           ShapedType::isDynamic(info.mDim)) &&
-         "a dot operand cannot have two unknown extents");
+  // The reshapes below put the batch and M next to each other, and TOSA can
+  // infer only one extent per reshape.
+  if (ShapedType::isDynamic(info.batchSizeA) &&
+      ShapedType::isDynamic(info.mDim)) {
+    op->emitError("a dot operand cannot have two dynamic dimensions");
+    return failure();
+  }
 
   info.newBatch = info.batchSizeA;
   info.newM = info.mDim;
@@ -546,6 +544,7 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
       info.newBatch = 1;
       info.newM = productOfDims({info.batchSizeA, info.mDim});
     } else {
+      op->emitError("tosa.matmul can't broadcast input.");
       return failure();
     }
   }
@@ -674,10 +673,10 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
     return op->emitError("the K and N dimensions of a dot must be static");
 
   // Compute batch flattening info (done once for both scaled and regular)
-  auto batchInfoResult = computeBatchFlattenInfo(shapeA, shapeB, origOutDims);
-  if (failed(batchInfoResult)) {
-    return op->emitError("tosa.matmul can't broadcast input.");
-  }
+  auto batchInfoResult =
+      computeBatchFlattenInfo(op, shapeA, shapeB, origOutDims);
+  if (failed(batchInfoResult))
+    return failure();
   BatchFlattenInfo batchInfo = *batchInfoResult;
 
   // Compute 3D output shape
