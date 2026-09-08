@@ -2576,5 +2576,132 @@ class TestOpenAiBackend(unittest.TestCase):
         self.assertNotIn("inputTokens", session["lastTransportTiming"])
 
 
+class TestCursorRound(unittest.TestCase):
+    """What a cursor round keeps besides the reply.
+
+    An agent streams its thinking and its answer as two kinds of message on
+    one stream, both in deltas. Reading only the answer -- which is what
+    `iter_text` does -- loses the thinking entirely, and with it the only
+    account of why a config was proposed.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {transport.KEY_VARIABLE: "a-key"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def messages(self, *, thinking=(), reply="{}", duration=None):
+        """A round's stream: thinking deltas, then the reply in deltas.
+
+        Shaped like a measured one, where 268 thinking messages held 2660
+        characters between them and the last carried the duration and no text.
+        """
+        stream = [
+            SimpleNamespace(type="thinking", text=piece, thinking_duration_ms=None)
+            for piece in thinking
+        ]
+        if duration is not None:
+            stream.append(SimpleNamespace(type="thinking", text="", thinking_duration_ms=duration))
+        stream.append(SimpleNamespace(type="status"))
+        stream.append(
+            SimpleNamespace(
+                type="assistant",
+                message=SimpleNamespace(content=[SimpleNamespace(text=piece) for piece in reply])))
+        return stream
+
+    class Manager:
+        """Stands in for what `Agent.create` hands back: a context manager."""
+
+        def __init__(self, agent):
+            self.agent = agent
+
+        def __enter__(self):
+            return self.agent
+
+        def __exit__(self, *_arguments):
+            return False
+
+    def sdk(self, stream, *, usage=None):
+        """The handful of cursor-sdk names a round is run through."""
+        run = SimpleNamespace(id="run-1",
+                              stream=lambda: iter(stream),
+                              wait=lambda: SimpleNamespace(status="completed", id="run-1"),
+                              text=lambda: "",
+                              usage=usage)
+        agent = SimpleNamespace(agent_id="agent-1", send=lambda _text: run)
+        manager = self.Manager(agent)
+        return SimpleNamespace(AgentOptions=TestAgentOptions.Options,
+                               LocalAgentOptions=TestAgentOptions.Local,
+                               ModelSelection=TestAgentOptions.Selection,
+                               ModelParameterValue=TestAgentOptions.Parameter,
+                               CursorAgentError=type("CursorAgentError", (Exception,), {}),
+                               Agent=SimpleNamespace(create=lambda _options: manager,
+                                                     resume=lambda _id, _options: manager))
+
+    def ask(self, module, session=None):
+        session = {} if session is None else session
+        turn = transport.Turn(prompt="round prompt",
+                              system_prompt="standing instructions",
+                              model="claude-haiku-4-5:thinking=true",
+                              session=session,
+                              space={},
+                              default_config={},
+                              configs_requested=15)
+        with mock.patch.dict(sys.modules, {"cursor_sdk": module}):
+            return cursor_backend.CursorBackend().reply(turn), session
+
+    def test_keeps_the_thinking_the_reply_does_not_carry(self):
+        module = self.sdk(self.messages(thinking=("the odd filter ", "wants a small tile")))
+        _, session = self.ask(module)
+        self.assertEqual(session["lastReasoning"], "the odd filter wants a small tile")
+
+    def test_puts_the_thinking_back_together_without_cutting_words(self):
+        # The deltas are fragments of running prose, not thoughts of their
+        # own: a separator between them lands mid-word.
+        module = self.sdk(self.messages(thinking=("split", "K", " of 4")))
+        _, session = self.ask(module)
+        self.assertEqual(session["lastReasoning"], "splitK of 4")
+
+    def test_reads_the_reply_off_the_same_stream_as_the_thinking(self):
+        module = self.sdk(self.messages(thinking=("thought",), reply=("{\"a\"", ": 1}")))
+        reply, _ = self.ask(module)
+        self.assertEqual(reply, "{\"a\": 1}")
+
+    def test_says_nothing_of_thinking_a_model_does_not_show(self):
+        module = self.sdk(self.messages())
+        _, session = self.ask(module)
+        self.assertEqual(session["lastReasoning"], "")
+        self.assertNotIn("thinkingMs", session["lastTransportTiming"])
+
+    def test_takes_the_thinking_time_the_service_measured(self):
+        # Rather than this end's guess at it, which would fold in the queueing
+        # ahead of the first delta.
+        module = self.sdk(self.messages(thinking=("thought",), duration=11560))
+        _, session = self.ask(module)
+        self.assertEqual(session["lastTransportTiming"]["thinkingMs"], 11560)
+
+    def test_counts_the_tokens_a_round_spent(self):
+        usage = SimpleNamespace(input_tokens=1869, output_tokens=1285, reasoning_tokens=640)
+        module = self.sdk(self.messages(), usage=usage)
+        _, session = self.ask(module)
+        timing = session["lastTransportTiming"]
+        self.assertEqual(timing["inputTokens"], 1869)
+        self.assertEqual(timing["outputTokens"], 1285)
+        self.assertEqual(timing["reasoningTokens"], 640)
+
+    def test_says_nothing_of_tokens_a_run_does_not_report(self):
+        module = self.sdk(self.messages())
+        _, session = self.ask(module)
+        self.assertNotIn("inputTokens", session["lastTransportTiming"])
+
+    def test_leaves_out_a_reasoning_count_the_model_does_not_keep(self):
+        # Absent on a model that does not think, and distinct from zero on one
+        # that does and happened not to.
+        usage = SimpleNamespace(input_tokens=10, output_tokens=20, reasoning_tokens=None)
+        module = self.sdk(self.messages(), usage=usage)
+        _, session = self.ask(module)
+        self.assertNotIn("reasoningTokens", session["lastTransportTiming"])
+
+
 if __name__ == "__main__":
     unittest.main()
