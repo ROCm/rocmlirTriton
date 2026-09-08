@@ -72,7 +72,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/Process.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
@@ -6665,13 +6664,10 @@ int main(int argc, char **argv) {
     outputDataType = canonicaliseF8Type(outputDataType);
   }
 
-  // The lit suite sets ROCMLIR_GEN_NO_NATIVE_CU_QUERY so that generated IR
-  // stays identical everywhere. Without it a test whose --arch matches the
-  // host's GPU picks up that device's count, so the same command produces
-  // different output on different machines, and every invocation initializes
-  // the HIP runtime just to ask one question.
-  if (num_cu.getNumOccurrences() == 0 && !arch.getValue().empty() &&
-      !llvm::sys::Process::GetEnv("ROCMLIR_GEN_NO_NATIVE_CU_QUERY"))
+  // Ask the device for its count unless one was given. The result is only used
+  // when its architecture matches --arch, so compiling for a foreign target
+  // still lands on the per-arch default.
+  if (num_cu.getNumOccurrences() == 0 && !arch.getValue().empty())
     nativeNumCU = rock::getNativeNumCU(arch);
 
   if (isConv(operation))
