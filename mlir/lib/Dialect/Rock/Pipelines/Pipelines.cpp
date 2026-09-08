@@ -454,7 +454,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
 
-  // Add the function arguments for the dynamic dimensions. 
+  // Add the function arguments for the dynamic dimensions.
   // A no-op on static shape kernels.
   pm.addPass(rock::createRockAddDynamicDimArgsPass());
 

@@ -18,6 +18,19 @@
 
 namespace mlir {
 namespace rock {
+
+inline int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
+  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
+    return ShapedType::kDynamic;
+  return lhs * rhs;
+}
+
+inline int64_t dynAwareDiv(int64_t lhs, int64_t rhs) {
+  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
+    return ShapedType::kDynamic;
+  return lhs / rhs;
+}
+
 /// Methods for building up coordinate transformations
 ///
 /// A coordinate transformation is a description of how to map a set of upper

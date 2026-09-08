@@ -458,7 +458,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     if (params.size() != upperDims.size()) {
       return emitError() << "Must supply a size parameter for each dimension";
     }
-    if (params[0] <= 0) {
+    if (params[0] <= 0 && !ShapedType::isDynamic(params[0])) {
       return emitError() << "AddDim size " << params[0] << " must be positive";
     }
     if (!lowerDims.empty()) {
@@ -516,15 +516,6 @@ TransformMapAttr getTransformMapAttrChecked(
     DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds) {
   return TransformMapAttr::getChecked(emitError, context, ops, map, upperBounds,
                                       lowerBounds);
-}
-
-/// A product that stays dynamic once any factor is, so that a bound derived
-/// from an unknown extent is itself unknown rather than a wrapped-around
-/// `kDynamic`.
-static int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
-  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
-    return ShapedType::kDynamic;
-  return lhs * rhs;
 }
 
 /// Whether a consistency check relating `values` can be decided at all. A
@@ -650,7 +641,7 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::AddDim: {
-      if (params[0] != ub[uDims[0]]) {
+      if (!anyDynamic({params[0], ub[uDims[0]]}) && params[0] != ub[uDims[0]]) {
         return emitError() << "AddDim: parameter " << params[0]
                            << " does not match upper bound " << ub[uDims[0]];
       }

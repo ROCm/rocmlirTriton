@@ -140,6 +140,24 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   return {g_block, m_block, n_block};
 }
 
+// TODO: Temporary, for testing purposes only.
+GridCoordinates rock::layout::makeMMajorGridLayout(PatternRewriter &b,
+                                                   Location loc, Value bid,
+                                                   int64_t gBlocks,
+                                                   int64_t nBlocks) {
+  Type i32 = b.getIntegerType(32);
+  Value gnBlocksVal =
+      b.createOrFold<ConstantIntOp>(loc, i32, gBlocks * nBlocks);
+  Value nBlocksVal = b.createOrFold<ConstantIntOp>(loc, i32, nBlocks);
+
+  Value m_block = DivUIOp::create(b, loc, bid, gnBlocksVal);
+  Value gn = RemUIOp::create(b, loc, bid, gnBlocksVal);
+  Value g_block = DivUIOp::create(b, loc, gn, nBlocksVal);
+  Value n_block = RemUIOp::create(b, loc, gn, nBlocksVal);
+
+  return {g_block, m_block, n_block};
+}
+
 AttnGridCoordinates rock::layout::makeGxNGridLayout(
     PatternRewriter &b, Location loc, Value bid, int64_t mBlocks, Value nIter,
     int64_t gridSize, StringRef arch, int64_t numChiplets, Value splitKV) {

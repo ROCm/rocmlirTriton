@@ -117,6 +117,11 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
                              int64_t G, int64_t M, int64_t N, int64_t K,
                              int64_t mBlocks, int64_t nBlocks, bool aReloads,
                              bool bReloads) {
+  // A dynamic M makes both the memory footprint and the m block count
+  // unknown, so we cannot infer the cache pressure, return the default cache behaviour.
+  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(mBlocks))
+    return {rock::CacheModifier::NONE, rock::CacheModifier::NONE};
+
   const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
   auto bytesOf = [](int64_t numElems, Type elemType) -> int64_t {
     return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
@@ -150,18 +155,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
   LogicalResult matchAndRewrite(GridwiseGemmOp op,
                                 PatternRewriter &b) const override {
     Location loc = op.getLoc();
-
-    // The block id is mapped onto a tile below using compile-time tile counts,
-    // and the K loop trip count is a constant, so a dimension that is only
-    // known at run time cannot be lowered yet -- even though
-    // `rock-gemm-to-gridwise` can already describe the launch for a dynamic M.
-    // Bail out before anything that measures the operands, which asserts on a
-    // dynamic extent.
-    if (!op.getA().getType().hasStaticShape() ||
-        !op.getB().getType().hasStaticShape())
-      return op->emitOpError()
-             << "lowering a gemm with a dynamic dimension to blockwise "
-                "operations is not implemented yet";
 
     // Obtain data types of inputs.
     auto elementTypeA = op.getA().getType().getElementType();
@@ -205,16 +198,24 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     int64_t K = aShape[2];
     int64_t N = bShape[2];
 
+    // Only the M extent may be unknown here: G and N fix how many blocks the
+    // grid is grouped into, and K is the trip count of the loop below.
+    if (ShapedType::isDynamic(G) || ShapedType::isDynamic(N) ||
+        ShapedType::isDynamic(K))
+      return op->emitOpError()
+             << "lowering a gemm with a dynamic G, N or K dimension is not "
+                "implemented";
+
     // Obtain critical tuning parameters.
     StringRef arch = rock::getArchValue(op);
     uint32_t blockSize = rock::getBlockSize(op).value().getInt();
-    uint32_t gridSize = rock::getGridSize(op).value().getInt();
+    FailureOr<IntegerAttr> gridSize = rock::getGridSize(op);
     GemmParamsAttr tuningParams = op.getParams();
     int64_t kpack = tuningParams.getKpack();
     int64_t kPerBlock = tuningParams.getKPerBlock();
     int64_t mPerBlock = tuningParams.getMPerBlock();
     int64_t nPerBlock = tuningParams.getNPerBlock();
-    int64_t mBlocks = M / mPerBlock;
+    int64_t mBlocks = dynAwareDiv(M, mPerBlock);
     int64_t nBlocks = N / nPerBlock;
     std::optional<int64_t> quantBlockSize = op.getQuantBlockSize();
     int64_t quantKPerBlock = 0;
@@ -226,7 +227,10 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     if (quantBlockSize.has_value())
       quantKPerBlock = kPerBlock / quantBlockSize.value();
 
-    LLVM_DEBUG(llvm::dbgs() << "gridSize: " << gridSize << "\n"
+    LLVM_DEBUG(llvm::dbgs() << "gridSize: "
+                            << (succeeded(gridSize) ? Twine(gridSize->getInt())
+                                                    : Twine("dynamic"))
+                            << "\n"
                             << "blockSize: " << blockSize << "\n"
                             << "elementTypeALoad: " << elementTypeALoad << "\n"
                             << "elementTypeBLoad: " << elementTypeBLoad << "\n"
@@ -242,12 +246,15 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     // Compute grid coordinates
     int64_t gridGroupSize = tuningParams.getGridGroupSize();
-    auto gridCoords = layout::makeGroupedGridLayout(
-        b, loc, bid,
-        {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeALoad, elemTypeOutStore,
-         gridGroupSize},
-        arch);
+    layout::GridCoordinates gridCoords =
+        ShapedType::isDynamic(mBlocks)
+            ? layout::makeMMajorGridLayout(b, loc, bid, G, nBlocks)
+            : layout::makeGroupedGridLayout(
+                  b, loc, bid,
+                  {G, mBlocks, nBlocks, rock::getNumCUValue(op),
+                   rock::getNumChipletsValue(op), elementTypeALoad,
+                   elemTypeOutStore, gridGroupSize},
+                  arch);
 
     int64_t numWaves = tuningParams.getNumWaves();
     int64_t numCTAs = tuningParams.getNumCTAs();

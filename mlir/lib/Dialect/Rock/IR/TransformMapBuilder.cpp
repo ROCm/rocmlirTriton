@@ -26,15 +26,6 @@
 using namespace mlir;
 using namespace mlir::rock;
 
-/// A product that stays dynamic once any factor is, so that an extent derived
-/// from an unknown one is itself unknown rather than a wrapped-around
-/// `kDynamic`.
-static int64_t dynAwareMul(int64_t lhs, int64_t rhs) {
-  if (ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs))
-    return ShapedType::kDynamic;
-  return lhs * rhs;
-}
-
 AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
                                          ArrayRef<TransformAttr> transforms,
                                          ArrayRef<int64_t> upperBounds,

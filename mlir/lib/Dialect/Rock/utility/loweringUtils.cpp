@@ -322,7 +322,7 @@ FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
   toGlobalIdx.unmerge("k", kLowerIdx, {"k_loop", "k_iter"},
                       {kIters, kPerBlock});
   toGlobalIdx.unmerge(dName, dLowerIdx, {thisBlockDim, dIterName},
-                      {dGlobal / dPerBlock, dPerBlock});
+                      {dynAwareDiv(dGlobal, dPerBlock), dPerBlock});
 
   toGlobalIdx.ignore(otherBlockDim);
   TransformMapAttr toGlobalIdxAttr = toGlobalIdx.get();

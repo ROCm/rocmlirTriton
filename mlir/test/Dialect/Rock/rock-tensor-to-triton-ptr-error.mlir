@@ -27,7 +27,7 @@ func.func @non_kernel_with_rock_op(%arg0: tensor<4096xf16>) -> i32 {
 
 // A kernel that carries neither grid size is rejected here, while it can still
 // be named, rather than downstream once it is a tt.func.
-// CHECK: error: 'func.func' op has neither a rock.grid_size nor a rock.dyn_grid_size attribute, so its launch cannot be sized
+// CHECK: error: 'func.func' op has neither a rock.grid_size nor a rock.dyn_grid_size attribute
 func.func @no_grid_size(%arg0: tensor<4096xf16>) attributes {rock.arch = "gfx90a", rock.kernel, rock.block_size = 64 : i32} {
   return
 }

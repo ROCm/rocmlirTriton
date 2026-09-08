@@ -515,7 +515,7 @@ static LogicalResult commonAttentionGemmElmtGemm(
     lseViews = std::move(lseInfo.outputViews);
     fusionInputMapLse = std::move(lseInfo.fusionInputMap);
   }
-  
+
   for (Value operand : {a, b, c}) {
     if (!cast<ShapedType>(operand.getType()).hasStaticShape())
       return op.emitError("cannot compute a static grid size for an attention "

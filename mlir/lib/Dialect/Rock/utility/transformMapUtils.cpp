@@ -2432,6 +2432,18 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
   return subDimInfo;
 }
 
+static std::pair<bool, int64_t> tensorSizeRank(ShapedType type) {
+  bool anyDynamic = false;
+  int64_t knownElements = 1;
+  for (int64_t extent : type.getShape()) {
+    if (ShapedType::isDynamic(extent))
+      anyDynamic = true;
+    else
+      knownElements *= extent;
+  }
+  return {anyDynamic, knownElements};
+}
+
 static FailureOr<Type>
 getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
                               bool isInput) {
@@ -2451,8 +2463,8 @@ getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
   Value biggestTensor = kernelArgs[0];
   for (auto tensor : kernelArgs) {
     if (auto shapedType = dyn_cast<ShapedType>(tensor.getType())) {
-      if (shapedType.getNumElements() >
-          cast<ShapedType>(biggestTensor.getType()).getNumElements())
+      if (tensorSizeRank(shapedType) >
+          tensorSizeRank(cast<ShapedType>(biggestTensor.getType())))
         biggestTensor = tensor;
     } else {
       LLVM_DEBUG(llvm::dbgs() << funcName
