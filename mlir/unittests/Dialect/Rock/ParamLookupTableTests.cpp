@@ -21,8 +21,8 @@ static constexpr StringLiteral kAttentionArchs[] = {
 
 // Of those, the ones with no gemm+gemm lists of their own, which therefore
 // still borrow attention's at every precision.
-static constexpr StringLiteral kUntunedGemmGemmArchs[] = {
-    "gfx908", "gfx90a", "gfx942", "gfx1151"};
+static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx908", "gfx90a",
+                                                          "gfx942", "gfx1151"};
 
 // Architectures that do ship gemm+gemm lists, and the precisions they cover.
 static constexpr StringLiteral kTunedGemmGemmArchs[] = {"gfx1100", "gfx950"};
@@ -109,9 +109,9 @@ TEST(FindFallbackTest, Gfx1201UsesGfx1200ForRemovedLists) {
   for (StringRef dataType : {"f16", "f32"}) {
     std::string attentionTarget =
         (Twine("gfx1201_attention_") + dataType).str();
-    EXPECT_EQ((Twine("gfx1200_attention_") + dataType).str(),
-              ParamLookupTable<GemmGemmParamsAttr>::findFallback(
-                  attentionTarget))
+    EXPECT_EQ(
+        (Twine("gfx1200_attention_") + dataType).str(),
+        ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
 }
