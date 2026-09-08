@@ -73,6 +73,30 @@ def text_only_options(sdk: Any, *, api_key: str, model: str, cwd: str) -> Any:
     return options
 
 
+def token_counts(usage: Any) -> Dict[str, int]:
+    """What the round cost, in the units the model is slow in.
+
+    Named the way `transcript.timing` reads them, which is how
+    openai_backend reports them too, so a round costs the same thing to read
+    whichever transport served it.
+
+    Empty when the run reported no usage, since a count of zero would read as
+    an answer rather than as a silence.
+    """
+    if usage is None:
+        return {}
+    counts = {
+        "inputTokens": getattr(usage, "input_tokens", 0) or 0,
+        "outputTokens": getattr(usage, "output_tokens", 0) or 0,
+    }
+    # Absent on a model that does not think, and distinct from zero on one
+    # that does and happened not to.
+    reasoning = getattr(usage, "reasoning_tokens", None)
+    if reasoning is not None:
+        counts["reasoningTokens"] = reasoning
+    return counts
+
+
 class CursorBackend(Backend):
     """A cursor agent, resumed round to round."""
 
@@ -151,10 +175,38 @@ class CursorBackend(Backend):
                 send_done = time.monotonic()
                 first_text = None
                 chunks = []
-                for chunk in run.iter_text():
-                    if first_text is None:
-                        first_text = time.monotonic()
-                    chunks.append(chunk)
+                thought = []
+                thinking_ms = 0
+                # `iter_text` is this loop's assistant half and nothing else:
+                # it walks the same stream and drops every message that is not
+                # the reply. What that loses is the thinking, which is where
+                # nearly all of a round's tokens and seconds go and the only
+                # account on record of why a config was proposed. Reading the
+                # messages keeps both halves; see `reasoning_said` in
+                # openai_backend for the same idea against a response object.
+                #
+                # Both halves arrive as deltas -- a measured round sent 268
+                # thinking messages holding 2660 characters between them -- so
+                # they are concatenated rather than joined: a separator here
+                # would cut words in half. Whether any thinking arrives at all
+                # is the model's to say, and the transcript leaves the section
+                # out rather than heading an empty one when none does.
+                for message in run.stream():
+                    kind = getattr(message, "type", "")
+                    if kind == "assistant":
+                        content = getattr(getattr(message, "message", None), "content", ())
+                        for block in content or ():
+                            said = getattr(block, "text", "")
+                            if said:
+                                if first_text is None:
+                                    first_text = time.monotonic()
+                                chunks.append(said)
+                    elif kind == "thinking":
+                        thought.append(getattr(message, "text", "") or "")
+                        # The delta that ends the thinking carries how long it
+                        # took and no text, which is the service's own measure
+                        # rather than this end's guess at it.
+                        thinking_ms = getattr(message, "thinking_duration_ms", None) or thinking_ms
                 result = run.wait()
                 completed = time.monotonic()
                 if getattr(result, "status", None) == "error":
@@ -163,7 +215,14 @@ class CursorBackend(Backend):
                         started=True,
                     )
                 reply = "".join(chunks) or run.text() or getattr(result, "result", "") or ""
+                session["lastReasoning"] = "".join(thought)
+                # What the service measured rather than what this end timed,
+                # kept apart from the clock readings below for that reason.
+                reported = token_counts(getattr(run, "usage", None))
+                if thinking_ms:
+                    reported["thinkingMs"] = thinking_ms
                 session["lastTransportTiming"] = {
+                    **reported,
                     "sdkImportMs": (import_done - import_started) * 1000.0,
                     "optionsMs": (options_done - options_started) * 1000.0,
                     "agentOpenMs": (agent_ready - agent_started) * 1000.0,

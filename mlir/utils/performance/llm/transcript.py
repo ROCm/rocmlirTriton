@@ -206,6 +206,11 @@ class Transcript:
             f"{milliseconds('agentOpenMs')}",
             f"Send: {milliseconds('sendMs')}",
             f"First text after send: {milliseconds('firstTextMs')}",
+            # Only where the service times the thinking itself. Left out
+            # otherwise rather than shown as zero, which would read as a model
+            # that answered without stopping to think.
+            *([f"Of it thinking: {milliseconds('thinkingMs')}"]
+              if measurements.get("thinkingMs") else []),
             f"Completion after send: {milliseconds('completionMs')}",
             f"Total transport: {milliseconds('totalMs')}",
             f"Prompt: {measurements.get('promptChars', 0)} chars; "
