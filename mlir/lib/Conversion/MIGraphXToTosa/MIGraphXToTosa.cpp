@@ -498,6 +498,12 @@ static int64_t productOfDims(ArrayRef<int64_t> dims) {
 /// Returns failure if the batch dimensions can't be handled, which today means
 /// a batched B that A's batch does not match, since only B may be broadcast.
 /// Every extent except M must already be known to be static.
+///
+/// Two batches match when their flattened sizes are equal, or, once an unknown
+/// extent is involved, when the batch dimensions are identical position by
+/// position. Comparing the flattened sizes alone would not do: they are both
+/// ShapedType::kDynamic as soon as either side has an unknown extent, so
+/// [?, 4] and [?, 2] would compare equal even though they never can be.
 static FailureOr<BatchFlattenInfo>
 computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
                         ArrayRef<int64_t> outShape) {
@@ -509,9 +515,11 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
          "matmul operands must be at least rank 2");
 
   // Compute batch sizes by multiplying all dimensions except last 2
+  ArrayRef<int64_t> batchDimsA = shapeA.drop_back(2);
+  ArrayRef<int64_t> batchDimsB = shapeB.drop_back(2);
   info.batchSizeOut = productOfDims(outShape.drop_back(2));
-  info.batchSizeA = productOfDims(shapeA.drop_back(2));
-  info.batchSizeB = productOfDims(shapeB.drop_back(2));
+  info.batchSizeA = productOfDims(batchDimsA);
+  info.batchSizeB = productOfDims(batchDimsB);
 
   // Get M, K, N dimensions (last 2 dims of each tensor)
   info.mDim = shapeA[rankA - 2];
@@ -526,7 +534,11 @@ computeBatchFlattenInfo(ArrayRef<int64_t> shapeA, ArrayRef<int64_t> shapeB,
   info.newM = info.mDim;
 
   // Handle batch dimension mismatch (broadcast)
-  if (info.batchSizeA != info.batchSizeB) {
+  bool anyBatchDynamic = ShapedType::isDynamic(info.batchSizeA) ||
+                         ShapedType::isDynamic(info.batchSizeB);
+  bool batchesMatch = anyBatchDynamic ? batchDimsA == batchDimsB
+                                      : info.batchSizeA == info.batchSizeB;
+  if (!batchesMatch) {
     if (info.batchSizeB == 1) {
       // Broadcast B - flatten A's batch into M dimension. Either half may be
       // unknown, and their product is then the one extent that the reshape

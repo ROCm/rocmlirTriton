@@ -27,6 +27,19 @@ func.func @dot_dynamic_batch_vs_static(%arg0: !migraphx.shaped<?x32x72xf32, 2304
 
 // -----
 
+// Both operands have a dynamic first dimension, but one is ?x4 and the
+// other ?x2, so we can determine that they are not equal at compile time.
+func.func @dot_dynamic_batches_differ(%arg0: !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>,
+                                      %arg1: !migraphx.shaped<?x2x32x32xf32, 2048x1024x32x1>)
+    -> !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1> {
+  // expected-error @+2 {{tosa.matmul can't broadcast input}}
+  // expected-error @+1 {{failed to legalize operation 'migraphx.dot' that was explicitly marked illegal}}
+  %0 = migraphx.dot %arg0, %arg1 : <?x4x32x32xf32, 4096x1024x32x1>, <?x2x32x32xf32, 2048x1024x32x1> -> <?x4x32x32xf32, 4096x1024x32x1>
+  return %0 : !migraphx.shaped<?x4x32x32xf32, 4096x1024x32x1>
+}
+
+// -----
+
 // The channel dimension is not the slowest-moving one, so reject it.
 func.func @conv_dynamic_channel(%arg0: !migraphx.shaped<2x?x5x5xf32, 75x25x5x1>,
                                 %arg1: !migraphx.shaped<64x3x2x2xf32, 12x4x2x1>)

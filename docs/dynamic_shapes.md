@@ -36,7 +36,8 @@ their product is still the single inferable extent of that reshape.
 Rejected: a dynamic batch against a *batched* B (e.g. `?` vs `2`). Only B may be
 broadcast, so the sole applicable lowering is a plain batched matmul, and that is
 correct only if the two batches are equal at runtime, which cannot be proven.
-Note that two dynamic batches (`?` vs `?`) *are* accepted, and are assumed equal.
+Note that two dynamic batches (`?` vs `?`) *are* accepted, and are assumed equal,
+unless the other non-dynamic dimensions differ.
 
 ### Convolution (`convolution`, `backwards_data_convolution`)
 
