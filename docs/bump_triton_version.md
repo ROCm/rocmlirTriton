@@ -372,7 +372,10 @@ upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
 Also check that `tritonUtils.cpp::getMfmaVersion()` and
 `tritonUtils.cpp::getWmmaVersion()` handle the new `ISAFamily` / chip string.
 Additionally, `mlir/test/common_utils/amd_arch_db/binding.cpp` will need to have
-it's `py::enum_<ISAFamily>(...).value(...)` enum updated as well.
+its `py::enum_<ISAFamily>(...).value(...)` enum updated as well. That module is
+also how the performance scripts reach `AmdArchDb.cpp`, so a new `rock` arch
+predicate that Python needs (`is_cdna` / `is_rdna`, say) has to be exported
+there too -- see section 5.6.
 
 When a new ISA family (not just a new chip in an existing family) gains support,
 add a representative chip to `DEFAULT_ARCHES` in
@@ -420,6 +423,13 @@ if (rock::supportsTDM(arch))
 ```
 
 If there is no `rock` equivalent function to check that hardware feature, then implement a new function in `AmdArchDb.cpp` and use it.
+
+The same rule holds for the performance scripts under
+`mlir/utils/performance/`: classify an arch with the `amd_arch_db` pybind
+module (`amd_arch_db.is_rdna(arch)`, `amd_arch_db.get_isa_family(arch)`, ...)
+rather than with a `gfx` number range or a hand-maintained chip list. A range
+check like `0x1100 <= n < 0x1250` compiles and runs fine while silently
+mis-bucketing whichever family lands inside it next.
 
 ## Step 6: Regenerate Fat Library Dependencies
 

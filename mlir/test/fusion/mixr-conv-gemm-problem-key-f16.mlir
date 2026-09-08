@@ -1,7 +1,7 @@
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // CHECK: gfx942
 // CHECK-SAME: 304
-// CHECK-SAME: -t f16 -f N01GC -I N01GC -transC true -transO false -n 2 -c 64 -H 32 -W 32 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 16
+// CHECK-SAME: -t f16 -f N01GC -I N01GC -transC true -transO false -n 2 -c 64 -H 32 -W 32 -k 64 -y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 16 -supportsSplitK false
 module 
 {
   func.func private @mlir_conv_gemm(%arg0: !migraphx.shaped<2x64x32x32xf16, 65536x1x2048x64>,

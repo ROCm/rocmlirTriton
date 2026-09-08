@@ -46,6 +46,7 @@
 #include "mlir/Support/WalkResult.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
@@ -162,6 +163,9 @@ static FailureOr<SmallVector<OperandInput>> collectOperandInputs(Value val) {
       std::tie(root, std::ignore) = rock::untransform(source, transforms);
       auto blockArg = dyn_cast<BlockArgument>(root);
       if (!blockArg) {
+        // Dense non-splat constants need no kernel-argument signature rewrite.
+        if (rock::isDenseNonSplatConstant(root))
+          continue;
         loadOp.emitError("transform chain root is not a block argument");
         return failure();
       }
@@ -1607,9 +1611,64 @@ static LogicalResult fixup4BitFusionOps(
   return success();
 }
 
+static bool requiresCompilerOwnedStorage(Value constant) {
+  SmallVector<Value> worklist{constant};
+  DenseSet<Value> visited;
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (Operation *user : value.getUsers()) {
+      // A dense non-splat feeding TransformsToPtrOp becomes an ExtractPtrOp,
+      // which TensorToTritonPtr backs with a compiler-owned global. Keep both
+      // pointer forms even when no BlockwiseLoadOp is visible here. Dense
+      // splats, including attention's synthetic zero buffers, are filtered by
+      // the caller before this analysis.
+      if (isa<LoadMarkerOp, BlockwiseLoadOp, TransformsToPtrOp, ExtractPtrOp>(
+              user))
+        return true;
+      if (auto transform = dyn_cast<TransformOp>(user))
+        worklist.push_back(transform.getOutput());
+      else if (rock::isFusionOp(user))
+        worklist.push_back(user->getResult(0));
+    }
+  }
+  return false;
+}
+
 /// Legalize all non-TT_Float types to integer types of the same bit width
 /// throughout the kernel function (no shape changes).
 static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
+  WalkResult unsupportedConstant =
+      funcOp.walk([&](arith::ConstantOp constant) -> WalkResult {
+        DenseElementsAttr elements =
+            rock::getDenseTensorConstantAttr(constant.getResult());
+        if (!elements || elements.isSplat())
+          return WalkResult::advance();
+        Type elementType =
+            cast<RankedTensorType>(constant.getType()).getElementType();
+        if (isa<IntegerType, FloatType>(elementType) &&
+            elementType.getIntOrFloatBitWidth() < 8) {
+          bool requiresStorage =
+              requiresCompilerOwnedStorage(constant.getResult());
+          if (requiresStorage) {
+            constant.emitOpError(
+                "sub-byte dense non-splat constants are not supported as "
+                "compiler-owned storage");
+            return WalkResult::interrupt();
+          }
+          if (elementType.getIntOrFloatBitWidth() == 4) {
+            constant.emitOpError(
+                "register-only 4-bit dense non-splat constants are not "
+                "supported");
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+  if (unsupportedConstant.wasInterrupted())
+    return failure();
+
   // Save original types on BlockwiseGemmOp BEFORE converting.
   recordOrigTypesOnGemm(funcOp);
 
@@ -1628,8 +1687,17 @@ static LogicalResult convertKernel(func::FuncOp funcOp, MLIRContext *ctx) {
   funcOp.walk([&](Operation *op) {
     for (OpResult result : op->getResults()) {
       Type newType = convertType(result.getType(), ctx);
-      if (newType != result.getType())
+      if (newType != result.getType()) {
+        if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
+          if (auto elements =
+                  dyn_cast<DenseElementsAttr>(constant.getValue())) {
+            auto newShapedType = cast<ShapedType>(newType);
+            constant.setValueAttr(
+                elements.bitcast(newShapedType.getElementType()));
+          }
+        }
         result.setType(newType);
+      }
     }
   });
 

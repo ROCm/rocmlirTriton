@@ -93,16 +93,16 @@ class ReadTuningDbTest(TempFileTestCase):
         self.assertEqual(perfRunner.read_tuning_db(path, PerfConfiguration), {})
 
     def test_read_with_header_and_comments(self):
-        # Written without -transO; canonicalization adds it, and the key is the
-        # canonical form.
+        # Written without -transO or -supportsSplitK; canonicalization adds both
+        # (split-K defaults to true for gemm), and the key is the canonical form.
         gemm_a = ("-t f32 -out_datatype f32 -transA false -transB false "
                   "-g 1 -m 1024 -n 512 -k 769")
         gemm_b = ("-t f16 -out_datatype f16 -transA false -transB true "
                   "-g 1 -m 256 -n 128 -k 64")
         gemm_a_key = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
-                      "-g 1 -m 1024 -n 512 -k 769")
+                      "-g 1 -m 1024 -n 512 -k 769 -supportsSplitK true")
         gemm_b_key = ("-t f16 -out_datatype f16 -transA false -transB true -transO false "
-                      "-g 1 -m 256 -n 128 -k 64")
+                      "-g 1 -m 256 -n 128 -k 64 -supportsSplitK true")
         path = self.write_temp(
             ".tsv", "# arch\tconfig\tperfconfig\n"
             f"gfx900\t{gemm_a}\tperf_1\n"
@@ -123,7 +123,7 @@ class ReadTuningDbTest(TempFileTestCase):
         valid_gemm = ("-t f32 -out_datatype f32 -transA false -transB false "
                       "-g 1 -m 1024 -n 512 -k 769")
         valid_gemm_key = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
-                          "-g 1 -m 1024 -n 512 -k 769")
+                          "-g 1 -m 1024 -n 512 -k 769 -supportsSplitK true")
         # A conv config: cannot be parsed under GemmConfiguration.
         conv_entry = ("convfp16 -F 1 -f NCHW -I NCHW -O NCHW -n 256 -c 1024 -H 14 -W 14 "
                       "-k 256 -y 1 -x 1 -p 0 -q 0 -u 1 -v 1 -l 1 -j 1 -m conv -g 1 -t 1")
