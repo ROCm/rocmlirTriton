@@ -89,7 +89,8 @@ TEST(FindFallbackTest, UnavailableTuningList) {
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
-  EXPECT_EQ("gfx1100_gemm_f16",
+  // gfx1100 no longer ships gemm_f16; gfx1101 is the closest gfx11* relative.
+  EXPECT_EQ("gfx1101_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
 
@@ -217,7 +218,11 @@ TEST(FindFallbackTest, ConvGemmBorrowsAttentionAtSamePrecision) {
     for (StringRef dataType : kAttentionDataTypes) {
       std::string target =
           (Twine(arch) + "_convelementwisegemm_" + dataType).str();
-      EXPECT_EQ((Twine(arch) + "_attention_" + dataType).str(),
+      // gfx1100 only ships attention bf16/i8; f16/f32 borrow gfx1101's lists.
+      StringRef attentionArch = arch;
+      if (arch == "gfx1100" && (dataType == "f16" || dataType == "f32"))
+        attentionArch = "gfx1101";
+      EXPECT_EQ((Twine(attentionArch) + "_attention_" + dataType).str(),
                 ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
           << "for target " << target;
     }
