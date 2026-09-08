@@ -1415,7 +1415,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
                 rc, outs, errs = _run_pipeline(verification_commands,
                                                env=env,
                                                cwd=tmpdir,
-                                               timeout=options.verify_timeout)
+                                               timeout=options.verify_timeout or None)
             except subprocess.TimeoutExpired:
                 raise TuningError(
                     format_error(
@@ -2718,7 +2718,7 @@ def parse_arguments(args=None) -> argparse.Namespace:
                         type=int,
                         default=DEFAULT_VERIFY_TIMEOUT_SECONDS,
                         metavar='SECONDS',
-                        help="Timeout in seconds for each verification run "
+                        help="Timeout in seconds for each verification run, 0 to disable "
                         f"(default: {DEFAULT_VERIFY_TIMEOUT_SECONDS})")
 
     parser.add_argument("--gpus",

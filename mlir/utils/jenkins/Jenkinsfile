@@ -1541,15 +1541,24 @@ pipeline {
                                                         buildProject('check-rocmlir-build-only ci-performance-scripts', '')
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
+                                                            // Verification of a winning config runs the single-threaded
+                                                            // CPU reference, and the largest tier1 gemm was measured at
+                                                            // 104 minutes on the slowest weekly node against a 600s
+                                                            // default, so the bound rejects large but healthy configs and
+                                                            // --abort-on-error then fails the whole matrix. Disable it for
+                                                            // now so a run completes and reports how long the stage really
+                                                            // takes; the runtime is to be cut by trimming the config
+                                                            // lists, after which this can go back to a real bound.
+                                                            def verifyTimeout = 0
                                                             shStrict """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op gemm \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_tuning_${CHIP}.tsv ]""" 
                                                             // Tune resnet50 and unet configs
-                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op conv \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
@@ -1590,17 +1599,17 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op attention \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op attention \
                                                                     -c ${attnConfigToUse} \
                                                                     -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op gemm --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op gemm --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
                                                                 [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs (quick tuning)
-                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --op conv --tuning-space quick \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op conv --tuning-space quick \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
                                                                     -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             shStrict """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
