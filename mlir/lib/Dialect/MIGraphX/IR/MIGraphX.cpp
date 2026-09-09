@@ -186,8 +186,11 @@ RankedTensorType MIXRShapedType::asMemoryLayoutTensor() const {
   // Everything below is integer arithmetic on lengths and strides.
   // Reject dynamic strides now.
   auto isDynamic = [](int64_t val) { return ShapedType::isDynamic(val); };
-  if (llvm::any_of(strides, isDynamic))
+  if (llvm::any_of(strides, isDynamic)) {
+    emitError(UnknownLoc::get(getContext()),
+              "!migraphx.shaped with a dynamic stride is not supported");
     return nullptr;
+  }
 
   size_t nStrides = strides.size();
   SmallVector<int64_t> stridesToStandardPerm;
@@ -203,10 +206,13 @@ RankedTensorType MIXRShapedType::asMemoryLayoutTensor() const {
     if (strides[from] == 0)
       orderedShape[to] = 1;
   }
-  // At most one length may be dynamic, and it must be the slowest moving
-  // dimension.
-  if (llvm::any_of(llvm::drop_begin(orderedShape), isDynamic))
+
+  if (llvm::any_of(llvm::drop_begin(orderedShape), isDynamic)) {
+    emitError(UnknownLoc::get(getContext()))
+        << "at most one length of " << *this << " may be dynamic, and it must "
+        << "be the slowest moving dimension";
     return nullptr;
+  }
 
   // Ensure we have a unit stride.
   for (auto stride : llvm::reverse(orderedStrides)) {

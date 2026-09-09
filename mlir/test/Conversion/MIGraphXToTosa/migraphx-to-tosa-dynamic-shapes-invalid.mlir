@@ -66,7 +66,10 @@ func.func @conv_dynamic_channel(%arg0: !migraphx.shaped<2x?x5x5xf32, 75x25x5x1>,
 // -----
 
 // A dynamic length on anything but the slowest-moving dimension has no memory
-// layout, so the kernel argument cannot be flattened.
+// layout, so the kernel argument cannot be flattened. The layout is a property
+// of the type rather than of any one operation, so its diagnostic carries no
+// location.
+// expected-error@unknown {{at most one length of '!migraphx.shaped<32x?xf32, 72x1>' may be dynamic}}
 // expected-error @+1 {{failed to legalize operation 'func.func' that was explicitly marked illegal}}
 func.func @dynamic_inner_dim(%arg0: !migraphx.shaped<32x?xf32, 72x1>)
     -> !migraphx.shaped<32x?xf32, 72x1> {
@@ -77,6 +80,7 @@ func.func @dynamic_inner_dim(%arg0: !migraphx.shaped<32x?xf32, 72x1>)
 // -----
 
 // Two dynamic lengths would need two inferable dimensions in one tosa.reshape.
+// expected-error@unknown {{at most one length of '!migraphx.shaped<?x?x72xf32, 2304x72x1>' may be dynamic}}
 // expected-error @+1 {{failed to legalize operation 'func.func' that was explicitly marked illegal}}
 func.func @two_dynamic_dims(%arg0: !migraphx.shaped<?x?x72xf32, 2304x72x1>)
     -> !migraphx.shaped<?x?x72xf32, 2304x72x1> {
@@ -88,6 +92,7 @@ func.func @two_dynamic_dims(%arg0: !migraphx.shaped<?x?x72xf32, 2304x72x1>)
 
 // A dynamic stride is rejected outright: the memory layout is derived by
 // arithmetic on the strides, and nothing supplies one at runtime.
+// expected-error@unknown {{!migraphx.shaped with a dynamic stride is not supported}}
 // expected-error @+1 {{failed to legalize operation 'func.func' that was explicitly marked illegal}}
 func.func @dynamic_stride(%arg0: !migraphx.shaped<32x64xf32, ?x1>)
     -> !migraphx.shaped<32x64xf32, ?x1> {
