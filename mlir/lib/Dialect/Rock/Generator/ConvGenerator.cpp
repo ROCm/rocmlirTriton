@@ -290,9 +290,16 @@ uint32_t ConvGenerator::getNumCU() const {
 }
 
 int64_t ConvGenerator::getNumChiplets() const {
-  return config.num_chiplets.has_value()
-             ? config.num_chiplets.value()
-             : rock::inferNumChiplets(config.arch, getNumCU());
+  if (config.num_chiplets.has_value())
+    return config.num_chiplets.value();
+  // Infer only from a count the caller actually supplied. Inferring from the
+  // per-arch assumption instead lands on a count inferNumChiplets does not
+  // recognize, and it answers one chiplet for those. One chiplet skips the
+  // XCD-aware workgroup swizzle in GridLayoutEmitter, which costs 22% on a
+  // 4096-cube f16 GEMM and 32% on an 8192-by-4096-by-8192 one on an MI300X.
+  if (config.num_cu.has_value())
+    return rock::inferNumChiplets(config.arch, config.num_cu.value());
+  return rock::getMaxNumChiplets(config.arch);
 }
 
 LogicalResult ConvGenerator::parseConvConfig(OpBuilder &builder,

@@ -155,6 +155,19 @@ static IntegerAttr getNumCUAttr(OpBuilder &builder, StringRef targetArch) {
   return builder.getI32IntegerAttr(getEffectiveNumCU(targetArch));
 }
 
+// Chiplets are inferred only from a count that is known rather than assumed.
+// The per-arch assumption is not a count inferNumChiplets recognizes, and it
+// answers one chiplet for those, which skips the XCD-aware workgroup swizzle
+// in GridLayoutEmitter: measured on an MI300X, one chiplet instead of eight
+// costs 22% on a 4096-cube f16 GEMM and 32% on an 8192-by-4096-by-8192 one.
+static int64_t getEffectiveNumChiplets(StringRef targetArch, int64_t numCU) {
+  if (numChiplets.getNumOccurrences() > 0)
+    return numChiplets.getValue();
+  if (num_cu.getNumOccurrences() > 0 || nativeNumCU)
+    return rock::inferNumChiplets(targetArch, numCU);
+  return rock::getMaxNumChiplets(targetArch);
+}
+
 static llvm::cl::opt<std::string> perfConfig(
     "perf_config", llvm::cl::desc("performance config data used for tuning"),
     llvm::cl::value_desc("Serialized tuning parameters"), llvm::cl::init(""));
@@ -2868,10 +2881,7 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   IntegerAttr numCUAttr = b.getI64IntegerAttr(numCU);
 
   IntegerAttr numChipletsAttr =
-      (numChiplets.getNumOccurrences() > 0
-           ? b.getI64IntegerAttr(numChiplets)
-           : b.getI64IntegerAttr(
-                 rock::inferNumChiplets(archAttr.getValue(), numCU)));
+      b.getI64IntegerAttr(getEffectiveNumChiplets(archAttr.getValue(), numCU));
   SmallVector<NamedAttribute> funcAttrs = {
       b.getNamedAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr()),
       b.getNamedAttr(rock::ArchAttr::getMnemonic(), archAttr)};

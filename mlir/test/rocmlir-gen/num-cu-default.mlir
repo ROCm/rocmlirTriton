@@ -10,13 +10,30 @@
 // PINNED: rock.num_cu = 7 : i64
 
 // 2. With no device visible, which is what a GPU-less compile host looks like,
-//    the query yields nothing and the per-arch default has to hold.
+//    the query yields nothing and the per-arch default has to hold. Chiplets
+//    then come from the arch maximum rather than from that assumed count:
+//    inferNumChiplets does not recognize 20 and answers one chiplet for counts
+//    it does not, and one chiplet skips the XCD-aware workgroup swizzle in
+//    GridLayoutEmitter, which measured 22% on a 4096-cube f16 GEMM and 32% on
+//    an 8192-by-4096-by-8192 one on an MI300X.
 
 // RUN: env HIP_VISIBLE_DEVICES=-1 \
 // RUN:   rocmlir-gen --arch gfx942 --operation gemm -t f16 -g 1 -m 64 -k 64 -n 64 \
 // RUN: | FileCheck %s --check-prefix=CDNA3
 
-// CDNA3: rock.num_cu = 20 : i64
+// CDNA3-DAG: rock.num_cu = 20 : i64
+// CDNA3-DAG: rock.num_chiplets = 8 : i64
+
+// 2b. A count the caller does supply is inferred from, since then it describes
+//     a real device rather than an assumption. gfx942 has no 64-CU part, so
+//     one chiplet is the honest answer here.
+
+// RUN: env HIP_VISIBLE_DEVICES=-1 \
+// RUN:   rocmlir-gen --arch gfx942 --num_cu 64 --operation gemm -t f16 -g 1 -m 64 -k 64 -n 64 \
+// RUN: | FileCheck %s --check-prefix=SUPPLIED
+
+// SUPPLIED-DAG: rock.num_cu = 64 : i64
+// SUPPLIED-DAG: rock.num_chiplets = 1 : i64
 
 // 3. gfx950 is the one architecture whose assumed count is not its floor: the
 //    floor is CPX's single 32-CU partition, while an unpartitioned card has all
