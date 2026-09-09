@@ -19,6 +19,7 @@ patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
+patch-fma-lds-swizzle.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -411,4 +412,21 @@ patch-warp-id-readfirstlane.patch
   RDNA1, RDNA2, RDNA3, and GFX1170 are what newly gain the readfirstlane.
 
   Upstream PR: https://github.com/triton-lang/triton/pull/11570
+
+patch-fma-lds-swizzle.patch
+  Swizzles the pipelined LDS tile for FMA dot operands, which
+  composePaddedLayout does not cover and upstream leaves unswizzled.
+  SwizzledSharedEncodingAttr::get returns vec = 1, perPhase = 1, maxPhase = 1
+  whenever the dot's parent layout is not MFMA/WMMA/Nvidia MMA, and
+  composePaddedLayout only covers CDNA4 MFMA and gfx1250 WMMA, so an f32 dot on
+  a target without a matrix core gets no swizzle at all.
+  getSharedEncIfAllUsersAreDotEnc gains composeSwizzledLayoutForFMA, called for
+  blocked-parent operands after composePaddedLayout declines and before the
+  generic dot-operand constructor.
+
+  Stacks on patch10694.patch and must be applied after it: the shared orders
+  expected in test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir are the
+  operand-major ones that patch introduces.
+
+  Not filed upstream yet; upstream Triton has the same performance gap.
 
