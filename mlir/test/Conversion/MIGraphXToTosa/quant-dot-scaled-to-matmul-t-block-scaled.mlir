@@ -99,9 +99,12 @@ func.func @quant_dot_with_scales(
 //         tosa.matmul_t_block_scaled. MIGraphX allows f32 scale types.
 // ============================================================================
 // CHECK-LABEL: quant_dot_with_f32_scales
-// CHECK: tosa.cast
-// CHECK: tosa.cast
-// CHECK: tosa.matmul_t_block_scaled
+// CHECK: %[[SCALE_A:.*]] = tosa.cast
+// CHECK-SAME: f8E8M0FNU
+// CHECK: %[[SCALE_B:.*]] = tosa.cast
+// CHECK-SAME: f8E8M0FNU
+// CHECK: %[[SCALE_B_T:.*]] = tosa.transpose %[[SCALE_B]]
+// CHECK: tosa.matmul_t_block_scaled %{{.*}}, %[[SCALE_A]], %{{.*}}, %[[SCALE_B_T]]
 // CHECK-SAME: acc_type = f32
 // CHECK-SAME: block_size = BLOCK_SIZE_32
 func.func @quant_dot_with_f32_scales(
@@ -131,9 +134,12 @@ func.func @quant_dot_with_f32_scales(
 //         failing (the "unpack_fp4" pattern).
 // ============================================================================
 // CHECK-LABEL: quant_dot_2d_f32_scales_transpose_add
-// CHECK: tosa.cast
-// CHECK: tosa.cast
-// CHECK: tosa.matmul_t_block_scaled
+// CHECK: %[[SCALE_A:.*]] = tosa.cast
+// CHECK-SAME: f8E8M0FNU
+// CHECK: %[[SCALE_B:.*]] = tosa.cast
+// CHECK-SAME: f8E8M0FNU
+// CHECK: %[[SCALE_B_T:.*]] = tosa.transpose %[[SCALE_B]]
+// CHECK: tosa.matmul_t_block_scaled %{{.*}}, %[[SCALE_A]], %{{.*}}, %[[SCALE_B_T]]
 // CHECK-SAME: acc_type = f32
 // CHECK-SAME: block_size = BLOCK_SIZE_32
 func.func @quant_dot_2d_f32_scales_transpose_add(

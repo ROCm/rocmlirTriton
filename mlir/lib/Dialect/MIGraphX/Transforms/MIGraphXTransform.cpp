@@ -63,10 +63,8 @@ private:
   // for tosa.matmul_t_block_scaled / rock.gemm.
   Value applyScale(PatternRewriter &rewriter, Location loc, Value input,
                    Value scale, Type targetElemType) const {
-    Type scaleElemType = cast<MIXRShapedType>(scale.getType()).getElementType();
     Type f8E8M0Type = Float8E8M0FNUType::get(rewriter.getContext());
-    if (scaleElemType != f8E8M0Type)
-      scale = convertToType(rewriter, loc, scale, f8E8M0Type);
+    scale = convertToType(rewriter, loc, scale, f8E8M0Type);
     Value convertedScale = convertToType(rewriter, loc, scale, targetElemType);
     Value convertedInput = convertToType(rewriter, loc, input, targetElemType);
 
