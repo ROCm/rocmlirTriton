@@ -101,6 +101,11 @@ set(ROCMLIR_TEST_DEPENDS
   # instead of waiting for the weekly Jenkins parameter-sweeps run.
   ci-performance-scripts
 
+  # hsacoDisasm.py, used to compare the kernel binaries that the two binary
+  # emission paths produce, plus the llvm-objdump it shells out to.
+  rocmlir-widgets
+  llvm-objdump
+
   opt
   llc
 
