@@ -815,6 +815,7 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
     constexpr uint64_t swizzleEnable = 1, typeMask = 3 << 2;
     return (bits & (swizzleEnable | typeMask)) == 0;
   }
+  case triton::amdgpu::ISAFamily::GFX1310:
   case triton::amdgpu::ISAFamily::Unknown:
     return false;
   }

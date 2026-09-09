@@ -18,6 +18,7 @@ patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
+patch-gfx1310-isa-family.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -26,6 +27,18 @@ patch10635.patch
 patch10928.patch
 patch11018.patch
 patch11118.patch
+
+patch-gfx1310-isa-family.patch
+  Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
+  that Rock can tell gfx13 apart from GFX1250 when it queries the Triton
+  target. Four changes only: the ISAFamily::GFX1310 enumerator, a major == 13
+  arm in getISAFamily(), a GFX1310 case in isRDNA(), and GFX1310 grouped with
+  RDNA4 in supportsBufferAtomicFadd() (no BUFFER_ATOMIC_ADD_F64, matching
+  FeatureISAVersion13 in public LLVM).
+
+  This change is deliberately the identity slice and nothing more. .
+
+  Drop when upstream Triton carries gfx1310 natively.
 
 patch-partitionloops-clang-cl.patch
   Upstream PR: https://github.com/triton-lang/triton/pull/11114
