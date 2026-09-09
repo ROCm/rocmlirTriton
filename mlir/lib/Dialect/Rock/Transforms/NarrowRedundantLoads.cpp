@@ -356,12 +356,11 @@ void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
   conjuncts.push_back(mask);
 }
 
-/// Narrowing shape when the address is constant along some dims even though
-/// the result is not (the mask varies per lane). Mask conjuncts constant on
-/// the narrowed dims slice onto the load, reported in `loadMaskConjuncts`; the
-/// rest must be constant on the surviving dims, so dropping them cannot make
-/// the load touch extra addresses. `narrowLoad` re-applies the full mask to
-/// the broadcast result.
+/// Narrowing shape when the address is constant along some dims but the result
+/// is not. Conjuncts constant on the narrowed dims slice onto the load and
+/// still bound its address; the rest must be constant on the surviving dims, so
+/// `narrowLoad` drops them and re-applies the full mask after the broadcast,
+/// speculating on dereferenceability when a dropped conjunct masks every lane.
 std::optional<SmallVector<int64_t>>
 getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
                         SmallVectorImpl<Value> &loadMaskConjuncts) {
