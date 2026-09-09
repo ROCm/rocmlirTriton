@@ -15,7 +15,9 @@
 using namespace mlir;
 using namespace mlir::rock;
 
-// Architectures shipping a full set of attention quick-tuning lists.
+// Architectures shipping a full set of attention quick-tuning lists. gfx1201 is
+// absent because it only ships bf16 and i8; the precisions it keeps and the
+// ones it drops are covered by the Gfx1201* tests below.
 static constexpr StringLiteral kAttentionArchs[] = {
     "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151"};
 
@@ -114,6 +116,20 @@ TEST(FindFallbackTest, Gfx1201UsesGfx1200ForRemovedLists) {
         ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
+}
+
+TEST(FindFallbackTest, Gfx1201KeepsItsRemainingLists) {
+  // The other half of the same change: dropping only some of an architecture's
+  // lists must not disturb the ones it keeps, so these still resolve to
+  // themselves rather than to a gfx12/gfx11 relative.
+  EXPECT_EQ("gfx1201_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_bf16"));
+  EXPECT_EQ("gfx1201_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_i8"));
+  EXPECT_EQ("gfx1201_gemm_fp8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_fp8"));
 }
 
 TEST(FindFallbackTest, StrixFallsBackToGfx1151) {
