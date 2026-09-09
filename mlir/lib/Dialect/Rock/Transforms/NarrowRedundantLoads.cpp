@@ -448,11 +448,17 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
 
-  // Restore masked-out lanes. Skip if there was no `other`: they were
-  // undefined.
-  if (reapplyMask && load.getOther())
+  // Restore masked-out lanes. Triton calls them undefined when the load had no
+  // `other`, but every backend hands back zero, so fill them rather than
+  // letting the broadcast value reach lanes the original load never read.
+  if (reapplyMask) {
+    Value other = load.getOther();
+    if (!other)
+      other = arith::ConstantOp::create(rewriter, load.getLoc(), type,
+                                        rewriter.getZeroAttr(type));
     result = arith::SelectOp::create(rewriter, load.getLoc(), load.getMask(),
-                                     result, load.getOther());
+                                     result, other);
+  }
 
   rewriter.replaceOp(load, result);
   return success();
