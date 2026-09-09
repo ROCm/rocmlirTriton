@@ -359,7 +359,7 @@
 // CHECK-NAVI-WIDEN-CONV: gemm:{{.*kPerBlock=27,kpack=1,}}
 
 // A channels-last (nhwgc) input reorders that same merge to Merge(y, x, c),
-// which leaves a spatial dim outermost: y then moves on every step whatever the
+// which leaves nothing below the channel dim: x moves on every step whatever the
 // tile size, so there is no aligned tile to look for and nothing is added. 27
 // is the witness, since it is reachable only through the widened range; 9 stays
 // because rule (3)'s window admits it independently (9 = 8+1 lands in the
@@ -369,19 +369,25 @@
 // RUN:       --implicit-check-not='{{kPerBlock=(27|43),}}'
 // CHECK-NAVI-WIDEN-CONV-NHWC: gemm:{{.*kPerBlock=9,kpack=1,}}
 
-// Same for an interleaved (nghcw) input, Merge(y, c, x): a tile aligned to the
-// dims below y, C*X, pins c and x but still advances y, so it buys nothing. The
-// witness is 42 on a K = 42 (C=2, 3x7 filter): a multiple of that C*X = 14, a
-// divisor of K, and out of rule (3)'s reach, which takes two-segment tiles only
-// (42 = 32+8+2). Channels-first does widen on the same shape, where the factor
-// is Y*X = 21, so 42 and 21 = 1*(3*7) both land. kPerBlock=16 is just an anchor
-// for the negative run; nothing else this K admits survives rule (2).
-// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=2 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=nghcw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-NO-WIDEN-CONV-NGHCW \
-// RUN:       --implicit-check-not='{{kPerBlock=(21|42),}}'
-// CHECK-NAVI-NO-WIDEN-CONV-NGHCW: gemm:{{.*kPerBlock=16,kpack=1,}}
-// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=2 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=ngchw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NGCHW
+// An interleaved (nghcw) input, Merge(y, c, x), widens too, but to a smaller
+// factor: only x lies below the channel dim, so a multiple of X pins x and lets
+// c take the step, and y moves on the one step in C where c wraps. On a 3x7
+// filter over C = 4 (K = 84) that is X = 7, and the widened range offers the
+// three multiples of 7 that divide K: 21, 28 and 42, none of them reachable
+// through rule (3), which takes two-segment tiles only.
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=4 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=nghcw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NGHCW
+// CHECK-NAVI-WIDEN-CONV-NGHCW-DAG: gemm:{{.*kPerBlock=21,kpack=1,}}
+// CHECK-NAVI-WIDEN-CONV-NGHCW-DAG: gemm:{{.*kPerBlock=28,kpack=1,}}
+// CHECK-NAVI-WIDEN-CONV-NGHCW-DAG: gemm:{{.*kPerBlock=42,kpack=1,}}
+
+// Channels-first on the same shape has both spatial dims below the channel one,
+// so its factor is the whole window Y*X = 21 and it offers only 21 and 42. 28 is
+// what tells the two apart: a multiple of X but not of Y*X, so it pins x under
+// Merge(y, c, x) but would leave x mid-window under Merge(c, y, x).
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=4 --in_h=32 --in_w=32 --out_channels=128 --fil_h=3 --fil_w=7 --padding_h=1 --padding_w=3 --fil_layout=gkcyx --in_layout=ngchw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-WIDEN-CONV-NGCHW \
+// RUN:       --implicit-check-not='kPerBlock=28,'
 // CHECK-NAVI-WIDEN-CONV-NGCHW-DAG: gemm:{{.*kPerBlock=21,kpack=1,}}
 // CHECK-NAVI-WIDEN-CONV-NGCHW-DAG: gemm:{{.*kPerBlock=42,kpack=1,}}
 
@@ -459,3 +465,25 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-WMMA-ALIGN-GATE \
 // RUN:       --implicit-check-not='{{kPerBlock=(96|108|126|192),}}'
 // CHECK-WMMA-ALIGN-GATE: gemm:{{.*kPerBlock=144,kpack=1,}}
+
+//===----------------------------------------------------------------------===//
+// A channel dim of one, which is a channel dim in name only
+//===----------------------------------------------------------------------===//
+
+// One channel carries on every step, so nothing sits below it that a tile could
+// pin: gemmK is the filter window itself, and the tile that consumes the window
+// is the whole K loop. That holds wherever the layout puts the unit dim, so it
+// is read off the filter rather than off the merge order. An interleaved
+// (nghcw) 5x5 over C = 1 gives K = 25, and 25 is offered -- out of reach of the
+// pow2 list and of rule (3), which takes two-segment tiles only (25 = 16+8+1).
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=1 --in_h=32 --in_w=32 --out_channels=128 --fil_h=5 --fil_w=5 --padding_h=2 --padding_w=2 --fil_layout=gkcyx --in_layout=nghcw --out_layout=ngkhw --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-UNIT-C-NGHCW
+// CHECK-NAVI-UNIT-C-NGHCW: gemm:{{.*kPerBlock=25,kpack=1,}}
+
+// Channels-last (nhwgc) is the same conv with the unit dim innermost instead,
+// and lands on the same 25 -- the case that needs reading the filter, since the
+// merge has nothing below the channel dim to offer. Depthwise convs are all of
+// this shape, and their input layouts park the unit dim wherever they please.
+// RUN: rocmlir-gen --arch gfx1101 --operation=conv -t f32 --groupsize=1 --batchsize=8 --in_channels=1 --in_h=32 --in_w=32 --out_channels=128 --fil_h=5 --fil_w=5 --padding_h=2 --padding_w=2 --fil_layout=gkyxc --in_layout=nhwgc --out_layout=nhwgk --emit-tuning-space=full 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NAVI-UNIT-C-NHWGC
+// CHECK-NAVI-UNIT-C-NHWGC: gemm:{{.*kPerBlock=25,kpack=1,}}
