@@ -182,6 +182,33 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
   return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
 }
 
+// Shared layout for an FMA dot operand, which composePaddedLayout does not
+// cover and upstream leaves unswizzled. Transposing a K-contiguous operand into
+// an operand-major buffer puts each group of threadsPerWarp[strided] lanes on
+// one LDS bank, since the leading dimension is a multiple of the 32 banks. Pick
+// the smallest XOR swizzle that separates them.
+ttg::SharedEncodingTrait composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
+                                                     ArrayRef<unsigned> order,
+                                                     ttg::CGAEncodingAttr cga,
+                                                     unsigned bitWidth) {
+  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
+  if (!blocked || order.size() != 2)
+    return {};
+  unsigned strided = order[1];
+  ArrayRef<int64_t> shape = srcTy.getShape();
+  int64_t vec = std::max<int64_t>(1, 128 / bitWidth);
+  int64_t perPhase = blocked.getSizePerThread()[strided];
+  int64_t maxPhase = std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
+                                        shape[order[0]] / vec,
+                                        shape[strided] / perPhase});
+  if (maxPhase <= 1)
+    return {};
+  LDBG("FMA LDS swizzle: vec=" << vec << " perPhase=" << perPhase
+                               << " maxPhase=" << maxPhase);
+  return ttg::SwizzledSharedEncodingAttr::get(srcTy.getContext(), vec, perPhase,
+                                              maxPhase, order, cga);
+}
+
 // Adapted from
 // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
 // to support AMDMfmaEncodingAttr.
@@ -197,6 +224,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
   assert(loadOp);
   Value loadedValue = loadOp->getResult(0);
   llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
+  // A user that already carries a shared encoding (e.g. a local_alloc feeding
+  // memdesc_trans) pins the layout, so the FMA swizzle below must stay off
+  bool pinnedByMemDescUser =
+      llvm::any_of(loadedValue.getUsers(), [](Operation *u) {
+        return u->getNumResults() == 1 &&
+               isa<ttg::MemDescType>(u->getResult(0).getType());
+      });
   for (Operation *user : loadedValue.getUsers()) {
     LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
     if (user->getNumResults() != 1)
@@ -304,6 +338,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
         tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                        dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                        dotOpEnc, canUseAsyncCopy);
+        if (!tempAttr && !pinnedByMemDescUser &&
+            isa<ttg::BlockedEncodingAttr>(dotOpEnc.getParent()))
+          tempAttr = composeSwizzledLayoutForFMA(srcTy, sharedOrder, cgaLayout,
+                                                 bitWidth);
         if (!tempAttr) {
           tempAttr = ttg::SwizzledSharedEncodingAttr::get(
               loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,
