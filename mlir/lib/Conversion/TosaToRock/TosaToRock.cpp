@@ -472,8 +472,14 @@ struct ElementwiseRegionFinder {
       blockArgCandidates.insert(blockArgCandidates.begin(), input);
       return;
     }
-    if (op && dyn_cast<tosa::ConstOp>(op)) {
-      constantVals.push_back(input);
+    if (auto constOp = dyn_cast_or_null<tosa::ConstOp>(op)) {
+      // Splat constants can be freely reshaped to any tile shape; dense
+      // non-splat constants require the same transform and tiled-load path as
+      // tensor inputs.
+      if (isa<SplatElementsAttr>(constOp.getValuesAttr()))
+        constantVals.push_back(input);
+      else
+        blockArgCandidates.push_back(input);
       return;
     }
     // Right now, this is a bit restricted that we only allow reshape-like
@@ -639,15 +645,12 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->template getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->template getAttrOfType<DenseI64ArrayAttr>("pad");
     auto dilationAttr =
         op->template getAttrOfType<DenseI64ArrayAttr>("dilation");
 
     // Verify all required attributes are present
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     if (!padAttr)
       return op->emitError(
@@ -719,14 +722,11 @@ public:
     if (failed(setSplitKAttrs(op, rw)))
       return failure();
 
-    auto groupAttr = op->getAttrOfType<IntegerAttr>("group");
     auto padAttr = op->getAttrOfType<DenseI64ArrayAttr>("pad");
     auto strideAttr = op->getAttrOfType<DenseI64ArrayAttr>("stride");
     auto dilationAttr = op->getAttrOfType<DenseI64ArrayAttr>("dilation");
 
-    int64_t group = 1;
-    if (groupAttr)
-      group = groupAttr.getInt();
+    int64_t group = rock::tosa::getConvGroupCount(op);
 
     FailureOr<rock::RockConvInterface> rockConv =
         makeRockConv(rw, op, input, filter, outputType, padAttr, strideAttr,
@@ -1448,6 +1448,20 @@ struct ConvElementwiseGemmRewritePattern
       op.emitOpError("bias not supported yet");
       return failure();
     }
+    // A grouped convolution cannot be fused with the GEMM that follows it. The
+    // `rock.conv_elementwise_gemm` emitted below is lowered by
+    // `ConvGemmRewritePattern` in Rock/Transforms/ConvToGemm.cpp, which passes
+    // the group dimension through to `gemmG`, the batch dimension of both
+    // GEMMs. Each group's output channels would therefore reach the second GEMM
+    // as their own tile, contracted against their own slice of `c`. A dot
+    // applied to a grouped convolution instead contracts over every output
+    // channel at once, which means summing those per-group products: a
+    // reduction over a dimension the GEMM+GEMM form treats as parallel.
+    if (rock::tosa::isGroupedConv(firstConv)) {
+      op.emitOpError("fusing a grouped convolution into conv+gemm is not "
+                     "supported");
+      return failure();
+    }
     return elementwiseRegionFinder;
   }
 
@@ -1465,13 +1479,12 @@ struct ConvElementwiseGemmRewritePattern
     SmallVector<Value> elementwiseOtherArgs =
         elementwiseRegionFinder.getElementwiseArgs();
 
-    int64_t group = 1;
-    if (auto attr = op->template getAttrOfType<IntegerAttr>("group"))
-      group = attr.getInt(); // Use op.getGroup() when all OpT have it.
+    assert(!rock::tosa::isGroupedConv(firstConv) &&
+           "the matcher rejects grouped convolutions");
     ConvFields convFields = commonConv(
         rewriter, op, firstConv.getInput(), firstConv.getWeight(),
         /*outputType=*/RankedTensorType(), firstConv.getPadAttr(),
-        firstConv.getStrideAttr(), firstConv.getDilationAttr(), group);
+        firstConv.getStrideAttr(), firstConv.getDilationAttr(), /*group=*/1);
     if (failed(setSplitKAttrs(op, rewriter)))
       return;
 

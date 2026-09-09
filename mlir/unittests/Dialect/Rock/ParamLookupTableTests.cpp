@@ -8,10 +8,32 @@
 
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include <gtest/gtest.h>
 
 using namespace mlir;
 using namespace mlir::rock;
+
+// Architectures shipping a full set of attention quick-tuning lists.
+static constexpr StringLiteral kAttentionArchs[] = {
+    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
+
+// Of those, the ones with no gemm+gemm lists of their own, which therefore
+// still borrow attention's at every precision.
+static constexpr StringLiteral kUntunedGemmGemmArchs[] = {
+    "gfx908", "gfx90a", "gfx942", "gfx1151", "gfx1201"};
+
+// Architectures that do ship gemm+gemm lists, and the precisions they cover.
+static constexpr StringLiteral kTunedGemmGemmArchs[] = {"gfx1100", "gfx950"};
+static constexpr StringLiteral kTunedGemmGemmDataTypes[] = {"f16", "f32"};
+
+// Data types the attention lists are tuned for.
+static constexpr StringLiteral kAttentionDataTypes[] = {"bf16", "f16", "f32",
+                                                        "i8"};
+
+// Data types gfx1100 borrows from gfx1101 for gemm and conv.
+static constexpr StringLiteral kNavi3SharedDataTypes[] = {"f16", "f32", "i8"};
 
 TEST(FindFallbackTest, ExactMatch) {
   // Exact match should return itself
@@ -70,7 +92,8 @@ TEST(FindFallbackTest, UnavailableTuningList) {
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
-  EXPECT_EQ("gfx1100_gemm_f16",
+  // gfx1100 no longer ships gemm_f16; gfx1101 is the closest gfx11* relative.
+  EXPECT_EQ("gfx1101_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
 
@@ -99,6 +122,57 @@ TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
   EXPECT_EQ("gfx1151_attention_i8",
             ParamLookupTable<GemmGemmParamsAttr>::findFallback(
                 "gfx1152_attention_i8"));
+}
+
+TEST(FindFallbackTest, Gfx1100BorrowsGfx1101GemmAndConvLists) {
+  // gfx1100 has no gemm or conv lists, so it falls back to gfx1101.
+  for (StringRef kernelType : {"gemm", "conv"}) {
+    for (StringRef dataType : kNavi3SharedDataTypes) {
+      std::string target =
+          (Twine("gfx1100") + "_" + kernelType + "_" + dataType).str();
+      EXPECT_EQ((Twine("gfx1101") + "_" + kernelType + "_" + dataType).str(),
+                ParamLookupTable<GemmParamsAttr>::findFallback(target))
+          << "for target " << target;
+    }
+  }
+}
+
+TEST(FindFallbackTest, Gfx1100KeepsAttentionPrecisionsGfx1101Lacks) {
+  // gfx1100 keeps its bf16 and i8 attention lists.
+  EXPECT_EQ("gfx1100_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1100_attention_bf16"));
+  EXPECT_EQ("gfx1100_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1100_attention_i8"));
+  // f16 and f32 fall back to gfx1101.
+  EXPECT_EQ("gfx1101_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1100_attention_f16"));
+  EXPECT_EQ("gfx1101_attention_f32",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1100_attention_f32"));
+}
+
+TEST(FindFallbackTest, Gfx1101BorrowsGfx1100AttentionWhereItHasNone) {
+  // gfx1101 has no bf16 or i8 attention lists, so it falls back to gfx1100.
+  EXPECT_EQ("gfx1100_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1101_attention_bf16"));
+  EXPECT_EQ("gfx1100_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1101_attention_i8"));
+}
+
+TEST(FindFallbackTest, Gfx1101GemmGemmPrefersOwnAttentionOverGfx1100) {
+  // Prefer gfx1101 attention over gfx1100 gemm+gemm.
+  for (StringRef dataType : kTunedGemmGemmDataTypes) {
+    std::string target =
+        (Twine("gfx1101_gemmelementwisegemm_") + dataType).str();
+    EXPECT_EQ((Twine("gfx1101_attention_") + dataType).str(),
+              ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+        << "for target " << target;
+  }
 }
 
 TEST(FindFallbackTest, Fp8FallsBackToArchRelative) {
@@ -147,4 +221,186 @@ TEST(FindFallbackTest, OlderArchFallsBackToGfx908) {
   EXPECT_EQ("gfx908_attention_f16",
             ParamLookupTable<GemmGemmParamsAttr>::findFallback(
                 "gfx906_attention_f16"));
+}
+
+TEST(FindFallbackTest, GemmGemmUsesItsOwnListWhereTuned) {
+  // gfx1100 and gfx950 ship gemm+gemm lists for f16 and f32, so those are exact
+  // hits rather than fallbacks.
+  for (StringRef arch : kTunedGemmGemmArchs) {
+    for (StringRef dataType : kTunedGemmGemmDataTypes) {
+      std::string target =
+          (Twine(arch) + "_gemmelementwisegemm_" + dataType).str();
+      EXPECT_EQ(target,
+                ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+          << "for target " << target;
+    }
+  }
+}
+
+TEST(FindFallbackTest, GemmGemmBorrowsAttentionAtSamePrecision) {
+  // Where gemm+elementwise+gemm has no list of its own it borrows attention's,
+  // and the requested precision has to survive that substitution: the suffix
+  // match used to slice candidate keys by a length derived from the target,
+  // which underflowed for the much longer "_gemmelementwisegemm_<dt>" suffix
+  // and made every key in the architecture family look like a relative. Every
+  // dtype then resolved to the lexicographically nearest one, i8.
+  for (StringRef arch : kUntunedGemmGemmArchs) {
+    for (StringRef dataType : kAttentionDataTypes) {
+      std::string target =
+          (Twine(arch) + "_gemmelementwisegemm_" + dataType).str();
+      EXPECT_EQ((Twine(arch) + "_attention_" + dataType).str(),
+                ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+          << "for target " << target;
+    }
+  }
+  // The tuned architectures only cover f16 and f32; their other precisions
+  // still fall back, and must not be captured by the f16/f32 gemm+gemm lists.
+  for (StringRef arch : kTunedGemmGemmArchs) {
+    for (StringRef dataType : {"bf16", "i8"}) {
+      std::string target =
+          (Twine(arch) + "_gemmelementwisegemm_" + dataType).str();
+      EXPECT_EQ((Twine(arch) + "_attention_" + dataType).str(),
+                ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+          << "for target " << target;
+    }
+  }
+}
+
+TEST(FindFallbackTest, ConvGemmBorrowsAttentionAtSamePrecision) {
+  // conv+elementwise+gemm shares the same gridwise path, and the same gap.
+  for (StringRef arch : kAttentionArchs) {
+    for (StringRef dataType : kAttentionDataTypes) {
+      std::string target =
+          (Twine(arch) + "_convelementwisegemm_" + dataType).str();
+      // gfx1100 only ships attention bf16/i8; f16/f32 borrow gfx1101's lists.
+      StringRef attentionArch = arch;
+      if (arch == "gfx1100" && (dataType == "f16" || dataType == "f32"))
+        attentionArch = "gfx1101";
+      EXPECT_EQ((Twine(attentionArch) + "_attention_" + dataType).str(),
+                ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+          << "for target " << target;
+    }
+  }
+}
+
+TEST(FindFallbackTest, GemmGemmKeepsPrecisionWhileArchFallsBack) {
+  // gfx1170 and gfx1200 ship only f16 and f32 attention lists, so an i8
+  // gemm+gemm has to cross architectures. It must still land on an i8 list:
+  // gfx1151 is the closest gfx11/gfx12 relative that has one.
+  EXPECT_EQ("gfx1151_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1170_gemmelementwisegemm_i8"));
+}
+
+TEST(FindFallbackTest, GemmGemmPrefersOwnArchOverRelativesGemmGemmList) {
+  // gfx1170 ships no gemm+gemm list but gfx1100, a relative, does. gfx1170's
+  // own attention list still wins: attention shares the gridwise code and the
+  // perf-config format, whereas a relative architecture differs in LDS capacity
+  // and matrix-instruction shapes, making it the more expensive substitution.
+  EXPECT_EQ("gfx1170_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1170_gemmelementwisegemm_f16"));
+  // Likewise on the CDNA side, where the relative holding a list is gfx950.
+  EXPECT_EQ("gfx942_attention_f32",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx942_gemmelementwisegemm_f32"));
+}
+
+TEST(FindFallbackTest, GemmGemmSubstitutesKernelTypeBeforeDataType) {
+  // fp8 has no attention list anywhere, so both substitutions are needed and
+  // the datatype one (fp8 -> i8) is only reached after the kernel-type one.
+  EXPECT_EQ("gfx942_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx942_gemmelementwisegemm_fp8"));
+  EXPECT_EQ("gfx942_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx942_gemmelementwisegemm_f4"));
+}
+
+TEST(FindFallbackTest, LongUnknownKernelTypeHasNoRelatives) {
+  // A kernel type with no entries and no fallback must report failure rather
+  // than matching an unrelated list. These suffixes are longer than the table's
+  // whole keys, which is what used to trigger the underflow.
+  EXPECT_EQ("", ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                    "gfx942_someunknownfusedkerneltype_f16"));
+  EXPECT_EQ("", ParamLookupTable<GemmParamsAttr>::findFallback(
+                    "gfx942_someunknownfusedkerneltype_f16"));
+}
+
+TEST(FindFallbackTest, MalformedKeysAreRejected) {
+  // Keys must have all three components.
+  EXPECT_EQ("", ParamLookupTable<GemmParamsAttr>::findFallback("gfx942"));
+  EXPECT_EQ("", ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_f16"));
+  EXPECT_EQ("", ParamLookupTable<GemmParamsAttr>::findFallback(""));
+}
+
+TEST(LookupTest, GemmGemmResolvesToItsOwnListOnTunedArch) {
+  // End-to-end through the public entry point. gfx1100 has tuned gemm+gemm
+  // lists, so f16 must get the f16 one -- not f32's, and above all not the i8
+  // attention list every precision used to collapse onto.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  Type f32 = Float32Type::get(&ctx);
+  Type i8 = IntegerType::get(&ctx, 8);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1100";
+  auto get = [&](KernelType kernel, Type t) {
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+  };
+
+  auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
+  EXPECT_FALSE(gemmGemmF16.empty());
+  EXPECT_FALSE(gemmGemmF16 == get(KernelType::GemmElementwiseGemm, f32));
+  EXPECT_FALSE(gemmGemmF16 == get(KernelType::Attention, i8));
+  // The merged list keeps attention's entries as a tail, so it is strictly
+  // larger than the attention list it was seeded from.
+  EXPECT_GT(gemmGemmF16.size(), get(KernelType::Attention, f16).size());
+}
+
+TEST(LookupTest, GemmGemmResolvesToAttentionListOfSamePrecision) {
+  // gfx942 has no gemm+gemm lists, so it borrows attention's -- at its own
+  // precision.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  Type i8 = IntegerType::get(&ctx, 8);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx942";
+  auto get = [&](KernelType kernel, Type t) {
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+  };
+
+  auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
+  auto attentionF16 = get(KernelType::Attention, f16);
+  auto attentionI8 = get(KernelType::Attention, i8);
+
+  EXPECT_FALSE(gemmGemmF16.empty());
+  EXPECT_TRUE(gemmGemmF16 == attentionF16);
+  // The f16 and i8 lists must actually differ, or the assertion above would
+  // hold even with the bug present.
+  EXPECT_FALSE(attentionF16 == attentionI8);
+  EXPECT_FALSE(gemmGemmF16 == attentionI8);
+}
+
+TEST(LookupTest, Gfx1100GemmAndConvServeGfx1101Lists) {
+  // Verify the public lookup returns gfx1101's lists for gfx1100.
+  MLIRContext ctx;
+  SmallVector<Type, 3> dataTypes = {Float16Type::get(&ctx),
+                                    Float32Type::get(&ctx),
+                                    IntegerType::get(&ctx, 8)};
+  auto get = [&](StringRef arch, KernelType kernel, Type t) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, t);
+  };
+
+  for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
+    for (Type dataType : dataTypes) {
+      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType);
+      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType);
+      EXPECT_FALSE(navi31.empty());
+      EXPECT_TRUE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
+                                    << " at " << getDataTypeString(dataType);
+    }
+  }
+
+  // Verify different types and operations use different lists.
+  auto gemmF16 = get("gfx1101", KernelType::Gemm, dataTypes[0]);
+  EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Gemm, dataTypes[1]));
+  EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Conv, dataTypes[0]));
 }
