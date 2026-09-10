@@ -255,6 +255,14 @@ static llvm::cl::opt<unsigned> numCompileThreads(
     llvm::cl::desc("Number of parallel compilation threads (0 = auto)"),
     llvm::cl::value_desc("thread count"), llvm::cl::init(0));
 
+static llvm::cl::opt<bool> verifyPasses(
+    "verify-passes",
+    llvm::cl::desc("Run the MLIR verifier after each pass during tuning "
+                   "compilation. Off by default: the verifier costs roughly a "
+                   "tenth of every per-config compile and the pipeline is the "
+                   "same one rocmlir-driver verifies in its own tests."),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> flushLastLevelCache(
     "flush-last-level-cache",
     llvm::cl::desc(
@@ -575,6 +583,7 @@ struct BenchmarkParams {
   rock::TuningParamSetKind tuningSpaceKind;
   unsigned numCompileThreads;
   std::string benchmarkConfig;
+  bool verifyPasses;
   bool flushLastLevelCache;
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
@@ -676,7 +685,7 @@ static std::string getRocmlirDriverPath() {
 // other workers and against the compile-phase progress bar.
 static CompilationResult compileConfigViaSubprocess(
     StringRef perfConfig, StringRef driverPath, StringRef inputPath,
-    StringRef archName, unsigned timeoutSec,
+    StringRef archName, unsigned timeoutSec, bool shouldVerifyPasses,
     llvm::function_ref<void(const llvm::Twine &)> emitDiagnostic,
     std::atomic<bool> &compilationFailed) {
   CompilationResult result;
@@ -714,6 +723,10 @@ static CompilationResult compileConfigViaSubprocess(
       driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
       archArg,    perfConfigArg, "-o",
       outputPath};
+  // Keep the child's verification in step with the in-process path, so
+  // --verify-passes means the same thing in either compile mode.
+  if (!shouldVerifyPasses)
+    args.push_back("--disable-verify-passes");
 
   // Discard stdout (empty path => /dev/null) because it would corrupt the
   // results stream. Capture stderr per child so fatal diagnostics can be
@@ -1457,6 +1470,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            tuningSpaceKind,
                                            numCompileThreads,
                                            benchmarkConfig,
+                                           verifyPasses,
                                            flushLastLevelCache,
                                            perfConfigTimeout,
                                            gpuRunTimeout,
@@ -1663,6 +1677,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       // rock pass set the `rock.not_applicable` marker on the module.
       PassManager pm(sourceModule.get()->getName(),
                      PassManager::Nesting::Implicit);
+      pm.enableVerifier(benchmarkParams.verifyPasses);
 
       rock::BackendOptions backendOpts;
       backendOpts.triple = deviceName.getTriple().str();
@@ -1760,7 +1775,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                          ? compileConfigViaSubprocess(
                                configs[idx], driverPath, sharedInputPath,
                                archName, benchmarkParams.perfConfigTimeoutSec,
-                               emitDiagnostic, compilationFailed)
+                               benchmarkParams.verifyPasses, emitDiagnostic,
+                               compilationFailed)
                          : compileConfig(idx);
           }
 
@@ -1929,6 +1945,7 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   benchmarkParams.tuningSpaceKind = rock::TuningParamSetKind::Full;
   benchmarkParams.numCompileThreads = numCompileThreads;
   benchmarkParams.benchmarkConfig = benchmarkConfig;
+  benchmarkParams.verifyPasses = verifyPasses;
   benchmarkParams.flushLastLevelCache = flushLastLevelCache;
   benchmarkParams.perfConfigTimeoutSec = 0;
   benchmarkParams.gpuRunTimeoutSec = gpuRunTimeout;
