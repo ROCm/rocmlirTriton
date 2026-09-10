@@ -324,12 +324,15 @@ enum class DimSet {
   Kept,
 };
 
-/// Returns true if `loadValue` is constant across the whole extent of every
+/// Returns true if `mask` is constant across the whole extent of every
 /// dimension on the `dims` side of the narrowing.
-bool isConstantAlongDims(Value loadValue, ArrayRef<int64_t> shape,
-                         ArrayRef<int64_t> narrowShape, DimSet dims,
-                         tt::ModuleAxisInfoAnalysis &axisInfo) {
-  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
+bool isMaskConstantAlongDims(Value mask, ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> narrowShape, DimSet dims,
+                             tt::ModuleAxisInfoAnalysis &axisInfo) {
+  tt::AxisInfo *info = axisInfo.getAxisInfo(mask);
+  // Missing or incompatible analysis information only means this optional
+  // rewrite cannot prove the mask safe; leaving the load unchanged is valid,
+  // so this is not a pass failure.
   if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
     return false;
   for (auto [dim, extent] : llvm::enumerate(shape)) {
@@ -353,7 +356,7 @@ void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
   conjuncts.push_back(mask);
 }
 
-/// Narrowing shape when the address is constant along some dims but the result
+/// Narrowing shape when the address is constant along some dims but the mask
 /// is not. Conjuncts constant on the narrowed dims slice onto the load and
 /// still bound its address; the rest must be constant on the surviving dims, so
 /// `narrowLoad` drops them and re-applies the full mask after the broadcast,
@@ -378,16 +381,21 @@ getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
     return std::nullopt;
 
   ArrayRef<int64_t> shape = type.getShape();
+  // Bounds masks are commonly ANDs of independent per-dimension checks.
+  // Splitting the AND lets checks that vary only on kept dimensions remain on
+  // the narrowed load, while checks that vary only on collapsed dimensions
+  // move to the post-broadcast select. A conjunct that varies on both sides
+  // makes the rewrite unsafe and rejects the candidate below.
   SmallVector<Value> conjuncts;
   collectMaskConjuncts(load.getMask(), conjuncts);
   for (auto [pos, conjunct] : llvm::enumerate(conjuncts)) {
-    if (isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Collapsed,
-                            axisInfo)) {
+    if (isMaskConstantAlongDims(conjunct, shape, *narrowShape,
+                                DimSet::Collapsed, axisInfo)) {
       loadMaskConjuncts.push_back(pos);
       continue;
     }
-    if (!isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Kept,
-                             axisInfo))
+    if (!isMaskConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Kept,
+                                 axisInfo))
       return std::nullopt;
   }
   return narrowShape;
@@ -455,9 +463,10 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
 
-  // Restore masked-out lanes. Triton calls them undefined when the load had no
-  // `other`, but every backend hands back zero, so fill them rather than
-  // letting the broadcast value reach lanes the original load never read.
+  // Restore masked-out lanes. `triton.language.load` documents them as
+  // undefined when `other` is None (see python/triton/language/core.py), but
+  // every backend hands back zero, so fill them rather than letting the
+  // broadcast value reach lanes the original load never read.
   if (reapplyMask) {
     Value other = load.getOther();
     // `getZeroAttr` is null for an element type that is not int, float, or
