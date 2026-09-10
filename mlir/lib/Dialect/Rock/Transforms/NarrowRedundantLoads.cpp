@@ -315,33 +315,25 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
                                     axisInfo);
 }
 
-/// Returns true if `loadValue` is constant along every dimension that
-/// `narrowShape` keeps.
-bool isConstantOutsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
-                                   ArrayRef<int64_t> narrowShape,
-                                   tt::ModuleAxisInfoAnalysis &axisInfo) {
-  tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
-  if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
-    return false;
-  for (auto [dim, extent] : llvm::enumerate(shape)) {
-    if (narrowShape[dim] == 1)
-      continue;
-    if (extent > 1 && info->getConstancy(dim) != extent)
-      return false;
-  }
-  return true;
-}
+/// Which side of a narrowing `isConstantAlongDims` asks about.
+enum class DimSet {
+  /// Dimensions `narrowShape` collapses to 1.
+  Collapsed,
+  /// Dimensions `narrowShape` keeps at full extent.
+  Kept,
+};
 
-/// Returns true if `loadValue` is constant along every dimension that
-/// `narrowShape` collapses, so slicing it to `narrowShape` preserves its value.
-bool isConstantInsideNarrowedDims(Value loadValue, ArrayRef<int64_t> shape,
-                                  ArrayRef<int64_t> narrowShape,
-                                  tt::ModuleAxisInfoAnalysis &axisInfo) {
+/// Returns true if `loadValue` is constant across the whole extent of every
+/// dimension on the `dims` side of the narrowing.
+bool isConstantAlongDims(Value loadValue, ArrayRef<int64_t> shape,
+                         ArrayRef<int64_t> narrowShape, DimSet dims,
+                         tt::ModuleAxisInfoAnalysis &axisInfo) {
   tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
   if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
     return false;
   for (auto [dim, extent] : llvm::enumerate(shape)) {
-    if (narrowShape[dim] != 1)
+    bool collapsed = narrowShape[dim] == 1;
+    if (collapsed != (dims == DimSet::Collapsed))
       continue;
     if (extent > 1 && info->getConstancy(dim) != extent)
       return false;
@@ -388,11 +380,13 @@ getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
   SmallVector<Value> conjuncts;
   collectMaskConjuncts(load.getMask(), conjuncts);
   for (Value conjunct : conjuncts) {
-    if (isConstantInsideNarrowedDims(conjunct, shape, *narrowShape, axisInfo)) {
+    if (isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Collapsed,
+                            axisInfo)) {
       loadMaskConjuncts.push_back(conjunct);
       continue;
     }
-    if (!isConstantOutsideNarrowedDims(conjunct, shape, *narrowShape, axisInfo))
+    if (!isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Kept,
+                             axisInfo))
       return std::nullopt;
   }
   return narrowShape;
