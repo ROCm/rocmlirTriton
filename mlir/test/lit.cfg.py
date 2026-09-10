@@ -51,7 +51,6 @@ config.substitutions.append(('%pv', config.populate_validation))
 # loosening the check everywhere.
 if config.arch_prefers_bf16x3_for_f32_dot:
     config.available_features.add('bf16x3_f32_dot')
-
 # `asserts` marks a build that kept NDEBUG off, which is what LLVM ties both
 # `-debug-only` and `llvm::Statistic` to: the option is only registered and the
 # counters only track when assertions are on. Tests that read a debug log or
