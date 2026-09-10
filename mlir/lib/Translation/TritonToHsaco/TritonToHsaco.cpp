@@ -979,11 +979,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     llvm::errs() << "\n";
   }
 
-  // Unlike the LLVM IR dump above this is needed before the AMDGCN text is
-  // produced, because it decides whether the text is produced at all.
-  const char *amdgcnDumpEnv = std::getenv("AMDGCN_ENABLE_DUMP");
-  bool dumpAmdgcn = amdgcnDumpEnv && StringRef(amdgcnDumpEnv) == "1";
-
   // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
   // records DiagnosticHandler::HasErrors and prints the message. Backend
   // errors such as the AMDGPU RegisterAllocator out-of-registers error surface
