@@ -52,7 +52,7 @@ module {
                            %scale: !migraphx.shaped<1x1x256xf32, 256x256x1>)
       -> !migraphx.shaped<1x256x256xi8, 65536x256x1>
       attributes {rock.kernel} {
-    %d = migraphx.dot %a, %b : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 65536x256x1> -> <1x256x256xf32, 65536x256x1>
+    %d = migraphx.dot %a, %b {perf_config = "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"} : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 65536x256x1> -> <1x256x256xf32, 65536x256x1>
     %q = migraphx.quantizelinear %d, %scale : <1x256x256xf32, 65536x256x1>, <1x1x256xf32, 256x256x1> -> <1x256x256xi8, 65536x256x1>
     return %q : !migraphx.shaped<1x256x256xi8, 65536x256x1>
   }
