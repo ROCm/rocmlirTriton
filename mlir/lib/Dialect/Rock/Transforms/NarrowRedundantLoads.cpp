@@ -318,9 +318,9 @@ getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
 
 /// Which side of a narrowing `isConstantAlongDims` asks about.
 enum class DimSet {
-  /// Dimensions `narrowShape` collapses to 1.
+  /// Dimensions whose extent `narrowShape` reduces to 1.
   Collapsed,
-  /// Dimensions `narrowShape` keeps at full extent.
+  /// Dimensions whose extent `narrowShape` leaves unchanged.
   Kept,
 };
 
@@ -335,7 +335,7 @@ FailureOr<bool> isMaskConstantAlongDims(Value mask, ArrayRef<int64_t> shape,
   if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
     return failure();
   for (auto [dim, extent] : llvm::enumerate(shape)) {
-    bool collapsed = narrowShape[dim] == 1;
+    bool collapsed = narrowShape[dim] != extent;
     if (collapsed != (dims == DimSet::Collapsed))
       continue;
     if (extent > 1 && info->getConstancy(dim) != extent)
