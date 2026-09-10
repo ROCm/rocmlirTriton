@@ -264,12 +264,16 @@ FailureOr<Value> SliceMaterializer::sliceElementwise(Operation *op,
 /// Returns the type of `load` if this pass can narrow it at all, which every
 /// narrowing criterion below needs first. A dynamically shaped tensor has no
 /// index-0 slice to name, and an `other` holding a different element per lane
-/// has no narrower form, so neither can be re-materialized.
+/// has no narrower form, so neither can be re-materialized. A volatile load is
+/// left alone because every narrowing drops accesses, which is exactly what
+/// volatile asks the compiler not to do.
 std::optional<RankedTensorType> getNarrowableType(tt::LoadOp load) {
   auto type = dyn_cast<RankedTensorType>(load.getType());
   if (!type || !type.hasStaticShape())
     return std::nullopt;
   if (load.getOther() && !isSplatLike(load.getOther()))
+    return std::nullopt;
+  if (load.getIsVolatile())
     return std::nullopt;
   return type;
 }
