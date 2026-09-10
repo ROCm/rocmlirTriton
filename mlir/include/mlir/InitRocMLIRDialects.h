@@ -101,6 +101,7 @@
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -112,6 +113,40 @@
 #include "triton/Tools/Sys/GetEnv.h"
 
 namespace mlir {
+namespace rock {
+
+/// Accepts the kernel metadata Rock and Triton leave on function parameters,
+/// which has no LLVM IR counterpart and is dropped during translation. Without
+/// an interface, that goes through `convertParameterAttr`, which warns once per
+/// attribute via `Operation::emitWarning` - attaching the whole kernel to every
+/// diagnostic and dominating the translation. Function and module attributes
+/// need no interface; `amendOperation` already ignores them silently.
+class KernelMetadataLLVMTranslationInterface
+    : public LLVMTranslationDialectInterface {
+public:
+  using LLVMTranslationDialectInterface::LLVMTranslationDialectInterface;
+
+  LogicalResult
+  convertParameterAttr(LLVM::LLVMFuncOp function, int argIdx,
+                       NamedAttribute attr,
+                       LLVM::ModuleTranslation &moduleTranslation) const final {
+    return success();
+  }
+};
+
+/// Register the interface for the dialects that annotate kernel parameters:
+/// `rock` (`rock.prefill`) and `tt` (`tt.divisibility` and friends).
+inline void
+registerKernelMetadataDialectTranslation(DialectRegistry &registry) {
+  registry.addExtension(+[](MLIRContext *ctx, rock::RockDialect *dialect) {
+    dialect->addInterfaces<KernelMetadataLLVMTranslationInterface>();
+  });
+  registry.addExtension(+[](MLIRContext *ctx, triton::TritonDialect *dialect) {
+    dialect->addInterfaces<KernelMetadataLLVMTranslationInterface>();
+  });
+}
+
+} // namespace rock
 
 inline void registerUpstreamDialects(DialectRegistry &registry) {
   // clang-format off
@@ -266,6 +301,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerLLVMDialectTranslation(registry);
   mlir::registerGPUDialectTranslation(registry);
   mlir::registerROCDLDialectTranslation(registry);
+  mlir::rock::registerKernelMetadataDialectTranslation(registry);
 }
 
 // Add all the MLIR dialects to the provided registry.
