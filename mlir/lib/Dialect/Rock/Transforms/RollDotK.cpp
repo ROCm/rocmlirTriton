@@ -100,47 +100,6 @@ TypedValue<ttg::MemDescType> findStagingBuffer(Value operand) {
   return {};
 }
 
-/// Maps each element of a shared-memory tile to its offset within the tile.
-/// Indexed as `[d0 * shape[1] + d1]`.
-SmallVector<int32_t> elementOffsets(ArrayRef<int64_t> shape, Attribute enc) {
-  triton::LinearLayout ll = ttg::toLinearLayout(shape, enc);
-  MLIRContext *ctx = enc.getContext();
-  StringAttr kOffset = StringAttr::get(ctx, "offset");
-  StringAttr kDim0 = StringAttr::get(ctx, "dim0");
-  StringAttr kDim1 = StringAttr::get(ctx, "dim1");
-  if (!ll.hasInDim(kOffset) || !ll.hasOutDim(kDim0) || !ll.hasOutDim(kDim1))
-    return {};
-
-  // A shared layout may carry input dimensions besides the offset ("block"
-  // for a multi-CTA cluster); apply() insists on being given all of them.
-  SmallVector<std::pair<StringAttr, int32_t>> ins;
-  for (auto [name, size] : ll.getInDims())
-    ins.emplace_back(name, 0);
-  auto offsetIt = llvm::find_if(
-      ins, [&](const auto &entry) { return entry.first == kOffset; });
-
-  int64_t numElems = shape[0] * shape[1];
-  SmallVector<int32_t> offsets(numElems, -1);
-  for (int32_t off = 0; off < numElems; ++off) {
-    offsetIt->second = off;
-    int32_t d0 = -1, d1 = -1;
-    for (auto [name, value] : ll.apply(ins)) {
-      if (name == kDim0)
-        d0 = value;
-      else if (name == kDim1)
-        d1 = value;
-    }
-    if (d0 < 0 || d1 < 0 || d0 >= shape[0] || d1 >= shape[1])
-      return {};
-    offsets[d0 * shape[1] + d1] = off;
-  }
-  // A layout that does not cover every element of the tile bijectively leaves
-  // holes, and reasoning about segment boundaries would not be valid.
-  if (llvm::is_contained(offsets, -1))
-    return {};
-  return offsets;
-}
-
 /// Whether viewing a `[M, K]`-shaped tile (with `kDim` naming which of the two
 /// dimensions is K) as `nseg` consecutive `dotK`-wide tiles addresses exactly
 /// the same bytes.
@@ -153,29 +112,23 @@ SmallVector<int32_t> elementOffsets(ArrayRef<int64_t> shape, Attribute enc) {
 bool segmentingPreservesAddresses(ArrayRef<int64_t> shape, Attribute enc,
                                   unsigned kDim, int64_t dotK) {
   assert(shape.size() == 2 && "expected a 2-D dot operand tile");
-  int64_t nseg = shape[kDim] / dotK;
-
   SmallVector<int64_t> segShape(shape);
   segShape[kDim] = dotK;
 
-  SmallVector<int32_t> wide = elementOffsets(shape, enc);
-  SmallVector<int32_t> seg = elementOffsets(segShape, enc);
-  if (wide.empty() || seg.empty())
-    return false;
+  MLIRContext *ctx = enc.getContext();
+  StringAttr kOffset = StringAttr::get(ctx, "offset");
+  StringAttr kSeg = StringAttr::get(ctx, kDim == 0 ? "dim0" : "dim1");
 
-  int64_t segElems = segShape[0] * segShape[1];
-  for (int64_t j = 0; j < nseg; ++j) {
-    for (int64_t d0 = 0; d0 < segShape[0]; ++d0) {
-      for (int64_t d1 = 0; d1 < segShape[1]; ++d1) {
-        SmallVector<int64_t, 2> wideIdx{d0, d1};
-        wideIdx[kDim] += j * dotK;
-        int32_t want = j * segElems + seg[d0 * segShape[1] + d1];
-        if (wide[wideIdx[0] * shape[1] + wideIdx[1]] != want)
-          return false;
-      }
-    }
-  }
-  return true;
+  // Stacking `nseg` copies of the segment view along K has to reproduce the
+  // wide tile. `inner * outer` puts the inner layout on the low offset bits
+  // and scales the outer's contribution to a shared output dimension by the
+  // inner's size, which is exactly `offset = j * segElems + segOffset` and
+  // `K = j * dotK + segK`, so the equality holds iff the reinterpretation
+  // addresses the same bytes.
+  triton::LinearLayout view =
+      ttg::toLinearLayout(segShape, enc) *
+      triton::LinearLayout::identity1D(shape[kDim] / dotK, kOffset, kSeg);
+  return ttg::toLinearLayout(shape, enc) == view;
 }
 
 /// Recognizes a dot this pass can roll, without yet deciding whether it
@@ -238,12 +191,9 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
 /// The widest segment that gets a dot's loop body under `budget`, or 0 if the
 /// dot's full K already fits, in which case rolling would shrink nothing.
 int64_t chooseDotK(const RollableDot &cand, int64_t budget) {
-  // The body can never hold fewer than `accs` FMAs, and each iteration
-  // amortizes its overhead over `accs` FMAs, so a dot with few accumulators
-  // has nothing to gain here.
-  if (cand.accs >= budget)
-    return 0;
-
+  // A body holds `accs * dotK` FMAs, so `accs` is the floor rolling can reach.
+  // A dot whose accumulators alone are over `budget` cannot get under it, but
+  // rolling to the floor still divides the block by K, so narrow all the way.
   int64_t dotK = cand.k;
   while (dotK > 1 && cand.accs * dotK > budget)
     dotK /= 2;

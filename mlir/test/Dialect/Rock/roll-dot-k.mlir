@@ -245,3 +245,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     tt.return %d1 : tensor<128x64xf32, #blocked2>
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// A 256x128 tile over 64 threads leaves 512 accumulators in each one, which is
+// the whole target on its own, so no segment width gets the body under it. A
+// body still holds `accs * dotK`, so narrowing to a single K per iteration is
+// what divides this block the furthest, taking it from 2048 FMAs down to 512.
+
+// CHECK-LABEL: tt.func @roll_to_accumulator_floor
+// CHECK-DAG:     %[[A:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<256x4xf32, {{.*}}> -> !ttg.memdesc<4x256x1xf32, {{.*}}>
+// CHECK-DAG:     %[[B:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<4x128xf32, {{.*}}> -> !ttg.memdesc<4x1x128xf32, {{.*}}>
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<256x1xf32, {{.*}}> * tensor<1x128xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_to_accumulator_floor(%acc: tensor<256x128xf32, #blocked2>) -> tensor<256x128xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<256x4xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<4x128xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<256x4xf32, #shared, #smem, mutable> -> tensor<256x4xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<4x128xf32, #shared1, #smem, mutable> -> tensor<4x128xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<256x4xf32, #blocked1> -> tensor<256x4xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<4x128xf32, #blocked> -> tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<256x4xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<256x128xf32, #blocked2>
+    tt.return %d : tensor<256x128xf32, #blocked2>
+  }
+}
