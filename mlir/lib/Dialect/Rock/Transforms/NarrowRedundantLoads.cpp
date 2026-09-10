@@ -433,30 +433,31 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
     operands.push_back(*narrowed);
   }
 
-  // Same for the surviving conjuncts, re-read from the live mask so a replaced
-  // conjunct is picked up as it stands now. Re-splitting preserves order: the
-  // rewrites only replace leaves of the `andi` tree, never reshape it.
-  SmallVector<Value> conjuncts;
-  if (load.getMask())
+  if (reapplyMask) {
+    // Re-read surviving conjuncts from the live mask so a replaced conjunct is
+    // picked up as it stands now. Re-splitting preserves order: the rewrites
+    // only replace leaves of the `andi` tree, never reshape it.
+    SmallVector<Value> conjuncts;
     collectMaskConjuncts(load.getMask(), conjuncts);
-  SmallVector<Value> narrowedConjuncts;
-  for (unsigned pos : candidate.loadMaskConjuncts) {
-    if (pos >= conjuncts.size()) {
-      materializer.rollback();
-      return failure();
+    SmallVector<Value> narrowedConjuncts;
+    for (unsigned pos : candidate.loadMaskConjuncts) {
+      if (pos >= conjuncts.size()) {
+        materializer.rollback();
+        return failure();
+      }
+      FailureOr<Value> narrowed =
+          materializer.slice(conjuncts[pos], candidate.narrowShape);
+      if (failed(narrowed)) {
+        materializer.rollback();
+        return failure();
+      }
+      narrowedConjuncts.push_back(*narrowed);
     }
-    FailureOr<Value> narrowed =
-        materializer.slice(conjuncts[pos], candidate.narrowShape);
-    if (failed(narrowed)) {
-      materializer.rollback();
-      return failure();
-    }
-    narrowedConjuncts.push_back(*narrowed);
+    for (Value conjunct : narrowedConjuncts)
+      operands[1] = operands[1] ? arith::AndIOp::create(rewriter, load.getLoc(),
+                                                        operands[1], conjunct)
+                                : conjunct;
   }
-  for (Value conjunct : narrowedConjuncts)
-    operands[1] = operands[1] ? arith::AndIOp::create(rewriter, load.getLoc(),
-                                                      operands[1], conjunct)
-                              : conjunct;
 
   auto type = cast<RankedTensorType>(load.getType());
   auto narrowedType = RankedTensorType::get(
