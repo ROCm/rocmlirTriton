@@ -195,7 +195,12 @@ ttg::SharedEncodingTrait composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
   if (!blocked || order.size() != 2)
     return {};
   unsigned strided = order[1];
-  ArrayRef<int64_t> shape = srcTy.getShape();
+  // Cap the phases by the per-CTA extents: the buffer is per CTA, so phases
+  // counted against the full shape would alias once toLinearLayout wraps them
+  // modulo the local column count.
+  SmallVector<int64_t> shape =
+      ttg::getShapePerCTA(cga.getCTASplitNum(), srcTy.getShape());
+  // max vectorization size for LDS load/store is 128 bits
   int64_t vec = std::max<int64_t>(1, 128 / bitWidth);
   int64_t perPhase = blocked.getSizePerThread()[strided];
   int64_t maxPhase = std::min<int64_t>({blocked.getThreadsPerWarp()[strided],

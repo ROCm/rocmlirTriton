@@ -141,10 +141,10 @@ index 0000000000..db7ec67de5
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index e17a7c1573..59dec2ea30 100644
+index e17a7c1573..f10fd284ec 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -182,6 +182,33 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
+@@ -182,6 +182,38 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
    return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
  }
  
@@ -161,7 +161,12 @@ index e17a7c1573..59dec2ea30 100644
 +  if (!blocked || order.size() != 2)
 +    return {};
 +  unsigned strided = order[1];
-+  ArrayRef<int64_t> shape = srcTy.getShape();
++  // Cap the phases by the per-CTA extents: the buffer is per CTA, so phases
++  // counted against the full shape would alias once toLinearLayout wraps them
++  // modulo the local column count.
++  SmallVector<int64_t> shape =
++      ttg::getShapePerCTA(cga.getCTASplitNum(), srcTy.getShape());
++  // max vectorization size for LDS load/store is 128 bits
 +  int64_t vec = std::max<int64_t>(1, 128 / bitWidth);
 +  int64_t perPhase = blocked.getSizePerThread()[strided];
 +  int64_t maxPhase = std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
@@ -178,7 +183,7 @@ index e17a7c1573..59dec2ea30 100644
  // Adapted from
  // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
  // to support AMDMfmaEncodingAttr.
-@@ -197,6 +224,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -197,6 +229,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
    assert(loadOp);
    Value loadedValue = loadOp->getResult(0);
    llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
@@ -192,7 +197,7 @@ index e17a7c1573..59dec2ea30 100644
    for (Operation *user : loadedValue.getUsers()) {
      LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
      if (user->getNumResults() != 1)
-@@ -304,6 +338,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -304,6 +343,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
          tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                         dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                         dotOpEnc, canUseAsyncCopy);
