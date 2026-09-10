@@ -206,6 +206,15 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
   pm->addPass(
       mlir::createTritonAMDGPUPipeline({useAsyncCopy, useBlockPingpong}));
+
+  // --- rocmlirTriton pass ----
+  // Must run after the pipeliner, which is what stages the dot operands in
+  // shared memory, and before block-pingpong, which slices dots itself.
+  rock::RockRollDotKPassOptions rollDotKOpts;
+  rollDotKOpts.arch = options.arch;
+  pm->addPass(rock::createRockRollDotKPass(rollDotKOpts));
+  // --- rocmlirTriton pass ----
+
   if (useAsyncCopy) {
     pm->addPass(mlir::createTritonAMDGPUCoalesceAsyncCopy({options.arch}));
   }

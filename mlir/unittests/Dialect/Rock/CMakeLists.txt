@@ -53,6 +53,7 @@ target_link_libraries(MLIRRockUnitTests
   TritonAMDGPUTransforms
   TritonAMDAnalysis
   TritonAMDGPUDialectToLLVM
+  TritonNVIDIAGPUToLLVM
   TritonAMDUtils
   GluonTransforms
   TritonInstrumentToLLVM
