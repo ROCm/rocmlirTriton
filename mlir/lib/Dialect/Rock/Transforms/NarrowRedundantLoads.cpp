@@ -279,15 +279,24 @@ std::optional<RankedTensorType> getNarrowableType(tt::LoadOp load) {
   return type;
 }
 
+/// The answer to "what shape can this load be narrowed to". Failure means the
+/// axis-info analysis had nothing usable to say, which no narrowing decision
+/// can be made without; `std::nullopt` means the analysis answered and the load
+/// simply has no dimension worth narrowing.
+using NarrowShapeOr = FailureOr<std::optional<SmallVector<int64_t>>>;
+
+/// Spells out the "analysis answered, but there is nothing to narrow" case,
+/// which failure and a narrowed shape are otherwise easy to confuse with.
+NarrowShapeOr noNarrowing() { return std::optional<SmallVector<int64_t>>(); }
+
 /// Returns `type`'s shape with every dimension along which `loadValue` repeats
 /// across the whole extent collapsed to 1, or nothing if no dimension does.
 /// A dimension that is already unit-sized is not a narrowing on its own.
-std::optional<SmallVector<int64_t>>
-getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
-                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+NarrowShapeOr getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
+                                         tt::ModuleAxisInfoAnalysis &axisInfo) {
   tt::AxisInfo *info = axisInfo.getAxisInfo(loadValue);
   if (!info || info->getRank() != type.getRank())
-    return std::nullopt;
+    return failure();
 
   ArrayRef<int64_t> shape = type.getShape();
   SmallVector<int64_t> narrowShape(shape);
@@ -298,7 +307,9 @@ getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
       narrowed = true;
     }
   }
-  return narrowed ? std::optional(narrowShape) : std::nullopt;
+  if (!narrowed)
+    return noNarrowing();
+  return std::optional(std::move(narrowShape));
 }
 
 /// Returns the shape `load` can be narrowed to, or nothing if it reads
@@ -307,16 +318,16 @@ getConstantDimsNarrowShape(Value loadValue, RankedTensorType type,
 /// A dimension qualifies when the analysis proves the loaded values repeat
 /// across its whole extent. That constancy already folds in both the address
 /// and the mask; `other` is checked separately because it does not.
-std::optional<SmallVector<int64_t>>
-getNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo) {
+NarrowShapeOr getNarrowShape(tt::LoadOp load,
+                             tt::ModuleAxisInfoAnalysis &axisInfo) {
   std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
   if (!narrowableType)
-    return std::nullopt;
+    return noNarrowing();
   return getConstantDimsNarrowShape(load.getResult(), *narrowableType,
                                     axisInfo);
 }
 
-/// Which side of a narrowing `isConstantAlongDims` asks about.
+/// Which side of a narrowing `isMaskConstantAlongDims` asks about.
 enum class DimSet {
   /// Dimensions whose extent `narrowShape` reduces to 1.
   Collapsed,
@@ -360,24 +371,26 @@ void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
 /// still bound its address; the rest must be constant on the surviving dims, so
 /// `narrowLoad` drops them and re-applies the full mask after the broadcast,
 /// speculating on dereferenceability when a dropped conjunct masks every lane.
-FailureOr<std::optional<SmallVector<int64_t>>>
+NarrowShapeOr
 getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
                         SmallVectorImpl<unsigned> &loadMaskConjuncts) {
   std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
   if (!narrowableType)
-    return std::optional<SmallVector<int64_t>>();
+    return noNarrowing();
   RankedTensorType type = *narrowableType;
 
   // Without a mask the plain constancy path above already applies.
   if (!load.getMask())
-    return std::optional<SmallVector<int64_t>>();
+    return noNarrowing();
 
   // Same question as `getNarrowShape`, asked about the address rather than the
   // result, which is what lets it see past the mask.
-  std::optional<SmallVector<int64_t>> narrowShape =
+  NarrowShapeOr narrowShape =
       getConstantDimsNarrowShape(load.getPtr(), type, axisInfo);
-  if (!narrowShape)
-    return std::optional<SmallVector<int64_t>>();
+  if (failed(narrowShape))
+    return failure();
+  if (!*narrowShape)
+    return noNarrowing();
 
   ArrayRef<int64_t> shape = type.getShape();
   // Bounds masks are commonly ANDs of independent per-dimension checks.
@@ -389,19 +402,23 @@ getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
   collectMaskConjuncts(load.getMask(), conjuncts);
   for (auto [pos, conjunct] : llvm::enumerate(conjuncts)) {
     FailureOr<bool> constantOnCollapsed = isMaskConstantAlongDims(
-        conjunct, shape, *narrowShape, DimSet::Collapsed, axisInfo);
+        conjunct, shape, **narrowShape, DimSet::Collapsed, axisInfo);
     if (failed(constantOnCollapsed))
       return failure();
     if (*constantOnCollapsed) {
       loadMaskConjuncts.push_back(pos);
       continue;
     }
+    // This conjunct varies on a collapsed dimension, so it cannot remain on
+    // the narrowed load. It can move to the post-broadcast select only if it
+    // is constant along every kept dimension; a conjunct may vary along both
+    // sets of dimensions, in which case narrowing is unsafe.
     FailureOr<bool> constantOnKept = isMaskConstantAlongDims(
-        conjunct, shape, *narrowShape, DimSet::Kept, axisInfo);
+        conjunct, shape, **narrowShape, DimSet::Kept, axisInfo);
     if (failed(constantOnKept))
       return failure();
     if (!*constantOnKept)
-      return std::optional<SmallVector<int64_t>>();
+      return noNarrowing();
   }
   return narrowShape;
 }
@@ -500,17 +517,21 @@ struct RockNarrowRedundantLoadsPass
     SmallVector<NarrowingCandidate> candidates;
     WalkResult walkResult = module.walk([&](tt::LoadOp load) -> WalkResult {
       // Prefer the exact slice when it applies.
-      if (std::optional<SmallVector<int64_t>> narrowShape =
-              getNarrowShape(load, axisInfo)) {
+      NarrowShapeOr narrowShape = getNarrowShape(load, axisInfo);
+      if (failed(narrowShape)) {
+        load.emitError("no usable axis information for this load");
+        return WalkResult::interrupt();
+      }
+      if (*narrowShape) {
         candidates.push_back(
-            {load, std::move(*narrowShape), MaskPolicy::Narrow, {}});
+            {load, std::move(**narrowShape), MaskPolicy::Narrow, {}});
         return WalkResult::advance();
       }
       SmallVector<unsigned> loadMaskConjuncts;
-      FailureOr<std::optional<SmallVector<int64_t>>> broadcastNarrowShape =
+      NarrowShapeOr broadcastNarrowShape =
           getBroadcastNarrowShape(load, axisInfo, loadMaskConjuncts);
       if (failed(broadcastNarrowShape)) {
-        load.emitError("failed to obtain compatible axis information");
+        load.emitError("no usable axis information for this load");
         return WalkResult::interrupt();
       }
       if (*broadcastNarrowShape)
