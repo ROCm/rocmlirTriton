@@ -460,6 +460,9 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   // letting the broadcast value reach lanes the original load never read.
   if (reapplyMask) {
     Value other = load.getOther();
+    // `getZeroAttr` is null for an element type that is not int, float, or
+    // index, but such a load never reaches here: Triton's axis-info analysis
+    // asserts on a pointer element type long before any candidate is built.
     if (!other)
       other = arith::ConstantOp::create(rewriter, load.getLoc(), type,
                                         rewriter.getZeroAttr(type));
