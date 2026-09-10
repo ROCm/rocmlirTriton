@@ -4,7 +4,7 @@
 // be reflected in the tuning key.
 // CHECK: gfx942
 // CHECK-SAME: 304
-// CHECK-SAME: -t f32 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 3 -head_dim_v 3 -with-attn-scale true -with-attn-bias false
+// CHECK-SAME: -t f32 -transQ false -transK false -transV false -transO false -causal false -return_lse false -split_kv 1 -num_heads_q 1 -num_heads_kv 1 -g 1 -seq_len_q 7 -seq_len_k 7 -head_dim_qk 3 -head_dim_v 3 -with-attn-scale true -with-attn-bias false -transBias false -supportsSplitK false
 module
 {
   func.func private @mlir_attention(%arg0: !migraphx.shaped<1x7x3xf32, 21x3x1>,

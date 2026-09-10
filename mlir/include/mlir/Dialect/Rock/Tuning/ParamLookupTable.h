@@ -48,6 +48,14 @@ public:
   // and "gfx1201_gemm_f16" exist, this picks the lexicographically closest one
   // (gfx1101_gemm_f16). This enables graceful fallback between similar GPU
   // architectures.
+  //
+  // When the target key itself is absent, the kernel type and data type may
+  // also be substituted (see getFallbackKernelType and getFallbackDataType).
+  // Candidates are tried cheapest-first along three axes: kernel type is
+  // cheapest, then architecture, then data type. So a same-architecture
+  // attention list is preferred over the same fusion tuned for a relative
+  // architecture, and both are preferred over any change of precision.
+  // Returns an empty StringRef when nothing applies.
   static StringRef findFallback(StringRef target);
 
 private:
@@ -63,6 +71,25 @@ private:
   // has no entries of its own (e.g. fp8 -> i8, f4 -> i8). Returns an empty
   // StringRef when there is no fallback datatype.
   static StringRef getFallbackDataType(StringRef dataType);
+
+  // Returns the closest kernel type to borrow tuning configs from when
+  // `kernelType` has no entries of its own. The gemm+elementwise+gemm and
+  // conv+elementwise+gemm fusions lower through the same gridwise code and
+  // share attention's perf-config format, so they can use the attention lists
+  // until they are tuned in their own right. Returns an empty StringRef when
+  // there is no fallback kernel type.
+  static StringRef getFallbackKernelType(StringRef kernelType);
+
+  // Splits `key` into its `<arch>_<kernelType>_<dataType>` components. Returns
+  // false, leaving the outputs untouched, when `key` has no such structure.
+  static bool splitKey(StringRef key, StringRef &arch, StringRef &kernelType,
+                       StringRef &dataType);
+
+  // Of `relatives`, all of which share `target`'s suffix and architecture
+  // family, returns the one whose key diverges from `target` latest, preferring
+  // the newer architecture when two are equidistant.
+  static StringRef pickClosestRelative(StringRef target,
+                                       ArrayRef<StringRef> relatives);
 
   static const std::map<StringRef, ArrayRef<StringRef>> &getTable() {
     static const std::map<StringRef, ArrayRef<StringRef>> table = buildTable();

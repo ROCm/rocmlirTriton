@@ -119,7 +119,10 @@ the author can look up the rationale.
 - `TODO` without an issue reference (`TODO(#issue-number)`).
 - Architecture coverage: a new op/pass that should work on multiple GPU
   arch families (CDNA `gfx9xx` -- e.g. gfx908, gfx942, gfx950 -- and RDNA
-  `gfx10xx`/`gfx11xx`/`gfx12xx`) is implemented for only one. Use the
+  `gfx10xx`/`gfx11xx`/`gfx120x`) is implemented for only one. The gfx number
+  is not the product line: gfx1250 is CDNA despite being a gfx12 chip (and it
+  issues WMMA, not MFMA), so code that needs the line must ask
+  `rock::isCDNA` / `rock::isRDNA` rather than test a gfx prefix or range. Use the
   `mlir/test/e2e/` `.toml`/`.cfg` corpus as the reference for which arches
   are exercised in CI before approving "this is single-arch on purpose".
 - Data type coverage: an op that should support multiple dtypes (f16/bf16/

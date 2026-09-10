@@ -49,6 +49,13 @@ OP_TO_KERNEL_TYPE = {
     'conv_gemm': 'ConvElementwiseGemm',
 }
 
+# Operations whose problems may or may not permit split-K depending on the
+# fusion they end up in (including gemm+gemm and conv+gemm). Attention is
+# excluded: it parallelizes over the KV sequence via the -split_kv kernel
+# argument, never via the perf-config's splitKFactor, so a split-K-free
+# duplicate would be the same problem twice.
+SPLIT_K_AWARE_OPS = frozenset({'gemm', 'conv', 'gemm_gemm', 'conv_gemm'})
+
 # Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
 LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
 
@@ -186,6 +193,42 @@ def load_data(files, no_splitk):
     return df
 
 
+def build_coverage(df_typed, target_cols, op, threshold):
+    """Map each problem to the perfconfigs performing within ``threshold`` of its best.
+
+    Keys are ``(problem, split_k_allowed)``. A problem whose fusion forbids
+    split-K can only run a ``splitKFactor == 1`` config, so covering it well
+    needs a second entry whose candidates are restricted to those. Both entries
+    come from the same measurements, so the extra accuracy costs no tuning time.
+
+    The restricted entry is dropped when it would duplicate the unrestricted one,
+    which happens whenever split-K did not win the problem in the first place.
+    """
+    coverage = {}
+    for name, group in df_typed.groupby(target_cols):
+        max_tflops = group['TFlops'].max()
+        top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
+        coverage[name, True] = top
+
+        if op not in SPLIT_K_AWARE_OPS:
+            continue
+
+        is_split_k_free = group['PerfConfig'].apply(lambda config: get_splitk_value(config) in
+                                                    (None, '1'))
+        no_splitk = group[is_split_k_free]
+        if no_splitk.empty:
+            print(f"WARNING: no splitKFactor=1 config measured for {name}; the quick list "
+                  "cannot cover it when split-K is illegal")
+            continue
+
+        cutoff = no_splitk['TFlops'].max() * threshold
+        top_no_splitk = no_splitk[no_splitk['TFlops'] >= cutoff]['PerfConfig'].tolist()
+        if set(top_no_splitk) != set(top):
+            coverage[name, False] = top_no_splitk
+
+    return coverage
+
+
 def find_perfconfigs(df, op, threshold):
     """Find minimal covering set of perfconfigs using set cover optimization.
 
@@ -209,12 +252,7 @@ def find_perfconfigs(df, op, threshold):
         # Aggregate by keeping only the best TFlops per (problem, config)
         df_typed = df_typed.groupby(target_cols + ['PerfConfig'], as_index=False)['TFlops'].max()
 
-        # Build coverage: for each problem, which configs are "good enough"?
-        coverage = {}
-        for name, group in df_typed.groupby(target_cols):
-            max_tflops = group['TFlops'].max()
-            top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
-            coverage[name] = top
+        coverage = build_coverage(df_typed, target_cols, op, threshold)
 
         problems = sorted(coverage.keys())
         configs = sorted({c for cs in coverage.values() for c in cs})

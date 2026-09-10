@@ -1728,6 +1728,28 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
 // since it can store each field separately.
 // Currently serialize the problem in MIOpenDriver command friendly format
 LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
+  auto serializeWithSplitKSupport = [&](auto tuningOp) -> LogicalResult {
+    if (failed(getTuningProblemStr(tuningOp, out)))
+      return failure();
+
+    // Legality must be judged on the function holding the op we just
+    // serialized. The ModuleOp overload always inspects the module's first
+    // function, which is not necessarily that one.
+    auto func = tuningOp->template getParentOfType<func::FuncOp>();
+    if (!func)
+      return failure();
+
+    // MIGraphX calls mlirRockTuningGetKey, which routes here. Append split-K
+    // fusion legality so the same GEMM problem gets distinct tuning keys when
+    // the surrounding fusion does or does not allow split-K (this allows for
+    // MIGraphX to avoid running into tuning DB lookup issues)
+    llvm::raw_svector_ostream problemOS(out);
+    problemOS << " -supportsSplitK "
+              << (succeeded(rock::testFusionLegalitySplitK(func)) ? "true"
+                                                                  : "false");
+    return success();
+  };
+
   {
     rock::RockGemmWrapperInterface gemmIF;
     WalkResult findPrimary =
@@ -1736,7 +1758,7 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
           return WalkResult::interrupt();
         });
     if (findPrimary.wasInterrupted())
-      return getTuningProblemStr(gemmIF, out);
+      return serializeWithSplitKSupport(gemmIF);
   }
   {
     rock::RockGemmGemmWrapperInterface gemmGemmOp;
@@ -1746,7 +1768,7 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
           return WalkResult::interrupt();
         });
     if (findGemmGemm.wasInterrupted())
-      return getTuningProblemStr(gemmGemmOp, out);
+      return serializeWithSplitKSupport(gemmGemmOp);
   }
   return failure();
 }
