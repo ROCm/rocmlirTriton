@@ -324,17 +324,16 @@ enum class DimSet {
   Kept,
 };
 
-/// Returns true if `mask` is constant across the whole extent of every
-/// dimension on the `dims` side of the narrowing.
-bool isMaskConstantAlongDims(Value mask, ArrayRef<int64_t> shape,
-                             ArrayRef<int64_t> narrowShape, DimSet dims,
-                             tt::ModuleAxisInfoAnalysis &axisInfo) {
+/// Returns whether `mask` is constant across the whole extent of every
+/// dimension on the `dims` side of the narrowing, or failure if axis
+/// information is unavailable or incompatible with the mask.
+FailureOr<bool> isMaskConstantAlongDims(Value mask, ArrayRef<int64_t> shape,
+                                        ArrayRef<int64_t> narrowShape,
+                                        DimSet dims,
+                                        tt::ModuleAxisInfoAnalysis &axisInfo) {
   tt::AxisInfo *info = axisInfo.getAxisInfo(mask);
-  // Missing or incompatible analysis information only means this optional
-  // rewrite cannot prove the mask safe; leaving the load unchanged is valid,
-  // so this is not a pass failure.
   if (!info || info->getRank() != static_cast<int64_t>(shape.size()))
-    return false;
+    return failure();
   for (auto [dim, extent] : llvm::enumerate(shape)) {
     bool collapsed = narrowShape[dim] == 1;
     if (collapsed != (dims == DimSet::Collapsed))
@@ -361,24 +360,24 @@ void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
 /// still bound its address; the rest must be constant on the surviving dims, so
 /// `narrowLoad` drops them and re-applies the full mask after the broadcast,
 /// speculating on dereferenceability when a dropped conjunct masks every lane.
-std::optional<SmallVector<int64_t>>
+FailureOr<std::optional<SmallVector<int64_t>>>
 getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
                         SmallVectorImpl<unsigned> &loadMaskConjuncts) {
   std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
   if (!narrowableType)
-    return std::nullopt;
+    return std::optional<SmallVector<int64_t>>();
   RankedTensorType type = *narrowableType;
 
   // Without a mask the plain constancy path above already applies.
   if (!load.getMask())
-    return std::nullopt;
+    return std::optional<SmallVector<int64_t>>();
 
   // Same question as `getNarrowShape`, asked about the address rather than the
   // result, which is what lets it see past the mask.
   std::optional<SmallVector<int64_t>> narrowShape =
       getConstantDimsNarrowShape(load.getPtr(), type, axisInfo);
   if (!narrowShape)
-    return std::nullopt;
+    return std::optional<SmallVector<int64_t>>();
 
   ArrayRef<int64_t> shape = type.getShape();
   // Bounds masks are commonly ANDs of independent per-dimension checks.
@@ -389,14 +388,20 @@ getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
   SmallVector<Value> conjuncts;
   collectMaskConjuncts(load.getMask(), conjuncts);
   for (auto [pos, conjunct] : llvm::enumerate(conjuncts)) {
-    if (isMaskConstantAlongDims(conjunct, shape, *narrowShape,
-                                DimSet::Collapsed, axisInfo)) {
+    FailureOr<bool> constantOnCollapsed = isMaskConstantAlongDims(
+        conjunct, shape, *narrowShape, DimSet::Collapsed, axisInfo);
+    if (failed(constantOnCollapsed))
+      return failure();
+    if (*constantOnCollapsed) {
       loadMaskConjuncts.push_back(pos);
       continue;
     }
-    if (!isMaskConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Kept,
-                                 axisInfo))
-      return std::nullopt;
+    FailureOr<bool> constantOnKept = isMaskConstantAlongDims(
+        conjunct, shape, *narrowShape, DimSet::Kept, axisInfo);
+    if (failed(constantOnKept))
+      return failure();
+    if (!*constantOnKept)
+      return std::optional<SmallVector<int64_t>>();
   }
   return narrowShape;
 }
@@ -492,21 +497,29 @@ struct RockNarrowRedundantLoadsPass
 
     // Collect first: rewriting the loads invalidates the analysis.
     SmallVector<NarrowingCandidate> candidates;
-    module.walk([&](tt::LoadOp load) {
+    WalkResult walkResult = module.walk([&](tt::LoadOp load) -> WalkResult {
       // Prefer the exact slice when it applies.
       if (std::optional<SmallVector<int64_t>> narrowShape =
               getNarrowShape(load, axisInfo)) {
         candidates.push_back(
             {load, std::move(*narrowShape), MaskPolicy::Narrow, {}});
-        return;
+        return WalkResult::advance();
       }
       SmallVector<unsigned> loadMaskConjuncts;
-      if (std::optional<SmallVector<int64_t>> narrowShape =
-              getBroadcastNarrowShape(load, axisInfo, loadMaskConjuncts))
-        candidates.push_back({load, std::move(*narrowShape),
+      FailureOr<std::optional<SmallVector<int64_t>>> broadcastNarrowShape =
+          getBroadcastNarrowShape(load, axisInfo, loadMaskConjuncts);
+      if (failed(broadcastNarrowShape)) {
+        load.emitError("failed to obtain compatible axis information");
+        return WalkResult::interrupt();
+      }
+      if (*broadcastNarrowShape)
+        candidates.push_back({load, std::move(**broadcastNarrowShape),
                               MaskPolicy::ReapplyAfterBroadcast,
                               std::move(loadMaskConjuncts)});
+      return WalkResult::advance();
     });
+    if (walkResult.wasInterrupted())
+      return signalPassFailure();
 
     for (const NarrowingCandidate &candidate : candidates) {
       // Logged before the rewrite because a narrowed load is erased by it.
