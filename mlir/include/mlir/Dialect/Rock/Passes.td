@@ -866,32 +866,24 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
   let summary = "Roll the K dimension of a scalar-FMA dot into an scf.for over "
                 "shared-memory segments";
   let description = [{
-    A `tt.dot` that lowers to scalar FMAs (a blocked result encoding, as
-    opposed to a WMMA or MFMA one) expands into `accumulators * K` machine
-    instructions in a single basic block. On a 128x64 tile with a K of 64 that
-    is 8192 FMAs per dot, and the register allocator and machine scheduler
-    cost grows superlinearly in the size of that block.
+    A `tt.dot` with a blocked result encoding (rather than a WMMA or MFMA one)
+    lowers to `accumulators * K` scalar FMAs in one basic block, 8192 of them
+    for a 128x64 tile with a K of 64, and register allocation and scheduling
+    cost grows superlinearly in the size of that block. This pass rolls such a
+    dot into an `scf.for` over `K / dotK` segments accumulating into the same
+    tile, leaving `accumulators * dotK` FMAs in the body.
 
-    This pass rewrites such a dot into an `scf.for` over `K / dotK` segments,
-    each performing a narrower dot that accumulates into the same tile, which
-    leaves `accumulators * dotK` FMAs in the loop body.
-
-    The operands keep the shared-memory buffer they already have. Because a
-    dot operand's shared encoding stores K as its slowest-varying dimension, a
-    K segment is a contiguous range of that buffer, so the segmented view is
-    obtained with `ttg.memdesc_reinterpret` from `[M, K]` to `[K / dotK, M,
-    dotK]` and then `ttg.memdesc_index` with the loop induction variable. No
-    memory moves and no global load changes: the byte layout of shared memory
-    is exactly what it was. That soundness condition is checked per operand
-    against the linear layout, so an operand whose swizzling would cross a
-    segment boundary is left alone.
+    The operands keep the shared-memory buffer they already have. Their shared
+    encoding stores K as the slowest-varying dimension, so a segment is a
+    contiguous range: the view is a `ttg.memdesc_reinterpret` from `[M, K]` to
+    `[K / dotK, M, dotK]` indexed by the induction variable, which leaves the
+    byte layout untouched. That is checked per operand against the linear
+    layout, so swizzling that would cross a segment boundary is left alone.
 
     Runs after Triton's pipeliner, which is what puts the operands in shared
-    memory. It handles every qualifying dot in the function, including the
-    per-stage drain dots the pipeliner leaves after the loop, and several
-    chained dots in one block (as `rock-decompose-nonpow2-k` produces).
-
-    Scoped to f32 on RDNA, where the scalar-FMA path is what a dot lowers to.
+    memory, and covers every qualifying f32 dot on RDNA, including the drain
+    dots left after the loop and chained dots sharing one block (as
+    `rock-decompose-nonpow2-k` produces).
   }];
   let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
                            "triton::gpu::TritonGPUDialect", "scf::SCFDialect",

@@ -51,6 +51,7 @@ config.substitutions.append(('%pv', config.populate_validation))
 # loosening the check everywhere.
 if config.arch_prefers_bf16x3_for_f32_dot:
     config.available_features.add('bf16x3_f32_dot')
+
 # ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
 # such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
 # relocatable SDK). lit otherwise scrubs it from the test environment.
