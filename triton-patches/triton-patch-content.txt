@@ -19,10 +19,10 @@ patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
-patch-fma-lds-swizzle.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
+patch-fma-lds-swizzle.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
