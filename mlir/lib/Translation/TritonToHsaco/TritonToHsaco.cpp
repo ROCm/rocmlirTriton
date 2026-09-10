@@ -532,10 +532,12 @@ void disablePrintInline(llvm::Module &module) {
 // Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
 //===----------------------------------------------------------------------===//
 
-std::string translateLLVMIRToASM(llvm::Module &module,
-                                 llvm::TargetMachine *machine) {
-  using namespace mlir;
-
+/// Inline everything, verify, then run the target's code generation pipeline,
+/// writing `fileType` to `os`. Matches llvm.cc lines 329-377. Returns false if
+/// the target cannot emit `fileType`.
+bool emitMachineCode(llvm::Module &module, llvm::TargetMachine *machine,
+                     llvm::CodeGenFileType fileType,
+                     llvm::raw_pwrite_stream &os) {
   // inline everything (matches llvm.cc lines 329-332)
   for (llvm::Function &f : module.functions())
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
@@ -551,15 +553,50 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   pm.run(module);
 
   // emit machine code (matches llvm.cc lines 360-377)
+  llvm::legacy::PassManager pass;
+  if (machine->addPassesToEmitFile(pass, os, nullptr, fileType))
+    return false;
+  pass.run(module);
+  return true;
+}
+
+std::string translateLLVMIRToASM(llvm::Module &module,
+                                 llvm::TargetMachine *machine) {
   std::string result;
   {
     llvm::raw_string_ostream stream(result);
     llvm::buffer_ostream pstream(stream);
-    llvm::legacy::PassManager pass;
-    // emit
-    machine->addPassesToEmitFile(pass, pstream, nullptr,
-                                 llvm::CodeGenFileType::AssemblyFile);
-    pass.run(module);
+    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::AssemblyFile,
+                         pstream))
+      return {};
+  }
+  return result;
+}
+
+/// Emit a relocatable object straight from the target machine.
+///
+/// This is the same code generation `translateLLVMIRToASM` performs, asking for
+/// `ObjectFile` instead of `AssemblyFile` so that the MC layer writes the
+/// object directly. It replaces printing ISA to text and parsing that text back
+/// with `AMDGPUAsmParser` (`assembleAMDGCN`), which together account for
+/// roughly half of binary emission on large kernels and buy nothing when the
+/// text is never read.
+///
+/// Upstream Triton has no equivalent because `make_amdgcn` and `make_hsaco` are
+/// separate Python-visible stages there and it caches the `.s` as a build
+/// artifact; we only need the text when a dump is requested.
+std::optional<SmallVector<char, 0>>
+translateLLVMIRToObject(llvm::Module &module, llvm::TargetMachine *machine) {
+  llvm::SmallVector<char, 0> result;
+  {
+    // Unlike the assembly path this needs no `buffer_ostream`, since
+    // `raw_svector_ostream` is already a seekable `raw_pwrite_stream`.
+    llvm::raw_svector_ostream svos(result);
+    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::ObjectFile,
+                         svos)) {
+      llvm::errs() << "Target does not support direct object emission\n";
+      return std::nullopt;
+    }
   }
   return result;
 }
@@ -942,21 +979,49 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     llvm::errs() << "\n";
   }
 
-  std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
-  if (amdgcnAsm.empty()) {
-    llvm::errs() << "Failed to generate AMDGCN assembly\n";
-    return failure();
-  }
+  // Unlike the LLVM IR dump above this is needed before the AMDGCN text is
+  // produced, because it decides whether the text is produced at all.
+  const char *amdgcnDumpEnv = std::getenv("AMDGCN_ENABLE_DUMP");
+  bool dumpAmdgcn = amdgcnDumpEnv && StringRef(amdgcnDumpEnv) == "1";
 
   // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
   // records DiagnosticHandler::HasErrors and prints the message. Backend
   // errors such as the AMDGPU RegisterAllocator out-of-registers error surface
   // this way during code generation, so propagate them as a failure instead of
   // emitting a binary for a kernel that the backend rejected.
-  if (llvmContext.getDiagHandlerPtr()->HasErrors) {
+  auto codegenFailed = [&] {
+    if (!llvmContext.getDiagHandlerPtr()->HasErrors)
+      return false;
     llvm::errs() << "LLVM backend reported errors during code generation\n";
+    return true;
+  };
+
+  // The assembler in `assembleAMDGCN` is configured with `hsacoFeatures`, which
+  // under ASan carries a `+xnack` that `asmFeatures` (and hence `tmAsm`) does
+  // not. Emitting the object straight from `tmAsm` would silently drop it, so
+  // ASan keeps the text round trip; its compile time does not matter.
+  if (!enableAsan && !dumpAmdgcn) {
+    std::optional<SmallVector<char, 0>> objectCode =
+        translateLLVMIRToObject(*llvmModule, tmAsm.get());
+    if (!objectCode)
+      return failure();
+    if (codegenFailed())
+      return failure();
+
+    auto hsaco = linkHSACO(*objectCode);
+    if (!hsaco)
+      return failure();
+    return llvm::SmallVector<char, 0>(hsaco->begin(), hsaco->end());
+  }
+
+  std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
+  if (amdgcnAsm.empty()) {
+    llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
   }
+
+  if (codegenFailed())
+    return failure();
 
   // make_amdgcn (compiler.py)
   if (dumpAmdgcn) {
