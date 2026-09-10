@@ -72,10 +72,11 @@ struct NarrowingCandidate {
   tt::LoadOp load;
   SmallVector<int64_t> narrowShape;
   MaskPolicy maskPolicy;
-  /// The conjuncts of the mask that survive narrowing and stay on the narrowed
-  /// load, keeping it from reading positions the original load skipped. Empty
-  /// means it runs unmasked.
-  SmallVector<Value> loadMaskConjuncts;
+  /// Which of the mask's conjuncts, in `collectMaskConjuncts` order, stay on
+  /// the narrowed load to keep it from reading positions the original skipped.
+  /// Empty means it runs unmasked. Positions rather than values because a
+  /// conjunct may itself be a load this pass replaces before this rewrite.
+  SmallVector<unsigned> loadMaskConjuncts;
 };
 
 /// Re-materializes values at a reduced shape, which amounts to taking their
@@ -359,7 +360,7 @@ void collectMaskConjuncts(Value mask, SmallVectorImpl<Value> &conjuncts) {
 /// speculating on dereferenceability when a dropped conjunct masks every lane.
 std::optional<SmallVector<int64_t>>
 getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
-                        SmallVectorImpl<Value> &loadMaskConjuncts) {
+                        SmallVectorImpl<unsigned> &loadMaskConjuncts) {
   std::optional<RankedTensorType> narrowableType = getNarrowableType(load);
   if (!narrowableType)
     return std::nullopt;
@@ -379,10 +380,10 @@ getBroadcastNarrowShape(tt::LoadOp load, tt::ModuleAxisInfoAnalysis &axisInfo,
   ArrayRef<int64_t> shape = type.getShape();
   SmallVector<Value> conjuncts;
   collectMaskConjuncts(load.getMask(), conjuncts);
-  for (Value conjunct : conjuncts) {
+  for (auto [pos, conjunct] : llvm::enumerate(conjuncts)) {
     if (isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Collapsed,
                             axisInfo)) {
-      loadMaskConjuncts.push_back(conjunct);
+      loadMaskConjuncts.push_back(pos);
       continue;
     }
     if (!isConstantAlongDims(conjunct, shape, *narrowShape, DimSet::Kept,
@@ -419,11 +420,20 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
     operands.push_back(*narrowed);
   }
 
-  // Same for the surviving conjuncts.
+  // Same for the surviving conjuncts, re-read from the live mask so a replaced
+  // conjunct is picked up as it stands now. Re-splitting preserves order: the
+  // rewrites only replace leaves of the `andi` tree, never reshape it.
+  SmallVector<Value> conjuncts;
+  if (load.getMask())
+    collectMaskConjuncts(load.getMask(), conjuncts);
   SmallVector<Value> narrowedConjuncts;
-  for (Value conjunct : candidate.loadMaskConjuncts) {
+  for (unsigned pos : candidate.loadMaskConjuncts) {
+    if (pos >= conjuncts.size()) {
+      materializer.rollback();
+      return failure();
+    }
     FailureOr<Value> narrowed =
-        materializer.slice(conjunct, candidate.narrowShape);
+        materializer.slice(conjuncts[pos], candidate.narrowShape);
     if (failed(narrowed)) {
       materializer.rollback();
       return failure();
@@ -478,7 +488,7 @@ struct RockNarrowRedundantLoadsPass
             {load, std::move(*narrowShape), MaskPolicy::Narrow, {}});
         return;
       }
-      SmallVector<Value> loadMaskConjuncts;
+      SmallVector<unsigned> loadMaskConjuncts;
       if (std::optional<SmallVector<int64_t>> narrowShape =
               getBroadcastNarrowShape(load, axisInfo, loadMaskConjuncts))
         candidates.push_back({load, std::move(*narrowShape),

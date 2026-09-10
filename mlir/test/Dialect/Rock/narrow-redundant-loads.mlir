@@ -444,3 +444,32 @@ func.func @mask_varies_along_surviving_dim(%base: !tt.ptr<f16>, %lim: i32) -> te
   %val = tt.load %addr, %mask, %zero : tensor<32x128x!tt.ptr<f16>>
   return %val : tensor<32x128xf16>
 }
+
+// -----
+
+// A mask conjunct that is itself a load this pass narrows. The conjunct has to
+// be re-read from the mask operand at rewrite time, because the load defining
+// it is replaced before this one is reached and a value captured during
+// collection would dangle.
+
+// CHECK-LABEL: @conjunct_is_a_narrowed_load
+//      CHECK:   %[[MASK:.*]] = tt.load %{{.*}} : tensor<32x1x!tt.ptr<i1>>
+//      CHECK:   tt.load %{{.*}}, %[[MASK]] : tensor<32x1x!tt.ptr<f32>>
+func.func @conjunct_is_a_narrowed_load(%mBase: !tt.ptr<i1>, %base: !tt.ptr<f32>) -> tensor<32x32xf32> {
+  %one = arith.constant dense<1> : tensor<1x32xi32>
+  %range = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %col = tt.expand_dims %range {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %row = tt.expand_dims %range {axis = 0 : i32} : tensor<32xi32> -> tensor<1x32xi32>
+  %mPtrs = tt.splat %mBase : !tt.ptr<i1> -> tensor<32x1x!tt.ptr<i1>>
+  %mAddr = tt.addptr %mPtrs, %col : tensor<32x1x!tt.ptr<i1>>, tensor<32x1xi32>
+  %mAddrB = tt.broadcast %mAddr : tensor<32x1x!tt.ptr<i1>> -> tensor<32x32x!tt.ptr<i1>>
+  %loaded = tt.load %mAddrB : tensor<32x32x!tt.ptr<i1>>
+  %inRange = arith.cmpi ult, %row, %one : tensor<1x32xi32>
+  %inRangeB = tt.broadcast %inRange : tensor<1x32xi1> -> tensor<32x32xi1>
+  %mask = arith.andi %loaded, %inRangeB : tensor<32x32xi1>
+  %ptrs = tt.splat %base : !tt.ptr<f32> -> tensor<32x1x!tt.ptr<f32>>
+  %addr = tt.addptr %ptrs, %col : tensor<32x1x!tt.ptr<f32>>, tensor<32x1xi32>
+  %addrB = tt.broadcast %addr : tensor<32x1x!tt.ptr<f32>> -> tensor<32x32x!tt.ptr<f32>>
+  %val = tt.load %addrB, %mask : tensor<32x32x!tt.ptr<f32>>
+  return %val : tensor<32x32xf32>
+}
