@@ -224,6 +224,7 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
+    pm.enableVerifier(false);
     // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI so
     // MIGraphX can request IEEE NaN semantics; until then every entry point
     // assumes no NaN operands.
@@ -280,6 +281,7 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
+    pm.enableVerifier(false);
     mlir::rock::KernelOptions kOpts;
     // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI (see
     // above).
@@ -352,6 +354,7 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
   if (failed(applyPassManagerCLOptions(*passMan)))
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
+  passMan->enableVerifier(false);
   // TODO: expose fast-math control through this entry point so MIGraphX can
   // request IEEE NaN semantics; for now the lowering assumes no NaN operands.
   mlir::migraphx::addMIGraphXPipeline(*passMan, /*disableFastMath=*/false);
@@ -406,6 +409,7 @@ mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
   if (failed(applyPassManagerCLOptions(*passMan)))
     return false;
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
+  passMan->enableVerifier(false);
   mlir::rock::KernelOptions kOpts;
   // TODO: add a fast-math field to MlirMIGraphXBackendOptions and plumb it
   // here; for now the kernel and backend pipelines assume no NaN operands.
