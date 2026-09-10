@@ -862,6 +862,45 @@ def RockSetReductionLayoutPass
       "every kernel.">];
 }
 
+def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
+  let summary = "Roll the K dimension of a scalar-FMA dot into an scf.for over "
+                "shared-memory segments";
+  let description = [{
+    A `tt.dot` that lowers to scalar FMAs (a blocked result encoding, as
+    opposed to a WMMA or MFMA one) expands into `accumulators * K` machine
+    instructions in a single basic block. On a 128x64 tile with a K of 64 that
+    is 8192 FMAs per dot, and the register allocator and machine scheduler
+    cost grows superlinearly in the size of that block.
+
+    This pass rewrites such a dot into an `scf.for` over `K / dotK` segments,
+    each performing a narrower dot that accumulates into the same tile, which
+    leaves `accumulators * dotK` FMAs in the loop body.
+
+    The operands keep the shared-memory buffer they already have. Because a
+    dot operand's shared encoding stores K as its slowest-varying dimension, a
+    K segment is a contiguous range of that buffer, so the segmented view is
+    obtained with `ttg.memdesc_reinterpret` from `[M, K]` to `[K / dotK, M,
+    dotK]` and then `ttg.memdesc_index` with the loop induction variable. No
+    memory moves and no global load changes: the byte layout of shared memory
+    is exactly what it was. That soundness condition is checked per operand
+    against the linear layout, so an operand whose swizzling would cross a
+    segment boundary is left alone.
+
+    Runs after Triton's pipeliner, which is what puts the operands in shared
+    memory. It handles every qualifying dot in the function, including the
+    per-stage drain dots the pipeliner leaves after the loop, and several
+    chained dots in one block (as `rock-decompose-nonpow2-k` produces).
+
+    Scoped to f32 on RDNA, where the scalar-FMA path is what a dot lowers to.
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
+                           "triton::gpu::TritonGPUDialect", "scf::SCFDialect",
+                           "arith::ArithDialect"];
+  let options = [Option<
+      "arch", "arch", "std::string", /*default=*/"std::string{}",
+      "Target architecture. Defaults to the module's ttg.target.">];
+}
+
 def RockNarrowRedundantLoadsPass
     : Pass<"rock-narrow-redundant-loads", "::mlir::ModuleOp"> {
   let summary = "Replace a tt.load that reads the same value along a dimension "
