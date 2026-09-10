@@ -171,13 +171,6 @@ bool isEnvFlagSet(const char *name) {
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
-///
-/// `asmComments` controls the human-readable annotations (register and
-/// occupancy counts, source comments) the AsmPrinter interleaves with the
-/// generated instructions. They are worth their cost only when someone is
-/// going to read the assembly, because the text is immediately re-parsed by
-/// assembleAMDGCN and the comments are discarded; the machine code is
-/// identical either way.
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(llvm::Module &module, llvm::Triple &triple,
                     StringRef archStr, StringRef features, bool enableFpFusion,
@@ -386,12 +379,7 @@ bool linkExternLibs(llvm::Module &module,
 
   for (const std::string &path : paths) {
     llvm::SMDiagnostic err;
-    // ocml/ockl are large libraries of which a kernel uses a handful of
-    // functions, and every compile re-reads them from scratch because each one
-    // owns its LLVMContext. Deserialize function bodies on demand so
-    // LinkOnlyNeeded below only pays for the ones it actually pulls in; this is
-    // what llvm-link does by default. Note this keeps `isDeclaration()`
-    // honest: it reports an unmaterialized body as a definition.
+    // Lazy-load ocml/ockl so LinkOnlyNeeded only materializes referenced fns.
     std::unique_ptr<llvm::Module> libMod = llvm::getLazyIRFileModule(
         path, err, ctx, /*ShouldLazyLoadMetadata=*/true);
     if (!libMod) {
@@ -556,9 +544,8 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   // run inliner (matches llvm.cc lines 333-344)
   //
   // Deliberate divergence from upstream Triton: llvm.cc also adds
-  // createVerifierPass() here. We drop it because this runs once per perf
-  // config during tuning and once per kernel for MIGraphX, and it re-verifies
-  // IR our own lowering just produced.
+  // createVerifierPass() here; we drop it to avoid re-verifying IR our
+  // lowering just produced on every compile.
   llvm::legacy::PassManager pm;
   pm.add(llvm::createAlwaysInlinerLegacyPass());
   pm.run(module);
@@ -785,9 +772,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
   llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
-  // Skip the LLVM module verification this would otherwise run: the IR comes
-  // straight out of the Triton lowering, and tuning compiles the same pipeline
-  // once per perf config, so verifying it is pure overhead in the inner loop.
+  // Deliberate divergence from upstream Triton: llvm.cc's to_module() calls
+  // translateModuleToLLVMIR with verification enabled; we disable it here.
   std::unique_ptr<llvm::Module> llvmModule = translateModuleToLLVMIR(
       module, llvmContext, "LLVMDialectModule", /*disableVerification=*/true);
   if (!llvmModule) {
