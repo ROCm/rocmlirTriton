@@ -1,6 +1,6 @@
 diff --git a/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
 new file mode 100644
-index 0000000000..db7ec67de5
+index 0000000000..bd33d2b6a7
 --- /dev/null
 +++ b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
 @@ -0,0 +1,136 @@
@@ -18,7 +18,7 @@ index 0000000000..db7ec67de5
 +
 +#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
 +#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
-+// CHECK: #shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 4, order = [1, 0]}>
++// CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [1, 0]}>
 +module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
 +  // CHECK-LABEL: fma_operand_b_is_swizzled
 +  tt.func @fma_operand_b_is_swizzled(
@@ -44,7 +44,7 @@ index 0000000000..db7ec67de5
 +
 +#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [2, 16], warpsPerCTA = [1, 1], order = [0, 1]}>
 +#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [2, 16], warpsPerCTA = [1, 1], order = [1, 0]}>
-+// CHECK: #shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 2, order = [1, 0]}>
++// CHECK: #shared = #ttg.swizzled_shared<{vec = 16, perPhase = 1, maxPhase = 2, order = [1, 0]}>
 +module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
 +  // CHECK-LABEL: fma_swizzle_is_capped_by_colliding_lanes
 +  tt.func @fma_swizzle_is_capped_by_colliding_lanes(
@@ -70,7 +70,7 @@ index 0000000000..db7ec67de5
 +
 +#blocked = #ttg.blocked<{sizePerThread = [2, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
 +#fma = #ttg.blocked<{sizePerThread = [2, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
-+// CHECK: #shared = #ttg.swizzled_shared<{vec = 4, perPhase = 2, maxPhase = 4, order = [1, 0]}>
++// CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 4, order = [1, 0]}>
 +module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
 +  // CHECK-LABEL: fma_swizzle_per_phase_follows_size_per_thread
 +  tt.func @fma_swizzle_per_phase_follows_size_per_thread(
@@ -141,10 +141,10 @@ index 0000000000..db7ec67de5
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index e17a7c1573..f10fd284ec 100644
+index e17a7c1573..df03e6e742 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -182,6 +182,38 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
+@@ -182,6 +182,45 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
    return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
  }
  
@@ -160,17 +160,24 @@ index e17a7c1573..f10fd284ec 100644
 +  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
 +  if (!blocked || order.size() != 2)
 +    return {};
++  unsigned contig = order[0];
 +  unsigned strided = order[1];
 +  // Cap the phases by the per-CTA extents: the buffer is per CTA, so phases
 +  // counted against the full shape would alias once toLinearLayout wraps them
 +  // modulo the local column count.
 +  SmallVector<int64_t> shape =
 +      ttg::getShapePerCTA(cga.getCTASplitNum(), srcTy.getShape());
-+  // max vectorization size for LDS load/store is 128 bits
-+  int64_t vec = std::max<int64_t>(1, 128 / bitWidth);
++  // The swizzle displaces a column by vec * phase, so vec is both the run that
++  // stays contiguous through it and the step between phases. It has to cover
++  // the widest LDS load/store, or a 128-bit access gets reordered internally
++  // and split, and the columns one warp spans, or a phase lands back inside
++  // the span it was meant to step over and the lanes still share banks.
++  int64_t warpSpan = int64_t(blocked.getThreadsPerWarp()[contig]) *
++                     blocked.getSizePerThread()[contig];
++  int64_t vec = std::max<int64_t>(warpSpan, std::max<int64_t>(1, 128 / bitWidth));
 +  int64_t perPhase = blocked.getSizePerThread()[strided];
 +  int64_t maxPhase = std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
-+                                        shape[order[0]] / vec,
++                                        shape[contig] / vec,
 +                                        shape[strided] / perPhase});
 +  if (maxPhase <= 1)
 +    return {};
@@ -183,7 +190,7 @@ index e17a7c1573..f10fd284ec 100644
  // Adapted from
  // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
  // to support AMDMfmaEncodingAttr.
-@@ -197,6 +229,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -197,6 +236,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
    assert(loadOp);
    Value loadedValue = loadOp->getResult(0);
    llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
@@ -197,7 +204,7 @@ index e17a7c1573..f10fd284ec 100644
    for (Operation *user : loadedValue.getUsers()) {
      LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
      if (user->getNumResults() != 1)
-@@ -304,6 +343,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -304,6 +350,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
          tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                         dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                         dotOpEnc, canUseAsyncCopy);
