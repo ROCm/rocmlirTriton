@@ -18,7 +18,7 @@
 //
 // Records the pointwie/elementwise operations fused around a kernel as
 // `rock.input_fusions` and `rock.output_fusions`, which getTuningProblemStr
-// will later serialize into the tuning key. 
+// will later serialize into the tuning key.
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,7 +67,7 @@ void annotateFusions(func::FuncOp func) {
   // By this point in the pipeline the kernel is one operation. Whatever the
   // attention, gemm-elementwise-gemm and conv-elementwise-gemm patterns
   // absorbed sits inside it (a hand-spelled softmax in its region, a
-  // log-sum-exp in its `lse` result, a mask in its `causal` flag). These 
+  // log-sum-exp in its `lse` result, a mask in its `causal` flag). These
   // kind of operations can have inter-gemm elementwise operations, but they
   // are intentionally not supported yet by this pass, and are left for future
   // work if needed.
