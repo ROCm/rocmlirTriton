@@ -1,0 +1,63 @@
+diff --git a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+index d3628cdf4..c3ffb2537 100644
+--- a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -1,5 +1,6 @@
+ #include "mlir/Conversion/LLVMCommon/Pattern.h"
+ #include "mlir/Dialect/GPU/IR/GPUDialect.h"
++#include "mlir/Dialect/Math/IR/Math.h"
+ #include "mlir/Support/LLVM.h"
+ #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
+ #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
+@@ -664,6 +665,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+   POPULATE_UNARY_OP(arith::NegFOp, LLVM::FNegOp)
+   POPULATE_UNARY_OP(math::FloorOp, math::FloorOp)
+   POPULATE_UNARY_OP(math::CeilOp, math::CeilOp)
++  POPULATE_UNARY_OP(math::RoundEvenOp, math::RoundEvenOp)
+   POPULATE_UNARY_OP(math::LogOp, math::LogOp)
+   POPULATE_UNARY_OP(math::Log2Op, math::Log2Op)
+   POPULATE_UNARY_OP(math::CosOp, math::CosOp)
+diff --git a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+index 2c7066a9d..46487d97e 100644
+--- a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
++++ b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
+@@ -1,5 +1,6 @@
+ #include "mlir/Dialect/Arith/IR/Arith.h"
+ #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
++#include "mlir/Dialect/Math/IR/Math.h"
+ #include "mlir/Dialect/UB/IR/UBOps.h"
+ #include "mlir/Pass/Pass.h"
+ #include "mlir/Transforms/DialectConversion.h"
+@@ -121,6 +122,7 @@ void populateMathPatternsAndLegality(TritonGPUTypeConverter &typeConverter,
+   // Rewrite rule
+   patterns.add<GenericOpPattern<math::ExpOp>, GenericOpPattern<math::Exp2Op>,
+                GenericOpPattern<math::FloorOp>, GenericOpPattern<math::CeilOp>,
++               GenericOpPattern<math::RoundEvenOp>,
+                GenericOpPattern<math::CosOp>, GenericOpPattern<math::SinOp>,
+                GenericOpPattern<math::LogOp>, GenericOpPattern<math::Log2Op>,
+                GenericOpPattern<math::ErfOp>, GenericOpPattern<math::AbsFOp>,
+diff --git a/test/Conversion/triton_to_tritongpu.mlir b/test/Conversion/triton_to_tritongpu.mlir
+index 84918529d..d2dfd68de 100644
+--- a/test/Conversion/triton_to_tritongpu.mlir
++++ b/test/Conversion/triton_to_tritongpu.mlir
+@@ -159,6 +159,20 @@ tt.func @ub_poison() {
+ 
+ // -----
+ 
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
++tt.func @roundeven(%ptr: !tt.ptr<f32>) {
++  // CHECK-LABEL: @roundeven
++  %ptrs = tt.splat %ptr : !tt.ptr<f32> -> tensor<128x!tt.ptr<f32>>
++  %input = tt.load %ptrs : tensor<128x!tt.ptr<f32>>
++  // CHECK: math.roundeven {{.*}} : tensor<128xf32, #{{.*}}>
++  %rounded = math.roundeven %input : tensor<128xf32>
++  tt.store %ptrs, %rounded : tensor<128x!tt.ptr<f32>>
++  tt.return
++}
++}
++
++// -----
++
+ // CHECK-LABEL: @cf_br
+ tt.func @cf_br(%ptr: !tt.ptr<i32>) {
+   %cst = arith.constant dense<1> : tensor<128xi32>
