@@ -1,4 +1,4 @@
-//===- AnnotateFusions.cpp - name a kernel's fusions ------------------===//
+//===- AnnotateFusions.cpp - name a kernel's fusions ----------------------===//
 //
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -16,39 +16,31 @@
 // limitations under the License.
 // ============================================================
 //
-// Records the operations fused around a kernel as `rock.input_fusions` and
-// `rock.output_fusions`, which getTuningProblemStr serializes into the tuning
-// key. Runs first in the MIGraphX pipeline because it is the last point at
-// which the graph still says what MIGraphX asked for.
+// Records the pointwie/elementwise operations fused around a kernel as
+// `rock.input_fusions` and `rock.output_fusions`, which getTuningProblemStr
+// will later serialize into the tuning key. 
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
-#include "mlir/Dialect/MIGraphX/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
-namespace migraphx {
-#define GEN_PASS_DEF_MIGRAPHXANNOTATEFUSIONSPASS
-#include "mlir/Dialect/MIGraphX/Passes.h.inc"
-} // namespace migraphx
+namespace rock {
+#define GEN_PASS_DEF_ROCKANNOTATEFUSIONSPASS
+#include "mlir/Dialect/Rock/Passes.h.inc"
+} // namespace rock
 } // namespace mlir
 
 using namespace mlir;
-using namespace mlir::migraphx;
+using namespace mlir::rock;
 
 namespace {
-
-// The operations that become an `OpTrait::rock::FusionRoot`, which cannot be
-// asked for directly here because no Rock operation exists this early.
-bool isFusionRootCandidate(Operation *op) {
-  return isa<DotOp, QuantDotOp, ConvolutionOp, QuantConvolutionOp,
-             ConvolutionBwdDataOp>(op);
-}
 
 void walkBackward(ValueRange values, llvm::SmallPtrSetImpl<Operation *> &out) {
   SmallVector<Value> worklist(values.begin(), values.end());
@@ -72,27 +64,16 @@ void walkForward(ValueRange values, llvm::SmallPtrSetImpl<Operation *> &out) {
 }
 
 void annotateFusions(func::FuncOp func) {
-  // Only a kernel is ever looked up in the tuning database. The host and CPU
-  // verifier functions run the same graph and would otherwise be stamped too.
-  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
-    return;
-
-  // A lone candidate becomes `rock.gemm` or `rock.conv` and everything around
-  // it really is fusion. A pair of them instead collapses into one
-  // `rock.attention`, `rock.gemm_elementwise_gemm` or
-  // `rock.conv_elementwise_gemm` that swallows the chain written between them,
-  // and side branches off that chain as well: attention takes a hand-spelled
-  // log-sum-exp into its `lse` result and a mask into its `causal` flag. Those
-  // read as fusions here while costing nothing in the kernel that gets built.
-  //
-  // TODO: Annotate the two-root patterns as well. Their fusions are just as
-  // load-bearing for a perf config as a GEMM's, but naming them needs a way to
-  // tell an absorbed side branch from a real fusion; walking only the chain
-  // between the two roots is not enough. Until then they are skipped, which
-  // leaves their keys as earlier releases wrote them.
+  // By this point in the pipeline the kernel is one operation. Whatever the
+  // attention, gemm-elementwise-gemm and conv-elementwise-gemm patterns
+  // absorbed sits inside it (a hand-spelled softmax in its region, a
+  // log-sum-exp in its `lse` result, a mask in its `causal` flag). These 
+  // kind of operations can have inter-gemm elementwise operations, but they
+  // are intentionally not supported yet by this pass, and are left for future
+  // work if needed.
   SmallVector<Operation *> roots;
   func.walk([&](Operation *op) {
-    if (isFusionRootCandidate(op))
+    if (op->hasTrait<OpTrait::rock::FusionRoot>())
       roots.push_back(op);
   });
   if (roots.size() != 1)
@@ -104,45 +85,51 @@ void annotateFusions(func::FuncOp func) {
   walkBackward(root->getOperands(), above);
   walkForward(root->getResults(), below);
 
-  // The epilogue reads operands of its own (the bias of an `add(result, bias)`
-  // and the broadcast behind it) which neither walk from the root reaches.
+  // The epilogue reads operands of its own (the bias of an `addf(result, bias)`
+  // and the view feeding it) which neither walk from the root reaches. Only an
+  // op that computes seeds this walk: the forward walk also reaches the
+  // terminator, and going backward through that would pull in every other
+  // result of the function, which is someone else's work rather than this
+  // kernel's epilogue.
   llvm::SmallPtrSet<Operation *, 8> epilogueInputs;
   for (Operation *op : below)
-    walkBackward(op->getOperands(), epilogueInputs);
+    if (isFusionOp(op))
+      walkBackward(op->getOperands(), epilogueInputs);
   for (Operation *op : epilogueInputs)
     if (op != root && !above.contains(op))
       below.insert(op);
 
-  // Emit in program order, which the walks above do not preserve, because the
-  // key has to be stable. A literal is a baked-in constant rather than work; the
-  // broadcast that spreads it still counts.
+  // `isFusionOp` is the dialect's own answer to "does this compute something":
+  // an arith or math operation taking operands and returning one result. Emit
+  // in program order, which the walks above do not preserve, because the key
+  // has to be stable.
   MLIRContext *ctx = func.getContext();
   SmallVector<Attribute> inputFusions;
   SmallVector<Attribute> outputFusions;
   func.walk([&](Operation *op) {
-    if (op == root || isa<LiteralOp>(op) ||
-        op->getDialect() != ctx->getLoadedDialect<MIGraphXDialect>())
+    if (op == root || !isFusionOp(op))
       return;
-    auto name = StringAttr::get(ctx, op->getName().stripDialect());
+    // The mnemonic verbatim, so a token names exactly one operation and can be
+    // traced back to the IR it came from.
+    auto nameAttr = StringAttr::get(ctx, op->getName().stripDialect());
     if (above.contains(op))
-      inputFusions.push_back(name);
+      inputFusions.push_back(nameAttr);
     else if (below.contains(op))
-      outputFusions.push_back(name);
+      outputFusions.push_back(nameAttr);
   });
 
   // Set only when non-empty, so an unfused kernel keeps the key earlier
   // releases wrote and its tuning database rows stay reachable.
   if (!inputFusions.empty())
-    func->setAttr(rock::InputFusionsAttr::getMnemonic(),
+    func->setAttr(InputFusionsAttr::getMnemonic(),
                   ArrayAttr::get(ctx, inputFusions));
   if (!outputFusions.empty())
-    func->setAttr(rock::OutputFusionsAttr::getMnemonic(),
+    func->setAttr(OutputFusionsAttr::getMnemonic(),
                   ArrayAttr::get(ctx, outputFusions));
 }
 
-struct MIGraphXAnnotateFusionsPass
-    : public migraphx::impl::MIGraphXAnnotateFusionsPassBase<
-          MIGraphXAnnotateFusionsPass> {
+struct RockAnnotateFusionsPass
+    : public rock::impl::RockAnnotateFusionsPassBase<RockAnnotateFusionsPass> {
   void runOnOperation() override { annotateFusions(getOperation()); }
 };
 

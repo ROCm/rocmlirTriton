@@ -44,18 +44,18 @@ GEMM_KEY = ("-t f32 -out_datatype f32 -transA false -transB false -transO false 
 # getTuningProblemStr puts them: after the problem and before -supportsSplitK.
 SAMPLES = (
     (ConvConfiguration, "conv -F 1 -f GNC01 -I NGC01 -O NGC01 -n 1 -c 8 -H 16 -W 16 -k 16 "
-     "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1", "-outputFusions=broadcast,add"),
-    (GemmConfiguration, GEMM_KEY, "-inputFusions=add,broadcast -outputFusions=add,transpose"),
+     "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g 1", "-outputFusions=addf,maxnumf"),
+    (GemmConfiguration, GEMM_KEY, "-inputFusions=mulf,addf -outputFusions=addf,erf"),
     (ConvGemmConfiguration, "-t f16 -f GNC01 -I NGC01 -transC false -transO false "
      "-n 1 -c 8 -H 16 -W 16 -k 16 -y 3 -x 3 -p 1 -q 1 "
-     "-u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 32", "-inputFusions=mul"),
+     "-u 1 -v 1 -l 1 -j 1 -g 1 -gemmO 32", "-inputFusions=mulf"),
     (GemmGemmConfiguration, "-t f16 -transA false -transB false -transC false -transO false "
-     "-g 1 -m 64 -k 64 -n 64 -gemmO 32", "-outputFusions=exp,mul,add"),
+     "-g 1 -m 64 -k 64 -n 64 -gemmO 32", "-outputFusions=exp,mulf,addf"),
     (AttentionConfiguration, "-t f16 -transQ false -transK false -transV false -transO false "
      "-causal false -return_lse false -split_kv 1 -g 1 "
      "-seq_len_q 16 -seq_len_k 16 -num_heads_q 1 -num_heads_kv 1 "
      "-head_dim_qk 32 -head_dim_v 32 -with-attn-scale false "
-     "-with-attn-bias false -transBias false", "-inputFusions=transpose,broadcast,mul"),
+     "-with-attn-bias false -transBias false", "-inputFusions=mulf"),
 )
 
 
@@ -74,11 +74,11 @@ class FusionTuningKeyTest(unittest.TestCase):
 
     def test_fusions_are_not_driver_options(self):
         config = GemmConfiguration.from_command_line(
-            f"{GEMM_KEY} -inputFusions=add -outputFusions=add -supportsSplitK true".split(), ARCH,
+            f"{GEMM_KEY} -inputFusions=addf -outputFusions=addf -supportsSplitK true".split(), ARCH,
             NUM_CU, NUM_CHIPLETS)
 
         self.assertNotIn("Fusions", config.generate_mlir_driver_commandline("",
-                                                                           kernel_repeats=None))
+                                                                            kernel_repeats=None))
         self.assertNotIn("Fusions", config.generate_problem_commandline())
 
     def test_unfused_key_is_unchanged(self):
@@ -90,7 +90,7 @@ class FusionTuningKeyTest(unittest.TestCase):
 
     def test_metadata_is_dropped_wherever_it_appears(self):
         argv, _ = extract_tuning_key_metadata(
-            ["-t", "f32", "-inputFusions=add,broadcast", "-g", "1", "-outputFusions=max"])
+            ["-t", "f32", "-inputFusions=addf,mulf", "-g", "1", "-outputFusions=maxnumf"])
 
         self.assertEqual(argv, ["-t", "f32", "-g", "1"])
 

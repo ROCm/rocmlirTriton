@@ -457,6 +457,35 @@ def RockInsertOutputStoresPass
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
 
+def RockAnnotateFusionsPass
+    : Pass<"rock-annotate-fusions", "::mlir::func::FuncOp"> {
+  let summary = "name the operations fused around a kernel for the tuning key";
+  let description = [{
+    Records the operations fused into a kernel's operand loads and into the
+    store of its result as `rock.input_fusions` and `rock.output_fusions` on the
+    kernel function, which `getTuningProblemStr` serializes into the tuning key.
+
+    This runs at the end of the highlevel pipeline, where the kernel is a single
+    operation carrying the `FusionRoot` trait. Everything the attention,
+    gemm-elementwise-gemm and conv-elementwise-gemm patterns absorbed is by then
+    inside that operation, so it cannot be mistaken for a input/outputfusion, 
+    and `rock-sort-dimensions-memory-layout` has already decided which
+    transposes became `-transQ` and friends.
+
+    TODO: layout operations are not named yet. On one of the kernel's own
+    operands a view is already covered, by those transpose flags and by the
+    problem's dimensions. On a fused operand it is handled further down instead
+    of in the key: `rock-narrow-redundant-loads` collapses a broadcast load to a
+    narrow one and rebuilds the tile, and the vectorization analysis folds a
+    `Broadcast` into the maximum vector length. Naming views here is what to
+    reach for if a case turns up where a view decides which perf config wins.
+
+    A function with no fusions is left alone, which keeps its key byte-identical
+    to what earlier releases produced.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
 def RockSerializeHostFuncsPass
     : Pass<"rock-serialize-host-funcs", "::mlir::ModuleOp"> {
   let summary = "Serialize and erase host functions before kernel lowering";

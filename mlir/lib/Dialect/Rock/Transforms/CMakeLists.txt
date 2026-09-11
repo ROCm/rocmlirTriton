@@ -2,6 +2,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AddTritonMetadata.cpp
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp
+  AnnotateFusions.cpp
   ConvToGemm.cpp
   SetMatmulOutputTranspose.cpp
   SetReductionLayout.cpp
