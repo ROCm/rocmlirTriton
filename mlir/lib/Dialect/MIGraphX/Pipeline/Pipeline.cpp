@@ -43,6 +43,7 @@ using namespace mlir;
 void migraphx::addMIGraphXPipeline(PassManager &pm, bool disableFastMath) {
   // passes for MIXR to TOSA
   auto &funcPm = pm.nest<func::FuncOp>();
+  funcPm.addPass(migraphx::createMIGraphXAnnotateFusionsPass());
   funcPm.addPass(migraphx::createMIGraphXRealizeInt4Pass());
   funcPm.addPass(migraphx::createMIGraphXTransformPass());
   funcPm.addPass(createCanonicalizerPass());
