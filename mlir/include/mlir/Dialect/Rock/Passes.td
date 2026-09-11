@@ -474,11 +474,8 @@ def RockAnnotateFusionsPass
 
     TODO: layout operations are not named yet. On one of the kernel's own
     operands a view is already covered, by those transpose flags and by the
-    problem's dimensions. On a fused operand it is handled further down instead
-    of in the key: `rock-narrow-redundant-loads` collapses a broadcast load to a
-    narrow one and rebuilds the tile, and the vectorization analysis folds a
-    `Broadcast` into the maximum vector length. Naming views here is what to
-    reach for if a case turns up where a view decides which perf config wins.
+    problem's dimensions. Additionally, inter-gemm elementwise operations are
+    currently not supported yet either.
 
     A function with no fusions is left alone, which keeps its key byte-identical
     to what earlier releases produced.

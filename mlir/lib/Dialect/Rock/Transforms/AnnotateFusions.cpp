@@ -22,12 +22,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
@@ -41,27 +42,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-void walkBackward(ValueRange values, llvm::SmallPtrSetImpl<Operation *> &out) {
-  SmallVector<Value> worklist(values.begin(), values.end());
-  while (!worklist.empty()) {
-    Operation *def = worklist.pop_back_val().getDefiningOp();
-    if (!def || !out.insert(def).second)
-      continue;
-    worklist.append(def->operand_begin(), def->operand_end());
-  }
-}
-
-void walkForward(ValueRange values, llvm::SmallPtrSetImpl<Operation *> &out) {
-  SmallVector<Value> worklist(values.begin(), values.end());
-  while (!worklist.empty()) {
-    for (Operation *user : worklist.pop_back_val().getUsers()) {
-      if (!out.insert(user).second)
-        continue;
-      worklist.append(user->result_begin(), user->result_end());
-    }
-  }
-}
 
 void annotateFusions(func::FuncOp func) {
   // By this point in the pipeline the kernel is one operation. Whatever the
@@ -80,21 +60,25 @@ void annotateFusions(func::FuncOp func) {
     return;
   Operation *root = roots.front();
 
-  llvm::SmallPtrSet<Operation *, 8> above;
-  llvm::SmallPtrSet<Operation *, 8> below;
-  walkBackward(root->getOperands(), above);
-  walkForward(root->getResults(), below);
+  BackwardSliceOptions sliceOpts;
+  sliceOpts.omitBlockArguments = true;
+
+  llvm::SetVector<Operation *> above;
+  llvm::SetVector<Operation *> below;
+  (void)getBackwardSlice(root, &above, sliceOpts);
+  getForwardSlice(root, &below);
 
   // The epilogue reads operands of its own (the bias of an `addf(result, bias)`
-  // and the view feeding it) which neither walk from the root reaches. Only an
-  // op that computes seeds this walk: the forward walk also reaches the
-  // terminator, and going backward through that would pull in every other
-  // result of the function, which is someone else's work rather than this
-  // kernel's epilogue.
-  llvm::SmallPtrSet<Operation *, 8> epilogueInputs;
+  // and the view feeding it) which neither slice from the root contains. Only
+  // an op that computes seeds this: the forward slice also reaches the
+  // terminator, and slicing backward from that would pull in every other result
+  // of the function, which is someone else's work rather than this kernel's
+  // epilogue. The slice runs back through the kernel into its operands, so drop
+  // whatever the backward slice already claimed.
+  llvm::SetVector<Operation *> epilogueInputs;
   for (Operation *op : below)
     if (isFusionOp(op))
-      walkBackward(op->getOperands(), epilogueInputs);
+      (void)getBackwardSlice(op, &epilogueInputs, sliceOpts);
   for (Operation *op : epilogueInputs)
     if (op != root && !above.contains(op))
       below.insert(op);
@@ -107,7 +91,9 @@ void annotateFusions(func::FuncOp func) {
   SmallVector<Attribute> inputFusions;
   SmallVector<Attribute> outputFusions;
   func.walk([&](Operation *op) {
-    if (op == root || !isFusionOp(op))
+    // What the kernel absorbed lives in its regions, and the forward slice
+    // descends into those before it follows the results.
+    if (op == root || root->isProperAncestor(op) || !isFusionOp(op))
       return;
     // The mnemonic verbatim, so a token names exactly one operation and can be
     // traced back to the IR it came from.

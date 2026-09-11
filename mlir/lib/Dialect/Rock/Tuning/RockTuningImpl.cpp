@@ -1743,7 +1743,8 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
     // MIGraphX calls mlirRockTuningGetKey, which routes here. The fusions
     // around a kernel change how much LDS and how many registers a perf config
     // needs, so they are part of the problem's identity: without them a config
-    // tuned for the bare GEMM is reused for a fused one and overflows LDS.
+    // tuned for the bare GEMM is reused for a fused one and could potentially
+    // overflows LDS.
     llvm::raw_svector_ostream problemOS(out);
     auto emitFusions = [&](StringRef attrName, StringRef flag) {
       auto fusions = func->template getAttrOfType<ArrayAttr>(attrName);
