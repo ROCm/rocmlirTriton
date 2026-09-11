@@ -16,6 +16,7 @@ patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
+patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
 patch11295.patch
@@ -341,6 +342,14 @@ patch-optimize-epilogue-rock-metadata.patch
   and tri-state policy resolution live in rocMLIR's rock-add-triton-metadata
   pass; no Rock-specific performance model remains in the vendored Triton
   implementation.
+
+patch-optimize-epilogue-fma-blocked.patch
+  Lets BypassEpilogueSMEM also bypass the epilogue relayout when the dot
+  accumulator carries a blocked (FMA) layout, not just an WMMA/MFMA one.
+  This shows perf improvement in some kernels.
+
+  Stacks on patch-optimize-epilogue-rock-metadata.patch; apply it after that
+  one. Plan is to upstream this PR.
 
 patch11295.patch
   Fixes a GFX9 direct-to-LDS miscompile that faults at runtime. The lowering
