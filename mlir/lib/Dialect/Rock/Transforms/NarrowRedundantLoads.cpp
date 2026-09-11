@@ -79,6 +79,15 @@ struct NarrowingCandidate {
   SmallVector<unsigned> loadMaskConjuncts;
 };
 
+/// Carries the attributes of `from` onto `to`, the narrowed re-materialization
+/// of it, so that what the original said about its addresses -- the
+/// vectorization hints `AxisInfoAnalysis` reads off an op among them -- is not
+/// lost to the rewrite.
+void copyDiscardableAttrs(Operation *from, Operation *to) {
+  for (NamedAttribute attr : from->getDiscardableAttrs())
+    to->setDiscardableAttr(attr.getName(), attr.getValue());
+}
+
 /// Re-materializes values at a reduced shape, which amounts to taking their
 /// slice at index 0 along every dimension the caller narrowed. Callers must
 /// only use the result where the value is known to be invariant along those
@@ -127,6 +136,13 @@ private:
   Value track(Operation *op) {
     created.push_back(op);
     return op->getResult(0);
+  }
+
+  /// Same, for an `op` that re-materializes `from` and so inherits what `from`
+  /// had to say about the addresses it computes.
+  Value track(Operation *op, Operation *from) {
+    copyDiscardableAttrs(from, op);
+    return track(op);
   }
 
   OpBuilder &builder;
@@ -188,12 +204,13 @@ FailureOr<Value> SliceMaterializer::slice(Value v, ArrayRef<int64_t> shape) {
   FailureOr<Value> result = failure();
 
   if (auto splat = dyn_cast<tt::SplatOp>(defOp)) {
-    result =
-        track(tt::SplatOp::create(builder, loc, resultType, splat.getSrc()));
+    result = track(
+        tt::SplatOp::create(builder, loc, resultType, splat.getSrc()), defOp);
   } else if (auto constant = dyn_cast<arith::ConstantOp>(defOp)) {
     if (auto splatAttr = dyn_cast<SplatElementsAttr>(constant.getValue())) {
       Value scalar = materializeSplatScalar(loc, splatAttr);
-      result = track(tt::SplatOp::create(builder, loc, resultType, scalar));
+      result =
+          track(tt::SplatOp::create(builder, loc, resultType, scalar), defOp);
     }
   } else if (auto range = dyn_cast<tt::MakeRangeOp>(defOp)) {
     // Narrowing a range keeps only its first element, so the range collapses
@@ -202,7 +219,8 @@ FailureOr<Value> SliceMaterializer::slice(Value v, ArrayRef<int64_t> shape) {
     if (shape.size() == 1 && shape[0] == 1) {
       Value start = track(arith::ConstantOp::create(
           builder, loc, builder.getI32IntegerAttr(range.getStart())));
-      result = track(tt::SplatOp::create(builder, loc, resultType, start));
+      result =
+          track(tt::SplatOp::create(builder, loc, resultType, start), defOp);
     }
   } else if (auto broadcast = dyn_cast<tt::BroadcastOp>(defOp)) {
     // The source is already unit-sized along the dimensions it broadcasts, so
@@ -216,7 +234,8 @@ FailureOr<Value> SliceMaterializer::slice(Value v, ArrayRef<int64_t> shape) {
       result =
           src->getType() == resultType
               ? *src
-              : track(tt::BroadcastOp::create(builder, loc, resultType, *src));
+              : track(tt::BroadcastOp::create(builder, loc, resultType, *src),
+                      defOp);
     }
   } else if (auto expand = dyn_cast<tt::ExpandDimsOp>(defOp)) {
     // The expanded dimension is unit-sized in the result, hence unit-sized in
@@ -227,13 +246,14 @@ FailureOr<Value> SliceMaterializer::slice(Value v, ArrayRef<int64_t> shape) {
     FailureOr<Value> src = slice(expand.getSrc(), srcShape);
     if (succeeded(src))
       result =
-          track(tt::ExpandDimsOp::create(builder, loc, resultType, *src, axis));
+          track(tt::ExpandDimsOp::create(builder, loc, resultType, *src, axis),
+                defOp);
   } else if (auto addPtr = dyn_cast<tt::AddPtrOp>(defOp)) {
     FailureOr<Value> ptr = slice(addPtr.getPtr(), shape);
     FailureOr<Value> offset = slice(addPtr.getOffset(), shape);
     if (succeeded(ptr) && succeeded(offset))
-      result =
-          track(tt::AddPtrOp::create(builder, loc, resultType, *ptr, *offset));
+      result = track(
+          tt::AddPtrOp::create(builder, loc, resultType, *ptr, *offset), defOp);
   } else if (isNarrowableElementwise(defOp)) {
     result = sliceElementwise(defOp, shape);
   }
@@ -479,10 +499,11 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   auto type = cast<RankedTensorType>(load.getType());
   auto narrowedType = RankedTensorType::get(
       candidate.narrowShape, type.getElementType(), type.getEncoding());
-  Value narrowedLoad =
+  tt::LoadOp narrowedLoad =
       tt::LoadOp::create(rewriter, load.getLoc(), narrowedType, operands[0],
                          operands[1], operands[2], load.getCacheAttr(),
                          load.getEvictAttr(), load.getIsVolatileAttr());
+  copyDiscardableAttrs(load, narrowedLoad);
   Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
 

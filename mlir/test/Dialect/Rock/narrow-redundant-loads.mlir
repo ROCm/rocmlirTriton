@@ -447,6 +447,46 @@ func.func @mask_varies_along_surviving_dim(%base: !tt.ptr<f16>, %lim: i32) -> te
 
 // -----
 
+// Rock stamps vectorization hints on the address where Triton's alignment
+// analysis cannot work them out for itself, so the re-materialized address has
+// to carry them or the narrowed load comes out worse than the one it replaced.
+// They describe the narrowed tile as well as they did the original: a
+// dimension is only collapsed when the address repeats along it, and a
+// dimension the address repeats along has a contiguous run of one.
+
+// CHECK-LABEL: @address_hints_are_carried
+//      CHECK:   tt.addptr %{{.*}} {tt.contiguity = dense<[2, 1]> : tensor<2xi32>, tt.divisibility = dense<16> : tensor<2xi32>} : tensor<32x1x!tt.ptr<f16>>
+// CHECK-NEXT:   tt.load %{{.*}} : tensor<32x1x!tt.ptr<f16>>
+func.func @address_hints_are_carried(%base: !tt.ptr<f16>) -> tensor<32x128xf16> {
+  %mRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %off = tt.broadcast %mCol : tensor<32x1xi32> -> tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %off {tt.contiguity = dense<[2, 1]> : tensor<2xi32>, tt.divisibility = dense<16> : tensor<2xi32>} : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
+// Attributes that say nothing about the shape are not the rewrite's to
+// interpret, so they ride along untouched on both the address and the load.
+
+// CHECK-LABEL: @unshaped_attrs_are_carried
+//      CHECK:   tt.addptr %{{.*}} {rock.note = "keep me"} : tensor<32x1x!tt.ptr<f16>>
+// CHECK-NEXT:   tt.load %{{.*}} {rock.tag = "on the load"} : tensor<32x1x!tt.ptr<f16>>
+func.func @unshaped_attrs_are_carried(%base: !tt.ptr<f16>) -> tensor<32x128xf16> {
+  %mRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+  %mCol = tt.expand_dims %mRange {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+  %off = tt.broadcast %mCol : tensor<32x1xi32> -> tensor<32x128xi32>
+  %ptrs = tt.splat %base : !tt.ptr<f16> -> tensor<32x128x!tt.ptr<f16>>
+  %addr = tt.addptr %ptrs, %off {rock.note = "keep me"} : tensor<32x128x!tt.ptr<f16>>, tensor<32x128xi32>
+  %val = tt.load %addr {rock.tag = "on the load"} : tensor<32x128x!tt.ptr<f16>>
+  return %val : tensor<32x128xf16>
+}
+
+// -----
+
 // A mask conjunct that is itself a load this pass narrows. The conjunct has to
 // be re-read from the mask operand at rewrite time, because the load defining
 // it is replaced before this one is reached and a value captured during
