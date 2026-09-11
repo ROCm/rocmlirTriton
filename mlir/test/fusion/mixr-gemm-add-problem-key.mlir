@@ -4,7 +4,7 @@
 // mixr-gemm-gemm-problem-key.mlir, where a pre-second-GEMM add blocks split-K.
 // CHECK: gfx942
 // CHECK-SAME: 304
-// CHECK-SAME: -t f32 -out_datatype f32 -transA false -transB false -transO false -g 1 -m 7 -n 7 -k 3 -supportsSplitK true
+// CHECK-SAME: -t f32 -out_datatype f32 -transA false -transB false -transO false -g 1 -m 7 -n 7 -k 3 -outputFusions=add -supportsSplitK true
 module
 {
   func.func private @mlir_dot_add(%arg0: !migraphx.shaped<1x7x3xf32, 21x3x1>,

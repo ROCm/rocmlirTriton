@@ -41,6 +41,36 @@ def MIGraphXRealizeInt4Pass : Pass<"migraphx-realize-int4", "func::FuncOp"> {
   }];
 }
 
+def MIGraphXAnnotateFusionsPass
+    : Pass<"migraphx-annotate-fusions", "func::FuncOp"> {
+  let summary = "name the operations fused around a kernel for the tuning key";
+  let description = [{
+    Records the operations MIGraphX fused into a kernel's operand loads and into
+    the store of its result as `rock.input_fusions` and `rock.output_fusions` on
+    the kernel function, which `getTuningProblemStr` serializes into the tuning
+    key. Without them a fused kernel shares a key with the bare GEMM, is handed
+    that GEMM's perf config, and overflows LDS.
+
+    This has to run before anything lowers the graph, because once `dot` and
+    `convolution` have become Rock operations the fusions around them are
+    indistinguishable from the kernel itself.
+
+    Only a function holding exactly one `dot` or `convolution` is annotated. A
+    pair of them is absorbed, along with everything between and hanging off the
+    chain that joins them, into a single `rock.attention`,
+    `rock.gemm_elementwise_gemm` or `rock.conv_elementwise_gemm`, and that
+    absorbed subgraph currently reads as fusion here.
+
+    TODO: Extend this to the two-root patterns, which need their fusions in the
+    key just as much, once an absorbed side branch can be told apart from a real
+    fusion.
+
+    A function with no fusions is left alone, which keeps its key byte-identical
+    to what earlier releases produced.
+  }];
+  let dependentDialects = ["migraphx::MIGraphXDialect"];
+}
+
 def MIGraphXTosaSimplifyPass : Pass<"migraphx-tosa-simplify", "func::FuncOp"> {
   let summary = "Simplify TOSA operations after MIGraphX to TOSA conversion";
   let description = [{

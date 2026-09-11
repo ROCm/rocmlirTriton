@@ -605,6 +605,29 @@ def Rock_EnableSplitKForTuning : Rock_Attr<"EnableSplitKForTuning"> {
   }];
 }
 
+def Rock_InputFusions : Rock_Attr<"InputFusions"> {
+  let mnemonic = "rock.input_fusions";
+  let description = [{
+    The names of the operations fused into a kernel function ahead of its
+    primary operation, in the order they are applied. Stored as an `ArrayAttr`
+    of `StringAttr`, set by the framework that requested the kernel (MIGraphX).
+
+    `getTuningProblemStr` folds these names into the tuning key, because the
+    fusions change how much LDS and how many registers a perf config needs, so
+    a fused kernel must not be served the config tuned for the bare kernel.
+  }];
+}
+
+def Rock_OutputFusions : Rock_Attr<"OutputFusions"> {
+  let mnemonic = "rock.output_fusions";
+  let description = [{
+    The names of the operations fused into a kernel function after its primary
+    operation, in the order they are applied. Stored as an `ArrayAttr` of
+    `StringAttr`, set by the framework that requested the kernel (MIGraphX),
+    and folded into the tuning key like `rock.input_fusions`.
+  }];
+}
+
 def Rock_Arch : Rock_Attr<"Arch"> {
   let mnemonic = "rock.arch";
   let description = [{

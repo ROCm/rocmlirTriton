@@ -412,6 +412,17 @@ def extract_tuning_key_metadata(argv: list,
             supports_split_k = value == "true"
             i += 2
             continue
+        if argv[i].startswith(('-inputFusions=', '-outputFusions=')):
+            # getTuningProblemStr emits fusions as one word carrying its own
+            # value. They are part of a kernel's identity for MIGraphX, which
+            # looks tuning entries up by exact key, but this tooling can only
+            # ever generate the standalone kernel, so drop them and let a fused
+            # key name the problem we would tune for it.
+            flag, _, value = argv[i].partition('=')
+            if not value:
+                raise ValueError(f"Missing value for tuning-key metadata {flag}")
+            i += 1
+            continue
         filtered.append(argv[i])
         i += 1
     return filtered, supports_split_k

@@ -1,4 +1,5 @@
 add_rocmlir_dialect_library(MLIRMIGraphXTransforms
+  AnnotateFusions.cpp
   MIGraphXTransform.cpp
   RealizeInt4.cpp
   MIGraphXTosaSimplify.cpp
