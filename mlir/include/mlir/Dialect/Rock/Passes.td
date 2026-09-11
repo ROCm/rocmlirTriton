@@ -468,11 +468,11 @@ def RockAnnotateFusionsPass
     This runs at the end of the highlevel pipeline, where the kernel is a single
     operation carrying the `FusionRoot` trait. Everything the attention,
     gemm-elementwise-gemm and conv-elementwise-gemm patterns absorbed is by then
-    inside that operation, so it cannot be mistaken for an input/output fusion, 
+    inside that operation, so it cannot be mistaken for an input/output fusion,
     and `rock-sort-dimensions-memory-layout` has already decided which
     transposes became `-transQ` and friends.
 
-    TODO (AIROCMLIR-1274): layout operations are not named yet. On one of the
+    TODO(AIROCMLIR-1274): layout operations are not named yet. On one of the
     kernel's own operands a view is already covered, by those transpose flags
     and by the problem's dimensions. Additionally, inter-gemm elementwise
     operations are currently not supported yet either.
