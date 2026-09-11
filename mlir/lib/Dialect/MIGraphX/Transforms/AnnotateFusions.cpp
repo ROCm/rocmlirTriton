@@ -44,11 +44,7 @@ using namespace mlir::migraphx;
 namespace {
 
 // The operations that become an `OpTrait::rock::FusionRoot`, which cannot be
-// asked for directly here because no Rock operation exists this early. The two
-// are not one-to-one and that is why this pass has to run at all: a lone one of
-// these becomes `rock.gemm` or `rock.conv`, but a *pair* of them collapses into
-// a single `rock.attention`, `rock.gemm_elementwise_gemm` or
-// `rock.conv_elementwise_gemm`, taking whatever sits between them along.
+// asked for directly here because no Rock operation exists this early.
 bool isFusionRootCandidate(Operation *op) {
   return isa<DotOp, QuantDotOp, ConvolutionOp, QuantConvolutionOp,
              ConvolutionBwdDataOp>(op);
@@ -76,43 +72,45 @@ void walkForward(ValueRange values, llvm::SmallPtrSetImpl<Operation *> &out) {
 }
 
 void annotateFusions(func::FuncOp func) {
+  // Only a kernel is ever looked up in the tuning database. The host and CPU
+  // verifier functions run the same graph and would otherwise be stamped too.
+  if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+    return;
+
+  // A lone candidate becomes `rock.gemm` or `rock.conv` and everything around
+  // it really is fusion. A pair of them instead collapses into one
+  // `rock.attention`, `rock.gemm_elementwise_gemm` or
+  // `rock.conv_elementwise_gemm` that swallows the chain written between them,
+  // and side branches off that chain as well: attention takes a hand-spelled
+  // log-sum-exp into its `lse` result and a mask into its `causal` flag. Those
+  // read as fusions here while costing nothing in the kernel that gets built.
+  //
+  // TODO: Annotate the two-root patterns as well. Their fusions are just as
+  // load-bearing for a perf config as a GEMM's, but naming them needs a way to
+  // tell an absorbed side branch from a real fusion; walking only the chain
+  // between the two roots is not enough. Until then they are skipped, which
+  // leaves their keys as earlier releases wrote them.
   SmallVector<Operation *> roots;
   func.walk([&](Operation *op) {
     if (isFusionRootCandidate(op))
       roots.push_back(op);
   });
-  if (roots.empty())
+  if (roots.size() != 1)
     return;
+  Operation *root = roots.front();
 
-  SmallVector<Value> rootOperands;
-  SmallVector<Value> rootResults;
-  for (Operation *op : roots) {
-    rootOperands.append(op->operand_begin(), op->operand_end());
-    rootResults.append(op->result_begin(), op->result_end());
-  }
   llvm::SmallPtrSet<Operation *, 8> above;
   llvm::SmallPtrSet<Operation *, 8> below;
-  walkBackward(rootOperands, above);
-  walkForward(rootResults, below);
-
-  // An operation both above and below a candidate sits between two of them, and
-  // that is precisely what the attention, gemm-elementwise-gemm and
-  // conv-elementwise-gemm patterns absorb into the single operation they
-  // synthesize. It is therefore kernel, not fusion, which is what keeps an
-  // attention's hand-spelled softmax out of the key.
-  llvm::SmallPtrSet<Operation *, 8> core(roots.begin(), roots.end());
-  for (Operation *op : above)
-    if (below.contains(op))
-      core.insert(op);
+  walkBackward(root->getOperands(), above);
+  walkForward(root->getResults(), below);
 
   // The epilogue reads operands of its own (the bias of an `add(result, bias)`
-  // and the broadcast behind it) which neither walk from a root reaches.
+  // and the broadcast behind it) which neither walk from the root reaches.
   llvm::SmallPtrSet<Operation *, 8> epilogueInputs;
   for (Operation *op : below)
-    if (!core.contains(op))
-      walkBackward(op->getOperands(), epilogueInputs);
+    walkBackward(op->getOperands(), epilogueInputs);
   for (Operation *op : epilogueInputs)
-    if (!above.contains(op) && !core.contains(op))
+    if (op != root && !above.contains(op))
       below.insert(op);
 
   // Emit in program order, which the walks above do not preserve, because the
@@ -122,7 +120,7 @@ void annotateFusions(func::FuncOp func) {
   SmallVector<Attribute> inputFusions;
   SmallVector<Attribute> outputFusions;
   func.walk([&](Operation *op) {
-    if (core.contains(op) || isa<LiteralOp>(op) ||
+    if (op == root || isa<LiteralOp>(op) ||
         op->getDialect() != ctx->getLoadedDialect<MIGraphXDialect>())
       return;
     auto name = StringAttr::get(ctx, op->getName().stripDialect());
