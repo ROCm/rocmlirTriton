@@ -18,6 +18,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemKey.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningShardDb.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -68,6 +70,17 @@ FailureOr<ParamsAttr> materializeTuningParams(OpBuilder &b,
                                               StringRef perfConfig,
                                               ArrayRef<ParamsAttr> defaults);
 
+/// The quick-tuning problem hash of `op`, or `kQuickTuningNoProblem` when its
+/// problem has no spelling. That is not an error here: an operation the
+/// quick-tuning database cannot name is simply an unknown problem, and gets the
+/// set cover like any other. `serializeTuningProblem` stays silent about it for
+/// the quick-tuning format, so there is nothing to suppress.
+template <typename OpTy>
+uint64_t getQuickTuningProblemHashOrZero(OpTy op) {
+  FailureOr<uint64_t> hash = getQuickTuningProblemHash(op);
+  return succeeded(hash) ? *hash : kQuickTuningNoProblem;
+}
+
 /// Store information useful for populating perf configurations
 struct PopulateParamsInfo {
   GemmSize gemmSize;
@@ -76,6 +89,12 @@ struct PopulateParamsInfo {
   Type gemmBType;
   KernelType kernelType;
   bool hasFusedReduction;
+  /// Identifies the problem within its quick-tuning key, or
+  /// `kQuickTuningNoProblem` when the problem has no spelling. Taken in
+  /// `fromOp` rather than derived later: by the time tuning parameters are
+  /// populated a convolution has been reduced to a `GemmSize` and its real
+  /// shape is gone.
+  uint64_t problemHash = kQuickTuningNoProblem;
   // Block-scaled (MXFP-style) GEMM metadata. `quantBlockSize` is unset for
   // non-scaled ops; the scale element types come from
   // `RockGemmWrapperInterface::getScale{A,B}Type()` and are null for ops that
@@ -229,18 +248,6 @@ public:
 };
 
 //
-// Data holder for static tuning parameter arrays from generated .inc file.
-// Used by ParamLookupTable.
-//
-struct PopulateParamsGemm {
-#define Gemm_DECLARATIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Gemm_DECLARATIONS_GEN
-
-  friend class ParamLookupTable<GemmParamsAttr>;
-};
-
-//
 // Tuning-parameter interface for single-gemm ops.
 //
 class PopulateParams : public BasePopulateParams<GemmParamsAttr> {
@@ -253,13 +260,16 @@ public:
                          const StringRef perfConfig);
 
   // Return the set of heuristic tuning parameters for the given opType, data
-  // types, and architecture. Pass `quantBlockSize` / `aScaleType` /
+  // types, and architecture. `problemHash` narrows the list to the configs
+  // recorded for that exact problem where the database has them; see
+  // `ParamLookupTable::lookup`. Pass `quantBlockSize` / `aScaleType` /
   // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability
   // check accounts for scale-tile LDS use and the `kPerBlock %
   // quantBlockSize == 0` constraint.
   std::vector<GemmParamsAttr> getTuningParameters(
       OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-      StringRef arch, std::optional<int64_t> quantBlockSize = std::nullopt,
+      StringRef arch, uint64_t problemHash = kQuickTuningNoProblem,
+      std::optional<int64_t> quantBlockSize = std::nullopt,
       Type aScaleType = nullptr, Type bScaleType = nullptr) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,

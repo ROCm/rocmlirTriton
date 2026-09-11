@@ -5,37 +5,123 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningShardDb.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Process.h"
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
 using namespace mlir;
 using namespace mlir::rock;
 
+// Both instantiations of ParamLookupTable share one table. That costs nothing
+// in reachability: every candidate a lookup compares against carries the
+// kernel type in its key, so a gemm key can only ever resolve to a gemm shard.
+static const std::map<StringRef, const QuickTuningShard *> &getShardTable() {
+  static const auto table = [] {
+    std::map<StringRef, const QuickTuningShard *> shards;
+    for (const QuickTuningShard &shard : getQuickTuningShards())
+      shards.emplace(shard.key, &shard);
+    return shards;
+  }();
+  return table;
+}
+
 template <typename ParamsType>
-ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
-                                                         KernelType op,
-                                                         Type dataType) {
+const std::map<StringRef, const QuickTuningShard *> &
+ParamLookupTable<ParamsType>::getTable() {
+  return getShardTable();
+}
+
+static size_t getQuickTuningListMax() {
+  static const size_t listMax = [] {
+    std::optional<std::string> env =
+        llvm::sys::Process::GetEnv(kQuickTuningListMaxEnvVar);
+    size_t parsed = 0;
+    if (env && !StringRef(*env).getAsInteger(10, parsed) && parsed > 0)
+      return parsed;
+    return kQuickTuningListMaxDefault;
+  }();
+  return listMax;
+}
+
+// The set cover `shard` records, which is the list an unknown problem sweeps.
+static SmallVector<StringRef> getCover(const QuickTuningShard &shard) {
+  ArrayRef<const char *> configs = shard.getConfigs();
+  SmallVector<StringRef> cover;
+  cover.reserve(shard.numCover);
+  for (uint16_t configIdx : shard.getCover())
+    cover.push_back(configs[configIdx]);
+  return cover;
+}
+
+// The quick-tuning list `shard` holds for `problemHash`.
+static SmallVector<StringRef> narrowToProblem(const QuickTuningShard &shard,
+                                              uint64_t problemHash) {
+  // Nothing gates on how the key was reached, so a substituted key is probed
+  // just like an exact one. A mismatched substitution cannot produce a false
+  // hit: the kernel type is part of the hashed problem key, so a problem that
+  // landed on another operation's shard simply misses.
+  ArrayRef<uint64_t> problems = shard.getProblems();
+  const uint64_t *hit = llvm::lower_bound(problems, problemHash);
+  if (hit == problems.end() || *hit != problemHash)
+    return getCover(shard);
+
+  size_t problemIdx = hit - problems.begin();
+  ArrayRef<const char *> configs = shard.getConfigs();
+  SmallVector<StringRef> res;
+  // The cap bounds the whole list, the recorded bests included, so that it
+  // means what its name says even when set below the number of bests.
+  // Non-split-K comes first, so the config that survives the tightest cap is
+  // the one that is legal in every fusion context.
+  size_t listMax = getQuickTuningListMax();
+  // `front()` is what a skip-benchmarking consumer runs and what a perfdb miss
+  // falls back to, so the non-split-K best has to lead.
+  for (uint16_t configIdx :
+       {shard.getBestNonSplitK(problemIdx), shard.getBestSplitK(problemIdx)}) {
+    if (res.size() >= listMax)
+      break;
+    if (configIdx == kQuickTuningNoConfig)
+      continue;
+    StringRef config = configs[configIdx];
+    if (!llvm::is_contained(res, config))
+      res.push_back(config);
+  }
+  // Backfill so that a recorded best rejected by the fusion, or measured on a
+  // problem that only resembles this one, still has the set cover behind it.
+  for (StringRef config : getCover(shard)) {
+    if (res.size() >= listMax)
+      break;
+    if (!llvm::is_contained(res, config))
+      res.push_back(config);
+  }
+  return res;
+}
+
+template <typename ParamsType>
+SmallVector<StringRef>
+ParamLookupTable<ParamsType>::lookup(StringRef arch, KernelType op,
+                                     Type dataType, uint64_t problemHash) {
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
   static const auto &table = getTable();
-  auto it = table.find(key);
-  if (it != table.end())
-    return it->second;
+  if (auto it = table.find(key); it != table.end())
+    return narrowToProblem(*it->second, problemHash);
 
-  auto fallbackKey = findFallback(key);
-  if (!fallbackKey.empty()) {
-    LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
-                            << fallbackKey << "\n");
-    return table.at(fallbackKey);
-  }
-
-  llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
+  StringRef fallbackKey = findFallback(key);
+  if (fallbackKey.empty())
+    llvm::report_fatal_error(Twine("Tuning parameters not found for key ") +
+                             key);
+  LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
+                          << fallbackKey << "\n");
+  return narrowToProblem(*table.at(fallbackKey), problemHash);
 }
 
 template <typename ParamsType>
@@ -226,26 +312,6 @@ ParamLookupTable<ParamsType>::getKernelTypeString(KernelType kernelType) {
   default:
     return stringifyEnum(kernelType).lower();
   }
-}
-
-template <>
-std::map<StringRef, ArrayRef<StringRef>>
-ParamLookupTable<GemmParamsAttr>::buildTable() {
-  return {
-#define Gemm_LOOKUP_TABLE_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Gemm_LOOKUP_TABLE_GEN
-  };
-}
-
-template <>
-std::map<StringRef, ArrayRef<StringRef>>
-ParamLookupTable<GemmGemmParamsAttr>::buildTable() {
-  return {
-#define GemmGemm_LOOKUP_TABLE_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef GemmGemm_LOOKUP_TABLE_GEN
-  };
 }
 
 template class mlir::rock::ParamLookupTable<GemmParamsAttr>;

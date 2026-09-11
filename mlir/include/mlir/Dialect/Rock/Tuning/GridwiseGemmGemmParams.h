@@ -33,10 +33,13 @@ public:
   getTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
 
   // Same as above, but for callers without a concrete op (e.g. rocmlir-gen
-  // computing default block sizes before the kernel exists).
+  // computing default block sizes before the kernel exists). Such a caller has
+  // no problem to name, so it leaves `problemHash` at `kQuickTuningNoProblem`
+  // and gets the set cover.
   static std::vector<GemmGemmParamsAttr>
   getTuningParameters(OpBuilder &b, StringRef arch, KernelType kernelType,
-                      Type elementType);
+                      Type elementType,
+                      uint64_t problemHash = kQuickTuningNoProblem);
 
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,
@@ -50,13 +53,6 @@ public:
   static GemmParamsAttr getGemm1Params(OpBuilder &b,
                                        RockGemmGemmWrapperInterface op,
                                        GemmGemmParamsAttr params);
-
-private:
-#define GemmGemm_DECLARATIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef GemmGemm_DECLARATIONS_GEN
-
-  friend class ParamLookupTable<GemmGemmParamsAttr>;
 };
 
 /// Pure-arithmetic core of the gemm+gemm/attention peak-LDS footprint.

@@ -12,6 +12,8 @@ set(ROCK_UNITTEST_SOURCES
   transformMapUtilsTests.cpp
   ParamLookupTableTests.cpp
   PointerArithExpandTests.cpp
+  QuickTuningProblemKeyTests.cpp
+  QuickTuningShardDbTests.cpp
 )
 
 if(MLIR_ENABLE_ROCM_RUNNER)

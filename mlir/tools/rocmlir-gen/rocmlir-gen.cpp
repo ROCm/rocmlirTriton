@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemKey.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -70,6 +71,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -489,6 +491,15 @@ static llvm::cl::opt<bool> emitTuningKey(
         "Prints out the struct of the problem to be tuned for inspection."),
     llvm::cl::value_desc(
         "String formatted fields of the problem which is going to be tuned."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitQuickTuningHash(
+    "emit-quick-tuning-hash",
+    llvm::cl::desc("Print the quick-tuning problem hash of the kernel, as "
+                   "0x-prefixed lowercase 16-digit hex. This is what the "
+                   "ProblemHash column of a tuning .debug file holds, so that "
+                   "the quick-tuning generator never has to build the hash "
+                   "itself."),
     llvm::cl::init(false));
 
 // Attention related args
@@ -6749,6 +6760,17 @@ int main(int argc, char **argv) {
       return EXIT_FAILURE;
     }
     llvm::outs() << tuningKey << "\n";
+    return 0;
+  }
+
+  if (emitQuickTuningHash) {
+    FailureOr<uint64_t> problemHash = rock::getQuickTuningProblemHash(*module);
+    if (failed(problemHash)) {
+      llvm::errs() << "Failed to get quick-tuning problem hash for module: "
+                   << *module << "\n";
+      return EXIT_FAILURE;
+    }
+    llvm::outs() << llvm::format_hex(*problemHash, /*Width=*/18) << "\n";
     return 0;
   }
 
