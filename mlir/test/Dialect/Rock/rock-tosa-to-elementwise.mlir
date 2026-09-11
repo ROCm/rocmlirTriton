@@ -422,10 +422,51 @@ func.func @cast_i32_to_f32(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {
 
 // -----
 
-// Float-to-int via plain `tosa.cast` is intentionally rejected by this pass:
-// the MIGraphX frontend must emit `tosa.custom "fp_to_int_cast"` instead so
-// the saturating-truncation semantics are preserved (see CustomOpConverter
-// and the @fp_to_int_cast_* tests below for the lowered IR).
+// A plain tosa.cast float-to-int uses TOSA round-to-nearest-even semantics.
+// Clamp after rounding so arith.fptosi never receives an out-of-range value.
+// CHECK-LABEL: @cast_f32_to_i32
+// CHECK-NOT:   tosa.cast
+// CHECK:       %[[ROUND:.*]] = math.roundeven %arg0 : tensor<16xf32>
+// CHECK:       %[[MINCLAMP:.*]] = arith.maxnumf %[[ROUND]], {{.*}} : tensor<16xf32>
+// CHECK:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// CHECK:       %[[OVF:.*]] = arith.cmpf uge, %[[ROUND]], {{.*}} : tensor<16xf32>
+// CHECK:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+
+// IEEE-LABEL: @cast_f32_to_i32
+// IEEE:       %[[ROUND:.*]] = math.roundeven %arg0 : tensor<16xf32>
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %[[ROUND]], %[[ROUND]] : tensor<16xf32>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %[[ROUND]] : tensor<16xi1>, tensor<16xf32>
+// IEEE:       %[[MINCLAMP:.*]] = arith.maxnumf %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       %[[CONV:.*]] = arith.fptosi %[[MINCLAMP]] : tensor<16xf32> to tensor<16xi32>
+// IEEE:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
+// IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
+func.func @cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xf32>) -> tensor<16xi32>
+  return %0 : tensor<16xi32>
+}
+
+// -----
+
+// CHECK-LABEL: @cast_f16_to_i8
+// CHECK-NOT:   tosa.cast
+// CHECK:       %[[ROUND:.*]] = math.roundeven %arg0 : tensor<16xf16>
+// CHECK:       %[[HI:.*]] = arith.minnumf %[[ROUND]], {{.*}} : tensor<16xf16>
+// CHECK:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf16>
+// CHECK:       arith.fptosi %[[CLAMPED]] : tensor<16xf16> to tensor<16xi8>
+
+// IEEE-LABEL: @cast_f16_to_i8
+// IEEE:       %[[ROUND:.*]] = math.roundeven %arg0 : tensor<16xf16>
+// IEEE:       %[[NAN:.*]] = arith.cmpf uno, %[[ROUND]], %[[ROUND]] : tensor<16xf16>
+// IEEE:       %[[SAN:.*]] = arith.select %[[NAN]], {{.*}}, %[[ROUND]] : tensor<16xi1>, tensor<16xf16>
+// IEEE:       %[[HI:.*]] = arith.minnumf %[[SAN]], {{.*}} : tensor<16xf16>
+// IEEE:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf16>
+// IEEE:       arith.fptosi %[[CLAMPED]] : tensor<16xf16> to tensor<16xi8>
+func.func @cast_f16_to_i8(%arg0: tensor<16xf16>) -> tensor<16xi8> attributes {rock.kernel} {
+  %0 = tosa.cast %arg0 : (tensor<16xf16>) -> tensor<16xi8>
+  return %0 : tensor<16xi8>
+}
+
+// -----
 
 // Float-to-bool: non-zero is true.
 // CHECK-LABEL: @cast_f32_to_i1
@@ -822,9 +863,8 @@ func.func @unsigned_max(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 
 // fp_to_int_cast: float-to-signed-int with saturation, matching MIGraphX
 // convert semantics. Lowers via rock::createClampedFPToInt. This is the
-// only path through which fp->int casts reach this pass; plain `tosa.cast`
-// fp->int is rejected (see CastConverter), so the MIGraphX frontend must
-// emit this custom op for any fp->int conversion.
+// RTZ path used for migraphx.convert; plain `tosa.cast` takes the separate
+// RNE path tested above.
 // f32 -> i32 is Case 3 of createClampedFPToInt: f32 mantissa (24) is too
 // narrow to represent i32 max (2^31-1) exactly, so we clamp the lower
 // bound, fptosi, then fix up overflow with a select against int-max-plus-one.

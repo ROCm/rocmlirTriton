@@ -458,7 +458,9 @@ struct ClampConverter : public OpRewritePattern<tosa::ClampOp> {
 
 // tosa.cast: dispatch to the appropriate arith cast op
 struct CastConverter : public OpRewritePattern<tosa::CastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  CastConverter(MLIRContext *ctx, bool assumeNoNaNs)
+      : OpRewritePattern(ctx), assumeNoNaNs(assumeNoNaNs) {}
+
   LogicalResult matchAndRewrite(tosa::CastOp op,
                                 PatternRewriter &rewriter) const override {
     auto srcTy = cast<ShapedType>(op.getInput().getType()).getElementType();
@@ -506,13 +508,28 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       return success();
     }
 
-    // float -> int: not reachable. This pass is only invoked from the
-    // MIGraphX pipeline, and the MIGraphX frontend never emits a plain
-    // `tosa.cast` for fp->int
-    if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      return op.emitOpError(
-          "tosa.cast from floating-point to integer is not supported by "
-          "rock-tosa-to-elementwise");
+    // A plain tosa.cast uses TOSA's round-to-nearest-even semantics. Round
+    // first, then reuse the clamped conversion helper so out-of-range values
+    // and infinities never become poison in arith.fptosi. MIGraphX convert
+    // remains RTZ because it uses the separate fp_to_int_cast custom op.
+    if (auto srcFloatTy = dyn_cast<FloatType>(srcTy);
+        srcFloatTy && dstTy.isSignlessInteger()) {
+      const llvm::fltSemantics &semantics = srcFloatTy.getFloatSemantics();
+      if (!APFloat::semanticsHasZero(semantics) ||
+          !APFloat::semanticsHasInf(semantics) ||
+          !APFloat::semanticsHasSignedRepr(semantics)) {
+        return op.emitOpError(
+            "floating-point to integer cast requires a source type with "
+            "representable zero, signed representation, and infinity; "
+            "promote the source to a wider floating-point type first");
+      }
+      Value rounded =
+          math::RoundEvenOp::create(rewriter, op.getLoc(), op.getInput());
+      Value result =
+          rock::createClampedFPToInt(rewriter, op.getLoc(), rounded, dstTy,
+                                     /*isUnsigned=*/false, assumeNoNaNs);
+      rewriter.replaceOp(op, result);
+      return success();
     }
 
     // int -> bool
@@ -546,6 +563,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
 
     return failure();
   }
+
+  bool assumeNoNaNs;
 };
 
 // tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
@@ -721,8 +740,8 @@ struct RockTosaToElementwise
     patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
-            ctx);
+             SigmoidConverter, SelectConverter, ClampConverter>(ctx);
+    patterns.add<CastConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
     patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
 
     // --- Triton workarounds ---
