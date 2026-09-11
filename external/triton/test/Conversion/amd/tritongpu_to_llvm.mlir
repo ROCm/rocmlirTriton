@@ -848,6 +848,19 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 #linear = #ttg.linear<{register=[[64]], lane=[[1], [2], [4], [8], [16], [32]], warp=[], block=[]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
+    // COMMON-LABEL: roundeven_f32
+    tt.func public @roundeven_f32(%x : tensor<128xf32, #linear>, %ptr : tensor<128x!tt.ptr<f32>, #linear>) {
+        // COMMON: llvm.intr.roundeven({{.*}}) : (f32) -> f32
+        %0 = math.roundeven %x : tensor<128xf32, #linear>
+        tt.store %ptr, %0 : tensor<128x!tt.ptr<f32>, #linear>
+        tt.return
+    }
+}
+
+// -----
+
+#linear = #ttg.linear<{register=[[64]], lane=[[1], [2], [4], [8], [16], [32]], warp=[], block=[]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
     // COMMON-LABEL: clampf_f32
     tt.func public @clampf_f32(%x : tensor<128xf32, #linear>, %ptr : tensor<128x!tt.ptr<f32>, #linear>) {
         %min = arith.constant dense<-1.00000e+00> : tensor<128xf32, #linear>
