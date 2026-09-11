@@ -16,7 +16,7 @@
 // limitations under the License.
 // ============================================================
 //
-// Records the pointwie/elementwise operations fused around a kernel as
+// Records the pointwise/elementwise operations fused around a kernel as
 // `rock.input_fusions` and `rock.output_fusions`, which getTuningProblemStr
 // will later serialize into the tuning key.
 //

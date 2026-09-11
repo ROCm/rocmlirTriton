@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --rock-annotate-fusions %s | FileCheck %s
 
 #collapse = affine_map<(d0) -> (0, d0 floordiv 8, d0 mod 8)>

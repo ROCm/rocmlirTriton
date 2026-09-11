@@ -609,7 +609,7 @@ def Rock_InputFusions : Rock_Attr<"InputFusions"> {
   let mnemonic = "rock.input_fusions";
   let description = [{
     The names of the elementwise operations fused into a kernel function ahead
-    of its primary operation, in the order they are applied. Stored as an 
+    of its primary operation, in the order they are applied. Stored as an
     `ArrayAttr` of `StringAttr`.
   }];
 }
