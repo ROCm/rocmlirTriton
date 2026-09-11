@@ -143,6 +143,12 @@ DictionaryAttr makeDynGridSizeAttr(Builder &b, DynGridSize gridSize);
 /// `attr` is not one.
 std::optional<DynGridSize> getDynGridSize(Attribute attr);
 
+/// Set the static grid size of a kernel on its function.
+void setGridSize(func::FuncOp funcOp, Builder &b, int64_t gridSize);
+
+/// Counterpart of `setGridSize` for a kernel with dynamic M.
+void setDynGridSize(func::FuncOp funcOp, Builder &b, DynGridSize gridSize);
+
 /// How a caller obtains one gemm dimension. A static dimension is a literal; a
 /// dynamic one is recovered by dividing the element count of the buffer the
 /// gemm operand is a view of by the product of the operand's other extents.

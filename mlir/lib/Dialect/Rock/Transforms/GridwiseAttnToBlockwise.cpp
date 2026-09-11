@@ -110,6 +110,12 @@ chooseAttentionKVCacheModifiers(StringRef arch, Type qElemType,
                                 int64_t kNumElems, bool kReloads,
                                 Type vElemType, int64_t vNumElems,
                                 bool vReloads, int64_t gemm0MBlocks) {
+  // If any of the extents are dynamic, the cache pressure cannot be inferred;
+  // keep the default behaviour.
+  if (ShapedType::isDynamic(qNumElems) || ShapedType::isDynamic(kNumElems) ||
+      ShapedType::isDynamic(vNumElems) || ShapedType::isDynamic(gemm0MBlocks))
+    return {rock::CacheModifier::NONE, rock::CacheModifier::NONE};
+
   const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
   auto bytesOf = [](int64_t numElems, Type elemType) -> int64_t {
     return llvm::divideCeil(numElems * elemType.getIntOrFloatBitWidth(), 8);
@@ -1117,8 +1123,18 @@ struct GridwiseAttentionRewritePattern
     int64_t gemm0KPerBlock = gemm0TuningParams.getKPerBlock();
     int64_t gemm0MPerBlock = gemm0TuningParams.getMPerBlock();
     int64_t gemm0NPerBlock = gemm0TuningParams.getNPerBlock();
-    int64_t gemm0MBlocks = gemm0M / gemm0MPerBlock;
-    assert(gemm0M % gemm0MPerBlock == 0);
+    // Only the M extent may be unknown here: G and N fix how the grid is
+    // grouped, and gemm0K and gemm1K are loop trip counts.
+    if (ShapedType::isDynamic(gemm0G) || ShapedType::isDynamic(gemm0K) ||
+        ShapedType::isDynamic(gemm0N) || ShapedType::isDynamic(gemm1N))
+      return op->emitOpError()
+             << "lowering an attention op with a dynamic G, K or N dimension "
+                "is not implemented";
+
+    int64_t gemm0MBlocks = dynAwareDiv(gemm0M, gemm0MPerBlock);
+    assert((ShapedType::isDynamic(gemm0M) || gemm0M % gemm0MPerBlock == 0) &&
+           "a dynamic M is required to be a multiple of the tile height, since "
+           "the tail is not masked");
     int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
     assert(gemm0N % gemm0NPerBlock == 0);
 
@@ -1149,8 +1165,10 @@ struct GridwiseAttentionRewritePattern
     // params related to how we load Q
     bool prefetchQTile = gemm0K == gemm0KPerBlock;
 
-    int64_t gemm1MBlocks = gemm1M / gemm1MPerBlock;
-    assert(gemm1M % gemm1MPerBlock == 0);
+    int64_t gemm1MBlocks = dynAwareDiv(gemm1M, gemm1MPerBlock);
+    assert((ShapedType::isDynamic(gemm1M) || gemm1M % gemm1MPerBlock == 0) &&
+           "a dynamic M is required to be a multiple of the tile height, since "
+           "the tail is not masked");
     SmallVector<int64_t, 3> gemm0BidGridLengths = {gemm0G, gemm0MBlocks,
                                                    gemm0NBlocks};
     // Whether the K/V loads reload data (non-injective view: conv im2col,
@@ -1201,26 +1219,50 @@ struct GridwiseAttentionRewritePattern
         (splitKV > 1) ? rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), splitKV)
                       : nullptr;
 
-    auto maybeGridSize = rock::getGridSize(op);
-    if (failed(maybeGridSize))
-      return op->emitError("Failed to get grid_size");
+    // A kernel with dynamic M carries the factors of its
+    // grid (rather than a static grid size), and the layout picked below is the one that does
+    // not need one.
+    const bool hasDynamicGrid = ShapedType::isDynamic(gemm0MBlocks);
+    int64_t gridSize = 0;
+    if (!hasDynamicGrid) {
+      auto maybeGridSize = rock::getGridSize(op);
+      if (failed(maybeGridSize))
+        return op->emitError("failed to get grid_size");
+      gridSize = maybeGridSize->getInt();
+    }
 
-    int64_t gridSize = maybeGridSize->getInt();
-        
     auto arch = rock::getArchValue(op);
+
+    // Handles both static and dynamic shapes.
+    auto numElemsOf = [](Value v) -> int64_t {
+      auto type = cast<ShapedType>(v.getType());
+      return type.hasStaticShape() ? type.getNumElements()
+                                   : ShapedType::kDynamic;
+    };
 
     // Cache hint for the K/V loads: stream them when seqQ is skinny (decode)
     // and the KV cache doesn't fit in the LLC. Q is always kept cached.
     auto [cacheK, cacheV] = chooseAttentionKVCacheModifiers(
-        arch, elemTypeQLoad, inQ.getType().getNumElements(), elemTypeKLoad,
-        inK.getType().getNumElements(), kReloads, elemTypeVLoad,
-        inV.getType().getNumElements(), vReloads, gemm0MBlocks);
+        arch, elemTypeQLoad, numElemsOf(inQ), elemTypeKLoad, numElemsOf(inK),
+        kReloads, elemTypeVLoad, numElemsOf(inV), vReloads, gemm0MBlocks);
 
-    auto gridCoordsGemm0mIter0 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, gemm0MBlocks,
-        rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
-                                                    0),
-        gridSize, arch, rock::getNumChipletsValue(op), splitKVConst);
+    // `splitKVInG` selects the form used for the output store, where the
+    // split-KV slices are already part of the batch dimension.
+    auto makeGridLayout = [&](int64_t mBlocks, Value nIter,
+                              bool splitKVInG =
+                                  false) -> layout::AttnGridCoordinates {
+      if (hasDynamicGrid)
+        return layout::makeMMajorGxNGridLayout(
+            rewriter, loc, bid, splitKVInG ? gemm0G * splitKV : gemm0G, nIter,
+            splitKVInG ? 1 : splitKV);
+      return layout::makeGxNGridLayout(
+          rewriter, loc, bid, mBlocks, nIter, gridSize, arch,
+          rock::getNumChipletsValue(op), splitKVInG ? nullptr : splitKVConst);
+    };
+
+    auto gridCoordsGemm0mIter0 = makeGridLayout(
+        gemm0MBlocks, rewriter.createOrFold<arith::ConstantIntOp>(
+                          loc, rewriter.getI32Type(), 0));
 
     auto blockMTensorType =
         RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
@@ -1283,9 +1325,7 @@ struct GridwiseAttentionRewritePattern
 
       // it is fine m iteration to be zero as it irrelevant to Q tensor
       // as the first gemm is Kt x Qt.
-      auto gridCoordsGemm0LoadQ = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
-          rock::getNumChipletsValue(op), splitKVConst);
+      auto gridCoordsGemm0LoadQ = makeGridLayout(gemm0MBlocks, zero);
 
       loadedQ = rock::loadTile(
           rewriter, loc, inQ, /*kiter=*/zero, "m", gridCoordsGemm0LoadQ,
@@ -1329,9 +1369,8 @@ struct GridwiseAttentionRewritePattern
       maxRow = nLoopOp.getRegionIterArg(gemm1NChunks);
       sumRow = nLoopOp.getRegionIterArg(gemm1NChunks + 1);
 
-      layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
-          rock::getNumChipletsValue(op), splitKVConst);
+      layout::GridCoordinates gridCoordsGemm0 =
+          makeGridLayout(gemm0MBlocks, nLoopIV);
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
 
@@ -1436,23 +1475,42 @@ struct GridwiseAttentionRewritePattern
         // to global memory)
         ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
         assert(lowerShape.size() == 3);
-        int64_t tensorSize =
-            std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
-                            std::multiplies<int64_t>());
-        Value fakeTensor =
-            rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
-        Value fakeTensorM =
-            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[1]}, accType);
-        Value fakeTensorN =
-            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[2]}, accType);
+
+        // Handle padding
+        bool hasPadding =
+            op.getPrePadG0M().has_value() || op.getPrePadG0N().has_value();
+
+        // TODO: Not sure about this, need to check later if it's correct.
+
+        // The fake tensors below exist only to give TransformsToPtrOp a
+        // coordinate space to derive indices and masks from; nothing ever reads
+        // them. They are built on demand because their extents are those of the
+        // whole gemm0 output, so a kernel that needs neither padding nor
+        // masking can have an unknown one and still be lowered.
+        const bool needsGlobalCoords =
+            hasPadding || isKVCache || isCausal || slidingWindowLookBack > 0;
+        Value fakeTensor, fakeTensorM, fakeTensorN;
+        if (needsGlobalCoords) {
+          if (llvm::any_of(lowerShape, ShapedType::isDynamic))
+            return op->emitOpError()
+                   << "padding and masking of the first gemm's output are not "
+                      "implemented for a dynamic shape";
+          int64_t tensorSize =
+              std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
+                              std::multiplies<int64_t>());
+          fakeTensor =
+              rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
+          fakeTensorM = rock::createZeroAccBuffer(rewriter, loc,
+                                                  {lowerShape[1]}, accType);
+          fakeTensorN = rock::createZeroAccBuffer(rewriter, loc,
+                                                  {lowerShape[2]}, accType);
+        }
+
         Value negInfTensor = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(),
             cast<ShapedType>(softmaxInput.getType()).getElementType(),
             -std::numeric_limits<float>::infinity(), APFloat::opOK);
 
-        // Handle padding
-        bool hasPadding =
-            op.getPrePadG0M().has_value() || op.getPrePadG0N().has_value();
         if (hasPadding) {
           softmaxInput = createFirstGemmNegInfPadding(
               rewriter, loc, gridCoordsGemm0, fakeTensor, softmaxInput,
@@ -1554,9 +1612,7 @@ struct GridwiseAttentionRewritePattern
 
         Value chunkIdx = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), chunk);
-        auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-            rewriter, loc, bid, gemm1MBlocks, chunkIdx, gridSize, arch,
-            rock::getNumChipletsValue(op), splitKVConst);
+        auto gridCoordsGemm1 = makeGridLayout(gemm1MBlocks, chunkIdx);
 
         Value loadedV =
             rock::loadTile(rewriter, loc, inV,
@@ -1635,9 +1691,8 @@ struct GridwiseAttentionRewritePattern
 
     // Note that we don't use splitKV here because that dimension belongs to the
     // batch size already for output tensors
-    auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
-        rock::getNumChipletsValue(op));
+    auto gridCoordsGemm1 =
+        makeGridLayout(gemm1MBlocks, zero, /*splitKVInG=*/true);
 
     // Compute output transforms - use grid lengths with splitKV for output
     // The store consumes the full concatenated [gemm1MPerBlock, gemm1N] tile

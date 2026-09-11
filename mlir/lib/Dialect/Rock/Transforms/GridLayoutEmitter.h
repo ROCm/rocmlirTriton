@@ -72,6 +72,28 @@ GridCoordinates makeMMajorGridLayout(PatternRewriter &b, Location loc,
                                      Value bid, int64_t gBlocks,
                                      int64_t nBlocks);
 
+/// Maps a flat block id onto <group, block_m, split_kv> for an attention grid
+/// whose m extent is only known at run time, which `makeGxNGridLayout` cannot
+/// describe: it divides the block id by the number of m blocks.
+///
+/// Treating m as the most significant coordinate keeps every divisor static,
+/// because the number of m blocks is then the only thing the *size* of the grid
+/// depends on and never appears in the mapping itself:
+///
+///   m_block  = bid / (gBlocks * splitKV)
+///   g_block  = (bid % (gBlocks * splitKV)) / splitKV
+///   split_kv = (bid % (gBlocks * splitKV)) % splitKV
+///
+/// The launch is sized as `mBlocks * gBlocks * splitKV` (see
+/// `rock.dyn_grid_size`), so `m_block` covers exactly [0, mBlocks).
+///
+/// Unlike `makeGxNGridLayout` this does not rearrange workgroups across
+/// chiplets, because that rewrite is derived from the grid size, which is not a
+/// constant here. It costs locality on a multi-chiplet part, not correctness.
+AttnGridCoordinates makeMMajorGxNGridLayout(PatternRewriter &b, Location loc,
+                                            Value bid, int64_t gBlocks,
+                                            Value nIter, int64_t splitKV);
+
 AttnGridCoordinates makeGxNGridLayout(PatternRewriter &b, Location loc,
                                       Value bid, int64_t mBlocks, Value nIter,
                                       int64_t gridSize, StringRef arch,

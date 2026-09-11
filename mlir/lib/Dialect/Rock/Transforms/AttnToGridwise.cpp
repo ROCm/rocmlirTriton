@@ -303,13 +303,18 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                      /*k=*/aShape[2],
                      /*n=*/bShape[2]);
 
-  int64_t gridSize =
-      (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g * splitKV;
-  assert(gridSize > 0);
-
-  IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
-  funcOp->setAttr(rock::GridSizeAttr::getMnemonic(), gridSizeAttr);
+
+  // If M is dynamic, the grid is not a constant, so publish the two factors
+  // the launch needs to evaluate it instead of a size.
+  if (ShapedType::isDynamic(gemm0Size.m))
+    rock::setDynGridSize(funcOp, rw,
+                         {params0.getMPerBlock(), gemm0Size.g * splitKV});
+  else
+    rock::setGridSize(funcOp, rw,
+                      (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g *
+                          splitKV);
+
   return success();
 }
 
@@ -516,10 +521,24 @@ static LogicalResult commonAttentionGemmElmtGemm(
     fusionInputMapLse = std::move(lseInfo.fusionInputMap);
   }
 
-  for (Value operand : {a, b, c}) {
-    if (!cast<ShapedType>(operand.getType()).hasStaticShape())
-      return op.emitError("cannot compute a static grid size for an attention "
-                          "op with dynamically shaped operands");
+  // Only the M dimension of the first gemm may be dynamic (ie only dynamic
+  // cross-attention is supported right now).
+  //
+  // M also has to sit on the slowest-moving axis, which rules out a transposed
+  // Q or output.
+  for (Value operand : {a, b, c, out}) {
+    const bool mIsSlowest = operand == a     ? !op.getTransposedA()
+                            : operand == out ? !op.getTransposedOut()
+                                             : false;
+    ArrayRef<int64_t> shape = cast<ShapedType>(operand.getType()).getShape();
+    for (auto [index, extent] : llvm::enumerate(shape)) {
+      if (!ShapedType::isDynamic(extent))
+        continue;
+      if (index == 1 && mIsSlowest)
+        continue;
+      return op.emitError()
+             << "only the M dimension of the first gemm may be dynamic";
+    }
   }
 
   // Note: the gridwise ops take M x K, K x N and K x N

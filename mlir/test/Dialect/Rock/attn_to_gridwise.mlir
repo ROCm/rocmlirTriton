@@ -344,4 +344,3 @@ func.func @rock_attention_gqa(%arg0: tensor<64x1x128xf16>, %arg1: tensor<8x128x8
   %lseStore = rock.store %lseOut to %arg3 by set : tensor<256x1xf16> -> tensor<256x1xf16> to tensor<256x1xf16>
   return %out, %lseStore : tensor<256x1x128xf16>, tensor<256x1xf16>
 }
-

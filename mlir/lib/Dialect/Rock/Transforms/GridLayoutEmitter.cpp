@@ -158,6 +158,32 @@ GridCoordinates rock::layout::makeMMajorGridLayout(PatternRewriter &b,
   return {g_block, m_block, n_block};
 }
 
+// TODO: Look for a way to unify with GEMM function makeMMajorGridLayout
+AttnGridCoordinates
+rock::layout::makeMMajorGxNGridLayout(PatternRewriter &b, Location loc,
+                                      Value bid, int64_t gBlocks, Value nIter,
+                                      int64_t splitKV) {
+  Type i32 = b.getIntegerType(32);
+  Value gBlocksVal = b.createOrFold<ConstantIntOp>(loc, i32, gBlocks);
+
+  if (splitKV <= 1) {
+    Value mBlockIdx = DivUIOp::create(b, loc, bid, gBlocksVal);
+    Value gBlockIdx = RemUIOp::create(b, loc, bid, gBlocksVal);
+    return {{gBlockIdx, mBlockIdx, nIter}, /*splitKVIdx=*/nullptr};
+  }
+
+  Value splitKVVal = b.createOrFold<ConstantIntOp>(loc, i32, splitKV);
+  Value gSplitBlocksVal =
+      b.createOrFold<ConstantIntOp>(loc, i32, gBlocks * splitKV);
+
+  Value mBlockIdx = DivUIOp::create(b, loc, bid, gSplitBlocksVal);
+  Value gSplit = RemUIOp::create(b, loc, bid, gSplitBlocksVal);
+  Value gBlockIdx = DivUIOp::create(b, loc, gSplit, splitKVVal);
+  Value splitKVIdx = RemUIOp::create(b, loc, gSplit, splitKVVal);
+
+  return {{gBlockIdx, mBlockIdx, nIter}, splitKVIdx};
+}
+
 AttnGridCoordinates rock::layout::makeGxNGridLayout(
     PatternRewriter &b, Location loc, Value bid, int64_t mBlocks, Value nIter,
     int64_t gridSize, StringRef arch, int64_t numChiplets, Value splitKV) {

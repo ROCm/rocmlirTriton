@@ -70,9 +70,14 @@ std::optional<GemmSize> mlir::rock::calculatePadding(int64_t kPerBlock,
                                                      int64_t mPerBlock,
                                                      int64_t nPerBlock,
                                                      const GemmSize &gemmSize) {
-  int64_t kExtra = llvm::alignTo(gemmSize.k, kPerBlock) - gemmSize.k;
-  int64_t mExtra = llvm::alignTo(gemmSize.m, mPerBlock) - gemmSize.m;
-  int64_t nExtra = llvm::alignTo(gemmSize.n, nPerBlock) - gemmSize.n;
+  auto extraFor = [](int64_t size, int64_t perBlock) -> int64_t {
+    if (ShapedType::isDynamic(size))
+      return 0;
+    return llvm::alignTo(size, perBlock) - size;
+  };
+  int64_t kExtra = extraFor(gemmSize.k, kPerBlock);
+  int64_t mExtra = extraFor(gemmSize.m, mPerBlock);
+  int64_t nExtra = extraFor(gemmSize.n, nPerBlock);
   if (mExtra == 0 && kExtra == 0 && nExtra == 0)
     return std::nullopt;
   return GemmSize(0, mExtra, kExtra, nExtra);

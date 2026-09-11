@@ -516,6 +516,37 @@ std::optional<DynGridSize> mlir::rock::getDynGridSize(Attribute attr) {
   return DynGridSize{mPerBlock.getInt(), gnBlocks.getInt()};
 }
 
+/// The static and dynamic grid attributes are alternatives, and
+/// `rock-tensor-to-triton-ptr` takes the static one when both are present. A
+/// kernel that ended up with both would therefore launch on whichever was
+/// written first rather than fail, so catch that here instead.
+///
+/// Rewriting the same kind is allowed: a backward-data convolution holds
+/// several gemms in one function and each of them publishes the grid.
+static void assertNoOtherGridSizeKind(func::FuncOp funcOp, StringRef other) {
+  assert(!funcOp->hasAttr(other) &&
+         "a kernel carries either a static or a dynamic grid size, not both");
+  (void)funcOp;
+  (void)other;
+}
+
+void mlir::rock::setGridSize(func::FuncOp funcOp, Builder &b,
+                             int64_t gridSize) {
+  assertNoOtherGridSizeKind(funcOp, DynGridSizeAttr::getMnemonic());
+  assert(gridSize > 0 && "a grid must hold at least one block");
+  funcOp->setAttr(GridSizeAttr::getMnemonic(), b.getI32IntegerAttr(gridSize));
+}
+
+void mlir::rock::setDynGridSize(func::FuncOp funcOp, Builder &b,
+                                DynGridSize gridSize) {
+  assertNoOtherGridSizeKind(funcOp, GridSizeAttr::getMnemonic());
+  assert(gridSize.mPerBlock > 0 && gridSize.gnBlocks > 0 &&
+         "both factors of a dynamic grid must be positive, since the launch is "
+         "their product");
+  funcOp->setAttr(DynGridSizeAttr::getMnemonic(),
+                  makeDynGridSizeAttr(b, gridSize));
+}
+
 /// Whether `transforms` only reshuffles coordinates, so that the view and the
 /// buffer underneath it hold the same number of elements. That equality is what
 /// relates a dynamic extent to a buffer's element count.
@@ -535,11 +566,19 @@ static bool preservesElementCount(ArrayRef<TransformMapAttr> transforms) {
           if (upperBounds[upperDim] != 1)
             return false;
         break;
+      case TransformType::ConstDim:
+        // ConstDim is parameterized by [value, length] pairs. Pinning a
+        // dimension of length one selects the only element there is, which is
+        // the inverse of the unit AddDim above; a longer one picks out one
+        // slice of several and drops the rest.
+        for (size_t i = 1, e = transform.getParams().size(); i < e; i += 2)
+          if (transform.getParams()[i] != 1)
+            return false;
+        break;
       case TransformType::Pad:
       case TransformType::Slice:
       case TransformType::Embed:
       case TransformType::Broadcast:
-      case TransformType::ConstDim:
         return false;
       }
     }
@@ -609,39 +648,78 @@ static FailureOr<ExtentRecipe> buildExtentRecipe(Operation *gemmOp,
                       productOfOtherDims(shape, dimIndex)};
 }
 
-/// The one gemm of a kernel that carries runtime dimensions. The G, M, N and K
-/// arguments are identified by position alone, so numbering them for several
-/// gemms at once would be ambiguous.
-static FailureOr<GemmOp> findLoneGemm(func::FuncOp funcOp) {
-  SmallVector<GemmOp> gemmOps;
-  funcOp.walk([&](GemmOp gemmOp) { gemmOps.push_back(gemmOp); });
-
-  if (gemmOps.size() != 1)
-    return funcOp.emitOpError()
-           << "dynamic shapes are only supported for kernels with exactly one "
-              "rock.gemm, found "
-           << gemmOps.size()
-           << "; the appended G, M, N, K arguments would be ambiguous";
-  return gemmOps.front();
-}
-
 /// What each axis of a gemm view means. A is G x M x K, B is G x K x N and the
-/// result is G x M x N once the gemm has been normalized.
-using GemmAxes = std::array<RuntimeGemmDim, 3>;
+/// result is G x M x N once the gemm has been normalized. An axis that no
+/// runtime argument carries is `std::nullopt`, so that finding an unknown
+/// extent there fails loudly instead of being attributed to the wrong
+/// dimension.
+using GemmAxes = std::array<std::optional<RuntimeGemmDim>, 3>;
 static constexpr GemmAxes kAAxes = {RuntimeGemmDim::G, RuntimeGemmDim::M,
                                     RuntimeGemmDim::K};
 static constexpr GemmAxes kBAxes = {RuntimeGemmDim::G, RuntimeGemmDim::K,
                                     RuntimeGemmDim::N};
 static constexpr GemmAxes kOutAxes = {RuntimeGemmDim::G, RuntimeGemmDim::M,
                                       RuntimeGemmDim::N};
+/// Attention's output is G x M x O, where O is the head dimension of the
+/// values. That is the second gemm's N, which the four runtime arguments do not
+/// cover, so it must stay static.
+static constexpr GemmAxes kAttentionOutAxes = {RuntimeGemmDim::G,
+                                               RuntimeGemmDim::M, std::nullopt};
+
+/// The gemm-shaped operands of the one op in a kernel that carries runtime
+/// dimensions.
+///
+/// For a two-gemm op such as `rock.attention` these describe the *first* gemm:
+/// its G and M size the grid and its N is the second gemm's K, so between them
+/// the four runtime arguments name every extent of both gemms except the value
+/// head dimension.
+struct GemmLikeOp {
+  Operation *op;
+  /// The G x M x K matrix.
+  Value a;
+  /// The G x K x N matrix.
+  Value b;
+  /// The op's output, whose axes `resultAxes` names.
+  Value result;
+  GemmAxes resultAxes;
+};
+
+/// Find the single gemm-like op of `funcOp`. The G, M, N and K arguments are
+/// identified by position alone, so numbering them for several such ops at once
+/// would be ambiguous.
+static FailureOr<GemmLikeOp> findLoneGemmLikeOp(func::FuncOp funcOp) {
+  SmallVector<GemmLikeOp> found;
+  funcOp.walk([&](Operation *op) {
+    if (auto gemmOp = dyn_cast<GemmOp>(op)) {
+      found.push_back(
+          {op, gemmOp.getA(), gemmOp.getB(), gemmOp.getResult(), kOutAxes});
+    } else if (auto attnOp = dyn_cast<AttentionOp>(op)) {
+      found.push_back({op, attnOp.getQueries(), attnOp.getKeys(),
+                       attnOp.getResult(), kAttentionOutAxes});
+    }
+  });
+
+  if (found.size() != 1)
+    return funcOp.emitOpError()
+           << "dynamic shapes are only supported for kernels with exactly one "
+              "rock.gemm or rock.attention, found "
+           << found.size();
+
+  if (auto attnOp = dyn_cast<AttentionOp>(found.front().op)) {
+    if (attnOp.getQTransposed() || attnOp.getOTransposed())
+      return attnOp.emitOpError()
+             << "dynamic shapes are not supported for a transposed Q or O yet";
+  }
+  return found.front();
+}
 
 FailureOr<SmallVector<ExtentRecipe>>
 mlir::rock::buildGemmExtentRecipes(func::FuncOp funcOp) {
-  FailureOr<GemmOp> gemmOp = findLoneGemm(funcOp);
-  if (failed(gemmOp))
+  FailureOr<GemmLikeOp> root = findLoneGemmLikeOp(funcOp);
+  if (failed(root))
     return failure();
 
-  Value a = gemmOp->getA(), b = gemmOp->getB();
+  Value a = root->a, b = root->b;
   const std::pair<Value, unsigned> sources[kNumRuntimeGemmDims] = {
       {a, 0}, {a, 1}, {b, 2}, {a, 2}};
 
@@ -650,7 +728,7 @@ mlir::rock::buildGemmExtentRecipes(func::FuncOp funcOp) {
     StringRef dimName =
         getRuntimeGemmDimName(static_cast<RuntimeGemmDim>(index));
     FailureOr<ExtentRecipe> recipe =
-        buildExtentRecipe(*gemmOp, dimName, source.first, source.second);
+        buildExtentRecipe(root->op, dimName, source.first, source.second);
     if (failed(recipe))
       return failure();
     recipes.push_back(*recipe);
@@ -660,8 +738,8 @@ mlir::rock::buildGemmExtentRecipes(func::FuncOp funcOp) {
 
 FailureOr<SmallVector<DynamicArgExtent>>
 mlir::rock::getDynamicArgExtents(func::FuncOp funcOp) {
-  FailureOr<GemmOp> gemmOp = findLoneGemm(funcOp);
-  if (failed(gemmOp))
+  FailureOr<GemmLikeOp> root = findLoneGemmLikeOp(funcOp);
+  if (failed(root))
     return failure();
 
   /// One gemm view of a kernel argument.
@@ -675,13 +753,13 @@ mlir::rock::getDynamicArgExtents(func::FuncOp funcOp) {
     GemmAxes axes;
   };
 
-  Value a = gemmOp->getA(), b = gemmOp->getB();
+  Value a = root->a, b = root->b;
   SmallVector<View> views = {{a, a, kAAxes}, {b, b, kBAxes}};
 
   FailureOr<SetVector<StoreOp>> stores =
-      traceRootOutputToStoreOps(gemmOp->getResult());
+      traceRootOutputToStoreOps(root->result);
   if (failed(stores))
-    return gemmOp->emitOpError()
+    return root->op->emitOpError()
            << "cannot size a dynamic output because the gemm result does not "
               "reach a rock.store";
   for (StoreOp storeOp : *stores) {
@@ -690,10 +768,10 @@ mlir::rock::getDynamicArgExtents(func::FuncOp funcOp) {
     SmallVector<TransformMapAttr> sourceTransforms;
     untransform(storeOp.getSource(), sourceTransforms);
     if (!preservesElementCount(sourceTransforms))
-      return gemmOp->emitOpError()
+      return root->op->emitOpError()
              << "cannot size a dynamic output because what is stored is not an "
                 "element-count-preserving view of the gemm result";
-    views.push_back({gemmOp->getResult(), storeOp.getDest(), kOutAxes});
+    views.push_back({root->result, storeOp.getDest(), root->resultAxes});
   }
 
   SmallVector<DynamicArgExtent> extents;
@@ -705,18 +783,23 @@ mlir::rock::getDynamicArgExtents(func::FuncOp funcOp) {
       continue;
 
     FailureOr<unsigned> dynamicDim =
-        findLoneDynamicDim(*gemmOp, "a gemm view", shape);
+        findLoneDynamicDim(root->op, "a gemm view", shape);
     if (failed(dynamicDim))
       return failure();
 
-    RuntimeGemmDim dim = view.axes[*dynamicDim];
+    std::optional<RuntimeGemmDim> dim = view.axes[*dynamicDim];
+    if (!dim)
+      return root->op->emitOpError()
+             << "axis " << *dynamicDim
+             << " of a gemm view is dynamic, but no runtime argument carries "
+                "that dimension";
     FailureOr<BlockArgument> blockArg =
-        findViewedArgument(*gemmOp, getRuntimeGemmDimName(dim), view.buffer);
+        findViewedArgument(root->op, getRuntimeGemmDimName(*dim), view.buffer);
     if (failed(blockArg))
       return failure();
 
     if (described.insert(blockArg->getArgNumber()).second)
-      extents.push_back({blockArg->getArgNumber(), dim,
+      extents.push_back({blockArg->getArgNumber(), *dim,
                          productOfOtherDims(shape, *dynamicDim)});
   }
 
