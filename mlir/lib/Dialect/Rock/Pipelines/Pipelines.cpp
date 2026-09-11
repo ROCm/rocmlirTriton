@@ -404,6 +404,7 @@ void rock::buildHighlevelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(
         rock::createRockSortDimensionsMemoryLayoutPass());
     pm.addPass(rock::createRockInsertOutputStoresPass());
+    pm.nest<func::FuncOp>().addPass(rock::createRockAnnotateFusionsPass());
   }
 }
 
