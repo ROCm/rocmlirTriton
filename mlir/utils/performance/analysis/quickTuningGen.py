@@ -4,7 +4,13 @@
 #
 """Quick Tuning Generator
 
-Generates QuickTuningPerfconfigs.inc from tuning data produced by tuningRunner.py.
+Generates the quick-tuning shards under
+include/mlir/Dialect/Rock/Tuning/QuickTuningShards/ from tuning data produced
+by tuningRunner.py, plus the QuickTuningShards.inc index that lists them.
+
+One shard holds one lookup key: its set cover, and the best split-K and
+non-split-K config recorded for each problem the data measured. A shard is
+always written whole, so its contents depend only on the input data.
 """
 
 import argparse
@@ -37,9 +43,6 @@ CONV_GEMM_COLUMNS = [
     'DilationH', 'DilationW', 'StrideH', 'StrideW', 'PaddingH', 'PaddingW', 'O'
 ]
 
-# Operations that share the attention (GemmGemm) tuning code path
-GEMM_GEMM_OPS = {'attention', 'gemm_gemm', 'conv_gemm'}
-
 # Maps the user-facing --op value to its C++ KernelType name
 OP_TO_KERNEL_TYPE = {
     'gemm': 'Gemm',
@@ -56,8 +59,38 @@ OP_TO_KERNEL_TYPE = {
 # duplicate would be the same problem twice.
 SPLIT_K_AWARE_OPS = frozenset({'gemm', 'conv', 'gemm_gemm', 'conv_gemm'})
 
-# Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
-LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
+# Column carrying the problem hash that rocmlir-gen emits into .debug rows. The
+# generator groups by it and never constructs one, so it stays an opaque token:
+# a `0x`-prefixed lowercase 64-bit hex string. Rows without it (older data)
+# contribute to the set cover only.
+PROBLEM_HASH_COLUMN = 'ProblemHash'
+PROBLEM_HASH_PATTERN = re.compile(r'^0x[0-9a-f]{1,16}$')
+
+# Legacy positional perf configs spell their fields as `prefix:vN:a,b,c,...`
+# instead of `key=value`. splitKFactor sits at index 7 in every version up to
+# v5; v6 inserts a field ahead of it, so a positional v6 has to be rejected
+# rather than silently misread.
+POSITIONAL_SPLITK_INDEX = 7
+POSITIONAL_MAX_VERSION = 5
+POSITIONAL_VERSION_PATTERN = re.compile(r'^v(\d+)$')
+
+# Where the shards live, both on disk (relative to mlir/) and as C++ sees them.
+SHARD_INCLUDE_DIR = "mlir/Dialect/Rock/Tuning/QuickTuningShards"
+SHARD_DIR = f"include/{SHARD_INCLUDE_DIR}"
+
+# kQuickTuningNoConfig: the config index a problem carries when no config of
+# that kind was measured for it. Mirrors QuickTuningShardDb.h.
+NO_CONFIG = 0xFFFF
+
+# kQuickTuningNoProblem: the hash a lookup passes when it has no problem to
+# name. Reserved, so that such a lookup cannot be narrowed by a problem that
+# happens to hash to zero. Mirrors QuickTuningShardDb.h. rocmlir-gen prints all
+# 16 digits, but the column's grammar admits fewer, so match any spelling of it.
+NO_PROBLEM_PATTERN = re.compile(r'^0x0+$')
+
+# How much of a shard's problem count may vanish in a rewrite before it looks
+# less like new data and more like a run missing part of the .debug set.
+PROBLEM_LOSS_RATIO = 0.9
 
 # =============================================================================
 # Helper Functions
@@ -77,25 +110,6 @@ def op_from_kernel(kernel):
     raise ValueError(f"Unknown kernel type: {kernel}")
 
 
-def get_instruction_type(arch, dtype, op):
-    """Determine instruction type based on architecture, data type, and operation."""
-    if op in GEMM_GEMM_OPS:
-        return "GemmGemm"
-    return "Gemm"
-
-
-def get_class_name(arch, dtype, op):
-    """Get the PopulateParams class name."""
-    return f"PopulateParams{get_instruction_type(arch, dtype, op)}"
-
-
-def get_param_names(arch, dtype, op):
-    """Generate array and count variable names."""
-    kernel_type = OP_TO_KERNEL_TYPE[op]
-    base = f"initParameters{dtype.capitalize()}{kernel_type}{arch.capitalize()}"
-    return base, f"n{base[0].upper()}{base[1:]}"
-
-
 def get_target_columns(op):
     """Get the columns used to identify unique problems for an operation."""
     if op == "gemm":
@@ -113,10 +127,28 @@ def get_target_columns(op):
 
 
 def get_splitk_value(perfconfig):
-    """Extract the Split-K value (as a string) from a perfconfig string."""
+    """Extract the Split-K value (as a string) from a perfconfig string.
+
+    Handles both the named `prefix:key=value,...` form and the legacy
+    positional `prefix:vN:a,b,c,...` form, which measurements taken before the
+    named form landed still carry.
+    """
+    _, _, rest = perfconfig.partition(":")
+    version, sep, body = rest.partition(":")
+    match = POSITIONAL_VERSION_PATTERN.match(version) if sep else None
+    if match:
+        if int(match.group(1)) > POSITIONAL_MAX_VERSION:
+            raise ValueError(f"Positional perfconfig too new to read positionally: {perfconfig}")
+        return body.split(",")[POSITIONAL_SPLITK_INDEX].strip()
+
     _, params = parse_perfconfig(perfconfig)
     value = params.get(SPLITK_KEY)
     return None if value is None else str(value)
+
+
+def is_splitk(perfconfig):
+    """Whether `perfconfig` asks for a Split-K factor greater than one."""
+    return get_splitk_value(perfconfig) not in (None, '1')
 
 
 # =============================================================================
@@ -185,7 +217,7 @@ def load_data(files, no_splitk):
     if no_splitk and not df.empty:
         # Filter out configs where Split-K != 1
         before = len(df)
-        mask = df['PerfConfig'].apply(lambda x: get_splitk_value(x) in (None, '1'))
+        mask = df['PerfConfig'].apply(lambda x: not is_splitk(x))
         df = df[mask]
         if len(df) < before:
             print(f"Filtered out {before - len(df)} out of {before} Split-K configs")
@@ -213,9 +245,7 @@ def build_coverage(df_typed, target_cols, op, threshold):
         if op not in SPLIT_K_AWARE_OPS:
             continue
 
-        is_split_k_free = group['PerfConfig'].apply(lambda config: get_splitk_value(config) in
-                                                    (None, '1'))
-        no_splitk = group[is_split_k_free]
+        no_splitk = group[~group['PerfConfig'].apply(is_splitk)]
         if no_splitk.empty:
             print(f"WARNING: no splitKFactor=1 config measured for {name}; the quick list "
                   "cannot cover it when split-K is illegal")
@@ -291,15 +321,112 @@ def find_perfconfigs(df, op, threshold):
     return results
 
 
-# =============================================================================
-# File Generation
-# =============================================================================
+def pick_best(group):
+    """The winning PerfConfig of `group`, breaking TFlops ties lexicographically.
+
+    The tie-break is what makes a rerun on the same data reproduce the same
+    shard: measurements repeat to the last digit often enough that leaving the
+    winner to row order would churn the output.
+    """
+    if group.empty:
+        return None
+    ordered = group.sort_values(['TFlops', 'PerfConfig'], ascending=[False, True])
+    return ordered['PerfConfig'].iloc[0]
 
 
-def get_output_path():
-    """Get the output .inc file path relative to this script."""
+def find_problem_bests(df):
+    """Best non-split-K and split-K config per measured problem, per data type.
+
+    Returns ``{dtype: {problem_hash: (best_non_splitk, best_splitk)}}`` with
+    either config possibly ``None``. The hash is C++'s to define: it arrives in
+    the `ProblemHash` column and is only ever grouped by, never constructed.
+    Data predating the column yields no bests at all, which leaves every key it
+    covers with the pre-sharding set-cover-only behaviour.
+    """
+    if PROBLEM_HASH_COLUMN not in df.columns:
+        print(f"No {PROBLEM_HASH_COLUMN} column: emitting set covers only")
+        return {}
+
+    # A row whose hash is missing, malformed or reserved contributes to the set
+    # cover only, which is the pre-per-problem behaviour. attachProblemHashes.py
+    # leaves the column empty for a problem it could not identify, so a partly
+    # hashed file is expected input rather than an error.
+    hashes = df[PROBLEM_HASH_COLUMN].astype(str).str.strip()
+    valid = hashes.str.match(PROBLEM_HASH_PATTERN) & ~hashes.str.match(NO_PROBLEM_PATTERN)
+    if not valid.all():
+        unrecognized = sorted(set(hashes[~valid].astype(str)))
+        print(f"WARNING: ignoring {(~valid).sum()} row(s) whose {PROBLEM_HASH_COLUMN} is not a "
+              f"recordable hash, e.g. {unrecognized[:3]}")
+
+    df = df.assign(**{PROBLEM_HASH_COLUMN: hashes})[valid]
+
+    bests = {}
+    for dtype in sorted(df['DataType'].unique()):
+        df_typed = df[df['DataType'] == dtype]
+        per_problem = {}
+        for problem_hash, group in df_typed.groupby(PROBLEM_HASH_COLUMN):
+            splits = group['PerfConfig'].apply(is_splitk)
+            best = (pick_best(group[~splits]), pick_best(group[splits]))
+            per_problem[int(problem_hash, 16)] = best
+        bests[dtype] = per_problem
+
+    return bests
+
+
+# =============================================================================
+# Shard Generation
+# =============================================================================
+
+COLUMN_LIMIT = 80
+
+BANNER_RULE = "//===" + "-" * (COLUMN_LIMIT - 10) + "===//"
+
+# Longest banner title that still leaves `//===- `, a separating dash and
+# `===//` inside the column limit.
+BANNER_TITLE_LIMIT = COLUMN_LIMIT - 14
+
+LICENSE_HEADER = "\n".join([
+    "//",
+    "// Part of the rocMLIR Project, under the Apache License v2.0 with LLVM",
+    "// Exceptions. See https://llvm.org/LICENSE.txt for license information.",
+    "// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception",
+    "//",
+    BANNER_RULE,
+])
+
+INDEX_HEADER = """//===- QuickTuningShards.inc - index of quick-tuning shards ---------------===//
+//
+// Part of the rocMLIR Project, under the Apache License v2.0 with LLVM
+// Exceptions. See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// The checked-in list of quick-tuning shards. A shard only reaches the binary
+// if it is listed here, so adding one is an explicit, reviewable edit. This is
+// deliberately not a CMake glob: a glob leaves deleted shards behind in an
+// incremental build and bakes absolute paths into the build tree.
+//
+// Rewritten wholesale, from the shards on disk, by
+// mlir/utils/performance/analysis/quickTuningGen.py.
+//
+// Included once per phase by QuickTuningShardDb.cpp, so it must contain
+// nothing but `#include` directives, and must not carry an include guard.
+// Keep the list sorted by file name.
+//
+//===----------------------------------------------------------------------===//
+"""
+
+
+def get_shard_dir():
+    """Directory holding the per-key shards, relative to this script."""
     script_dir = Path(__file__).resolve().parent
-    return script_dir.parent.parent.parent / "include/mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+    return script_dir.parent.parent.parent / SHARD_DIR
+
+
+def get_index_path():
+    """The checked-in index that lists the shards."""
+    return get_shard_dir().parent / "QuickTuningShards.inc"
 
 
 def get_generator_path():
@@ -315,183 +442,316 @@ def get_generator_path():
     return script_path.name
 
 
-def init_inc_file(path):
-    """Create empty .inc file with required structure."""
-    sections = ["Gemm", "GemmGemm"]
-    lookup_table_sections = ["Gemm", "GemmGemm"]
-    lines = [f"// Generated by: {get_generator_path()}", "", "// clang-format off", ""]
-    for s in sections:
-        lines += [f"#ifdef {s}_DEFINITIONS_GEN", "", f"#endif  // {s}_DEFINITIONS_GEN", ""]
-        lines += [f"#ifdef {s}_DECLARATIONS_GEN", "", f"#endif  // {s}_DECLARATIONS_GEN", ""]
-    for s in lookup_table_sections:
-        lines += [f"#ifdef {s}_LOOKUP_TABLE_GEN", "", f"#endif  // {s}_LOOKUP_TABLE_GEN", ""]
-    path.write_text("\n".join(lines))
+def shard_suffix(arch, kernel_type, dtype):
+    """The identifier suffix a shard's arrays share, e.g. `Gfx908GemmI8`.
 
-
-def find_endif(content, section_name):
-    """Find position of `#endif // SECTION_NAME` line, tolerant of whitespace.
-
-    Matches `#endif`, any horizontal whitespace, `//`, any horizontal whitespace,
-    then the section name. This survives clang-format normalizing two spaces to one.
+    It is the lookup key with the separators dropped and each component
+    capitalised, so key and suffix stay one edit apart.
     """
-    pattern = re.compile(rf'^[ \t]*#endif[ \t]+//[ \t]*{re.escape(section_name)}[ \t]*$',
-                         re.MULTILINE)
-    match = pattern.search(content)
-    return match.start() if match else -1
+    return f"{arch.capitalize()}{kernel_type}{dtype.capitalize()}"
 
 
-def ensure_section(content, section_name):
-    """Ensure `#ifdef SECTION_NAME ... #endif // SECTION_NAME` exists; append if missing."""
-    if find_endif(content, section_name) != -1:
-        return content
-    if not content.endswith("\n"):
-        content += "\n"
-    content += f"\n#ifdef {section_name}\n\n#endif  // {section_name}\n"
-    print(f"Created missing section: {section_name}")
-    return content
+def lookup_key(arch, kernel_type, dtype):
+    """The lookup key a shard answers to, as ParamLookupTable::makeKey spells it."""
+    return f"{arch}_{kernel_type.lower()}_{dtype}"
 
 
-def replace_section(content, section_name, begin_marker, end_marker, new_content):
-    """Replace content between begin/end markers inside the named #ifdef section.
+def banner(text):
+    """An LLVM-style file banner padded out to the column limit."""
+    prefix = f"//===- {text} "
+    return prefix + "-" * max(1, COLUMN_LIMIT - 5 - len(prefix)) + "===//"
 
-    Creates the begin/end block if it doesn't exist, and creates the enclosing
-    #ifdef/#endif section too if it's also missing.
+
+def format_array(decl, entries):
+    """Emit `decl = {...};`, on one line when it fits and indented otherwise."""
+    one_line = f"{decl} = {{{', '.join(entries)}}};"
+    if len(one_line) <= COLUMN_LIMIT:
+        return one_line
+
+    lines, current = [], ""
+    for i, entry in enumerate(entries):
+        piece = entry + ("," if i < len(entries) - 1 else "")
+        if current and len(current) + 1 + len(piece) > COLUMN_LIMIT - 4:
+            lines.append(current)
+            current = piece
+        else:
+            current = f"{current} {piece}".strip()
+    lines.append(current)
+    body = "\n".join(f"    {line}" for line in lines)
+    return f"{decl} = {{\n{body}\n}};"
+
+
+def fmt_index(index):
+    """Spell a config index, using the sentinel's C++ spelling for `None`."""
+    return f"0x{NO_CONFIG:04X}" if index is None else str(index)
+
+
+def render_shard(key, suffix, configs, cover, problems):
+    """Render a whole shard file.
+
+    `configs` is the config pool, `cover` the set cover as indices into it in
+    descending coverage order, and `problems` a list of
+    ``(problem_hash, best_non_splitk_index, best_splitk_index)`` triples sorted
+    by hash, either index possibly ``NO_CONFIG``.
     """
-    pattern = re.compile(f'{re.escape(begin_marker)}.*?{re.escape(end_marker)}', re.DOTALL)
+    if len(configs) > NO_CONFIG:
+        raise ValueError(f"{key}: {len(configs)} configs overflows the uint16 shard indices")
 
-    if pattern.search(content):
-        return pattern.sub(f'{begin_marker}\n{new_content}\n{end_marker}', content)
+    # Name the key in the banner, unless it is one of the long ones that leaves
+    # no room for it within 80 columns; the entry below spells it out anyway.
+    title = f"{suffix}.inc - quick-tuning shard"
+    if len(title) + len(key) + len(" for ") <= BANNER_TITLE_LIMIT:
+        title += f" for {key}"
 
-    content = ensure_section(content, section_name)
-    insert_pos = find_endif(content, section_name)
+    config_lines = ",\n".join(f'    "{cfg}"' for cfg in configs)
+    lines = [
+        banner(title),
+        LICENSE_HEADER,
+        "//",
+        f"// Generated by {get_generator_path()}; do not edit.",
+        "//",
+        "// See QuickTuningShardDb.h for the entry layout and the include protocol.",
+        "//",
+        BANNER_RULE,
+        "",
+        "// clang-format off",
+        "",
+        "#ifdef QUICK_TUNING_DB_ARRAYS",
+        "",
+        "// The config pool. An array of separate string literals rather than one",
+        "// concatenated blob: MSVC caps the length of a single string literal (C2026)",
+        "// and this repo builds on Windows.",
+        f"static const char *const kCfg{suffix}[] = {{",
+        config_lines,
+        "};",
+        "",
+        "// The set cover, in descending coverage order.",
+        format_array(f"static const uint16_t kCover{suffix}[]", [str(i) for i in cover]),
+    ]
 
-    section = f'{begin_marker}\n{new_content}\n{end_marker}\n\n'
-    return content[:insert_pos] + section + content[insert_pos:]
-
-
-def add_lookup_entry(content, section_name, entry):
-    """Add or replace a lookup table entry inside the named #ifdef section."""
-    match = LOOKUP_ENTRY_PATTERN.match(entry)
-    if not match:
-        raise ValueError(f"Invalid lookup entry: {entry}")
-
-    key = match.group(1)  # e.g., "gfx942_gemm_f16"
-
-    # Check for existing entry
-    remove_pattern = re.compile(r'\{' + re.escape(key) + r',\s*\{[^}]+\}\},?[^\n]*\n*')
-    existing = remove_pattern.search(content)
-
-    if existing:
-        insert_pos = existing.start()
-        content = content[:existing.start()] + content[existing.end():]
+    if problems:
+        hashes = [f"0x{problem_hash:016x}ULL" for problem_hash, _, _ in problems]
+        slots = [f"{fmt_index(non)}, {fmt_index(split)}" for _, non, split in problems]
+        lines += [
+            "",
+            "// Problem hashes, ascending (see QuickTuningProblemKey.h).",
+            f"static const uint64_t kProb{suffix}[] = {{",
+            ",\n".join(f"    {h}" for h in hashes),
+            "};",
+            "",
+            "// Problem i: [2*i] best non-split-K, [2*i+1] best split-K,",
+            "// kQuickTuningNoConfig where none was measured.",
+            f"static const uint16_t kProbCfg{suffix}[] = {{",
+            ",\n".join(f"    {slot}" for slot in slots),
+            "};",
+        ]
+        problem_fields = f" kProb{suffix}, kProbCfg{suffix},"
     else:
-        content = ensure_section(content, section_name)
-        insert_pos = find_endif(content, section_name)
+        problem_fields = " nullptr, nullptr,"
 
-    return content[:insert_pos] + f'{entry}\n\n' + content[insert_pos:]
+    lines += [
+        "",
+        "#endif // QUICK_TUNING_DB_ARRAYS",
+        "",
+        "#ifdef QUICK_TUNING_DB_ENTRIES",
+        f'{{"{key}",',
+        f" kCfg{suffix}, /*numConfigs=*/{len(configs)},",
+        f" kCover{suffix}, /*numCover=*/{len(cover)},",
+        f"{problem_fields} /*numProblems=*/{len(problems)}}},",
+        "#endif // QUICK_TUNING_DB_ENTRIES",
+        "",
+    ]
+    return "\n".join(lines)
 
 
-def get_lookup_section(arch, op, dtype):
-    """Get the appropriate lookup table section name."""
-    if op in GEMM_GEMM_OPS:
-        return "GemmGemm_LOOKUP_TABLE_GEN"
-    return "Gemm_LOOKUP_TABLE_GEN"
+def parse_shard(path):
+    """Read back a shard as ``(key, configs, cover, num_problems)``.
+
+    Only the generator reads shards: to carry a set cover into an alias, and to
+    compare a shard against the one it is about to replace.
+    """
+    text = path.read_text()
+    key = re.search(r'^\{"([^"]+)",', text, re.MULTILINE)
+    pool = re.search(r'kCfg\w+\[\] = \{(.*?)\n\};', text, re.DOTALL)
+    cover = re.search(r'kCover\w+\[\] = \{(.*?)\};', text, re.DOTALL)
+    num_problems = re.search(r'/\*numProblems=\*/(\d+)\}', text)
+    if not (key and pool and cover and num_problems):
+        raise ValueError(f"{path} is not a shard this generator can read")
+
+    configs = re.findall(r'"([^"]*)"', pool.group(1))
+    indices = [int(i) for i in cover.group(1).replace("\n", " ").split(",") if i.strip()]
+    return key.group(1), configs, indices, int(num_problems.group(1))
 
 
-def update_inc_file(results, arch, op):
-    """Update the .inc file with results."""
-    path = get_output_path()
+def warn_on_lost_problems(path, key, num_problems):
+    """Warn when a shard is about to be rewritten with materially fewer problems.
+
+    A run made with only part of the `.debug` set still produces a perfectly
+    well-formed shard; the only symptom is that problems the last run knew
+    about have quietly gone missing.
+    """
     if not path.exists():
-        init_inc_file(path)
+        return
+    _, _, _, previous = parse_shard(path)
+    if num_problems < previous * PROBLEM_LOSS_RATIO:
+        print(f"WARNING: {key} drops from {previous} to {num_problems} measured problem(s); "
+              "rerun with the full .debug set if that was not intended")
 
-    content = path.read_text()
 
-    # Identifiers and section markers use the PascalCase KernelType; the lookup key uses its
-    # lowercase form
+def write_shard(key, suffix, configs, cover, problems):
+    """Write one shard, warning first if it loses problems the old one had."""
+    path = get_shard_dir() / f"{suffix}.inc"
+    warn_on_lost_problems(path, key, len(problems))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_shard(key, suffix, configs, cover, problems))
+    return path
+
+
+def write_index():
+    """Rewrite the shard index from the shards on disk.
+
+    A shard only reaches the binary by being listed here, so every write of a
+    shard has to be followed by a rewrite of the index.
+    """
+    path = get_index_path()
+    names = sorted(p.name for p in get_shard_dir().glob("*.inc"))
+    includes = "\n".join(f'#include "{SHARD_INCLUDE_DIR}/{name}"' for name in names)
+    path.write_text(f"{INDEX_HEADER}\n{includes}\n")
+    print(f"Indexed {len(names)} shard(s) in {path}")
+
+
+def build_pool(cover_configs, bests):
+    """Lay out a shard's config pool and index its cover and per-problem bests.
+
+    The cover leads the pool, so its indices are the identity and a key with no
+    measured problems is exactly its old list. The bests the cover does not
+    already hold follow, sorted, so the pool depends on the data alone.
+
+    Returns ``(pool, cover_indices, problems)``.
+    """
+    pool = list(cover_configs)
+    indices = {cfg: i for i, cfg in enumerate(pool)}
+    for cfg in sorted({c for pair in bests.values() for c in pair if c and c not in indices}):
+        indices[cfg] = len(pool)
+        pool.append(cfg)
+
+    problems = [(problem_hash, indices.get(non_splitk), indices.get(splitk))
+                for problem_hash, (non_splitk, splitk) in sorted(bests.items())]
+    return pool, list(range(len(cover_configs))), problems
+
+
+def write_shards(results, bests, arch, op):
+    """Write a shard per data type covered by this run, then reindex."""
     kernel_type = OP_TO_KERNEL_TYPE[op]
 
-    for dtype, configs in results.items():
-        instr = get_instruction_type(arch, dtype, op)
-        class_name = get_class_name(arch, dtype, op)
-        param_name, count_name = get_param_names(arch, dtype, op)
+    for dtype, cover_configs in results.items():
+        key = lookup_key(arch, kernel_type, dtype)
+        pool, cover, problems = build_pool(cover_configs, bests.get(dtype, {}))
+        path = write_shard(key, shard_suffix(arch, kernel_type, dtype), pool, cover, problems)
+        print(f"Wrote {path}: {len(cover)} cover config(s), {len(problems)} problem(s)")
 
-        # Generate definition. Perf configs are `prefix:key=value,...` strings
-        # containing only identifier, digit, `-`, `=`, `,` and `:` characters,
-        # so they embed directly into a C++ string literal without escaping.
-        def_lines = [f"const StringRef {class_name}::{param_name}[] = {{"]
-        for i, cfg in enumerate(configs):
-            comma = "," if i < len(configs) - 1 else ""
-            def_lines.append(f'    "{cfg}"{comma}')
-        def_lines.append("};")
-
-        content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  "\n".join(def_lines))
-
-        # Generate declaration
-        dec_lines = [
-            f"static constexpr size_t {count_name} = {len(configs)};",
-            f"static const StringRef {param_name}[{count_name}];"
-        ]
-
-        content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  "\n".join(dec_lines))
-
-        # Add lookup entry
-        section_name = get_lookup_section(arch, op, dtype)
-        key = f"{arch}_{kernel_type.lower()}_{dtype}"
-        value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
-        entry = f'{{"{key}", {value}}},'
-        content = add_lookup_entry(content, section_name, entry)
-
-    path.write_text(content)
+    write_index()
 
 
 def add_type_aliases(from_type, to_type):
-    """Add lookup entries for from_type that reference to_type's configs."""
-    path = get_output_path()
-    if not path.exists():
-        print(f"ERROR: {path} does not exist", file=sys.stderr)
+    """Give `from_type` keys a shard carrying the `to_type` set cover.
+
+    The cover transfers because it is what an untuned key falls back to
+    anyway; the per-problem bests do not, since they are measurements of a
+    different precision, so an aliased shard has no problems and behaves
+    exactly as the pre-sharding table did.
+    """
+    shard_dir = get_shard_dir()
+    if not shard_dir.is_dir():
+        print(f"ERROR: {shard_dir} does not exist", file=sys.stderr)
         sys.exit(1)
 
-    content = path.read_text()
-
     aliases_added = 0
-    for match in LOOKUP_ENTRY_PATTERN.finditer(content):
-        arch = match.group(2)  # e.g., "gfx942"
-        kernel = match.group(3)  # e.g., "gemm"
-        dtype = match.group(4)  # e.g., "f16"
-        value = match.group(5)  # e.g., "{PopulateParamsGemm::..., ...}"
-
+    for path in sorted(shard_dir.glob("*.inc")):
+        key, configs, cover, _ = parse_shard(path)
+        arch, kernel, dtype = key.split("_")
         if dtype != to_type:
             continue
 
-        from_key = f"{arch}_{kernel}_{from_type}"
+        from_key = lookup_key(arch, kernel, from_type)
+        kernel_type = OP_TO_KERNEL_TYPE[op_from_kernel(kernel)]
+        suffix = shard_suffix(arch, kernel_type, from_type)
 
-        # Don't overwrite existing entries - aliases are fallbacks only
-        if f'"{from_key}"' in content:
+        # Don't overwrite existing shards - aliases are fallbacks only
+        if (shard_dir / f"{suffix}.inc").exists():
             print(f"Skipping {from_key}: already exists")
             continue
 
-        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
-
-        section_name = get_lookup_section(arch, op, from_type)
-        entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
-
-        content = add_lookup_entry(content, section_name, entry)
+        write_shard(from_key, suffix, [configs[i] for i in cover], list(range(len(cover))), [])
         print(f"Added: {from_key} -> {to_type}")
         aliases_added += 1
 
     if aliases_added > 0:
-        path.write_text(content)
+        write_index()
         print(f"Added {aliases_added} alias(es)")
     else:
         print("No aliases added")
 
     return True
+
+
+# =============================================================================
+# One-shot Conversion
+# =============================================================================
+
+MONOLITH_ENTRY_PATTERN = re.compile(r'\{"(gfx\w+)_(\w+)_(\w+)",\s*\{(\w+)::(\w+),')
+MONOLITH_DEFINITION_PATTERN = re.compile(r'const StringRef \w+::(\w+)\[\] = \{(.*?)\n\};',
+                                         re.DOTALL)
+
+
+def convert_monolith(path):
+    """Split the pre-sharding QuickTuningPerfconfigs.inc into shards.
+
+    The measurements behind that table are long gone, so this reads the shipped
+    lists themselves: every key becomes a shard whose pool is its old list and
+    whose problem arrays are empty, which is bit-for-bit the behaviour it had.
+    A key that already has a shard is left alone and only checked, so the
+    conversion cannot undo work a real run has already done.
+
+    Returns False if any key failed to carry over.
+    """
+    content = path.read_text()
+    lists = {
+        name: re.findall(r'"([^"]*)"', body)
+        for name, body in MONOLITH_DEFINITION_PATTERN.findall(content)
+    }
+
+    converted, checked, failed = 0, 0, []
+    for arch, kernel, dtype, _, param_name in MONOLITH_ENTRY_PATTERN.findall(content):
+        key = f"{arch}_{kernel}_{dtype}"
+        configs = lists.get(param_name)
+        if not configs:
+            failed.append(f"{key}: no definition of {param_name}")
+            continue
+
+        kernel_type = OP_TO_KERNEL_TYPE[op_from_kernel(kernel)]
+        suffix = shard_suffix(arch, kernel_type, dtype)
+        shard_path = get_shard_dir() / f"{suffix}.inc"
+
+        if not shard_path.exists():
+            write_shard(key, suffix, configs, list(range(len(configs))), [])
+            converted += 1
+        else:
+            checked += 1
+
+        # Read the shard back rather than trust what was just written: this is
+        # the one run that has the old table to check the new ones against.
+        shard_key, pool, cover, _ = parse_shard(shard_path)
+        if shard_key != key:
+            failed.append(f"{key}: {shard_path.name} answers to {shard_key}")
+        elif [pool[i] for i in cover] != configs:
+            failed.append(f"{key}: set cover in {shard_path.name} differs from {param_name}")
+
+    write_index()
+    print(f"Converted {converted} key(s), checked {checked} pre-existing shard(s)")
+    for message in failed:
+        print(f"ERROR: {message}", file=sys.stderr)
+    return not failed
 
 
 # =============================================================================
@@ -514,18 +774,18 @@ def process_arch(df, arch, op, threshold, update):
     df_arch = df[df['Chip'] == arch]
 
     results = find_perfconfigs(df_arch, op, threshold)
+    bests = find_problem_bests(df_arch)
     print_results(results, arch)
 
     if update:
-        update_inc_file(results, arch, op)
-        print(f"Updated {get_output_path()} for {arch}")
+        write_shards(results, bests, arch, op)
 
 
 def main(args=None):
     parser = argparse.ArgumentParser(
         prog='quickTuningGen.py',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description='Generate QuickTuningPerfconfigs.inc from tuning data.',
+        description='Generate the quick-tuning shards from tuning data.',
         epilog='''
 Examples:
     # Generate quick-tune lists from tuning data
@@ -536,6 +796,11 @@ Examples:
 
     # Add fallback type aliases (use f16 configs when there's no bf16 data)
     %(prog)s --alias bf16 f16
+
+    # One-shot: split the pre-sharding table into shards. It was deleted once
+    # the shards reproduced it, so take it from the history:
+    #   git show <rev>:mlir/include/mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc > /tmp/old.inc
+    %(prog)s --convert-monolith /tmp/old.inc
 ''')
 
     parser.add_argument(
@@ -551,18 +816,27 @@ Examples:
                         default=0.93,
                         metavar='THRESHOLD',
                         help='Coverage threshold (default: 0.93)')
-    parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
+    parser.add_argument('--update', action='store_true', help='Write the shards')
     parser.add_argument('--no-splitk', action='store_true', help='Exclude Split-K configurations')
     parser.add_argument('--alias',
                         nargs=2,
                         metavar=('FROM', 'TO'),
                         help='Add fallback: use TO configs for FROM type (e.g., --alias bf16 f16)')
+    parser.add_argument('--convert-monolith',
+                        metavar='FILE',
+                        help='One-shot: split a pre-sharding QuickTuningPerfconfigs.inc into '
+                        'shards, checking each set cover survives unchanged')
 
     pargs = parser.parse_args(args)
 
-    if not pargs.op and not pargs.alias:
-        parser.error('either --op or --alias must be specified')
+    if not pargs.op and not pargs.alias and not pargs.convert_monolith:
+        parser.error('either --op, --alias or --convert-monolith must be specified')
         return 1
+
+    # Convert the pre-sharding table
+    if pargs.convert_monolith:
+        if not convert_monolith(Path(pargs.convert_monolith)):
+            return 1
 
     # Generate quick-tune lists
     if pargs.op:

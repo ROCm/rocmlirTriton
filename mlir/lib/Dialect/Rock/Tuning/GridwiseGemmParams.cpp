@@ -38,13 +38,6 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
   return os;
 }
 
-/// Static data for tuning parameters (used by ParamLookupTable).
-// clang-format off
-#define Gemm_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef Gemm_DEFINITIONS_GEN
-// clang-format on
-
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
@@ -52,6 +45,7 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
   info.hasFusedReduction = wRes.wasInterrupted();
+  info.problemHash = getQuickTuningProblemHashOrZero(op);
 
   // Block-scaled GEMM metadata: `quantBlockSize` lives on `GemmOp`, scale
   // element types come from the interface. `getScale{A,B}Type` returns the
@@ -205,8 +199,8 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   return materializeTuningParams<GemmParamsAttr>(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
-                          info.arch, info.quantBlockSize, info.aScaleType,
-                          info.bScaleType));
+                          info.arch, info.problemHash, info.quantBlockSize,
+                          info.aScaleType, info.bScaleType));
 }
 
 FailureOr<GemmParamsAttr>
@@ -224,10 +218,10 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
 
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-    StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
-    Type bScaleType) const {
-  auto perfConfigs =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
+    StringRef arch, uint64_t problemHash, std::optional<int64_t> quantBlockSize,
+    Type aScaleType, Type bScaleType) const {
+  auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, opType, dataTypeA, problemHash);
 
   LLVM_DEBUG(
       llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "

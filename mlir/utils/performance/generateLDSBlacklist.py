@@ -301,7 +301,7 @@ def overflowing_projections(paths: perfRunner.Paths, arch: str, gen_dtype: str, 
 
 
 # =============================================================================
-# .inc emission (mirrors QuickTuningPerfconfigs.inc structure)
+# .inc emission (same two-phase include protocol as the quick-tuning shards)
 # =============================================================================
 
 
@@ -344,8 +344,9 @@ def generator_rel_path() -> str:
 def emit_inc(results: Dict[Tuple[str, str], List[Projection]], path: Path) -> None:
     """Write the full .inc from {(arch, dtype_key): [projection,...]}.
 
-    Regenerated wholesale each run (unlike quickTuningGen's incremental patching)
-    because this tool always sweeps the complete arch/dtype matrix it's given.
+    Regenerated wholesale each run -- unlike quickTuningGen, which rewrites only
+    the shards its run covers -- because this tool always sweeps the complete
+    arch/dtype matrix it's given.
     """
     field_comment = "// GemmLdsKey fields: " + ", ".join(PROJECTION_NAMES)
     lines: List[str] = [

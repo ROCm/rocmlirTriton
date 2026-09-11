@@ -3,6 +3,8 @@ add_rocmlir_dialect_library(MLIRRockTuning
   GridwiseGemmParams.cpp
   GridwiseGemmGemmParams.cpp
   LdsBlacklist.cpp
+  QuickTuningProblemKey.cpp
+  QuickTuningShardDb.cpp
   RockTuningImpl.cpp
   ParamLookupTable.cpp
 

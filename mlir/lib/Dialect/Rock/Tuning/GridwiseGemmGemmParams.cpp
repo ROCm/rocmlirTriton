@@ -17,10 +17,6 @@
 using namespace mlir;
 using namespace mlir::rock;
 
-#define GemmGemm_DEFINITIONS_GEN
-#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
-#undef GemmGemm_DEFINITIONS_GEN
-
 FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
     OpBuilder &b, RockGemmGemmWrapperInterface op) {
   // Prefer the op's `perf_config`; otherwise fall back to the
@@ -42,7 +38,8 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
   auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
   auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType,
+                                  getQuickTuningProblemHashOrZero(op));
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
         return isGemmGemmParamsConservativelyApplicable(
@@ -60,9 +57,10 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
 }
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
-    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
+    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
+    uint64_t problemHash) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      arch, kernelType, elementType);
+      arch, kernelType, elementType, problemHash);
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(perfConfigs.size());
   for (StringRef config : perfConfigs) {

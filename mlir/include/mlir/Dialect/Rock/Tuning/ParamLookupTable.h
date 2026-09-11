@@ -14,7 +14,11 @@
 #define MLIR_DIALECT_ROCK_PARAM_LOOKUP_TABLE_H
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningShardDb.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/SmallVector.h"
+#include <cstdint>
+#include <map>
 
 namespace mlir {
 namespace rock {
@@ -31,11 +35,32 @@ StringRef normalizeArch(StringRef arch);
 // keys emitted here match those baked into the generated .inc tables.
 std::string getDataTypeString(Type dataType);
 
+/// Environment variable overriding how many configs a known problem's
+/// quick-tuning list may hold, the recorded bests included. Only the list of a
+/// problem the database has measurements for is capped; an unknown problem
+/// still sweeps the whole set cover.
+inline constexpr StringLiteral kQuickTuningListMaxEnvVar =
+    "ROCMLIR_QUICK_TUNING_LIST_MAX";
+
+/// Cap used when `kQuickTuningListMaxEnvVar` is unset or unparseable.
+inline constexpr size_t kQuickTuningListMaxDefault = 30;
+
 template <typename ParamsType>
 class ParamLookupTable {
 public:
-  static ArrayRef<StringRef> lookup(StringRef arch, KernelType op,
-                                    Type dataType);
+  /// The quick-tuning list for a problem: the configs to sweep, best first.
+  ///
+  /// `problemHash` identifies the problem within the resolved key (see
+  /// QuickTuningProblemKey.h). When the database holds measurements for it,
+  /// the list leads with the best non-split-K and best split-K config recorded
+  /// for that exact problem and is then backfilled from the set cover, without
+  /// repeats, to a total of `kQuickTuningListMaxEnvVar`. Otherwise -- an
+  /// unknown problem, an untuned key, or `kQuickTuningNoProblem` from a caller
+  /// that has no problem to name -- the list is the whole set cover, in its
+  /// recorded order, exactly as before per-problem data existed.
+  static SmallVector<StringRef>
+  lookup(StringRef arch, KernelType op, Type dataType,
+         uint64_t problemHash = kQuickTuningNoProblem);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.
@@ -91,12 +116,10 @@ private:
   static StringRef pickClosestRelative(StringRef target,
                                        ArrayRef<StringRef> relatives);
 
-  static const std::map<StringRef, ArrayRef<StringRef>> &getTable() {
-    static const std::map<StringRef, ArrayRef<StringRef>> table = buildTable();
-    return table;
-  }
-
-  static std::map<StringRef, ArrayRef<StringRef>> buildTable();
+  // Every key the compiled-in quick-tuning database holds, mapped to the shard
+  // holding its data. Ordered rather than hashed because `getRelatives`
+  // depends on iterating it in key order.
+  static const std::map<StringRef, const QuickTuningShard *> &getTable();
 
   static std::string getKernelTypeString(KernelType kernelType);
 
