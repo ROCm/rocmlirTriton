@@ -9,6 +9,7 @@ patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
+patch-roundeven-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
@@ -93,6 +94,13 @@ patch-preserve-arith-bitcast-lowering.patch
   Keeps `arith.bitcast` legal through Triton's Triton-to-TritonGPU and
   TritonGPU-to-LLVM conversion pipeline by adding the corresponding generic
   conversion and LLVM lowering patterns.
+
+patch-roundeven-lowering.patch
+  Keeps tensor `math.roundeven` legal through Triton's
+  Triton-to-TritonGPU conversion and scalarizes it to the LLVM
+  `llvm.intr.roundeven` intrinsic. This lets TOSA float-to-integer casts retain
+  round-to-nearest-even semantics and lower to the target's native rounding
+  instruction instead of an expanded arithmetic sequence.
 
 patch-skip-subbyte-reduce-data-duplication.patch
   Prevents ReduceDataDuplication from materializing sub-byte tensors through
