@@ -413,7 +413,9 @@ patch-fma-lds-swizzle.patch
   a target without a matrix core gets no swizzle at all.
   getSharedEncIfAllUsersAreDotEnc gains composeSwizzledLayoutForFMA, called for
   blocked-parent operands after composePaddedLayout declines and before the
-  generic dot-operand constructor.
+  generic dot-operand constructor. The helper accounts for target bank count
+  and rows narrower than a complete bank row. It is limited to f32 because
+  other FMA element types use different packed LDS access patterns.
 
   Stacks on patch10694.patch and must be applied after it: the shared orders
   expected in test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir are the

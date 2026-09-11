@@ -85,6 +85,58 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 // -----
 
+// A 16-element f32 row occupies half of the 32 LDS banks, so adjacent rows
+// start 16 banks apart. Change phase every two rows, when the row stride wraps.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
+#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+// CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 2, order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: fma_swizzle_accounts_for_narrow_rows
+  tt.func @fma_swizzle_accounts_for_narrow_rows(
+                %argB: tensor<16x16x!tt.ptr<f32>, #blocked>,
+                %argA: tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>>,
+                %lb: i32, %ub: i32, %step: i32) -> tensor<16x16xf32, #fma> {
+    // CHECK: ttg.local_alloc {{.*}} #shared
+    %cst_acc = arith.constant dense<0.000000e+00> : tensor<16x16xf32, #fma>
+    %result = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst_acc) -> (tensor<16x16xf32, #fma>) : i32 {
+      %b = tt.load %argB : tensor<16x16x!tt.ptr<f32>, #blocked>
+      %b_dot = ttg.convert_layout %b : tensor<16x16xf32, #blocked> -> tensor<16x16xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>>
+      %c = tt.dot %argA, %b_dot, %acc : tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>> * tensor<16x16xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>> -> tensor<16x16xf32, #fma>
+      scf.yield %c : tensor<16x16xf32, #fma>
+    }
+    tt.return %result : tensor<16x16xf32, #fma>
+  }
+}
+
+// -----
+
+// Negative case: other FMA element types use different LDS access widths and
+// packed patterns, so leave them unswizzled until those cases are handled.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
+#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+// CHECK: #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: fma_non_f32_operand_is_not_swizzled
+  tt.func @fma_non_f32_operand_is_not_swizzled(
+                %argB: tensor<64x64x!tt.ptr<f16>, #blocked>,
+                %argA: tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #fma}>>,
+                %lb: i32, %ub: i32, %step: i32) -> tensor<64x64xf32, #fma> {
+    // CHECK: ttg.local_alloc {{.*}} #shared
+    %cst_acc = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #fma>
+    %result = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst_acc) -> (tensor<64x64xf32, #fma>) : i32 {
+      %b = tt.load %argB : tensor<64x64x!tt.ptr<f16>, #blocked>
+      %b_dot = ttg.convert_layout %b : tensor<64x64xf16, #blocked> -> tensor<64x64xf16, #ttg.dot_op<{opIdx = 1, parent = #fma}>>
+      %c = tt.dot %argA, %b_dot, %acc : tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #fma}>> * tensor<64x64xf16, #ttg.dot_op<{opIdx = 1, parent = #fma}>> -> tensor<64x64xf32, #fma>
+      scf.yield %c : tensor<64x64xf32, #fma>
+    }
+    tt.return %result : tensor<64x64xf32, #fma>
+  }
+}
+
+// -----
+
 // Negative case: a single lane spans the strided dim, so no two lanes share a
 // bank and the buffer keeps the unswizzled layout.
 

@@ -1,9 +1,9 @@
 diff --git a/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
 new file mode 100644
-index 0000000000..bd33d2b6a7
+index 0000000000..4e7ec3be15
 --- /dev/null
 +++ b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,188 @@
 +// RUN: triton-opt %s -split-input-file -tritonamdgpu-schedule-loops="num_stages=2" -tritonamdgpu-pipeline | FileCheck %s
 +
 +// Bank-conflict swizzling for FMA dot operands. Upstream leaves a blocked-parent
@@ -91,6 +91,58 @@ index 0000000000..bd33d2b6a7
 +
 +// -----
 +
++// A 16-element f32 row occupies half of the 32 LDS banks, so adjacent rows
++// start 16 banks apart. Change phase every two rows, when the row stride wraps.
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
++#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
++// CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 2, order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: fma_swizzle_accounts_for_narrow_rows
++  tt.func @fma_swizzle_accounts_for_narrow_rows(
++                %argB: tensor<16x16x!tt.ptr<f32>, #blocked>,
++                %argA: tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>>,
++                %lb: i32, %ub: i32, %step: i32) -> tensor<16x16xf32, #fma> {
++    // CHECK: ttg.local_alloc {{.*}} #shared
++    %cst_acc = arith.constant dense<0.000000e+00> : tensor<16x16xf32, #fma>
++    %result = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst_acc) -> (tensor<16x16xf32, #fma>) : i32 {
++      %b = tt.load %argB : tensor<16x16x!tt.ptr<f32>, #blocked>
++      %b_dot = ttg.convert_layout %b : tensor<16x16xf32, #blocked> -> tensor<16x16xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>>
++      %c = tt.dot %argA, %b_dot, %acc : tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>> * tensor<16x16xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>> -> tensor<16x16xf32, #fma>
++      scf.yield %c : tensor<16x16xf32, #fma>
++    }
++    tt.return %result : tensor<16x16xf32, #fma>
++  }
++}
++
++// -----
++
++// Negative case: other FMA element types use different LDS access widths and
++// packed patterns, so leave them unswizzled until those cases are handled.
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [0, 1]}>
++#fma = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
++// CHECK: #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
++  // CHECK-LABEL: fma_non_f32_operand_is_not_swizzled
++  tt.func @fma_non_f32_operand_is_not_swizzled(
++                %argB: tensor<64x64x!tt.ptr<f16>, #blocked>,
++                %argA: tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #fma}>>,
++                %lb: i32, %ub: i32, %step: i32) -> tensor<64x64xf32, #fma> {
++    // CHECK: ttg.local_alloc {{.*}} #shared
++    %cst_acc = arith.constant dense<0.000000e+00> : tensor<64x64xf32, #fma>
++    %result = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst_acc) -> (tensor<64x64xf32, #fma>) : i32 {
++      %b = tt.load %argB : tensor<64x64x!tt.ptr<f16>, #blocked>
++      %b_dot = ttg.convert_layout %b : tensor<64x64xf16, #blocked> -> tensor<64x64xf16, #ttg.dot_op<{opIdx = 1, parent = #fma}>>
++      %c = tt.dot %argA, %b_dot, %acc : tensor<64x64xf16, #ttg.dot_op<{opIdx = 0, parent = #fma}>> * tensor<64x64xf16, #ttg.dot_op<{opIdx = 1, parent = #fma}>> -> tensor<64x64xf32, #fma>
++      scf.yield %c : tensor<64x64xf32, #fma>
++    }
++    tt.return %result : tensor<64x64xf32, #fma>
++  }
++}
++
++// -----
++
 +// Negative case: a single lane spans the strided dim, so no two lanes share a
 +// bank and the buffer keeps the unswizzled layout.
 +
@@ -141,25 +193,33 @@ index 0000000000..bd33d2b6a7
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index e17a7c1573..df03e6e742 100644
+index e17a7c1573..df0ac07d07 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -182,6 +182,45 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
+@@ -182,6 +182,68 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
    return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
  }
  
-+// Shared layout for an FMA dot operand, which composePaddedLayout does not
++// Shared layout for an f32 FMA dot operand, which composePaddedLayout does not
 +// cover and upstream leaves unswizzled. Transposing a K-contiguous operand into
-+// an operand-major buffer puts each group of threadsPerWarp[strided] lanes on
-+// one LDS bank, since the leading dimension is a multiple of the 32 banks. Pick
-+// the smallest XOR swizzle that separates them.
-+ttg::SharedEncodingTrait composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
-+                                                     ArrayRef<unsigned> order,
-+                                                     ttg::CGAEncodingAttr cga,
-+                                                     unsigned bitWidth) {
-+  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
-+  if (!blocked || order.size() != 2)
++// an operand-major buffer can make lanes along the strided dimension revisit
++// the same LDS banks. Pick the smallest XOR swizzle that separates them.
++ttg::SharedEncodingTrait
++composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
++                            ArrayRef<unsigned> order, ttg::CGAEncodingAttr cga,
++                            unsigned bitWidth,
++                            const tt::AMD::TargetInfo &targetInfo) {
++  if (!srcTy.getElementType().isF32()) {
++    LDBG("No FMA LDS swizzle: only f32 operands are supported, got "
++         << srcTy.getElementType());
 +    return {};
++  }
++  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
++  if (!blocked || order.size() != 2) {
++    LDBG("No FMA LDS swizzle: need a 2D blocked source layout, got "
++         << srcTy.getEncoding() << " with rank " << order.size());
++    return {};
++  }
 +  unsigned contig = order[0];
 +  unsigned strided = order[1];
 +  // Cap the phases by the per-CTA extents: the buffer is per CTA, so phases
@@ -169,18 +229,33 @@ index e17a7c1573..df03e6e742 100644
 +      ttg::getShapePerCTA(cga.getCTASplitNum(), srcTy.getShape());
 +  // The swizzle displaces a column by vec * phase, so vec is both the run that
 +  // stays contiguous through it and the step between phases. It has to cover
-+  // the widest LDS load/store, or a 128-bit access gets reordered internally
-+  // and split, and the columns one warp spans, or a phase lands back inside
-+  // the span it was meant to step over and the lanes still share banks.
++  // the widest LDS load/store (128 bits), or a 128-bit access gets reordered
++  // internally and split, and the columns one warp spans, or a phase lands back
++  // inside the span it was meant to step over and the lanes still share banks.
 +  int64_t warpSpan = int64_t(blocked.getThreadsPerWarp()[contig]) *
 +                     blocked.getSizePerThread()[contig];
-+  int64_t vec = std::max<int64_t>(warpSpan, std::max<int64_t>(1, 128 / bitWidth));
-+  int64_t perPhase = blocked.getSizePerThread()[strided];
-+  int64_t maxPhase = std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
-+                                        shape[contig] / vec,
-+                                        shape[strided] / perPhase});
-+  if (maxPhase <= 1)
++  int64_t vec =
++      std::max<int64_t>(warpSpan, std::max<int64_t>(1, 128 / bitWidth));
++  // A row narrower than one complete bank row naturally starts at a different
++  // bank. Keep those rows in the same phase and only swizzle when the row
++  // stride wraps, while also keeping each lane's rows in the same phase.
++  constexpr int64_t bankBitWidth = 32;
++  int64_t elemsPerBankRow =
++      static_cast<int64_t>(targetInfo.getSharedMemoryBanks()) * bankBitWidth /
++      bitWidth;
++  int64_t rowsPerBankRow =
++      std::max<int64_t>(1, elemsPerBankRow / shape[contig]);
++  int64_t perPhase =
++      std::max<int64_t>(blocked.getSizePerThread()[strided], rowsPerBankRow);
++  int64_t maxPhase =
++      std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
++                         shape[contig] / vec, shape[strided] / perPhase});
++  if (maxPhase <= 1) {
++    LDBG("No FMA LDS swizzle: no two lanes share a bank, or the tile is too "
++         "small to step over (vec="
++         << vec << " perPhase=" << perPhase << ")");
 +    return {};
++  }
 +  LDBG("FMA LDS swizzle: vec=" << vec << " perPhase=" << perPhase
 +                               << " maxPhase=" << maxPhase);
 +  return ttg::SwizzledSharedEncodingAttr::get(srcTy.getContext(), vec, perPhase,
@@ -190,7 +265,7 @@ index e17a7c1573..df03e6e742 100644
  // Adapted from
  // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
  // to support AMDMfmaEncodingAttr.
-@@ -197,6 +236,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -197,6 +259,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
    assert(loadOp);
    Value loadedValue = loadOp->getResult(0);
    llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
@@ -204,14 +279,17 @@ index e17a7c1573..df03e6e742 100644
    for (Operation *user : loadedValue.getUsers()) {
      LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
      if (user->getNumResults() != 1)
-@@ -304,6 +350,10 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -304,6 +373,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
          tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                         dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                         dotOpEnc, canUseAsyncCopy);
++        // SwizzledSharedEncodingAttr::get dispatches on the dot's parent and
++        // only computes AMD swizzles for MFMA and WMMA. A blocked (FMA) parent
++        // falls through unswizzled, so compute one here.
 +        if (!tempAttr && !pinnedByMemDescUser &&
 +            isa<ttg::BlockedEncodingAttr>(dotOpEnc.getParent()))
 +          tempAttr = composeSwizzledLayoutForFMA(srcTy, sharedOrder, cgaLayout,
-+                                                 bitWidth);
++                                                 bitWidth, targetInfo);
          if (!tempAttr) {
            tempAttr = ttg::SwizzledSharedEncodingAttr::get(
                loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,
