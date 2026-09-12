@@ -793,7 +793,8 @@ TEST(TuningParamAxesTest, SplitKIsExploredOnlyWhenTheCallerAsksForIt) {
 
   EXPECT_EQ(splitKAxisFor(false), (std::vector<int64_t>{1}));
   EXPECT_EQ(splitKAxisFor(true),
-            (std::vector<int64_t>{1, 2, 3, 4, 5, 6, 7, 8, 9}));
+            (std::vector<int64_t>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                                  15}));
 }
 
 // The opt-in is the whole of it, and in particular the output element type does
@@ -814,7 +815,8 @@ TEST(TuningParamAxesTest, SplitKDoesNotAskForANativeAtomicAdd) {
   };
   auto f16 = [](OpBuilder &b) { return b.getF16Type(); };
   auto f32 = [](OpBuilder &b) { return b.getF32Type(); };
-  const std::vector<int64_t> split{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const std::vector<int64_t> split{1, 2,  3,  4,  5,  6,  7, 8,
+                                   9, 10, 11, 12, 13, 14, 15};
 
   EXPECT_EQ(splitKAxisFor("gfx1100", f16), split);
   EXPECT_EQ(splitKAxisFor("gfx1100", f32), split);

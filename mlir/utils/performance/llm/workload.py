@@ -420,11 +420,6 @@ def _dim_letters(dims: Sequence[str], filter_tensor: bool) -> Sequence[str]:
     ]
 
 
-def _standard_layout(dims: Sequence[str], filter_tensor: bool) -> str:
-    """`dims` written the way convolution layouts usually are, NGCHW and such."""
-    return "".join(_dim_letters(dims, filter_tensor))
-
-
 def _layout_without_unit_dims(dims: Sequence[str], extents: Sequence[int],
                               filter_tensor: bool) -> Tuple[str, Sequence[str]]:
     """The layout with its one-long dimensions taken out, and their names.
@@ -873,6 +868,27 @@ def compute_workload_hints(problem: Problem,
     return _gemm_hints(g, m, n, k, num_cus, hardware, problem.get("kPerBlockAlignment") or 1, space)
 
 
+def _workgroups(count: int) -> str:
+    """`count` with its noun, since a grid of exactly one is a real case here."""
+    return f"{count} workgroup" if count == 1 else f"{count} workgroups"
+
+
+def _split_to_fill(grid: int, num_cus: int) -> int:
+    """The splitKFactor that would bring `grid` workgroups up to the CU count.
+
+    Told only that it needs more parallelism, a model asks for 2 or 3, which on
+    a grid that is short by an order of magnitude buys a reduction and almost no
+    workgroups. The shortfall is arithmetic on numbers the prompt already gives,
+    so it is worth doing rather than describing.
+
+    Uncapped, because `splitKFactor` reaches the model as a rule and not as a
+    ladder: every positive value is admitted, so a ceiling taken from the axis
+    would be one the Configuration Space never showed it. What limits the factor
+    is the contraction it divides, which the caller names.
+    """
+    return (num_cus + grid - 1) // grid if grid else 1
+
+
 def _gemm_hints(g: int, m: int, n: int, k: int, num_cus: int, hardware: Hardware, k_alignment: int,
                 space: Optional[Space]) -> List[str]:
     """Readings for a single GEMM, whether written as one or lowered to one."""
@@ -906,16 +922,25 @@ def _gemm_hints(g: int, m: int, n: int, k: int, num_cus: int, hardware: Hardware
                          "keep the machine busy.")
             break
     else:
+        # The loop leaves `tiles` at the largest tile it tried; this reading is
+        # about the smallest, so it counts that grid again.
         tiles = grid * ((m + 63) // 64) * ((n + 63) // 64)
-        hints.append(f"Even a 64x64 output tile gives only {tiles} workgroups{per_group} "
-                     f"against {num_cus} CUs, so this problem cannot fill the machine by "
-                     "tiling M and N alone." +
-                     (" splitKFactor above 1 is the way to get more parallelism out of "
-                      "it, at the cost of a reduction across the partial results."
-                      if can_split else " The Configuration Space pins splitKFactor at 1 "
-                      "here, so there is no more parallelism to be had: prefer configs "
-                      "that make each workgroup efficient over configs that make more "
-                      "of them."))
+        reading = (f"Even a 64x64 output tile gives only {_workgroups(tiles)}{per_group} "
+                   f"against {num_cus} CUs, so this problem cannot fill the machine by "
+                   "tiling M and N alone.")
+        if can_split:
+            wanted = _split_to_fill(tiles, num_cus)
+            instead = " rather than the 2 or 3 a short grid invites" if wanted > 3 else ""
+            advice = ("splitKFactor above 1 is the way to get more parallelism out of it, at "
+                      "the cost of a reduction across the partial results. Bringing "
+                      f"{_workgroups(tiles)} up to {num_cus} takes a factor of {wanted}, so "
+                      f"propose around that{instead}, as far as K ({k}) leaves each slice "
+                      "enough to be worth its share of the reduction.")
+        else:
+            advice = ("The Configuration Space pins splitKFactor at 1 here, so there is no "
+                      "more parallelism to be had: prefer configs that make each workgroup "
+                      "efficient over configs that make more of them.")
+        hints.append(f"{reading} {advice}")
 
     if k >= 8 * max(m, n):
         hints.append(f"K ({k}) dwarfs both M ({m}) and N ({n}): this is a skinny GEMM, and "
@@ -1012,13 +1037,20 @@ def _gemm_gemm_hints(g: int, m: int, n: int, k: int, o: int, num_cus: int,
             break
     else:
         groups = g * ((m + 31) // 32)
-        hints.append(f"Even mPerBlockG0=32 gives only {groups} workgroups against "
-                     f"{num_cus} CUs, because the grid is only G x (M / mPerBlockG0) and "
-                     "N is looped inside the kernel. No tiling fills this machine, so "
-                     "prefer configs that make each workgroup efficient over configs "
-                     "that make more of them." +
-                     (" splitKFactor is the one knob that adds workgroups here, and what "
-                      "it splits is that loop over N." if can_split else ""))
+        reading = (f"Even mPerBlockG0=32 gives only {_workgroups(groups)} against "
+                   f"{num_cus} CUs, because the grid is only G x (M / mPerBlockG0) and N is "
+                   "looped inside the kernel. No tiling fills this machine, so prefer "
+                   "configs that make each workgroup efficient over configs that make more "
+                   "of them.")
+        if can_split:
+            wanted = _split_to_fill(groups, num_cus)
+            instead = " rather than the 2 or 3 a short grid invites" if wanted > 3 else ""
+            reading += (" splitKFactor is the one knob that adds workgroups here, and what "
+                        "it splits is that loop over N. Bringing "
+                        f"{_workgroups(groups)} up to {num_cus} takes a factor of {wanted}, "
+                        f"so propose around that{instead}, as far as N ({n}) leaves each "
+                        "slice enough to be worth its share of the reduction.")
+        hints.append(reading)
 
     hints.append(f"O is {o}, so nPerBlockG1=0 (untiled, the whole of O in one workgroup) "
                  "is the usual choice; tiling O only pays once O is large enough that a "

@@ -86,7 +86,12 @@ _GEMM_TILE_BULLET = textwrap.dedent("""\
     - mPerBlock, nPerBlock: the M x N output tile one workgroup computes. This
       is the single most consequential choice: it fixes how many workgroups
       launch, how much LDS a stage needs, and how many registers the
-      accumulator occupies.""")
+      accumulator occupies. It is also the choice worth spending proposals on:
+      shape the tile like the GEMM rather than keeping it square, taking
+      nPerBlock from N and mPerBlock from M. Which side can afford a generous
+      tile is set by the smallest of M, N and K, since that one decides how
+      much reuse there is to amortize the loads a larger tile issues: tile the
+      long dimensions generously and the short one tightly.""")
 
 _GEMM_GEMM_TILE_BULLET = textwrap.dedent("""\
     - mPerBlockG0, nPerBlockG0: the M x N output tile one workgroup computes
@@ -100,7 +105,10 @@ _KPERBLOCK_BULLET = textwrap.dedent("""\
       Deeper means fewer, larger LDS loads and better matrix-instruction
       utilization, but more LDS per stage. The A and B tiles together must fit
       in LDS numStages times over, which is what makes large tiles and deep
-      pipelining compete for the same budget.""")
+      pipelining compete for the same budget. That budget is counted in bytes,
+      so narrow operands afford depth that f32 does not; take the scale from
+      the element width and the LDS size in the hardware section rather than
+      from any fixed number.""")
 
 
 def _section(title: str, body: str) -> str:
@@ -136,10 +144,6 @@ def _is_tunable(space: Optional[Dict[str, Sequence[int]]], name: str) -> bool:
     return len(values) > 1
 
 
-def _any_tunable(space: Optional[Dict[str, Sequence[int]]], *names: str) -> bool:
-    return any(_is_tunable(space, name) for name in names)
-
-
 def _offers(space: Optional[Dict[str, Sequence[int]]], name: str, value: int) -> bool:
     """Whether the space still lists `value` for `name`.
 
@@ -167,40 +171,25 @@ def _may_pipeline_one_stage(space: Optional[Dict[str, Sequence[int]]]) -> bool:
 # those live in the always-on text above rather than here.
 _PARAM_BULLETS: Dict[str, str] = {
     "numWaves":
-        """- numWaves: waves per workgroup. More waves split the tile more finely, so
-  a large tile usually wants more of them and a small tile is starved by
-  them.""",
+        "- numWaves: waves per workgroup; match it to tile size.",
     "matrixInstrNonkdim":
-        """- matrixInstrNonkdim: the M/N extent of the matrix instruction, typically
-  16 or 32. 16 and 32 are genuinely different families rather than points on a
-  scale: 32 amortizes more work per instruction, 16 wastes less on a tile that
-  does not divide by 32.""",
+        "- matrixInstrNonkdim: matrix-instruction M/N width; 16 and 32 are distinct families.",
     "kpack":
-        """- kpack: how many matrix instructions issue from one LDS load. Above 1 it
-  reduces LDS traffic; the ceiling is in the hardware section.""",
+        "- kpack: matrix instructions issued per LDS load.",
     "numStages":
-        """- numStages: software pipeline depth over the K loop. 1 is safest. 2 to 4
-  overlaps loads with math on a streaming loop, at numStages times the LDS for
-  the tiles. The sweeps behind the seed configs stopped at 3, so any higher
-  value the Configuration Space offers is unmeasured here rather than known to
-  be bad.""",
+        "- numStages: K-loop pipeline depth; more overlap costs more LDS.",
     "splitKFactor":
-        """- splitKFactor: splits the contraction across that many workgroups, which
-  then reduce their partial results. This is the answer to a problem too small
-  to fill the machine by tiling M and N, and it is a distinct family: it buys
-  parallelism and pays for it with a reduction. Leave it at 1 unless M x N is
-  small relative to the CU count.""",
+        "- splitKFactor: splits the contraction across that many workgroups, which then "
+        "reduce their partial results; 1 disables the split and any integer above it is "
+        "legal. The grid is G x ceil(M/mPerBlock) x ceil(N/nPerBlock) workgroups, so a "
+        "split pays where that count falls short of the CU count, by about the factor it "
+        "falls short by.",
     "gridGroupSize":
-        """- gridGroupSize: how many M-tile blocks are grouped when workgroups are
-  mapped onto the grid. Larger groups improve last-level-cache locality across
-  the group and cost scheduling flexibility. 0 lets the compiler choose.""",
+        "- gridGroupSize: M-grid grouping for cache locality; 0 is heuristic.",
     "numCTAs":
         "- numCTAs: workgroups per cooperative cluster.",
     "wavesPerEU":
-        """- wavesPerEU: a hint to the backend for how many waves to keep resident per
-  execution unit, which it honours by limiting registers per wave. 0 means no
-  hint. A large tile plus a high wavesPerEU cannot both be satisfied, and the
-  space refuses that combination rather than compiling it.""",
+        "- wavesPerEU: occupancy hint that limits registers; 0 means no hint.",
 }
 
 # Sentences appended to the bullet above where the kernel is a gemm+gemm. Both
@@ -217,35 +206,19 @@ _GEMM_GEMM_PARAM_TAILS: Dict[str, str] = {
   the knob is a real option on this kernel.""",
 }
 
-# The knobs the space left room for. Same rule as `_PARAM_BULLETS`: a knob
-# pinned to -1 builds the one kernel whatever it is asked for.
-_KNOB_BULLETS: Dict[str, str] = {
-    "useAsyncCopy":
-        "- useAsyncCopy: direct-to-LDS global loads, bypassing registers.",
-    # Nothing here about the MFMA layout the pass wants, which is a condition on
-    # the target rather than on the config: `addKnobAxes` pins this knob where a
-    # single dot's layout would not be one, so a ladder that reached this bullet
-    # is a ladder whose kernel can carry the schedule.
-    "useBlockPingpong":
-        """- useBlockPingpong: the pingpong schedule, which alternates two wave groups
-  between loading and computing.""",
-    "useInThreadTranspose":
-        "- useInThreadTranspose: an in-thread transpose of a loaded tile.",
-    "useBufferOps":
-        """- useBufferOps: the buffer-ops pass cluster (buffer addressing rather than
-  flat pointers).""",
-    "useBufferAtomics":
-        """- useBufferAtomics: buffer atomics, which require useBufferOps to be on.
-  Setting this to 1 with useBufferOps at 0 is refused.""",
-    "useReductionLayout":
-        """- useReductionLayout: redistributes warps onto the reduction dimension to
-  cut register spill. -1 rewrites convolutions only.""",
-    "useOptimizeEpilogue":
-        "- useOptimizeEpilogue: Triton's epilogue optimization.",
-    "useBf16x3ForF32":
-        """- useBf16x3ForF32: decomposes an f32 dot into three bf16 dots. Only
-  relevant to f32 inputs.""",
-}
+# The knobs the space left room for, in the order they are listed. Same rule as
+# `_PARAM_BULLETS`: a knob pinned to -1 builds the one kernel whatever it is
+# asked for. Names only, since one bullet describes all of them.
+_KNOB_NAMES: Tuple[str, ...] = (
+    "useAsyncCopy",
+    "useBlockPingpong",
+    "useInThreadTranspose",
+    "useBufferOps",
+    "useBufferAtomics",
+    "useReductionLayout",
+    "useOptimizeEpilogue",
+    "useBf16x3ForF32",
+)
 
 
 def _bullets_for(bullets: Dict[str, str], space: Optional[Dict[str, Sequence[int]]],
@@ -274,36 +247,20 @@ def build_system_prompt(space: Optional[Dict[str, Sequence[int]]] = None) -> str
         _KPERBLOCK_BULLET,
     ]
 
-    compact_params = {
-        "numWaves":
-            "- numWaves: waves per workgroup; match it to tile size.",
-        "matrixInstrNonkdim":
-            "- matrixInstrNonkdim: matrix-instruction M/N width; 16 and 32 are distinct families.",
-        "kpack":
-            "- kpack: matrix instructions issued per LDS load.",
-        "numStages":
-            "- numStages: K-loop pipeline depth; more overlap costs more LDS.",
-        "splitKFactor":
-            "- splitKFactor: splits the contraction across workgroups and pays for a reduction.",
-        "gridGroupSize":
-            "- gridGroupSize: M-grid grouping for cache locality; 0 is heuristic.",
-        "numCTAs":
-            "- numCTAs: workgroups per cooperative cluster.",
-        "wavesPerEU":
-            "- wavesPerEU: occupancy hint that limits registers; 0 means no hint.",
-    }
-    scheduling = _bullets_for(compact_params, space, gemm_gemm)
+    scheduling = _bullets_for(_PARAM_BULLETS, space, gemm_gemm)
     if scheduling:
         blocks.append("Scheduling and layout:\n" + "\n".join(scheduling))
 
-    compact_knobs = {
-        name: f"- {name}: tri-state -1=compiler heuristic, 0=off, 1=on." for name in _KNOB_BULLETS
+    knob_bullets = {
+        name: f"- {name}: tri-state -1=compiler heuristic, 0=off, 1=on." for name in _KNOB_NAMES
     }
-    knobs = _bullets_for(compact_knobs, space, gemm_gemm)
+    knobs = _bullets_for(knob_bullets, space, gemm_gemm)
     if knobs:
-        blocks.append(
-            "The use* knobs are tri-state. Seed -1 values were not compared; Read nothing "
-            "into that. Change only one with a reason.\n" + "\n".join(knobs))
+        blocks.append("The use* knobs are tri-state, and -1 is not a missing answer but the usual "
+                      "one: with the tile held fixed, moving one off -1 has usually been worth "
+                      "nothing measurable. Move one when something about this problem gives you a "
+                      "reason to expect it to help, and otherwise leave it at -1 and spend the "
+                      "proposal on the tile.\n" + "\n".join(knobs))
 
         # Only where the ladder still holds the value being warned against.
         # `without_no_op_values` takes these out of the space it renders, and a
@@ -357,25 +314,30 @@ def _initial_strategy_lines(
     if len(space.get("matrixInstrNonkdim", [])) > 1:
         lines.append("matrixInstrNonkdim can vary, so treat 16 and 32 as two families "
                      "and put some configs on each.")
-    # Pointed at the aggressive fifth rather than left as "a minority ... only
-    # where you can say why", which the model read as a reason not to bother:
-    # across 2799 proposals in the transcripts the eight tri-state knobs moved
-    # in 2.9% between them and wavesPerEU in 1.0%, while the aggressive share
-    # went entirely on larger tiles. They are worth the fifth: a non-default
-    # knob appears in 29 of 161 winning configs, one of them the second-fastest
-    # config measured on any problem here.
-    if knobs := knob_names(space):
-        occupancy = [
-            name for name in ("wavesPerEU", "gridGroupSize") if len(space.get(name, ())) > 1
-        ]
-        lines.append("Leave the tri-state knobs (" + ", ".join(knobs) + ") at -1 in most "
-                     "configs. The aggressive fifth is where they belong: give those "
-                     "configs an explicit 0 or 1 on a knob" +
-                     (f", or a non-default {' or '.join(occupancy)}, " if occupancy else " ") +
-                     "instead of only reaching for a bigger tile. These are the least "
-                     "explored part of the space, since the sweeps behind the seed "
-                     "configs never varied them.")
-    lines.append("Spread tiles and numStages; variety matters more than near-duplicates.")
+    inert = [
+        *knob_names(space), *(name for name in ("wavesPerEU", "gridGroupSize", "numStages")
+                              if len(space.get(name, ())) > 1)
+    ]
+    if inert:
+        held = "its" if len(inert) == 1 else "their"
+        plural = "" if len(inert) == 1 else "s"
+        lines.append(f"Keep {', '.join(inert)} at {held} Default Configuration value{plural} "
+                     "unless something about this problem argues otherwise: held against a "
+                     "fixed tile, moving one off its default has not been worth a measurable "
+                     "amount.")
+    # The fields whose effect outruns measurement noise, named so the budget the
+    # line above frees up has somewhere to go. numWaves and splitKFactor belong
+    # here as much as the tiles do, and neither is reachable from a tile family.
+    decisive = [
+        "the block tiles", "kPerBlock",
+        *(name for name in ("numWaves", "splitKFactor") if len(space.get(name, ())) > 1)
+    ]
+    lines.append("Put the budget into " + ", ".join(decisive[:-1]) + " and " + decisive[-1] +
+                 ", which are the fields whose effect is large enough to read off a single "
+                 "timing. Spend the aggressive fifth on one of those that the other configs "
+                 "miss.")
+    lines.append("Spread the tiles: distinct M/N/K families and aspect ratios matter more "
+                 "than near-duplicates.")
     return lines
 
 
@@ -395,23 +357,31 @@ def _refinement_strategy_lines(
     # Named from the space, because a fixed list is wrong in both directions on
     # a problem whose axes are narrow. It recommended kpack and
     # matrixInstrNonkdim on a convolution that pins both, spending a third of
-    # the advice on moves the space refuses, and left out wavesPerEU and the
-    # tri-state knobs, which were free, unexplored and in 29 of the 161 winning
-    # configs measured here.
+    # the advice on moves the space refuses. The fields named here are the ones
+    # whose effect is separable from measurement noise.
     movable = [
-        name for name in ("numWaves", "numStages", "kpack", "matrixInstrNonkdim", "splitKFactor",
-                          "gridGroupSize", "wavesPerEU")
+        name for name in ("kPerBlock", "numWaves", "kpack", "matrixInstrNonkdim", "splitKFactor")
         if space is None or len(space.get(name, ())) > 1
     ]
     lines.append("Prefer edits with attributable effects: move the block tiles" +
                  ("".join(f", {name}" for name in movable[:-1]) +
                   f" or {movable[-1]}" if movable else "") + " rather than rewriting every field.")
+    # A tri-state flip on an otherwise unchanged anchor is a clean experiment
+    # whose answer is already in: matched on the tile, a median +0.00%.
     if knobs := knob_names(space or {}):
-        lines.append("A tri-state knob (" + ", ".join(knobs) + ") flipped from -1 to 0 or "
-                     "1 on an otherwise unchanged anchor is a clean experiment, and one "
-                     "the sweeps behind the seed configs never ran: while Results shows "
-                     "no knob moved, that is a better use of the minority above than "
-                     "another tile family.")
+        lines.append("A flip of " + ", ".join(knobs) + " that looks like a win in Results is "
+                     "more likely to be noise: held against the same tile, none of them has "
+                     "been worth a measurable amount. Spend configs on the tiles, kPerBlock, "
+                     "numWaves and splitKFactor instead.")
+    # Results are ranked by a single timing apiece, and nothing in them says how
+    # far apart two configs have to be before the order means anything. Unsaid,
+    # the model reads the top of the list as a gradient and mutates the luckiest
+    # measurement: the winning config is the best of some 460 draws, and taking
+    # the fastest sample of one is already optimistic by a median 5%.
+    lines.append("Read gaps under 10% in Results as noise rather than signal: repeat runs of "
+                 "one unchanged kernel routinely differ by that much. Follow the families "
+                 "that lead by more than 10%, and do not read an ordering among the configs "
+                 "bunched at the top.")
     lines.append("Keep each config sparse: usually 1-4 changed fields, and no more than "
                  f"{MAX_CHANGED_FIELDS_PER_CONFIG} unless absolutely necessary.")
     lines.append("If unsure, return fewer valid configs instead of verbose or malformed JSON.")
@@ -438,9 +408,7 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
     knob to `kKnobDefault` and both `wavesPerEU` and `gridGroupSize` to 0 while
     enumerating -- so every entry in the checked-in list agrees on those
     fields, without a single one of them having been measured against its
-    alternatives. Left unsaid, a column that never varies reads as a
-    consensus, and the knobs are precisely where a search over the axes can
-    find something the sweeps could not.
+    alternatives.
 
     A seed naming a value this problem refuses is left out. The list is checked
     in for no particular chip, so its seeds routinely name values the axes do
@@ -479,12 +447,6 @@ def build_seed_config_section(seed_configs: Sequence[Dict[str, int]],
         "propose mutations of them instead. A config matches a seed only when "
         "it changes the same fields to the same values; one field at a "
         "different value makes it new.\n"
-        "They are strong starting points on the fields the sweeps behind them "
-        "varied, and evidence about nothing else: the "
-        "block tiles, kpack, numWaves, matrixInstrNonkdim, splitKFactor and "
-        "numStages. Their use* knobs, wavesPerEU and gridGroupSize were held "
-        "fixed throughout those sweeps, so on those fields these configs are "
-        "unmeasured rather than confirmed.\n"
         "Each is written as its difference from the default config above.\n" +
         "\n".join(f"  - {format_config_diff(default_config, config)}" for config in seed_configs))
     return _section("Heuristic Seed Configs", body)

@@ -225,7 +225,7 @@ std::vector<int64_t> gridGroupSizeValues() {
 // that arranged for it (`rock.enable_splitk_for_tuning`); without that the
 // space is one.
 //
-// Otherwise every factor through nine. A split multiplies the grid by its
+// Otherwise every factor through fifteen. A split multiplies the grid by its
 // factor to fill the CUs a single-tile grid leaves idle, so the useful factors
 // are the small ones and they are not power-of-two shaped. The enumerators are
 // narrower still, offering only what a work-imbalance model expects to pay off,
@@ -245,7 +245,7 @@ std::vector<int64_t> splitKFactorValues(Operation *op) {
     return {1};
   if (failed(testFusionLegalitySplitK(func)))
     return {1};
-  return {1, 2, 3, 4, 5, 6, 7, 8, 9};
+  return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 }
 
 // What `nPerBlockG1`, the second gemm's N tile, may be set to. Zero leaves
@@ -517,6 +517,19 @@ TileBounds makeTileBounds(bool requirePow2) {
   return {/*lo=*/1, /*pow2Only=*/requirePow2};
 }
 
+// `splitKFactor` is bounded rather than enumerated, for a tile's reason: one
+// disables the split and `validateSplitKFactor` asks only for a factor of at
+// least one, while the axis stops at fifteen because that is where enumerating
+// stops paying. Skipped where the axis holds a single value, since attention
+// and a kernel with no reduction arranged for it take no factor but one.
+void addSplitKBounds(const llvm::StringMap<std::vector<int64_t>> &axesByKey,
+                     llvm::StringMap<TileBounds> &boundsByKey) {
+  auto it = axesByKey.find("splitKFactor");
+  if (it != axesByKey.end() && it->second.size() > 1)
+    boundsByKey.insert(
+        {"splitKFactor", TileBounds{/*lo=*/1, /*pow2Only=*/false}});
+}
+
 // Whether every value a search will walk onto is a value `isFeasible` accepts,
 // which is what makes the bounds a widening of the axes rather than a second
 // opinion about them. Asserted at construction: a ladder that fell outside its
@@ -659,10 +672,12 @@ public:
     exemplar = makeExemplar(gemmOp.getContext(), byKey);
     axes = orderAxes(exemplar, byKey);
     knobParams = findKnobParams(exemplar);
-    tileBounds = orderTileBounds(
-        exemplar, {{"mPerBlock", makeTileBounds(requirePow2.mn)},
-                   {"nPerBlock", makeTileBounds(requirePow2.mn)},
-                   {"kPerBlock", makeTileBounds(requirePow2.k)}});
+    llvm::StringMap<TileBounds> boundsByKey{
+        {"mPerBlock", makeTileBounds(requirePow2.mn)},
+        {"nPerBlock", makeTileBounds(requirePow2.mn)},
+        {"kPerBlock", makeTileBounds(requirePow2.k)}};
+    addSplitKBounds(byKey, boundsByKey);
+    tileBounds = orderTileBounds(exemplar, boundsByKey);
     assert(axesAreWithinBounds(axes, tileBounds) &&
            "a tile ladder left the interval its own kernel accepts");
   }
@@ -848,20 +863,21 @@ public:
     // `requirePow2MN` and `requirePow2K` both set, so every tile here is a
     // power of two whatever the arch: the decomposition pass this kernel would
     // need does not run on it.
-    tileBounds = orderTileBounds(
-        exemplar, {{"mPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
-                   {"nPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
-                   {"kPerBlock", makeTileBounds(/*requirePow2=*/true)},
-                   // Zero is gemm1 untiled, which is why the floor is zero and
-                   // not one; `validateNPerBlockG1` takes that or a power of
-                   // two. `nPerBlockG1Values` stops offering tiles at the
-                   // padded head dim, since one that wide describes the kernel
-                   // zero already names and is not worth a second benchmark,
-                   // but `getGemm1Params` hands a wider one to gemm1 as its N
-                   // tile like any other and the kernel pads. The quick list is
-                   // looked up by arch and type alone, so it names one on every
-                   // short head dim.
-                   {"nPerBlockG1", {/*lo=*/0, /*pow2Only=*/true}}});
+    llvm::StringMap<TileBounds> boundsByKey{
+        {"mPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
+        {"nPerBlockG0", makeTileBounds(/*requirePow2=*/true)},
+        {"kPerBlock", makeTileBounds(/*requirePow2=*/true)},
+        // Zero is gemm1 untiled, which is why the floor is zero and not one;
+        // `validateNPerBlockG1` takes that or a power of two.
+        // `nPerBlockG1Values` stops offering tiles at the padded head dim,
+        // since one that wide describes the kernel zero already names and is
+        // not worth a second benchmark, but `getGemm1Params` hands a wider one
+        // to gemm1 as its N tile like any other and the kernel pads. The quick
+        // list is looked up by arch and type alone, so it names one on every
+        // short head dim.
+        {"nPerBlockG1", TileBounds{/*lo=*/0, /*pow2Only=*/true}}};
+    addSplitKBounds(byKey, boundsByKey);
+    tileBounds = orderTileBounds(exemplar, boundsByKey);
     assert(axesAreWithinBounds(axes, tileBounds) &&
            "a tile ladder left the interval its own kernel accepts");
   }

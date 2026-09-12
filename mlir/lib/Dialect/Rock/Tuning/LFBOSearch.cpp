@@ -82,6 +82,7 @@ float encodeValue(bool logScaled, int64_t value) {
 constexpr StringRef kTileKeys[] = {"mPerBlock",   "nPerBlock",   "kPerBlock",
                                    "mPerBlockG0", "nPerBlockG0", "nPerBlockG1"};
 constexpr StringRef kWaveCountKey = "numWaves";
+constexpr StringRef kSplitKKey = "splitKFactor";
 
 /// numpy's default (linearly interpolated) quantile. Sorts `values` in place.
 double quantileOf(MutableArrayRef<double> values, double quantile) {
@@ -229,10 +230,11 @@ private:
   /// values call for a log2 encoding.
   std::vector<std::vector<int64_t>> ladders;
   std::vector<bool> logScaled;
-  /// The tile-size parameters, and the wave count if the config has one; see
-  /// `kTileKeys`. Empty when a config names none of them.
+  /// The tile-size parameters, and the wave count and split factor if the
+  /// config has them; see `kTileKeys`. Empty when a config names none of them.
   SmallVector<unsigned> tileParams;
   std::optional<unsigned> waveCountParam;
+  std::optional<unsigned> splitKParam;
   std::vector<ConfigValues> quickSeeds;
 
   /// Every config benchmarked already or handed out to be benchmarked, so none
@@ -320,6 +322,8 @@ bool LFBOSearch::buildSearchSpace() {
       tileParams.push_back(param);
     else if (name == kWaveCountKey)
       waveCountParam = param;
+    else if (name == kSplitKKey)
+      splitKParam = param;
   }
 
   // The quick list is the best guess available before anything is measured, so
@@ -739,18 +743,21 @@ void LFBOSearch::generateRandomNeighbors(const ConfigValues &base,
                                          std::vector<ConfigValues> &out) {
   SmallVector<int64_t, 8> values;
   SmallVector<unsigned> movable;
-  SmallVector<unsigned, 2> emphasized;
+  SmallVector<unsigned, 3> emphasized;
   unsigned numParams = ladders.size();
   for (unsigned trial = 0; trial < options.numNeighbors; ++trial) {
     ConfigValues candidate = base;
 
-    // One tile size and the wave count move by up to `radius` doublings, ...
+    // One tile size, the wave count and the split factor move by up to `radius`
+    // doublings, ...
     emphasized.clear();
     if (!tileParams.empty())
       emphasized.push_back(tileParams[pickIndex(tileParams.size())]);
     if (waveCountParam)
       emphasized.push_back(*waveCountParam);
-    // ... unless the config names neither, in which case any one parameter
+    if (splitKParam)
+      emphasized.push_back(*splitKParam);
+    // ... unless the config names none of them, in which case any one parameter
     // moves, so that a trial still travels somewhere.
     if (emphasized.empty())
       emphasized.push_back(pickIndex(numParams));
@@ -814,8 +821,11 @@ void LFBOSearch::generateTreeGuidedNeighbors(const ConfigValues &base,
       seen[feature] = true;
       pathParams.push_back(feature);
     }
-    // The tile sizes and the wave count are tuned whether or not this tree
-    // tests them, as in the random generator.
+    // Tiles, wave count and split factor are tuned whether this tree tests them
+    // or not, as in the random generator. Adding one forces no move: the loop
+    // below keeps the value the tree scores highest, which is the one already
+    // held unless a neighbour beats it, and a surrogate trained on results that
+    // hold the split factor at 1 never tries it otherwise.
     auto emphasize = [&](unsigned param) {
       if (!seen[param]) {
         seen[param] = true;
@@ -826,6 +836,8 @@ void LFBOSearch::generateTreeGuidedNeighbors(const ConfigValues &base,
       emphasize(tileParams[pickIndex(tileParams.size())]);
     if (waveCountParam)
       emphasize(*waveCountParam);
+    if (splitKParam)
+      emphasize(*splitKParam);
     // A tree that tests nothing on this path has no opinion to follow, and a
     // trial that moves nothing is wasted, so pick a parameter at random.
     if (pathParams.empty())

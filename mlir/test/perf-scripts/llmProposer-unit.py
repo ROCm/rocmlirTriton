@@ -1518,7 +1518,7 @@ class TestSystemPromptGating(unittest.TestCase):
         self.assertNotIn("useAsyncCopy", self.prompt(useAsyncCopy=[-1]))
 
     def test_drops_the_knob_section_where_no_knob_is_open(self):
-        prompt = self.prompt(**{knob: [-1] for knob in prompting._KNOB_BULLETS})
+        prompt = self.prompt(**{knob: [-1] for knob in prompting._KNOB_NAMES})
         self.assertNotIn("tri-state", prompt)
         self.assertNotIn("measures nothing", prompt)
 
@@ -1673,16 +1673,6 @@ class TestPromptConstruction(unittest.TestCase):
         prompt = proposer.build_prompt(self.request())
         self.assertIn("64", prompt)
 
-    def test_the_seeds_say_which_of_their_fields_were_measured(self):
-        # The sweeps the quick list is distilled from pinned the knobs,
-        # wavesPerEU and gridGroupSize, so every seed agrees on them without
-        # having compared them to anything. Unqualified, a column that never
-        # varies reads as a consensus.
-        prompt = proposer.build_prompt(self.request())
-        self.assertIn("unmeasured rather than confirmed", prompt)
-        for field in ("wavesPerEU", "gridGroupSize"):
-            self.assertIn(field, prompt)
-
     def test_the_seeds_are_asked_to_be_mutated_and_not_matched(self):
         # `buildSeedBatch` hands every seed to the benchmark before this prompt
         # is sent and `accept` drops a proposal that repeats one, so asking for
@@ -1770,22 +1760,26 @@ class TestPromptConstruction(unittest.TestCase):
         # The -1s in the seeds are an artifact of how they were produced, so
         # the knob advice must not lean on them as evidence.
         system = prompting.build_system_prompt()
-        self.assertIn("Read nothing into that", system)
+        knobs = system.split("The use* knobs", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("not a missing answer but the usual one", knobs)
+        self.assertNotIn("seed", knobs.lower())
 
-    def test_the_aggressive_share_is_pointed_at_the_knobs(self):
-        # "A minority, and only where you can say why" read as a reason not to
-        # bother: across 2799 proposals the tri-state knobs moved in 2.9% and
-        # wavesPerEU in 1.0%, with the aggressive fifth going on bigger tiles
-        # instead. A non-default knob is in 29 of 161 winning configs.
+    def test_the_aggressive_share_is_pointed_at_the_decisive_fields(self):
+        # An aggressive candidate is worth its slot only where it moves a field
+        # whose effect outruns measurement noise. The tiles are that, and a knob
+        # left to the compiler's own heuristic is not, so the share goes to the
+        # fields a single timing can attribute an effect to.
         prompt = proposer.build_prompt(self.request())
-        self.assertIn("aggressive fifth is where they belong", prompt)
-        self.assertIn("least explored part of the space", prompt)
+        self.assertIn("aggressive fifth", prompt)
+        self.assertIn("Put the budget into", prompt)
+        self.assertIn("the block tiles", prompt)
 
-    def test_a_later_round_asks_for_a_knob_experiment(self):
-        # The refinement bullets named seven fields to move and no knob among
-        # them, so a knob never got tried once the anchors existed.
+    def test_a_later_round_does_not_spend_configs_on_a_knob_flip(self):
+        # A flip on an otherwise unchanged anchor looks like a clean experiment,
+        # but held against the same tile a knob is not worth a measurable
+        # amount, so one that leads in Results is reading noise.
         prompt = proposer.build_prompt(self.request(round=1, results=[result({"kpack": 8}, 500.0)]))
-        self.assertIn("flipped from -1 to 0 or 1", prompt)
+        self.assertIn("more likely to be noise", prompt)
         self.assertIn("useAsyncCopy", prompt)
 
     def test_a_later_round_does_not_recommend_a_field_the_space_pins(self):
