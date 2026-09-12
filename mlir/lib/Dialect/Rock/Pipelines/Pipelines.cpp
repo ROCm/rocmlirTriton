@@ -277,6 +277,15 @@ static void makeLLIR(mlir::OpPassManager *pm, const std::string &arch,
   // pm->addPass(gluon::createGluonInline());
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
+  // --- rocmlirTriton pass ----
+  // Must run after every layout-changing pass (including
+  // rock-set-reduction-layout above) and before the conversion to LLVM, so the
+  // packed-upcast layouts it inspects are the ones that get lowered.
+  rock::RockVerifyPackedUpcastLayoutPassOptions upcastLayoutOpts;
+  upcastLayoutOpts.arch = arch;
+  pm->addPass(rock::createRockVerifyPackedUpcastLayoutPass(upcastLayoutOpts));
+  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemoryPass(arch));
   pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
   // Upstream calls this pass twice, between

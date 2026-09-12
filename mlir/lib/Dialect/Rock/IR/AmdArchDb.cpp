@@ -28,6 +28,7 @@
 // triton::AMD::TargetInfo
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
+#include <algorithm>
 #include <cassert>
 
 #define DEBUG_TYPE "rock-amd-arch-db"
@@ -684,4 +685,40 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   auto [_, chip] = getArch(arch);
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
+}
+
+bool mlir::rock::supportsScaledUpcastPk8(StringRef arch) {
+  auto [_, chip] = getArch(arch);
+  triton::AMD::TargetInfo targetInfo(chip.str());
+  return targetInfo.supportsCvtPkScalePk8();
+}
+
+bool mlir::rock::archHasScaledMfma(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily == ISAFamily::CDNA4;
+}
+
+int64_t mlir::rock::getScaledAccelKDim(StringRef arch, int64_t mPerBlock,
+                                       int64_t nPerBlock,
+                                       int64_t matrixInstrNonkdim) {
+  if (!archHasScaledMfma(arch))
+    return 0;
+
+  int64_t nonKDim = matrixInstrNonkdim;
+  if (nonKDim == 0) {
+    int64_t minTile = std::min(mPerBlock, nPerBlock);
+    if (minTile >= 32)
+      nonKDim = 32;
+    else if (minTile >= 16)
+      nonKDim = 16;
+  }
+
+  switch (nonKDim) {
+  case 16:
+    return 128; // mfma_scale_f32_16x16x128_f8f6f4
+  case 32:
+    return 64; // mfma_scale_f32_32x32x64_f8f6f4
+  default:
+    return 0;
+  }
 }

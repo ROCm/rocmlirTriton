@@ -94,18 +94,21 @@ struct PopulateParamsInfo {
   static PopulateParamsInfo fromOp(RockGemmWrapperInterface op);
 };
 
-/// FP4 (4-bit float) operands are upcast in the AMD Triton backend's
-/// `Fp4ToFpOp` lowering, which consumes packed values 8 at a time. A
-/// `kPerBlock` that is not a multiple of `kFp4KPerBlockMultiple` leaves a
-/// partial group and crashes that lowering. The curated FP4 quick-tuning
-/// entries always used `kPerBlock >= 64`; this makes the constraint explicit
-/// now that FP4 borrows the i8 tuning space (see `ParamLookupTable` fallback).
-static constexpr int64_t kFp4KPerBlockMultiple = 64;
-
-/// True when `type` (or its element type) is a 4-bit float, i.e. FP4/MXFP4.
 inline bool isFp4ElementType(Type type) {
-  Type elem = getElementTypeOrSelf(type);
-  return isa<FloatType>(elem) && elem.getIntOrFloatBitWidth() == 4;
+  if (!type)
+    return false;
+  Type elemType = getElementTypeOrSelf(type);
+  return isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() == 4;
+}
+
+/// Whether a config keeps its GEMM on the native scaled matrix-accelerator
+/// path, which consumes 4-bit operands directly and so builds no packed upcast
+/// at all. Triton declines that path for a single wave and for a `kPerBlock`
+/// that is not a whole number of instruction k-tiles.
+inline bool staysOnNativeScaledPath(GemmParamsAttr p, StringRef arch) {
+  int64_t kDim = getScaledAccelKDim(arch, p.getMPerBlock(), p.getNPerBlock(),
+                                    p.getMatrixInstrNonkdim());
+  return kDim != 0 && p.getNumWaves() > 1 && p.getKPerBlock() % kDim == 0;
 }
 
 /// Conservative GEMM applicability: covers the perfconfig-driven
@@ -141,11 +144,9 @@ inline bool isGemmParamsConservativelyApplicable(
   // hand back shaped types; normalize so `getIntOrFloatBitWidth()` is safe.
   Type aElem = getElementTypeOrSelf(aElemType);
   Type bElem = getElementTypeOrSelf(bElemType);
-  // FP4 operands are upcast 8-at-a-time by the AMD Triton `Fp4ToFpOp`
-  // lowering; a `kPerBlock` that is not a multiple of `kFp4KPerBlockMultiple`
-  // leaves a partial group and crashes that pass.
-  if ((isFp4ElementType(aElem) || isFp4ElementType(bElem)) &&
-      p.getKPerBlock() % kFp4KPerBlockMultiple != 0)
+  if (archHasScaledMfma(arch) &&
+      (isFp4ElementType(aElem) || isFp4ElementType(bElem)) &&
+      !staysOnNativeScaledPath(p, arch))
     return false;
   int64_t totalBits =
       (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
@@ -180,11 +181,13 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
   int64_t kPerBlock = 32;
   if (quantBlockSize.has_value() && *quantBlockSize > 0)
     kPerBlock = llvm::alignTo(kPerBlock, *quantBlockSize);
-  // Keep the guaranteed-applicable fallback valid for FP4 (see
-  // `isGemmParamsConservativelyApplicable` and `kFp4KPerBlockMultiple`).
-  if ((aElemType && isFp4ElementType(aElemType)) ||
-      (bElemType && isFp4ElementType(bElemType)))
-    kPerBlock = llvm::alignTo(kPerBlock, kFp4KPerBlockMultiple);
+  // The fixed 32x32x32 fallback can leave an FP4 upcast with a partial
+  // per-thread group after Triton distributes the layout. Bumping K to 64
+  // makes the 32x32 tile a whole number of `32x32x64` scaled-MFMA k-tiles, so
+  // the fallback keeps the native path and never reaches an upcast, which is
+  // what `staysOnNativeScaledPath` demands of table entries too.
+  if (isFp4ElementType(aElemType) || isFp4ElementType(bElemType))
+    kPerBlock = llvm::alignTo(kPerBlock, 64);
   return GemmParamsAttr::get(ctx,
                              /*mPerBlock=*/32, /*nPerBlock=*/32,
                              /*kPerBlock=*/kPerBlock, /*kpack=*/1,
