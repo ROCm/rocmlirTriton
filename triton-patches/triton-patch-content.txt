@@ -14,6 +14,7 @@ patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
 patch-warp-id-readfirstlane.patch
+patch-pipeline-kmajor-lds-layout.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
@@ -419,4 +420,37 @@ patch-warp-id-readfirstlane.patch
   RDNA1, RDNA2, RDNA3, and GFX1170 are what newly gain the readfirstlane.
 
   Upstream PR: https://github.com/triton-lang/triton/pull/11570
+
+patch-pipeline-kmajor-lds-layout.patch
+  Selects a K-contiguous LDS buffer for matrix core dot operands that the AMD
+  pipeliner would otherwise stage in the global load's own orientation.
+
+  A matrix core without an LDS transpose load has to read its dot operand
+  K-contiguous, but getSharedEncIfAllUsersAreDotEnc inherits the shared order
+  from the global load. When the load delivers the tile the other way around,
+  tritonamdgpu-in-thread-transpose normally fixes it up after the fact: it
+  widens the load's sizePerThread across K, inserts amdgpu.in_thread_transpose,
+  and retypes the buffer to AMDRotatingSharedEncodingAttr. That transform needs
+  room across K in the load layout, so where K is fully consumed by lanes and
+  warps (getMaxSizePerThread == 1) the operand kept an N-major buffer and was
+  read one element per ds_read.
+
+  Re-orienting the buffer is separable from the register transpose, so the
+  choice is made in LowerLoops where the shared encoding is picked, next to the
+  FMA operand-major flip from patch10694, rather than by retyping an
+  already-allocated memdesc later. The write then runs at a different order
+  than the read, which is what the rotating swizzle handles, so the choice is
+  cost modelled: estimate combined LDS store plus load transactions
+  (vectorization from largestVectorisation, serialization from
+  bankConflictsMemDesc) for the inherited layout versus the K-contiguous one,
+  and flip only when the total drops. Operands that in-thread-transpose will
+  claim are left alone, and because the buffer is shared the flip is applied
+  only when every user of the load agrees on it.
+
+  Also guards matchInThreadTransposePattern against a non-swizzled buffer:
+  changeSharedEncoding only rewrites swizzled encodings, so on anything else
+  the pass would have transposed in registers while leaving the buffer's
+  swizzle built for the original store layout.
+
+  Not filed upstream yet; upstream Triton has the same performance gap.
 
