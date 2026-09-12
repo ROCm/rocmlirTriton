@@ -41,6 +41,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -68,12 +69,14 @@ struct RockTransformsToPointerArithPass
 namespace {
 
 /// Tail of the TransformsToPtrOp lowering. Given the chain `root` buffer, the
+/// `source` view of that buffer (the isolated transform chain, which still
+/// carries the coordinate structure needed to prove vectorization), the
 /// remaining `transformVec`, the seeded `initValues` (extra indices + per-tile
 /// ranges), the result tile `shape`, and the offset element type `indexType`
 /// (i32 or i64), expand to the linearized offset + mask, prepend the base
 /// pointer, and replace `op`.
 static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
-                                    Location loc, Value buffer,
+                                    Location loc, Value buffer, Value source,
                                     ArrayRef<TransformMapAttr> transformVec,
                                     ValueRange initValues,
                                     ArrayRef<int64_t> shape, Type indexType) {
@@ -134,6 +137,45 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
   // address width is handled there.
   Value pointerTensor =
       arith::AddIOp::create(b, loc, baseAddrSplat, expanded->offset);
+
+  // Preserve vectorization through im2col address math by attaching proven
+  // contiguity and divisibility hints. Triton clamps contiguity to the final
+  // per-thread layout, so an over-wide hint is safe. Divisibility is the byte
+  // size of the contiguous run, rounded up for sub-byte elements.
+  // Constant index-calculation buffers do not load, so skip them.
+  if (!constantBuffer) {
+    auto sourceType = cast<ShapedType>(source.getType());
+    // `initValues` is seeded as [extra indices..., one range per tile dim], so
+    // whatever precedes the per-tile ranges is the extra-index count.
+    size_t numExtra = initValues.size() - shape.size();
+    // `source` is a higher-rank view: leading `numExtra` dims are the block
+    // coordinates fixed by the extra indices; the trailing `shape.size()` dims
+    // are the per-thread tile that becomes the pointer tensor. Map tile dim
+    // `d` to source dim `numExtra + d`. The rank relationship is guaranteed
+    // by the TransformsToPtrOp verifier.
+    int64_t elemBits = sourceType.getElementTypeBitWidth();
+    SmallVector<int32_t> contigPerDim(shape.size(), 1);
+    SmallVector<int32_t> divPerDim(shape.size(), 1);
+    bool haveHint = false;
+    for (uint32_t d = 0; d < shape.size(); ++d) {
+      int64_t vecLen =
+          getMaxVectorization(source, static_cast<uint32_t>(numExtra + d)).max;
+      contigPerDim[d] = static_cast<int32_t>(vecLen);
+      // Byte alignment of the whole run; round up so sub-byte types work.
+      divPerDim[d] =
+          static_cast<int32_t>(llvm::divideCeil(vecLen * elemBits, 8));
+      if (vecLen > 1)
+        haveHint = true;
+    }
+    if (haveHint) {
+      auto hintTy = RankedTensorType::get({static_cast<int64_t>(shape.size())},
+                                          b.getI32Type());
+      pointerTensor.getDefiningOp()->setDiscardableAttr(
+          "tt.contiguity", DenseIntElementsAttr::get(hintTy, contigPerDim));
+      pointerTensor.getDefiningOp()->setDiscardableAttr(
+          "tt.divisibility", DenseIntElementsAttr::get(hintTy, divPerDim));
+    }
+  }
 
   b.replaceOp(op, {pointerTensor, expanded->mask});
   return success();
@@ -199,8 +241,8 @@ struct TransformsToPtrRewritePattern
       initValues.push_back(makeRange(b, loc, 0, shape[dimension], shape.size(),
                                      dimension, indexElemType));
 
-    return lowerToPointer(b, op, loc, buffer, transformVec, initValues, shape,
-                          indexElemType);
+    return lowerToPointer(b, op, loc, buffer, source, transformVec, initValues,
+                          shape, indexElemType);
   }
 };
 
