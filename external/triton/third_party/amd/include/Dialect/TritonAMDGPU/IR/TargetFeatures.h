@@ -22,6 +22,7 @@ enum class ISAFamily {
   GFX1170,
   RDNA4,
   GFX1250,
+  GFX1310,
 };
 
 class TargetFeatures {

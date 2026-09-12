@@ -88,6 +88,7 @@ TEST(AmdArchDbTest, InferNumChiplets) {
   EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
   EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
   EXPECT_EQ(inferNumChiplets("gfx906", 60), 1);
+  EXPECT_EQ(inferNumChiplets("gfx1310", 32), 1);
   EXPECT_EQ(inferNumChiplets("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-", 304),
             8);
 }
@@ -132,6 +133,7 @@ TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx1170"), 2);   // GFX1170
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
   EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
+  EXPECT_EQ(getMinNumCU("gfx1310"), 32);  // GFX1310
   // The RDNA2 APUs the old family floor of 30 rejected outright.
   EXPECT_LE(getMinNumCU("gfx1036"), 2); // 2 CUs
   EXPECT_LE(getMinNumCU("gfx1033"), 8); // 8 CUs
@@ -151,6 +153,7 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
   EXPECT_EQ(getMaxWavesPerEU("gfx1170"), 16); // GFX1170
   EXPECT_EQ(getMaxWavesPerEU("gfx1200"), 16); // RDNA4
   EXPECT_EQ(getMaxWavesPerEU("gfx1250"), 16); // GFX1250
+  EXPECT_EQ(getMaxWavesPerEU("gfx1310"), 16); // GFX1310
 }
 
 // --- getVGPRsPerEU ---
@@ -170,6 +173,7 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   // GFX1250 has Feature1024AddressableVGPRs, not Feature1536VGPRs.
   EXPECT_EQ(getVGPRsPerEU("gfx1250"), 1024);
   EXPECT_EQ(getVGPRsPerEU("gfx1251"), 1024);
+  EXPECT_EQ(getVGPRsPerEU("gfx1310"), 1536);
 }
 
 // --- getWaveSize ---
@@ -186,6 +190,7 @@ TEST(AmdArchDbTest, WaveSize) {
   EXPECT_EQ(getWaveSize("gfx1170"), 32); // GFX1170
   EXPECT_EQ(getWaveSize("gfx1200"), 32); // RDNA4
   EXPECT_EQ(getWaveSize("gfx1250"), 32); // GFX1250
+  EXPECT_EQ(getWaveSize("gfx1310"), 32); // GFX1310
 }
 
 // --- getLDSSize ---
@@ -200,6 +205,7 @@ TEST(AmdArchDbTest, LDSSize) {
   EXPECT_EQ(getLDSSize("gfx1170"), 65536);  // GFX1170: 64 KB (gfx11 core)
   EXPECT_EQ(getLDSSize("gfx1200"), 65536);  // RDNA4: 64 KB
   EXPECT_EQ(getLDSSize("gfx1250"), 327680); // GFX1250: 320 KB
+  EXPECT_EQ(getLDSSize("gfx1310"), 65536);  // GFX1310: 64 KB in public LLVM
 }
 
 // --- getLastLevelCacheSize ---
@@ -220,6 +226,7 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   // Fabric Cache Dies.
   EXPECT_EQ(getLastLevelCacheSize("gfx1250"), 192 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1251"), 192 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1310"), 64 * kMiB);
 }
 
 // Within one ISA family the discrete parts differ from each other and, above
@@ -255,13 +262,14 @@ TEST(AmdArchDbTest, LastLevelCacheSizePerChip) {
 // The gfx117x caches are unpublished, so they fall back to their ISA family,
 // whose value is a guess at a bare APU L2. Pinned so that the guess is a
 // deliberate choice: if any of these turns out to carry a MALL, as the APU
-// gfx1151 does, the real value is much larger. These and gfx1153, pinned
-// above, are the only chips not on a published number.
+// gfx1151 does, the real value is much larger. These, gfx1153 pinned above,
+// and gfx1310 are the only chips not on a published number.
 TEST(AmdArchDbTest, LastLevelCacheSizeUnpublishedChips) {
   constexpr int64_t kMiB = 1024 * 1024;
   EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1171"), 1 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1172"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1310"), 64 * kMiB);
 }
 
 TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
@@ -328,6 +336,8 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
             MatrixAccelKind::None); // GFX1170 (no f32 WMMA inputs)
   EXPECT_EQ(getMatrixAccelKind("gfx1200", e.f32, e.f32),
             MatrixAccelKind::None); // RDNA4
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f16, e.f16),
+            MatrixAccelKind::None); // GFX1310
   // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
   EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::WMMA); // GFX1170 (fp8 WMMA v2)

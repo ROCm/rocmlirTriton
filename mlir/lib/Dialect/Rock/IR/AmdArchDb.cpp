@@ -413,6 +413,7 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
   case ISAFamily::RDNA3:
   case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
+  case ISAFamily::GFX1310:
     return 1;
   }
   llvm_unreachable("unhandled ISAFamily in inferNumChiplets");
@@ -443,6 +444,8 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 12;
   case ISAFamily::GFX1250:
     return 256;
+  case ISAFamily::GFX1310:
+    return 32;
   case ISAFamily::Unknown:
     return 1;
   }
@@ -555,6 +558,7 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   case ISAFamily::GFX1170: // guess, see the TODO above
     return 1 * kMiB;
   case ISAFamily::RDNA4:
+  case ISAFamily::GFX1310:
     return 64 * kMiB;
   case ISAFamily::Unknown: // Unknown arch: assume Infinity-Cache-class LLC.
     return 256 * kMiB;
@@ -579,6 +583,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::GFX1170:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
+  case ISAFamily::GFX1310:
     return 16;
     break;
   default:
@@ -612,6 +617,7 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::GFX1170:
     return 1024;
   case ISAFamily::RDNA4:
+  case ISAFamily::GFX1310:
     return 1536;
   case ISAFamily::GFX1250:
     return 1024;
