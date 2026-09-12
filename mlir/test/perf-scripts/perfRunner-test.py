@@ -204,10 +204,56 @@ class GetNanosecondsTest(TempFileTestCase):
         self.assertTrue(math.isnan(perfRunner.get_nanoseconds("/nonexistent/path.csv")))
 
     def test_valid_csv(self):
-        path = self.write_temp(".csv", "KernelName,AverageNs,SomeOther\n"
+        # Several kernels for one op (e.g. a split-K GEMM and its reduction) sum.
+        path = self.write_temp(".csv", "Name,AverageNs,SomeOther\n"
                                "kern1,1000,0\n"
                                "kern2,2000,0\n")
         self.assertEqual(perfRunner.get_nanoseconds(path), 3000)
+
+    def test_rocclr_internal_kernels_excluded(self):
+        # The HIP runtime's blit shader for the harness's hipMemcpy calls lands
+        # in the same trace and must not be charged to the kernel under test.
+        path = self.write_temp(
+            ".csv", "Name,AverageNs,SomeOther\n"
+            "kern1,1000,0\n"
+            "__amd_rocclr_copyBuffer,2800,0\n"
+            "__amd_rocclr_initHeap,500,0\n")
+        self.assertEqual(perfRunner.get_nanoseconds(path), 1000)
+
+    def test_only_internal_kernels_returns_nan(self):
+        # No kernel of ours ran, so there is no time to report -- NaN rather
+        # than 0, which would otherwise read as infinite TFlops.
+        path = self.write_temp(".csv", "Name,AverageNs,SomeOther\n"
+                               "__amd_rocclr_copyBuffer,2800,0\n")
+        self.assertTrue(math.isnan(perfRunner.get_nanoseconds(path)))
+
+    def test_missing_name_column_sums_all_rows(self):
+        path = self.write_temp(".csv", "AverageNs\n"
+                               "1000\n"
+                               "2000\n")
+        self.assertEqual(perfRunner.get_nanoseconds(path), 3000)
+
+
+class GetBankConflictTest(TempFileTestCase):
+    """Tests for get_bank_conflict (reads rocprof's counter-collection CSV)."""
+
+    HEADER = "Kernel_Name,Counter_Name,Counter_Value\n"
+
+    def test_missing_file_returns_nan_string(self):
+        self.assertEqual(perfRunner.get_bank_conflict("/nonexistent/path.csv"), "NaN")
+
+    def test_averages_over_our_dispatches_only(self):
+        # The blit shader reports 0% and would otherwise dilute the average.
+        path = self.write_temp(
+            ".csv", self.HEADER + "kern1,LDSBankConflict,40.0\n"
+            "kern1,LDSBankConflict,60.0\n"
+            "__amd_rocclr_copyBuffer,LDSBankConflict,0.0\n"
+            "__amd_rocclr_copyBuffer,LDSBankConflict,0.0\n")
+        self.assertEqual(perfRunner.get_bank_conflict(path), 50.0)
+
+    def test_no_matching_rows_returns_nan(self):
+        path = self.write_temp(".csv", self.HEADER + "kern1,SomeOtherCounter,7.0\n")
+        self.assertTrue(math.isnan(perfRunner.get_bank_conflict(path)))
 
 
 class GetProfilerOutputPathTest(unittest.TestCase):
