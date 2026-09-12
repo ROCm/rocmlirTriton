@@ -173,6 +173,10 @@ bool preferBf16x3ForF32Dot(StringRef arch);
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
+/// Whether this architecture has the `v_tanh_*` transcendental instructions,
+/// mirroring LLVM's `FeatureTanhInsts`.
+bool hasTanhInsts(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 
