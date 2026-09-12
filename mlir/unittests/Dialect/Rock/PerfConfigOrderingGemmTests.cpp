@@ -532,18 +532,15 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceKeepsWindowOnFmaForPow2DivisibleK) {
   EXPECT_TRUE(kValues.count(16)) << "expected base pow2 kPerBlock=16 in space";
 }
 
-// gfx950 is opted out of the non-pow2 kPerBlock candidates while the LLVM
-// backend bug that miscompiles the peeled K loop there is unfixed, so its
-// tuning space must stay purely power-of-two.
-TEST(PerfConfigOrderingGemmTest, TuningSpaceHasNoNonPow2KDivisorsOnGfx950) {
-  // Same K = 576 as the gfx1201 case above, which does offer 36/48/72/...
+// gfx950 uses the same non-pow2 K candidate generation as other accelerated
+// targets now that peeled-K lowering is fixed there as well.
+TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisorsOnGfx950) {
+  // Same K = 576 as the gfx1201 case above.
   const int64_t K = 576;
   TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF16Type(); },
                        /*m=*/256, /*n=*/256, K, "gfx950");
   std::set<int64_t> kValues = e.collectAndCheckKPerBlocks(K);
 
-  ASSERT_FALSE(kValues.empty());
-  for (int64_t kPerBlock : kValues)
-    EXPECT_TRUE(llvm::isPowerOf2_64(static_cast<uint64_t>(kPerBlock)))
-        << "gfx950 must not offer non-pow2 kPerBlock=" << kPerBlock;
+  EXPECT_TRUE(kValues.count(48)) << "expected non-pow2 kPerBlock=48 in space";
+  EXPECT_TRUE(kValues.count(64)) << "expected base pow2 kPerBlock=64 in space";
 }

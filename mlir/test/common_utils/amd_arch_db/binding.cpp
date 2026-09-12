@@ -103,13 +103,6 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
-      "supports_non_pow2_k_per_block",
-      [](const std::string &arch) {
-        return mlir::rock::supportsNonPow2KPerBlock(arch);
-      },
-      py::arg("arch"));
-
-  m.def(
       "infer_num_chiplets",
       [](const std::string &arch, int64_t numCUs) {
         return mlir::rock::inferNumChiplets(arch, numCUs);

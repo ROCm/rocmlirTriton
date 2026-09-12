@@ -662,16 +662,6 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
   return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
 }
 
-// A non-power-of-two kPerBlock makes rock-gridwise-gemm-to-blockwise peel the
-// K loop into several power-of-two segments. That peeled form currently
-// miscompiles on gfx950 because of an unfixed LLVM backend bug, so we neither
-// tune nor accept such a kPerBlock there.
-// TODO: Enable this on gfx950 too once the LLVM bug is fixed.
-bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
-  auto [chip, _] = parseArchString(arch);
-  return chip != "gfx950";
-}
-
 // Decomposing an f32 dot into three bf16 products trades the f32 MFMA
 // for the higher throughput bf16 ops. CDNA4 was measured to perform better
 // overall with this decomposition.
