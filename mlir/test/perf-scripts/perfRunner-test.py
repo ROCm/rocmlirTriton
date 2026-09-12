@@ -197,6 +197,87 @@ class LayoutHelpersTest(unittest.TestCase):
                          layout)
 
 
+def make_conv_commandline(fil, inp, out, group=1):
+    """Build a minimal conv commandline (as a token list) with the given layouts."""
+    return ("conv -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
+            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(f=fil, i=inp, o=out,
+                                                                     g=group).split()
+
+
+class RocmlirLayoutToMiopenTest(unittest.TestCase):
+    """Tests for rocmlir_layout_to_miopen (single layout string -> MIOpen name).
+
+    MIOpenDriver only accepts NCHW/NHWC, so a rocMLIR layout is only usable once the
+    group dim is dropped (MIOpen passes the group count via -g) and the spatial dims
+    are renamed 0->H, 1->W. Anything else has no faithful MIOpen equivalent.
+    """
+
+    def test_channel_first_maps_to_nchw(self):
+        """Dropping G and renaming 0/1 leaves the channel second, i.e. NCHW."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGC01"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GNC01"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NC0G1"), "NCHW")
+
+    def test_channel_last_maps_to_nhwc(self):
+        """A trailing channel dim maps to NHWC."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GC"), "NHWC")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GN01C"), "NHWC")
+
+    def test_already_miopen_layouts_pass_through(self):
+        """NCHW/NHWC are returned unchanged."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NCHW"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NHWC"), "NHWC")
+
+    def test_output_channel_letter_k_treated_as_c(self):
+        """The output tensor spells the channel dim as K; MIOpen still wants NCHW/NHWC."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGK01"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GK"), "NHWC")
+
+    def test_unrepresentable_orderings_return_none(self):
+        """Orderings that aren't NCHW/NHWC (channel or spatial in the wrong slot) skip."""
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("G0NC1"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("01NGC"))
+
+
+class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
+    """Tests for conv_commandline_to_miopen_layouts (whole commandline translate-or-skip)."""
+
+    def test_consistent_nchw_config_is_translated(self):
+        """A config whose filter/input/output all map to NCHW is translated."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GNC01", "NGC01", "NGC01"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NCHW")
+
+    def test_consistent_nhwc_config_is_translated(self):
+        """A config whose filter/input/output all map to NHWC is translated."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GN01C", "N01GC", "N01GC"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NHWC")
+
+    def test_group_conv_layout_is_still_translated(self):
+        """Dropping G from the layout is valid; the group count rides on -g."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GNC01", "NGC01", "NGC01", group=2))
+        self.assertIsNotNone(result)
+        self.assertEqual(result[result.index("-g") + 1], "2")
+
+    def test_unrepresentable_layout_is_skipped(self):
+        """A layout with no NCHW/NHWC equivalent makes the whole config skip."""
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("G0NC1", "G0NC1", "NGC01", group=3)))
+
+    def test_mixed_nchw_nhwc_config_is_skipped(self):
+        """MIOpen has no solver for mixed filter/input/output layouts, so skip."""
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "NGC01", "N01GC")))
+
+
 class GetNanosecondsTest(TempFileTestCase):
     """Tests for get_nanoseconds (reads the CSV rocprof leaves behind)."""
 
