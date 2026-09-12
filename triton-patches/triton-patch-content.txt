@@ -13,6 +13,7 @@ patch-roundeven-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
+patch-negligible-anchor-layout-conflict.patch
 patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
@@ -342,6 +343,26 @@ patch-cost-aware-dot-rematerialization.patch
 
   Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
   from hoistConvertDotOperand or upstreams this change.
+
+patch-negligible-anchor-layout-conflict.patch
+  Adds the tie-break that LayoutPropagation::resolveConflicts asked for in its
+  "hacky resolve" comment. Each anchor carries the traffic its layout governs,
+  the figure propagates with the layout, and a candidate whose anchor governs
+  no more than one dword per thread loses to one that governs more. The
+  type-based preference still decides first.
+
+  The 128x1 bias load left behind by rock-narrow-redundant-loads still anchors
+  by element count, and with no mma candidate yet before accelerate-matmul,
+  iteration order handed the whole epilogue of the dot that load's
+  sizePerThread = [1, 1] layout and a full-tile shared-memory round trip: up
+  to 1.6x slower on gfx1100 convolution+reduce fusions. Ranking every conflict
+  by traffic was tried too and regressed other configs, as getConvertCost
+  prices the register permutes it trades for at zero.
+
+  No upstream PR yet. Covered by
+  test/TritonGPU/amd/remove-layout-conversions-negligible-anchor.mlir and, for
+  the interaction with the Rock pass, by the rocMLIR test
+  Dialect/Rock/narrow-redundant-loads-through-triton.mlir.
 
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
