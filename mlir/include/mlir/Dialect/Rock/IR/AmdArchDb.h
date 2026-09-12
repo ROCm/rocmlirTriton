@@ -108,8 +108,20 @@ FailureOr<int64_t> getAccelInstrMinKDim(StringRef arch,
                                         RockGemmWrapperInterface gemmOp,
                                         uint32_t instrNonKDim);
 
-/// Get minimum number of CUs per arch
+/// The smallest CU count any device in this ISA family can report, including
+/// the smallest APU and the narrowest compute-partition mode. Nothing rejects
+/// a `rock.num_cu` below this value, because a caller that queried a
+/// partitioned device legitimately supplies a smaller count than the family's
+/// flagship; `HardwareLimitsTest` asserts the bound against live devices
+/// instead, so a new part that drops below the table surfaces as a test
+/// failure. Use `getDefaultNumCU` when you need a stand-in for an unknown
+/// device.
 int64_t getMinNumCU(StringRef arch);
+
+/// The CU count to assume for this arch when the real one is unknown, i.e. the
+/// flagship part of the family. Callers that can reach the device should
+/// prefer `getNativeNumCU` (see `utility/DeviceInfo.h`) and fall back to this.
+int64_t getDefaultNumCU(StringRef arch);
 
 /// Get maximum number of chiplets per arch
 int64_t getMaxNumChiplets(StringRef arch);

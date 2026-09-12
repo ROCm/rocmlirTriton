@@ -8,10 +8,16 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 
+#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/utility/DeviceInfo.h"
+
 #include "hip/hip_runtime_api.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
+#include <string>
 
 using namespace mlir::rock;
 
@@ -36,5 +42,64 @@ TEST(HardwareLimitsTest, LimitsMatchHip) {
         &maxThreadsPerBlock, hipDeviceAttributeMaxThreadsPerBlock, device);
     ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
     EXPECT_EQ(maxHardwareWorkgroupSize, maxThreadsPerBlock);
+  }
+}
+
+// `getMinNumCU` is a floor on what a real device can report, and nothing
+// enforces it while lowering: a caller running on a compute-partitioned device
+// legitimately passes fewer CUs than the family's flagship, so rejecting that
+// would fail compilation on valid input. Assert the bound here instead, where
+// a part or partition mode that drops below the table shows up as a test
+// failure on the machine that has it rather than as silently wrong tuning.
+TEST(HardwareLimitsTest, NativeNumCUIsAtLeastTheArchFloor) {
+  int deviceCount = 0;
+  hipError_t status = hipGetDeviceCount(&deviceCount);
+  if (status == hipErrorNoDevice)
+    GTEST_SKIP() << "no HIP devices available";
+  ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
+  if (deviceCount == 0)
+    GTEST_SKIP() << "no HIP devices available";
+
+  // getNativeNumCU always reports device 0, so this checks that one device.
+  hipDeviceProp_t prop;
+  status = hipGetDeviceProperties(&prop, 0);
+  ASSERT_EQ(status, hipSuccess) << hipGetErrorString(status);
+  llvm::StringRef arch(prop.gcnArchName);
+
+  std::optional<int64_t> nativeNumCU = mlir::rock::getNativeNumCU(arch);
+  ASSERT_TRUE(nativeNumCU.has_value()) << arch.str();
+  EXPECT_GE(*nativeNumCU, mlir::rock::getMinNumCU(arch)) << arch.str();
+}
+
+// HIP reads the scheduling mode out of the environment while it initializes,
+// so the request only works if it lands there. It also has to win over a
+// caller that asked for CU mode, because grid sizes are computed per workgroup
+// processor either way and a count in the other unit would be off by two.
+TEST(HardwareLimitsTest, RequestWGPSchedulingSetsTheEnvironment) {
+  constexpr const char *envVar = "GPU_ENABLE_WGP_MODE";
+  const char *previous = std::getenv(envVar);
+  std::string saved = previous ? previous : "";
+  bool hadPrevious = previous != nullptr;
+
+  auto setEnvVar = [&](const char *value) {
+#if defined(_WIN32)
+    _putenv_s(envVar, value);
+#else
+    setenv(envVar, value, /*overwrite=*/1);
+#endif
+  };
+
+  setEnvVar("0");
+  mlir::rock::requestWGPScheduling();
+  EXPECT_STREQ(std::getenv(envVar), "1");
+
+  if (hadPrevious) {
+    setEnvVar(saved.c_str());
+  } else {
+#if defined(_WIN32)
+    _putenv_s(envVar, "");
+#else
+    unsetenv(envVar);
+#endif
   }
 }

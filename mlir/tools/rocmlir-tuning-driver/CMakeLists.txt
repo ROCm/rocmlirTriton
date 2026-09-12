@@ -83,7 +83,9 @@ endif()
 set_property(TARGET rocmlir-tuning-driver
   PROPERTY INSTALL_RPATH_USE_LINK_PATH ON)
 
-target_link_libraries(rocmlir-tuning-driver PRIVATE ${LIBS})
+# MLIRRockDeviceInfo is deliberately not a dialect library, so ${LIBS} does not
+# cover it.
+target_link_libraries(rocmlir-tuning-driver PRIVATE ${LIBS} MLIRRockDeviceInfo)
 target_link_libraries(rocmlir-tuning-driver PUBLIC benchmark-driver-utils)
 target_link_libraries(rocmlir-tuning-driver PUBLIC hip::host hip::amdhip64 hiprtc::hiprtc)
 llvm_update_compile_flags(rocmlir-tuning-driver)
