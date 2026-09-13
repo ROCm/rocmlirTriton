@@ -29,13 +29,22 @@ namespace rock {
 /// and an entry in this bridge's hardware table (see OrigamiRanker.cpp).
 bool origamiSupportsArch(StringRef arch);
 
+/// Two environment variables tune what the functions below do:
+///
+///  - `ROCMLIR_DISABLE_ORIGAMI_RANKING`, if set, turns the ranking off, so a
+///    tuning run can be compared against the same build with it on.
+///  - `ROCMLIR_ORIGAMI_TOP_N`, if set to a positive count, crops the ranked
+///    list to that many configs, trading tuning time against the risk of
+///    cropping away the config that would have won. It only ever applies to a
+///    list that was really ranked, never to one left in its original order.
+
 /// Reorder `params` so the configs Origami predicts to be fastest for
 /// `gemmOp`'s problem shape come first.
 ///
-/// Every element survives: configs Origami rejects, or that cannot be
-/// described to it, keep their relative order at the back of the list. The
-/// list is left untouched when Origami cannot model the kernel at all --
-/// an unsupported `arch`, a non-accelerated (FMA) kernel, which has no matrix
+/// Configs Origami rejects, or that cannot be described to it, keep their
+/// relative order at the back of the list rather than being dropped. The list
+/// is left untouched when Origami cannot model the kernel at all -- an
+/// unsupported `arch`, a non-accelerated (FMA) kernel, which has no matrix
 /// instruction to describe, or fewer than two configs.
 void rankGemmParamsByOrigami(RockGemmWrapperInterface gemmOp,
                              const PopulateParamsInfo &info,
@@ -45,8 +54,7 @@ void rankGemmParamsByOrigami(RockGemmWrapperInterface gemmOp,
 /// `gemmGemmOp`'s attention problem come first, using Origami's flash-attention
 /// model rather than its GEMM one.
 ///
-/// Same contract as rankGemmParamsByOrigami: no config is ever dropped, and the
-/// list is left untouched when Origami cannot model the kernel.
+/// Same contract as rankGemmParamsByOrigami.
 void rankAttentionParamsByOrigami(RockGemmGemmWrapperInterface gemmGemmOp,
                                   std::vector<GemmGemmParamsAttr> &params);
 
