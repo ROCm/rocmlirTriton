@@ -1,0 +1,56 @@
+origami-patches/ -- downstream Origami changes
+==============================================
+
+This directory holds downstream patch records against the vendored Origami tree
+(external/origami/). Unlike external/triton and external/llvm-project, Origami
+is a plain copy of a subdirectory of the rocm-libraries monorepo rather than a
+subtree, so external/origami/commit.txt records the upstream SHA and the
+re-vendoring recipe. Re-vendoring overwrites the tree, which drops these
+changes: re-apply each patch below afterwards, or drop it if upstream has
+adopted the change.
+
+Every patch here applies with `patch -p1` from inside external/origami:
+
+    for p in ../../origami-patches/*.patch; do patch -p1 < "$p"; done
+
+----------------------------------------------------------------------
+patch-optional-hip.patch
+
+  Guards Origami's HIP-dependent device-query entry points behind
+  `#ifndef ORIGAMI_NO_HIP`, leaving the arch-only `get_hardware_for_arch()`
+  path available. librockCompiler links Origami purely to rank tuning configs
+  for a cross-compiled target, so it must not acquire a HIP runtime
+  dependency; cmake/origami.cmake defines ORIGAMI_NO_HIP for that reason.
+
+  Touches: include/origami/hardware.hpp, src/origami/hardware.cpp
+
+  Drop this patch if upstream makes the HIP dependency optional itself (look
+  for a CMake option or an existing guard macro around
+  `get_hardware_for_properties` and the `hipDeviceProp_t` includes).
+
+----------------------------------------------------------------------
+patch-fixed-split-k.patch
+
+  Adds `config_t::split_k` and honours it in `compute_launch_parameters()`,
+  so a caller can pin the number of workgroups cooperating on each output
+  tile's K range instead of having the model derive one from its stream-K
+  grid selection.
+
+  Rock carries the K split as an explicit perf-config knob (`splitKFactor`)
+  and emits a plain data-parallel grid, so without this the ranker cannot
+  distinguish two otherwise identical configs that differ only in their
+  split, and the model scores every config against a stream-K kernel Rock
+  never generates. Upstream's only caller-supplied split
+  (`config.tensile().global_split_u`) is read solely by the Formocast
+  simulator path, which is unreachable here.
+
+  The patch deliberately leaves `reduction_strategy` at `none`: the epilogue
+  charges for the split-K partial writes and their accumulation off
+  `splitting_factor`, not off that enum, and Rock reduces in-kernel rather
+  than in a separate post-GSU kernel.
+
+  Touches: include/origami/types.hpp, src/origami/gemm.cpp
+
+  Drop this patch if upstream adds a first-class fixed-split-K input to
+  `config_t`; if it lands under a different name, update
+  mlir/lib/Dialect/Rock/Tuning/OrigamiRanker.cpp to set that field instead.

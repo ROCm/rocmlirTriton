@@ -1,0 +1,31 @@
+a70d405dd06b041a4b9c6849a6233862b95ca807
+
+Upstream: https://github.com/ROCm/rocm-libraries
+Branch:   develop
+Path:     shared/origami
+
+external/origami is a vendored snapshot of the directory above. Origami lives
+in a subdirectory of the rocm-libraries monorepo, so it is copied in rather
+than imported with `git subtree` the way external/triton and
+external/llvm-project are. Re-vendor by checking out the commit recorded here
+(or a newer one), copying shared/origami over external/origami, and updating
+the hash above:
+
+    TEMP_DIR=$(mktemp -d)
+    git clone --no-checkout --filter=blob:none --sparse --depth 1 -b develop \
+      https://github.com/ROCm/rocm-libraries.git "$TEMP_DIR"
+    git -C "$TEMP_DIR" sparse-checkout set shared/origami
+    git -C "$TEMP_DIR" checkout develop
+    git -C "$TEMP_DIR" rev-parse HEAD
+    cp -a "$TEMP_DIR"/shared/origami/. external/origami/
+    rm -rf "$TEMP_DIR"
+
+That copy overwrites the tree with clean upstream, dropping the downstream
+changes recorded in origami-patches/. Re-apply the survivors afterwards:
+
+    for p in ../../origami-patches/*.patch; do
+      (cd external/origami && patch -p1 < "$p")
+    done
+
+See origami-patches/origami-patch-content.txt for what each one is for and
+when to drop it.
