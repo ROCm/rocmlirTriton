@@ -685,3 +685,24 @@ bool mlir::rock::supportsTDM(StringRef arch) {
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
 }
+
+bool mlir::rock::hasTanhInsts(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  switch (isaFamily) {
+  case ISAFamily::GFX1250:
+    return true;
+  case ISAFamily::Unknown:
+  case ISAFamily::GCN5_1:
+  case ISAFamily::CDNA1:
+  case ISAFamily::CDNA2:
+  case ISAFamily::CDNA3:
+  case ISAFamily::CDNA4:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::RDNA3:
+  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4:
+    return false;
+  }
+  llvm_unreachable("unhandled ISAFamily in hasTanhInsts");
+}

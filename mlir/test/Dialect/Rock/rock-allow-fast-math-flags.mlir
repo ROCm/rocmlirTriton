@@ -205,7 +205,7 @@ module @perop_tests {
 // ROCK-NEXT: arith.addf %{{.*}}, %{{.*}} : tensor<2x3xf32>
 // ROCK-NEXT: arith.divf %{{.*}}, %{{.*}} : tensor<2x3xf32>
 // ROCK-NEXT: arith.mulf %{{.*}}, %{{.*}} : tensor<2x3xf32>
-// ROCK-NEXT: arith.mulf %{{.*}}, %{{.*}} : tensor<2x3xf32>
+// ROCK-NEXT: arith.negf %{{.*}} : tensor<2x3xf32>
 
 // FAST-LABEL: func.func @migraphx_pipeline_adds_per_op_flags
 // FAST:      arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
@@ -213,7 +213,7 @@ module @perop_tests {
 // FAST-NEXT: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
 // FAST-NEXT: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
 // FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
-// FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+// FAST-NEXT: arith.negf %{{.*}} fastmath<nsz> : tensor<2x3xf32>
 func.func @migraphx_pipeline_adds_per_op_flags(
     %a: !migraphx.shaped<2x3xf32, 3x1>,
     %b: !migraphx.shaped<2x3xf32, 3x1>,
