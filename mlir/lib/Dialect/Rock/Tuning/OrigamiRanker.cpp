@@ -121,14 +121,31 @@ origami::data_type_t toOrigamiDataType(Type type) {
   return origami::data_type_t::None;
 }
 
-/// The matrix-instruction shape a config with this `matrixInstrNonkdim` will
-/// lower to, which Origami needs to count instructions per macro tile. Fails
-/// when the kernel has no matrix instruction, or none that covers these
-/// operand types.
-FailureOr<origami::dim3_t> getMatrixInstrShape(StringRef arch,
-                                               MatrixAccelKind accelKind,
-                                               uint32_t nonKDim, Type aType,
-                                               Type bType) {
+/// Whether Origami has a measured latency for `instr`.
+///
+/// It does not reject an instruction it has never seen: `get_mi_latency` falls
+/// back to a flat 32 cycles, which is a plausible-looking number that would
+/// rank the config on its memory terms alone. Screen those configs out here so
+/// they keep their original position instead of being scored against a
+/// made-up compute cost.
+bool isModelledInstr(const origami::hardware_t &hardware,
+                     origami::data_type_t miDataType, origami::dim3_t instr) {
+  return llvm::is_contained(hardware.get_valid_matrix_instructions(miDataType),
+                            instr);
+}
+
+/// The matrix-instruction shape a config will lower to, which Origami needs to
+/// count instructions per macro tile. Fails when the kernel has no matrix
+/// instruction, or none that covers these operand types.
+///
+/// Which instruction gets issued depends on the config's `kPerBlock` and not
+/// just on its `matrixInstrNonkdim`: where an arch offers several K extents at
+/// the same tile, Triton takes the widest one the block's K can feed. Asking
+/// for the narrowest instead would model more, shorter instructions per tile
+/// and overstate the compute time.
+FailureOr<origami::dim3_t>
+getMatrixInstrShape(StringRef arch, MatrixAccelKind accelKind, uint32_t nonKDim,
+                    uint32_t kPerBlock, Type aType, Type bType) {
   // `matrixInstrNonkdim` is an MFMA-only knob. WMMA and the non-accelerated
   // FMA path both spell it 0, so it cannot distinguish them -- the accel kind
   // is what separates "instruction is always 16x16" from "no instruction".
@@ -136,7 +153,8 @@ FailureOr<origami::dim3_t> getMatrixInstrShape(StringRef arch,
                 accelKind == MatrixAccelKind::ScaledMFMA;
   uint32_t instrMN = isMfma && nonKDim != 0 ? nonKDim : 16;
 
-  FailureOr<int64_t> instrK = getAccelInstrMinKDim(arch, aType, bType, instrMN);
+  FailureOr<int64_t> instrK =
+      getAccelInstrKDim(arch, aType, bType, instrMN, kPerBlock);
   if (failed(instrK) || *instrK <= 0)
     return failure();
 
@@ -148,6 +166,27 @@ FailureOr<origami::dim3_t> getMatrixInstrShape(StringRef arch,
 /// against the same build with ranking on.
 bool rankingDisabled() {
   return std::getenv("ROCMLIR_DISABLE_ORIGAMI_RANKING") != nullptr;
+}
+
+/// How many configs to keep once the list is in best-first order, read from
+/// `ROCMLIR_ORIGAMI_TOP_N`. Unset, zero, or unparseable keeps all of them.
+///
+/// This trades tuning time against the risk of cropping away the config that
+/// would actually have won, so it only ever applies to a list Origami really
+/// ranked: every path that bails out early leaves the candidates untouched,
+/// and an unranked list is in no particular order to crop.
+std::optional<size_t> rankedListLimit() {
+  const char *env = std::getenv("ROCMLIR_ORIGAMI_TOP_N");
+  if (!env)
+    return std::nullopt;
+
+  size_t limit = 0;
+  if (StringRef(env).trim().getAsInteger(10, limit) || limit == 0) {
+    LLVM_DEBUG(llvm::dbgs() << "Ignoring ROCMLIR_ORIGAMI_TOP_N=\"" << env
+                            << "\": expected a positive count\n");
+    return std::nullopt;
+  }
+  return limit;
 }
 
 /// The innermost (fastest-varying) entry of a Rock conv layout attribute, e.g.
@@ -216,8 +255,10 @@ getOrigamiTransposes(RockGemmWrapperInterface gemmOp, KernelType kernelType) {
 /// Rebuild `params` best-first from Origami's `ranked` verdict.
 ///
 /// rank_configs drops the configs it rejects instead of ranking them last, so
-/// walk the results first and then sweep up everything they did not mention;
-/// dropping a config here would shrink the tuning space.
+/// walk the results first and then sweep up everything they did not mention:
+/// a config Origami would not score is still a config the tuner may pick, and
+/// it only loses its place in the list rather than its place in the space. The
+/// list is then cropped, if `ROCMLIR_ORIGAMI_TOP_N` asked for that.
 template <typename ParamsAttrT>
 void reorderByRanking(const std::vector<origami::prediction_result_t> &ranked,
                       std::vector<ParamsAttrT> &params) {
@@ -241,6 +282,14 @@ void reorderByRanking(const std::vector<origami::prediction_result_t> &ranked,
 
   assert(reordered.size() == params.size() &&
          "Origami ranking must preserve every candidate config");
+
+  if (std::optional<size_t> limit = rankedListLimit();
+      limit && *limit < reordered.size()) {
+    LLVM_DEBUG(llvm::dbgs() << "  cropping to the top " << *limit << " of "
+                            << reordered.size() << " configs\n");
+    reordered.resize(*limit);
+  }
+
   params = std::move(reordered);
 }
 
@@ -314,11 +363,19 @@ void mlir::rock::rankGemmParamsByOrigami(RockGemmWrapperInterface gemmOp,
   std::vector<origami::config_t> configs;
   configs.reserve(params.size());
   for (auto [idx, param] : llvm::enumerate(params)) {
-    FailureOr<origami::dim3_t> instrShape =
-        getMatrixInstrShape(arch, accelKind, param.getMatrixInstrNonkdim(),
-                            info.gemmAType, info.gemmBType);
+    FailureOr<origami::dim3_t> instrShape = getMatrixInstrShape(
+        arch, accelKind, param.getMatrixInstrNonkdim(), param.getKPerBlock(),
+        info.gemmAType, info.gemmBType);
     if (failed(instrShape))
       continue;
+    if (!isModelledInstr(hardware, problem.mi_dtype, *instrShape)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  skipping " << instrShape->m << "x" << instrShape->n
+                 << "x" << instrShape->k << " "
+                 << origami::datatype_to_string(problem.mi_dtype)
+                 << ": no measured latency for this instruction\n");
+      continue;
+    }
 
     origami::config_t config;
     config.mt = origami::dim3_t{static_cast<size_t>(param.getMPerBlock()),
@@ -334,6 +391,11 @@ void mlir::rock::rankGemmParamsByOrigami(RockGemmWrapperInterface gemmOp,
     // own for a kernel Rock will not generate.
     config.stream_k = 0;
     config.split_k = std::max<int64_t>(param.getSplitKFactor(), 1);
+    // Inert today -- no Origami model code branches on `target`, and its
+    // fitted coefficients carry no backend dimension -- but these kernels are
+    // Triton-generated rather than Tensile, so say so and pick up a
+    // Triton-specific path should upstream grow one.
+    config.target = origami::target_t::triton;
     config.index = idx;
     configs.push_back(config);
   }
@@ -409,9 +471,11 @@ void mlir::rock::rankAttentionParamsByOrigami(
   std::vector<origami::config_t> configs;
   configs.reserve(params.size());
   for (auto [idx, param] : llvm::enumerate(params)) {
-    FailureOr<origami::dim3_t> instrShape = getMatrixInstrShape(
-        arch, accelKind, param.getMatrixInstrNonkdim(), aType, bType);
-    if (failed(instrShape))
+    FailureOr<origami::dim3_t> instrShape =
+        getMatrixInstrShape(arch, accelKind, param.getMatrixInstrNonkdim(),
+                            param.getKPerBlock(), aType, bType);
+    if (failed(instrShape) ||
+        !isModelledInstr(hardware, problem.mi_dtype, *instrShape))
       continue;
 
     origami::config_t config;
@@ -427,6 +491,8 @@ void mlir::rock::rankAttentionParamsByOrigami(
     // Origami means waves resident per CU and clamps to at least 1. The
     // perf-config's 0 means "unset", not "none".
     config.occupancy = param.getWavesPerEU() > 0 ? param.getWavesPerEU() : 1;
+    // Inert today; see rankGemmParamsByOrigami.
+    config.target = origami::target_t::triton;
     config.index = idx;
     configs.push_back(config);
   }
