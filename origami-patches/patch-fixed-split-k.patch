@@ -1,0 +1,53 @@
+--- a/include/origami/types.hpp
++++ b/include/origami/types.hpp
+@@ -539,6 +539,14 @@
+   /// Stream-K mode selector (0 disables stream-K; 1 to 5 enables stream-K).
+   int stream_k = 5;
+ 
++  /// Fixed split-K: the number of workgroups that cooperate on each output
++  /// tile's K range. 0 or 1 leaves the split to the stream-K grid selection,
++  /// which is how backends that derive the split from a grid size use the
++  /// model. Backends whose kernels carry the split as an explicit tuning
++  /// parameter set it here instead, so that the modelled kernel is the one
++  /// they will actually launch.
++  std::size_t split_k = 0;
++
+   /// Reduction strategy.
+   reduction_t reduction_strategy = reduction_t::none;
+ 
+@@ -590,7 +598,8 @@
+     return mt == o.mt && mi == o.mi && hand_optimized_main_loop == o.hand_optimized_main_loop &&
+            subtile == o.subtile && cache_hints_a == o.cache_hints_a &&
+            cache_hints_b == o.cache_hints_b && stream_k == o.stream_k &&
+-           workgroup_mapping == o.workgroup_mapping && reduction_strategy == o.reduction_strategy &&
++           split_k == o.split_k && workgroup_mapping == o.workgroup_mapping &&
++           reduction_strategy == o.reduction_strategy &&
+            prediction_mode == o.prediction_mode && target == o.target && grvw_a == o.grvw_a &&
+            grvw_b == o.grvw_b && gwvw_d == o.gwvw_d && vector_width_a == o.vector_width_a &&
+            vector_width_b == o.vector_width_b && backend == o.backend;
+@@ -608,6 +617,7 @@
+                                           cache_hints_a,
+                                           cache_hints_b,
+                                           stream_k,
++                                          split_k,
+                                           workgroup_mapping,
+                                           static_cast<std::uint32_t>(reduction_strategy),
+                                           static_cast<std::uint32_t>(prediction_mode),
+--- a/src/origami/gemm.cpp
++++ b/src/origami/gemm.cpp
+@@ -373,7 +373,14 @@
+   size_t num_wgs                 = num_mts;
+   reduction_t reduction_strategy = reduction_t::none;
+ 
+-  if (config.stream_k > 0) {
++  if (config.split_k > 1) {
++    // Fixed split-K: one workgroup per output tile per split, so the
++    // splitting_factor below comes out as exactly config.split_k. The
++    // reduction strategy stays `none` (an in-kernel reduction); the epilogue
++    // charges for the partial writes and their accumulation off
++    // splitting_factor rather than off this enum, so the cost is still paid.
++    num_wgs = num_mts * config.split_k;
++  } else if (config.stream_k > 0) {
+     reduction_strategy = streamk::select_reduction(problem, hardware, config, grid_selection);
+     auto config_with_reduction               = config;
+     config_with_reduction.reduction_strategy = reduction_strategy;

@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
+#include "mlir/Dialect/Rock/Tuning/OrigamiRanker.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -1004,10 +1005,15 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   PopulateParams tuningInfo;
 
   // `getTuningParameters` already bumps the first conservatively-applicable
-  // config to the front of the list.
-  for (GemmParamsAttr param : tuningInfo.getTuningParameters(
-           b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
-           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+  // config to the front of the list. That guarantee is for
+  // `obtainTuningParameters`, which calls `getTuningParameters` itself and is
+  // untouched by the reordering below; here the order is purely search order,
+  // so it is free to become best-predicted-first.
+  std::vector<GemmParamsAttr> params = tuningInfo.getTuningParameters(
+      b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
+      info.quantBlockSize, info.aScaleType, info.bScaleType);
+  rankGemmParamsByOrigami(gemmOp, info, params);
+  for (GemmParamsAttr param : params) {
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
 }
@@ -1016,11 +1022,13 @@ static void
 createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
                                RockGemmGemmWrapperInterface gemmGemmOp) {
   OpBuilder b(gemmGemmOp.getContext());
-  // `getTuningParameters` already bumps the first conservatively-applicable
-  // config to the front of the list.
-  for (GemmGemmParamsAttr params :
-       PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
-    newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));
+  // See createGemmTuningRangeQuick on why reordering here does not disturb the
+  // conservatively-applicable-front guarantee.
+  std::vector<GemmGemmParamsAttr> params =
+      PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp);
+  rankAttentionParamsByOrigami(gemmGemmOp, params);
+  for (GemmGemmParamsAttr param : params) {
+    newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
 }
 
