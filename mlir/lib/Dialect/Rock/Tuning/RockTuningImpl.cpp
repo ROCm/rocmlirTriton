@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblem.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -1005,9 +1006,12 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
 
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
+  SmallString<256> problemName;
+  (void)getQuickTuningProblemName(gemmOp, problemName);
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
-           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+           info.quantBlockSize, info.aScaleType, info.bScaleType,
+           problemName)) {
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
 }
@@ -1721,6 +1725,54 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
   }
 
   return success();
+}
+
+static LogicalResult
+normalizeQuickTuningProblemName(StringRef serialized,
+                                unsigned leadingProblemTokens,
+                                SmallVectorImpl<char> &out) {
+  // getTuningProblemStr prefixes every problem with arch, numCU and
+  // numChiplets. Those are deployment properties, not problem identity.
+  StringRef problem = serialized;
+  for (unsigned i = 0; i < 3; ++i) {
+    size_t tab = problem.find('\t');
+    if (tab == StringRef::npos)
+      return failure();
+    problem = problem.drop_front(tab + 1);
+  }
+
+  // Drop the operation/data-type tokens. The lookup key already carries them,
+  // and findFallback is allowed to substitute each one.
+  for (unsigned i = 0; i < leadingProblemTokens; ++i) {
+    size_t space = problem.find(' ');
+    if (space == StringRef::npos)
+      return failure();
+    problem = problem.drop_front(space + 1);
+  }
+
+  out.clear();
+  out.append(problem.begin(), problem.end());
+  return success();
+}
+
+LogicalResult getQuickTuningProblemName(RockGemmWrapperInterface op,
+                                        SmallVectorImpl<char> &out) {
+  SmallString<256> serialized;
+  if (failed(getTuningProblemStr(op, serialized)))
+    return failure();
+  // Convolution starts with one combined operation/data-type token. GEMM
+  // starts with "-t <input-type> -out_datatype <output-type>".
+  unsigned leadingTokens = isa<RockConvInterface>(op.getOperation()) ? 1u : 4u;
+  return normalizeQuickTuningProblemName(serialized, leadingTokens, out);
+}
+
+LogicalResult getQuickTuningProblemName(RockGemmGemmWrapperInterface op,
+                                        SmallVectorImpl<char> &out) {
+  SmallString<256> serialized;
+  if (failed(getTuningProblemStr(op, serialized)))
+    return failure();
+  // Every two-GEMM problem starts with "-t <data-type>".
+  return normalizeQuickTuningProblemName(serialized, 2, out);
 }
 
 // Suppose to return the structure of the given problem to tune, currently

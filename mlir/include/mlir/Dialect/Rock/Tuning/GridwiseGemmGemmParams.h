@@ -36,11 +36,11 @@ public:
   // computing default block sizes before the kernel exists).
   static std::vector<GemmGemmParamsAttr>
   getTuningParameters(OpBuilder &b, StringRef arch, KernelType kernelType,
-                      Type elementType);
+                      Type elementType, StringRef problemName = StringRef());
 
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,
-                     GemmGemmParamsAttr params);
+                GemmGemmParamsAttr params);
 
   static FailureOr<GemmGemmParamsAttr>
   obtainTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);

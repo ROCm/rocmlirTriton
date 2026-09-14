@@ -250,17 +250,20 @@ public:
 
   FailureOr<GemmParamsAttr>
   obtainTuningParameters(OpBuilder &b, const PopulateParamsInfo &info,
-                         const StringRef perfConfig);
+                         const StringRef perfConfig,
+                         StringRef problemName = StringRef());
 
   // Return the set of heuristic tuning parameters for the given opType, data
   // types, and architecture. Pass `quantBlockSize` / `aScaleType` /
   // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability
   // check accounts for scale-tile LDS use and the `kPerBlock %
   // quantBlockSize == 0` constraint.
-  std::vector<GemmParamsAttr> getTuningParameters(
-      OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-      StringRef arch, std::optional<int64_t> quantBlockSize = std::nullopt,
-      Type aScaleType = nullptr, Type bScaleType = nullptr) const;
+  std::vector<GemmParamsAttr>
+  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
+                      Type dataTypeB, StringRef arch,
+                      std::optional<int64_t> quantBlockSize = std::nullopt,
+                      Type aScaleType = nullptr, Type bScaleType = nullptr,
+                      StringRef problemName = StringRef()) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;

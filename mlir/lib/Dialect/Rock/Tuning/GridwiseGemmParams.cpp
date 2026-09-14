@@ -194,7 +194,8 @@ LogicalResult PopulateParams::couldBePerformant(const PopulateParamsInfo &info,
 }
 
 FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
-    OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig) {
+    OpBuilder &b, const PopulateParamsInfo &info, const StringRef perfConfig,
+    StringRef problemName) {
   // Under two scenarios can we receive a non-empty perfConfig:
   // 1. This is tuning mode
   // 2. This is running mode and we have succeeded with a perfdb load.
@@ -206,7 +207,7 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, info.quantBlockSize, info.aScaleType,
-                          info.bScaleType));
+                          info.bScaleType, problemName));
 }
 
 FailureOr<GemmParamsAttr>
@@ -219,15 +220,22 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
           op->template getAttrOfType<StringAttr>("perf_config")) {
     perfConfig = perfConfigAttr.getValue();
   }
-  return obtainTuningParameters(b, info, perfConfig);
+  SmallString<256> problemName;
+  (void)getQuickTuningProblemName(op, problemName);
+  return obtainTuningParameters(b, info, perfConfig, problemName);
 }
 
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
     StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
-    Type bScaleType) const {
-  auto perfConfigs =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
+    Type bScaleType, StringRef problemName) const {
+  SmallVector<StringRef, 8> problemConfigs =
+      ParamLookupTable<GemmParamsAttr>::lookupProblem(arch, opType, dataTypeA,
+                                                      problemName);
+  ArrayRef<StringRef> perfConfigs = problemConfigs;
+  if (perfConfigs.empty())
+    perfConfigs =
+        ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
 
   LLVM_DEBUG(
       llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "

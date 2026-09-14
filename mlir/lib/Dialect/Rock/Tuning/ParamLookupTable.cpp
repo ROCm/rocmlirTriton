@@ -9,6 +9,8 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 
+#include <cstdlib>
+
 #define DEBUG_TYPE "rock-tuning-parameter"
 
 using namespace mlir;
@@ -36,6 +38,34 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   }
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
+}
+
+template <typename ParamsType>
+SmallVector<StringRef, 8>
+ParamLookupTable<ParamsType>::lookupProblem(StringRef arch, KernelType op,
+                                            Type dataType, StringRef problem) {
+  if (problem.empty() || std::getenv("ROCMLIR_DISABLE_PROBLEM_QUICK_TUNING"))
+    return {};
+
+  arch = normalizeArch(arch);
+  std::string key = makeKey(arch, op, dataType);
+  static const auto &table = getTable();
+  StringRef resolvedKey = key;
+  if (table.find(resolvedKey) == table.end())
+    resolvedKey = findFallback(key);
+  if (resolvedKey.empty())
+    return {};
+
+  static const auto &problemTable = getProblemTable();
+  auto keyIt = problemTable.find(resolvedKey);
+  if (keyIt == problemTable.end())
+    return {};
+
+  auto result = keyIt->second.lookup(problem);
+  LLVM_DEBUG(llvm::dbgs() << "Per-problem tuning lookup for key " << resolvedKey
+                          << " and problem \"" << problem << "\" returned "
+                          << result.size() << " configs\n");
+  return result;
 }
 
 template <typename ParamsType>
@@ -245,6 +275,34 @@ ParamLookupTable<GemmGemmParamsAttr>::buildTable() {
 #define GemmGemm_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef GemmGemm_LOOKUP_TABLE_GEN
+  };
+}
+
+#define Gemm_PROBLEM_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemPerfconfigs.inc"
+#undef Gemm_PROBLEM_DEFINITIONS_GEN
+
+template <>
+std::map<StringRef, ProblemTuningData>
+ParamLookupTable<GemmParamsAttr>::buildProblemTable() {
+  return {
+#define Gemm_PROBLEM_LOOKUP_TABLE_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemPerfconfigs.inc"
+#undef Gemm_PROBLEM_LOOKUP_TABLE_GEN
+  };
+}
+
+#define GemmGemm_PROBLEM_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemPerfconfigs.inc"
+#undef GemmGemm_PROBLEM_DEFINITIONS_GEN
+
+template <>
+std::map<StringRef, ProblemTuningData>
+ParamLookupTable<GemmGemmParamsAttr>::buildProblemTable() {
+  return {
+#define GemmGemm_PROBLEM_LOOKUP_TABLE_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemPerfconfigs.inc"
+#undef GemmGemm_PROBLEM_LOOKUP_TABLE_GEN
   };
 }
 

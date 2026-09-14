@@ -15,6 +15,19 @@
 using namespace mlir;
 using namespace mlir::rock;
 
+TEST(ProblemTuningDataTest, ExactLookupAndMissUseSyntheticData) {
+  static const StringRef names[] = {"problem-a", "problem-b"};
+  static const uint32_t offsets[] = {0, 2, 3};
+  static const uint16_t indices[] = {1, 0, 1};
+  static const StringRef configs[] = {"config-0", "config-1"};
+  ProblemTuningData data(names, offsets, indices, configs);
+
+  EXPECT_EQ((SmallVector<StringRef>{"config-1", "config-0"}),
+            data.lookup("problem-a"));
+  EXPECT_EQ((SmallVector<StringRef>{"config-1"}), data.lookup("problem-b"));
+  EXPECT_TRUE(data.lookup("problem-c").empty());
+}
+
 // Architectures shipping a full set of attention quick-tuning lists. gfx1201 is
 // absent because it only ships bf16 and i8; the precisions it keeps and the
 // ones it drops are covered by the Gfx1201* tests below.
