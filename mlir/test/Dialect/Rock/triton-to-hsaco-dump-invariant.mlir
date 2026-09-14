@@ -1,5 +1,5 @@
-// Case 1: no asan. AMDGCN_ENABLE_DUMP=0 emits an object directly, =1 takes the
-// AMDGCN assembly round trip.
+// Case 1: no `+xnack`, so no asan. AMDGCN_ENABLE_DUMP=0 emits an object
+// directly, =1 takes the AMDGCN assembly round trip.
 // RUN: rocmlir-opt -triton-to-hsaco='arch=gfx942' %s -o %t.plain.0.mlir
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx942' %s \
 // RUN:   -o %t.plain.1.mlir 2>/dev/null
@@ -8,7 +8,9 @@
 // RUN: diff -u %t.plain.0.s %t.plain.1.s
 // RUN: FileCheck --check-prefix=KERNEL %s < %t.plain.0.s
 
-// Case 2: asan (+xnack), which stays on the assembly round trip either way.
+// Case 2: `+xnack` in the features, which is how asan is requested through this
+// translation (`enableAsan` in TritonToHsaco.cpp infers it from the feature
+// string). This stays on the assembly round trip whatever the dump says.
 // RUN: rocmlir-opt -triton-to-hsaco='arch=gfx942 features=+xnack' %s \
 // RUN:   -o %t.asan.0.mlir
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt \
@@ -21,9 +23,11 @@
 // Binary emission has two paths: translateTritonToHsaco() normally asks the
 // TargetMachine for an object directly, but falls back to printing AMDGCN
 // assembly and re-parsing it with AMDGPUAsmParser when the text is actually
-// wanted (AMDGCN_ENABLE_DUMP=1) or under asan, where the assembler carries a
-// `+xnack` that `asmFeatures` (and hence `tmAsm`) does not. Whichever path runs,
-// the kernel that comes out has to be the same.
+// wanted (AMDGCN_ENABLE_DUMP=1) or when the features carry `+xnack`, which is
+// how asan is requested: the assembler is then configured with a feature that
+// `asmFeatures` (and hence `tmAsm`) does not have, so an object emitted from
+// `tmAsm` would carry a different target ID. Whichever path runs, the kernel
+// that comes out has to be the same.
 //
 // The comparison is on disassembly rather than on the ELF, which is not
 // byte-comparable: the assembler path leaves extra local symbols behind and

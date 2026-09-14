@@ -595,9 +595,15 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 /// roughly half of binary emission on large kernels and buy nothing when the
 /// text is never read.
 ///
-/// Upstream Triton has no equivalent because `make_amdgcn` and `make_hsaco` are
-/// separate Python-visible stages there and it caches the `.s` as a build
-/// artifact; we only need the text when a dump is requested.
+/// This is a deliberate deviation from upstream Triton, taken purely for
+/// compile time. Upstream always routes the binary through AMDGCN text, and can
+/// afford to: `make_amdgcn` and `make_hsaco` are separate Python-visible stages
+/// there and it caches the `.s` as a build artifact, so the text is a product
+/// it owes the caller either way. We have no such stage boundary and need the
+/// text only when a dump is requested, so `translateTritonToHsaco` keeps the
+/// round trip for exactly those cases and skips it otherwise. Anyone
+/// reconciling this file with llvm.cc should expect the difference rather than
+/// "fix" it.
 std::optional<SmallVector<char, 0>>
 translateLLVMIRToObject(llvm::Module &module, llvm::TargetMachine *machine) {
   llvm::SmallVector<char, 0> result;
@@ -831,6 +837,14 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   StringRef arch = options.arch;
   std::string features = options.features;
+  // Upstream Triton has an explicit `enable_asan` knob and derives the target
+  // feature from it, because asan on AMDGPU requires XNACK: instrumented
+  // accesses read shadow memory that the GPU reaches through unified memory,
+  // which needs XNACK's recoverable page faults, and `xnack` is part of the
+  // target ID the loader matches against the device. See
+  // `attach_datalayout`, `add_fn_target_feature("+xnack")` and `make_hsaco` in
+  // compiler.py. We are handed only the feature string, so we read that
+  // implication backwards and take `+xnack` as the request for asan.
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
   // Upstream compiler.py disable_real_true16_feature() passes `-real-true16`
@@ -1005,10 +1019,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return true;
   };
 
+  // Everything below this point intentionally diverges from upstream Triton,
+  // which always emits AMDGCN text and re-parses it. We only pay for the text
+  // when something is going to read it; see `translateLLVMIRToObject` for what
+  // that saves and why upstream has no reason to do the same.
+  //
   // The assembler in `assembleAMDGCN` is configured with `hsacoFeatures`, which
-  // under ASan carries a `+xnack` that `asmFeatures` (and hence `tmAsm`) does
-  // not. Emitting the object straight from `tmAsm` would silently drop it, so
-  // ASan keeps the text round trip; its compile time does not matter.
+  // carries the `+xnack` that asan needs (see `enableAsan` above) and that
+  // `asmFeatures` (and hence `tmAsm`) does not. Emitting the object straight
+  // from `tmAsm` would silently drop it and change the target ID, so the
+  // `+xnack` case keeps the text round trip; its compile time does not matter.
   if (!enableAsan && !dumpAmdgcn) {
     std::optional<SmallVector<char, 0>> objectCode =
         translateLLVMIRToObject(*llvmModule, tmAsm.get());
@@ -1020,7 +1040,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     auto hsaco = linkHSACO(*objectCode);
     if (!hsaco)
       return failure();
-    return llvm::SmallVector<char, 0>(hsaco->begin(), hsaco->end());
+    return std::move(*hsaco);
   }
 
   std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
@@ -1048,7 +1068,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
-  return llvm::SmallVector<char, 0>(hsaco->begin(), hsaco->end());
+  return std::move(*hsaco);
 }
 
 void registerTritonToHsacoTranslation() {
