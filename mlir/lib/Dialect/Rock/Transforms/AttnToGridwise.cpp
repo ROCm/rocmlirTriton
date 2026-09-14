@@ -370,7 +370,8 @@ arrangeGemmGemmSplitKTransform(OpBuilder &builder,
 
     StringRef preservedDimName =
         gemmOperand.inputDimNames[gemmOperand.presevedDimIdx];
-    StringRef splitDimName = gemmOperand.inputDimNames[gemmOperand.splitDimIdx];
+    [[maybe_unused]] StringRef splitDimName =
+        gemmOperand.inputDimNames[gemmOperand.splitDimIdx];
     assert(splitDimName == "gemmN");
 
     BottomUpTMBuilder unmergeTransform(builder, gemmOperand.inputDimNames,

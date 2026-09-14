@@ -169,8 +169,8 @@ struct VectorizationInfo {
       : maxLength(maxLength), needsCoefficient(needsCoefficient),
         alignment(alignment) {}
 
-  friend llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
-                                       const VectorizationInfo &info) {
+  [[maybe_unused]] friend llvm::raw_ostream &
+  operator<<(llvm::raw_ostream &os, const VectorizationInfo &info) {
     return os << info.maxLength << "@" << info.needsCoefficient << " align("
               << info.alignment << ")";
   }
@@ -2036,7 +2036,7 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
           if (upperToLower.contains(dim)) {
             LLVM_DEBUG(llvm::dbgs() << "copying removedSubDimInfo from:" << dim
                                     << " to:" << upperToLower[dim] << "\n");
-            for (const auto &sdIndo : subDimInfo) {
+            for ([[maybe_unused]] const auto &sdIndo : subDimInfo) {
               LLVM_DEBUG(llvm::dbgs()
                          << "\tcreating newRemovedSubDim /w size = "
                          << sdIndo.size << ", stride=" << sdIndo.stride << " @ "
@@ -2065,7 +2065,8 @@ static FailureOr<rock::TransformMapAttr> removeUpperDimsFromMap(
             args.params.append({0, 0});
             LLVM_DEBUG(llvm::dbgs() << "copying removedSubDimInfo from:"
                                     << upperDim << " to:" << lowerDim << "\n");
-            for (const auto &sdIndo : removedSubDims[upperDim]) {
+            for ([[maybe_unused]] const auto &sdIndo :
+                 removedSubDims[upperDim]) {
               LLVM_DEBUG(llvm::dbgs()
                          << "\tcreating newRemovedSubDim /w size = "
                          << sdIndo.size << ", stride=" << sdIndo.stride << " @ "
