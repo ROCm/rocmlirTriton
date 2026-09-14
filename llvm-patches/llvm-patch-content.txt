@@ -669,3 +669,88 @@ there.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 c64ec3766d72ab552957827b5a96cc50ed6c7182.
+
+----------------------------------------------------------------------
+patch214725.patch
+----------------------------------------------------------------------
+- Upstream commit : 8a9c0755eb6c4f00a12bc128b7d4c9d8d0d08667
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/214725
+- Upstream title  : [AMDGPU][CodeGen] Allow remat with multiple users in
+                    same region
+- JIRA case       : LCOMPILER-2224
+- File Fixed      : llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
+- Contents        : Relaxes the rematerialization candidate filter in the
+                    scheduler's PreRARematStage. Instead of requiring a
+                    single user across the whole function, it accepts any
+                    register whose users all live in one region
+                    (CandReg.Uses.size() == 1) and checks operand
+                    availability at the first user in program order,
+                    obtained from Rematerializer::Reg::getRegionUseBounds().
+                    The register is rematerialized once, just before that
+                    first user, which the generic Rematerializer already
+                    supports (rematerializeToRegion transfers all region
+                    users to the new def).
+
+Symptom without the patch
+-------------------------
+rocmlir-tuning-driver crashes while compiling certain gfx950 convolution
+perf configs. The reduced reproducer is the fp16 conv
+
+  rocmlir-gen --operation conv -t f16 --arch gfx950:sramecc+:xnack- \
+    --num_cu 256 --num_chiplets 8 --fil_layout gkc01 --in_layout ngc01 \
+    --out_layout ngk01 --batchsize 1 --in_channels 768 --in_h 32 --in_w 32 \
+    --out_channels 383 --fil_h 3 --fil_w 3 --dilation_h 1 --dilation_w 1 \
+    --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 \
+    --groupsize 1 --perf_config=
+
+compiled with the full perf config
+
+  gemm:mPerBlock=256,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
+
+with an LLVM assertion in the AGPR-copy-MFMA rewrite:
+
+  IntervalMap.h:639: ... Assertion `(i == Size ||
+  Traits::stopLess(b, start(i))) && "Overlapping insert"' failed.
+    ... llvm::LiveIntervalUnion::unify
+    ... llvm::LiveRegMatrix::assign
+    ... AMDGPURewriteAGPRCopyMFMAImpl::eliminateSpillsOfReassignedVGPRs
+    ... Running pass 'AMDGPU Rewrite AGPR-Copy-MFMA'
+
+Root cause
+----------
+The single-user restriction left a multi-user register spilled instead of
+rematerialized. The resulting VGPR spill slot was then folded back into a
+single vreg by eliminateSpillsOfReassignedVGPRs, producing overlapping live
+ranges that trip LiveRegMatrix::assign. Note the existing joint-dominance
+guard (patch167347) does *not* catch this case: the reload passes the
+dominance check yet the recomputed interval still overlaps. Fixing the
+source of the bad spill in PreRARematStage removes the crash. The reduced
+llc reproducer (rocmlir-agpr-final.ll) that aborted on the pinned tree
+compiles cleanly with this patch (-O3 -mcpu=gfx950 -filetype=null).
+
+CI coverage
+-----------
+mlir/test/rocmlir-driver/conv-f16-gfx950-sched-remat-multi-user.mlir pins the
+conv shape and full perf config above and cross-compiles to gfx950 with
+`rocmlir-driver -c`, asserting `triton.hsaco` is emitted. It is a compile-only
+test (no GPU required) that runs in check-rocmlir; it aborts without this
+patch, so a future LLVM bump that loses the fix will fail there.
+
+Downstream divergence from the upstream PR
+------------------------------------------
+Upstream #214725 was written against a later Rematerializer revision that
+tracks dependencies via Reg::Dependencies and validates them with
+Rematerializer::isRegIdenticalAtUses(). The pinned tree (revision
+62b7cf9623fc) still uses the earlier filter, which checks operand
+availability with VirtRegAuxInfo::allUsesAvailableAt() and scans
+DefMI->all_uses() for marked registers. This patch ports the intent of
+#214725 -- single-region multi-user acceptance and first-user-in-region
+availability checking -- onto that earlier filter; the availability and
+marked-register checks are otherwise unchanged. The upstream lit/MIR test
+updates that accompany #214725 are omitted from this downstream record,
+matching the handling of the other LLVM tests here: the vendored LLVM is
+built as libraries only, so they cannot be run in this build. The
+rocmlir-driver test named above provides the equivalent coverage.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+8a9c0755eb6c4f00a12bc128b7d4c9d8d0d08667.
