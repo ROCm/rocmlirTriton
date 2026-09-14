@@ -329,11 +329,13 @@ void TransformMapBuilder::defineDim(StringRef name, uint32_t dim,
                                     int64_t size) {
   assert(!frozen && "It's a bug to add to a coordinate transform after "
                     "fetching the attribute");
-  bool nameInsertResult = endIndices.insert({name, dim}).second;
+  [[maybe_unused]] bool nameInsertResult =
+      endIndices.insert({name, dim}).second;
   assert(nameInsertResult &&
          "Trying to redefine a result name in a coordinate transform");
   SmallString<8> nameCopy = name;
-  bool dimInsertResult = endNames.insert({dim, nameCopy}).second;
+  [[maybe_unused]] bool dimInsertResult =
+      endNames.insert({dim, nameCopy}).second;
   assert(dimInsertResult &&
          "Trying to redefine a result dimension in a coordinate transform");
   for (uint32_t e = endShape.size(); e <= dim; ++e) {
@@ -649,9 +651,9 @@ void TopDownTMBuilder::merge(ArrayRef<StringRef> lowerNames,
          "One size per output dimension required in merge");
 
   uint32_t upperDim = startIndex(upperName);
-  int64_t upperSize = startSize(upperDim);
+  [[maybe_unused]] int64_t upperSize = startSize(upperDim);
 
-  int64_t totalLowerSize = 1;
+  [[maybe_unused]] int64_t totalLowerSize = 1;
   for (const int64_t s : sizes) {
     totalLowerSize *= s;
   }
@@ -894,8 +896,8 @@ void BottomUpTMBuilder::unmerge(ArrayRef<StringRef> upperNames,
 
   uint32_t lowerDim = startIndex(lowerName);
 
-  int64_t totalLength = startSize(lowerDim);
-  int64_t lengthsProd = 1;
+  [[maybe_unused]] int64_t totalLength = startSize(lowerDim);
+  [[maybe_unused]] int64_t lengthsProd = 1;
   for (int64_t length : lengths) {
     lengthsProd *= length;
   }
@@ -1004,13 +1006,15 @@ llvm::StringMap<uint32_t> mlir::rock::expandNamesInPlace(
     StringRef origName = pair.value();
     if (expansion.count(origName) != 0) {
       for (auto newName : (*expansion.find(origName)).getValue()) {
-        bool insertResult = ret.insert({newName, origIndex + offset}).second;
+        [[maybe_unused]] bool insertResult =
+            ret.insert({newName, origIndex + offset}).second;
         assert(insertResult && "Duplicate dimension in dimension expansion");
         offset++;
       }
       offset--; // Handle extra count and dropping a dimension
     } else {
-      bool insertResult = ret.insert({origName, origIndex + offset}).second;
+      [[maybe_unused]] bool insertResult =
+          ret.insert({origName, origIndex + offset}).second;
       assert(insertResult && "Dimension already defined by expansion");
     }
   }

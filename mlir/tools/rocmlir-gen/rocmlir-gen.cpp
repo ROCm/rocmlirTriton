@@ -3231,7 +3231,7 @@ static Value applyMask(OpBuilder builder, Location loc, Value inputTensor,
   std::pair<APFloat, llvm::detail::opStatus> floatRes =
       rock::createAPFloat(inpType.getElementType(), initValue);
   APFloat fpVal = floatRes.first;
-  auto status = floatRes.second;
+  [[maybe_unused]] auto status = floatRes.second;
   assert(status == APFloat::opOK);
 
   DenseElementsAttr initValueAttr = DenseFPElementsAttr::get(
@@ -3359,7 +3359,7 @@ static Value maskLastValidKVIndexTosa(OpBuilder builder, Location loc,
   auto inpType = cast<RankedTensorType>(inputTensor.getType());
   ArrayRef<int64_t> inpShape = inpType.getShape();
 
-  for (auto v : lastValidKVIndex)
+  for ([[maybe_unused]] auto v : lastValidKVIndex)
     assert(v >= 0 && v < inpShape[3]);
 
   // generate range
