@@ -548,6 +548,30 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
 }
 
+// --- tritonLowersTanhToNativeInst ---
+//
+// Mirrors the GFX1250 gate on the __ocml_tanh_f32 rewrite in Triton's
+// BuiltinFuncToLLVM.cpp, which is narrower than LLVM's FeatureTanhInsts.
+
+TEST(AmdArchDbTest, TritonLowersTanhToNativeInst) {
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx906"));  // GCN5_1
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx908"));  // CDNA1
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx90a"));  // CDNA2
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx942"));  // CDNA3
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx950"));  // CDNA4
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1010")); // RDNA1
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1030")); // RDNA2
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1100")); // RDNA3
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1170")); // GFX1170
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1200")); // RDNA4
+  EXPECT_TRUE(tritonLowersTanhToNativeInst("gfx1250"));  // GFX1250
+}
+
+TEST(AmdArchDbTest, TritonLowersTanhToNativeInstWithTriple) {
+  EXPECT_TRUE(tritonLowersTanhToNativeInst("amdgcn-amd-amdhsa:gfx1250"));
+  EXPECT_FALSE(tritonLowersTanhToNativeInst("amdgcn-amd-amdhsa:gfx942"));
+}
+
 // --- isCDNA / isRDNA ---
 
 TEST(AmdArchDbTest, IsCDNA) {
