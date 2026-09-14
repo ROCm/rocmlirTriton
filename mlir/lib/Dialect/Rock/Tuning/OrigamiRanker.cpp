@@ -168,8 +168,15 @@ bool rankingDisabled() {
   return std::getenv("ROCMLIR_DISABLE_ORIGAMI_RANKING") != nullptr;
 }
 
-/// How many configs to keep once the list is in best-first order, read from
-/// `ROCMLIR_ORIGAMI_TOP_N`. Unset, zero, or unparseable keeps all of them.
+/// Default crop after Origami ranking. Quick tuning lists can be much longer
+/// than this; keeping only the predicted-best few cuts MIGraphX benchmark time
+/// while still trying configs Origami thinks are competitive.
+constexpr size_t kDefaultOrigamiTopN = 10;
+
+/// How many configs to keep once the list is in best-first order. Defaults to
+/// `kDefaultOrigamiTopN`; override with `ROCMLIR_ORIGAMI_TOP_N`. Set that to
+/// zero to keep the full ranked list; an unparseable value falls back to the
+/// default.
 ///
 /// This trades tuning time against the risk of cropping away the config that
 /// would actually have won, so it only ever applies to a list Origami really
@@ -178,14 +185,17 @@ bool rankingDisabled() {
 std::optional<size_t> rankedListLimit() {
   const char *env = std::getenv("ROCMLIR_ORIGAMI_TOP_N");
   if (!env)
-    return std::nullopt;
+    return kDefaultOrigamiTopN;
 
   size_t limit = 0;
-  if (StringRef(env).trim().getAsInteger(10, limit) || limit == 0) {
+  if (StringRef(env).trim().getAsInteger(10, limit)) {
     LLVM_DEBUG(llvm::dbgs() << "Ignoring ROCMLIR_ORIGAMI_TOP_N=\"" << env
-                            << "\": expected a positive count\n");
-    return std::nullopt;
+                            << "\": expected a non-negative count; using "
+                            << kDefaultOrigamiTopN << "\n");
+    return kDefaultOrigamiTopN;
   }
+  if (limit == 0)
+    return std::nullopt;
   return limit;
 }
 
@@ -258,7 +268,7 @@ getOrigamiTransposes(RockGemmWrapperInterface gemmOp, KernelType kernelType) {
 /// walk the results first and then sweep up everything they did not mention:
 /// a config Origami would not score is still a config the tuner may pick, and
 /// it only loses its place in the list rather than its place in the space. The
-/// list is then cropped, if `ROCMLIR_ORIGAMI_TOP_N` asked for that.
+/// list is then cropped to `rankedListLimit()` when that returns a limit.
 template <typename ParamsAttrT>
 void reorderByRanking(const std::vector<origami::prediction_result_t> &ranked,
                       std::vector<ParamsAttrT> &params) {

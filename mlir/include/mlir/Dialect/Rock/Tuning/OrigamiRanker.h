@@ -33,10 +33,10 @@ bool origamiSupportsArch(StringRef arch);
 ///
 ///  - `ROCMLIR_DISABLE_ORIGAMI_RANKING`, if set, turns the ranking off, so a
 ///    tuning run can be compared against the same build with it on.
-///  - `ROCMLIR_ORIGAMI_TOP_N`, if set to a positive count, crops the ranked
-///    list to that many configs, trading tuning time against the risk of
-///    cropping away the config that would have won. It only ever applies to a
-///    list that was really ranked, never to one left in its original order.
+///  - `ROCMLIR_ORIGAMI_TOP_N` crops the ranked list (default 10). Set it to
+///    zero to keep every ranked config, or to another positive count to
+///    override the default. It only ever applies to a list that was really
+///    ranked, never to one left in its original order.
 
 /// Reorder `params` so the configs Origami predicts to be fastest for
 /// `gemmOp`'s problem shape come first.
