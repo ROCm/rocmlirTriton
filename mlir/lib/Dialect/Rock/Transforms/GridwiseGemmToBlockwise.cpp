@@ -117,10 +117,11 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
                              int64_t G, int64_t M, int64_t N, int64_t K,
                              int64_t mBlocks, int64_t nBlocks, bool aReloads,
                              bool bReloads) {
-  // A dynamic M makes both the memory footprint and the m block count
-  // unknown, so we cannot infer the cache pressure, return the default cache
-  // behaviour.
-  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(mBlocks))
+  // Any dynamic shape leaves the memory footprint or a block count unknown,
+  // so the cache pressure cannot be inferred; return the default behaviour.
+  if (ShapedType::isDynamic(G) || ShapedType::isDynamic(M) ||
+      ShapedType::isDynamic(N) || ShapedType::isDynamic(K) ||
+      ShapedType::isDynamic(mBlocks) || ShapedType::isDynamic(nBlocks))
     return {rock::CacheModifier::NONE, rock::CacheModifier::NONE};
 
   const int64_t llcBytes = rock::getLastLevelCacheSize(arch);
@@ -199,14 +200,6 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     int64_t K = aShape[2];
     int64_t N = bShape[2];
 
-    // Only the M extent may be unknown here: G and N fix how many blocks the
-    // grid is grouped into, and K is the trip count of the loop below.
-    if (ShapedType::isDynamic(G) || ShapedType::isDynamic(N) ||
-        ShapedType::isDynamic(K))
-      return op->emitOpError()
-             << "lowering a gemm with a dynamic G, N or K dimension is not "
-                "implemented";
-
     // Obtain critical tuning parameters.
     StringRef arch = rock::getArchValue(op);
     uint32_t blockSize = rock::getBlockSize(op).value().getInt();
@@ -217,7 +210,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     int64_t mPerBlock = tuningParams.getMPerBlock();
     int64_t nPerBlock = tuningParams.getNPerBlock();
     int64_t mBlocks = dynAwareDiv(M, mPerBlock);
-    int64_t nBlocks = N / nPerBlock;
+    int64_t nBlocks = dynAwareDiv(N, nPerBlock);
     std::optional<int64_t> quantBlockSize = op.getQuantBlockSize();
     int64_t quantKPerBlock = 0;
     if (quantBlockSize.has_value() && kPerBlock % quantBlockSize.value() != 0) {
@@ -245,11 +238,43 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value bid =
         triton::GetProgramIdOp::create(b, op.getLoc(), triton::ProgramIDDim::X);
 
+    // Counts that the block id mapping and the reduction loop need as values,
+    // because the extent they come from may only be known at run time. A
+    // static count folds straight back to a constant.
+    //
+    // Dividing here rather than rounding up relies on each extent being a
+    // multiple of its tile size, which is what lets this lowering skip masking
+    // the tail of an axis. `rock-gemm-to-gridwise` is what enforces it.
+    auto countOf = [&](int64_t staticCount, RuntimeGemmDim dim,
+                       int64_t perBlock) -> FailureOr<Value> {
+      if (!ShapedType::isDynamic(staticCount))
+        return b.createOrFold<ConstantIntOp>(loc, b.getI32Type(), staticCount);
+      FailureOr<Value> extent = rock::getRuntimeGemmDimValue(op, dim);
+      if (failed(extent))
+        return failure();
+      if (perBlock == 1)
+        return *extent;
+      Value divisor =
+          b.createOrFold<ConstantIntOp>(loc, b.getI32Type(), perBlock);
+      return b.createOrFold<DivUIOp>(loc, *extent, divisor);
+    };
+
+    FailureOr<Value> gBlocksVal = countOf(G, RuntimeGemmDim::G, 1);
+    FailureOr<Value> nBlocksVal = countOf(nBlocks, RuntimeGemmDim::N, nPerBlock);
+    if (failed(gBlocksVal) || failed(nBlocksVal))
+      return failure();
+
     // Compute grid coordinates
     int64_t gridGroupSize = tuningParams.getGridGroupSize();
+    // Any unknown block count rules out the grouped layout, whose swizzling is
+    // derived from the block counts themselves.
+    const bool hasDynamicGrid = ShapedType::isDynamic(G) ||
+                                ShapedType::isDynamic(mBlocks) ||
+                                ShapedType::isDynamic(nBlocks);
     layout::GridCoordinates gridCoords =
-        ShapedType::isDynamic(mBlocks)
-            ? layout::makeMMajorGridLayout(b, loc, bid, G, nBlocks)
+        hasDynamicGrid
+            ? layout::makeMMajorGridLayout(b, loc, bid, *gBlocksVal,
+                                           *nBlocksVal)
             : layout::makeGroupedGridLayout(
                   b, loc, bid,
                   {G, mBlocks, nBlocks, rock::getNumCUValue(op),
@@ -292,11 +317,13 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
         rock::createZeroAccBuffer(b, loc, {mPerBlock, nPerBlock}, accType);
 
     // Emit loop with iter_args for the accumulator
-    int64_t kIterations = K / kPerBlock;
-    Value nIterations =
-        ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
+    FailureOr<Value> kIterationsVal =
+        countOf(dynAwareDiv(K, kPerBlock), RuntimeGemmDim::K, kPerBlock);
+    if (failed(kIterationsVal))
+      return failure();
 
-    scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
+    scf::ForOp loopOp =
+        createMainLoop(b, loc, *kIterationsVal, ValueRange{initAcc});
     Value loopResult;
     {
       PatternRewriter::InsertionGuard guard(b);

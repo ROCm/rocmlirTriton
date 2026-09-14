@@ -58,9 +58,9 @@ GridCoordinates makeGroupedGridLayout(PatternRewriter &b, Location loc,
 /// extent is only known at run time, which `makeGroupedGridLayout` cannot
 /// describe: every one of its divisors is derived from `mBlocks`.
 ///
-/// Treating m as the most significant coordinate keeps all of them static,
-/// because the number of m blocks is then the only thing the *size* of the grid
-/// depends on and never appears in the mapping itself:
+/// Treating m as the most significant coordinate keeps the number of m blocks
+/// out of the mapping entirely, because it is then the only thing the *size* of
+/// the grid depends on:
 ///
 ///   m_block = bid / (gBlocks * nBlocks)
 ///   g_block = (bid % (gBlocks * nBlocks)) / nBlocks
@@ -68,9 +68,13 @@ GridCoordinates makeGroupedGridLayout(PatternRewriter &b, Location loc,
 ///
 /// The launch is sized as `mBlocks * gBlocks * nBlocks` (see
 /// `rock.dyn_grid_size`), so `m_block` covers exactly [0, mBlocks).
+///
+/// `gBlocks` and `nBlocks` are values rather than integers so that G and N may
+/// be dynamic too. The divisions above are then evaluated at run time, which
+/// costs a handful of scalar instructions once per workgroup; when both counts
+/// are constants they fold away and this emits what a static mapping would.
 GridCoordinates makeMMajorGridLayout(PatternRewriter &b, Location loc,
-                                     Value bid, int64_t gBlocks,
-                                     int64_t nBlocks);
+                                     Value bid, Value gBlocks, Value nBlocks);
 
 /// Maps a flat block id onto <group, block_m, split_kv> for an attention grid
 /// whose m extent is only known at run time, which `makeGxNGridLayout` cannot

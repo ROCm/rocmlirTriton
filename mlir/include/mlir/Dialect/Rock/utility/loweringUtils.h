@@ -124,6 +124,12 @@ StringRef getRuntimeGemmDimName(RuntimeGemmDim dim);
 /// that the ordering is written down exactly once.
 unsigned getRuntimeGemmDimIndex(unsigned numArgs, RuntimeGemmDim dim);
 
+/// The argument of the kernel containing `op` that carries gemm dimension
+/// `dim`, for a lowering that needs its value rather than its extent. Emits a
+/// diagnostic and fails if that kernel does not carry the trailing arguments
+/// `rock-add-dynamic-dim-args` appends.
+FailureOr<Value> getRuntimeGemmDimValue(Operation *op, RuntimeGemmDim dim);
+
 /// The grid size of a kernel whose M is only known at runtime, as
 /// `ceilDiv(M, mPerBlock) * gnBlocks`. Published by `rock-gemm-to-gridwise`
 /// under `rock.dyn_grid_size` in place of the static `rock.grid_size`, because

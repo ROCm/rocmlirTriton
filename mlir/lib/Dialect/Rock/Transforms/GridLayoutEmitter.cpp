@@ -143,17 +143,14 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
 // TODO: Temporary, for testing purposes only.
 GridCoordinates rock::layout::makeMMajorGridLayout(PatternRewriter &b,
                                                    Location loc, Value bid,
-                                                   int64_t gBlocks,
-                                                   int64_t nBlocks) {
-  Type i32 = b.getIntegerType(32);
-  Value gnBlocksVal =
-      b.createOrFold<ConstantIntOp>(loc, i32, gBlocks * nBlocks);
-  Value nBlocksVal = b.createOrFold<ConstantIntOp>(loc, i32, nBlocks);
+                                                   Value gBlocks,
+                                                   Value nBlocks) {
+  Value gnBlocks = b.createOrFold<MulIOp>(loc, gBlocks, nBlocks);
 
-  Value m_block = DivUIOp::create(b, loc, bid, gnBlocksVal);
-  Value gn = RemUIOp::create(b, loc, bid, gnBlocksVal);
-  Value g_block = DivUIOp::create(b, loc, gn, nBlocksVal);
-  Value n_block = RemUIOp::create(b, loc, gn, nBlocksVal);
+  Value m_block = DivUIOp::create(b, loc, bid, gnBlocks);
+  Value gn = RemUIOp::create(b, loc, bid, gnBlocks);
+  Value g_block = DivUIOp::create(b, loc, gn, nBlocks);
+  Value n_block = RemUIOp::create(b, loc, gn, nBlocks);
 
   return {g_block, m_block, n_block};
 }

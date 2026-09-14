@@ -294,7 +294,7 @@ FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
   int64_t kGlobal = isKFirst ? matrixShape[1] : matrixShape[2];
   int64_t dGlobal = isKFirst ? matrixShape[2] : matrixShape[1];
 
-  int64_t kIters = kGlobal / kPerBlock;
+  int64_t kIters = dynAwareDiv(kGlobal, kPerBlock);
 
   std::string dIterName = llvm::formatv("{0}_iter", dName);
 
@@ -492,6 +492,32 @@ unsigned mlir::rock::getRuntimeGemmDimIndex(unsigned numArgs,
   assert(numArgs >= kNumRuntimeGemmDims &&
          "argument list is too short to hold the runtime gemm dimensions");
   return numArgs - kNumRuntimeGemmDims + static_cast<unsigned>(dim);
+}
+
+FailureOr<Value> mlir::rock::getRuntimeGemmDimValue(Operation *op,
+                                                    RuntimeGemmDim dim) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return op->emitOpError(
+        "is not inside a function, so the runtime gemm dimensions that would "
+        "supply its dynamic extents are not in scope");
+
+  unsigned numArgs = funcOp.getNumArguments();
+  if (numArgs < kNumRuntimeGemmDims)
+    return op->emitOpError()
+           << "needs the runtime value of dimension "
+           << getRuntimeGemmDimName(dim) << ", but the enclosing kernel has "
+           << numArgs << " arguments, too few to carry the "
+           << kNumRuntimeGemmDims
+           << " that rock-add-dynamic-dim-args appends";
+
+  BlockArgument arg = funcOp.getArgument(getRuntimeGemmDimIndex(numArgs, dim));
+  if (!arg.getType().isInteger(32))
+    return op->emitOpError()
+           << "expected argument " << arg.getArgNumber() << " to carry the "
+           << getRuntimeGemmDimName(dim) << " dimension as an i32, got "
+           << arg.getType();
+  return arg;
 }
 
 /// Keys of the `rock.dyn_grid_size` dictionary.

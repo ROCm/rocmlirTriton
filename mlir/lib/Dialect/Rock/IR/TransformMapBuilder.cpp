@@ -279,6 +279,11 @@ TransformMapAttr TransformMapBuilder::get() {
   auto errorEmitter = [&]() -> InFlightDiagnostic {
     InFlightDiagnostic err =
         mlir::emitError(loc, "Error assembling transform map: ");
+    err.attachNote(loc)
+        .append("Upper bounds = ")
+        .appendRange(upperBounds)
+        .append("\n  Lower bounds = ")
+        .appendRange(lowerBounds);
     if (b.getContext()->shouldPrintOpOnDiagnostic()) {
       err.attachNote(loc).append("The transforms were").appendRange(result);
     }
@@ -379,8 +384,9 @@ void TransformMapBuilder::passThrough(StringRef outName, StringRef inName) {
 }
 
 void TransformMapBuilder::passThrough(ArrayRef<StringRef> names) {
+  // Sizes must be int64_t (ShapedType::kDynamic would otherwise truncate to 0).
   llvm::SmallVector<uint32_t> dims;
-  llvm::SmallVector<uint32_t> sizes;
+  llvm::SmallVector<int64_t> sizes;
   dims.reserve(names.size());
   sizes.reserve(names.size());
   for (const auto name : names) {
@@ -400,8 +406,9 @@ void TransformMapBuilder::passThrough(ArrayRef<StringRef> outNames,
   assert(outNames.size() == inNames.size() && "One output per input");
   assert(outNames.size() == outDims.size() && "One location per output");
 
+  // Sizes must be int64_t (ShapedType::kDynamic would otherwise truncate to 0).
   llvm::SmallVector<uint32_t> inDims;
-  llvm::SmallVector<uint32_t> inSizes;
+  llvm::SmallVector<int64_t> inSizes;
   inDims.reserve(inNames.size());
   inSizes.reserve(inNames.size());
   for (const auto name : inNames) {
