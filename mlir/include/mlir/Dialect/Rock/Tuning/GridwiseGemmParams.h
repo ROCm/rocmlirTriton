@@ -248,6 +248,18 @@ public:
 };
 
 //
+// Data holder for static tuning parameter arrays from generated .inc file.
+// Used by ParamLookupTable.
+//
+struct PopulateParamsGemm {
+#define Gemm_DECLARATIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef Gemm_DECLARATIONS_GEN
+
+  friend class ParamLookupTable<GemmParamsAttr>;
+};
+
+//
 // Tuning-parameter interface for single-gemm ops.
 //
 class PopulateParams : public BasePopulateParams<GemmParamsAttr> {

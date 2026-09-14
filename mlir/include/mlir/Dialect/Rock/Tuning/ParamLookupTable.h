@@ -35,16 +35,6 @@ StringRef normalizeArch(StringRef arch);
 // keys emitted here match those baked into the generated .inc tables.
 std::string getDataTypeString(Type dataType);
 
-/// Environment variable overriding how many configs a known problem's
-/// quick-tuning list may hold, the recorded bests included. Only the list of a
-/// problem the database has measurements for is capped; an unknown problem
-/// still sweeps the whole set cover.
-inline constexpr StringLiteral kQuickTuningListMaxEnvVar =
-    "ROCMLIR_QUICK_TUNING_LIST_MAX";
-
-/// Cap used when `kQuickTuningListMaxEnvVar` is unset or unparseable.
-inline constexpr size_t kQuickTuningListMaxDefault = 30;
-
 template <typename ParamsType>
 class ParamLookupTable {
 public:
@@ -52,12 +42,9 @@ public:
   ///
   /// `problemHash` identifies the problem within the resolved key (see
   /// QuickTuningProblemKey.h). When the database holds measurements for it,
-  /// the list leads with the best non-split-K and best split-K config recorded
-  /// for that exact problem and is then backfilled from the set cover, without
-  /// repeats, to a total of `kQuickTuningListMaxEnvVar`. Otherwise -- an
-  /// unknown problem, an untuned key, or `kQuickTuningNoProblem` from a caller
-  /// that has no problem to name -- the list is the whole set cover, in its
-  /// recorded order, exactly as before per-problem data existed.
+  /// the list is exactly the top-N configs recorded for that problem.
+  /// Otherwise -- an unknown problem, an untuned key, a fallback key, or
+  /// `kQuickTuningNoProblem` -- the list is the monolith's whole set cover.
   static SmallVector<StringRef>
   lookup(StringRef arch, KernelType op, Type dataType,
          uint64_t problemHash = kQuickTuningNoProblem);
@@ -116,10 +103,12 @@ private:
   static StringRef pickClosestRelative(StringRef target,
                                        ArrayRef<StringRef> relatives);
 
-  // Every key the compiled-in quick-tuning database holds, mapped to the shard
-  // holding its data. Ordered rather than hashed because `getRelatives`
-  // depends on iterating it in key order.
-  static const std::map<StringRef, const QuickTuningShard *> &getTable();
+  static const std::map<StringRef, ArrayRef<StringRef>> &getTable() {
+    static const std::map<StringRef, ArrayRef<StringRef>> table = buildTable();
+    return table;
+  }
+
+  static std::map<StringRef, ArrayRef<StringRef>> buildTable();
 
   static std::string getKernelTypeString(KernelType kernelType);
 

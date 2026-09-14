@@ -17,6 +17,10 @@
 using namespace mlir;
 using namespace mlir::rock;
 
+#define GemmGemm_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef GemmGemm_DEFINITIONS_GEN
+
 FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
     OpBuilder &b, RockGemmGemmWrapperInterface op) {
   // Prefer the op's `perf_config`; otherwise fall back to the

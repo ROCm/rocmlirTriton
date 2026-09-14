@@ -53,6 +53,13 @@ public:
   static GemmParamsAttr getGemm1Params(OpBuilder &b,
                                        RockGemmGemmWrapperInterface op,
                                        GemmGemmParamsAttr params);
+
+private:
+#define GemmGemm_DECLARATIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef GemmGemm_DECLARATIONS_GEN
+
+  friend class ParamLookupTable<GemmGemmParamsAttr>;
 };
 
 /// Pure-arithmetic core of the gemm+gemm/attention peak-LDS footprint.

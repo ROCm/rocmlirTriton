@@ -25,6 +25,13 @@
 using namespace mlir;
 using namespace mlir::rock;
 
+/// Static data for tuning parameters (used by ParamLookupTable).
+// clang-format off
+#define Gemm_DEFINITIONS_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef Gemm_DEFINITIONS_GEN
+// clang-format on
+
 llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
                                           GemmDimension dim) {
   switch (dim) {
