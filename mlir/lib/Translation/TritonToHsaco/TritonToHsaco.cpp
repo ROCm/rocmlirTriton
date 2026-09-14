@@ -35,6 +35,7 @@
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
@@ -161,13 +162,6 @@ void initializeLLVMTargets() {
   // global thread pool is not fork-safe: a forked child inherits the pool's
   // state but not its threads, causing SIGABRT on use or cleanup.
   llvm::parallel::strategy = llvm::hardware_concurrency(1);
-}
-
-/// True when `name` is set to "1" in the environment. Mirrors how upstream
-/// Triton spells its debug dump switches (see triton/Tools/Sys/GetEnv.h).
-bool isEnvFlagSet(const char *name) {
-  const char *value = std::getenv(name);
-  return value && StringRef(value) == "1";
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
@@ -1001,7 +995,9 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   if (disableTrue16)
     asmFeatures = "-real-true16";
   // Only annotate the assembly when someone has asked to see it below.
-  const bool dumpAmdgcn = isEnvFlagSet("AMDGCN_ENABLE_DUMP");
+  // getBoolEnv asserts the name is registered in Triton's
+  // CACHE_INVALIDATING_ENV_VARS; a rocMLIR-specific switch must be added there.
+  const bool dumpAmdgcn = triton::tools::getBoolEnv("AMDGCN_ENABLE_DUMP");
   auto tmAsm =
       createTargetMachine(*llvmModule, triple, arch, asmFeatures,
                           options.enableFpFusion, /*asmComments=*/dumpAmdgcn);
@@ -1009,9 +1005,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
-  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set (matches upstream Triton's
-  // env var name; see external/triton/include/triton/Tools/Sys/GetEnv.h).
-  if (isEnvFlagSet("LLVM_IR_ENABLE_DUMP")) {
+  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set.
+  if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
     llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
     llvmModule->print(llvm::errs(), nullptr);
     llvm::errs() << "\n";
