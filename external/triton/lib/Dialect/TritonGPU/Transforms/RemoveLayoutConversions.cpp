@@ -22,7 +22,10 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include <algorithm>
 #include <deque>
+#include <limits>
+#include <tuple>
 
 namespace mlir::triton::gpu {
 
@@ -35,24 +38,22 @@ namespace mlir::triton::gpu {
 
 namespace {
 
-static int64_t getByteCount(Value result, int64_t minElementCount = 0,
-                            int64_t minBitWidth = 0) {
-  int64_t elementCount = 0;
-  int64_t dtypeBitWidth = 0;
-  if (auto tensorTy = dyn_cast<RankedTensorType>(result.getType())) {
-    elementCount = tensorTy.getNumElements();
-    auto elemType = tensorTy.getElementType();
-    if (elemType.isIntOrFloat()) {
-      dtypeBitWidth = elemType.getIntOrFloatBitWidth();
-    }
-  }
-  if (elementCount < minElementCount) {
-    elementCount = minElementCount;
-  }
-  if (dtypeBitWidth < minBitWidth) {
-    dtypeBitWidth = minBitWidth;
-  }
-  return (elementCount * dtypeBitWidth) >> 3;
+/// The amount of data, in bytes, that \p value stands for. A tensor of
+/// pointers is measured by the data it addresses rather than by the addresses
+/// themselves, since an anchor holding one -- a function argument, or the
+/// pointer operand of a load -- governs that data. An element type with no
+/// width to measure is reported as unbounded: not knowing how much data a
+/// value covers is no reason to treat it as covering little.
+static int64_t getAnchorByteCount(Value value) {
+  auto tensorTy = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorTy)
+    return 0;
+  Type elemTy = tensorTy.getElementType();
+  if (auto ptrTy = dyn_cast<triton::PointerType>(elemTy))
+    elemTy = ptrTy.getPointeeType();
+  if (!elemTy.isIntOrFloat())
+    return std::numeric_limits<int64_t>::max();
+  return (tensorTy.getNumElements() * elemTy.getIntOrFloatBitWidth()) >> 3;
 }
 
 /// The amount of data, in bytes, whose access pattern \p anchor's layout
@@ -61,12 +62,12 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 /// combined with, which makes it a poor choice for the values downstream of it.
 static int64_t getAnchorTraffic(Value anchor) {
   // Block arguments are anchored too, and have no op to inspect.
-  int64_t traffic = getByteCount(anchor);
+  int64_t traffic = getAnchorByteCount(anchor);
   if (Operation *op = anchor.getDefiningOp()) {
     for (Value operand : op->getOperands())
-      traffic = std::max(traffic, getByteCount(operand));
+      traffic = std::max(traffic, getAnchorByteCount(operand));
     for (Value result : op->getResults())
-      traffic = std::max(traffic, getByteCount(result));
+      traffic = std::max(traffic, getAnchorByteCount(result));
   }
   return traffic;
 }
@@ -304,18 +305,11 @@ void LayoutPropagation::initAnchorLayout() {
 void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
                                     SmallVector<Value> &changed,
                                     Operation *op) {
-  // Snapshot the source candidates and their traffic, as writing to `layouts`
-  // below can grow it and invalidate `info`, which aliases one of its entries.
-  SmallVector<std::pair<Attribute, int64_t>> srcEncodings;
-  srcEncodings.reserve(info.encodings.size());
-  for (Attribute encoding : info.encodings)
-    srcEncodings.emplace_back(encoding, info.trafficOf(encoding));
-
   for (Value value : values) {
     if (!isa<RankedTensorType>(value.getType()))
       continue;
     bool hasChanged = false;
-    for (auto [encoding, traffic] : srcEncodings) {
+    for (auto encoding : info.encodings) {
       Attribute dstEncoding;
       if (isa<ConvertLayoutOp>(op)) {
         // Try to remove the convert by making the dst encoding match the source
@@ -327,7 +321,7 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       if (dstEncoding) {
         LayoutInfo &dstInfo = layouts[value];
         hasChanged |= dstInfo.encodings.insert(dstEncoding);
-        hasChanged |= dstInfo.addTraffic(dstEncoding, traffic);
+        hasChanged |= dstInfo.addTraffic(dstEncoding, info.trafficOf(encoding));
       }
     }
     if (hasChanged)
@@ -416,7 +410,8 @@ void LayoutPropagation::propagateLayout() {
       DBGS() << "propagateLayout considering " << currentValue << ", which has "
              << info.encodings.size() << " candidate encoding(s):\n";
       for (Attribute encoding : info.encodings)
-        DBGS() << "  " << encoding << "\n";
+        DBGS() << "  " << encoding << " (traffic: " << info.trafficOf(encoding)
+               << " bytes)\n";
       DBGS() << "changed: " << changed.size() << "\n";
     });
 
@@ -457,15 +452,26 @@ void LayoutPropagation::resolveConflicts() {
     // those (getConvertCost, for one, prices them at zero).
     bool isLoadOrStore =
         op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
-    // Compared lexicographically, so the kind decides and traffic breaks ties.
+    // A memory access already holds the encoding coalesce picked for it, so
+    // traffic must not be allowed to hand it one chosen for something else:
+    // the access would stop reading contiguous addresses, and there is no
+    // large tensor here whose conversion that would save. Ranking its own
+    // encoding first keeps the choice with the pass that measured the access.
+    Attribute ownEncoding;
+    if (isLoadOrStore)
+      ownEncoding = cast<RankedTensorType>(it.first.getType()).getEncoding();
+    // Compared lexicographically: the kind decides, then a memory access's own
+    // encoding, and traffic breaks what is left.
     auto rank = [&](Attribute e) {
       bool isPreferredKind = (isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
                              (!isLoadOrStore && isa<MmaEncodingTrait>(e));
+      bool isOwnEncoding = e == ownEncoding;
       bool hasSubstantialTraffic = info.trafficOf(e) > negligibleTraffic;
-      return std::make_pair(isPreferredKind, hasSubstantialTraffic);
+      return std::make_tuple(isPreferredKind, isOwnEncoding,
+                             hasSubstantialTraffic);
     };
     Attribute encoding;
-    std::pair<bool, bool> best;
+    std::tuple<bool, bool, bool> best;
     for (Attribute e : info.encodings) {
       if (auto candidate = rank(e); !encoding || best < candidate) {
         best = candidate;
@@ -486,7 +492,8 @@ void LayoutPropagation::dump() {
     llvm::errs() << " \n encoding:\n";
     for (auto encoding : it.second.encodings) {
       encoding.print(llvm::errs());
-      llvm::errs() << "\n";
+      llvm::errs() << " (traffic: " << it.second.trafficOf(encoding)
+                   << " bytes)\n";
     }
     llvm::errs() << "--\n";
   }
@@ -1094,6 +1101,26 @@ static bool isExpensiveMathOp(Operation *op) {
              math::Log1pOp, math::SinOp, math::CosOp, math::TanOp, math::AsinOp,
              math::AcosOp, math::AtanOp, math::Atan2Op, math::PowFOp,
              math::SqrtOp, math::RsqrtOp, math::ErfOp, math::CbrtOp>(op);
+}
+
+static int64_t getByteCount(Value result, int64_t minElementCount = 0,
+                            int64_t minBitWidth = 0) {
+  int64_t elementCount = 0;
+  int64_t dtypeBitWidth = 0;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(result.getType())) {
+    elementCount = tensorTy.getNumElements();
+    auto elemType = tensorTy.getElementType();
+    if (elemType.isIntOrFloat()) {
+      dtypeBitWidth = elemType.getIntOrFloatBitWidth();
+    }
+  }
+  if (elementCount < minElementCount) {
+    elementCount = minElementCount;
+  }
+  if (dtypeBitWidth < minBitWidth) {
+    dtypeBitWidth = minBitWidth;
+  }
+  return (elementCount * dtypeBitWidth) >> 3;
 }
 
 /// Compute the cost of a ConvertLayoutOp with source \p convertSrc and result

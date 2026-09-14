@@ -22,7 +22,13 @@
 // RUN: | rocmlir-driver -c --arch=gfx1100 --mlir-disable-threading -o /dev/null \
 // RUN:   --perf-config=gemm:mPerBlock=128,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0 \
 // RUN:   --mlir-print-ir-after=tritonamdgpu-optimize-epilogue 2>&1 \
-// RUN: | FileCheck %s --implicit-check-not='convert_layout {{.*}}tensor<128x64xf32'
+// RUN: | FileCheck %s --implicit-check-not='convert_layout {{.*}}tensor<128x64xf'
+
+// The guard above rejects a layout conversion of any 128x64 tile of values,
+// whether f16 (the bias add and everything it feeds) or f32 (what the two
+// reductions consume). It stops at the element type rather than matching every
+// 128x64 tensor because the store pointers are legitimately converted to the
+// accumulator layout, and tensor<128x64x!tt.ptr<f16>> moves no data.
 
 // The accumulator layout of the dot, which the epilogue is expected to keep.
 // CHECK-DAG: #[[MMA:.+]] = #ttg.amd_wmma<
@@ -33,9 +39,9 @@
 // CHECK: %[[CVT:.*]] = ttg.convert_layout %[[BIAS]] : tensor<128x1xf16, #[[NARROW]]> -> tensor<128x1xf16, #[[MMA]]>
 // CHECK: %[[BCAST:.*]] = tt.broadcast %[[CVT]] : tensor<128x1xf16, #[[MMA]]> -> tensor<128x64xf16, #[[MMA]]>
 
-// Only those 128 values are converted: the epilogue stays in the accumulator
-// layout all the way into both reductions, so the 128x64 tiles never go through
-// shared memory. The implicit-check-not above is what enforces that.
+// Those 128 values are the only tile data converted: the epilogue stays in the
+// accumulator layout all the way into both reductions, so the 128x64 tiles
+// never go through shared memory. The implicit-check-not above enforces that.
 // CHECK: arith.addf %{{.*}}, %[[BCAST]] {{.*}} : tensor<128x64xf16, #[[MMA]]>
 // CHECK: "tt.reduce"
 // CHECK: }) : (tensor<128x64xf32, #[[MMA]]>) -> tensor<128xf32, #ttg.slice<{dim = 1, parent = #[[MMA]]}>>
