@@ -204,7 +204,8 @@ class GetNanosecondsTest(TempFileTestCase):
         self.assertTrue(math.isnan(perfRunner.get_nanoseconds("/nonexistent/path.csv")))
 
     def test_valid_csv(self):
-        # Several kernels for one op (e.g. a split-K GEMM and its reduction) sum.
+        # Several kernels for one op (e.g. a strided backward-data
+        # convolution, which emits one kernel per filter slice) sum.
         path = self.write_temp(".csv", "Name,AverageNs,SomeOther\n"
                                "kern1,1000,0\n"
                                "kern2,2000,0\n")
