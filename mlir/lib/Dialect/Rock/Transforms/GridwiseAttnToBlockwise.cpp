@@ -1503,7 +1503,8 @@ struct GridwiseAttentionRewritePattern
 
         IntegerAttr reductionAxis = rewriter.getIndexAttr(1);
 
-        auto softmaxShape = cast<ShapedType>(softmaxInput.getType()).getShape();
+        [[maybe_unused]] auto softmaxShape =
+            cast<ShapedType>(softmaxInput.getType()).getShape();
         assert(softmaxShape.size() == 2);
 
         // Softmax max reduction

@@ -130,7 +130,7 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
       info.argTypes.push_back(llvmFuncType.getParamType(i));
     }
 
-    for (const PrefillInfo &pi : info.prefillArgs) {
+    for ([[maybe_unused]] const PrefillInfo &pi : info.prefillArgs) {
       assert(pi.argIndex < info.argTypes.size() &&
              "prefill arg index out of range");
       assert(isa<LLVM::LLVMPointerType>(info.argTypes[pi.argIndex]) &&

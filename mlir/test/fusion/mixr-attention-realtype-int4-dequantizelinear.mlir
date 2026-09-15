@@ -1,3 +1,4 @@
+// REQUIRES: asserts
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch --mlir-print-ir-after=rock-gridwise-attn-to-blockwise -o /dev/null 2>&1 -debug-only=rock-gridwise-attn-to-blockwise | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch gfx942 | rocmlir-driver -kernel-pipeline gpu,triton -arch gfx942 --mlir-print-ir-after=tritongpu-coalesce -o /dev/null 2>&1 | FileCheck %s --check-prefix=VECTORIZATION
 

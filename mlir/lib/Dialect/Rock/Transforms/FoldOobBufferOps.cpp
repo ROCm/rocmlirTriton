@@ -858,7 +858,7 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
 /// none if the hardware is not guaranteed to discard it.
 enum class OobShape { None, PlainSentinel, SplitSoffset };
 
-static StringRef getShapeName(OobShape shape) {
+[[maybe_unused]] static StringRef getShapeName(OobShape shape) {
   return shape == OobShape::SplitSoffset ? "split-soffset sentinel"
                                          : "plain sentinel";
 }

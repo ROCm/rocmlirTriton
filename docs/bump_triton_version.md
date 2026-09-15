@@ -377,7 +377,8 @@ git diff "$OLD_REPO..$NEW_REPO" -- \
 
 A renamed symbol does not fail the build, and the lit tests that pin these
 strings (`lowering_rock_legalize_math_for_triton.mlir`,
-`fastmath-through-triton.mlir`) keep passing because they check the same copies:
+`fastmath-through-triton-transcendentals.mlir`) keep passing because they check
+the same copies:
 the reference stays unresolved until the `ocml.bc` link in `TritonToHsaco`, so it
 surfaces as a link failure there or, for the gfx1250 rewrite above, as a silent
 loss of `v_tanh_f32` that `mlir/test/rocmlir-driver/tanh-isa.mlir` catches.
@@ -387,6 +388,27 @@ valid either way. The one thing that does speak up is a bump adding an
 `ISAFamily`: `tritonLowersTanhToNativeInst()` switches exhaustively over Triton's
 enum precisely so that this becomes a build error and someone has to go read the
 guard.
+
+### 5.4.3 Mirrored assertion flags (from `HandleLLVMOptions.cmake`)
+
+`LLVM_ENABLE_ASSERTIONS` is not just a switch on `assert()`: `HandleLLVMOptions`
+turns it into `-UNDEBUG`, `-D_DEBUG`, `-D_GLIBCXX_ASSERTIONS` and a libc++
+hardening mode. Triton's `CMakeLists.txt` never includes that module, and we
+cannot `include()` it there (it would impose LLVM's whole flag policy on a
+subtree that builds `-Werror` / `/WX`), so `cmake/triton.cmake` hand-copies the
+block before `add_subdirectory(external/triton)`. Drift is silent -- a missed
+define leaves Triton as the one subtree still on `NDEBUG` in an assertions
+build, with nothing failing to announce it. This **manual copy** is keyed to the
+vendored LLVM rather than to Triton, so diff it on every LLVM bump:
+
+| Rock copy | Upstream source | What to check |
+|-----------|-----------------|---------------|
+| the `if(LLVM_ENABLE_ASSERTIONS)` block in `cmake/triton.cmake` | the `if( LLVM_ENABLE_ASSERTIONS )` block at `external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake:113-155` | Every define and option upstream adds under that `if` must appear in the copy, with the same build-type guard on `-UNDEBUG`. Three deviations are deliberate: the guard reads our `rocmlir_uppercase_build_type`, the `CHECK_CXX_SOURCE_COMPILES` probe is replaced by the `SUPPORTS_LIBCXX_HARDENING_MODE` that LLVM's own scope already cached, and the `LIBCXX_HARDENING_MODE` override warning is dropped as LLVM has already emitted it. |
+
+```bash
+git diff "$OLD_REPO..$NEW_REPO" -- \
+  external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake
+```
 
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
@@ -702,6 +724,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
 - [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
+- [ ] Generate diff for `llvm/cmake/modules/HandleLLVMOptions.cmake` and reconcile the mirrored `LLVM_ENABLE_ASSERTIONS` flag block in `cmake/triton.cmake` (see section 5.4.3)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
@@ -782,6 +805,8 @@ If new Triton headers are needed:
 | Triton libdevice symbol source | `external/triton/third_party/amd/language/hip/libdevice.py` |
 | Mirrored tanh rewrite arch gate | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` (`tritonLowersTanhToNativeInst`) |
 | Triton tanh rewrite source | `external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp` |
+| Mirrored `LLVM_ENABLE_ASSERTIONS` flag block | `cmake/triton.cmake` |
+| LLVM assertion flag source | `external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake` |
 | Triton compiler.py | `external/triton/third_party/amd/backend/compiler.py` |
 | Triton llvm.cc | `external/triton/python/src/llvm.cc` |
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
