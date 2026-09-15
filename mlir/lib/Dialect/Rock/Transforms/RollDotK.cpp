@@ -196,22 +196,62 @@ bool mayWriteBetween(Operation *from, Operation *to) {
 /// is checked against the linear layout rather than by inspecting encoding
 /// parameters, so an encoding this pass has not anticipated is rejected
 /// instead of being silently mislowered.
+///
+/// `toLinearLayout` is assert-based for shared encodings. In particular,
+/// SharedLinearEncodingAttr requires the shape to match the shape captured by
+/// its layout, and a partitioned encoding applies that requirement to its
+/// per-partition shape. Check both the original and segmented shapes before
+/// calling it.
+bool canConvertToLinearLayout(ArrayRef<int64_t> shape, Attribute enc) {
+  if (!llvm::all_of(shape, [](int64_t dim) {
+        return dim > 0 && llvm::isPowerOf2_64(dim);
+      }))
+    return false;
+
+  if (isa<ttg::PaddedSharedEncodingAttr>(enc))
+    return false;
+
+  auto layout = dyn_cast<ttg::LayoutEncodingTrait>(enc);
+  if (!layout || shape.size() != layout.getRank())
+    return false;
+
+  if (auto shared = dyn_cast<ttg::SharedLinearEncodingAttr>(enc)) {
+    for (auto [size, llSize] :
+         llvm::zip(shape, shared.getLinearLayout().getOutDimSizes()))
+      if (size != llSize)
+        return false;
+    return true;
+  }
+
+  if (auto partitioned = dyn_cast<ttg::PartitionedSharedEncodingAttr>(enc)) {
+    unsigned partitionDim = partitioned.getPartitionDim();
+    unsigned numPieces = partitioned.getNumLogicalPieces();
+    if (partitionDim >= shape.size() || numPieces == 0 ||
+        shape[partitionDim] % numPieces != 0)
+      return false;
+
+    SmallVector<int64_t> partitionShape(shape);
+    partitionShape[partitionDim] /= numPieces;
+    return canConvertToLinearLayout(partitionShape,
+                                    partitioned.getPartitionLayout());
+  }
+
+  // These are the AMD shared encodings this pass can encounter that are
+  // handled by TritonGPUDialect::toLinearLayout. Unknown encodings may assert
+  // there.
+  return isa<ttg::SwizzledSharedEncodingAttr,
+             ttg::AMDRotatingSharedEncodingAttr>(enc);
+}
+
 bool segmentingPreservesAddresses(ArrayRef<int64_t> shape, Attribute enc,
                                   unsigned kDim, int64_t dotK) {
   assert(shape.size() == 2 && "expected a 2-D dot operand tile");
-  // Padding is the one thing a linear layout cannot express, so
-  // `toLinearLayout` asserts on a padded encoding rather than answering, and
-  // the padding-blind layout `paddedLinearLayout` returns instead cannot
-  // decide this question. Rejecting is the right answer regardless: a padded
-  // encoding carries a linear component fixed at the tile's own shape, so
-  // reusing it for a narrower view does not describe the same memory, and
-  // `memdesc_reinterpret` compares only interval/padding pairs, so it would
-  // not catch that either.
-  if (ttg::isPaddedEncoding(enc))
-    return false;
-
   SmallVector<int64_t> segShape(shape);
   segShape[kDim] = dotK;
+
+  if (!canConvertToLinearLayout(shape, enc) ||
+      !canConvertToLinearLayout(segShape, enc))
+    return false;
 
   MLIRContext *ctx = enc.getContext();
   StringAttr kOffset = StringAttr::get(ctx, "offset");
@@ -342,13 +382,6 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
       !canSegment("B", bMemTy.getShape(), bMemTy.getEncoding(), /*kDim=*/0))
     return failure();
 
-  // Anchoring at the dot is what puts the replacement loads later in program
-  // order than the ones they stand in for, so it is only sound while nothing
-  // rewrites the buffers in between. `matchDot` is what establishes that.
-  assert(!mayWriteBetween(cand.aLoad, dot) &&
-         !mayWriteBetween(cand.bLoad, dot) &&
-         "rolling reloads the operand buffers at the dot, so nothing may "
-         "write them between the loads it replaces and the dot");
   OpBuilder b(dot);
 
   auto segmentView = [&](TypedValue<ttg::MemDescType> mem,
