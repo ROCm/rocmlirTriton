@@ -47,12 +47,13 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -156,6 +157,25 @@ static Value materializeMaskPath(OpBuilder &builder, Value mask,
   return mask;
 }
 
+/// Test whether a GEMM accumulator holds zero in the lanes a padded load masks
+/// out. That is either a freshly zeroed tile or, when the GEMM accumulates
+/// across tiles, a value carried around a loop whose initial value is zeroed;
+/// each iteration adds a product that is itself zero in those lanes, so the
+/// zero survives the whole accumulation.
+static bool isZeroedAccumulator(Value val) {
+  if (matchPattern(val, m_AnyZeroFloat()) || matchPattern(val, m_Zero()))
+    return true;
+  auto blockArg = dyn_cast<BlockArgument>(val);
+  if (!blockArg)
+    return false;
+  auto loopOp =
+      dyn_cast<LoopLikeOpInterface>(blockArg.getOwner()->getParentOp());
+  if (!loopOp)
+    return false;
+  OpOperand *init = loopOp.getTiedLoopInit(blockArg);
+  return init && isZeroedAccumulator(init->get());
+}
+
 /// Trace backwards from a value through fusion ops and narrowed-load shape
 /// operations, and collect all BlockwiseLoadPtrOp ops that feed into it
 /// (directly or indirectly).
@@ -167,6 +187,54 @@ static void collectContributingLoads(Value val,
     return;
   if (auto loadOp = dyn_cast<BlockwiseLoadPtrOp>(defOp)) {
     loads.push_back(loadOp);
+    return;
+  }
+  // The first GEMM accumulates across its K loop, so what a gemm+gemm fusion
+  // consumes is the loop's result rather than the blockwise GEMM's. Step
+  // through to the value the body yields for it; that is the GEMM handled
+  // just below, whose accumulator is the matching iteration argument.
+  if (auto loopOp = dyn_cast<LoopLikeOpInterface>(defOp)) {
+    if (!visited.insert(defOp).second)
+      return;
+    BlockArgument iterArg =
+        loopOp.getTiedLoopRegionIterArg(cast<OpResult>(val));
+    if (!iterArg)
+      return;
+    OpOperand *yielded = loopOp.getTiedLoopYieldedValue(iterArg);
+    if (!yielded)
+      return;
+    collectContributingLoads(yielded->get(), loads, visited);
+    return;
+  }
+  // Needed for gemm+gemm fusions: once the loop above has been stepped
+  // through, `defOp` is the first GEMM's BlockwiseGemmOp and the loads we are
+  // looking for sit underneath it.
+  //
+  // Tracing through is sound because a blockwise GEMM is zero wherever its
+  // operands' masks are out of bounds: the padded rows of A and columns of B
+  // read as zero and contribute nothing to a zeroed accumulator. Without it,
+  // `gemm0 * paddedInput` would be conservatively re-masked inside the second
+  // GEMM's K loop. Both A and B must come from masked loads: their pads zero
+  // the padded region of the GEMM's output space, the same space the fused
+  // elementwise inputs are padded in.
+  if (auto gemmOp = dyn_cast<BlockwiseGemmOp>(defOp)) {
+    if (!visited.insert(defOp).second)
+      return;
+    if (!isZeroedAccumulator(gemmOp.getMatrixC()))
+      return;
+    // Trace the two operands with independent visited sets, seeded from the
+    // caller's so the walk still cannot re-enter anything above this GEMM. A
+    // node reachable from both operands has to be seen by both traversals;
+    // sharing one set would let whichever operand is traced first claim it and
+    // leave the other empty, needlessly treating the GEMM as not load-backed.
+    SmallVector<BlockwiseLoadPtrOp> aLoads, bLoads;
+    DenseSet<Operation *> aVisited(visited), bVisited(visited);
+    collectContributingLoads(gemmOp.getMatrixA(), aLoads, aVisited);
+    collectContributingLoads(gemmOp.getMatrixB(), bLoads, bVisited);
+    if (aLoads.empty() || bLoads.empty())
+      return;
+    loads.append(aLoads);
+    loads.append(bLoads);
     return;
   }
   if (!rock::isFusionOp(defOp) && !isNarrowLoadShapeOp(defOp))
@@ -388,7 +456,8 @@ void RockPreserveMaskedLoadSemanticsPass::runOnOperation() {
   // of zero. Record the mask contribution for the rest.
   // Result: leafMasks[leaf] = paths from contributing non-trivial masks to the
   //         leaf shape for values that need re-masking.
-  DenseMap<Value, SmallVector<std::pair<Value, SmallVector<Operation *>>>>
+  llvm::MapVector<Value,
+                  SmallVector<std::pair<Value, SmallVector<Operation *>>>>
       leafMasks;
   DenseSet<Value> zeroPreserving;
   OpBuilder builder(funcOp.getContext());
