@@ -269,8 +269,9 @@ message(STATUS "JSON_SYSPATH: ${JSON_SYSPATH}")
 
 #===----------------------------------------------------------------------===//
 # COPY-PASTE of the LLVM_ENABLE_ASSERTIONS block from
-# external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake:113-154.
-# Re-sync when bumping the vendored LLVM.
+# external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake:113-155.
+# Re-sync when bumping the vendored LLVM; see docs/bump_triton_version.md
+# section 5.4.3.
 #
 # Triton never includes that module, so without this it is the one subtree left
 # on NDEBUG in an assertions-enabled build. We cannot simply
