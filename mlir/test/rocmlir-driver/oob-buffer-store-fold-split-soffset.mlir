@@ -24,11 +24,15 @@
 // The statistics are the only place the load side of the fold is pinned, since a
 // load that stops folding leaves no trace in the store checks above. They go to
 // stderr, hence the separate runs.
-// RUN: sed s/##TOKEN_ARCH##/gfx1100/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1100 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1100 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-SPLIT
-// RUN: sed s/##TOKEN_ARCH##/gfx1200/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1200 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1200 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-SPLIT
-// RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx942 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx942 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA
-// RUN: sed s/##TOKEN_ARCH##/gfx950/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx950 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx950 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA
-// RUN: sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1250 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1250 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-GFX1250
+//
+// `llvm::Statistic` is a no-op counter once NDEBUG is on, so these runs would
+// report every fold as 0 in a Release build. Only they are gated, not the whole
+// file: the store checks above are ordinary IR matches and stay useful there.
+// RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx1100/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1100 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1100 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-SPLIT %}
+// RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx1200/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1200 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1200 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-SPLIT %}
+// RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx942 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx942 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA %}
+// RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx950/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx950 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx950 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA %}
+// RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1250 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1250 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-GFX1250 %}
 
 // The correlated select pair. The lone `icmp "sge"` in the kernel is the
 // split-safety guard, so it anchors the shape.

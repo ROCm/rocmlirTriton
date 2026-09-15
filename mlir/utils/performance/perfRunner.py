@@ -159,6 +159,12 @@ def find_mlir_build_dir() -> str:
     """
     rocmlir_gen_path = None
     candidate_paths = [
+        # if the script is run from its installed copy: ci-performance-scripts
+        # puts these scripts in <build>/bin, next to the tools, so that copy can
+        # name its own build tree. First because it is the only unambiguous
+        # candidate -- a checkout with more than one build directory would
+        # otherwise benchmark whichever one the guesses below happen to find.
+        Path(__file__).resolve().parent / 'rocmlir-gen',
         # if the script is run from build dir
         Path('./bin/rocmlir-gen'),
         # if the script is run from source
@@ -167,6 +173,7 @@ def find_mlir_build_dir() -> str:
     for candidate_path in candidate_paths:
         if candidate_path.exists():
             rocmlir_gen_path = candidate_path
+            break
 
     if not rocmlir_gen_path:
         try:
