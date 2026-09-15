@@ -100,14 +100,18 @@ def make_problem_name(row, op):
         if direction is None:
             raise ValueError(f'unsupported convolution direction: {row.Direction}')
         group = integer(row.G) if 'G' in row.index and not pd.isna(row.G) else '1'
+        # Rock's internal convolution layout names use GEMM dimensions: filter
+        # K is N, and output K is C. Match extractLayouts()'s compiler spelling.
+        filter_layout = str(row.FilterLayout).lower().replace('k', 'n')
+        output_layout = str(row.OutputLayout).lower().replace('k', 'c')
         return ' '.join([
-            '-F', direction, '-f', str(row.FilterLayout), '-I', str(row.InputLayout), '-O',
-            str(row.OutputLayout), '-n', integer(row.N), '-c', integer(row.C), '-H',
-            integer(row.H), '-W', integer(row.W), '-k', integer(row.K), '-y', integer(row.Y), '-x',
-            integer(row.X), '-p', integer(row.PaddingH), '-q', integer(row.PaddingW), '-u',
-            integer(row.StrideH), '-v', integer(row.StrideW), '-l', integer(row.DilationH), '-j',
-            integer(row.DilationW), '-g', group
-        ])
+            '-F', direction, '-f', filter_layout, '-I', str(row.InputLayout), '-O', output_layout,
+            '-n', integer(row.N), '-c', integer(row.C), '-H', integer(row.H), '-W', integer(row.W),
+            '-k', integer(row.K), '-y', integer(row.Y), '-x', integer(row.X), '-p',
+            integer(row.PaddingH), '-q', integer(row.PaddingW), '-u', integer(row.StrideH), '-v',
+            integer(row.StrideW), '-l', integer(row.DilationH), '-j', integer(row.DilationW), '-g',
+            group
+        ]).lower()
 
     if op == 'attention':
         fields = [
@@ -142,7 +146,7 @@ def make_problem_name(row, op):
         integer(row.X), '-p', integer(row.PaddingH), '-q', integer(row.PaddingW), '-u',
         integer(row.StrideH), '-v', integer(row.StrideW), '-l', integer(row.DilationH), '-j',
         integer(row.DilationW), '-g', group, '-gemmO', integer(row.O)
-    ])
+    ]).lower()
 
 
 def is_non_split_k(perfconfig):

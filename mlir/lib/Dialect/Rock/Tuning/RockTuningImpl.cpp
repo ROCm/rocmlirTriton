@@ -1762,8 +1762,16 @@ LogicalResult getQuickTuningProblemName(RockGemmWrapperInterface op,
     return failure();
   // Convolution starts with one combined operation/data-type token. GEMM
   // starts with "-t <input-type> -out_datatype <output-type>".
-  unsigned leadingTokens = isa<RockConvInterface>(op.getOperation()) ? 1u : 4u;
-  return normalizeQuickTuningProblemName(serialized, leadingTokens, out);
+  bool isConv = isa<RockConvInterface>(op.getOperation());
+  unsigned leadingTokens = isConv ? 1u : 4u;
+  if (failed(normalizeQuickTuningProblemName(serialized, leadingTokens, out)))
+    return failure();
+  // Debug TSVs spell convolution layouts in lower case, while the compiler's
+  // problem serializer preserves the upper-case dimension names.
+  if (isConv)
+    for (char &c : out)
+      c = llvm::toLower(c);
+  return success();
 }
 
 LogicalResult getQuickTuningProblemName(RockGemmGemmWrapperInterface op,
@@ -1772,7 +1780,12 @@ LogicalResult getQuickTuningProblemName(RockGemmGemmWrapperInterface op,
   if (failed(getTuningProblemStr(op, serialized)))
     return failure();
   // Every two-GEMM problem starts with "-t <data-type>".
-  return normalizeQuickTuningProblemName(serialized, 2, out);
+  if (failed(normalizeQuickTuningProblemName(serialized, 2, out)))
+    return failure();
+  if (isa<ConvElementwiseGemmOp>(op.getOperation()))
+    for (char &c : out)
+      c = llvm::toLower(c);
+  return success();
 }
 
 // Suppose to return the structure of the given problem to tune, currently
