@@ -11,13 +11,6 @@
 // residual is what forces an elementwise upcast, since quant_dot consumes fp8
 // natively. Keeping the dequantize and the output quantize on opposite sides of
 // the add stops adjacent casts from folding away.
-//
-// The f8E5M2 (bf8) half of these expectations lives in bf8_cvt_lowering.mlir.
-// Keep the two formats in separate files: the Triton half of the kernel pipeline
-// is parameterized per module (`ttg.num-warps` sets every kernel's block size,
-// `ttg.shared` and `ttg.global_scratch_memory_size` are single module-wide
-// values), so a module carrying more than one kernel is out of contract and
-// aborts Triton's global-scratch allocation.
 
 // Check gfx1170 lowering at the LLVM boundary.
 // RUN: rocmlir-gen --clone-harness -arch gfx1170 -fut mlir_fp8_cvt %s \

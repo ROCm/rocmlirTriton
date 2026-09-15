@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // TODO(rocmlirTriton): Route RDNA4 to the plain cvt instructions as well, and
 // check it here, once LCOMPILER-2609 is fixed in LLVM.
 
