@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
+#include "mlir/Dialect/Rock/utility/DeviceInfo.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -77,6 +78,7 @@
 
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <tuple>
 #include <unordered_map>
 
@@ -123,18 +125,48 @@ static llvm::cl::opt<std::string> arch(
 
 static llvm::cl::opt<int> num_cu(
     "num_cu",
-    llvm::cl::desc("Number of compute units. If omitted, defaults to the "
-                   "per-arch minimum returned by rock::getMinNumCU (e.g. "
-                   "gfx906=10, gfx908=120, gfx90a=104, gfx942=20, "
-                   "gfx950=256, gfx1010=20, gfx1030=2, gfx1100=2, gfx1170=2, "
-                   "gfx1200=12, gfx1250=256). Any positive value is "
-                   "accepted."),
+    llvm::cl::desc("Number of compute units, or of workgroup processors on "
+                   "architectures that schedule per WGP. If omitted, the "
+                   "count is queried from a visible HIP device whose "
+                   "architecture matches --arch, and otherwise falls back to "
+                   "rock::getDefaultNumCU for that arch. Any positive value "
+                   "is accepted."),
     llvm::cl::value_desc("compute unit value"), llvm::cl::init(0));
 
 static llvm::cl::opt<int> numChiplets("num_chiplets",
                                       llvm::cl::desc("Number of chiplets"),
                                       llvm::cl::value_desc("chiplets value"),
                                       llvm::cl::init(0));
+
+static std::optional<int64_t> nativeNumCU;
+
+static int64_t getEffectiveNumCU(StringRef targetArch) {
+  if (num_cu.getNumOccurrences() > 0)
+    return num_cu.getValue();
+  if (nativeNumCU)
+    return *nativeNumCU;
+  return rock::getDefaultNumCU(targetArch);
+}
+
+// Always carries a count, the way the plain GEMM generator does. Leaving the
+// attribute off when nothing was queried would make its presence depend on the
+// host's GPU, and a consumer that finds no count assumes one anyway.
+static IntegerAttr getNumCUAttr(OpBuilder &builder, StringRef targetArch) {
+  return builder.getI32IntegerAttr(getEffectiveNumCU(targetArch));
+}
+
+// Chiplets are inferred only from a count that is known rather than assumed.
+// The per-arch assumption is not a count inferNumChiplets recognizes, and it
+// answers one chiplet for those, which skips the XCD-aware workgroup swizzle
+// in GridLayoutEmitter: measured on an MI300X, one chiplet instead of eight
+// costs 22% on a 4096-cube f16 GEMM and 32% on an 8192-by-4096-by-8192 one.
+static int64_t getEffectiveNumChiplets(StringRef targetArch, int64_t numCU) {
+  if (numChiplets.getNumOccurrences() > 0)
+    return numChiplets.getValue();
+  if (num_cu.getNumOccurrences() > 0 || nativeNumCU)
+    return rock::inferNumChiplets(targetArch, numCU);
+  return rock::getMaxNumChiplets(targetArch);
+}
 
 static llvm::cl::opt<std::string> perfConfig(
     "perf_config", llvm::cl::desc("performance config data used for tuning"),
@@ -2845,15 +2877,11 @@ static func::FuncOp createGpuGemmKernel(ModuleOp module,
   getGemmTypes(params.types, argTypes,
                /*isCpuVerifier=*/false);
   constexpr StringLiteral kernelName("rock_gemm");
-  IntegerAttr numCUAttr =
-      (num_cu.getNumOccurrences() > 0
-           ? b.getI64IntegerAttr(num_cu)
-           : b.getI64IntegerAttr(rock::getMinNumCU(archAttr.getValue())));
+  int64_t numCU = getEffectiveNumCU(archAttr.getValue());
+  IntegerAttr numCUAttr = b.getI64IntegerAttr(numCU);
 
   IntegerAttr numChipletsAttr =
-      (numChiplets.getNumOccurrences() > 0
-           ? b.getI64IntegerAttr(numChiplets)
-           : b.getI64IntegerAttr(rock::getMaxNumChiplets(archAttr.getValue())));
+      b.getI64IntegerAttr(getEffectiveNumChiplets(archAttr.getValue(), numCU));
   SmallVector<NamedAttribute> funcAttrs = {
       b.getNamedAttr(rock::KernelAttr::getMnemonic(), b.getUnitAttr()),
       b.getNamedAttr(rock::ArchAttr::getMnemonic(), archAttr)};
@@ -3659,9 +3687,7 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   SmallVector<Type, 5> flatArgTypes =
       llvm::map_to_vector(argTypes, rock::getFlattenedType);
 
-  IntegerAttr numCUAttr =
-      (num_cu.getNumOccurrences() > 0 ? builder.getI32IntegerAttr(num_cu)
-                                      : nullptr);
+  IntegerAttr numCUAttr = getNumCUAttr(builder, params.arch);
 
   IntegerAttr numChipletsAttr = (numChiplets.getNumOccurrences() > 0
                                      ? builder.getI32IntegerAttr(numChiplets)
@@ -3871,9 +3897,7 @@ createGpuConvElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
       getConvElementwiseGemmTypes(argTypes, config, params.types);
   SmallVector<Type, 5> flatArgTypes =
       llvm::map_to_vector(argTypes, rock::getFlattenedType);
-  IntegerAttr numCUAttr =
-      (num_cu.getNumOccurrences() > 0 ? builder.getI32IntegerAttr(num_cu)
-                                      : nullptr);
+  IntegerAttr numCUAttr = getNumCUAttr(builder, params.arch);
 
   IntegerAttr numChipletsAttr = (numChiplets.getNumOccurrences() > 0
                                      ? builder.getI32IntegerAttr(numChiplets)
@@ -3990,9 +4014,7 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   getGemmElementwiseGemmTypes(argTypes, params.types);
   SmallVector<Type, 5> flatArgTypes =
       llvm::map_to_vector(argTypes, rock::getFlattenedType);
-  IntegerAttr numCUAttr =
-      (num_cu.getNumOccurrences() > 0 ? builder.getI32IntegerAttr(num_cu)
-                                      : nullptr);
+  IntegerAttr numCUAttr = getNumCUAttr(builder, params.arch);
 
   IntegerAttr numChipletsAttr = (numChiplets.getNumOccurrences() > 0
                                      ? builder.getI32IntegerAttr(numChiplets)
@@ -6482,7 +6504,8 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     convGenerator = rock::ConvGenerator(
         arch, chip, disableSplitKForTuning, triple, chipFeatures,
         perfConfig.getValue(),
-        num_cu.getNumOccurrences() ? std::optional<int>(num_cu.getValue())
+        num_cu.getNumOccurrences() ? std::optional<int>(getEffectiveNumCU(arch))
+        : nativeNumCU              ? std::optional<int>(*nativeNumCU)
                                    : std::nullopt,
         numChiplets.getNumOccurrences()
             ? std::optional<int>(numChiplets.getValue())
@@ -6651,6 +6674,12 @@ int main(int argc, char **argv) {
     inputDataType = canonicaliseF8Type(inputDataType);
     outputDataType = canonicaliseF8Type(outputDataType);
   }
+
+  // Ask the device for its count unless one was given. The result is only used
+  // when its architecture matches --arch, so compiling for a foreign target
+  // still lands on the per-arch default.
+  if (num_cu.getNumOccurrences() == 0 && !arch.getValue().empty())
+    nativeNumCU = rock::getNativeNumCU(arch);
 
   if (isConv(operation))
     correctConvParameters();

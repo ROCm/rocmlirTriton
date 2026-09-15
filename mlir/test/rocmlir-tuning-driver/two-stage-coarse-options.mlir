@@ -12,9 +12,14 @@
 // A warmup floor above --warmup would be silently capped away, so it is
 // rejected up front rather than ignored.
 
-// RUN: rocmlir-gen --arch %arch -operation gemm -t f16 -out_datatype f32 -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= \
-// RUN: | not rocmlir-tuning-driver --tuning-space=quick --rep=10 --warmup=3 \
-// RUN:     --two-stage-topk=2 --coarse-warmup-floor-ms=4 \
+// The kernel goes through a file rather than a pipe here. This run rejects the
+// option before it reads its input at all, so on a pipe the generator is left
+// writing into a closed one and the test dies of SIGPIPE with every check
+// satisfied.
+
+// RUN: rocmlir-gen --arch %arch -operation gemm -t f16 -out_datatype f32 -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= -o %t.mlir
+// RUN: not rocmlir-tuning-driver --tuning-space=quick --rep=10 --warmup=3 \
+// RUN:     --two-stage-topk=2 --coarse-warmup-floor-ms=4 %t.mlir \
 // RUN: 2>&1 >/dev/null | FileCheck %s --check-prefix=FLOOR
 
 // FLOOR: coarse-warmup-floor-ms must not exceed warmup

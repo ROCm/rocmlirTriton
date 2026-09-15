@@ -13,10 +13,15 @@ get_property(rocmlir_dialect_libs GLOBAL PROPERTY ROCMLIR_DIALECT_LIBS)
 get_property(rocmlir_conversion_libs GLOBAL PROPERTY ROCMLIR_CONVERSION_LIBS)
 get_property(rocmlir_test_libs GLOBAL PROPERTY ROCMLIR_TEST_LIBS)
 
+# MLIRRockDeviceInfo is deliberately not a dialect library (it links HIP and
+# must stay out of librockCompiler), so it has to be listed explicitly.
+rocmlir_find_hip()
+
 target_link_libraries(amd_arch_db PRIVATE
   ${rocmlir_dialect_libs}
   ${rocmlir_conversion_libs}
   ${rocmlir_test_libs}
+  MLIRRockDeviceInfo
   MLIROptLib
   MLIRAnalysis
   MLIRFuncInlinerExtension
