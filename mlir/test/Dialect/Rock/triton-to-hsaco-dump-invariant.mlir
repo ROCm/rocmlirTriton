@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Case 1: no `+xnack`, so no asan. AMDGCN_ENABLE_DUMP=0 emits an object
 // directly, =1 takes the AMDGCN assembly round trip.
 // RUN: rocmlir-opt -triton-to-hsaco='arch=gfx942' %s -o %t.plain.0.mlir

@@ -13,13 +13,6 @@
 // v_med3 instead (see clip-nnan-isa.mlir for that contrast). The flag has to
 // reach both driver invocations, since the choice is made in phase 1 by
 // migraphx-to-tosa's NaN mode and again in phase 3 by rock-allow-fast-math-flags.
-//
-// The f16 half of these expectations lives in minmax-f16-isa.mlir. Keep the two
-// dtypes in separate files: the Triton half of the kernel pipeline is
-// parameterized per module (`ttg.num-warps` sets every kernel's block size,
-// `ttg.shared` and `ttg.global_scratch_memory_size` are single module-wide
-// values), so a module carrying more than one kernel is out of contract and
-// aborts Triton's global-scratch allocation.
 
 // CDNA3 has no IEEE-2019 min/max in any form, packed or not. LLVM lowers each
 // operation to a legacy non-propagating min/max followed by compare/select

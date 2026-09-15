@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The transcendentals kernel of the fastmath-through-triton family: what happens
 // to `rock-allow-fast-math-flags`' output once it crosses into Triton. See
 // fastmath-through-triton.mlir for what the family checks and why each file
