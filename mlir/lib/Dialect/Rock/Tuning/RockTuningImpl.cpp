@@ -139,8 +139,10 @@ static void capKPerBlockByK(std::vector<uint32_t> &kPerBlockList, int64_t k) {
 // the range is worth it. "Cleanly" is two requirements at once:
 //
 //   - the candidate divides K evenly, so no iteration masks a K remainder;
-//   - the candidate is a multiple of `alignTo`, so advancing K moves no inner
-//     coordinate (see kPerBlockAlignmentFactor).
+//   - the candidate is a multiple of `alignTo`, so advancing K leaves every
+//     merged dim below the channel one where it is, which is what makes their
+//     share of the index arithmetic loop invariant; the dims above the channel
+//     may still move (see kPerBlockAlignmentFactor).
 //
 // We skip kPerBlock of 1, since it always divides K, but degenerates the K loop
 // into one iteration per K element, so it does not count as a usable tiling.
@@ -162,12 +164,17 @@ static bool needsWidenedKPerBlockRange(ArrayRef<uint32_t> kPerBlockList,
 // the validity mask dependent on the K loop's induction variable. A carry into
 // the channel dim is just a uniform address step.
 //
-// So the factor is the product of the merged dims below the channel one: a tile
-// that is a multiple of it advances the channel and leaves those dims where
-// they are. Channels-first Merge(c, y, x) has the whole filter window below, so
-// it pins every spatial dim. Interleaved Merge(y, c, x) has X, which pins x and
-// moves y only on the steps where c wraps. Channels-last Merge(y, x, c) has
-// nothing below, and no tile size stops x moving on every step.
+// So the factor is the product of the merged dims below the channel one. A tile
+// that is a multiple of it gives those dims the same per-lane coordinates on
+// every iteration, so their share of the address and mask arithmetic is loop
+// invariant and hoists out of the K loop. The dims above the channel still
+// carry, and their share stays tied to the induction variable.
+//
+// Channels-first Merge(c, y, x) has the whole filter window below, so the whole
+// mask hoists and no spatial dim moves at all. Interleaved Merge(y, c, x) has
+// X, so the x share hoists while y keeps advancing: less than the full win, but
+// the x share is real. Channels-last Merge(y, x, c) has nothing below, so the
+// factor is 1 -- there is no dim under c for a multiple to pin.
 //
 // One channel is the exception: it carries on every step, so the merge is the
 // filter window however the layout orders it, and the factor is that window.
