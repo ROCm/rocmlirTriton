@@ -40,6 +40,8 @@ target_link_libraries(MLIRRockUnitTests
   MLIRFuncDialect
   MLIRIR
   TritonAMDGPUToLLVM
+  TritonAMDGPUDialectToLLVM
+  TritonNVIDIAGPUToLLVM
   TritonAMDUtils
 )
 
