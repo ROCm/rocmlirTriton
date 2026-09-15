@@ -195,6 +195,28 @@ static void replaceExtractPtrWithPointer(IRRewriter &rewriter,
   rewriter.eraseOp(extractPtrOp);
 }
 
+/// Keeps the argument attributes that mean something past this pass: Triton
+/// reads `tt.*` and LLVM translation reads `llvm.*`. Rock argument attributes
+/// are dropped, since no consumer looks for them on a `tt.func`.
+static ArrayAttr filterArgAttrsForTriton(OpBuilder &builder,
+                                         ArrayAttr allArgAttrs) {
+  auto isKept = [](NamedAttribute attr) {
+    StringRef dialect = attr.getName().getValue().split('.').first;
+    return dialect == triton::TritonDialect::getDialectNamespace() ||
+           dialect == LLVM::LLVMDialect::getDialectNamespace();
+  };
+
+  SmallVector<Attribute> filtered;
+  filtered.reserve(allArgAttrs.size());
+  for (Attribute argAttrs : allArgAttrs) {
+    SmallVector<NamedAttribute> kept;
+    llvm::copy_if(cast<DictionaryAttr>(argAttrs), std::back_inserter(kept),
+                  isKept);
+    filtered.push_back(builder.getDictionaryAttr(kept));
+  }
+  return builder.getArrayAttr(filtered);
+}
+
 struct RockTensorToTritonPtrPass
     : public rock::impl::RockTensorToTritonPtrPassBase<
           RockTensorToTritonPtrPass> {
@@ -319,9 +341,12 @@ LogicalResult RockTensorToTritonPtrPass::processFunction(
   ttFuncOp->setAttr("noinline", builder.getBoolAttr(true));
 
   // Propagate arg attributes (tt.divisibility, tt.pointer_range, LLVM attrs)
-  // set by RockAnalyzeMemoryUsePass from func.func to tt.func.
+  // set by RockAnalyzeMemoryUsePass from func.func to tt.func. `rock.prefill`
+  // is left behind: runOnOperation() has already recorded it as a module
+  // attribute for collectKernelInfo, and carrying it into Triton IR would only
+  // reach LLVM translation, which has no counterpart for it.
   if (auto allArgAttrs = funcOp.getAllArgAttrs())
-    ttFuncOp.setAllArgAttrs(allArgAttrs);
+    ttFuncOp.setAllArgAttrs(filterArgAttrsForTriton(builder, allArgAttrs));
 
   Region &oldRegion = funcOp.getBody();
   Region &newRegion = ttFuncOp.getBody();

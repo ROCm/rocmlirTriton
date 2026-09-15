@@ -115,12 +115,19 @@
 namespace mlir {
 namespace rock {
 
-/// Accepts the kernel metadata Rock and Triton leave on function parameters,
-/// which has no LLVM IR counterpart and is dropped during translation. Without
-/// an interface, that goes through `convertParameterAttr`, which warns once per
+/// Accepts the kernel metadata Triton leaves on function parameters, which has
+/// no LLVM IR counterpart and is dropped during translation. Without an
+/// interface claiming the namespace, that goes through
+/// `LLVMTranslationInterface::convertParameterAttr`, which warns once per
 /// attribute via `Operation::emitWarning` - attaching the whole kernel to every
 /// diagnostic and dominating the translation. Function and module attributes
 /// need no interface; `amendOperation` already ignores them silently.
+///
+/// Rock is deliberately not registered. `rock.prefill` is the only `rock`
+/// parameter attribute, and RockTensorToTritonPtrPass leaves it behind once it
+/// has been recorded as a module attribute, so no `rock` parameter attribute
+/// should reach LLVM translation. If one ever does, the warning is the signal
+/// we want rather than something to suppress.
 class KernelMetadataLLVMTranslationInterface
     : public LLVMTranslationDialectInterface {
 public:
@@ -134,13 +141,11 @@ public:
   }
 };
 
-/// Register the interface for the dialects that annotate kernel parameters:
-/// `rock` (`rock.prefill`) and `tt` (`tt.divisibility` and friends).
+/// Register the interface for `tt`, the one dialect whose parameter attributes
+/// (`tt.divisibility` and friends) are still on the kernel when we translate to
+/// LLVM IR.
 inline void
 registerKernelMetadataDialectTranslation(DialectRegistry &registry) {
-  registry.addExtension(+[](MLIRContext *ctx, rock::RockDialect *dialect) {
-    dialect->addInterfaces<KernelMetadataLLVMTranslationInterface>();
-  });
   registry.addExtension(+[](MLIRContext *ctx, triton::TritonDialect *dialect) {
     dialect->addInterfaces<KernelMetadataLLVMTranslationInterface>();
   });
