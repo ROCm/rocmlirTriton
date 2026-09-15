@@ -181,6 +181,214 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// A's buffer pads every 128 elements. The encoding carries a linear component
+// built for this 128x64 tile, so reusing it for a narrower view would not
+// describe the same memory, and padding is the one thing a linear layout
+// cannot express, so the check cannot see that by comparing layouts and has
+// to reject on the encoding kind. Otherwise `toLinearLayout` would assert.
+#shared = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @no_roll_padded_shared
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_padded_shared(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// The same padding, reached through a partitioned encoding that wraps it.
+// This is the case that has to be rejected on the encoding kind rather than
+// left to the layout comparison: `toLinearLayout` does answer for a
+// partitioned encoding, but it drops the padding on the way, so the layouts
+// it returns would compare equal and the segmentation would be accepted even
+// though the holes make it wrong.
+#padded = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
+#shared = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 2, partitionDim = 0, partitionLayout = #padded}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @no_roll_partitioned_wrapping_padded
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_partitioned_wrapping_padded(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// A's buffer is written after the dot's operands are loaded out of it. The
+// loop would read the buffer where the dot is rather than where the load is,
+// so it would multiply the stored tile instead of the loaded one. The
+// pipeliner does emit exactly this store for the next iteration's tile, just
+// after the dot rather than before it, so which side it falls on matters.
+
+// CHECK-LABEL: tt.func @no_roll_store_between_load_and_dot
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_store_between_load_and_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    ttg.local_store %next, %a : tensor<128x64xf32, #blocked1> -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The same clobber, with the dot one region deeper, the way the pipeliner
+// leaves a drain dot. The store is in the block holding the loads rather than
+// the one holding the dot, so seeing it means looking at every level between
+// the two, not just the dot's own block. `roll_multi_buffer` is the control:
+// the same nesting without the store still rolls.
+
+// CHECK-LABEL: tt.func @no_roll_store_before_drain_dot
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_store_before_drain_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    ttg.local_store %next, %a : tensor<128x64xf32, #blocked1> -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %drain = scf.if %cond -> (tensor<128x64xf32, #blocked2>) {
+      %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+      scf.yield %d : tensor<128x64xf32, #blocked2>
+    } else {
+      scf.yield %acc : tensor<128x64xf32, #blocked2>
+    }
+    tt.return %drain : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The loads are outside the loop and the clobber is inside it, after the dot.
+// Nothing writes A between the load and the dot on the first trip, but the
+// registers the load produced stay live across the backedge while the buffer
+// does not, so from the second trip on the dot and the buffer disagree.
+// Stopping the scan at the dot would miss this, so a region the loads sit
+// outside of has to be clear of writes throughout, not just ahead of the dot.
+
+// CHECK-LABEL: tt.func @no_roll_loop_invariant_load_clobbered
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_index
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_loop_invariant_load_clobbered(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %n: i32) -> tensor<128x64xf32, #blocked2> {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %loop = scf.for %i = %c0 to %n step %c1 iter_args(%it = %acc) -> (tensor<128x64xf32, #blocked2>)  : i32 {
+      %d = tt.dot %ac, %bc, %it : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+      ttg.local_store %next, %a : tensor<128x64xf32, #blocked1> -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+      scf.yield %d : tensor<128x64xf32, #blocked2>
+    }
+    tt.return %loop : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The same nesting with nothing writing the buffers: a loop the loads sit
+// outside of is fine as long as it is clear throughout, so the rejection
+// above is about the store and not about the nesting.
+
+// The rolled loop is built where the dot was, so it and its views land inside
+// the outer loop.
+// CHECK-LABEL: tt.func @roll_loop_invariant_load
+// CHECK:         scf.for
+// CHECK-DAG:       ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
+// CHECK-DAG:       ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<64x64xf32, {{.*}}> -> !ttg.memdesc<16x4x64xf32, {{.*}}>
+// CHECK:           scf.for
+// CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_loop_invariant_load(%acc: tensor<128x64xf32, #blocked2>, %n: i32) -> tensor<128x64xf32, #blocked2> {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %loop = scf.for %i = %c0 to %n step %c1 iter_args(%it = %acc) -> (tensor<128x64xf32, #blocked2>)  : i32 {
+      %d = tt.dot %ac, %bc, %it : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+      scf.yield %d : tensor<128x64xf32, #blocked2>
+    }
+    tt.return %loop : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
