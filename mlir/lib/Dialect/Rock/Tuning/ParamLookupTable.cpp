@@ -5,9 +5,12 @@
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+
+#include <cassert>
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
@@ -78,6 +81,14 @@ bool ParamLookupTable<ParamsType>::splitKey(StringRef key, StringRef &arch,
 template <typename ParamsType>
 StringRef ParamLookupTable<ParamsType>::pickClosestRelative(
     StringRef target, ArrayRef<StringRef> relatives) {
+  assert(!relatives.empty() &&
+         "pickClosestRelative requires at least one relative");
+  // Nothing sorts `relatives` explicitly: getRelatives, the only producer,
+  // appends candidates while iterating the table, and that table is a
+  // `std::map` keyed on StringRef, so the vector inherits the map's ascending
+  // key order. The assert pins that incidental guarantee down.
+  assert(llvm::is_sorted(relatives) && "relatives must be sorted ascending");
+
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
   if (it == relatives.end())
     return relatives.back();
