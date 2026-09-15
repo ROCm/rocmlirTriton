@@ -83,6 +83,10 @@ StringRef ParamLookupTable<ParamsType>::pickClosestRelative(
     StringRef target, ArrayRef<StringRef> relatives) {
   assert(!relatives.empty() &&
          "pickClosestRelative requires at least one relative");
+  // Nothing sorts `relatives` explicitly: getRelatives, the only producer,
+  // appends candidates while iterating the table, and that table is a
+  // `std::map` keyed on StringRef, so the vector inherits the map's ascending
+  // key order. The assert pins that incidental guarantee down.
   assert(llvm::is_sorted(relatives) && "relatives must be sorted ascending");
 
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
