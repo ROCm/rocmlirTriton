@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s \
 // RUN: | rocmlir-driver -kernel-pipeline=gpu,triton -arch=gfx1100 \
 // RUN: | rocmlir-opt -triton-to-hsaco='arch=gfx1100' > /dev/null 2> %t.log
@@ -7,8 +10,12 @@
 // metadata on kernel parameters has no LLVM IR counterpart, and a dialect that
 // does not claim it in an LLVMTranslationDialectInterface gets a warning per
 // attribute per argument. Each of those prints the whole kernel into the
-// diagnostic, which cost about a fifth of this compile before `rock` and `tt`
-// were registered in registerKernelMetadataDialectTranslation().
+// diagnostic, which cost about a fifth of this compile before `tt` was
+// registered in registerKernelMetadataDialectTranslation().
+//
+// Because `rock` is deliberately left unregistered, this check covers the other
+// direction too: if a `rock` parameter attribute ever survived onto the Triton
+// kernel, it would warn here instead of passing silently.
 //
 // rocmlir-opt runs the translation here because it installs a diagnostic
 // handler; rocmlir-driver installs none, so DiagnosticEngine drops everything
