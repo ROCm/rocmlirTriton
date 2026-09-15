@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -79,17 +80,17 @@ struct RollableDot {
   int64_t k;
 };
 
-/// The shared-memory buffer a dot operand is loaded from, looking through the
-/// layout-only conversions the pipeline puts between the load and the dot.
-/// Null if the operand does not come from shared memory.
-TypedValue<ttg::MemDescType> findStagingBuffer(Value operand) {
+/// The load that stages a dot operand through shared memory, looking through
+/// the layout-only conversions the pipeline puts between it and the dot. Null
+/// if the operand does not come from shared memory.
+ttg::LocalLoadOp findStagingLoad(Value operand) {
   Operation *def = operand.getDefiningOp();
   while (def) {
     if (auto load = dyn_cast<ttg::LocalLoadOp>(def)) {
       // An asynchronous load's token would have to be threaded into the loop.
       if (load.getToken())
         return {};
-      return load.getSrc();
+      return load;
     }
     if (isa<ttg::ConvertLayoutOp>(def)) {
       def = def->getOperand(0).getDefiningOp();
@@ -98,6 +99,88 @@ TypedValue<ttg::MemDescType> findStagingBuffer(Value operand) {
     return {};
   }
   return {};
+}
+
+/// Whether `op`, or anything nested in it, may write memory. Deliberately
+/// blind to which memory: a read cannot change what a buffer holds, and
+/// nothing that reaches this pass makes it worth telling a shared-memory
+/// write from any other. An op that does not describe its effects counts as a
+/// write, which is also what puts barriers on the wrong side of this: they
+/// make another thread's stores visible.
+bool mayWriteMemory(Operation *op) {
+  bool writes = false;
+  op->walk([&](Operation *nested) {
+    if (isMemoryEffectFree(nested))
+      return WalkResult::advance();
+    auto iface = dyn_cast<MemoryEffectOpInterface>(nested);
+    if (!iface) {
+      writes = true;
+      return WalkResult::interrupt();
+    }
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    iface.getEffects(effects);
+    for (const MemoryEffects::EffectInstance &effect : effects) {
+      if (isa<MemoryEffects::Write, MemoryEffects::Free>(effect.getEffect())) {
+        writes = true;
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return writes;
+}
+
+/// Whether memory may be written on the way from `from` to `to`. `from`
+/// dominates `to` here, because it is the load that feeds it.
+///
+/// The dot can sit deeper than the load it consumes: the pipeliner leaves the
+/// drain dot in an `scf.if` and keeps its loads outside. So climb from `to`
+/// out to the block holding `from`, scanning what precedes each ancestor on
+/// the way.
+///
+/// At the level `from` itself is on, only what precedes `to` matters, because
+/// `from` reaches `to` within one execution. That is not true of a region
+/// `from` sits outside of and `to` sits inside: if it can run more than once,
+/// its tail runs before `to` on the next trip, with `from` still holding the
+/// first trip's values. Such a region has to be clear of writes throughout.
+bool mayWriteBetween(Operation *from, Operation *to) {
+  SmallVector<Operation *> ancestors;
+  for (Operation *op = to; op; op = op->getParentOp()) {
+    ancestors.push_back(op);
+    if (op->getBlock() == from->getBlock())
+      break;
+  }
+  if (ancestors.back()->getBlock() != from->getBlock())
+    return true;
+
+  for (Operation *anchor : ancestors) {
+    if (anchor == ancestors.back()) {
+      for (Operation *op = from->getNextNode(); op != anchor;
+           op = op->getNextNode())
+        if (mayWriteMemory(op))
+          return true;
+      continue;
+    }
+    // Only these run their regions at most once per execution, so only these
+    // let the scan stop at `to`. A loop, or anything else holding a region
+    // this pass cannot reason about, gets checked whole.
+    Operation *owner = anchor->getParentOp();
+    if (!isa<scf::IfOp, scf::IndexSwitchOp>(owner)) {
+      if (mayWriteMemory(owner))
+        return true;
+      continue;
+    }
+    // Scanning one block only covers the path into `anchor` if the region
+    // does not branch, which is what the structured control flow at this
+    // point in the pipeline gives.
+    if (!anchor->getBlock()->getParent()->hasOneBlock())
+      return true;
+    for (Operation *op = &anchor->getBlock()->front(); op != anchor;
+         op = op->getNextNode())
+      if (mayWriteMemory(op))
+        return true;
+  }
+  return false;
 }
 
 /// Whether viewing a `[M, K]`-shaped tile (with `kDim` naming which of the two
@@ -112,6 +195,17 @@ TypedValue<ttg::MemDescType> findStagingBuffer(Value operand) {
 bool segmentingPreservesAddresses(ArrayRef<int64_t> shape, Attribute enc,
                                   unsigned kDim, int64_t dotK) {
   assert(shape.size() == 2 && "expected a 2-D dot operand tile");
+  // Padding is the one thing a linear layout cannot express, so
+  // `toLinearLayout` asserts on a padded encoding rather than answering, and
+  // the padding-blind layout `paddedLinearLayout` returns instead cannot
+  // decide this question. Rejecting is the right answer regardless: a padded
+  // encoding carries a linear component fixed at the tile's own shape, so
+  // reusing it for a narrower view does not describe the same memory, and
+  // `memdesc_reinterpret` compares only interval/padding pairs, so it would
+  // not catch that either.
+  if (ttg::isPaddedEncoding(enc))
+    return false;
+
   SmallVector<int64_t> segShape(shape);
   segShape[kDim] = dotK;
 
@@ -156,11 +250,22 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
       !dTy.getElementType().isF32())
     return reject("it is not an f32 dot");
 
-  TypedValue<ttg::MemDescType> aMem = findStagingBuffer(dot.getA());
-  TypedValue<ttg::MemDescType> bMem = findStagingBuffer(dot.getB());
-  if (!aMem || !bMem)
+  ttg::LocalLoadOp aLoad = findStagingLoad(dot.getA());
+  ttg::LocalLoadOp bLoad = findStagingLoad(dot.getB());
+  if (!aLoad || !bLoad)
     return reject("an operand is not staged through shared memory by a "
                   "synchronous local_load");
+  TypedValue<ttg::MemDescType> aMem = aLoad.getSrc();
+  TypedValue<ttg::MemDescType> bMem = bLoad.getSrc();
+
+  // The loop reads the buffers where the dot is, not where the pipeliner put
+  // the loads, so the bytes have to still be the ones the loads read. The
+  // buffers are mutable and the pipeliner does store the next tile into them
+  // in the same block, so this is checked rather than assumed.
+  if (mayWriteBetween(aLoad, dot) || mayWriteBetween(bLoad, dot))
+    return reject("memory is written between an operand's local_load and the "
+                  "dot, so reloading the buffer would not give the tile the "
+                  "dot consumes");
 
   // The staged buffers must be the whole tile the dot consumes, so that
   // segmenting them is a pure reinterpretation.
@@ -222,8 +327,8 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
                << " cannot be segmented at dotK=" << dotK
                << ": its shared encoding does not store K as the "
                   "slowest-varying dimension with a per-segment swizzling "
-                  "pattern, or its linear layout is not one this pass can "
-                  "reason about\n");
+                  "pattern, or it pads, or its linear layout is not one this "
+                  "pass can reason about\n");
     return false;
   };
   // A is [M, K] and B is [K, N], so K is dimension 1 of A and 0 of B.
