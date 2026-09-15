@@ -597,6 +597,15 @@ matchInThreadTransposePattern(ttg::LocalLoadOp lLoad) {
     return failure();
   }
 
+  // changeSharedEncoding only rewrites swizzled buffers, so on anything else
+  // the register transpose below would be left writing into a buffer whose
+  // swizzle was picked for the original store layout.
+  if (!isa<ttg::SwizzledSharedEncodingAttr>(
+          lLoad.getSrc().getType().getEncoding())) {
+    LDBG("Shared encoding is not swizzled, cannot re-orient it");
+    return failure();
+  }
+
   // find local_alloc, local_store, local_load and ttg.memdesc_index
   // operations
   auto sharedMemSearch = findReachableSMemOps(lLoad);
