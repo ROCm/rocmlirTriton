@@ -73,6 +73,10 @@ struct RockRollDotKPass
 /// are staged through already resolved.
 struct RollableDot {
   triton::DotOp dot;
+  /// The loads staging A and B, which rolling replaces with narrower ones at
+  /// the dot. Kept so that the "nothing rewrites these buffers in between"
+  /// precondition can be restated where it is relied on.
+  ttg::LocalLoadOp aLoad, bLoad;
   /// The `[M, K]` and `[K, N]` buffers feeding A and B.
   TypedValue<ttg::MemDescType> aMem, bMem;
   /// Per-thread accumulator count, which rolling does not change.
@@ -286,6 +290,8 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
 
   RollableDot cand;
   cand.dot = dot;
+  cand.aLoad = aLoad;
+  cand.bLoad = bLoad;
   cand.aMem = aMem;
   cand.bMem = bMem;
   cand.k = k;
@@ -336,6 +342,13 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
       !canSegment("B", bMemTy.getShape(), bMemTy.getEncoding(), /*kDim=*/0))
     return failure();
 
+  // Anchoring at the dot is what puts the replacement loads later in program
+  // order than the ones they stand in for, so it is only sound while nothing
+  // rewrites the buffers in between. `matchDot` is what establishes that.
+  assert(!mayWriteBetween(cand.aLoad, dot) &&
+         !mayWriteBetween(cand.bLoad, dot) &&
+         "rolling reloads the operand buffers at the dot, so nothing may "
+         "write them between the loads it replaces and the dot");
   OpBuilder b(dot);
 
   auto segmentView = [&](TypedValue<ttg::MemDescType> mem,
