@@ -8,16 +8,6 @@
 // kernel in the LLVM dialect. Nothing here writes a fastmath attribute by hand:
 // the flags in the expectations can only come from the pass running inside the
 // pipeline.
-//
-// This file carries the f32 arithmetic kernel. The other widths and the
-// transcendentals live in fastmath-through-triton-f16.mlir,
-// fastmath-through-triton-bf16.mlir and
-// fastmath-through-triton-transcendentals.mlir. One kernel per file is a
-// requirement, not a preference: the Triton half of the kernel pipeline is
-// parameterized per module (`ttg.num-warps` sets every kernel's block size,
-// `ttg.shared` and `ttg.global_scratch_memory_size` are single module-wide
-// values), so a module carrying more than one kernel is out of contract and
-// aborts Triton's global-scratch allocation.
 
 // RUN: rocmlir-driver -arch=gfx942 -kernel-pipeline=gpu,triton %s | FileCheck %s
 

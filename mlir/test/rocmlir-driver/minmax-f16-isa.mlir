@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The f16 half of minmax-isa.mlir: same clip-then-max kernel shape and the same
 // `-disable-fast-math` requirement, see that file for why those two things are
 // what put the ops on the IEEE-754-2019 NaN-propagating min/max forms. What f16
