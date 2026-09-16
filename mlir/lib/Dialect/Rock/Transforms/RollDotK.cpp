@@ -185,6 +185,19 @@ bool mayWriteBetween(Operation *from, Operation *to) {
         return true;
       continue;
     }
+    // Different lanes may take different regions of a conditional. A sibling
+    // region's store can therefore clobber shared memory after this lane's
+    // original local_load captured it but before the rolled dot reloads it.
+    // Check every sibling in full; only the active region can stop at `to`.
+    Region *activeRegion = anchor->getParentRegion();
+    for (Region &region : owner->getRegions()) {
+      if (&region == activeRegion)
+        continue;
+      for (Block &block : region)
+        for (Operation &op : block)
+          if (mayWriteMemory(&op))
+            return true;
+    }
     // Scanning one block only covers the path into `anchor` if the region
     // does not branch, which is what the structured control flow at this
     // point in the pipeline gives.

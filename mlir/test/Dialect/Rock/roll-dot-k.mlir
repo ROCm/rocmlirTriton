@@ -443,6 +443,42 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
+// The dot and clobber are in sibling regions. Different lanes can take
+// different regions, so a lane entering the then region may reload A after a
+// lane in the else region overwrites it. The original local_load captured A
+// before either region ran, so rolling would change its value.
+
+// CHECK-LABEL: tt.func @no_roll_store_in_sibling_region
+// CHECK-NOT:     ttg.memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_store_in_sibling_region(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %result = scf.if %cond -> (tensor<128x64xf32, #blocked2>) {
+      %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+      scf.yield %d : tensor<128x64xf32, #blocked2>
+    } else {
+      ttg.local_store %next, %a : tensor<128x64xf32, #blocked1> -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+      scf.yield %acc : tensor<128x64xf32, #blocked2>
+    }
+    tt.return %result : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
 // The loads are outside the loop and the clobber is inside it, after the dot.
 // Nothing writes A between the load and the dot on the first trip, but the
 // registers the load produced stay live across the backedge while the buffer
