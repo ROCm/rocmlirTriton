@@ -1062,9 +1062,25 @@ LogicalResult MemDescIndexOp::verify() {
   return success();
 }
 
+unsigned MemDescSubsliceOp::getIndexDim() {
+  auto srcTy = getSrc().getType();
+  auto dstTy = getType();
+  for (unsigned i = 0, e = srcTy.getRank(); i < e; ++i)
+    if (srcTy.getDimSize(i) != dstTy.getDimSize(i))
+      return i;
+  llvm_unreachable("an indexed subslice narrows exactly one dimension");
+}
+
 OpFoldResult MemDescSubsliceOp::fold(FoldAdaptor adaptor) {
+  // Two dynamic offsets do not combine into one set of static offsets, and a
+  // dynamic offset does not commute into a static one either.
+  if (getIndex())
+    return {};
+
   // Fold subslice(subslice(x, off1), off2) -> subslice(x, off1 + off2)
   if (auto srcSubslice = getSrc().getDefiningOp<MemDescSubsliceOp>()) {
+    if (srcSubslice.getIndex())
+      return {};
     auto srcOffsets = srcSubslice.getOffsets();
     auto currOffsets = getOffsets();
 
@@ -1076,7 +1092,7 @@ OpFoldResult MemDescSubsliceOp::fold(FoldAdaptor adaptor) {
 
     // Update this operation to point directly to the original source with
     // combined offsets
-    setOperand(srcSubslice.getSrc());
+    getSrcMutable().assign(srcSubslice.getSrc());
     setOffsetsAttr(DenseI32ArrayAttr::get(getContext(), combinedOffsets));
     return getResult();
   }
@@ -1119,7 +1135,35 @@ LogicalResult MemDescSubsliceOp::verify() {
   SmallVector<int64_t> offsets(getOffsets().begin(), getOffsets().end());
   // Identity subview
   if (splitDims.empty()) {
+    if (getIndex())
+      return emitError("an index requires a dimension to walk, but the result "
+                       "narrows none");
     return success();
+  }
+
+  if (getIndex()) {
+    // The index scales by the result tile, so it can only address one
+    // dimension, and a static offset on top of it would have to be folded into
+    // that scaling to stay tile-aligned.
+    if (splitDims.size() != 1) {
+      return emitError("an index requires exactly one narrowed dimension, but "
+                       "the result narrows ")
+             << splitDims.size();
+    }
+    if (llvm::any_of(offsets, [](int64_t off) { return off != 0; })) {
+      return emitError("an index requires the static offsets to all be zero");
+    }
+    // Both of these make the physical offset a non-linear function of the
+    // index, which the lowering cannot compute from the index alone: padding
+    // inserts gaps, and a partitioned encoding picks a base per partition,
+    // which is a permutation the lowering precomputes from static offsets.
+    if (triton::gpu::getPaddedEncoding(srcEnc)) {
+      return emitError("an index is not supported on a padded shared encoding");
+    }
+    if (isa<PartitionedSharedEncodingAttr>(srcEnc)) {
+      return emitError(
+          "an index is not supported on a partitioned shared encoding");
+    }
   }
 
   for (auto [dim, offset] : llvm::enumerate(offsets)) {
@@ -1140,12 +1184,14 @@ LogicalResult MemDescSubsliceOp::verify() {
 
   auto ctx = getContext();
   LinearLayout ll;
+  bool isPadded = false;
   if (auto paddedEncoding = triton::gpu::getPaddedEncoding(srcEnc)) {
     if (paddedEncoding.getRank() < srcTy.getRank()) {
       return emitError("SubSlice of low rank PaddedSharedEncoding from higher "
                        "rank tensors is not supported yet");
     }
     ll = triton::gpu::paddedLinearLayout(srcTy);
+    isPadded = true;
   } else {
     ll = triton::gpu::toLinearLayout(srcTy);
   }
@@ -1163,7 +1209,16 @@ LogicalResult MemDescSubsliceOp::verify() {
       auto offsetAndBlock = llInv.apply(namedOffsets);
       auto offset = offsetAndBlock[0];
       auto block = offsetAndBlock[1];
-      if (!llvm::isPowerOf2_32(offset.second) && offset.second != 0) {
+      // An unpadded shared encoding is a GF(2)-linear map, so an element's
+      // physical offset splits exactly as L^-1(coords + offsets) ==
+      // L^-1(coords) ^ L^-1(offsets), which is the decomposition the lowering
+      // computes: getShmemOffset applies L^-1 to the accumulated logical
+      // offsets and materializeLocalAddrs XORs it into the per-element offset.
+      // A split that crosses a swizzle's phase pattern lands a second bit in
+      // L^-1(offsets), and that stays correct. Padding is not linear, so it
+      // keeps the stricter check.
+      if (isPadded && !llvm::isPowerOf2_32(offset.second) &&
+          offset.second != 0) {
         return emitError(
             "We don't support splitting along the swizzling pattern");
       }

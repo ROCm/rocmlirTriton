@@ -924,12 +924,18 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
     dot into an `scf.for` over `K / dotK` segments accumulating into the same
     tile, leaving `accumulators * dotK` FMAs in the body.
 
-    The operands keep the shared-memory buffer they already have. Their shared
-    encoding stores K as the slowest-varying dimension, so a segment is a
-    contiguous range: the view is a `ttg.memdesc_reinterpret` from `[M, K]` to
-    `[K / dotK, M, dotK]` indexed by the induction variable, which leaves the
-    byte layout untouched. That is checked per operand against the linear
-    layout, so swizzling that would cross a segment boundary is left alone.
+    The operands keep the shared-memory buffer they already have, and each
+    iteration names its segment with a `ttg.memdesc_subslice` indexed by the
+    induction variable. Nothing moves in memory and no buffer is re-swizzled.
+
+    A swizzled buffer displaces a row by a phase, so a segment narrower than
+    the phase pattern's period holds a different displacement than the one
+    before it. The indexed subslice absorbs that: an unpadded shared encoding
+    is a GF(2)-linear map, so an element's physical offset splits exactly into
+    the offset of its segment and the offset within it, and the lowering
+    derives the first from the index. This holds for any segment width, so
+    `dotK` is set by the FMA target rather than by the swizzle. Padded and
+    partitioned encodings are not linear in that way and are left alone.
 
     Runs after Triton's pipeliner, which is what puts the operands in shared
     memory, and covers every qualifying f32 dot on RDNA, including the drain

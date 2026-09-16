@@ -90,9 +90,9 @@ bool isUsedAsTensorMemory(Value v) {
          isa_and_nonnull<ttng::TensorMemorySpaceAttr>(type.getMemorySpace());
 }
 
-uint32_t getMemDescSubsliceByteOffset(ttg::MemDescSubsliceOp op) {
+uint32_t getMemDescSubsliceByteOffset(ttg::MemDescSubsliceOp op,
+                                      ArrayRef<int32_t> offsets) {
   auto srcTy = op.getSrc().getType();
-  auto offsets = op.getOffsets();
   if (offsets.empty())
     return 0;
 
@@ -244,10 +244,28 @@ LogicalResult BufferRegionAnalysis::visitOperation(
   if (auto memdescSubsliceOp = dyn_cast<ttg::MemDescSubsliceOp>(op)) {
     RegionInfo in = operands[0]->getValue();
     uint32_t subBufferSize = getMemDescSize(memdescSubsliceOp.getType());
-    uint32_t relativeOffset = getMemDescSubsliceByteOffset(memdescSubsliceOp);
+    // An index picks one of the tiles along its dimension at runtime, so the
+    // region is every tile it could land on, the same way a memdesc_index
+    // covers all of its sub-buffers.
+    SmallVector<uint32_t> relativeOffsets;
+    if (memdescSubsliceOp.getIndex()) {
+      unsigned dim = memdescSubsliceOp.getIndexDim();
+      auto srcTy = memdescSubsliceOp.getSrc().getType();
+      int64_t tile = memdescSubsliceOp.getType().getDimSize(dim);
+      SmallVector<int32_t> offsets(srcTy.getRank(), 0);
+      for (int64_t off = 0; off < srcTy.getDimSize(dim); off += tile) {
+        offsets[dim] = static_cast<int32_t>(off);
+        relativeOffsets.push_back(
+            getMemDescSubsliceByteOffset(memdescSubsliceOp, offsets));
+      }
+    } else {
+      relativeOffsets.push_back(getMemDescSubsliceByteOffset(
+          memdescSubsliceOp, memdescSubsliceOp.getOffsets()));
+    }
     for (auto &region : in.regions) {
-      regionInfo.regions.insert(
-          {region.baseOffset + relativeOffset, subBufferSize});
+      for (uint32_t relativeOffset : relativeOffsets)
+        regionInfo.regions.insert(
+            {region.baseOffset + relativeOffset, subBufferSize});
     }
     for (auto *r : results) {
       propagateIfChanged(r, r->join(regionInfo));

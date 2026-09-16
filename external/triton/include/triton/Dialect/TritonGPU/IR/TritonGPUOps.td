@@ -254,17 +254,40 @@ def TTG_MemDescSubsliceOp : TTG_Op<"memdesc_subslice", [Pure, MemDescViewTrait]>
     the logical tensor.
 
     The offsets must be larger or equal to the tile of the tensor (or zero).
+
+    An optional `index` operand selects the subview at runtime. It counts in
+    units of the result tile, so the offset it contributes along the split
+    dimension is `index * result_shape[split_dim]` and stays tile-aligned by
+    construction. It requires a single split dimension, all-zero static
+    offsets, and an unpadded, non-partitioned shared encoding, so that the
+    physical offset the lowering computes is a linear function of the index.
   }];
-  let arguments = (ins TTG_MemDescType:$src, DenseI32ArrayAttr:$offsets);
+  let arguments = (ins TTG_MemDescType:$src, DenseI32ArrayAttr:$offsets,
+                       Optional<I32>:$index);
   // Use qualified() otherwise "!ttg.memdesc<X>" is printed as "<X>".
   // Render offsets inline as %src[0, 0] via a custom directive, but keep
   // the overall parse/print generated from this assemblyFormat.
   let assemblyFormat = [{
-    $src `[` custom<Offsets>($offsets) `]` attr-dict `:` qualified(type($src))
-    `->` qualified(type($result))
+    $src `[` custom<Offsets>($offsets) `]` (`index` $index^)? attr-dict
+    `:` qualified(type($src)) `->` qualified(type($result))
   }];
 
   let results = (outs TTG_MemDescType:$result);
+
+  let builders = [
+    OpBuilder<(ins "Type":$result, "Value":$src, "ArrayRef<int32_t>":$offsets),
+    [{
+      build($_builder, $_state, result, src,
+            $_builder.getDenseI32ArrayAttr(offsets), /*index=*/Value());
+    }]>,
+  ];
+
+  let extraClassDeclaration = [{
+    // The single dimension an `index` operand walks, i.e. the one the result
+    // narrows. Only meaningful when `index` is present, which the verifier
+    // ties to there being exactly one such dimension.
+    unsigned getIndexDim();
+  }];
 
   let hasFolder = 1;
   let hasVerifier = 1;
