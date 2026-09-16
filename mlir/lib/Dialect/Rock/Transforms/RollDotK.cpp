@@ -16,6 +16,12 @@
 // segmented view is just a reinterpretation: `[M, K]` becomes `[K / dotK, M,
 // dotK]`, indexed by the induction variable. Nothing moves in memory.
 //
+// A swizzled buffer only looks the same in every segment once the segment
+// covers a whole period of its phase pattern, so `dotK` is floored at that
+// period. The buffer itself is never re-swizzled: its phase parameters are
+// picked to keep the LDS accesses conflict-free, and a dot whose period
+// covers its whole K tile is left unrolled instead.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
@@ -36,6 +42,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+
+#include <algorithm>
 
 namespace mlir {
 namespace rock {
@@ -82,6 +90,9 @@ struct RollableDot {
   /// Per-thread accumulator count, which rolling does not change.
   int64_t accs;
   int64_t k;
+  /// The narrowest segment both operands can be viewed at, from the periods of
+  /// their shared encodings' swizzling.
+  int64_t minDotK;
 };
 
 /// The load that stages a dot operand through shared memory, looking through
@@ -269,6 +280,30 @@ bool segmentingPreservesAddresses(ArrayRef<int64_t> shape, Attribute enc,
   return ttg::toLinearLayout(shape, enc) == view;
 }
 
+/// The narrowest segment a buffer with this encoding can be viewed at.
+///
+/// A swizzled encoding displaces a row by a phase that repeats every
+/// `perPhase * maxPhase` rows, so a segment shorter than that period starts
+/// part-way through the pattern and holds a different displacement than the
+/// segment before it. Only once a segment spans whole periods does every
+/// segment look alike, which is what lets one `memdesc_index` address all of
+/// them. Segments are halved out of a power-of-two K, so the period is
+/// rounded up to one.
+///
+/// An encoding whose period this does not describe gets 1, leaving
+/// `segmentingPreservesAddresses` to reject it if it does not in fact segment.
+int64_t minSegmentWidth(Attribute enc) {
+  auto swizzled = dyn_cast<ttg::SwizzledSharedEncodingAttr>(enc);
+  if (!swizzled)
+    return 1;
+  uint64_t period =
+      uint64_t{swizzled.getPerPhase()} * uint64_t{swizzled.getMaxPhase()};
+  // A degenerate encoding that swizzles nothing constrains nothing.
+  if (period <= 1)
+    return 1;
+  return static_cast<int64_t>(llvm::PowerOf2Ceil(period));
+}
+
 /// Recognizes a dot this pass can roll, without yet deciding whether it
 /// should be. Returns nullopt when any gating condition fails.
 std::optional<RollableDot> matchDot(triton::DotOp dot) {
@@ -336,79 +371,22 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
   cand.bMem = bMem;
   cand.k = k;
   cand.accs = ttg::getTotalElemsPerThread(dTy);
+  cand.minDotK = std::max(minSegmentWidth(aMemTy.getEncoding()),
+                          minSegmentWidth(bMemTy.getEncoding()));
   return cand;
 }
 
-/// The widest segment that gets a dot's loop body under `budget`, or 0 if the
-/// dot's full K already fits, in which case rolling would shrink nothing.
+/// The widest segment that gets a dot's loop body under `budget`, or 0 if no
+/// segment narrower than the dot's own K can, in which case rolling would
+/// shrink nothing.
 int64_t chooseDotK(const RollableDot &cand, int64_t budget) {
-  // A body holds `accs * dotK` FMAs, so `accs` is the floor rolling can reach.
-  // A dot whose accumulators alone are over `budget` cannot get under it, but
-  // rolling to the floor still divides the block by K, so narrow all the way.
+  // A body holds `accs * dotK` FMAs, so `accs * minDotK` is the floor rolling
+  // can reach. A dot that cannot get under `budget` even there is still
+  // narrowed all the way, since that is what divides the block the furthest.
   int64_t dotK = cand.k;
-  while (dotK > 1 && cand.accs * dotK > budget)
+  while (dotK > cand.minDotK && cand.accs * dotK > budget)
     dotK /= 2;
   return dotK < cand.k ? dotK : 0;
-}
-
-/// Reduce a swizzle's phase granularity until it repeats at every dotK
-/// boundary. Prefer reducing perPhase so maxPhase, and therefore the number of
-/// bank-conflict-removing phases, stays unchanged whenever possible.
-Attribute getSegmentCompatibleEncoding(Attribute enc, int64_t dotK) {
-  auto swizzled = dyn_cast<ttg::SwizzledSharedEncodingAttr>(enc);
-  if (!swizzled)
-    return enc;
-
-  int64_t perPhase = swizzled.getPerPhase();
-  int64_t maxPhase = swizzled.getMaxPhase();
-  assert(perPhase > 0 && maxPhase > 0 &&
-         "swizzle phase parameters must be positive");
-  while (dotK % (perPhase * maxPhase) != 0) {
-    if (perPhase > 1)
-      perPhase /= 2;
-    else
-      maxPhase /= 2;
-  }
-  if (perPhase == swizzled.getPerPhase() && maxPhase == swizzled.getMaxPhase())
-    return enc;
-
-  return ttg::SwizzledSharedEncodingAttr::get(
-      enc.getContext(), swizzled.getVec(), perPhase, maxPhase,
-      swizzled.getOrder(), swizzled.getCGALayout());
-}
-
-/// Retype every internal shared-memory SSA value using `oldEnc`. Stores and
-/// loads both derive their address mapping from these types, so changing the
-/// complete network preserves the logical contents while selecting `newEnc`.
-LogicalResult replaceSharedEncoding(triton::FuncOp func, Attribute oldEnc,
-                                    Attribute newEnc) {
-  if (oldEnc == newEnc)
-    return success();
-
-  for (Type inputTy : func.getFunctionType().getInputs()) {
-    auto memTy = dyn_cast<ttg::MemDescType>(inputTy);
-    if (memTy && memTy.getEncoding() == oldEnc)
-      return failure();
-  }
-
-  auto replace = [&](Value value) {
-    auto memTy = dyn_cast<ttg::MemDescType>(value.getType());
-    if (!memTy || memTy.getEncoding() != oldEnc)
-      return;
-    value.setType(
-        ttg::MemDescType::get(memTy.getShape(), memTy.getElementType(), newEnc,
-                              memTy.getMemorySpace(), memTy.getMutableMemory(),
-                              memTy.getAllocShape()));
-  };
-  func.walk([&](Operation *op) {
-    for (Value result : op->getResults())
-      replace(result);
-    for (Region &region : op->getRegions())
-      for (Block &block : region)
-        for (BlockArgument arg : block.getArguments())
-          replace(arg);
-  });
-  return success();
 }
 
 /// Replaces `cand.dot` with a loop over `cand.k / dotK` narrower dots.
@@ -421,23 +399,6 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
   auto aTy = dot.getA().getType();
   auto bTy = dot.getB().getType();
-  Attribute oldAEnc = cand.aMem.getType().getEncoding();
-  Attribute oldBEnc = cand.bMem.getType().getEncoding();
-  Attribute newAEnc = getSegmentCompatibleEncoding(oldAEnc, dotK);
-  Attribute newBEnc = getSegmentCompatibleEncoding(oldBEnc, dotK);
-
-  // Validate the proposed encodings before mutating the shared-memory network.
-  if (!segmentingPreservesAddresses(cand.aMem.getType().getShape(), newAEnc,
-                                    /*kDim=*/1, dotK) ||
-      !segmentingPreservesAddresses(cand.bMem.getType().getShape(), newBEnc,
-                                    /*kDim=*/0, dotK))
-    return failure();
-
-  triton::FuncOp func = dot->getParentOfType<triton::FuncOp>();
-  if (!func || failed(replaceSharedEncoding(func, oldAEnc, newAEnc)) ||
-      failed(replaceSharedEncoding(func, oldBEnc, newBEnc)))
-    return failure();
-
   auto aMemTy = cand.aMem.getType();
   auto bMemTy = cand.bMem.getType();
 
@@ -601,7 +562,7 @@ void RockRollDotKPass::runOnOperation() {
       for (const RollableDot *cand : alreadyFit) {
         if (residual <= kTargetBlockFMAs)
           break;
-        if (cand->k > 1)
+        if (cand->k / 2 >= cand->minDotK)
           tryRoll(*cand, cand->k / 2);
       }
       if (residual > kTargetBlockFMAs)
