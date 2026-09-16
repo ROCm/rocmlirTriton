@@ -2,6 +2,7 @@
 # ruff: noqa: F821
 
 import os
+import re
 
 import lit.formats
 import lit.util
@@ -66,6 +67,13 @@ tools = [
 # Static libraries are not built if TRITON_EXT_ENABLED is ON.
 if config.triton_ext_enabled:
     config.available_features.add("triton-ext-enabled")
+
+# Same feature names LLVM's own suites use, so that tests driving llc can state
+# which backend they need. A build that leaves a target out of
+# LLVM_TARGETS_TO_BUILD skips them instead of failing.
+for target in re.split(r"[;\s]+", config.llvm_targets_to_build.strip()):
+    if target:
+        config.available_features.add(target.lower() + "-registered-target")
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 

@@ -1,0 +1,62 @@
+diff --git a/test/Conversion/tritongpu_to_ptx.mlir b/test/Conversion/tritongpu_to_ptx.mlir
+index 7f933bb56..a60d6a776 100644
+--- a/test/Conversion/tritongpu_to_ptx.mlir
++++ b/test/Conversion/tritongpu_to_ptx.mlir
+@@ -1,6 +1,6 @@
+-// RUN: triton-opt %s --allocate-shared-memory-nv='compute-capability=90 ptx-version=83' --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_90 -mattr=+ptx83 | FileCheck --check-prefixes CHECK,SM90 --dump-input-context=20 %s
+-// RUN: triton-opt %s --allocate-shared-memory-nv='compute-capability=80 ptx-version=83' --convert-triton-gpu-to-llvm='compute-capability=80 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_80 -mattr=+ptx83 | FileCheck --check-prefixes CHECK,SM80 --dump-input-context=20 %s
+-// RUN: triton-opt %s --allocate-shared-memory-nv='compute-capability=100 ptx-version=87' --convert-triton-gpu-to-llvm='compute-capability=100 ptx-version=87' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_100 -mattr=+ptx87 | FileCheck --check-prefixes CHECK,SM100 --dump-input-context=20 %s
++// RUN: %if nvptx-registered-target %{ triton-opt %s --allocate-shared-memory-nv='compute-capability=90 ptx-version=83' --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_90 -mattr=+ptx83 | FileCheck --check-prefixes CHECK,SM90 --dump-input-context=20 %s %}
++// RUN: %if nvptx-registered-target %{ triton-opt %s --allocate-shared-memory-nv='compute-capability=80 ptx-version=83' --convert-triton-gpu-to-llvm='compute-capability=80 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_80 -mattr=+ptx83 | FileCheck --check-prefixes CHECK,SM80 --dump-input-context=20 %s %}
++// RUN: %if nvptx-registered-target %{ triton-opt %s --allocate-shared-memory-nv='compute-capability=100 ptx-version=87' --convert-triton-gpu-to-llvm='compute-capability=100 ptx-version=87' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_100 -mattr=+ptx87 | FileCheck --check-prefixes CHECK,SM100 --dump-input-context=20 %s %}
+ // RUN: triton-opt %s --convert-triton-gpu-to-llvm='compute-capability=80 ptx-version=83' -cse | FileCheck --check-prefix=VEC80 --dump-input-context=20 %s
+ // RUN: triton-opt %s --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=83' -cse | FileCheck --check-prefix=VEC90 --dump-input-context=20 %s
+ // RUN: triton-opt %s --convert-triton-gpu-to-llvm='compute-capability=100 ptx-version=87' -cse | FileCheck --check-prefix=VEC100 --dump-input-context=20 %s
+diff --git a/test/Conversion/tritongpu_to_ptx_mmav3.mlir b/test/Conversion/tritongpu_to_ptx_mmav3.mlir
+index 824c2636e..4409db463 100644
+--- a/test/Conversion/tritongpu_to_ptx_mmav3.mlir
++++ b/test/Conversion/tritongpu_to_ptx_mmav3.mlir
+@@ -1,4 +1,5 @@
+ // RUN: triton-opt %s --allocate-shared-memory --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=83' --convert-nv-gpu-to-llvm | mlir-translate --mlir-to-llvmir | opt -O3 -S | llc -mtriple nvptx64-nvidia-cuda -mcpu=sm_90 -mattr=+ptx83 | FileCheck --dump-input-context=20 %s
++// REQUIRES: nvptx-registered-target
+ 
+ #mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 1], instrShape = [16, 64, 16]}>
+ #dot_op = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth=4}>
+diff --git a/test/lit.cfg.py b/test/lit.cfg.py
+index 1dfc0c5cf..5eef7ed74 100644
+--- a/test/lit.cfg.py
++++ b/test/lit.cfg.py
+@@ -2,6 +2,7 @@
+ # ruff: noqa: F821
+ 
+ import os
++import re
+ 
+ import lit.formats
+ import lit.util
+@@ -67,6 +68,13 @@ tools = [
+ if config.triton_ext_enabled:
+     config.available_features.add("triton-ext-enabled")
+ 
++# Same feature names LLVM's own suites use, so that tests driving llc can state
++# which backend they need. A build that leaves a target out of
++# LLVM_TARGETS_TO_BUILD skips them instead of failing.
++for target in re.split(r"[;\s]+", config.llvm_targets_to_build.strip()):
++    if target:
++        config.available_features.add(target.lower() + "-registered-target")
++
+ llvm_config.add_tool_substitutions(tools, tool_dirs)
+ 
+ # TODO: what's this?
+diff --git a/test/lit.site.cfg.py.in b/test/lit.site.cfg.py.in
+index 90e4ae71e..3a4f91013 100644
+--- a/test/lit.site.cfg.py.in
++++ b/test/lit.site.cfg.py.in
+@@ -12,6 +12,7 @@ config.llvm_shlib_ext = "@CMAKE_SHARED_LIBRARY_SUFFIX@"
+ config.llvm_exe_ext = "@EXEEXT@"
+ config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
+ config.mlir_binary_dir = "@MLIR_BINARY_DIR@"
++config.llvm_targets_to_build = "@LLVM_TARGETS_TO_BUILD@"
+ config.python_executable = "@Python3_EXECUTABLE@"
+ config.enable_bindings_python = @MLIR_ENABLE_BINDINGS_PYTHON@
+ config.triton_ext_enabled = @TRITON_EXT_ENABLED@
