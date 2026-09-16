@@ -41,8 +41,99 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The four-phase A swizzle originally repeats every 16 K rows, so dotK=4
+// cannot be indexed as a contiguous segment. Reducing perPhase to 1 makes it
+// repeat every 4 rows while preserving all four phases.
+
+// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+// CHECK-LABEL:   tt.func @roll_four_phase_swizzle
+// CHECK:         ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, #shared, {{.*}}> -> !ttg.memdesc<16x128x4xf32, #shared
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_four_phase_swizzle(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// If perPhase is already 1, reducing maxPhase is the fallback that makes the
+// K=8 dot's four-row segments independently indexable.
+
+// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+// CHECK-LABEL:   tt.func @roll_by_reducing_max_phase
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x8xf32, #shared, {{.*}}> -> !ttg.memdesc<2x128x4xf32, #shared
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_by_reducing_max_phase(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x8xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<8x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x8xf32, #shared, #smem, mutable> -> tensor<128x8xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<8x64xf32, #shared1, #smem, mutable> -> tensor<8x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x8xf32, #blocked1> -> tensor<128x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<8x64xf32, #blocked> -> tensor<8x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x8xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<8x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// A swizzle is not changed merely because it is incompatible with narrow
+// segments. This dot has only 256 FMAs, so it is not selected for rolling.
+
+// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
+// CHECK-LABEL:   tt.func @no_swizzle_change_for_small_dot
+// CHECK-NOT:     ttg.memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_swizzle_change_for_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<16x16xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<16x32xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<16x16xf32, #shared, #smem, mutable> -> tensor<16x16xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<16x32xf32, #shared1, #smem, mutable> -> tensor<16x32xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<16x16xf32, #blocked1> -> tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<16x32xf32, #blocked> -> tensor<16x32xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<16x16xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<16x32xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<16x32xf32, #blocked2>
+    tt.return %d : tensor<16x32xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
 // A kernel pipelined to three stages: the allocation carries two buffers, but
@@ -51,6 +142,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // the number of buffers. Its trailing drain dot has to be rolled too, since
 // that is another full tile of FMAs.
 
+// CHECK:       #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+// CHECK:       #shared1 = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [1, 0]}>
 // CHECK-LABEL: tt.func @roll_multi_buffer
 // The loop-body dot. The reinterpret is rank 3 whatever the buffer count is,
 // because it applies to the rank-2 view the loop carries.
