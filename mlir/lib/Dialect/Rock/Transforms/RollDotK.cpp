@@ -351,6 +351,66 @@ int64_t chooseDotK(const RollableDot &cand, int64_t budget) {
   return dotK < cand.k ? dotK : 0;
 }
 
+/// Reduce a swizzle's phase granularity until it repeats at every dotK
+/// boundary. Prefer reducing perPhase so maxPhase, and therefore the number of
+/// bank-conflict-removing phases, stays unchanged whenever possible.
+Attribute getSegmentCompatibleEncoding(Attribute enc, int64_t dotK) {
+  auto swizzled = dyn_cast<ttg::SwizzledSharedEncodingAttr>(enc);
+  if (!swizzled)
+    return enc;
+
+  int64_t perPhase = swizzled.getPerPhase();
+  int64_t maxPhase = swizzled.getMaxPhase();
+  assert(perPhase > 0 && maxPhase > 0 &&
+         "swizzle phase parameters must be positive");
+  while (dotK % (perPhase * maxPhase) != 0) {
+    if (perPhase > 1)
+      perPhase /= 2;
+    else
+      maxPhase /= 2;
+  }
+  if (perPhase == swizzled.getPerPhase() && maxPhase == swizzled.getMaxPhase())
+    return enc;
+
+  return ttg::SwizzledSharedEncodingAttr::get(
+      enc.getContext(), swizzled.getVec(), perPhase, maxPhase,
+      swizzled.getOrder(), swizzled.getCGALayout());
+}
+
+/// Retype every internal shared-memory SSA value using `oldEnc`. Stores and
+/// loads both derive their address mapping from these types, so changing the
+/// complete network preserves the logical contents while selecting `newEnc`.
+LogicalResult replaceSharedEncoding(triton::FuncOp func, Attribute oldEnc,
+                                    Attribute newEnc) {
+  if (oldEnc == newEnc)
+    return success();
+
+  for (Type inputTy : func.getFunctionType().getInputs()) {
+    auto memTy = dyn_cast<ttg::MemDescType>(inputTy);
+    if (memTy && memTy.getEncoding() == oldEnc)
+      return failure();
+  }
+
+  auto replace = [&](Value value) {
+    auto memTy = dyn_cast<ttg::MemDescType>(value.getType());
+    if (!memTy || memTy.getEncoding() != oldEnc)
+      return;
+    value.setType(
+        ttg::MemDescType::get(memTy.getShape(), memTy.getElementType(), newEnc,
+                              memTy.getMemorySpace(), memTy.getMutableMemory(),
+                              memTy.getAllocShape()));
+  };
+  func.walk([&](Operation *op) {
+    for (Value result : op->getResults())
+      replace(result);
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        for (BlockArgument arg : block.getArguments())
+          replace(arg);
+  });
+  return success();
+}
+
 /// Replaces `cand.dot` with a loop over `cand.k / dotK` narrower dots.
 LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
   triton::DotOp dot = cand.dot;
@@ -361,6 +421,23 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
   auto aTy = dot.getA().getType();
   auto bTy = dot.getB().getType();
+  Attribute oldAEnc = cand.aMem.getType().getEncoding();
+  Attribute oldBEnc = cand.bMem.getType().getEncoding();
+  Attribute newAEnc = getSegmentCompatibleEncoding(oldAEnc, dotK);
+  Attribute newBEnc = getSegmentCompatibleEncoding(oldBEnc, dotK);
+
+  // Validate the proposed encodings before mutating the shared-memory network.
+  if (!segmentingPreservesAddresses(cand.aMem.getType().getShape(), newAEnc,
+                                    /*kDim=*/1, dotK) ||
+      !segmentingPreservesAddresses(cand.bMem.getType().getShape(), newBEnc,
+                                    /*kDim=*/0, dotK))
+    return failure();
+
+  triton::FuncOp func = dot->getParentOfType<triton::FuncOp>();
+  if (!func || failed(replaceSharedEncoding(func, oldAEnc, newAEnc)) ||
+      failed(replaceSharedEncoding(func, oldBEnc, newBEnc)))
+    return failure();
+
   auto aMemTy = cand.aMem.getType();
   auto bMemTy = cand.bMem.getType();
 
