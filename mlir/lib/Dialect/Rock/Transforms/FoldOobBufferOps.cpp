@@ -46,6 +46,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/Utils/InferIntRangeCommon.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
@@ -726,12 +727,10 @@ public:
     // analysis marks no successor live, leaving every block but the entry one
     // dead and every value in it without a fact. The K loop puts the output
     // stores in such a block.
-    dataflow::loadBaselineAnalyses(ranges);
-    ranges.load<LLVMIntegerRangeAnalysis>();
-    dataflow::loadBaselineAnalyses(knownBits);
-    knownBits.load<KnownBitsAnalysis>();
-    return success(succeeded(ranges.initializeAndRun(scope)) &&
-                   succeeded(knownBits.initializeAndRun(scope)));
+    dataflow::loadBaselineAnalyses(solver);
+    solver.load<LLVMIntegerRangeAnalysis>();
+    solver.load<KnownBitsAnalysis>();
+    return solver.initializeAndRun(scope);
   }
 
   bool isProvablyFalse(Value condition) {
@@ -750,6 +749,11 @@ public:
   }
 
 private:
+  struct UnsignedBounds {
+    std::optional<APInt> min;
+    std::optional<APInt> max;
+  };
+
   /// Reads the bound each domain holds for `value` and keeps the tighter of the
   /// two, since both are sound. A value neither domain constrains gets its
   /// type's full range rather than nullopt, one loaded from memory included;
@@ -759,28 +763,36 @@ private:
     // a bound reads as zero rather than as no bound at all. Every caller passes
     // an operand the op verifier types as an integer, so this only keeps that
     // from becoming a silent wrong answer if one ever does not.
-    if (!isScalarInt(value.getType()))
-      return std::nullopt;
-
-    std::optional<APInt> result;
-    auto keep = [&](const APInt &bound) {
-      if (!result || (wantMin ? bound.ugt(*result) : bound.ult(*result)))
-        result = bound;
-    };
-    if (const auto *range =
-            ranges.lookupState<dataflow::IntegerValueRangeLattice>(value))
-      if (!range->getValue().isUninitialized())
-        keep(wantMin ? range->getValue().getValue().umin()
-                     : range->getValue().getValue().umax());
-    if (const auto *known = knownBits.lookupState<KnownBitsLattice>(value))
-      if (!known->getValue().isUninitialized())
-        keep(wantMin ? known->getValue().getValue().getMinValue()
-                     : known->getValue().getValue().getMaxValue());
-    return result;
+    auto [it, inserted] = boundCache.try_emplace(value);
+    UnsignedBounds &bounds = it->second;
+    if (inserted && isScalarInt(value.getType())) {
+      auto keepMin = [&](const APInt &bound) {
+        if (!bounds.min || bound.ugt(*bounds.min))
+          bounds.min = bound;
+      };
+      auto keepMax = [&](const APInt &bound) {
+        if (!bounds.max || bound.ult(*bounds.max))
+          bounds.max = bound;
+      };
+      if (const auto *range =
+              solver.lookupState<dataflow::IntegerValueRangeLattice>(value)) {
+        if (!range->getValue().isUninitialized()) {
+          keepMin(range->getValue().getValue().umin());
+          keepMax(range->getValue().getValue().umax());
+        }
+      }
+      if (const auto *known = solver.lookupState<KnownBitsLattice>(value)) {
+        if (!known->getValue().isUninitialized()) {
+          keepMin(known->getValue().getValue().getMinValue());
+          keepMax(known->getValue().getValue().getMaxValue());
+        }
+      }
+    }
+    return wantMin ? bounds.min : bounds.max;
   }
 
-  DataFlowSolver ranges;
-  DataFlowSolver knownBits;
+  DataFlowSolver solver;
+  llvm::DenseMap<Value, UnsignedBounds> boundCache;
 };
 } // end namespace
 
@@ -942,6 +954,28 @@ static bool mayBeVolatile(Value aux) {
   return bits->getBitWidth() > volatileBit && (*bits)[volatileBit];
 }
 
+/// Whether an access has the structural pieces needed by the fold and is not
+/// guarded by a predicate that is already known true. This cheap filter runs
+/// before dataflow so functions without a candidate avoid analysis entirely.
+static bool isPotentiallyDroppable(const BufferAccess &access,
+                                   triton::amdgpu::ISAFamily isaFamily) {
+  if (mayBeVolatile(access.aux))
+    return false;
+
+  auto makeRsrc = access.rsrc.getDefiningOp<ROCDL::MakeBufferRsrcOp>();
+  if (!makeRsrc || !isIntConstant(makeRsrc.getStride(), 0))
+    return false;
+  std::optional<APInt> flags = matchConstantInt(makeRsrc.getFlags());
+  if (!flags || !flagsKeepBoundsCheck(isaFamily, *flags))
+    return false;
+
+  auto select = access.voffset.getDefiningOp<LLVM::SelectOp>();
+  if (!select)
+    return false;
+  std::optional<APInt> condition = matchConstantInt(select.getCondition());
+  return !condition || condition->isZero();
+}
+
 /// The prefix every raw buffer atomic intrinsic shares.
 constexpr StringLiteral kBufferAtomicIntrinsic =
     "llvm.amdgcn.raw.ptr.buffer.atomic.";
@@ -1019,35 +1053,61 @@ void RockFoldOobBufferOpsPass::runOnOperation() {
   triton::amdgpu::ISAFamily isaFamily =
       std::get<0>(rock::getArch(arch->getValue()));
 
-  PredicateOracle oracle;
-  if (failed(oracle.run(func)))
-    return signalPassFailure();
-
-  SmallVector<std::pair<ROCDL::RawPtrBufferStoreOp, OobShape>> deadStores;
-  SmallVector<std::pair<ROCDL::RawPtrBufferLoadOp, OobShape>> deadLoads;
-  SmallVector<std::pair<Operation *, OobShape>> deadAtomics;
+  SmallVector<std::pair<ROCDL::RawPtrBufferStoreOp, BufferAccess>>
+      candidateStores;
+  SmallVector<std::pair<ROCDL::RawPtrBufferLoadOp, BufferAccess>>
+      candidateLoads;
+  // Atomics may be typed ROCDL ops or generic LLVM intrinsic calls.
+  SmallVector<std::pair<Operation *, BufferAccess>> candidateAtomics;
   func.walk([&](Operation *op) {
     if (auto store = dyn_cast<ROCDL::RawPtrBufferStoreOp>(op)) {
-      OobShape shape = classifyAccess({store.getRsrc(), store.getOffset(),
-                                       store.getSoffset(), store.getAux()},
-                                      isaFamily, oracle);
-      if (shape != OobShape::None)
-        deadStores.emplace_back(store, shape);
+      BufferAccess access{store.getRsrc(), store.getOffset(),
+                          store.getSoffset(), store.getAux()};
+      if (isPotentiallyDroppable(access, isaFamily))
+        candidateStores.emplace_back(store, access);
     } else if (auto load = dyn_cast<ROCDL::RawPtrBufferLoadOp>(op)) {
-      OobShape shape = classifyAccess(
-          {load.getRsrc(), load.getOffset(), load.getSoffset(), load.getAux()},
-          isaFamily, oracle);
-      if (shape != OobShape::None)
-        deadLoads.emplace_back(load, shape);
-    } else if (std::optional<BufferAccess> atomic = getUnreadAtomic(op)) {
-      OobShape shape = classifyAccess(*atomic, isaFamily, oracle);
-      if (shape != OobShape::None)
-        deadAtomics.emplace_back(op, shape);
+      BufferAccess access{load.getRsrc(), load.getOffset(), load.getSoffset(),
+                          load.getAux()};
+      if (isPotentiallyDroppable(access, isaFamily))
+        candidateLoads.emplace_back(load, access);
+    } else if (std::optional<BufferAccess> atomic = getUnreadAtomic(op);
+               atomic && isPotentiallyDroppable(*atomic, isaFamily)) {
+      candidateAtomics.emplace_back(op, *atomic);
     }
     // `rocdl.raw.ptr.buffer.load.async.lds` carries the same masked offsets but
     // is left alone: a discarded one leaves stale data in its LDS slot, so
     // neither erasing it nor zeroing it is a win.
   });
+
+  if (candidateStores.empty() && candidateLoads.empty() &&
+      candidateAtomics.empty()) {
+    LLVM_DEBUG(llvm::dbgs() << "No potentially droppable buffer accesses\n");
+    return;
+  }
+
+  SmallVector<std::pair<ROCDL::RawPtrBufferStoreOp, OobShape>> deadStores;
+  SmallVector<std::pair<ROCDL::RawPtrBufferLoadOp, OobShape>> deadLoads;
+  SmallVector<std::pair<Operation *, OobShape>> deadAtomics;
+
+  PredicateOracle oracle;
+  if (failed(oracle.run(func)))
+    return signalPassFailure();
+
+  for (auto [store, access] : candidateStores) {
+    OobShape shape = classifyAccess(access, isaFamily, oracle);
+    if (shape != OobShape::None)
+      deadStores.emplace_back(store, shape);
+  }
+  for (auto [load, access] : candidateLoads) {
+    OobShape shape = classifyAccess(access, isaFamily, oracle);
+    if (shape != OobShape::None)
+      deadLoads.emplace_back(load, shape);
+  }
+  for (auto [atomic, access] : candidateAtomics) {
+    OobShape shape = classifyAccess(access, isaFamily, oracle);
+    if (shape != OobShape::None)
+      deadAtomics.emplace_back(atomic, shape);
+  }
 
   for (auto [store, shape] : deadStores) {
     LLVM_DEBUG(llvm::dbgs() << "Erasing " << getShapeName(shape) << " store "
