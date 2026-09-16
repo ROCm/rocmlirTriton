@@ -264,9 +264,9 @@ bool mlir::rock::hasAccel(StringRef arch, RockGemmWrapperInterface gemmOp) {
 }
 
 FailureOr<int64_t>
-mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
-                                 Type inputTypeB, uint32_t instrNonKDim,
-                                 Type scaleAType, Type scaleBType) {
+mlir::rock::getAccelInstrKDim(StringRef arch, Type inputTypeA, Type inputTypeB,
+                              uint32_t instrNonKDim, uint32_t inputKDim,
+                              Type scaleAType, Type scaleBType) {
   MatrixAccelKind accelKind =
       getMatrixAccelKind(arch, inputTypeA, inputTypeB, scaleAType, scaleBType);
   if (accelKind == MatrixAccelKind::None)
@@ -279,13 +279,11 @@ mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
 
   // Both selectFor()s walk their candidates widest-K first and then fall
   // through to "the only / smallest-K intrinsic", so an input K of zero skips
-  // every candidate and lands on exactly the one we are asking for.
-  constexpr unsigned narrowest = 0;
-
+  // every candidate and lands on the narrowest instruction the arch has.
   if (accelKind == MatrixAccelKind::WMMA ||
       accelKind == MatrixAccelKind::ScaledWMMA) {
     auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
-                                          kWmmaNonKDim, kWmmaNonKDim, narrowest,
+                                          kWmmaNonKDim, kWmmaNonKDim, inputKDim,
                                           elemA, elemB, elemOut);
 
     assert(succeeded(instr) && "WMMA arch has no intrinsic for its own types");
@@ -297,12 +295,20 @@ mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
   MLIRContext *ctx = elemA.getContext();
   auto instr = MfmaIntrinsic::selectFor(
       UnknownLoc::get(ctx), rock::getMfmaVersion(isaFamily), instrNonKDim,
-      instrNonKDim, narrowest, elemA, elemB,
+      instrNonKDim, inputKDim, elemA, elemB,
       /*withScale=*/accelKind == MatrixAccelKind::ScaledMFMA,
       /*useTF32=*/false);
   if (failed(instr))
     return failure();
   return instr->kDim;
+}
+
+FailureOr<int64_t>
+mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
+                                 Type inputTypeB, uint32_t instrNonKDim,
+                                 Type scaleAType, Type scaleBType) {
+  return getAccelInstrKDim(arch, inputTypeA, inputTypeB, instrNonKDim,
+                           /*inputKDim=*/0, scaleAType, scaleBType);
 }
 
 FailureOr<int64_t> mlir::rock::getAccelInstrMinKDim(

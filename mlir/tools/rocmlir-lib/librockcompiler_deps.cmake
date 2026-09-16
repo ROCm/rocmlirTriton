@@ -277,4 +277,5 @@ RocmlirCustomTosaToLinalg
 RocmlirEmulateFp8ExtTrunc
 RocmlirPromoteSoftmaxPrecision
 TritonToHsacoTranslation
+origami
 )

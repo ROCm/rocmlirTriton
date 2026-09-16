@@ -843,6 +843,24 @@ class TunedConfigsCache:
                             max_tflops=max_tflops)
 
 
+def format_wall_time(seconds: float) -> str:
+    """Render a session duration as both a raw second count and a readable form.
+
+    The seconds are what a run-to-run comparison wants to divide; the h/m/s form
+    is what a human reading the log wants.
+    """
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        readable = f"{hours}h{minutes:02d}m{secs:02d}s"
+    elif minutes:
+        readable = f"{minutes}m{secs:02d}s"
+    else:
+        readable = f"{secs}s"
+    return f"{seconds:.1f}s ({readable})"
+
+
 @dataclass
 class ETATracker:
     """Track completion times for accurate ETA estimation using median of successful configs."""
@@ -2065,6 +2083,7 @@ def _run_resumable_session(ctx: TuningContext,
       has been written, for any extra per-success reporting.
     """
     options = ctx.options
+    session_start = time.monotonic()
     cache, state_file = _load_resume_state(ctx)
     state = state_file.state
     _log_resume_summary(cache, state, wording, options.output)
@@ -2157,7 +2176,8 @@ def _run_resumable_session(ctx: TuningContext,
             execute(pending_configs, num_workers, state_file.set_running, handle_result)
 
         except KeyboardInterrupt:
-            logger.info(f"{wording.gerund} interrupted by user")
+            logger.info(f"{wording.gerund} interrupted by user after "
+                        f"{format_wall_time(time.monotonic() - session_start)}")
             raise
         finally:
             if progress_bar:
@@ -2165,10 +2185,16 @@ def _run_resumable_session(ctx: TuningContext,
 
             state_file.finalize_interrupted()
 
+    # Wall time for this session only: configs skipped as already done cost
+    # nothing here, so a resumed run reports less than a run from scratch.
+    elapsed = format_wall_time(time.monotonic() - session_start)
     if has_errors:
-        logger.error(f"Encountered errors during {wording.gerund.lower()}")
+        logger.error(f"Encountered errors during {wording.gerund.lower()}; "
+                     f"{wording.action} wall time {elapsed} for "
+                     f"{len(pending_configs)} config(s)")
     else:
-        logger.info(f"{wording.gerund} completed successfully")
+        logger.info(f"{wording.gerund} completed successfully in {elapsed} for "
+                    f"{len(pending_configs)} config(s)")
 
     return not has_errors
 

@@ -90,14 +90,30 @@ getMatrixAccelKind(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
 /// Same as above but for gemm+gemm
 bool hasAccel(StringRef arch, RockGemmGemmWrapperInterface gemmOp);
 
-/// The K extent of the narrowest matrix instruction this arch offers for the
-/// given operand types, at an instruction tile of `instrNonKDim` x
-/// `instrNonKDim`. Fails when the arch has no matrix instruction for them,
-/// which callers should read as "no instruction constrains K here" rather than
-/// as an error.
+/// The K extent of the matrix instruction this arch would issue for the given
+/// operand types at an instruction tile of `instrNonKDim` x `instrNonKDim`,
+/// when a tile of `inputKDim` reduction elements is available to feed it.
+/// Fails when the arch has no matrix instruction for them, which callers
+/// should read as "no instruction constrains K here" rather than as an error.
+///
+/// Selection prefers the widest instruction that fits within `inputKDim` and
+/// falls back to the narrowest one the arch has, matching what Triton's
+/// `AccelerateAMDMatmul` will pick when it lowers the dot. Pass the config's
+/// `kPerBlock` to learn which instruction it will really issue, or 0 to ask
+/// for the narrowest one unconditionally.
 ///
 /// `instrNonKDim` is the `matrixInstrNonkdim` perf-config field, and is ignored
 /// on WMMA, whose instructions are all 16x16.
+FailureOr<int64_t> getAccelInstrKDim(StringRef arch, Type inputTypeA,
+                                     Type inputTypeB, uint32_t instrNonKDim,
+                                     uint32_t inputKDim,
+                                     Type scaleAType = Type(),
+                                     Type scaleBType = Type());
+
+/// The K extent of the narrowest matrix instruction this arch offers for the
+/// given operand types. This is the bar a `kPerBlock` has to clear to use the
+/// matrix core at all; use `getAccelInstrKDim` to learn which instruction a
+/// given `kPerBlock` actually lands on.
 FailureOr<int64_t> getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
                                         Type inputTypeB, uint32_t instrNonKDim,
                                         Type scaleAType = Type(),

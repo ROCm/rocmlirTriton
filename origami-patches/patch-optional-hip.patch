@@ -1,0 +1,101 @@
+--- a/include/origami/hardware.hpp
++++ b/include/origami/hardware.hpp
+@@ -35,7 +35,13 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++// [EXTERNAL] rocmlirTriton: ORIGAMI_NO_HIP drops the entry points that query a
++// live device, leaving the arch-only ones (get_hardware_for_arch) available.
++// librockCompiler is a cross-targeting compiler library that must link and run
++// without the HIP runtime present.
++#ifndef ORIGAMI_NO_HIP
+ #include <hip/hip_runtime.h>
++#endif
+ 
+ #include "origami/types.hpp"
+ #include "origami/origami_export.h"
+@@ -721,7 +727,9 @@
+    * @param pci_chip_id Optional PCI chip id forwarded to @ref get_arch_constants for gfx950;
+    *                    Origami does not query HIP when omitted.
+    */
++#ifndef ORIGAMI_NO_HIP
+   hardware_t(hipDeviceProp_t properties, std::optional<int> pci_chip_id = std::nullopt);
++#endif
+ 
+   /**
+    * @brief Copy constructor.
+@@ -730,6 +738,7 @@
+    */
+   hardware_t(const hardware_t& other);
+ 
++#ifndef ORIGAMI_NO_HIP
+   /**
+    * @brief Create hardware_t instance from HIP device properties.
+    *
+@@ -784,6 +793,7 @@
+       int deviceId,
+       hipDeviceProp_t const& prop,
+       std::optional<int> pci_chip_id = std::nullopt);
++#endif  // ORIGAMI_NO_HIP
+ 
+   /**
+    * @brief Create hardware_t instance for a specific architecture with specified parameters.
+@@ -837,6 +847,7 @@
+    */
+   static size_t get_default_cache_line_bytes(architecture_t arch);
+ 
++#ifndef ORIGAMI_NO_HIP
+   /**
+    * @brief Check if the hardware described by properties is supported.
+    *
+@@ -847,6 +858,7 @@
+    * @return true if the architecture is supported, false otherwise
+    */
+   static bool is_hardware_supported(hipDeviceProp_t properties);
++#endif  // ORIGAMI_NO_HIP
+ 
+   /**
+    * @brief Print hardware details to stdout.
+--- a/src/origami/hardware.cpp
++++ b/src/origami/hardware.cpp
+@@ -80,8 +80,10 @@
+           constants.mem_bw_per_wg_coefficients,
+           pci_chip_id) {}
+ 
++#ifndef ORIGAMI_NO_HIP
+ hardware_t::hardware_t(hipDeviceProp_t properties, std::optional<int> pci_chip_id)
+     : hardware_t(get_hardware_for_properties(properties, 0, pci_chip_id)) {}
++#endif
+ 
+ hardware_t::hardware_t(const hardware_t& other)
+     : arch(other.arch)
+@@ -99,6 +101,7 @@
+     , NUM_XCD(other.NUM_XCD)
+     , pci_chip_id(other.pci_chip_id) {}
+ 
++#ifndef ORIGAMI_NO_HIP
+ namespace {
+ // On RDNA, HIP runs in WGP (Work Group Processor) mode by default. In that mode CLR halves
+ // the agent's compute-unit count, so hipDeviceProp_t::multiProcessorCount reports the number
+@@ -177,6 +180,7 @@
+ 
+   return get_hardware_for_device(deviceId, prop);
+ }
++#endif  // ORIGAMI_NO_HIP
+ 
+ hardware_t hardware_t::get_hardware_for_arch(architecture_t arch,
+                                              size_t N_CU,
+@@ -203,11 +207,13 @@
+                     pci_chip_id);
+ }
+ 
++#ifndef ORIGAMI_NO_HIP
+ bool hardware_t::is_hardware_supported(hipDeviceProp_t properties) {
+   auto arch_name = get_before_first_colon(properties.gcnArchName);
+   auto arch_enum = arch_name_to_enum(arch_name);
+   return arch_enum != architecture_t::Count;
+ }
++#endif  // ORIGAMI_NO_HIP
+ 
+ size_t hardware_t::get_default_num_xcds(architecture_t arch) {
+   // Do NOT add new architectures here — see declaration in hardware.hpp.
