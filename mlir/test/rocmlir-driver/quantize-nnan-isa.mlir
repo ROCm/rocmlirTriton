@@ -1,5 +1,5 @@
-// A `migraphx.quantizelinear` reduces its saturating float-to-int cast to a
-// single v_med3.
+// A `migraphx.quantizelinear` rounds to nearest, ties to even with v_rndne,
+// then reduces its saturating float-to-int clamp to a single v_med3.
 //
 // rock::createClampedFPToInt emits a NaN -> 0 sanitization (cmpf uno + select,
 // so that arith.fptosi never sees a NaN and returns poison) ahead of the clamp
@@ -28,7 +28,8 @@
 // RUN:   --implicit-check-not=v_cndmask_b32 --implicit-check-not=v_max_f32 \
 // RUN:   --implicit-check-not=v_min_f32 < %t
 
-// CHECK: v_med3_f32
+// CHECK-DAG: v_rndne_f32
+// CHECK-DAG: v_med3_f32
 
 // Under -disable-fast-math the sanitization stays, so the compare and select
 // come back, and the clamp does not fold: only RockAllowFastMathFlags marking
@@ -42,6 +43,7 @@
 // RUN: FileCheck %s --check-prefix=IEEE < %t.ieee
 // RUN: FileCheck /dev/null --implicit-check-not=v_med3_f32 < %t.ieee
 
+// IEEE-DAG: v_rndne_f32
 // IEEE-DAG: v_cmp_o_f32
 // IEEE-DAG: v_cndmask_b32
 // IEEE-DAG: v_minmax_f32

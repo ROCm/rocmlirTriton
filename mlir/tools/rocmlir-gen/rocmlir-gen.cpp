@@ -5268,6 +5268,33 @@ static int64_t scanModuleForAtomicAddExtent(ModuleOp module) {
   return maxExtent;
 }
 
+// Scan the module for the largest splitK factor requested by a matmul-like op
+// through its discardable `perf_config` attribute, or 1 if none asks for it.
+//
+// Used as a fallback when the kernel comes from a pre-lowered IR (e.g.
+// --clone-harness / --verifier=clone) and so the command-line -perf_config
+// flag is unset. Same convention as `computeReductionK`: the tuning
+// configuration then only exists as an attribute on the op, which
+// TosaToRock propagates onto rock.gemm / rock.attention /
+// rock.gemm_elementwise_gemm / rock.conv_elementwise_gemm.
+//
+// Each splitK slice is merged into the output with an atomic add, so the
+// factor is a count of low-precision additions per output element in the same
+// sense as `scanModuleForAtomicAddExtent`'s axis extent.
+static int64_t scanModuleForSplitKFactor(ModuleOp module) {
+  int64_t maxSplitK = 1;
+  module.walk([&](Operation *op) {
+    if (!isa<rock::RockGemmWrapperInterface,
+             rock::RockGemmGemmWrapperInterface>(op))
+      return;
+    auto perfConfig = op->getAttrOfType<StringAttr>("perf_config");
+    if (!perfConfig)
+      return;
+    maxSplitK = std::max(maxSplitK, rock::retrieveSplitKValue(perfConfig));
+  });
+  return maxSplitK;
+}
+
 // Machine epsilon for float types: eps = 2^(1 - mantissaWidth), where
 // getFPMantissaWidth() includes the implicit leading bit for IEEE types.
 static float machineEpsilon(Type t) {
@@ -5603,7 +5630,9 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
       // We use sqrt(extent) * eps as the boost (random-walk model, same as
       // CK/hipBLASLt). The extent is the largest of:
       //   - rock.reduce(sum) axis extent (fused reductions)
-      //   - splitK factor from the perf_config (partial-result accumulation)
+      //   - splitK factor from the command-line perf config (-pv flow)
+      //   - splitK factor from a per-op `perf_config` attribute, which is how
+      //     clone-harness flows pin a tuning configuration
       if (!rtolThreshold.getNumOccurrences()) {
         int64_t atomicExtent = scanModuleForAtomicAddExtent(module);
 
@@ -5611,6 +5640,9 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
           auto pc = StringAttr::get(module->getContext(), genParams.perfConfig);
           atomicExtent = std::max(atomicExtent, rock::retrieveSplitKValue(pc));
         }
+
+        atomicExtent =
+            std::max(atomicExtent, scanModuleForSplitKFactor(module));
 
         if (atomicExtent > 1) {
           float eps = machineEpsilon(baselineType);

@@ -259,6 +259,30 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
 
   kernelFn->addFnAttr("uniform-work-group-size", "true");
 
+  // Work around an AMDGPU register-allocator miscompile that corrupts SGPRs
+  // spilled into VGPR lanes.
+  //
+  // Under enough register pressure, SILowerSGPRSpills parks SGPRs in individual
+  // lanes of a VGPR (SI_SPILL_S32_TO_VGPR, i.e. v_writelane/v_readlane) and
+  // flags the holder WWM. If pressure keeps climbing, RegAllocGreedy then
+  // spills those holders to scratch -- and emits a reload of a WWM slot with no
+  // matching store, so every scalar living in that holder's lanes comes back as
+  // whatever the previous process left in scratch. Observed on gfx90a, gfx942
+  // and gfx950 in fp16 and int8 convolutions: the corrupted value was a buffer
+  // descriptor base, giving a null-pointer global load and a GPU memory fault;
+  // when it lands on a loop bound instead, the kernel hangs, and when it lands
+  // on an index it would silently compute the wrong answer.
+  //
+  // SIPreAllocateWWMRegs honors this attribute by assigning and reserving the
+  // lane holders before allocation, so the allocator can neither reuse nor
+  // spill them and the faulty path is never reached. It is self-limiting: the
+  // pass body only acts on SI_SPILL_S32_TO_VGPR, so a kernel that never spills
+  // SGPRs into lanes is unaffected.
+  //
+  // TODO: This is containment, not a fix; the allocator defect still needs
+  // repairing upstream. Drop this once that lands.
+  kernelFn->addFnAttr("amdgpu-prealloc-sgpr-spill-vgprs");
+
   if (wavesPerEU > 0) {
     std::string wavesStr =
         std::to_string(wavesPerEU) + ", " + std::to_string(wavesPerEU);
@@ -525,10 +549,12 @@ void disablePrintInline(llvm::Module &module) {
 // Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
 //===----------------------------------------------------------------------===//
 
-std::string translateLLVMIRToASM(llvm::Module &module,
-                                 llvm::TargetMachine *machine) {
-  using namespace mlir;
-
+/// Inline everything, verify, then run the target's code generation pipeline,
+/// writing `fileType` to `os`. Matches llvm.cc lines 329-377. Returns false if
+/// the target cannot emit `fileType`.
+bool emitMachineCode(llvm::Module &module, llvm::TargetMachine *machine,
+                     llvm::CodeGenFileType fileType,
+                     llvm::raw_pwrite_stream &os) {
   // inline everything (matches llvm.cc lines 329-332)
   for (llvm::Function &f : module.functions())
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
@@ -541,15 +567,56 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   pm.run(module);
 
   // emit machine code (matches llvm.cc lines 360-377)
+  llvm::legacy::PassManager pass;
+  if (machine->addPassesToEmitFile(pass, os, nullptr, fileType))
+    return false;
+  pass.run(module);
+  return true;
+}
+
+std::string translateLLVMIRToASM(llvm::Module &module,
+                                 llvm::TargetMachine *machine) {
   std::string result;
   {
     llvm::raw_string_ostream stream(result);
     llvm::buffer_ostream pstream(stream);
-    llvm::legacy::PassManager pass;
-    // emit
-    machine->addPassesToEmitFile(pass, pstream, nullptr,
-                                 llvm::CodeGenFileType::AssemblyFile);
-    pass.run(module);
+    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::AssemblyFile,
+                         pstream))
+      return {};
+  }
+  return result;
+}
+
+/// Emit a relocatable object straight from the target machine.
+///
+/// This is the same code generation `translateLLVMIRToASM` performs, asking for
+/// `ObjectFile` instead of `AssemblyFile` so that the MC layer writes the
+/// object directly. It replaces printing ISA to text and parsing that text back
+/// with `AMDGPUAsmParser` (`assembleAMDGCN`), which together account for
+/// roughly half of binary emission on large kernels and buy nothing when the
+/// text is never read.
+///
+/// This is a deliberate deviation from upstream Triton, taken purely for
+/// compile time. Upstream always routes the binary through AMDGCN text, and can
+/// afford to: `make_amdgcn` and `make_hsaco` are separate Python-visible stages
+/// there and it caches the `.s` as a build artifact, so the text is a product
+/// it owes the caller either way. We have no such stage boundary and need the
+/// text only when a dump is requested, so `translateTritonToHsaco` keeps the
+/// round trip for exactly those cases and skips it otherwise. Anyone
+/// reconciling this file with llvm.cc should expect the difference rather than
+/// "fix" it.
+std::optional<SmallVector<char, 0>>
+translateLLVMIRToObject(llvm::Module &module, llvm::TargetMachine *machine) {
+  llvm::SmallVector<char, 0> result;
+  {
+    // Unlike the assembly path this needs no `buffer_ostream`, since
+    // `raw_svector_ostream` is already a seekable `raw_pwrite_stream`.
+    llvm::raw_svector_ostream svos(result);
+    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::ObjectFile,
+                         svos)) {
+      llvm::errs() << "Target does not support direct object emission\n";
+      return std::nullopt;
+    }
   }
   return result;
 }
@@ -771,6 +838,14 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   StringRef arch = options.arch;
   std::string features = options.features;
+  // Upstream Triton has an explicit `enable_asan` knob and derives the target
+  // feature from it, because asan on AMDGPU requires XNACK: instrumented
+  // accesses read shadow memory that the GPU reaches through unified memory,
+  // which needs XNACK's recoverable page faults, and `xnack` is part of the
+  // target ID the loader matches against the device. See
+  // `attach_datalayout`, `add_fn_target_feature("+xnack")` and `make_hsaco` in
+  // compiler.py. We are handed only the feature string, so we read that
+  // implication backwards and take `+xnack` as the request for asan.
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
   // Upstream compiler.py disable_real_true16_feature() passes `-real-true16`
@@ -928,29 +1003,59 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
-  if (amdgcnAsm.empty()) {
-    llvm::errs() << "Failed to generate AMDGCN assembly\n";
-    return failure();
-  }
+  // Unlike the LLVM IR dump above this is needed before the AMDGCN text is
+  // produced, because it decides whether the text is produced at all.
+  const char *amdgcnDumpEnv = std::getenv("AMDGCN_ENABLE_DUMP");
+  bool dumpAmdgcn = amdgcnDumpEnv && StringRef(amdgcnDumpEnv) == "1";
 
   // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
   // records DiagnosticHandler::HasErrors and prints the message. Backend
   // errors such as the AMDGPU RegisterAllocator out-of-registers error surface
   // this way during code generation, so propagate them as a failure instead of
   // emitting a binary for a kernel that the backend rejected.
-  if (llvmContext.getDiagHandlerPtr()->HasErrors) {
+  auto codegenFailed = [&] {
+    if (!llvmContext.getDiagHandlerPtr()->HasErrors)
+      return false;
     llvm::errs() << "LLVM backend reported errors during code generation\n";
+    return true;
+  };
+
+  // Everything below this point intentionally diverges from upstream Triton,
+  // which always emits AMDGCN text and re-parses it. We only pay for the text
+  // when something is going to read it; see `translateLLVMIRToObject` for what
+  // that saves and why upstream has no reason to do the same.
+  //
+  // The assembler in `assembleAMDGCN` is configured with `hsacoFeatures`, which
+  // carries the `+xnack` that asan needs (see `enableAsan` above) and that
+  // `asmFeatures` (and hence `tmAsm`) does not. Emitting the object straight
+  // from `tmAsm` would silently drop it and change the target ID, so the
+  // `+xnack` case keeps the text round trip; its compile time does not matter.
+  if (!enableAsan && !dumpAmdgcn) {
+    std::optional<SmallVector<char, 0>> objectCode =
+        translateLLVMIRToObject(*llvmModule, tmAsm.get());
+    if (!objectCode)
+      return failure();
+    if (codegenFailed())
+      return failure();
+
+    auto hsaco = linkHSACO(*objectCode);
+    if (!hsaco)
+      return failure();
+    return std::move(*hsaco);
+  }
+
+  std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
+  if (amdgcnAsm.empty()) {
+    llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
   }
 
+  if (codegenFailed())
+    return failure();
+
   // make_amdgcn (compiler.py)
-  if (const char *dumpEnv = std::getenv("AMDGCN_ENABLE_DUMP")) {
-    std::string envVal(dumpEnv);
-    if (envVal == "1") {
-      llvm::errs() << "// -----// AMDGCN Dump //----- //\n"
-                   << amdgcnAsm << "\n";
-    }
+  if (dumpAmdgcn) {
+    llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
   }
 
   // make_hsaco (compiler.py)
@@ -964,7 +1069,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     return failure();
   }
 
-  return llvm::SmallVector<char, 0>(hsaco->begin(), hsaco->end());
+  return std::move(*hsaco);
 }
 
 void registerTritonToHsacoTranslation() {

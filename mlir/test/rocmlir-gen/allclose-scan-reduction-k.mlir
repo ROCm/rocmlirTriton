@@ -318,3 +318,32 @@ func.func private @mx_dot_reduce_max_fut(%arg0: !migraphx.shaped<1x256x64xf32, 1
 // rtol is the user-supplied value, NOT boosted.
 // SPLITK_RTOL_OVERRIDE-NEXT: arith.constant 5.000000e-03 : f32
 // SPLITK_RTOL_OVERRIDE:      call @mcpuVerifyFloatAllclose
+
+// ============================================================================
+// (13) SplitK rtol boost from a per-op `perf_config` attribute. Unlike cases
+// (11) and (12), the tuning configuration is not a command-line flag: it rides
+// on `migraphx.dot` as a discardable attribute and survives the pipeline onto
+// `rock.gemm`, which is how clone-harness e2e tests pin splitK. Same shape as
+// case (5) (K=64, f32), so only the rtol differs from it:
+//   atol = 1e-5 + 64*1e-5            = 6.5e-4
+//   rtol = 1.3e-6 + sqrt(4) * 2^-23 ~ 1.5384e-6
+// ============================================================================
+
+// RUN: rocmlir-gen -fut mx_dot_splitk_attr_fut --arch %arch --clone-harness %s \
+// RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
+// RUN:   | rocmlir-gen -ph -rand 1 -rand_type float -fut mx_dot_splitk_attr_fut --verifier clone --comparator=allclose - \
+// RUN:   | FileCheck %s --check-prefix=SPLITK_ATTR --enable-var-scope
+
+func.func private @mx_dot_splitk_attr_fut(%arg0: !migraphx.shaped<1x256x64xf32, 16384x64x1>, %arg1: !migraphx.shaped<1x64x128xf32, 8192x128x1>) -> !migraphx.shaped<1x256x128xf32, 32768x128x1> {
+  %0 = migraphx.dot %arg0, %arg1 {perf_config = "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0"} : <1x256x64xf32, 16384x64x1>, <1x64x128xf32, 8192x128x1> -> <1x256x128xf32, 32768x128x1>
+  return %0 : !migraphx.shaped<1x256x128xf32, 32768x128x1>
+}
+
+// The attribute must reach the `rock.gemm` the scanner reads it from.
+// SPLITK_ATTR:        rock.gemm
+// SPLITK_ATTR-SAME:   splitKFactor=4
+// atol = 1e-5 + 64*1e-5 = 6.5e-4, same as case (5).
+// SPLITK_ATTR:        arith.constant 6.5{{[0-9]*}}e-04 : f32
+// rtol boosted: 1.3e-6 + sqrt(4)*eps(f32) ~ 1.5384e-6 (NOT the base 1.3e-6).
+// SPLITK_ATTR-NEXT:   arith.constant 1.53{{[0-9]*}}E-6 : f32
+// SPLITK_ATTR:        call @mcpuVerifyFloatAllclose

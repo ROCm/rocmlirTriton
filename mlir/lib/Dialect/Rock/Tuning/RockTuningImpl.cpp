@@ -36,6 +36,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -1728,7 +1729,7 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
 // since it can store each field separately.
 // Currently serialize the problem in MIOpenDriver command friendly format
 LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
-  auto serializeWithSplitKSupport = [&](auto tuningOp) -> LogicalResult {
+  auto serializeWithFusionInfo = [&](auto tuningOp) -> LogicalResult {
     if (failed(getTuningProblemStr(tuningOp, out)))
       return failure();
 
@@ -1739,11 +1740,24 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
     if (!func)
       return failure();
 
-    // MIGraphX calls mlirRockTuningGetKey, which routes here. Append split-K
-    // fusion legality so the same GEMM problem gets distinct tuning keys when
-    // the surrounding fusion does or does not allow split-K (this allows for
-    // MIGraphX to avoid running into tuning DB lookup issues)
+    // MIGraphX calls mlirRockTuningGetKey, which routes here. The fusions
+    // around a kernel change how much LDS and how many registers a perf config
+    // needs, so they are part of the problem's identity: without them a config
+    // tuned for the bare GEMM is reused for a fused one and could potentially
+    // overflow LDS.
     llvm::raw_svector_ostream problemOS(out);
+    auto emitFusions = [&](StringRef attrName, StringRef flag) {
+      auto fusions = func->template getAttrOfType<ArrayAttr>(attrName);
+      if (fusions && !fusions.empty())
+        problemOS << flag
+                  << llvm::join(fusions.template getAsValueRange<StringAttr>(),
+                                ",");
+    };
+    emitFusions(rock::InputFusionsAttr::getMnemonic(), " -inputFusions=");
+    emitFusions(rock::OutputFusionsAttr::getMnemonic(), " -outputFusions=");
+
+    // Append split-K fusion legality so the same GEMM problem gets distinct
+    // tuning keys when the surrounding fusion does or does not allow split-K.
     problemOS << " -supportsSplitK "
               << (succeeded(rock::testFusionLegalitySplitK(func)) ? "true"
                                                                   : "false");
@@ -1758,7 +1772,7 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
           return WalkResult::interrupt();
         });
     if (findPrimary.wasInterrupted())
-      return serializeWithSplitKSupport(gemmIF);
+      return serializeWithFusionInfo(gemmIF);
   }
   {
     rock::RockGemmGemmWrapperInterface gemmGemmOp;
@@ -1768,7 +1782,7 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
           return WalkResult::interrupt();
         });
     if (findGemmGemm.wasInterrupted())
-      return serializeWithSplitKSupport(gemmGemmOp);
+      return serializeWithFusionInfo(gemmGemmOp);
   }
   return failure();
 }

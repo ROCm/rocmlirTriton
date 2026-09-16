@@ -1,0 +1,52 @@
+diff --git a/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp b/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
+index 11b783a102..955fc3e96b 100644
+--- a/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
++++ b/llvm/lib/Target/AMDGPU/GCNSchedStrategy.cpp
+@@ -1501,20 +1501,22 @@ bool PreRARematStage::initGCNSchedStage() {
+   for (unsigned RegIdx = 0, E = Remater.getNumRegs(); RegIdx < E; ++RegIdx) {
+     const Rematerializer::Reg &CandReg = Remater.getReg(RegIdx);
+ 
+-    // Single user only.
+-    unsigned NumUsers = 0;
+-    for (const auto &[_, RegionUses] : CandReg.Uses)
+-      NumUsers += RegionUses.size();
+-    if (NumUsers != 1)
++    // All users must be in a single region. Rematerialization moves the
++    // defining instruction just before the first user in program order and
++    // transfers every user in the region to it, so multiple users in the same
++    // region are supported.
++    if (CandReg.Uses.size() != 1)
+       continue;
++    const auto [UseRegion, Users] = *CandReg.Uses.begin();
+ 
+     // We further filter the registers that we can rematerialize based on our
+-    // current tracking capabilities in the stage. The user cannot itself be
++    // current tracking capabilities in the stage. No user can itself be
+     // marked rematerializable, and no register operand of the defining MI can
+     // be marked rematerializable.
+-    MachineInstr *UseMI = *CandReg.Uses.begin()->getSecond().begin();
+-    const MachineOperand &UseMO = UseMI->getOperand(0);
+-    if (UseMO.isReg() && MarkedRegs.contains(UseMO.getReg()))
++    if (llvm::any_of(Users, [&MarkedRegs](const MachineInstr *UserMI) {
++          const MachineOperand &UseMO = UserMI->getOperand(0);
++          return UseMO.isReg() && MarkedRegs.contains(UseMO.getReg());
++        }))
+       continue;
+     if (llvm::any_of(CandReg.DefMI->all_uses(),
+                      [&MarkedRegs](const MachineOperand &MO) {
+@@ -1524,8 +1526,13 @@ bool PreRARematStage::initGCNSchedStage() {
+ 
+     // Do not rematerialize an instruction if it uses registers that aren't
+     // available at its use. This ensures that we are not extending any live
+-    // range while rematerializing.
+-    SlotIndex UseIdx = DAG.LIS->getInstructionIndex(*UseMI).getRegSlot(true);
++    // range while rematerializing. The defining instruction is inserted just
++    // before the first user in program order, so check availability there.
++    MachineInstr *FirstUseMI =
++        CandReg.getRegionUseBounds(UseRegion, *DAG.LIS).first;
++    assert(FirstUseMI && "there must be a user in the region");
++    SlotIndex UseIdx =
++        DAG.LIS->getInstructionIndex(*FirstUseMI).getRegSlot(true);
+     if (!VirtRegAuxInfo::allUsesAvailableAt(CandReg.DefMI, UseIdx, *DAG.LIS,
+                                             DAG.MRI, *DAG.TII))
+       continue;

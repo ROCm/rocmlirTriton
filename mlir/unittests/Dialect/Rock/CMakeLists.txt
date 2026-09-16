@@ -39,8 +39,35 @@ target_link_libraries(MLIRRockUnitTests
   MLIRTosaDialect
   MLIRFuncDialect
   MLIRIR
+  # TritonAMDGPUToLLVM does not stand alone: its objects reach into the
+  # instrumentation and NVIDIA PTX-builder libraries, which in turn need the
+  # UB-to-LLVM patterns. Linking it by itself leaves those references
+  # unresolved. This is the same block every other consumer of it uses; keep it
+  # in sync with mlir/test/common_utils/amd_arch_db/CMakeLists.txt, the closest
+  # analogue since both are test-only targets.
+  TritonIR
+  TritonGPUIR
+  TritonAnalysis
+  TritonGPUTransforms
   TritonAMDGPUToLLVM
+  TritonAMDGPUTransforms
+  TritonAMDAnalysis
+  TritonAMDGPUDialectToLLVM
   TritonAMDUtils
+  GluonTransforms
+  TritonInstrumentToLLVM
+  NVHopperTransforms
+  ProtonToProtonGPU
+  ProtonGPUToLLVM
+  ProtonNVIDIAGPUToLLVM
+  ProtonAMDGPUToLLVM
+  ProtonGPUTransforms
+  TritonLLVMIR
+  NVGPUToLLVM
+  TritonInstrumentTransforms
+  # amd_arch_db picks this up transitively through MLIROptLib, which the unit
+  # tests do not link.
+  MLIRUBToLLVM
 )
 
 if(MLIR_ENABLE_ROCM_RUNNER)

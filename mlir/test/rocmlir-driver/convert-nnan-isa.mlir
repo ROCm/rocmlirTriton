@@ -1,10 +1,9 @@
-// The float-to-int side of `migraphx.convert` reaches the same saturating cast
-// as `migraphx.quantizelinear` (both go through createCastOp in MIGraphXToTosa
-// and then rock::createClampedFPToInt), so it collapses to a single v_med3 in
-// exactly the same way. quantize-nnan-isa.mlir carries the full explanation;
-// this file pins the second entry point, and does it on an unsigned destination
-// to cover the `unsigned_cast` spelling and its clamped fptoui alongside the
-// signed `fp_to_int_cast`.
+// The float-to-int side of `migraphx.convert` intentionally remains
+// round-toward-zero, unlike the round-to-nearest-even QuantizeLinear path. Its
+// saturating clamp still collapses to a single v_med3.
+//
+// This file uses an unsigned destination to cover the `unsigned_cast` spelling
+// and its clamped fptoui alongside the signed `fp_to_int_cast`.
 //
 // Only one kernel lives in this file, since every kernel in the module lands in
 // the same ISA dump; the IEEE contrast below is the same kernel compiled with
@@ -18,7 +17,7 @@
 // as its own invocation: implicit negative checks do not apply to the run above.
 // RUN: FileCheck /dev/null --implicit-check-not=v_cmp_o_f32 \
 // RUN:   --implicit-check-not=v_cndmask_b32 --implicit-check-not=v_max_f32 \
-// RUN:   --implicit-check-not=v_min_f32 < %t
+// RUN:   --implicit-check-not=v_min_f32 --implicit-check-not=v_rndne_f32 < %t
 
 // CHECK: v_med3_f32
 
@@ -29,7 +28,8 @@
 // RUN: | rocmlir-driver -disable-fast-math -arch=gfx1100 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1100 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.ieee 2>&1
 // RUN: FileCheck %s --check-prefix=IEEE < %t.ieee
-// RUN: FileCheck /dev/null --implicit-check-not=v_med3_f32 < %t.ieee
+// RUN: FileCheck /dev/null --implicit-check-not=v_med3_f32 \
+// RUN:   --implicit-check-not=v_rndne_f32 < %t.ieee
 
 // IEEE-DAG: v_cmp_o_f32
 // IEEE-DAG: v_cndmask_b32

@@ -409,6 +409,31 @@ def RockTransformsToPointerArithPass
                            "triton::TritonDialect"];
 }
 
+def RockLegalizeMathForTritonPass
+    : Pass<"rock-legalize-math-for-triton", "::mlir::func::FuncOp"> {
+  let summary = "Lower math.tanh and math.powf into ops Triton accepts";
+  let description = [{
+    TritonToTritonGPU only carries a fixed subset of the math dialect, which
+    excludes `math.tanh` and `math.powf`, so both are rewritten here into ops it
+    accepts.
+
+    `math.powf` always becomes a `tt.extern_elementwise` call to the same OCML
+    symbol the Triton frontend's libdevice bindings use. `math.tanh` becomes
+    that call when fast math is disabled or on a target where Triton rewrites
+    it into the native `v_tanh_f32`, an inline five-op approximation for the
+    types narrower than f32, and otherwise is left to the math dialect's own
+    expansion.
+
+    Must run before `math-extend-to-supported-types`, which would promote the
+    narrow types to f32 and make them indistinguishable from an f32 the user
+    asked for.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
+                           "math::MathDialect", "triton::TritonDialect"];
+  let options = [Option<"disableFastMath", "disable-fast-math", "bool", "false",
+                        "Disable fast-math dependent lowering choices">];
+}
+
 def RockToTTIRPass : Pass<"rock-to-ttir", "::mlir::func::FuncOp"> {
   let summary = "Convert Rock dialect operations to Triton IR";
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
@@ -453,6 +478,32 @@ def RockInsertOutputStoresPass
     2. A rock.store op is inserted before the return that writes to the new
        output argument added in step 1.
     3. The func.return operand is updated to use the rock.store result.
+  }];
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
+}
+
+def RockAnnotateFusionsPass
+    : Pass<"rock-annotate-fusions", "::mlir::func::FuncOp"> {
+  let summary = "name the operations fused around a kernel for the tuning key";
+  let description = [{
+    Records the operations fused into a kernel's operand loads and into the
+    store of its result as `rock.input_fusions` and `rock.output_fusions` on the
+    kernel function, which `getTuningProblemStr` serializes into the tuning key.
+
+    This runs at the end of the highlevel pipeline, where the kernel is a single
+    operation carrying the `FusionRoot` trait. Everything the attention,
+    gemm-elementwise-gemm and conv-elementwise-gemm patterns absorbed is by then
+    inside that operation, so it cannot be mistaken for an input/output fusion,
+    and `rock-sort-dimensions-memory-layout` has already decided which
+    transposes became `-transQ` and friends.
+
+    TODO(AIROCMLIR-1274): layout operations are not named yet. On one of the
+    kernel's own operands a view is already covered, by those transpose flags
+    and by the problem's dimensions. Additionally, inter-gemm elementwise
+    operations are currently not supported yet either.
+
+    A function with no fusions is left alone, which keeps its key byte-identical
+    to what earlier releases produced.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect"];
 }
