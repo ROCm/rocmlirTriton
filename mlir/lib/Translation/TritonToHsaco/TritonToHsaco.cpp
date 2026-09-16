@@ -32,6 +32,7 @@
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
+#include "mlir/Translation/KernelMetadataTranslation.h"
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -1127,6 +1128,7 @@ void registerTritonToHsacoTranslation() {
         mlir::registerGPUDialectTranslation(registry);
         mlir::registerROCDLDialectTranslation(registry);
         mlir::registerLLVMDialectTranslation(registry);
+        registerKernelMetadataDialectTranslation(registry);
       });
 }
 
