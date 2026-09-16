@@ -11,7 +11,7 @@
 // on their own the offset is unbounded below and the soffset unbounded above.
 //
 // A 2x5 by 5x5 dot is enough, since M and N are both padded up to the tile size.
-// gfx1100 and gfx1200 take the split path and erase 31 of 32 stores; the other
+// gfx1100 and gfx1200 take the split path and erase 24 of 32 stores; the other
 // targets keep a zero soffset here and go through the plain sentinel.
 // perf_config is pinned so the counts do not move with the tuning heuristics.
 
@@ -37,7 +37,7 @@
 // SPLIT: %[[NEGATED:.*]] = llvm.sub %{{.*}}, %[[UNIFORM]] : i32
 // SPLIT: llvm.select %[[NONNEG]], %[[NEGATED]], %{{.*}} : i1, i32
 
-// SPLIT-COUNT-1: rocdl.raw.ptr.buffer.store
+// SPLIT-COUNT-8: rocdl.raw.ptr.buffer.store
 // SPLIT-NOT: rocdl.raw.ptr.buffer.store
 
 // Pinning the plain-sentinel targets keeps a change in the split-safety analysis
@@ -56,7 +56,7 @@
 
 // STATS-SPLIT:      RockFoldOobBufferOpsPass
 // STATS-SPLIT-NEXT:   (S) 0 num-erased-atomics
-// STATS-SPLIT-NEXT:   (S) 31 num-erased-stores
+// STATS-SPLIT-NEXT:   (S) 24 num-erased-stores
 // STATS-SPLIT-NEXT:   (S) 91 num-folded-loads
 
 // STATS-CDNA:      RockFoldOobBufferOpsPass

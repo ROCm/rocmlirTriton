@@ -9,6 +9,7 @@ patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
+patch-roundeven-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
@@ -16,11 +17,13 @@ patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
+patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
+patch-fma-lds-swizzle.patch
 patch10832.patch
 patch10635.patch
 patch10928.patch
@@ -92,6 +95,13 @@ patch-preserve-arith-bitcast-lowering.patch
   Keeps `arith.bitcast` legal through Triton's Triton-to-TritonGPU and
   TritonGPU-to-LLVM conversion pipeline by adding the corresponding generic
   conversion and LLVM lowering patterns.
+
+patch-roundeven-lowering.patch
+  Keeps tensor `math.roundeven` legal through Triton's
+  Triton-to-TritonGPU conversion and scalarizes it to the LLVM
+  `llvm.intr.roundeven` intrinsic. This lets TOSA float-to-integer casts retain
+  round-to-nearest-even semantics and lower to the target's native rounding
+  instruction instead of an expanded arithmetic sequence.
 
 patch-skip-subbyte-reduce-data-duplication.patch
   Prevents ReduceDataDuplication from materializing sub-byte tensors through
@@ -342,6 +352,14 @@ patch-optimize-epilogue-rock-metadata.patch
   pass; no Rock-specific performance model remains in the vendored Triton
   implementation.
 
+patch-optimize-epilogue-fma-blocked.patch
+  Lets BypassEpilogueSMEM also bypass the epilogue relayout when the dot
+  accumulator carries a blocked (FMA) layout, not just an WMMA/MFMA one.
+  This shows perf improvement in some kernels.
+
+  Stacks on patch-optimize-epilogue-rock-metadata.patch; apply it after that
+  one. Plan is to upstream this PR.
+
 patch11295.patch
   Fixes a GFX9 direct-to-LDS miscompile that faults at runtime. The lowering
   implements a swizzled shared encoding as a within-warp lane shuffle to
@@ -402,4 +420,23 @@ patch-warp-id-readfirstlane.patch
   RDNA1, RDNA2, RDNA3, and GFX1170 are what newly gain the readfirstlane.
 
   Upstream PR: https://github.com/triton-lang/triton/pull/11570
+
+patch-fma-lds-swizzle.patch
+  Swizzles the pipelined LDS tile for FMA dot operands, which
+  composePaddedLayout does not cover and upstream leaves unswizzled.
+  SwizzledSharedEncodingAttr::get returns vec = 1, perPhase = 1, maxPhase = 1
+  whenever the dot's parent layout is not MFMA/WMMA/Nvidia MMA, and
+  composePaddedLayout only covers CDNA4 MFMA and gfx1250 WMMA, so an f32 dot on
+  a target without a matrix core gets no swizzle at all.
+  getSharedEncIfAllUsersAreDotEnc gains composeSwizzledLayoutForFMA, called for
+  blocked-parent operands after composePaddedLayout declines and before the
+  generic dot-operand constructor. The helper accounts for target bank count
+  and rows narrower than a complete bank row. It is limited to f32 because
+  other FMA element types use different packed LDS access patterns.
+
+  Stacks on patch10694.patch and must be applied after it: the shared orders
+  expected in test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir are the
+  operand-major ones that patch introduces.
+
+  Not filed upstream yet; upstream Triton has the same performance gap.
 

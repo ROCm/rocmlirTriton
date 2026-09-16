@@ -147,18 +147,19 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
 //     semantics, so we can't just emit a `tosa.cast` either.
 //
 // That's why MIGraphXToTosa emits dedicated `tosa.custom` ops
-// (`unsigned_cast`, `fp_to_int_cast`) for these casts instead of plain
-// `tosa.cast`, and why both lowering paths (CPU via
-// RocmlirCustomTosaToLinalg, GPU/kernel via RockTosaToElementwise) call
-// into this single helper to expand them. The three-case structure below
-// (exponent fits / mantissa fits / mixed clamp + overflow fix-up) is what
-// it takes to implement the saturating semantics correctly across every
+// (`unsigned_cast`, `fp_to_int_cast`) for conversions that need unsigned or
+// round-toward-zero semantics. QuantizeLinear instead uses plain `tosa.cast`
+// for its round-to-nearest-even step. The custom-op lowering paths (CPU via
+// RocmlirCustomTosaToLinalg, GPU/kernel via RockTosaToElementwise) and the GPU
+// `tosa.cast` lowering call into this helper for saturation. The three-case
+// structure below (exponent fits / mantissa fits / mixed clamp + overflow
+// fix-up) implements the saturating semantics correctly across every
 // (source-float, dest-int) pair without ever feeding poison values into
 // `arith.fptosi`/`arith.fptoui` on the way through.
 //
-// If MIGraphX's convert semantics ever change, or if we drop the MIGraphX
-// frontend, much of this can collapse back to a plain `tosa.cast` plus the
-// upstream tosa-to-linalg lowering.
+// If MIGraphX's convert semantics ever change, its custom RTZ path could
+// collapse back to a plain `tosa.cast`; this helper would still implement the
+// GPU saturation required by `tosa.cast`.
 
 Value createClampedFPToInt(OpBuilder &b, Location loc, Value input,
                            Type dstIntType, bool isUnsigned,

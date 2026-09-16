@@ -84,6 +84,9 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
       *this, "matrixInstrNonkdim", desc("Matrix instruction non-k dimension"),
       init(16)};
   PassOptions::Option<int> kpack{*this, "kpack", desc("kpack"), init(1)};
+  PassOptions::Option<bool> allowFlushDenorm{
+      *this, "allowFlushDenorm", desc("Whether to allow flush denorm"),
+      init(true)};
 
   // Triton knobs.
   PassOptions::Option<int64_t> useAsyncCopy{

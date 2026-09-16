@@ -2,6 +2,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   AddTritonMetadata.cpp
   AffixTuningParameters.cpp
   AnalyzeMemoryUse.cpp
+  AnnotateFusions.cpp
   ConvToGemm.cpp
   SetMatmulOutputTranspose.cpp
   SetReductionLayout.cpp
@@ -19,6 +20,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ViewToTransform.cpp
   FusionSplitkRegularizationPass.cpp
   LegalizeFloatTypes.cpp
+  LegalizeMathForTriton.cpp
   LowerBlockwiseToPtr.cpp
   NarrowRedundantLoads.cpp
   ConvertNarrowTypeSignatures.cpp

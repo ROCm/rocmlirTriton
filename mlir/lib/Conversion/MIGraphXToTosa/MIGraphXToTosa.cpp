@@ -1309,7 +1309,7 @@ LogicalResult DeQuantizeLinearConverter::matchAndRewrite(
 
 // MIGraphX pseudo code:
 // int32_t quantized = static_cast<int32>(
-//      std::round(input[i] / scales[i])) + zero_pts[i];
+//      std::nearbyint(input[i] / scales[i])) + zero_pts[i];
 // output[i] = std::max(-128, std::min(127, quantized));
 LogicalResult QuantizeLinearConverter::matchAndRewrite(
     migraphx::QuantizeLinearOp op, OpAdaptor adaptor,
@@ -1343,7 +1343,11 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
     biasType = isa<IntegerType>(biasType) ? cast<Type>(rewriter.getI32Type())
                                           : cast<Type>(rewriter.getF32Type());
   }
-  Value asShort = createCastOp(rewriter, loc, biasType, scaled, elementType);
+  // QuantizeLinear rounds to nearest, ties to even. Do not use createCastOp
+  // here: its float-to-int path intentionally implements the saturating RTZ
+  // semantics of migraphx.convert.
+  Type asShortType = cast<ShapedType>(scaled.getType()).cloneWith({}, biasType);
+  Value asShort = rewriter.createOrFold<tosa::CastOp>(loc, asShortType, scaled);
   Value biased = asShort;
   if (bias) {
     bias = createCastOp(rewriter, loc, biasType, bias,

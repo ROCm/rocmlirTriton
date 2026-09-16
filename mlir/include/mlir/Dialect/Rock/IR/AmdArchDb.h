@@ -173,6 +173,23 @@ bool preferBf16x3ForF32Dot(StringRef arch);
 /// Check if architecture supports TDM (Tensor Descriptor Memory)
 bool supportsTDM(StringRef arch);
 
+/// Whether emitting a `__ocml_tanh_f32` call on this architecture ends up as
+/// the native `v_tanh_f32` instruction.
+///
+/// This is a question about Triton, not about the hardware. The rewrite that
+/// turns the call into `llvm.amdgcn.tanh.f32` lives in Triton's
+/// `convert-builtin-func-to-llvm` pass
+/// (`third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp`) and is
+/// gated on `ISAFamily::GFX1250` exactly, so this mirrors that gate rather
+/// than LLVM's `FeatureTanhInsts`. The two do not agree: LLVM gives gfx13 the
+/// feature as well, but Triton leaves the call there as a full OCML library
+/// call, which is the slower path this predicate exists to avoid choosing.
+///
+/// Implemented as an exhaustive switch over the ISA families rather than an
+/// equality against GFX1250, so that a Triton bump adding a family fails to
+/// compile until someone re-reads that gate. Nothing else catches it moving.
+bool tritonLowersTanhToNativeInst(StringRef arch);
+
 } // namespace rock
 } // namespace mlir
 

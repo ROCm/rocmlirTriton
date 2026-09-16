@@ -10,6 +10,8 @@ add_rocmlir_dialect_library(MLIRRocMLIRUtils
   MLIRSupport
 )
 
+add_subdirectory(widgets)
+
 # Performance tests can't meaningfully be used without the ability to
 # run code we generate from within our build, which is controlled by
 # MLIR_ENABLE_ROCM_RUNNNER . Furthermore, not guarding the performance

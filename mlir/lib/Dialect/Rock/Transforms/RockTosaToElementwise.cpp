@@ -24,7 +24,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTosaCustomOps.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
@@ -316,31 +315,6 @@ struct ReciprocalConverter : public OpRewritePattern<tosa::ReciprocalOp> {
   }
 };
 
-// arith.negf(x) -> arith.mulf(x, -1.0)
-// This supports migraphx.neg operator, which will be expanded to arith.negf.
-// However, the TritonToTritonGPU conversion does not have a pattern for
-// arith.negf, so we expand it here into ops that Triton supports.
-//
-// Note that the cleanest way would be to make Triton support arith.negf,
-// however they rejected this change:
-// https://github.com/triton-lang/triton/pull/9955
-struct NegFTritonWorkaround : public OpRewritePattern<arith::NegFOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(arith::NegFOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    auto shapedTy = dyn_cast<ShapedType>(op.getType());
-    if (!shapedTy)
-      return failure();
-    auto negOneAttr = DenseElementsAttr::get(
-        shapedTy, rewriter.getFloatAttr(shapedTy.getElementType(), -1.0));
-    Value negOne = arith::ConstantOp::create(rewriter, loc, negOneAttr);
-    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getType(),
-                                               op.getOperand(), negOne);
-    return success();
-  }
-};
-
 // tosa.sigmoid: 1 / (1 + exp(-x))
 // We compute -x as (0 - x) to match both MIGraphX semantics and Triton's
 // implementation, avoiding arith.negf which Triton doesn't support on tensors.
@@ -458,7 +432,9 @@ struct ClampConverter : public OpRewritePattern<tosa::ClampOp> {
 
 // tosa.cast: dispatch to the appropriate arith cast op
 struct CastConverter : public OpRewritePattern<tosa::CastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  CastConverter(MLIRContext *ctx, bool assumeNoNaNs)
+      : OpRewritePattern(ctx), assumeNoNaNs(assumeNoNaNs) {}
+
   LogicalResult matchAndRewrite(tosa::CastOp op,
                                 PatternRewriter &rewriter) const override {
     auto srcTy = cast<ShapedType>(op.getInput().getType()).getElementType();
@@ -506,13 +482,28 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
       return success();
     }
 
-    // float -> int: not reachable. This pass is only invoked from the
-    // MIGraphX pipeline, and the MIGraphX frontend never emits a plain
-    // `tosa.cast` for fp->int
-    if (isa<FloatType>(srcTy) && isa<IntegerType>(dstTy)) {
-      return op.emitOpError(
-          "tosa.cast from floating-point to integer is not supported by "
-          "rock-tosa-to-elementwise");
+    // A plain tosa.cast uses TOSA's round-to-nearest-even semantics. Round
+    // first, then reuse the clamped conversion helper so out-of-range values
+    // and infinities never become poison in arith.fptosi. MIGraphX convert
+    // remains RTZ because it uses the separate fp_to_int_cast custom op.
+    if (auto srcFloatTy = dyn_cast<FloatType>(srcTy);
+        srcFloatTy && dstTy.isSignlessInteger()) {
+      const llvm::fltSemantics &semantics = srcFloatTy.getFloatSemantics();
+      if (!APFloat::semanticsHasZero(semantics) ||
+          !APFloat::semanticsHasInf(semantics) ||
+          !APFloat::semanticsHasSignedRepr(semantics)) {
+        return op.emitOpError(
+            "floating-point to integer cast requires a source type with "
+            "representable zero, signed representation, and infinity; "
+            "promote the source to a wider floating-point type first");
+      }
+      Value rounded =
+          math::RoundEvenOp::create(rewriter, op.getLoc(), op.getInput());
+      Value result =
+          rock::createClampedFPToInt(rewriter, op.getLoc(), rounded, dstTy,
+                                     /*isUnsigned=*/false, assumeNoNaNs);
+      rewriter.replaceOp(op, result);
+      return success();
     }
 
     // int -> bool
@@ -546,6 +537,8 @@ struct CastConverter : public OpRewritePattern<tosa::CastOp> {
 
     return failure();
   }
+
+  bool assumeNoNaNs;
 };
 
 // tosa.custom with domain "rocmlir": unsigned_cast, unsigned_div,
@@ -657,14 +650,6 @@ struct RockTosaToElementwise
 
     target.addLegalDialect<arith::ArithDialect, math::MathDialect,
                            tensor::TensorDialect>();
-    // Mark ops that Triton's TritonToTritonGPU conversion cannot handle as
-    // illegal so the workaround patterns below get applied to them.
-    target.addDynamicallyLegalOp<math::TanhOp>(
-        [](math::TanhOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<math::PowFOp>(
-        [](math::PowFOp op) { return !isa<ShapedType>(op.getType()); });
-    target.addDynamicallyLegalOp<arith::NegFOp>(
-        [](arith::NegFOp op) { return !isa<ShapedType>(op.getType()); });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return !isa<tosa::TosaDialect>(op->getDialect());
     });
@@ -721,23 +706,9 @@ struct RockTosaToElementwise
     patterns.add<ReciprocalRsqrtToSqrtConverter>(ctx, /*benefit=*/2);
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
-             SigmoidConverter, SelectConverter, ClampConverter, CastConverter>(
-            ctx);
+             SigmoidConverter, SelectConverter, ClampConverter>(ctx);
+    patterns.add<CastConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
     patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
-
-    // --- Triton workarounds ---
-    // The Triton TritonToTritonGPU conversion is missing patterns for
-    // math.tanh and math.powf so we use upstream
-    // math::populateExpansionPatterns to expand them into ops Triton supports.
-    //
-    // TODO(gfx1250): gfx1250 will have dedicated instructions for tanh,
-    // we need to make sure we emit those instead of using the math.tanh
-    // expansion.
-    math::populateExpansionPatterns(patterns, {"tanh", "powf"});
-
-    // This is to support migraphx.neg operator, which will be expanded to
-    // arith.negf.
-    patterns.add<NegFTritonWorkaround>(ctx);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

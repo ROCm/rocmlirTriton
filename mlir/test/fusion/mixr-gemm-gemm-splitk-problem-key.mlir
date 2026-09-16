@@ -1,7 +1,7 @@
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // Same GEMM-GEMM problem shape as mixr-gemm-gemm-problem-key.mlir, but without
-// the pre-second-GEMM add. MIGraphX uses mlirRockTuningGetKey to distinguish
-// these fusion patterns via -supportsSplitK.
+// the pre-second-GEMM add: the bare pattern has to stay split-k capable too,
+// not just the fused one.
 // CHECK: gfx942
 // CHECK-SAME: 304
 // CHECK-SAME: -t f32 -transA false -transB false -transC false -transO false -g 1 -m 7 -n 7 -k 3 -gemmO 3 -supportsSplitK true

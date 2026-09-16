@@ -12,6 +12,12 @@
 
 // RUN: rocmlir-opt -rock-fusion-splitk-regularization -rock-allow-fast-math-flags -mlir-print-local-scope %s | FileCheck %s --check-prefix=RECIP
 
+// For a gemm+gemm chain the split partitions the dimension shared by the two
+// GEMMs, so only gemm1 ever carries a factor greater than one.
+#gg_params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#gg_params_g1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#gg_params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 4, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
 module {
 
   // ============================================================
@@ -359,11 +365,84 @@ module {
   }
 
   // ============================================================
+  // gemm+gemm ADDF: the epilogue runs once per split, so the bias is divided
+  // by gemm1's splitKFactor exactly as it is for a plain GEMM.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_gemm_elementwise_gemm_addf
+  // CHECK: %[[G:.*]] = rock.gemm_elementwise_gemm
+  // CHECK: %[[CST:.*]] = arith.constant dense<4.000000e+00> : tensor<1x64x64xf32>
+  // CHECK: %[[DIV:.*]] = arith.divf %{{.*}}, %[[CST]] : tensor<1x64x64xf32>
+  // CHECK: %[[F:.*]] = arith.addf %[[G]], %[[DIV]] : tensor<1x64x64xf32>
+  // CHECK: rock.store %[[F]]
+  func.func @test_gemm_elementwise_gemm_addf(%a: tensor<1x64x64xf32>, %b: tensor<1x64x64xf32>, %c: tensor<1x64x64xf32>, %ext: tensor<1x64x64xf32>, %dest: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.kernel} {
+    %gemm = rock.gemm_elementwise_gemm{
+      ab = %a * %b : tensor<1x64x64xf32>, tensor<1x64x64xf32>
+      out = ab * %c : tensor<1x64x64xf32>
+    } {
+      params0 = #gg_params_g0,
+      params1 = #gg_params_g1_splitk
+    } -> tensor<1x64x64xf32>
+    %fused = arith.addf %gemm, %ext : tensor<1x64x64xf32>
+    %r = rock.store %fused to %dest by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+    return %r : tensor<1x64x64xf32>
+  }
+
+  // ============================================================
+  // gemm+gemm MULF: distributes over the split, so it is left alone.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_gemm_elementwise_gemm_mulf
+  // CHECK-NOT: arith.divf
+  // CHECK: %[[G:.*]] = rock.gemm_elementwise_gemm
+  // CHECK: %[[F:.*]] = arith.mulf %[[G]], %{{.*}} : tensor<1x64x64xf32>
+  // CHECK: rock.store %[[F]]
+  // CHECK-NOT: arith.divf
+  func.func @test_gemm_elementwise_gemm_mulf(%a: tensor<1x64x64xf32>, %b: tensor<1x64x64xf32>, %c: tensor<1x64x64xf32>, %ext: tensor<1x64x64xf32>, %dest: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.kernel} {
+    %gemm = rock.gemm_elementwise_gemm{
+      ab = %a * %b : tensor<1x64x64xf32>, tensor<1x64x64xf32>
+      out = ab * %c : tensor<1x64x64xf32>
+    } {
+      params0 = #gg_params_g0,
+      params1 = #gg_params_g1_splitk
+    } -> tensor<1x64x64xf32>
+    %fused = arith.mulf %gemm, %ext : tensor<1x64x64xf32>
+    %r = rock.store %fused to %dest by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+    return %r : tensor<1x64x64xf32>
+  }
+
+  // ============================================================
+  // gemm+gemm without split-k: no modification at all.
+  // ============================================================
+
+  // CHECK-LABEL: func.func @test_gemm_elementwise_gemm_noop_splitk1
+  // CHECK-NOT: arith.divf
+  // CHECK: %[[G:.*]] = rock.gemm_elementwise_gemm
+  // CHECK: %[[F:.*]] = arith.addf %[[G]], %{{.*}} : tensor<1x64x64xf32>
+  // CHECK: rock.store %[[F]]
+  // CHECK-NOT: arith.divf
+  func.func @test_gemm_elementwise_gemm_noop_splitk1(%a: tensor<1x64x64xf32>, %b: tensor<1x64x64xf32>, %c: tensor<1x64x64xf32>, %ext: tensor<1x64x64xf32>, %dest: tensor<1x64x64xf32>) -> tensor<1x64x64xf32> attributes {rock.kernel} {
+    %gemm = rock.gemm_elementwise_gemm{
+      ab = %a * %b : tensor<1x64x64xf32>, tensor<1x64x64xf32>
+      out = ab * %c : tensor<1x64x64xf32>
+    } {
+      params0 = #gg_params_g0,
+      params1 = #gg_params_g1
+    } -> tensor<1x64x64xf32>
+    %fused = arith.addf %gemm, %ext : tensor<1x64x64xf32>
+    %r = rock.store %fused to %dest by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+    return %r : tensor<1x64x64xf32>
+  }
+
+  // ============================================================
   // Multiply-with-reciprocal path (pipeline): split-k inserts divf on the
   // fused operand; rock-allow-fast-math-flags tags those divfs with arcp.
   // Checked only by the second RUN line (RECIP prefix) above.
   // ============================================================
 
+  // The default prefix needs a label here too, so that the preceding case's
+  // trailing CHECK-NOT stops before this function's legitimate divf.
+  // CHECK-LABEL: func.func @test_multiply_with_reciprocal_addf
   // RECIP-LABEL: func.func @test_multiply_with_reciprocal_addf
   // RECIP-DAG: %[[CST:.*]] = arith.constant dense<4.000000e+00> : tensor<1x4x4xf16>
   // RECIP-DAG: %[[G:.*]] = rock.gemm
