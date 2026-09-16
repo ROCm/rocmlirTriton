@@ -1,3 +1,4 @@
+// REQUIRES: asserts
 // RUN: rocmlir-opt --rock-detect-flash-decoding --debug-only=rock-detect-flash-decoding %s 2>&1 | FileCheck %s --check-prefixes=CHECK-DEBUG
 // RUN: rocmlir-opt --rock-detect-flash-decoding %s | FileCheck %s --check-prefix=CHECK-IR
 

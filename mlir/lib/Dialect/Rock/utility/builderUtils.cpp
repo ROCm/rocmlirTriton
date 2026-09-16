@@ -64,7 +64,7 @@ Value createConstantFloatOp(OpBuilder &b, Location loc, Type type,
   std::pair<APFloat, llvm::detail::opStatus> floatRes =
       createAPFloat(elemType, value);
   APFloat apValue = floatRes.first;
-  auto status = floatRes.second;
+  [[maybe_unused]] auto status = floatRes.second;
   assert(status == expectedStatus);
   Value retValue;
 
