@@ -169,7 +169,8 @@ bool rankingDisabled() {
 }
 
 /// How many configs to keep once the list is in best-first order, read from
-/// `ROCMLIR_ORIGAMI_TOP_N`. Unset, zero, or unparseable keeps all of them.
+/// `ROCMLIR_ORIGAMI_TOP_N`. Unset defaults to 30; zero or unparseable keeps all
+/// of them.
 ///
 /// This trades tuning time against the risk of cropping away the config that
 /// would actually have won, so it only ever applies to a list Origami really
@@ -178,7 +179,7 @@ bool rankingDisabled() {
 std::optional<size_t> rankedListLimit() {
   const char *env = std::getenv("ROCMLIR_ORIGAMI_TOP_N");
   if (!env)
-    return std::nullopt;
+    return 30;
 
   size_t limit = 0;
   if (StringRef(env).trim().getAsInteger(10, limit) || limit == 0) {
@@ -258,7 +259,7 @@ getOrigamiTransposes(RockGemmWrapperInterface gemmOp, KernelType kernelType) {
 /// walk the results first and then sweep up everything they did not mention:
 /// a config Origami would not score is still a config the tuner may pick, and
 /// it only loses its place in the list rather than its place in the space. The
-/// list is then cropped, if `ROCMLIR_ORIGAMI_TOP_N` asked for that.
+/// list is then cropped to the configured limit, which defaults to 30.
 template <typename ParamsAttrT>
 void reorderByRanking(const std::vector<origami::prediction_result_t> &ranked,
                       std::vector<ParamsAttrT> &params) {
