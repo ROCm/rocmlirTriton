@@ -325,8 +325,13 @@ add_subdirectory("${TRITON_PROJECT_DIR}" "external/triton" EXCLUDE_FROM_ALL)
 # register their passes (bin/RegisterTritonDialects.h). Those libraries are in
 # external/triton/test/lib, which upstream only adds under TRITON_BUILD_UT.
 # Turning UT on would trigger FetchContent() googletest for the C++ unit tests.
-# We keep UT OFF and instead build just test/lib here.
-if(TRITON_BUILD_BINARY AND NOT TRITON_BUILD_UT)
+# We keep UT OFF and add external/triton/test ourselves: it adds test/lib and
+# also defines check-triton-lit-tests over the vendored tree, which is the only
+# coverage our triton-patches/ have (12 of them ship lit tests).
+#
+# A function, so that the LLVM_*/MLIR_* variables Triton's lit.site.cfg.py.in
+# expects do not leak into the rest of the build.
+function(rocmlir_add_triton_test_dir)
   if(NOT MSVC)
     set(TRITON_DISABLE_EH_RTTI_FLAGS "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
   endif()
@@ -335,8 +340,62 @@ if(TRITON_BUILD_BINARY AND NOT TRITON_BUILD_UT)
     ${LLVM_INCLUDE_DIRS}
     ${TRITON_INCLUDE_DIRS}
   )
-  add_subdirectory("${TRITON_PROJECT_DIR}/test/lib"
-                   "external/triton/rocmlir-test-lib" EXCLUDE_FROM_ALL)
+
+  # add_lit_target() spells the test command as
+  # "${Python3_EXECUTABLE};${lit_base_dir}/llvm-lit". Neither half is populated
+  # here: LLVM exports its lit base dir only inside external/llvm-project, so
+  # without the override below the command becomes a bare "/llvm-lit".
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(CMAKE_HOST_WIN32 AND NOT CYGWIN)
+    set(LLVM_EXTERNAL_LIT "${LLVM_EXTERNAL_BIN_DIR}/llvm-lit.py")
+  else()
+    set(LLVM_EXTERNAL_LIT "${LLVM_EXTERNAL_BIN_DIR}/llvm-lit")
+  endif()
+
+  # find_package(MLIR) sets these for a standalone Triton build. In our in-tree
+  # build they only exist inside external/llvm-project's own scope, so populate
+  # them here the same way mlir/test/CMakeLists.txt does for check-rocmlir.
+  # LLVM_TOOLS_DIR is what puts FileCheck, not, count, split-file, opt, llc and
+  # mlir-translate on lit's PATH; Triton's RUN lines invoke them unqualified.
+  set(LLVM_SOURCE_DIR "${ROCMLIR_LLVM_PROJECT_DIR}/llvm")
+  set(LLVM_BINARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm")
+  set(LLVM_TOOLS_DIR "${LLVM_EXTERNAL_BIN_DIR}")
+  set(LLVM_LIBS_DIR "${LLVM_EXTERNAL_LIB_DIR}")
+  set(LLVM_LIT_TOOLS_DIR "${LLVM_EXTERNAL_BIN_DIR}")
+  set(MLIR_BINARY_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/tools/mlir")
+
+  add_subdirectory("${TRITON_PROJECT_DIR}/test" "external/triton/test"
+                   EXCLUDE_FROM_ALL)
+endfunction()
+
+if(TRITON_BUILD_BINARY AND NOT TRITON_BUILD_UT)
+  rocmlir_add_triton_test_dir()
+
+  # Upstream's TRITON_TEST_DEPENDS only covers the triton-* binaries because a
+  # standalone build gets the rest from an LLVM install. Ours are build targets,
+  # and lit picks them up from LLVM_TOOLS_DIR, so they have to be built first.
+  set(ROCMLIR_TRITON_LIT_TEST_DEPENDS
+    FileCheck
+    count
+    not
+    split-file
+    llc
+    opt
+    mlir-translate
+  )
+  add_dependencies(check-triton-lit-tests ${ROCMLIR_TRITON_LIT_TEST_DEPENDS})
+
+  # Mirrors check-mlir-build-only/check-rocmlir-build-only so CI can build the
+  # suite in its build stage and run it in a later one.
+  add_custom_target(check-triton-lit-tests-build-only
+    DEPENDS
+      ${ROCMLIR_TRITON_LIT_TEST_DEPENDS}
+      triton-opt
+      triton-llvm-opt
+      triton-tensor-layout
+  )
+  set_target_properties(check-triton-lit-tests-build-only
+                        PROPERTIES FOLDER "Tests")
 endif()
 
 #===----------------------------------------------------------------------===//

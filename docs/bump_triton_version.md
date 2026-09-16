@@ -178,7 +178,10 @@ subtree root and confirm there are no rejects:
 ```
 
 Offsets and small fuzz are expected (upstream shifted the surrounding
-lines); rejects are not.
+lines); rejects are not. A patch that applies with fuzz can still land in the
+wrong place, so once the tree builds, verify the survivors with
+`check-triton-lit-tests` (Step 12): most records ship the lit tests for the
+behavior they change.
 
 ## Step 3: Rebuild LLVM/MLIR
 
@@ -698,15 +701,19 @@ matrix. Because the table is compiled into the library, rebuild afterward
 ## Step 12: Run Tests
 
 ```bash
-cd build && ninja check-mlir && ninja check-rocmlir
+cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir
 ```
 
-`check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
-the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
-did not regress MLIR itself. Run it before `check-rocmlir`: it is far quicker, so
-regressions surface earlier. The nightly pipeline runs it too, and there with
-`MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that lands on `develop` is covered
-even if this step is skipped.
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project` and
+`check-triton-lit-tests` Triton's own lit suite from `external/triton`. Together
+they are the main signal that a fresh upstream import plus our re-applied
+`llvm-patches/` and `triton-patches/` did not regress the vendored trees. Run
+both before `check-rocmlir`: they are far quicker, so regressions surface
+earlier. `check-triton-lit-tests` is the check that catches a Step 2 patch
+re-applied against drifted upstream context, because most Triton patch records
+carry the lit tests for the behavior they change. The nightly pipeline runs both
+too, `check-mlir` there with `MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that
+lands on `develop` is covered even if this step is skipped.
 
 ## Checklist Summary
 
@@ -744,7 +751,7 @@ Use this checklist to track progress:
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
-- [ ] Run tests with `cd build && ninja check-mlir && ninja check-rocmlir`
+- [ ] Run tests with `cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 
