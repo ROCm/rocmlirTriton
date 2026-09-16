@@ -45,18 +45,20 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// The four-phase A swizzle originally repeats every 16 K rows, so dotK=4
-// cannot be indexed as a contiguous segment. Reducing perPhase to 1 makes it
-// repeat every 4 rows while preserving all four phases.
+// A's four-phase swizzle repeats every 16 K rows, so a segment narrower than
+// that holds a different phase pattern than the one before it and cannot be
+// reached by the same memdesc_index. The segment width is floored at the
+// period rather than the buffer being re-swizzled, which leaves 2048 FMAs in
+// the body instead of the 512 the target asks for.
 
-// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
-// CHECK-LABEL:   tt.func @roll_four_phase_swizzle
+// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
+// CHECK-LABEL:   tt.func @roll_at_swizzle_period
 // CHECK:         ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, #shared, {{.*}}> -> !ttg.memdesc<16x128x4xf32, #shared
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, #shared, {{.*}}> -> !ttg.memdesc<4x128x16xf32, #shared
 // CHECK:         scf.for
-// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+// CHECK:           tt.dot {{.*}} tensor<128x16xf32, {{.*}}> * tensor<16x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_four_phase_swizzle(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_at_swizzle_period(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -77,16 +79,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// If perPhase is already 1, reducing maxPhase is the fallback that makes the
-// K=8 dot's four-row segments independently indexable.
+// A's eight-phase swizzle repeats every 8 K rows, which is the dot's whole K
+// tile, so no segment narrower than K holds the same phase pattern and the
+// 1024-FMA block has nothing rolling can move out of it.
 
-// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
-// CHECK-LABEL:   tt.func @roll_by_reducing_max_phase
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x8xf32, #shared, {{.*}}> -> !ttg.memdesc<2x128x4xf32, #shared
-// CHECK:         scf.for
-// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+// CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [0, 1]}>
+// CHECK-LABEL:   tt.func @no_roll_swizzle_period_covers_k
+// CHECK-NOT:     ttg.memdesc_reinterpret
+// CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_by_reducing_max_phase(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_swizzle_period_covers_k(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x8xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<8x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x8xf32, #shared, #smem, mutable> -> tensor<128x8xf32, #blocked1>
@@ -107,15 +109,17 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// A swizzle is not changed merely because it is incompatible with narrow
-// segments. This dot has only 256 FMAs, so it is not selected for rolling.
+// A shared encoding is never rewritten, whatever the pass decides: the phase
+// parameters are what keep the LDS accesses conflict-free, and a buffer is
+// shared by every dot that reads it, not just the one under consideration.
+// This dot has only 256 FMAs, so it is not selected for rolling at all.
 
 // CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
-// CHECK-LABEL:   tt.func @no_swizzle_change_for_small_dot
+// CHECK-LABEL:   tt.func @no_encoding_change_when_dot_is_not_rolled
 // CHECK-NOT:     ttg.memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_swizzle_change_for_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
+  tt.func @no_encoding_change_when_dot_is_not_rolled(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<16x16xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<16x32xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<16x16xf32, #shared, #smem, mutable> -> tensor<16x16xf32, #blocked1>
@@ -132,8 +136,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
-#shared1 = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
 // A kernel pipelined to three stages: the allocation carries two buffers, but
@@ -142,8 +146,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // the number of buffers. Its trailing drain dot has to be rolled too, since
 // that is another full tile of FMAs.
 
-// CHECK:       #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
-// CHECK:       #shared1 = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [1, 0]}>
 // CHECK-LABEL: tt.func @roll_multi_buffer
 // The loop-body dot. The reinterpret is rank 3 whatever the buffer count is,
 // because it applies to the rank-2 view the loop carries.
