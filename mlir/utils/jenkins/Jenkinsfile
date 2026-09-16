@@ -1187,6 +1187,11 @@ pipeline {
         choice(name: 'weeklyTasks',
                choices: ['default', 'parameterSweeps', 'Tuning'],
                description: 'Choose the weekly tasks')
+
+        // Tuning space for the weekly tuning stage
+        choice(name: 'weeklyTuningSpace',
+               choices: ['quick', 'full', 'exhaustive'],
+               description: 'Tuning space for the weekly tuning stage')
     }
     stages {
         stage("Set System Property") {
@@ -1541,38 +1546,22 @@ pipeline {
                                                         buildProject('check-rocmlir-build-only ci-performance-scripts', '')
                                                         dir('build') {
                                                             def tuningLog = "tune_rocmlir_${CHIP}.log"
-                                                            // TESTING ONLY, all three of the following are to be reverted
-                                                            // once we decide how to cut this stage down.
-                                                            //
-                                                            // Verification of a winning config runs the single-threaded CPU
-                                                            // reference, and the largest tier1 gemm was measured at 104
-                                                            // minutes on the slowest weekly node against a 600s default, so
-                                                            // the bound rejects large but healthy configs. Disable it.
-                                                            //
-                                                            // A hung GPU kernel is not bounded by default, so the runtime's
-                                                            // watchdog raises a hardware exception and kills the tuner
-                                                            // instead of the problem being reported. Bound it per config.
-                                                            //
-                                                            // Every run so far died on its first finding, which costs five
-                                                            // hours per bug, so drop --abort-on-error and collect the
-                                                            // failures instead. The stage still goes red at the end, but a
-                                                            // single run now reports every broken config and the real
-                                                            // duration of the whole list.
+                                                            // Verifying the largest tier1 gemm was measured at 104 minutes
+                                                            // against the 600s default, so leave it unbounded.
                                                             def verifyTimeout = 0
-                                                            def gpuRunTimeout = 300
-                                                            def tuneFailures = "tuning_failures_${CHIP}.txt"
-                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} ===" | tee ${tuningLog}
-                                                                rm -f ${tuneFailures}"""
+                                                            // A job that has not picked up the new parameter reports null.
+                                                            def tuningSpace = params.weeklyTuningSpace ?: 'quick'
+                                                            shStrict """echo "=== Tuning rocMLIR for ${CHIP} in the ${tuningSpace} tuning space ===" | tee ${tuningLog}"""
                                                             // Tune gemms with default datatypes, fail if the DB is not created
                                                             // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            shStrict """python3 ./bin/tuningRunner.py --verify-winning-config --verify-timeout ${verifyTimeout} --gpu-run-timeout ${gpuRunTimeout} --op gemm \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op gemm --tuning-space ${tuningSpace} \
                                                                     -c ../mlir/utils/performance/configs/tier1-gemm-configs \
-                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog} || echo "gemm" >> ${tuneFailures}
-                                                                [ -f mlir_tuning_${CHIP}.tsv ]""" 
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
+                                                                [ -f mlir_tuning_${CHIP}.tsv ]"""
                                                             // Tune resnet50 and unet configs
-                                                            shStrict """python3 ./bin/tuningRunner.py --verify-winning-config --verify-timeout ${verifyTimeout} --gpu-run-timeout ${gpuRunTimeout} --op conv \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op conv --tuning-space ${tuningSpace} \
                                                                     -c ../mlir/utils/performance/configs/tier1-conv-configs \
-                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog} || echo "conv" >> ${tuneFailures}"""
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
                                                             // Tune attention configs
                                                             def attnConfig = "../mlir/utils/performance/configs/tier1-attention-configs"
                                                             def attnConfigToUse = attnConfig
@@ -1611,38 +1600,24 @@ dst.write_text("\\n".join(out_lines) + "\\n")
 PY
                                                                 """
                                                             }
-                                                            // TESTING ONLY, to be revisited once the OOM is fixed properly.
-                                                            // Compiling one perf config of the largest tier1 attention
-                                                            // problem (seq_len 16384, head_dim 512) was measured at 4.4GB
-                                                            // of host memory, and 29 of its 611 configs exceed 1GB.
-                                                            // tuningRunner sizes compile parallelism from the NUMA CPU
-                                                            // count alone, so this node compiles 32 of them at once and
-                                                            // the OOM killer takes the tuning driver down, which is what
-                                                            // failed the last weekly run. Bound it here for attention only,
-                                                            // since doing it for gemm and conv would multiply the sweep
-                                                            // that dominates the stage.
-                                                            shStrict """python3 ./bin/tuningRunner.py --verify-winning-config --verify-timeout ${verifyTimeout} --gpu-run-timeout ${gpuRunTimeout} --num-cpus 8 --op attention \
+                                                            shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op attention --tuning-space ${tuningSpace} \
                                                                     -c ${attnConfigToUse} \
-                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog} || echo "attention" >> ${tuneFailures}"""
-                                                            // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
-                                                            // (Includes int8xint8->int8 for performance comparisons against CK.)
-                                                            shStrict """python3 ./bin/tuningRunner.py --verify-winning-config --verify-timeout ${verifyTimeout} --gpu-run-timeout ${gpuRunTimeout} --op gemm --tuning-space quick \
-                                                                    -c ../mlir/utils/performance/configs/tier1-gemm-configs \
-                                                                    -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog} || echo "gemm quick" >> ${tuneFailures}
-                                                                [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
-                                                            // Tune resnet50 and unet configs (quick tuning)
-                                                            shStrict """python3 ./bin/tuningRunner.py --verify-winning-config --verify-timeout ${verifyTimeout} --gpu-run-timeout ${gpuRunTimeout} --op conv --tuning-space quick \
-                                                                    -c ../mlir/utils/performance/configs/tier1-conv-configs \
-                                                                    -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog} || echo "conv quick" >> ${tuneFailures}"""
+                                                                    -o mlir_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
+                                                            // The quick DB only needs its own runs when the stage above
+                                                            // tuned a wider space.
+                                                            if (tuningSpace != 'quick') {
+                                                                // Tune gemms with default datatypes, fail if the DB is not created (quick tuning)
+                                                                // (Includes int8xint8->int8 for performance comparisons against CK.)
+                                                                shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op gemm --tuning-space quick \
+                                                                        -c ../mlir/utils/performance/configs/tier1-gemm-configs \
+                                                                        -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}
+                                                                    [ -f mlir_quick_tuning_${CHIP}.tsv ]"""
+                                                                // Tune resnet50 and unet configs (quick tuning)
+                                                                shStrict """python3 ./bin/tuningRunner.py --abort-on-error --verify-winning-config --verify-timeout ${verifyTimeout} --op conv --tuning-space quick \
+                                                                        -c ../mlir/utils/performance/configs/tier1-conv-configs \
+                                                                        -o mlir_quick_tuning_${CHIP}.tsv 2>&1 | tee -a ${tuningLog}"""
+                                                            }
                                                             shStrict """echo "=== Tuning rocMLIR for ${CHIP} completed ===" | tee -a ${tuningLog}"""
-                                                            // Fail the stage once, at the end, so a single run reports
-                                                            // every tuning command that had failures rather than stopping
-                                                            // at the first one.
-                                                            shStrict """if [ -s ${tuneFailures} ]; then
-                                                                    echo "=== tuning commands with failures on ${CHIP} ==="
-                                                                    cat ${tuneFailures}
-                                                                    exit 1
-                                                                fi"""
                                                             // Check for errors in the tuning log
                                                             script {
                                                                 def tuneLog = readFile(tuningLog).split('\n')
