@@ -281,7 +281,7 @@ static bool fusionChainPreservesZero(Value leaf, OpBuilder &builder) {
   builder.setInsertionPointAfter(leafOp);
   IRMapping mapping;
   SmallVector<Operation *> toErase;
-  bool anyFoldFailed = false;
+  [[maybe_unused]] bool anyFoldFailed = false;
 
   for (Operation *op : chainOps) {
     for (Value operand : op->getOperands()) {

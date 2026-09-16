@@ -195,10 +195,11 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     // Obtain critical tuning parameters.
     StringRef arch = rock::getArchValue(op);
-    uint32_t blockSize = rock::getBlockSize(op).value().getInt();
-    uint32_t gridSize = rock::getGridSize(op).value().getInt();
+    [[maybe_unused]] uint32_t blockSize =
+        rock::getBlockSize(op).value().getInt();
+    [[maybe_unused]] uint32_t gridSize = rock::getGridSize(op).value().getInt();
     GemmParamsAttr tuningParams = op.getParams();
-    int64_t kpack = tuningParams.getKpack();
+    [[maybe_unused]] int64_t kpack = tuningParams.getKpack();
     int64_t kPerBlock = tuningParams.getKPerBlock();
     int64_t mPerBlock = tuningParams.getMPerBlock();
     int64_t nPerBlock = tuningParams.getNPerBlock();
@@ -237,8 +238,8 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
          gridGroupSize},
         arch);
 
-    int64_t numWaves = tuningParams.getNumWaves();
-    int64_t numCTAs = tuningParams.getNumCTAs();
+    [[maybe_unused]] int64_t numWaves = tuningParams.getNumWaves();
+    [[maybe_unused]] int64_t numCTAs = tuningParams.getNumCTAs();
 
     // Whether an operand's load reloads data (non-injective view: conv im2col,
     // broadcast, ...). Such operands rely on caching and are never streamed.
