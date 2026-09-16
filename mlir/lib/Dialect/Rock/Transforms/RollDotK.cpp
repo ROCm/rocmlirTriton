@@ -11,16 +11,18 @@
 // FMAs become `accumulators * dotK` per loop body.
 //
 // The operands stay in the shared-memory buffer the pipeliner already gave
-// them. A dot operand's shared encoding stores K as the slowest-varying
-// dimension, so a K segment is a contiguous range of the buffer and the
-// segmented view is just a reinterpretation: `[M, K]` becomes `[K / dotK, M,
-// dotK]`, indexed by the induction variable. Nothing moves in memory.
+// them, and each iteration names its segment with a `memdesc_subslice` indexed
+// by the induction variable. Nothing moves in memory and nothing is
+// re-swizzled: the buffer's phase parameters are picked to keep the LDS
+// accesses conflict-free and rolling leaves them alone.
 //
-// A swizzled buffer only looks the same in every segment once the segment
-// covers a whole period of its phase pattern, so `dotK` is floored at that
-// period. The buffer itself is never re-swizzled: its phase parameters are
-// picked to keep the LDS accesses conflict-free, and a dot whose period
-// covers its whole K tile is left unrolled instead.
+// A swizzle displaces a row by a phase, so segment `j` holds a different
+// displacement than segment 0 whenever a segment is narrower than the phase
+// pattern's period. The indexed subslice absorbs that: a shared layout is a
+// GF(2)-linear map, so an element's physical offset splits exactly into the
+// offset of the segment and the offset within it, and the lowering computes
+// the segment's half from the index. That holds for any segment width, which
+// is what lets `dotK` go below the period.
 //
 //===----------------------------------------------------------------------===//
 
@@ -90,9 +92,6 @@ struct RollableDot {
   /// Per-thread accumulator count, which rolling does not change.
   int64_t accs;
   int64_t k;
-  /// The narrowest segment both operands can be viewed at, from the periods of
-  /// their shared encodings' swizzling.
-  int64_t minDotK;
 };
 
 /// The load that stages a dot operand through shared memory, looking through
@@ -267,54 +266,24 @@ bool canConvertToLinearLayout(ArrayRef<int64_t> shape, Attribute enc) {
              ttg::AMDRotatingSharedEncodingAttr>(enc);
 }
 
-bool segmentingPreservesAddresses(ArrayRef<int64_t> shape, Attribute enc,
-                                  unsigned kDim, int64_t dotK) {
+/// Whether a K segment of this buffer can be addressed by an indexed
+/// `memdesc_subslice`, which is what the loop walks the segments with.
+///
+/// That op turns its index into a physical offset by applying the buffer's
+/// inverse layout, which is only a function of the index when the layout is
+/// linear. Padding inserts gaps and a partitioned encoding selects a base per
+/// partition, so its verifier rejects both, and so does this.
+bool canIndexSubslice(ArrayRef<int64_t> shape, Attribute enc, unsigned kDim,
+                      int64_t dotK) {
   assert(shape.size() == 2 && "expected a 2-D dot operand tile");
-  SmallVector<int64_t> segShape(shape);
-  segShape[kDim] = dotK;
-
-  if (!canConvertToLinearLayout(shape, enc) ||
-      !canConvertToLinearLayout(segShape, enc))
+  if (isa<ttg::PaddedSharedEncodingAttr, ttg::PartitionedSharedEncodingAttr>(
+          enc))
     return false;
 
-  MLIRContext *ctx = enc.getContext();
-  StringAttr kOffset = StringAttr::get(ctx, "offset");
-  StringAttr kSeg = StringAttr::get(ctx, kDim == 0 ? "dim0" : "dim1");
-
-  // Stacking `nseg` copies of the segment view along K has to reproduce the
-  // wide tile. `inner * outer` puts the inner layout on the low offset bits
-  // and scales the outer's contribution to a shared output dimension by the
-  // inner's size, which is exactly `offset = j * segElems + segOffset` and
-  // `K = j * dotK + segK`, so the equality holds iff the reinterpretation
-  // addresses the same bytes.
-  triton::LinearLayout view =
-      ttg::toLinearLayout(segShape, enc) *
-      triton::LinearLayout::identity1D(shape[kDim] / dotK, kOffset, kSeg);
-  return ttg::toLinearLayout(shape, enc) == view;
-}
-
-/// The narrowest segment a buffer with this encoding can be viewed at.
-///
-/// A swizzled encoding displaces a row by a phase that repeats every
-/// `perPhase * maxPhase` rows, so a segment shorter than that period starts
-/// part-way through the pattern and holds a different displacement than the
-/// segment before it. Only once a segment spans whole periods does every
-/// segment look alike, which is what lets one `memdesc_index` address all of
-/// them. Segments are halved out of a power-of-two K, so the period is
-/// rounded up to one.
-///
-/// An encoding whose period this does not describe gets 1, leaving
-/// `segmentingPreservesAddresses` to reject it if it does not in fact segment.
-int64_t minSegmentWidth(Attribute enc) {
-  auto swizzled = dyn_cast<ttg::SwizzledSharedEncodingAttr>(enc);
-  if (!swizzled)
-    return 1;
-  uint64_t period =
-      uint64_t{swizzled.getPerPhase()} * uint64_t{swizzled.getMaxPhase()};
-  // A degenerate encoding that swizzles nothing constrains nothing.
-  if (period <= 1)
-    return 1;
-  return static_cast<int64_t>(llvm::PowerOf2Ceil(period));
+  SmallVector<int64_t> segShape(shape);
+  segShape[kDim] = dotK;
+  return canConvertToLinearLayout(shape, enc) &&
+         canConvertToLinearLayout(segShape, enc);
 }
 
 /// Recognizes a dot this pass can roll, without yet deciding whether it
@@ -366,11 +335,11 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
   if (aMemTy.getShape() != aTy.getShape() ||
       bMemTy.getShape() != bTy.getShape())
     return reject("a staged buffer is not the whole tile the dot consumes");
-  // memdesc_reinterpret rejects subviews.
+  // A segment's index is relative to the buffer the subslice names, so a
+  // buffer that is itself a subview would need its own offset folded in.
   if (aMemTy.getShape() != aMemTy.getAllocShape() ||
       bMemTy.getShape() != bMemTy.getAllocShape())
-    return reject("a staged buffer is a subview, which memdesc_reinterpret "
-                  "rejects");
+    return reject("a staged buffer is a subview");
 
   int64_t k = aTy.getShape()[1];
   if (k != bTy.getShape()[0] || !llvm::isPowerOf2_64(k))
@@ -384,8 +353,6 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
   cand.bMem = bMem;
   cand.k = k;
   cand.accs = ttg::getTotalElemsPerThread(dTy);
-  cand.minDotK = std::max(minSegmentWidth(aMemTy.getEncoding()),
-                          minSegmentWidth(bMemTy.getEncoding()));
   return cand;
 }
 
@@ -393,11 +360,11 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
 /// segment narrower than the dot's own K can, in which case rolling would
 /// shrink nothing.
 int64_t chooseDotK(const RollableDot &cand, int64_t budget) {
-  // A body holds `accs * dotK` FMAs, so `accs * minDotK` is the floor rolling
-  // can reach. A dot that cannot get under `budget` even there is still
-  // narrowed all the way, since that is what divides the block the furthest.
+  // A body holds `accs * dotK` FMAs. A dot whose accumulators alone exceed
+  // `budget` is still narrowed all the way, since that is what divides the
+  // block the furthest.
   int64_t dotK = cand.k;
-  while (dotK > cand.minDotK && cand.accs * dotK > budget)
+  while (dotK > 1 && cand.accs * dotK > budget)
     dotK /= 2;
   return dotK < cand.k ? dotK : 0;
 }
@@ -417,15 +384,13 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
   auto canSegment = [&](StringRef which, ArrayRef<int64_t> shape, Attribute enc,
                         unsigned kDim) {
-    if (segmentingPreservesAddresses(shape, enc, kDim, dotK))
+    if (canIndexSubslice(shape, enc, kDim, dotK))
       return true;
     LLVM_DEBUG(llvm::dbgs()
                << "  operand " << which
                << " cannot be segmented at dotK=" << dotK
-               << ": its shared encoding does not store K as the "
-                  "slowest-varying dimension with a per-segment swizzling "
-                  "pattern, or it pads, or its linear layout is not one this "
-                  "pass can reason about\n");
+               << ": its shared encoding pads, partitions, or has a "
+                  "linear layout this pass cannot reason about\n");
     return false;
   };
   // A is [M, K] and B is [K, N], so K is dimension 1 of A and 0 of B.
@@ -435,21 +400,8 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
   OpBuilder b(dot);
 
-  auto segmentView = [&](TypedValue<ttg::MemDescType> mem,
-                         ArrayRef<int64_t> segShape) -> Value {
-    auto memTy = mem.getType();
-    SmallVector<int64_t> segmentedShape{nseg};
-    llvm::append_range(segmentedShape, segShape);
-    auto ty = ttg::MemDescType::get(segmentedShape, memTy.getElementType(),
-                                    memTy.getEncoding(), memTy.getMemorySpace(),
-                                    memTy.getMutableMemory());
-    return ttg::MemDescReinterpretOp::create(b, loc, ty, mem);
-  };
-
   SmallVector<int64_t, 2> aSegShape{aTy.getShape()[0], dotK};
   SmallVector<int64_t, 2> bSegShape{dotK, bTy.getShape()[1]};
-  Value aSeg = segmentView(cand.aMem, aSegShape);
-  Value bSeg = segmentView(cand.bMem, bSegShape);
 
   // memdesc_index takes an i32, so the loop is built on i32 to feed it
   // directly. This matches the loops the pipeliner emits.
@@ -464,13 +416,19 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
     Value j = loop.getInductionVar();
     Value acc = loop.getRegionIterArg(0);
 
-    auto loadSegment = [&](Value seg, ArrayRef<int64_t> segShape,
+    auto loadSegment = [&](TypedValue<ttg::MemDescType> mem,
+                           ArrayRef<int64_t> segShape,
                            RankedTensorType operandTy) -> Value {
-      auto segTy = cast<ttg::MemDescType>(seg.getType());
+      auto memTy = mem.getType();
       auto viewTy = ttg::MemDescType::get(
-          segShape, segTy.getElementType(), segTy.getEncoding(),
-          segTy.getMemorySpace(), segTy.getMutableMemory());
-      Value view = ttg::MemDescIndexOp::create(b, loc, viewTy, seg, j);
+          segShape, memTy.getElementType(), memTy.getEncoding(),
+          memTy.getMemorySpace(), memTy.getMutableMemory(),
+          memTy.getAllocShape());
+      // The index counts in segments, so it names segment `j` whatever the
+      // buffer's swizzling does to the bytes inside one.
+      SmallVector<int32_t> noStaticOffset(segShape.size(), 0);
+      Value view = ttg::MemDescSubsliceOp::create(
+          b, loc, viewTy, mem, b.getDenseI32ArrayAttr(noStaticOffset), j);
       // Load straight into the dot-operand layout; the narrower tile keeps the
       // encoding, which does not depend on shape.
       auto tensorTy = RankedTensorType::get(
@@ -478,8 +436,8 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
       return ttg::LocalLoadOp::create(b, loc, tensorTy, view);
     };
 
-    Value a = loadSegment(aSeg, aSegShape, aTy);
-    Value bVal = loadSegment(bSeg, bSegShape, bTy);
+    Value a = loadSegment(cand.aMem, aSegShape, aTy);
+    Value bVal = loadSegment(cand.bMem, bSegShape, bTy);
     Value acc2 = triton::DotOp::create(b, loc, acc.getType(), a, bVal, acc,
                                        dot.getInputPrecision(),
                                        dot.getMaxNumImpreciseAcc());
@@ -575,8 +533,7 @@ void RockRollDotKPass::runOnOperation() {
       for (const RollableDot *cand : alreadyFit) {
         if (residual <= kTargetBlockFMAs)
           break;
-        if (cand->k / 2 >= cand->minDotK)
-          tryRoll(*cand, cand->k / 2);
+        tryRoll(*cand, cand->k / 2);
       }
       if (residual > kTargetBlockFMAs)
         LLVM_DEBUG(llvm::dbgs()

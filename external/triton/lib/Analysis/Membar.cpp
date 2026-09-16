@@ -24,7 +24,10 @@ AllocationSlice::AllocationSlice(Value value,
     // We know there aren't subslices before the one because of subslice::fold
     // Still need to check this for where a fold isn't possible (control flow)
     // and when a subslice is carried in a loop
-    if (accessTy.getAllocShape() == subslice.getSrc().getType().getShape()) {
+    // An indexed subslice names a tile only at runtime, so leaving the offsets
+    // unknown is what keeps `intersects` conservative for it.
+    if (!subslice.getIndex() &&
+        accessTy.getAllocShape() == subslice.getSrc().getType().getShape()) {
       subsliceOffsets = SmallVector<int64_t>(subslice.getOffsets());
     }
   }

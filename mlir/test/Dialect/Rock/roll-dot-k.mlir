@@ -12,11 +12,11 @@
 // heuristic cuts K into sixteen segments of 4 to land on 512.
 
 // CHECK-LABEL: tt.func @roll_f32_fma_dot
-// CHECK-DAG:     %[[A:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
-// CHECK-DAG:     %[[B:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<64x64xf32, {{.*}}> -> !ttg.memdesc<16x4x64xf32, {{.*}}>
+// CHECK:         %[[A:.*]] = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32,
+// CHECK:         %[[B:.*]] = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32,
 // CHECK:         %[[LOOP:.*]] = scf.for %[[J:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[ACC:.*]] = %{{.*}}) -> (tensor<128x64xf32, {{.*}}>)  : i32 {
-// CHECK-DAG:       %[[AV:.*]] = ttg.memdesc_index %[[A]][%[[J]]] : {{.*}} -> !ttg.memdesc<128x4xf32, {{.*}}>
-// CHECK-DAG:       %[[BV:.*]] = ttg.memdesc_index %[[B]][%[[J]]] : {{.*}} -> !ttg.memdesc<4x64xf32, {{.*}}>
+// CHECK-DAG:       %[[AV:.*]] = ttg.memdesc_subslice %[[A]][0, 0] index %[[J]] : {{.*}} -> !ttg.memdesc<128x4xf32, {{.*}}>
+// CHECK-DAG:       %[[BV:.*]] = ttg.memdesc_subslice %[[B]][0, 0] index %[[J]] : {{.*}} -> !ttg.memdesc<4x64xf32, {{.*}}>
 // The operands load straight into the dot layout, so no convert_layout is left.
 // CHECK-DAG:       %[[AL:.*]] = ttg.local_load %[[AV]] : {{.*}} -> tensor<128x4xf32, #ttg.dot_op<{opIdx = 0,{{.*}}>>
 // CHECK-DAG:       %[[BL:.*]] = ttg.local_load %[[BV]] : {{.*}} -> tensor<4x64xf32, #ttg.dot_op<{opIdx = 1,{{.*}}>>
@@ -45,20 +45,20 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// A's four-phase swizzle repeats every 16 K rows, so a segment narrower than
-// that holds a different phase pattern than the one before it and cannot be
-// reached by the same memdesc_index. The segment width is floored at the
-// period rather than the buffer being re-swizzled, which leaves 2048 FMAs in
-// the body instead of the 512 the target asks for.
+// A's four-phase swizzle repeats every 16 K rows, so a 4-row segment starts
+// part-way through the phase pattern and holds a different displacement than
+// the segment before it. The indexed subslice addresses that, so the segment
+// width is set by the FMA target rather than by the period, and the buffer
+// keeps the phase parameters that make its LDS accesses conflict-free.
 
 // CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
-// CHECK-LABEL:   tt.func @roll_at_swizzle_period
+// CHECK-LABEL:   tt.func @roll_below_swizzle_period
 // CHECK:         ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, #shared, {{.*}}> -> !ttg.memdesc<4x128x16xf32, #shared
 // CHECK:         scf.for
-// CHECK:           tt.dot {{.*}} tensor<128x16xf32, {{.*}}> * tensor<16x64xf32, {{.*}}>
+// CHECK:           ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x64xf32, #shared, {{.*}}> -> !ttg.memdesc<128x4xf32, #shared
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_at_swizzle_period(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_below_swizzle_period(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -80,15 +80,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #smem = #ttg.shared_memory
 
 // A's eight-phase swizzle repeats every 8 K rows, which is the dot's whole K
-// tile, so no segment narrower than K holds the same phase pattern and the
-// 1024-FMA block has nothing rolling can move out of it.
+// tile, so every segment of it holds a different phase. Each one is still
+// reachable by its index, which takes the 1024-FMA block down to 512.
 
 // CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [0, 1]}>
-// CHECK-LABEL:   tt.func @no_roll_swizzle_period_covers_k
-// CHECK-NOT:     ttg.memdesc_reinterpret
-// CHECK-NOT:     scf.for
+// CHECK-LABEL:   tt.func @roll_swizzle_period_covers_k
+// CHECK:         scf.for
+// CHECK:           ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x8xf32, #shared, {{.*}}> -> !ttg.memdesc<128x4xf32, #shared
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_swizzle_period_covers_k(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_swizzle_period_covers_k(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x8xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<8x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x8xf32, #shared, #smem, mutable> -> tensor<128x8xf32, #blocked1>
@@ -116,7 +117,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 
 // CHECK:         #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
 // CHECK-LABEL:   tt.func @no_encoding_change_when_dot_is_not_rolled
-// CHECK-NOT:     ttg.memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_encoding_change_when_dot_is_not_rolled(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
@@ -147,15 +148,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // that is another full tile of FMAs.
 
 // CHECK-LABEL: tt.func @roll_multi_buffer
-// The loop-body dot. The reinterpret is rank 3 whatever the buffer count is,
-// because it applies to the rank-2 view the loop carries.
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
+// The loop-body dot. The subslice applies to the rank-2 view the loop carries,
+// so it says nothing about how many buffers the allocation holds.
 // CHECK:         scf.for
-// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+// CHECK:           scf.for
+// CHECK:             ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<128x4xf32, {{.*}}>
+// CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 // The drain dot, in its own scf.if.
 // CHECK:         scf.if
-// CHECK:           ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
 // CHECK:           scf.for
+// CHECK:             ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<128x4xf32, {{.*}}>
 // CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @roll_multi_buffer(%acc: tensor<128x64xf32, #blocked2>, %n: i32, %cond: i1) -> tensor<128x64xf32, #blocked2> {
@@ -203,7 +205,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // would otherwise clear the heuristic, so the arch is what stops it.
 
 // CHECK-LABEL: tt.func @no_roll_on_cdna
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
   tt.func @no_roll_on_cdna(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
@@ -230,7 +232,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // test the backend uses to pick the lowering.
 
 // CHECK-LABEL: tt.func @no_roll_wmma
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_wmma(%acc: tensor<128x64xf32, #wmma>) -> tensor<128x64xf32, #wmma> {
@@ -249,17 +251,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
 // A's shared encoding runs K fastest rather than slowest, so a K segment is
-// strided in shared memory rather than contiguous and reinterpreting the
-// buffer would read the wrong bytes. The linear-layout check catches it.
+// strided in shared memory rather than contiguous. A subslice names a segment
+// by its logical coordinates, so it does not care which of them is contiguous.
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// CHECK-LABEL: tt.func @no_roll_k_not_slowest
-// CHECK-NOT:     memdesc_reinterpret
-// CHECK-NOT:     scf.for
+// CHECK-LABEL: tt.func @roll_k_not_slowest
+// CHECK:         scf.for
+// CHECK:           ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<128x4xf32, {{.*}}>
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_k_not_slowest(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_k_not_slowest(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -276,17 +279,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// A's buffer pads every 128 elements. The encoding carries a linear component
-// built for this 128x64 tile, so reusing it for a narrower view would not
-// describe the same memory, and padding is the one thing a linear layout
-// cannot express, so the check cannot see that by comparing layouts and has
-// to reject on the encoding kind. Otherwise `toLinearLayout` would assert.
+// A's buffer pads every 128 elements. Turning a segment's index into a
+// physical offset relies on the layout being linear, and padding is the one
+// thing a linear layout cannot express, so the subslice's own verifier
+// rejects an index here and the pass has to stop before emitting one.
 #shared = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
 // CHECK-LABEL: tt.func @no_roll_padded_shared
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_padded_shared(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
@@ -306,19 +308,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// The same padding, reached through a partitioned encoding that wraps it.
-// This is the case that has to be rejected on the encoding kind rather than
-// left to the layout comparison: `toLinearLayout` does answer for a
-// partitioned encoding, but it drops the padding on the way, so the layouts
-// it returns would compare equal and the segmentation would be accepted even
-// though the holes make it wrong.
+// The same padding, reached through a partitioned encoding that wraps it. A
+// partitioned encoding is rejected whatever it wraps: it picks a base per
+// partition, and the lowering derives which one from the static offsets, so
+// there is nothing for it to derive from an index that only has a value at
+// run time.
 #padded = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
 #shared = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 2, partitionDim = 0, partitionLayout = #padded}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
 // CHECK-LABEL: tt.func @no_roll_partitioned_wrapping_padded
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_partitioned_wrapping_padded(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
@@ -345,12 +346,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// A non-padded partitioned shared encoding may wrap a SharedLinearEncodingAttr
-// whose fixed shape does not support the narrower rolled view. It must be
-// rejected without calling toLinearLayout on that invalid shape.
+// A partitioned shared encoding that wraps no padding at all is still
+// rejected, so the rejection is about the partitioning rather than about what
+// it happens to contain.
 
 // CHECK-LABEL: tt.func @no_roll_partitioned_shared_linear
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_partitioned_shared_linear(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
@@ -381,7 +382,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // after the dot rather than before it, so which side it falls on matters.
 
 // CHECK-LABEL: tt.func @no_roll_store_between_load_and_dot
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_store_between_load_and_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>) -> tensor<128x64xf32, #blocked2> {
@@ -413,7 +414,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // the same nesting without the store still rolls.
 
 // CHECK-LABEL: tt.func @no_roll_store_before_drain_dot
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_store_before_drain_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> {
@@ -449,7 +450,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // before either region ran, so rolling would change its value.
 
 // CHECK-LABEL: tt.func @no_roll_store_in_sibling_region
-// CHECK-NOT:     ttg.memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_store_in_sibling_region(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> {
@@ -487,8 +488,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // outside of has to be clear of writes throughout, not just ahead of the dot.
 
 // CHECK-LABEL: tt.func @no_roll_loop_invariant_load_clobbered
-// CHECK-NOT:     memdesc_reinterpret
-// CHECK-NOT:     ttg.memdesc_index
+// CHECK-NOT:     ttg.memdesc_subslice
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_loop_invariant_load_clobbered(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %n: i32) -> tensor<128x64xf32, #blocked2> {
     %c0 = arith.constant 0 : i32
@@ -525,9 +525,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // the outer loop.
 // CHECK-LABEL: tt.func @roll_loop_invariant_load
 // CHECK:         scf.for
-// CHECK-DAG:       ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
-// CHECK-DAG:       ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<64x64xf32, {{.*}}> -> !ttg.memdesc<16x4x64xf32, {{.*}}>
 // CHECK:           scf.for
+// CHECK-DAG:         ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<128x4xf32, {{.*}}>
+// CHECK-DAG:         ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<64x64xf32, {{.*}}> -> !ttg.memdesc<4x64xf32, {{.*}}>
 // CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @roll_loop_invariant_load(%acc: tensor<128x64xf32, #blocked2>, %n: i32) -> tensor<128x64xf32, #blocked2> {
@@ -560,7 +560,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // and the block is nowhere near the size where the scheduler struggles.
 
 // CHECK-LABEL: tt.func @no_roll_small_dot
-// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     ttg.memdesc_subslice
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @no_roll_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
@@ -591,8 +591,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // the second one from being touched.
 
 // CHECK-LABEL: tt.func @roll_until_block_fits
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x4xf32, {{.*}}> -> !ttg.memdesc<2x128x2xf32, {{.*}}>
 // CHECK:         scf.for
+// CHECK:           ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<128x4xf32, {{.*}}> -> !ttg.memdesc<128x2xf32, {{.*}}>
 // CHECK:           tt.dot {{.*}} tensor<128x2xf32, {{.*}}> * tensor<2x64xf32, {{.*}}>
 // The second dot keeps its full K: what is left unrolled already fits.
 // CHECK:         tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
@@ -632,9 +632,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // what divides this block the furthest, taking it from 2048 FMAs down to 512.
 
 // CHECK-LABEL: tt.func @roll_to_accumulator_floor
-// CHECK-DAG:     %[[A:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<256x4xf32, {{.*}}> -> !ttg.memdesc<4x256x1xf32, {{.*}}>
-// CHECK-DAG:     %[[B:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<4x128xf32, {{.*}}> -> !ttg.memdesc<4x1x128xf32, {{.*}}>
 // CHECK:         scf.for
+// CHECK-DAG:       ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<256x4xf32, {{.*}}> -> !ttg.memdesc<256x1xf32, {{.*}}>
+// CHECK-DAG:       ttg.memdesc_subslice %{{.*}}[0, 0] index %{{.*}} : !ttg.memdesc<4x128xf32, {{.*}}> -> !ttg.memdesc<1x128xf32, {{.*}}>
 // CHECK:           tt.dot {{.*}} tensor<256x1xf32, {{.*}}> * tensor<1x128xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @roll_to_accumulator_floor(%acc: tensor<256x128xf32, #blocked2>) -> tensor<256x128xf32, #blocked2> {

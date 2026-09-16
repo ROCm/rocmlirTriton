@@ -553,6 +553,17 @@ struct MemDescSubsliceOpConversion
       offsetVals.push_back(b.add(oldOffVal, b.i32_val(opOff)));
     }
 
+    // An index counts in result tiles, so it lands on a tile boundary and its
+    // bits stay disjoint from the coordinates within the tile. That is the
+    // same precondition the static offsets satisfy, so getShmemOffset turns it
+    // into a physical offset the same way, by applying L^-1 to the logical
+    // offsets, which is linear and so handles a dynamic index unchanged.
+    if (Value index = adaptor.getIndex()) {
+      unsigned dim = op.getIndexDim();
+      Value tile = b.i32_val(op.getType().getDimSize(dim));
+      offsetVals[dim] = b.add(offsetVals[dim], b.mul(index, tile));
+    }
+
     // For PartitionedSharedEncoding we need to pick the right base at load
     // time. Let
     //   o     = this op's static subslice offsets (one per dim),
@@ -576,6 +587,9 @@ struct MemDescSubsliceOpConversion
     // load time; only the partition component needs this fix.
     SmallVector<Value> newBases = llvm::to_vector(smemObj.getBases());
     if (newBases.size() > 1) {
+      assert(!adaptor.getIndex() &&
+             "the verifier rejects an index on a partitioned encoding, whose "
+             "base permutation is precomputed from the static offsets");
       LinearLayout ll = triton::gpu::isPaddedEncoding(srcTy.getEncoding())
                             ? triton::gpu::paddedLinearLayout(srcTy)
                             : triton::gpu::toLinearLayout(srcTy);

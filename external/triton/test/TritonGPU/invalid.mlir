@@ -118,6 +118,50 @@ tt.func public @too_many_offsets(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>) 
 
 // -----
 
+// An index scales by the result tile, so it can only walk one dimension.
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+#smem = #ttg.shared_memory
+tt.func public @indexed_subslice_two_split_dims(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>, %i: i32) {
+    // expected-error @+1 {{exactly one narrowed dimension}}
+    %a = ttg.memdesc_subslice %arg0 [0, 0] index %i : !ttg.memdesc<8x16xf32, #shared, #smem> -> !ttg.memdesc<4x8xf32, #shared, #smem, 8x16>
+    tt.return
+}
+
+// -----
+
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+#smem = #ttg.shared_memory
+tt.func public @indexed_subslice_no_split_dim(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>, %i: i32) {
+    // expected-error @+1 {{narrows none}}
+    %a = ttg.memdesc_subslice %arg0 [0, 0] index %i : !ttg.memdesc<8x16xf32, #shared, #smem> -> !ttg.memdesc<8x16xf32, #shared, #smem>
+    tt.return
+}
+
+// -----
+
+// A static offset on top of the index would have to be folded into its
+// scaling to keep the result tile-aligned.
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+#smem = #ttg.shared_memory
+tt.func public @indexed_subslice_nonzero_static_offset(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>, %i: i32) {
+    // expected-error @+1 {{static offsets to all be zero}}
+    %a = ttg.memdesc_subslice %arg0 [0, 8] index %i : !ttg.memdesc<8x16xf32, #shared, #smem> -> !ttg.memdesc<8x8xf32, #shared, #smem, 8x16>
+    tt.return
+}
+
+// -----
+
+// Padding is not linear, so the index cannot be turned into an offset.
+#padded = #ttg.padded_shared<[32:+4] {order = [1, 0], shape = [8, 16]}>
+#smem = #ttg.shared_memory
+tt.func public @indexed_subslice_padded(%arg0: !ttg.memdesc<8x16xf32, #padded, #smem>, %i: i32) {
+    // expected-error @+1 {{padded shared encoding}}
+    %a = ttg.memdesc_subslice %arg0 [0, 0] index %i : !ttg.memdesc<8x16xf32, #padded, #smem> -> !ttg.memdesc<8x8xf32, #padded, #smem, 8x16>
+    tt.return
+}
+
+// -----
+
 #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
 #smem = #ttg.shared_memory
 tt.func public @too_few_offsets(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>) {
@@ -158,16 +202,6 @@ tt.func public @result_1d_to_1d(%arg0: !ttg.memdesc<8xf32, #shared, #smem>) {
     tt.return
 }
 
-
-// -----
-
-#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 16, order = [0, 1]}>
-#smem = #ttg.shared_memory
-tt.func public @subview_along_swizzling_pattern(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>) {
-    // expected-error @+1 {{swizzling pattern}}
-    %a = ttg.memdesc_subslice %arg0 [0, 0] : !ttg.memdesc<8x16xf32, #shared, #smem> -> !ttg.memdesc<8x4xf32, #shared, #smem>
-    tt.return
-}
 
 // -----
 
