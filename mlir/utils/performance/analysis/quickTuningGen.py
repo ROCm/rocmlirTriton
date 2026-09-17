@@ -144,7 +144,16 @@ def validate_files(files):
         sys.exit(1)
 
 
-def load_data(files, no_splitk):
+def filter_split_k(df):
+    """Drop configs with Split-K != 1."""
+    before = len(df)
+    df = df[df['PerfConfig'].apply(lambda x: get_splitk_value(x) in (None, '1'))]
+    if len(df) < before:
+        print(f"Filtered out {before - len(df)} out of {before} Split-K configs")
+    return df
+
+
+def load_data(files):
     """Load tuning data from files or stdin."""
     if files:
         validate_files(files)
@@ -186,14 +195,6 @@ def load_data(files, no_splitk):
     df = df.dropna(subset=['TFlops'])
     if len(df) < before:
         print(f"Dropped {before - len(df)} row(s) with missing/invalid TFlops")
-
-    if no_splitk and not df.empty:
-        # Filter out configs where Split-K != 1
-        before = len(df)
-        mask = df['PerfConfig'].apply(lambda x: get_splitk_value(x) in (None, '1'))
-        df = df[mask]
-        if len(df) < before:
-            print(f"Filtered out {before - len(df)} out of {before} Split-K configs")
 
     return df
 
@@ -651,11 +652,14 @@ def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
         print(f'{key}: {len(problems)} problems')
 
 
-def process_arch(df, arch, op, threshold, update, top_n):
+def process_arch(df, arch, op, threshold, update, top_n, no_splitk):
     """Process data for a single architecture."""
     df_arch = df[df['Chip'] == arch]
 
-    results = find_perfconfigs(df_arch, op, threshold)
+    # Split-K filtering shapes the set cover only. A per-problem list ranks
+    # what was actually measured for that problem.
+    cover_data = filter_split_k(df_arch) if no_splitk else df_arch
+    results = find_perfconfigs(cover_data, op, threshold)
     print_results(results, arch)
 
     if update:
@@ -696,7 +700,9 @@ Examples:
                         metavar='THRESHOLD',
                         help='Coverage threshold (default: 0.93)')
     parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
-    parser.add_argument('--no-splitk', action='store_true', help='Exclude Split-K configurations')
+    parser.add_argument('--no-splitk',
+                        action='store_true',
+                        help='Exclude Split-K configurations from the set cover')
     parser.add_argument('--per-problem-top-n',
                         type=int,
                         default=PER_PROBLEM_TOP_N,
@@ -714,12 +720,13 @@ Examples:
 
     # Generate quick-tune lists
     if pargs.op:
-        df = load_data(pargs.files, pargs.no_splitk)
+        df = load_data(pargs.files)
         if not df.empty:
             archs = sorted(df['Chip'].unique())
             print(f"Processing {len(archs)} architecture(s): {', '.join(archs)}")
             for arch in archs:
-                process_arch(df, arch, pargs.op, pargs.th, pargs.update, pargs.per_problem_top_n)
+                process_arch(df, arch, pargs.op, pargs.th, pargs.update, pargs.per_problem_top_n,
+                             pargs.no_splitk)
         else:
             print("No data to process.")
 
