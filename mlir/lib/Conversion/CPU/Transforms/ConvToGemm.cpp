@@ -379,7 +379,7 @@ static LogicalResult matchConvolutionLikeGeneric(linalg::GenericOp op,
 /// direction-agnostic and behave identically whether or not the filter has
 /// this rotation. Used only to print "forward" vs "backward data" in the
 /// debug log so it's easier to correlate with rocmlir-gen invocations.
-static bool hasBwdDataFilterRotation(Value filter) {
+[[maybe_unused]] static bool hasBwdDataFilterRotation(Value filter) {
   Value v = filter;
   while (v) {
     Operation *def = v.getDefiningOp();
@@ -638,7 +638,7 @@ struct CpuConvToGemmPass
       });
     });
 
-    unsigned numConverted = 0, numUnconverted = 0;
+    [[maybe_unused]] unsigned numConverted = 0, numUnconverted = 0;
     for (const ConvCandidate &c : candidates) {
       bool converted = !surviving.contains(c.op);
       if (converted) {

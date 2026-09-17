@@ -52,6 +52,14 @@ config.substitutions.append(('%pv', config.populate_validation))
 if config.arch_prefers_bf16x3_for_f32_dot:
     config.available_features.add('bf16x3_f32_dot')
 
+# `asserts` marks a build that kept NDEBUG off, which is what LLVM ties both
+# `-debug-only` and `llvm::Statistic` to: the option is only registered and the
+# counters only track when assertions are on. Tests that read a debug log or
+# `-mlir-pass-statistics` therefore have nothing to check in a Release build and
+# gate on this feature. Same spelling as upstream LLVM's own suites.
+if config.enable_assertions:
+    config.available_features.add('asserts')
+
 # ROCM_PATH lets the performance scripts (perfRunner.py, ...) locate ROCm tools
 # such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
 # relocatable SDK). lit otherwise scrubs it from the test environment.

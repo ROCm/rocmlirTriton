@@ -43,7 +43,30 @@ set(LLVM_ENABLE_PROJECTS "mlir;lld" CACHE STRING "List of LLVM sub-projects")
 set(LLVM_ENABLE_ZSTD OFF CACHE STRING "")
 set(LLVM_ENABLE_ZLIB OFF CACHE STRING "")
 set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
-set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
+
+# LLVM_ENABLE_ASSERTIONS does more than enable assert(): HandleLLVMOptions
+# turns it into -UNDEBUG (cancelling the -DNDEBUG that the optimized build
+# types add), plus -D_DEBUG and -D_GLIBCXX_ASSERTIONS, for LLVM/MLIR and for
+# our own mlir/ subtree (which includes HandleLLVMOptions to get -Werror).
+# Triton's CMakeLists never includes that module, so it needs the same flags
+# applied by hand; see the block above add_subdirectory(external/triton).
+#
+# Default it off for the optimized build types. MIGraphX packages us through
+# cget, which configures with CMAKE_BUILD_TYPE=Release and never passes this
+# flag, so otherwise the librockCompiler it links would abort() the host
+# process on any assertion failure instead of failing the compile. Deliberately
+# not FORCEd: -DLLVM_ENABLE_ASSERTIONS=On still wins for release debugging.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" rocmlir_uppercase_build_type)
+if(rocmlir_uppercase_build_type STREQUAL "RELEASE" OR
+   rocmlir_uppercase_build_type STREQUAL "MINSIZEREL")
+  set(rocmlir_default_assertions OFF)
+else()
+  set(rocmlir_default_assertions ON)
+endif()
+set(LLVM_ENABLE_ASSERTIONS ${rocmlir_default_assertions} CACHE BOOL
+    "Enable LLVM/MLIR/Rock assertions")
+message(STATUS "LLVM_ENABLE_ASSERTIONS: ${LLVM_ENABLE_ASSERTIONS}")
+
 set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
 
 # In-tree dev builds do not install MLIR; consumers (us, Triton) use the
@@ -243,6 +266,57 @@ message(STATUS "JSON_SYSPATH: ${JSON_SYSPATH}")
 #===----------------------------------------------------------------------===//
 # Add Triton subdirectory
 #===----------------------------------------------------------------------===//
+
+#===----------------------------------------------------------------------===//
+# COPY-PASTE of the LLVM_ENABLE_ASSERTIONS block from
+# external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake:113-155.
+# Re-sync when bumping the vendored LLVM; see docs/bump_triton_version.md
+# section 5.4.3.
+#
+# Triton never includes that module, so without this it is the one subtree left
+# on NDEBUG in an assertions-enabled build. We cannot simply
+# include(HandleLLVMOptions): that imposes LLVM's whole flag policy on Triton,
+# which builds with -Werror / /WX and would fail on LLVM's warning set.
+# Must precede add_subdirectory(); directory properties are inherited at
+# creation time, so Triton's nested directories would otherwise miss them.
+#===----------------------------------------------------------------------===//
+if(LLVM_ENABLE_ASSERTIONS)
+  # MS STL doesn't like _DEBUG on release builds. See PR 4379.
+  if(NOT WIN32 OR MINGW)
+    add_compile_definitions(_DEBUG)
+  endif()
+  if(NOT rocmlir_uppercase_build_type STREQUAL "DEBUG")
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-UNDEBUG>)
+    if(MSVC)
+      # Also remove /D NDEBUG to avoid MSVC warnings about conflicting defines.
+      foreach(flags_var_to_scrub
+          CMAKE_CXX_FLAGS_RELEASE
+          CMAKE_CXX_FLAGS_RELWITHDEBINFO
+          CMAKE_CXX_FLAGS_MINSIZEREL
+          CMAKE_C_FLAGS_RELEASE
+          CMAKE_C_FLAGS_RELWITHDEBINFO
+          CMAKE_C_FLAGS_MINSIZEREL)
+        string(REGEX REPLACE "(^| )[/-]D *NDEBUG($| )" " "
+          "${flags_var_to_scrub}" "${${flags_var_to_scrub}}")
+      endforeach()
+    endif()
+  endif()
+  # Enable assertions in libstdc++.
+  add_compile_definitions(_GLIBCXX_ASSERTIONS)
+  # Cautiously enable the extensive hardening mode in libc++. Deviation from
+  # the original: LLVM runs a CHECK_CXX_SOURCE_COMPILES probe here, which has
+  # already executed in LLVM's own directory scope and cached its result, so we
+  # reuse SUPPORTS_LIBCXX_HARDENING_MODE instead of probing a second time.
+  if(NOT DEFINED LIBCXX_HARDENING_MODE)
+    set(LIBCXX_HARDENING_MODE "extensive")
+  endif()
+  string(TOUPPER "_LIBCPP_HARDENING_MODE_${LIBCXX_HARDENING_MODE}"
+         rocmlir_libcxx_hardening_spelling)
+  if(SUPPORTS_LIBCXX_HARDENING_MODE)
+    add_compile_definitions(
+      _LIBCPP_HARDENING_MODE=${rocmlir_libcxx_hardening_spelling})
+  endif()
+endif()
 
 add_subdirectory("${TRITON_PROJECT_DIR}" "external/triton" EXCLUDE_FROM_ALL)
 
