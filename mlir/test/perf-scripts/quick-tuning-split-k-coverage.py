@@ -33,7 +33,7 @@ sys.path.insert(0, str(MLIR_DIR / "utils" / "performance" / "analysis"))
 sys.modules.setdefault("pulp", types.SimpleNamespace())
 
 import quickTuningGen  # noqa: E402
-from quickTuningGen import build_coverage, get_target_columns  # noqa: E402
+from quickTuningGen import build_coverage, get_target_columns, threshold_for_priority  # noqa: E402
 
 THRESHOLD = 0.93
 
@@ -63,6 +63,51 @@ def coverage_for(op, rows, problem_id=0):
 
 
 class QuickTuningSplitKCoverageTest(unittest.TestCase):
+
+    def test_low_priority_relaxes_the_coverage_threshold(self):
+        self.assertEqual(threshold_for_priority(1, THRESHOLD), 0.90)
+        self.assertEqual(threshold_for_priority(2, THRESHOLD), 0.91)
+        self.assertEqual(threshold_for_priority(3, THRESHOLD), 0.92)
+        self.assertEqual(threshold_for_priority(4, THRESHOLD), THRESHOLD)
+        self.assertEqual(threshold_for_priority(None, THRESHOLD), THRESHOLD)
+
+    def test_low_priority_adds_nearby_configs_to_coverage(self):
+        winner = gemm_perfconfig(64, 1)
+        nearby = gemm_perfconfig(128, 1)
+        df = make_df('gemm', [(winner, 100.0), (nearby, 91.0)])
+        df['PerfPriority'] = 1
+
+        strict = build_coverage(df, get_target_columns('gemm'), 'gemm', THRESHOLD)
+        priority_aware = build_coverage(df,
+                                        get_target_columns('gemm'),
+                                        'gemm',
+                                        THRESHOLD,
+                                        use_perf_priority=True)
+
+        self.assertEqual(list(strict.values()), [[winner]])
+        self.assertEqual(list(priority_aware.values()), [[winner, nearby]])
+
+    def test_find_ignores_priority_when_strict_coverage_fits(self):
+        winner = gemm_perfconfig(64, 1)
+        nearby = gemm_perfconfig(128, 1)
+        df = make_df('gemm', [(winner, 100.0), (nearby, 91.0)])
+        df['DataType'] = 'f32'
+        df['PerfPriority'] = 1
+        seen_coverage = []
+
+        def solve(coverage, _dtype):
+            seen_coverage.append(coverage)
+            problems = sorted(coverage)
+            configs = sorted({config for candidates in coverage.values() for config in candidates})
+            config_idx = {config: i for i, config in enumerate(configs)}
+            matrix = quickTuningGen.np.ones((len(problems), len(configs)), dtype=int)
+            return [configs[0]], problems, configs, config_idx, matrix
+
+        with mock.patch.object(quickTuningGen, 'solve_full_coverage', side_effect=solve):
+            quickTuningGen.find_perfconfigs(df, 'gemm', THRESHOLD, max_configs=40)
+
+        self.assertEqual(len(seen_coverage), 1)
+        self.assertEqual(list(seen_coverage[0].values()), [[winner]])
 
     def test_split_k_winner_gets_a_split_k_free_duplicate(self):
         split_k_winner = gemm_perfconfig(128, 4)

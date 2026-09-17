@@ -119,6 +119,31 @@ def get_splitk_value(perfconfig):
     return None if value is None else str(value)
 
 
+def get_problem_priority(group):
+    """Return the tier-1 priority for a problem group, if one is available."""
+    if 'PerfPriority' not in group:
+        return None
+    priorities = pd.to_numeric(group['PerfPriority'], errors='coerce').dropna().unique()
+    if len(priorities) == 0:
+        return None
+    # All measurements of one problem should have the same priority. If mixed
+    # input is supplied, retain the stricter threshold rather than relaxing it.
+    return int(max(priorities))
+
+
+def threshold_for_priority(priority, threshold):
+    """Relax coverage for low-priority tier-1 problems.
+
+    With the default 93% threshold, priorities 1, 2, and 3 permit 10%, 9%,
+    and 8% gaps respectively. Priority 4 and above retain the original 7%
+    gap. The relaxation scales with a user-supplied ``--th`` value.
+    """
+    if priority is None:
+        return threshold
+    relaxation = min(max(4 - priority, 0) * 0.01, 0.03)
+    return max(0.0, threshold - relaxation)
+
+
 # =============================================================================
 # Data Loading & Processing
 # =============================================================================
@@ -193,7 +218,7 @@ def load_data(files, no_splitk):
     return df
 
 
-def build_coverage(df_typed, target_cols, op, threshold):
+def build_coverage(df_typed, target_cols, op, threshold, use_perf_priority=False):
     """Map each problem to the perfconfigs performing within ``threshold`` of its best.
 
     Keys are ``(problem, split_k_allowed)``. A problem whose fusion forbids
@@ -206,8 +231,11 @@ def build_coverage(df_typed, target_cols, op, threshold):
     """
     coverage = {}
     for name, group in df_typed.groupby(target_cols):
+        problem_threshold = threshold
+        if use_perf_priority:
+            problem_threshold = threshold_for_priority(get_problem_priority(group), threshold)
         max_tflops = group['TFlops'].max()
-        top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
+        top = group[group['TFlops'] >= max_tflops * problem_threshold]['PerfConfig'].tolist()
         coverage[name, True] = top
 
         if op not in SPLIT_K_AWARE_OPS:
@@ -221,7 +249,7 @@ def build_coverage(df_typed, target_cols, op, threshold):
                   "cannot cover it when split-K is illegal")
             continue
 
-        cutoff = no_splitk['TFlops'].max() * threshold
+        cutoff = no_splitk['TFlops'].max() * problem_threshold
         top_no_splitk = no_splitk[no_splitk['TFlops'] >= cutoff]['PerfConfig'].tolist()
         if set(top_no_splitk) != set(top):
             coverage[name, False] = top_no_splitk
@@ -229,12 +257,73 @@ def build_coverage(df_typed, target_cols, op, threshold):
     return coverage
 
 
-def find_perfconfigs(df, op, threshold):
+def solve_full_coverage(coverage, dtype):
+    """Return the minimum config set and its coverage matrix."""
+    problems = sorted(coverage.keys())
+    configs = sorted({c for candidates in coverage.values() for c in candidates})
+    config_idx = {config: i for i, config in enumerate(configs)}
+
+    n_problems, n_configs = len(problems), len(configs)
+    matrix = np.zeros((n_problems, n_configs), dtype=int)
+    for i, problem in enumerate(problems):
+        for config in coverage[problem]:
+            matrix[i, config_idx[config]] = 1
+
+    problem = pulp.LpProblem("SetCover", pulp.LpMinimize)
+    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
+    problem += pulp.lpSum(selected[j] for j in range(n_configs))
+    for i in range(n_problems):
+        problem += pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs)) >= 1
+
+    status = problem.solve(pulp.PULP_CBC_CMD(msg=0))
+    if status != pulp.LpStatusOptimal:
+        status_name = pulp.LpStatus.get(status, "Unknown")
+        raise RuntimeError(f"Set cover failed for {dtype}: {status_name}. "
+                           f"This likely indicates corrupted input data or a bug.")
+
+    chosen = [configs[j] for j in range(n_configs) if selected[j].varValue == 1]
+    return chosen, problems, configs, config_idx, matrix
+
+
+def solve_bounded_coverage(coverage, problem_weights, configs, max_configs):
+    """Select at most ``max_configs`` configs covering the most important problems."""
+    problems = sorted(coverage.keys())
+    config_idx = {c: i for i, c in enumerate(configs)}
+    n_problems, n_configs = len(problems), len(configs)
+    matrix = np.zeros((n_problems, n_configs), dtype=int)
+    for i, problem in enumerate(problems):
+        for config in coverage[problem]:
+            matrix[i, config_idx[config]] = 1
+
+    problem = pulp.LpProblem("BoundedCoverage", pulp.LpMaximize)
+    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
+    covered = pulp.LpVariable.dicts("covered", range(n_problems), cat='Binary')
+
+    # The small tie-breaker prefers a shorter list without changing the primary
+    # objective of maximizing weighted problem coverage.
+    problem += (pulp.lpSum(problem_weights.get(p, 1) * covered[i] for i, p in enumerate(problems)) -
+                1e-6 * pulp.lpSum(selected[j] for j in range(n_configs)))
+    problem += pulp.lpSum(selected[j] for j in range(n_configs)) <= max_configs
+    for i in range(n_problems):
+        problem += covered[i] <= pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs))
+
+    status = problem.solve(pulp.PULP_CBC_CMD(msg=0))
+    if status != pulp.LpStatusOptimal:
+        status_name = pulp.LpStatus.get(status, "Unknown")
+        raise RuntimeError(f"Bounded quick-tuning coverage failed: {status_name}.")
+
+    return [configs[j] for j in range(n_configs) if selected[j].varValue == 1]
+
+
+def find_perfconfigs(df, op, threshold, max_configs=40):
     """Find minimal covering set of perfconfigs using set cover optimization.
 
     For each problem (unique combination of problem dimensions), we identify
     configs that achieve >= threshold * best_tflops. We then solve a set cover
-    problem to find the minimum number of configs that cover all problems.
+    problem to find the minimum number of configs that cover all problems. Perf
+    priority is consulted only if that strict set exceeds ``max_configs``: low
+    priorities first receive relaxed gaps, then a bounded solve maximizes
+    priority-weighted coverage if full coverage still does not fit.
 
     The ILP formulation:
         minimize    sum(x[j] for all configs j)
@@ -250,42 +339,58 @@ def find_perfconfigs(df, op, threshold):
         df_typed = df[df['DataType'] == dtype]
 
         # Aggregate by keeping only the best TFlops per (problem, config)
-        df_typed = df_typed.groupby(target_cols + ['PerfConfig'], as_index=False)['TFlops'].max()
+        grouping = target_cols + ['PerfConfig']
+        if 'PerfPriority' in df_typed:
+            df_typed = df_typed.groupby(grouping,
+                                        as_index=False).agg(TFlops=('TFlops', 'max'),
+                                                            PerfPriority=('PerfPriority', 'max'))
+        else:
+            df_typed = df_typed.groupby(grouping, as_index=False)['TFlops'].max()
 
+        # First try the requested threshold uniformly. Perf priority must not
+        # affect lists that already fit under the cap at full coverage.
         coverage = build_coverage(df_typed, target_cols, op, threshold)
+        selected, problems, configs, config_idx, matrix = solve_full_coverage(coverage, dtype)
 
-        problems = sorted(coverage.keys())
-        configs = sorted({c for cs in coverage.values() for c in cs})
-        config_idx = {c: i for i, c in enumerate(configs)}
+        has_priorities = ('PerfPriority' in df_typed and df_typed['PerfPriority'].notna().any())
+        if max_configs is not None and len(selected) > max_configs and has_priorities:
+            strict_count = len(selected)
+            coverage = build_coverage(df_typed, target_cols, op, threshold, use_perf_priority=True)
+            selected, problems, configs, config_idx, matrix = solve_full_coverage(coverage, dtype)
+            print(f"{dtype}: strict {1 - threshold:.0%} gap needs {strict_count} configs; "
+                  f"priority-aware gaps reduce it to {len(selected)}")
 
-        # Build coverage matrix: matrix[i,j] = 1 if config j covers problem i
-        n_problems, n_configs = len(problems), len(configs)
-        matrix = np.zeros((n_problems, n_configs), dtype=int)
-        for i, prob in enumerate(problems):
-            for cfg in coverage[prob]:
-                matrix[i, config_idx[cfg]] = 1
+        # Extract selected configs, sorted by how many problems they cover.
+        if max_configs is not None and len(selected) > max_configs:
+            problem_weights = {}
+            for name, group in df_typed.groupby(target_cols):
+                priority = get_problem_priority(group)
+                weight = max(priority, 1) if priority is not None else 1
+                problem_weights[name, True] = weight
+                if op in SPLIT_K_AWARE_OPS:
+                    is_split_k_free = group['PerfConfig'].apply(
+                        lambda config: get_splitk_value(config) in (None, '1'))
+                    no_splitk = group[is_split_k_free]
+                    if not no_splitk.empty:
+                        top = coverage.get((name, True), [])
+                        top_no_splitk = coverage.get((name, False), top)
+                        if set(top_no_splitk) != set(top):
+                            problem_weights[name, False] = weight
 
-        # Solve set cover with ILP
-        prob = pulp.LpProblem("SetCover", pulp.LpMinimize)
-        x = pulp.LpVariable.dicts("x", range(n_configs), cat='Binary')
+            print(f"WARNING: {dtype} needs {len(selected)} configs for full coverage; "
+                  f"limiting quick tuning to {max_configs}")
+            selected = solve_bounded_coverage(coverage, problem_weights, configs, max_configs)
+            covered = [
+                problem for problem, candidates in coverage.items()
+                if any(config in candidates for config in selected)
+            ]
+            covered_weight = sum(problem_weights[problem] for problem in covered)
+            total_weight = sum(problem_weights[problem] for problem in coverage)
+            print(f"Capped list covers {len(covered)}/{len(coverage)} problem constraints "
+                  f"and {covered_weight}/{total_weight} priority weight "
+                  f"({covered_weight / total_weight:.1%})")
 
-        # Objective: minimize number of selected configs
-        prob += pulp.lpSum(x[j] for j in range(n_configs))
-
-        # Constraints: each problem must be covered by at least one config
-        for i in range(n_problems):
-            prob += pulp.lpSum(matrix[i, j] * x[j] for j in range(n_configs)) >= 1
-
-        status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
-
-        if status != pulp.LpStatusOptimal:
-            status_name = pulp.LpStatus.get(status, "Unknown")
-            raise RuntimeError(f"Set cover failed for {dtype}: {status_name}. "
-                               f"This likely indicates corrupted input data or a bug.")
-
-        # Extract selected configs, sorted by how many problems they cover
-        selected = [configs[j] for j in range(n_configs) if x[j].varValue == 1]
-        counts = {c: sum(matrix[i, config_idx[c]] for i in range(n_problems)) for c in selected}
+        counts = {config: int(matrix[:, config_idx[config]].sum()) for config in selected}
         results[dtype] = sorted(selected, key=lambda c: counts[c], reverse=True)
 
     return results
@@ -522,11 +627,11 @@ def print_results(results, arch):
     print()
 
 
-def process_arch(df, arch, op, threshold, update, no_splitk=False):
+def process_arch(df, arch, op, threshold, max_configs, update, no_splitk=False):
     """Process data for a single architecture."""
     df_arch = df[df['Chip'] == arch]
 
-    results = find_perfconfigs(df_arch, op, threshold)
+    results = find_perfconfigs(df_arch, op, threshold, max_configs)
     print_results(results, arch)
 
     if update:
@@ -564,6 +669,11 @@ Examples:
                         default=0.93,
                         metavar='THRESHOLD',
                         help='Coverage threshold (default: 0.93)')
+    parser.add_argument('--max-configs',
+                        type=int,
+                        default=40,
+                        metavar='COUNT',
+                        help='Maximum configs per dtype (default: 40)')
     parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
     parser.add_argument('--no-splitk',
                         action='store_true',
@@ -574,6 +684,9 @@ Examples:
                         help='Add fallback: use TO configs for FROM type (e.g., --alias bf16 f16)')
 
     pargs = parser.parse_args(args)
+
+    if pargs.max_configs < 1:
+        parser.error('--max-configs must be at least 1')
 
     if not pargs.op and not pargs.alias:
         parser.error('either --op or --alias must be specified')
@@ -586,7 +699,8 @@ Examples:
             archs = sorted(df['Chip'].unique())
             print(f"Processing {len(archs)} architecture(s): {', '.join(archs)}")
             for arch in archs:
-                process_arch(df, arch, pargs.op, pargs.th, pargs.update, pargs.no_splitk)
+                process_arch(df, arch, pargs.op, pargs.th, pargs.max_configs, pargs.update,
+                             pargs.no_splitk)
         else:
             print("No data to process.")
 
