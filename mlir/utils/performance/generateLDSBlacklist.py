@@ -38,9 +38,10 @@ header comment for the full argument and the C++ consumption in
 RockTuningImpl.cpp.
 
 Data types are keyed the same way the C++ consumer canonicalizes them
-(``ParamLookupTable::getDataTypeString``): all 16-bit floats collapse to ``f16``
-(so ``f16`` also covers ``bf16``), all 8-bit floats to ``fp8``, all 4-bit floats
-to ``f4``. We therefore enumerate one representative ``-t`` value per key.
+(``ldsDataTypeString`` in LdsBlacklist.cpp): all 16-bit floats collapse to
+``f16`` (so ``f16`` also covers ``bf16``), all 8-bit floats to ``fp8``, all
+4-bit floats to ``f4``. We therefore enumerate one representative ``-t`` value
+per key.
 
 The arch/dtype matrix and GEMM dims are fixed internally (DEFAULT_ARCHES /
 DEFAULT_DTYPES / DEFAULT_DIMS); edit those constants to change the sweep.
@@ -89,7 +90,7 @@ PROJECTION_NAMES = ("mPerBlock", "nPerBlock", "kPerBlock", "numWaves", "matrixIn
 
 Projection = Tuple[int, ...]
 
-# Canonical dtype key (matching ParamLookupTable::getDataTypeString) -> the
+# Canonical dtype key (matching ldsDataTypeString in LdsBlacklist.cpp) -> the
 # rocmlir-gen ``-t`` value used to (re)produce it. We only pick one -t per key
 # because LDS usage depends on element bit-width, which is identical within a
 # key (e.g. bf16 and f16 both key as "f16"). We don't pass -out_datatype:
