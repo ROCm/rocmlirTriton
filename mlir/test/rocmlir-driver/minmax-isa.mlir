@@ -49,9 +49,13 @@
 // gfx1170 has the two-operand form, so the f32 max is a single instruction and
 // the clip's pair fuses into one three-operand instruction. Nothing falls back
 // to a compare/select.
+// Pin the GEMM shape so the whole-kernel absence check does not depend on
+// unrelated address-selection instructions from quick-tuning list changes.
 // RUN: rocmlir-gen --clone-harness -arch gfx1170 -fut mlir_minmax_f32 %s \
 // RUN: | rocmlir-driver -disable-fast-math -arch=gfx1170 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
-// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1170 2>&1
+// RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1170 -kernel-pipeline=gpu,triton,binary \
+// RUN:   --perf-config="gemm:mPerBlock=64,nPerBlock=256,kPerBlock=8,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0" \
+// RUN:   -o /dev/null > %t.gfx1170 2>&1
 // RUN: FileCheck %s --check-prefix=GFX1170 < %t.gfx1170
 // RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1170
 
