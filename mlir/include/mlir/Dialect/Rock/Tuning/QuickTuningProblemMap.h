@@ -1,4 +1,4 @@
-//===- QuickTuningProblemMap.h - Per-problem quick tuning map ---*- C++ -*-===//
+//===- QuickTuningProblemMap.h - Per-problem quick tuning map -------------===//
 //
 // Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
