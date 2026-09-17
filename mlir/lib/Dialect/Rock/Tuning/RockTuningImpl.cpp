@@ -1002,12 +1002,16 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   auto info = PopulateParamsInfo::fromOp(gemmOp);
   OpBuilder b(gemmOp.getContext());
   PopulateParams tuningInfo;
+  auto func = cast<func::FuncOp>(gemmOp->getParentOp());
+  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(func));
 
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+    if (!supportsSplitK && param.getSplitKFactor() > 1)
+      continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
 }
@@ -1016,10 +1020,14 @@ static void
 createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
                                RockGemmGemmWrapperInterface gemmGemmOp) {
   OpBuilder b(gemmGemmOp.getContext());
+  auto func = cast<func::FuncOp>(gemmGemmOp->getParentOp());
+  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(func));
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
   for (GemmGemmParamsAttr params :
        PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
+    if (!supportsSplitK && params.getSplitKFactor() > 1)
+      continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));
   }
 }
