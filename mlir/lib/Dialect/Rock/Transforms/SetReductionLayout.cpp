@@ -51,12 +51,20 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
-// Walk from a dot operand back to the global load that produces it, through the
-// ops the pipeline interposes between a gather load and tt.dot: the layout-only
-// convert_layout / in_thread_transpose, and the local_alloc / local_load pair
-// that stages an operand through shared memory. Returns null if the def chain
-// does not find a tt.load / amdgpu.buffer_load.
-Operation *findFeedingLoad(Value operand) {
+// Walk from a dot operand back to the op that produces the distributed tensor
+// staged into shared memory for it, through the ops the pipeline interposes
+// between that tensor and tt.dot: the layout-only convert_layout /
+// in_thread_transpose, and the local_alloc / local_load pair that stages an
+// operand through shared memory.
+//
+// On an unfused kernel that producer is the global load itself. On a fused one
+// it is the tail of the fusion prologue (arith.select and friends), so a walk
+// that insisted on reaching a tt.load / amdgpu.buffer_load would give up and
+// leave every fused kernel unrewritten. The rewrite does not need the load: it
+// needs the tensor whose blocked layout is about to be redistributed, and
+// anchoring on its producer makes the backward slice below cover the fusion
+// chain and every load feeding it. Returns null if no such producer is found.
+Operation *findGatherAnchor(Value operand) {
   Operation *def = operand.getDefiningOp();
   while (def) {
     if (isa<triton::LoadOp, triton::amdgpu::BufferLoadOp>(def))
@@ -75,22 +83,26 @@ Operation *findFeedingLoad(Value operand) {
       def = alloc.getSrc().getDefiningOp();
       continue;
     }
+    // Anchor on this op as long as it carries a blocked layout to redistribute.
+    auto ty = dyn_cast<RankedTensorType>(def->getResult(0).getType());
+    if (ty && isa<triton::gpu::BlockedEncodingAttr>(ty.getEncoding()))
+      return def;
     return nullptr;
   }
   return nullptr;
 }
 
-// Redistribute a single blocked-encoded global load's warps onto its reduction
-// (K) dim, given by kDim. The caller supplies kDim from the dot operand this
-// load feeds.
-// The rewrite is scoped to the load's own use-def slice
-// (the load, the backward slice feeding its pointer/mask/other operands, and
-// any in_thread_transpose consuming it) rather than applied module-wide: TTG
+// Redistribute a single blocked-encoded gather's warps onto its reduction (K)
+// dim, given by kDim. The caller supplies kDim from the dot operand this
+// gather feeds, and `anchor` from findGatherAnchor.
+// The rewrite is scoped to the anchor's own use-def slice
+// (the anchor, the backward slice feeding it, and any in_thread_transpose
+// consuming it) rather than applied module-wide: TTG
 // encodings are uniqued by content, so a module-wide substitution keyed on the
 // encoding would also rewrite unrelated values that merely happen to share it.
-void rewriteGatherLoad(Operation *load, unsigned kDim) {
-  MLIRContext *ctx = load->getContext();
-  auto ty = dyn_cast<RankedTensorType>(load->getResult(0).getType());
+void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
+  MLIRContext *ctx = anchor->getContext();
+  auto ty = dyn_cast<RankedTensorType>(anchor->getResult(0).getType());
   if (!ty)
     return;
   auto oldBlocked =
@@ -130,8 +142,8 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
     }
   }
   if (!tiles) {
-    load->emitWarning("rock-set-reduction-layout: warps do not tile the "
-                      "reduction dim; skipping");
+    anchor->emitWarning("rock-set-reduction-layout: warps do not tile the "
+                        "reduction dim; skipping");
     return;
   }
 
@@ -159,19 +171,20 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
       triton::gpu::LinearEncodingAttr::get(ctx, std::move(newLL));
 
   // Collect exactly the ops whose types must move to the redistributed layout:
-  // the load itself, the backward slice feeding its pointer/mask/other operands
-  // (splat/addptr/make_range/broadcast/offset constants that share the load
+  // the anchor itself, its backward slice (the loads it gathers from, any
+  // fusion prologue between them, and the
+  // splat/addptr/make_range/broadcast/offset constants that share the anchor's
   // encoding), and any in_thread_transpose consuming it.
   llvm::SetVector<Operation *> scope;
   BackwardSliceOptions sliceOpts;
   sliceOpts.omitBlockArguments = true;
-  (void)getBackwardSlice(load, &scope, sliceOpts);
-  scope.insert(load);
-  for (Operation *user : load->getResult(0).getUsers())
+  (void)getBackwardSlice(anchor, &scope, sliceOpts);
+  scope.insert(anchor);
+  for (Operation *user : anchor->getResult(0).getUsers())
     if (isa<triton::amdgpu::InThreadTransposeOp>(user))
       scope.insert(user);
 
-  // Close the scope over scf.for loop-carried edges. The load's pointer/mask
+  // Close the scope over scf.for loop-carried edges. The gather's pointer/mask
   // operands may be computed inside an scf.for from a value carried across
   // iterations, i.e. read from an iter_arg block argument and advanced through
   // the loop's yield. The backward slice stops at that block argument, so it
@@ -314,19 +327,19 @@ void rewriteGatherLoad(Operation *load, unsigned kDim) {
 void RockSetReductionLayoutPass::runOnOperation() {
   ModuleOp mod = getOperation();
 
-  // Associate each dot operand with the global load that feeds it and the
+  // Associate each dot operand with the gather anchor that feeds it and the
   // reduction (K) dim implied by its operand position.
-  llvm::MapVector<Operation *, unsigned> loadKDim;
+  llvm::MapVector<Operation *, unsigned> anchorKDim;
   llvm::DenseSet<Operation *> conflicting;
-  // TODO: Support the case where the same load is assigned to multiple tt.dots.
-  // This can be beneficial specially if we used DecomposeNonPow2 pass.
+  // TODO: Support the case where the same gather is assigned to multiple
+  // tt.dots. This can be beneficial specially if we used DecomposeNonPow2 pass.
   auto record = [&](Value operand, unsigned kDim) {
-    Operation *load = findFeedingLoad(operand);
-    if (!load)
+    Operation *anchor = findGatherAnchor(operand);
+    if (!anchor)
       return;
-    auto [it, inserted] = loadKDim.try_emplace(load, kDim);
+    auto [it, inserted] = anchorKDim.try_emplace(anchor, kDim);
     if (!inserted && it->second != kDim)
-      conflicting.insert(load);
+      conflicting.insert(anchor);
   };
   // The `useReductionLayout` perfConfig knob is a tri-state gate:
   //   -1 (heuristic default): rewrite only convolution kernels (those carrying
@@ -346,24 +359,24 @@ void RockSetReductionLayoutPass::runOnOperation() {
       record(dot.getB(), /*kDim=*/0u);
     });
   });
-  if (loadKDim.empty()) {
+  if (anchorKDim.empty()) {
     LLVM_DEBUG(llvm::dbgs()
                << "rock-set-reduction-layout: no dot operand is fed "
                   "by a global load; nothing to redistribute\n");
     return;
   }
 
-  // A single load that feeds two dots as different operands (conflicting
+  // A single gather that feeds two dots as different operands (conflicting
   // reduction dims) is ambiguous; leave it untouched rather than guess.
   //
-  // TODO: Duplicating the load (one clone per reduction dim) would let each dot
-  // keep its ideal layout, but whether it's beneficial is not clear.
-  for (auto [load, kDim] : loadKDim) {
-    if (conflicting.contains(load)) {
-      load->emitWarning("rock-set-reduction-layout: load feeds dot operands "
-                        "with conflicting reduction dims; skipping");
+  // TODO: Duplicating the gather (one clone per reduction dim) would let each
+  // dot keep its ideal layout, but whether it's beneficial is not clear.
+  for (auto [anchor, kDim] : anchorKDim) {
+    if (conflicting.contains(anchor)) {
+      anchor->emitWarning("rock-set-reduction-layout: load feeds dot operands "
+                          "with conflicting reduction dims; skipping");
       continue;
     }
-    rewriteGatherLoad(load, kDim);
+    rewriteGatherLoad(anchor, kDim);
   }
 }
