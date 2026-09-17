@@ -1620,12 +1620,15 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
 
             if rc != 0:
                 gpu_logger.error(
-                    format_error("Tuning pipeline failed",
-                                 command=tuning_pipeline,
-                                 stdout=tuning_output,
-                                 stderr=tuning_errors,
-                                 exit_code=rc,
-                                 gpu_id=gpu_id))
+                    format_error(
+                        "Tuning pipeline failed",
+                        command=tuning_pipeline,
+                        stdout=tuning_output,
+                        stderr=tuning_errors,
+                        exit_code=rc,
+                        gpu_id=gpu_id,
+                        # A crash backtrace is useless without its middle frames.
+                        max_lines=80))
                 return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
 
             # Log any stderr output from tuning driver because it may contain warnings
