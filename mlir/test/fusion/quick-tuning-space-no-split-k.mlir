@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch %arch | rocmlir-gen --emit-tuning-space=quick - | FileCheck %s --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
-// CHECK: splitKFactor=1
+// CHECK: splitKFactor=1,
 
 module {
   func.func @conv_add_relu(%input: !migraphx.shaped<1x3x32x32xf32, 3072x1024x32x1>,
