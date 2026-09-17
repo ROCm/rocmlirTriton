@@ -8,8 +8,11 @@ Generates QuickTuningPerfconfigs.inc from tuning data produced by tuningRunner.p
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,6 +58,8 @@ OP_TO_KERNEL_TYPE = {
 # argument, never via the perf-config's splitKFactor, so a split-K-free
 # duplicate would be the same problem twice.
 SPLIT_K_AWARE_OPS = frozenset({'gemm', 'conv', 'gemm_gemm', 'conv_gemm'})
+
+PER_PROBLEM_TOP_N = 5
 
 # Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
 LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
@@ -509,7 +514,139 @@ def print_results(results, arch):
     print()
 
 
-def process_arch(df, arch, op, threshold, update):
+# =============================================================================
+# Per-Problem Maps
+# =============================================================================
+
+CONFIG_CLASSES = {
+    'gemm': 'GemmConfiguration',
+    'conv': 'ConvConfiguration',
+    'attention': 'AttentionConfiguration',
+    'gemm_gemm': 'GemmGemmConfiguration',
+    'conv_gemm': 'ConvGemmConfiguration',
+}
+
+
+def problem_key_hash(row, op, rocmlir_gen):
+    """Ask the compiler for this problem's key hash.
+
+    The key has one implementation, in C++. Rebuild the problem the way
+    perfRunner would and let rocmlir-gen answer, rather than reproducing it.
+    """
+    # Imported here rather than at module scope: it pulls in the built
+    # `amd_arch_db`, which only the per-problem path needs.
+    import perfRunner
+    conf_class = getattr(perfRunner, CONFIG_CLASSES[op])
+    config = conf_class.from_table_entry(row, row['Chip'], int(row['numCU']),
+                                         int(row['numChiplets']))
+    args = config.generate_problem_commandline().split()
+    # rocmlir-gen rejects --kernel-repeats without a host harness, and we are
+    # not running anything.
+    repeats = args.index('--kernel-repeats')
+    del args[repeats:repeats + 2]
+    result = subprocess.run([str(rocmlir_gen), *args, '--emit-quick-tuning-problem-key-hash'],
+                            capture_output=True,
+                            check=False,
+                            text=True)
+    if result.returncode:
+        raise RuntimeError(f'could not key {config.to_command_line()!r}: {result.stderr.strip()}')
+    return int(result.stdout)
+
+
+def select_perfconfigs(group, op, top_n):
+    """The best measured perfconfigs, keeping one legal non-split-K slot."""
+    ordered = group.sort_values(['TFlops', 'PerfConfig'], ascending=[False, True])
+    perfconfigs = ordered.head(top_n)['PerfConfig'].tolist()
+    if op not in SPLIT_K_AWARE_OPS or any(get_splitk_value(p) in (None, '1') for p in perfconfigs):
+        return perfconfigs, False
+    legal = [p for p in ordered['PerfConfig'] if get_splitk_value(p) in (None, '1')]
+    if not legal:
+        return perfconfigs, True
+    perfconfigs[-1] = legal[0]
+    return perfconfigs, False
+
+
+def find_per_problem_perfconfigs(df_arch, op, top_n, rocmlir_gen):
+    """Map each data type to its {problem key hash: perfconfigs}."""
+    problem_cols = get_target_columns(op)
+    results = {}
+    for dtype in sorted(df_arch['DataType'].unique()):
+        typed = df_arch[df_arch['DataType'] == dtype]
+        problems = {}
+        missing_non_split = 0
+        with ThreadPoolExecutor() as pool:
+            groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
+            keys = pool.map(lambda rows: problem_key_hash(rows.iloc[0], op, rocmlir_gen), groups)
+        for rows, key in zip(groups, keys):
+            best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
+            perfconfigs, missing = select_perfconfigs(best, op, top_n)
+            problems[key] = perfconfigs
+            missing_non_split += missing
+        if missing_non_split:
+            print(
+                f'WARNING: {missing_non_split} problem(s) have no measured '
+                f'splitKFactor=1 perfconfig',
+                file=sys.stderr)
+        results[dtype] = problems
+    return results
+
+
+def format_shard(key, op, problems):
+    """Render one per-problem map shard.
+
+    Perfconfigs are interned and each problem indexes a variable-length run of
+    them, so lists need no padding.
+    """
+    suffix = ''.join(part.capitalize() for part in key.split('_'))
+    hashes = sorted(problems)
+    perfconfigs = sorted({p for h in hashes for p in problems[h]})
+    if len(perfconfigs) > 65535:
+        raise ValueError(f'{key}: {len(perfconfigs)} perfconfigs do not fit in uint16_t')
+    index_of = {p: i for i, p in enumerate(perfconfigs)}
+
+    refs, indices = [], []
+    for value in hashes:
+        refs.append(f'{{{value}ULL, {len(indices)}, {len(problems[value])}}}')
+        indices += [index_of[p] for p in problems[value]]
+
+    section = 'GemmGemm' if op in GEMM_GEMM_OPS else 'Gemm'
+    lines = [
+        f'// {suffix}.inc -- generated by: {get_generator_path()}', '', '// clang-format off', '',
+        f'#ifdef {section}_PER_PROBLEM_DEFINITIONS_GEN',
+        f'static const QuickTuningProblemRef problems{suffix}[] = {{'
+    ]
+    lines += [f'    {ref},' for ref in refs]
+    lines += [
+        '};', f'static const uint16_t perfConfigIndices{suffix}[] = {{',
+        '    ' + ', '.join(map(str, indices)) + ',', '};',
+        f'static const StringRef perfConfigs{suffix}[] = {{'
+    ]
+    lines += [f'    {json.dumps(p)},' for p in perfconfigs]
+    lines += [
+        '};', f'#endif // {section}_PER_PROBLEM_DEFINITIONS_GEN', '',
+        f'#ifdef {section}_PER_PROBLEM_LOOKUP_TABLE_GEN',
+        f'{{"{key}", QuickTuningProblemMap(problems{suffix}, '
+        f'perfConfigIndices{suffix}, perfConfigs{suffix})}},',
+        f'#endif // {section}_PER_PROBLEM_LOOKUP_TABLE_GEN', ''
+    ]
+    return '\n'.join(lines)
+
+
+def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
+    """Write this architecture's per-problem map shards."""
+    shard_dir = get_output_path().with_name('QuickTuningProblemMap')
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    kernel_type = OP_TO_KERNEL_TYPE[op].lower()
+    for dtype, problems in find_per_problem_perfconfigs(df_arch, op, top_n, rocmlir_gen).items():
+        if not problems:
+            continue
+        key = f'{arch}_{kernel_type}_{dtype}'
+        suffix = ''.join(part.capitalize() for part in key.split('_'))
+        (shard_dir / f'{suffix}.inc').write_text(format_shard(key, op, problems))
+        print(f'{key}: {len(problems)} problems')
+
+
+def process_arch(df, arch, op, threshold, update, top_n):
     """Process data for a single architecture."""
     df_arch = df[df['Chip'] == arch]
 
@@ -519,6 +656,8 @@ def process_arch(df, arch, op, threshold, update):
     if update:
         update_inc_file(results, arch, op)
         print(f"Updated {get_output_path()} for {arch}")
+        update_problem_maps(df_arch, arch, op, top_n,
+                            os.environ.get('ROCMLIR_GEN_PATH', 'rocmlir-gen'))
 
 
 def main(args=None):
@@ -553,6 +692,10 @@ Examples:
                         help='Coverage threshold (default: 0.93)')
     parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
     parser.add_argument('--no-splitk', action='store_true', help='Exclude Split-K configurations')
+    parser.add_argument('--per-problem-top-n',
+                        type=int,
+                        default=PER_PROBLEM_TOP_N,
+                        help=f'perfconfigs kept per problem (default: {PER_PROBLEM_TOP_N})')
     parser.add_argument('--alias',
                         nargs=2,
                         metavar=('FROM', 'TO'),
@@ -571,7 +714,7 @@ Examples:
             archs = sorted(df['Chip'].unique())
             print(f"Processing {len(archs)} architecture(s): {', '.join(archs)}")
             for arch in archs:
-                process_arch(df, arch, pargs.op, pargs.th, pargs.update)
+                process_arch(df, arch, pargs.op, pargs.th, pargs.update, pargs.per_problem_top_n)
         else:
             print("No data to process.")
 

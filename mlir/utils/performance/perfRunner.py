@@ -129,6 +129,13 @@ def inverse_input_layouts(input_layout):
     return "".join(map[char] for char in input_layout)
 
 
+def table_bool(value):
+    """Read a boolean back out of a table entry, which may hold 0/1 or a str."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes')
+    return bool(value)
+
+
 def inverse_filter_layouts(filter_layout):
     map = {v: k for k, v in FILTER_LAYOUT_MAP.items()}
     return "".join(map[char] for char in filter_layout)
@@ -599,6 +606,16 @@ class PerfConfiguration:
     def table_entry(self, nanoseconds):
         raise NotImplementedError()
 
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        """Rebuild a configuration from a row written by ``table_entry``.
+
+        Its inverse; keep the two in step. The table does not carry the
+        convolution group count or the right half of an asymmetric padding, so
+        those come back as defaults.
+        """
+        raise NotImplementedError()
+
     def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS) -> str:
         """Driver arguments describing the problem itself.
 
@@ -749,6 +766,35 @@ class ConvConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        # The table holds the internal layout spelling, which __init__ maps
+        # into again, so undo that first.
+        return cls(dtype=row['DataType'],
+                   direction=row['Direction'],
+                   filter_layout=inverse_filter_layouts(row['FilterLayout']),
+                   input_layout=inverse_input_layouts(row['InputLayout']),
+                   output_layout=inverse_output_layouts(row['OutputLayout']),
+                   n=int(row['N']),
+                   c=int(row['C']),
+                   hi=int(row['H']),
+                   wi=int(row['W']),
+                   k=int(row['K']),
+                   y=int(row['Y']),
+                   x=int(row['X']),
+                   conv_stride_h=int(row['StrideH']),
+                   conv_stride_w=int(row['StrideW']),
+                   padding_hl=int(row['PaddingH']),
+                   padding_hr=int(row['PaddingH']),
+                   padding_wl=int(row['PaddingW']),
+                   padding_wr=int(row['PaddingW']),
+                   dilation_h=int(row['DilationH']),
+                   dilation_w=int(row['DilationW']),
+                   group=1,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -1306,6 +1352,27 @@ class GemmConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        scaled = table_bool(row['ScaledGemm'])
+        return cls(dtype=row['DataType'],
+                   out_dtype=row['OutDataType'],
+                   g=int(row['G']),
+                   m=int(row['M']),
+                   k=int(row['K']),
+                   n=int(row['N']),
+                   trans_a=table_bool(row['TransA']),
+                   trans_b=table_bool(row['TransB']),
+                   trans_o=table_bool(row['TransO']),
+                   scaled_gemm=scaled,
+                   scale_a_dtype=row['ScaleADtype'] if scaled else None,
+                   scale_b_dtype=row['ScaleBDtype'] if scaled else None,
+                   trans_scale_a=table_bool(row['TransScaleA']),
+                   trans_scale_b=table_bool(row['TransScaleB']),
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -2019,6 +2086,32 @@ class AttentionConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        look_back = int(row['SlidingWindowLookBack'])
+        return cls(dtype=row['DataType'],
+                   g=int(row['G']),
+                   seq_len_q=int(row['SeqLenQ']),
+                   seq_len_k=int(row['SeqLenK']),
+                   num_heads_q=int(row['NumHeadsQ']),
+                   num_heads_kv=int(row['NumHeadsKV']),
+                   head_dim_qk=int(row['HeadDimQK']),
+                   head_dim_v=int(row['HeadDimV']),
+                   with_attn_scale=table_bool(row['WithAttnScale']),
+                   with_attn_bias=table_bool(row['WithAttnBias']),
+                   trans_q=table_bool(row['TransQ']),
+                   trans_k=table_bool(row['TransK']),
+                   trans_v=table_bool(row['TransV']),
+                   trans_o=table_bool(row['TransO']),
+                   causal=table_bool(row['Causal']),
+                   return_lse=table_bool(row['ReturnLSE']),
+                   split_kv=int(row['SplitKV']),
+                   trans_bias=table_bool(row['TransBias']),
+                   sliding_window_look_back=None if look_back <= 0 else look_back,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config

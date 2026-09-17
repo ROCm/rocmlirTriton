@@ -14,6 +14,7 @@
 #define MLIR_DIALECT_ROCK_PARAM_LOOKUP_TABLE_H
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 namespace mlir {
@@ -34,8 +35,11 @@ std::string getDataTypeString(Type dataType);
 template <typename ParamsType>
 class ParamLookupTable {
 public:
-  static ArrayRef<StringRef> lookup(StringRef arch, KernelType op,
-                                    Type dataType);
+  /// Perfconfigs to try, narrowed to `problemKeyHash` when this key has an
+  /// entry for it.
+  static SmallVector<StringRef> lookup(
+      StringRef arch, KernelType op, Type dataType,
+      std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.
@@ -101,6 +105,13 @@ private:
   }
 
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
+
+  static const llvm::StringMap<QuickTuningProblemMap> &getProblemMap() {
+    static const llvm::StringMap<QuickTuningProblemMap> map = buildProblemMap();
+    return map;
+  }
+
+  static llvm::StringMap<QuickTuningProblemMap> buildProblemMap();
 
   static std::string getKernelTypeString(KernelType kernelType);
 
