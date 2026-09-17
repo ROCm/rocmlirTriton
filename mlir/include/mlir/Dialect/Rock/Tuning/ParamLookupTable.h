@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/StringMap.h"
 
 namespace mlir {
 namespace rock {

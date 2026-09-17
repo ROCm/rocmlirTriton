@@ -27,11 +27,17 @@ SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
+  // Set ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING to any value, including "0",
+  // to fall back to the set cover everywhere. Presence-based like
+  // ROCMLIR_DISABLE_LDS_BLACKLIST, and read once so getenv cannot race a
+  // concurrent setenv.
+  static const bool perProblemDisabled =
+      std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING") != nullptr;
+
   // Deliberately no key fallback: a ranking only holds for the problem it was
   // measured on.
-  if (problemKeyHash &&
-      !std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING")) {
-    static const auto &problemMap = getProblemMap();
+  if (problemKeyHash && !perProblemDisabled) {
+    const auto &problemMap = getProblemMap();
     if (auto it = problemMap.find(key); it != problemMap.end()) {
       SmallVector<StringRef> perfConfigs = it->second.lookup(*problemKeyHash);
       LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "

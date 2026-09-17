@@ -40,4 +40,7 @@ foreach(_shard ${_problem_map_shards})
 endforeach()
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/QuickTuningProblemMap.inc
   CONTENT "${_problem_map_inc}")
-target_include_directories(obj.MLIRRockTuning PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(MLIRRockTuning PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if(TARGET obj.MLIRRockTuning)
+  target_include_directories(obj.MLIRRockTuning PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endif()

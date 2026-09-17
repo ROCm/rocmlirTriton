@@ -1727,6 +1727,7 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
 namespace {
 /// Joins the fields identifying a problem into one string.
 struct ProblemKeyBuilder {
+  std::string key;
   llvm::raw_string_ostream os{key};
 
   template <typename T>
@@ -1736,8 +1737,6 @@ struct ProblemKeyBuilder {
     os << field;
     return *this;
   }
-
-  std::string key;
 };
 } // namespace
 
@@ -1747,7 +1746,7 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
   Operation *gemmOp = gemmIF.getOperation();
 
   if (opType == KernelType::Conv || opType == KernelType::ConvBwdData) {
-    auto convIF = dyn_cast<RockConvInterface>(gemmOp);
+    auto convIF = cast<RockConvInterface>(gemmOp);
     llvm::StringMap<unsigned> fLayoutMap, iLayoutMap, oLayoutMap;
     SmallString<6> fLayout, iLayout, oLayout;
     if (failed(extractLayouts(gemmOp, fLayoutMap, iLayoutMap, oLayoutMap,
@@ -1771,7 +1770,7 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
   }
 
   if (opType == KernelType::Gemm) {
-    auto rGemmOp = dyn_cast<rock::GemmOp>(gemmOp);
+    auto rGemmOp = cast<rock::GemmOp>(gemmOp);
     GemmSize size = gemmIF.getGemmSize();
     out << rGemmOp.getATransposed() << rGemmOp.getBTransposed()
         << rGemmOp.getOTransposed() << size.g << size.m << size.k << size.n;
