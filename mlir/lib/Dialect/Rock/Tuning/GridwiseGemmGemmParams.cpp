@@ -42,7 +42,8 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
   auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
   auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType,
+                                  getQuickTuningProblemKeyHash(op));
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
         return isGemmGemmParamsConservativelyApplicable(
@@ -60,9 +61,10 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
 }
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
-    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
+    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
+    std::optional<QuickTuningProblemKeyHash> problemKeyHash) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      arch, kernelType, elementType);
+      arch, kernelType, elementType, problemKeyHash);
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(perfConfigs.size());
   for (StringRef config : perfConfigs) {
