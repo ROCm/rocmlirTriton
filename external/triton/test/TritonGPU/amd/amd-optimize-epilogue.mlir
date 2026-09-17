@@ -441,17 +441,20 @@ module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32}
 
 // -----
 
-// The epilogue value feeds two stores. Retyping it in place would change the
-// type under the store that is not being rewritten, so an escaping use has to
-// keep the round trip even though the ops themselves are all elementwise.
-// CHECK-LABEL: escaping_use_two_stores
-// CHECK:       ttg.convert_layout %{{.*}} : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
-// CHECK:       tt.store %{{.*}} : tensor<32x32x!tt.ptr<f32>, #blocked>
-// CHECK:       tt.store %{{.*}} : tensor<32x32x!tt.ptr<f32>, #blocked>
+// The epilogue value feeds two stores, which is how a kernel with several
+// results reads one accumulator. Neither store can move alone, since the one
+// left behind would be reading a value whose layout just changed, so both are
+// rewritten together and the round trip goes away for both.
+// CHECK-LABEL: two_stores_move_together
+//   CHECK-NOT:   ttg.convert_layout %{{.*}} : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+//       CHECK:   ttg.convert_layout %{{.*}} : tensor<32x32x!tt.ptr<f32>, #blocked> -> tensor<32x32x!tt.ptr<f32>, #mma>
+//       CHECK:   tt.store %{{.*}} : tensor<32x32x!tt.ptr<f32>, #mma>
+//       CHECK:   ttg.convert_layout %{{.*}} : tensor<32x32x!tt.ptr<f32>, #blocked> -> tensor<32x32x!tt.ptr<f32>, #mma>
+//       CHECK:   tt.store %{{.*}} : tensor<32x32x!tt.ptr<f32>, #mma>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [16, 4], warpsPerCTA = [1, 1], order = [0, 1]}>
 #mma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [1, 1], instrShape = [32, 32, 8], isTransposed = false}>
 module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
-  tt.func public @escaping_use_two_stores(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
+  tt.func public @two_stores_move_together(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
     %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
     %cst_0 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
     %cst_1 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>>
@@ -462,6 +465,33 @@ module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32}
     %4 = tt.splat %arg1 : !tt.ptr<f32> -> tensor<32x32x!tt.ptr<f32>, #blocked>
     tt.store %3, %2 : tensor<32x32x!tt.ptr<f32>, #blocked>
     tt.store %4, %2 : tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.return
+  }
+}
+
+// -----
+
+// The second store consumes the epilogue as a *mask*, not as a value, so it is
+// not a store this rewrite can carry along and the round trip has to stay.
+// CHECK-LABEL: epilogue_used_as_mask
+// CHECK:       ttg.convert_layout %{{.*}} : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+// CHECK:       tt.store
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [16, 4], warpsPerCTA = [1, 1], order = [0, 1]}>
+#mma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [1, 1], instrShape = [32, 32, 8], isTransposed = false}>
+module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  tt.func public @epilogue_used_as_mask(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
+    %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
+    %cst_0 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
+    %cst_1 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>>
+    %zero = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #blocked>
+    %0 = tt.dot %cst_0, %cst_1, %cst : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>> * tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>> -> tensor<32x32xf32, #mma>
+    %1 = ttg.convert_layout %0 : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+    %2 = math.exp2 %1 : tensor<32x32xf32, #blocked>
+    %m = arith.cmpf ogt, %2, %zero : tensor<32x32xf32, #blocked>
+    %3 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<32x32x!tt.ptr<f32>, #blocked>
+    %4 = tt.splat %arg1 : !tt.ptr<f32> -> tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.store %3, %2 : tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.store %4, %2, %m : tensor<32x32x!tt.ptr<f32>, #blocked>
     tt.return
   }
 }

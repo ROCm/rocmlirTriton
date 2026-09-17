@@ -285,7 +285,6 @@ public:
 
     Value ptr = stOp.getPtr();
     Value val = stOp.getValue();
-    Value mask = stOp.getMask();
     auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
     auto valType = dyn_cast<RankedTensorType>(val.getType());
     if (!ptrType || !valType ||
@@ -369,20 +368,64 @@ public:
     if (!cvtOp)
       return mlir::failure();
 
+    // A kernel with several results stores more than one value off the same
+    // accumulator, so a value in the cone, or the conversion itself, can be
+    // read by a store other than the one matched here:
+    //
+    //   %c   = ttg.convert_layout %acc : #mma -> #blocked
+    //   tt.store %p0, %c                              // the raw result
+    //   %r   = arith.maxnumf %c, %zero                // the activated one
+    //   tt.store %p1, %r
+    //
+    // Rewriting one store in isolation is impossible: whichever is matched,
+    // the other still reads the old layout. They have to move together, so
+    // collect them and treat a store as an acceptable user of the cone.
     // The retype below mutates result types in place, so nothing outside the
     // cone may still be observing the old type. Reconvergence *inside* the
     // cone is fine, which is what makes a SiLU- or GELU-shaped epilogue
-    // bypassable: the accumulator is one value read more than once.
-    for (Operation *op : cone)
-      for (Operation *user : op->getUsers())
-        if (user != stOp && !cone.contains(user))
+    // bypassable: the accumulator is one value read more than once. The
+    // conversion has to become dead too, or the LDS round trip stays and the
+    // bypass buys an uncoalesced store for nothing.
+    //
+    // The one outside user that does not disqualify the bypass is another
+    // store, which is how a kernel with several results reads one epilogue:
+    //
+    //   %c = ttg.convert_layout %acc : #mma -> #blocked
+    //   tt.store %p0, %c                              // the raw result
+    //   %r = arith.maxnumf %c, %zero                  // the activated one
+    //   tt.store %p1, %r
+    //
+    // Neither store can move on its own, since whichever is rewritten first
+    // leaves the other reading a value whose layout just changed. Collect
+    // them and move them together.
+    llvm::SmallVector<triton::StoreOp> stores{stOp};
+    auto collectStoreUsers = [&](Operation *op) -> LogicalResult {
+      for (OpOperand &use : op->getResult(0).getUses()) {
+        Operation *user = use.getOwner();
+        if (user == stOp || cone.contains(user))
+          continue;
+        // Only the stored value may come from the epilogue. An epilogue value
+        // used as a store's pointer or mask means addressing computed from
+        // the data, which is not a shape this pattern rewrites.
+        auto otherSt = dyn_cast<triton::StoreOp>(user);
+        if (!otherSt || use.get() != otherSt.getValue())
           return mlir::failure();
+        auto otherPtrType =
+            dyn_cast<RankedTensorType>(otherSt.getPtr().getType());
+        if (!otherPtrType ||
+            !isa<triton::gpu::BlockedEncodingAttr>(otherPtrType.getEncoding()))
+          return mlir::failure();
+        if (!llvm::is_contained(stores, otherSt))
+          stores.push_back(otherSt);
+      }
+      return mlir::success();
+    };
 
-    // The conversion itself has to become dead, or the LDS round trip stays
-    // and the bypass buys an uncoalesced store for nothing.
-    for (Operation *user : cvtOp->getUsers())
-      if (user != stOp && !cone.contains(user))
+    for (Operation *op : cone)
+      if (failed(collectStoreUsers(op)))
         return mlir::failure();
+    if (failed(collectStoreUsers(cvtOp)))
+      return mlir::failure();
 
     // A side load is replaced, not duplicated, so it too has to become dead.
     // Leaving a user behind would mean loading the same data twice, once per
@@ -446,24 +489,118 @@ public:
       });
     }
 
-    Value newVal = cone.empty() ? Value(cvtOp.getSrc()) : valDef->getResult(0);
+    // Each store keeps its own destination and its own value; only the layout
+    // they agree on has changed. The matched store's pointer was converted
+    // above, the rest are converted here.
+    for (triton::StoreOp curSt : stores) {
+      // Build each replacement where its original stood, so the conversions
+      // it needs are dominated by their operands and the stores keep their
+      // order relative to the rest of the block.
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(curSt);
 
-    Value newMask = mask;
-    if (mask) {
-      auto maskType = dyn_cast<RankedTensorType>(mask.getType());
-      auto newMaskType = maskType.cloneWithEncoding(newEncoding);
-      newMask = triton::gpu::ConvertLayoutOp::create(rewriter, mask.getLoc(),
-                                                     newMaskType, mask);
-    }
-    triton::StoreOp newStoreOp =
-        usePermlaneSwapToOptimizeStore(rewriter, newPtr, newVal, newMask, stOp);
-    if (!newStoreOp) {
-      newStoreOp =
-          triton::StoreOp::create(rewriter, stOp.getLoc(), newPtr, newVal,
-                                  newMask, stOp.getCache(), stOp.getEvict());
-    }
+      Value curPtr = curSt == stOp ? newPtr : nullptr;
+      if (!curPtr) {
+        auto curPtrType = cast<RankedTensorType>(curSt.getPtr().getType());
+        curPtr = triton::gpu::ConvertLayoutOp::create(
+            rewriter, curSt.getPtr().getLoc(),
+            curPtrType.cloneWithEncoding(newEncoding), curSt.getPtr());
+      }
 
-    rewriter.replaceOp(stOp, newStoreOp);
+      // The stored value has already been retyped in place, unless it is the
+      // conversion itself, which collapses to its own source.
+      Value curVal = curSt.getValue();
+      if (Value mapped = remapped.lookup(curVal))
+        curVal = mapped;
+
+      Value curMask = curSt.getMask();
+      if (curMask) {
+        auto maskType = cast<RankedTensorType>(curMask.getType());
+        curMask = triton::gpu::ConvertLayoutOp::create(
+            rewriter, curMask.getLoc(),
+            maskType.cloneWithEncoding(newEncoding), curMask);
+      }
+
+      triton::StoreOp newStoreOp = usePermlaneSwapToOptimizeStore(
+          rewriter, curPtr, curVal, curMask, curSt);
+      if (!newStoreOp) {
+        newStoreOp =
+            triton::StoreOp::create(rewriter, curSt.getLoc(), curPtr, curVal,
+                                    curMask, curSt.getCache(), curSt.getEvict());
+      }
+      rewriter.replaceOp(curSt, newStoreOp);
+    }
+    return mlir::success();
+  }
+
+private:
+  // Not const: getConvertLayoutScratchInBytes takes a mutable TargetInfoBase.
+  triton::AMD::TargetInfo &targetInfo;
+};
+
+// Deliver a loaded value in the layout its consumer wants, instead of loading
+// it in one layout and converting the data afterwards.
+//
+// BypassEpilogueSMEM handles the operands it finds inside the store's backward
+// slice, but a bias add is already written in the accumulator's layout by the
+// time this pass runs:
+//
+//   %bias = tt.load %ptr            : tensor<MxNxf16, #blocked>
+//   %c    = ttg.convert_layout %bias : #blocked -> #mma
+//   %sum  = arith.addf %acc, %c      : tensor<MxNxf16, #mma>
+//
+// so the accumulator never needs a conversion and the store bypass has nothing
+// left to fix, while `%c` still costs M*N*sizeof(elem) of scratch. That is the
+// whole epilogue cost of the most common fusion there is, and it is invisible
+// unless the tile is large enough to outgrow what the main loop already
+// allocated for its operand buffers.
+//
+// A load's layout is a free choice, so the conversion can be removed outright
+// by relayouting the pointer instead of the data.
+struct BypassLoadConversion
+    : public mlir::OpRewritePattern<triton::gpu::ConvertLayoutOp> {
+  BypassLoadConversion(mlir::MLIRContext *context,
+                       triton::AMD::TargetInfo &targetInfo)
+      : mlir::OpRewritePattern<triton::gpu::ConvertLayoutOp>(context),
+        targetInfo(targetInfo) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(triton::gpu::ConvertLayoutOp cvtOp,
+                  mlir::PatternRewriter &rewriter) const override {
+    auto loadOp = cvtOp.getSrc().getDefiningOp<triton::LoadOp>();
+    if (!loadOp || !isa<RankedTensorType>(loadOp.getType()))
+      return mlir::failure();
+
+    // The load is moved, not duplicated. A second reader would mean fetching
+    // the same data once per layout, which costs more than the conversion.
+    if (!loadOp->hasOneUse())
+      return mlir::failure();
+
+    auto newType = dyn_cast<RankedTensorType>(cvtOp.getType());
+    if (!newType)
+      return mlir::failure();
+    Attribute newEncoding = newType.getEncoding();
+    if (!isa_and_nonnull<triton::gpu::DistributedEncodingTrait>(newEncoding))
+      return mlir::failure();
+
+    // A `blocked -> dot_op` conversion is the GEMM's own operand staging, not
+    // a fusion artifact: that trip through LDS is how the tile reaches the
+    // matrix cores, and the loop is built around it. Only conversions that
+    // exist to reconcile a fused value with the accumulator are fair game.
+    if (isa<triton::gpu::DotOperandEncodingAttr>(newEncoding))
+      return mlir::failure();
+
+    // Reissuing the load in the consumer's layout can cost global-load
+    // coalescing, so it is worth it only to stay inside a ceiling the caller
+    // actually named. Without `rock.max_lds` there is no reason to prefer one
+    // over the other and the conversion stays.
+    triton::FuncOp funcOp = cvtOp->getParentOfType<triton::FuncOp>();
+    if (!exceedsLdsBudget(funcOp, cvtOp, targetInfo))
+      return mlir::failure();
+
+    Value newLoad = rematerializeLoadInEncoding(rewriter, loadOp, newEncoding);
+    rewriter.replaceOp(cvtOp, newLoad);
+    rewriter.eraseOp(loadOp);
     return mlir::success();
   }
 
@@ -488,7 +625,7 @@ public:
 
     mlir::RewritePatternSet patterns(context);
 
-    patterns.add<BypassEpilogueSMEM>(context, targetInfo);
+    patterns.add<BypassEpilogueSMEM, BypassLoadConversion>(context, targetInfo);
 
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
