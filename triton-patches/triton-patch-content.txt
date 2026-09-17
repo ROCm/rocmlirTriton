@@ -468,13 +468,15 @@ patch-fma-lds-swizzle.patch
   Not filed upstream yet; upstream Triton has the same performance gap.
 
 patch-lit-registered-target-features.patch
-  Adds the `<target>-registered-target` lit features that LLVM's own suites
-  expose, derived from LLVM_TARGETS_TO_BUILD in test/lit.site.cfg.py.in, and
+  Adds the `<target>-registered-target` lit features to test/lit.cfg.py and
   guards the llc pipelines of test/Conversion/tritongpu_to_ptx.mlir and
-  test/Conversion/tritongpu_to_ptx_mmav3.mlir with them. rocmlirTriton builds
-  LLVM with X86;AMDGPU only (see cmake/triton.cmake), so `llc -mtriple
-  nvptx64-nvidia-cuda` cannot resolve a target and both tests fail rather than
-  being skipped. The three RUN lines of tritongpu_to_ptx.mlir that only need
-  triton-opt keep running; tritongpu_to_ptx_mmav3.mlir is nothing but an llc
-  pipeline, so it reports unsupported.
-  Drop this patch if upstream adds equivalent feature gating.
+  test/Conversion/tritongpu_to_ptx_mmav3.mlir with them. Same code as
+  llvm/test/lit.cfg.py, over config.targets_to_build, which
+  configure_lit_site_cfg fills in from LLVM_TARGETS_TO_BUILD.
+  rocmlirTriton builds LLVM with X86;AMDGPU only (see cmake/triton.cmake), so
+  `llc -mtriple nvptx64-nvidia-cuda` cannot resolve a target and both tests fail
+  rather than being skipped. The three RUN lines of tritongpu_to_ptx.mlir that
+  only need triton-opt keep running; tritongpu_to_ptx_mmav3.mlir is nothing but
+  an llc pipeline, so it reports unsupported.
+  Nothing in it is AMD-specific, so it can go upstream; drop this patch if it
+  does.

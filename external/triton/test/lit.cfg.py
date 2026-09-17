@@ -2,7 +2,6 @@
 # ruff: noqa: F821
 
 import os
-import re
 
 import lit.formats
 import lit.util
@@ -68,12 +67,10 @@ tools = [
 if config.triton_ext_enabled:
     config.available_features.add("triton-ext-enabled")
 
-# Same feature names LLVM's own suites use, so that tests driving llc can state
-# which backend they need. A build that leaves a target out of
-# LLVM_TARGETS_TO_BUILD skips them instead of failing.
-for target in re.split(r"[;\s]+", config.llvm_targets_to_build.strip()):
-    if target:
-        config.available_features.add(target.lower() + "-registered-target")
+# Same feature names LLVM's own suites use, so a build without a given backend
+# skips the tests that need it instead of failing.
+for arch in config.targets_to_build.split():
+    config.available_features.add(arch.lower() + "-registered-target")
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 
