@@ -554,6 +554,14 @@ def problem_key_hash(row, op, rocmlir_gen):
     return int(result.stdout)
 
 
+def positive_int(value):
+    """An argparse type that rejects the top-N values select_perfconfigs cannot use."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f'must be at least 1, got {parsed}')
+    return parsed
+
+
 def select_perfconfigs(group, op, top_n):
     """The best measured perfconfigs, keeping one legal non-split-K slot."""
     ordered = group.sort_values(['TFlops', 'PerfConfig'], ascending=[False, True])
@@ -716,7 +724,7 @@ Examples:
                         action='store_true',
                         help='Exclude Split-K configurations from the set cover')
     parser.add_argument('--per-problem-top-n',
-                        type=int,
+                        type=positive_int,
                         default=PER_PROBLEM_TOP_N,
                         help=f'perfconfigs kept per problem (default: {PER_PROBLEM_TOP_N})')
     parser.add_argument('--alias',

@@ -1654,14 +1654,42 @@ class ConvGemmConfiguration(PerfConfiguration):
         values = [
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.filter_layout,
             self.input_layout, self.trans_c, self.trans_o, self.n, self.c, self.hi, self.wi, self.k,
-            self.y, self.x, self.o, self.dilation_h, self.dilation_w, self.conv_stride_h,
-            self.conv_stride_w, self.padding_h, self.padding_w, self.perfconfig,
+            self.y, self.x, self.dilation_h, self.dilation_w, self.conv_stride_h,
+            self.conv_stride_w, self.padding_h, self.padding_w, self.o, self.perfconfig,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        # The table holds the internal layout spelling, which __init__ maps
+        # into again, so undo that first.
+        return cls(dtype=row['DataType'],
+                   filter_layout=inverse_filter_layouts(row['FilterLayout']),
+                   input_layout=inverse_input_layouts(row['InputLayout']),
+                   trans_c=table_bool(row['TransC']),
+                   trans_o=table_bool(row['TransO']),
+                   n=int(row['N']),
+                   c=int(row['C']),
+                   hi=int(row['H']),
+                   wi=int(row['W']),
+                   k=int(row['K']),
+                   y=int(row['Y']),
+                   x=int(row['X']),
+                   o=int(row['O']),
+                   conv_stride_h=int(row['StrideH']),
+                   conv_stride_w=int(row['StrideW']),
+                   padding_h=int(row['PaddingH']),
+                   padding_w=int(row['PaddingW']),
+                   dilation_h=int(row['DilationH']),
+                   dilation_w=int(row['DilationW']),
+                   group=1,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -1865,6 +1893,22 @@ class GemmGemmConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        return cls(dtype=row['DataType'],
+                   g=int(row['G']),
+                   m=int(row['M']),
+                   k=int(row['K']),
+                   n=int(row['N']),
+                   o=int(row['O']),
+                   trans_a=table_bool(row['TransA']),
+                   trans_b=table_bool(row['TransB']),
+                   trans_c=table_bool(row['TransC']),
+                   trans_o=table_bool(row['TransO']),
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
