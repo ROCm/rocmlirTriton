@@ -26,7 +26,7 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
-  static const auto &table = getTable();
+  const auto &table = getTable();
   auto it = table.find(key);
   if (it != table.end())
     return it->second;
@@ -35,7 +35,9 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
                             << fallbackKey << "\n");
-    return table.at(fallbackKey);
+    if (auto fallback = table.find(fallbackKey); fallback != table.end())
+      return fallback->second;
+    return getNoSplitKTable().at(fallbackKey);
   }
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
@@ -118,10 +120,13 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
   if (!splitKey(target, arch, kernelType, dataType))
     return StringRef();
 
+  // The split-K/no-split-K pair is the cheapest fallback and applies only to
+  // this exact key. `lookup` already checked the regular table.
+  if (auto it = getNoSplitKTable().find(target); it != getNoSplitKTable().end())
+    return it->first;
+
   StringRef fallbackKernelType = getFallbackKernelType(kernelType);
   StringRef fallbackDataType = getFallbackDataType(dataType);
-
-  static const auto &table = getTable();
 
   // The three axes we may substitute along are not equally cheap, so they are
   // nested cheapest-innermost.
@@ -133,6 +138,9 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
   // fusions lower through the very same gridwise code as attention and share
   // its perf-config format, so an attention list tuned for *this* chip beats
   // the same fusion tuned for a different one.
+  //
+  // The exact split-K pair was handled above. Pairing remains unconditional on
+  // the later axes, so each candidate is searched in both tables.
   for (StringRef data : {dataType, fallbackDataType}) {
     if (data.empty())
       continue;
@@ -141,12 +149,15 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
         if (kernel.empty())
           continue;
         // Only `key` needs to outlive this iteration; every candidate compared
-        // against it is a key owned by the table, and so is the result.
+        // against it is a key owned by a table, and so is the result.
         std::string key =
             (Twine(arch) + Twine(separator) + kernel + Twine(separator) + data)
                 .str();
         if (!crossArch) {
-          if (auto it = table.find(key); it != table.end())
+          if (auto it = getTable().find(key); it != getTable().end())
+            return it->first;
+          if (auto it = getNoSplitKTable().find(key);
+              it != getNoSplitKTable().end())
             return it->first;
           continue;
         }
@@ -178,19 +189,25 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
 
   SmallVector<StringRef, 12> relatives;
 
-  static const auto &table = getTable();
-  for (const auto &entry : table) {
-    StringRef candidate = entry.first;
-    auto candidateSuffixStart = candidate.find(separator);
-    if (candidateSuffixStart == StringRef::npos)
-      continue;
-    // If suffix and prefix match, then they are relatives
-    if (candidate.substr(candidateSuffixStart) == targetSuffix &&
-        target.starts_with(candidate.substr(0, fallbackArchPrefixLen))) {
-      relatives.push_back(candidate);
+  auto appendRelatives = [&](const auto &table) {
+    for (const auto &entry : table) {
+      StringRef candidate = entry.first;
+      auto candidateSuffixStart = candidate.find(separator);
+      if (candidateSuffixStart == StringRef::npos)
+        continue;
+      // If suffix and prefix match, then they are relatives
+      if (candidate.substr(candidateSuffixStart) == targetSuffix &&
+          target.starts_with(candidate.substr(0, fallbackArchPrefixLen))) {
+        relatives.push_back(candidate);
+      }
     }
-  }
+  };
+  appendRelatives(getTable());
+  appendRelatives(getNoSplitKTable());
 
+  llvm::sort(relatives);
+  relatives.erase(std::unique(relatives.begin(), relatives.end()),
+                  relatives.end());
   return relatives;
 }
 
@@ -253,11 +270,31 @@ ParamLookupTable<GemmParamsAttr>::buildTable() {
 
 template <>
 std::map<StringRef, ArrayRef<StringRef>>
+ParamLookupTable<GemmParamsAttr>::buildNoSplitKTable() {
+  return {
+#define Gemm_NOSPLITK_LOOKUP_TABLE_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef Gemm_NOSPLITK_LOOKUP_TABLE_GEN
+  };
+}
+
+template <>
+std::map<StringRef, ArrayRef<StringRef>>
 ParamLookupTable<GemmGemmParamsAttr>::buildTable() {
   return {
 #define GemmGemm_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef GemmGemm_LOOKUP_TABLE_GEN
+  };
+}
+
+template <>
+std::map<StringRef, ArrayRef<StringRef>>
+ParamLookupTable<GemmGemmParamsAttr>::buildNoSplitKTable() {
+  return {
+#define GemmGemm_NOSPLITK_LOOKUP_TABLE_GEN
+#include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
+#undef GemmGemm_NOSPLITK_LOOKUP_TABLE_GEN
   };
 }
 

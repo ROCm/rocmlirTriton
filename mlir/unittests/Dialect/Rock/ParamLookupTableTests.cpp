@@ -86,6 +86,10 @@ TEST(FindFallbackTest, NoRelativesBySuffix) {
 }
 
 TEST(FindFallbackTest, UnavailableTuningList) {
+  // gfx1201 ships no regular gemm_f16 list but does ship a split-K-free one,
+  // which the unconditional pair fallback finds before changing architecture.
+  EXPECT_EQ("gfx1201_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
   // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
@@ -120,6 +124,30 @@ TEST(FindFallbackTest, Gfx1201UsesItsOwnLists) {
         ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
+}
+
+TEST(FindFallbackTest, ArchitectureFallbackUsesBothLists) {
+  // Neither table has an exact gfx1202 key. Once the exact split-K pair misses,
+  // gfx1201's split-K-free list is closer than gfx1200's regular list.
+  EXPECT_EQ("gfx1201_gemm_f32",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1202_gemm_f32"));
+  EXPECT_EQ("gfx1201_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1202_attention_f16"));
+}
+
+TEST(FindFallbackTest, Gfx1201KeepsItsRemainingLists) {
+  // The other half of the same change: dropping only some of an architecture's
+  // lists must not disturb the ones it keeps, so these still resolve to
+  // themselves rather than to a gfx12/gfx11 relative.
+  EXPECT_EQ("gfx1201_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_bf16"));
+  EXPECT_EQ("gfx1201_attention_i8",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1201_attention_i8"));
+  EXPECT_EQ("gfx1201_gemm_fp8",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_fp8"));
 }
 
 TEST(FindFallbackTest, StrixFallsBackToGfx1151) {
@@ -499,4 +527,50 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
     EXPECT_TRUE(bf16List == get(kernel, f16))
         << "for " << stringifyEnum(kernel).lower();
   }
+}
+
+TEST(LookupTest, RegularListWinsWhenBothTablesContainTheKey) {
+  // gfx1150 ships both lists for gemm f16. With no selection option, the
+  // regular 32-entry list wins over the 36-entry split-K-free list.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1150";
+  auto regular =
+      ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f16);
+
+  EXPECT_FALSE(regular.empty());
+  EXPECT_EQ(32u, regular.size());
+}
+
+TEST(LookupTest, MissingRegularListUsesNoSplitKPair) {
+  // gfx1201 dropped its regular gemm lists but kept split-K-free ones. Since
+  // pair fallback is unconditional, lookup uses its 19-entry split-K-free list
+  // before changing architecture.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  auto get = [&](StringRef arch) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm,
+                                                    f16);
+  };
+
+  auto rdna4 = get("amdgcn-amd-amdhsa:gfx1201");
+  EXPECT_FALSE(rdna4.empty());
+  EXPECT_EQ(19u, rdna4.size());
+  EXPECT_FALSE(rdna4 == get("amdgcn-amd-amdhsa:gfx1200"));
+}
+
+TEST(LookupTest, CloserNoSplitKArchitectureWins) {
+  // gfx1202 has no exact key in either table, so architecture fallback uses
+  // gfx1201's closer split-K-free list rather than gfx1200's regular list.
+  MLIRContext ctx;
+  Type f32 = Float32Type::get(&ctx);
+  auto get = [&](StringRef arch) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm,
+                                                    f32);
+  };
+
+  auto next = get("amdgcn-amd-amdhsa:gfx1202");
+  EXPECT_FALSE(next.empty());
+  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1201"));
+  EXPECT_FALSE(next == get("amdgcn-amd-amdhsa:gfx1200"));
 }

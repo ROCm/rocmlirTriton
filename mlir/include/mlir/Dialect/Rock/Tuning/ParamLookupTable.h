@@ -56,6 +56,10 @@ public:
   // attention list is preferred over the same fusion tuned for a relative
   // architecture, and both are preferred over any change of precision.
   // Returns an empty StringRef when nothing applies.
+  //
+  // Split-K pairing is unconditional: if the regular entry is missing, its
+  // no-split-K pair is tried before kernel type, architecture, or data type,
+  // and candidates on those later axes may also come from either table.
   static StringRef findFallback(StringRef target);
 
 private:
@@ -100,11 +104,18 @@ private:
     return table;
   }
 
+  static const std::map<StringRef, ArrayRef<StringRef>> &getNoSplitKTable() {
+    static const std::map<StringRef, ArrayRef<StringRef>> table =
+        buildNoSplitKTable();
+    return table;
+  }
+
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
+  static std::map<StringRef, ArrayRef<StringRef>> buildNoSplitKTable();
 
   static std::string getKernelTypeString(KernelType kernelType);
 
-  // Get all related entries sorted lexicographically
+  // Get all related entries across both tables, sorted lexicographically.
   static SmallVector<StringRef, 12> getRelatives(StringRef target);
 };
 
