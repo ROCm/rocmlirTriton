@@ -998,12 +998,11 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
 }
 
 static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
-                                       RockGemmWrapperInterface gemmOp) {
+                                       RockGemmWrapperInterface gemmOp,
+                                       bool supportsSplitK) {
   auto info = PopulateParamsInfo::fromOp(gemmOp);
   OpBuilder b(gemmOp.getContext());
   PopulateParams tuningInfo;
-  auto func = cast<func::FuncOp>(gemmOp->getParentOp());
-  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(func));
 
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
@@ -1018,10 +1017,9 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
 
 static void
 createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
-                               RockGemmGemmWrapperInterface gemmGemmOp) {
+                               RockGemmGemmWrapperInterface gemmGemmOp,
+                               bool supportsSplitK) {
   OpBuilder b(gemmGemmOp.getContext());
-  auto func = cast<func::FuncOp>(gemmGemmOp->getParentOp());
-  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(func));
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
   for (GemmGemmParamsAttr params :
@@ -1035,6 +1033,7 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
 TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
+  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(mod));
 
   // create range and heuristic
   WalkResult findPrimary =
@@ -1047,7 +1046,7 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
           // so they cannot produce a worse search space than quick tuning.
           [[fallthrough]];
         case TuningParamSetKind::Quick:
-          createGemmTuningRangeQuick(newSpace, op);
+          createGemmTuningRangeQuick(newSpace, op, supportsSplitK);
           break;
         }
         newSpace->primaryOpType = op.getKernelType();
@@ -1063,7 +1062,7 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
           // so they cannot produce a worse search space than quick tuning.
           [[fallthrough]];
         case TuningParamSetKind::Quick:
-          createGemmGemmTuningRangeQuick(newSpace, op);
+          createGemmGemmTuningRangeQuick(newSpace, op, supportsSplitK);
           break;
         }
         return WalkResult::interrupt();
