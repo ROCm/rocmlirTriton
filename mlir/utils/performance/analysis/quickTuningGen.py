@@ -519,6 +519,8 @@ def print_results(results, arch):
 # Per-Problem Maps
 # =============================================================================
 
+PROBLEM_MAP_DIR = 'QuickTuningProblemMap'
+
 CONFIG_CLASSES = {
     'gemm': 'GemmConfiguration',
     'conv': 'ConvConfiguration',
@@ -567,34 +569,33 @@ def select_perfconfigs(group, op, top_n):
     return perfconfigs, False
 
 
-def find_per_problem_perfconfigs(df_arch, op, top_n, rocmlir_gen):
-    """Map each data type to its {problem key hash: perfconfigs}."""
+def per_problem_perfconfigs(typed, op, top_n, rocmlir_gen):
+    """Rank one data type's measurements into {problem key hash: perfconfigs}."""
     problem_cols = get_target_columns(op)
-    results = {}
-    for dtype in sorted(df_arch['DataType'].unique()):
-        typed = df_arch[df_arch['DataType'] == dtype]
-        problems = {}
-        missing_non_split = 0
-        with ThreadPoolExecutor() as pool:
-            groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
-            keys = pool.map(lambda rows: problem_key_hash(rows.iloc[0], op, rocmlir_gen), groups)
-        for rows, key in zip(groups, keys):
-            if key in problems:
-                raise ValueError(
-                    f'{op}: two problems share key {key}, so one would be dropped. Either the '
-                    f'compiler keys on fewer fields than {problem_cols}, or these two hash '
-                    f'to the same value.')
-            best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
-            perfconfigs, missing = select_perfconfigs(best, op, top_n)
-            problems[key] = perfconfigs
-            missing_non_split += missing
-        if missing_non_split:
-            print(
-                f'WARNING: {missing_non_split} problem(s) have no measured '
-                f'splitKFactor=1 perfconfig',
-                file=sys.stderr)
-        results[dtype] = problems
-    return results
+    groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
+    print(f"keying {len(groups)} problems ... ", end='', flush=True)
+    with ThreadPoolExecutor() as pool:
+        keys = pool.map(lambda rows: problem_key_hash(rows.iloc[0], op, rocmlir_gen), groups)
+
+    problems = {}
+    missing_non_split = 0
+    short = 0
+    for rows, key in zip(groups, keys):
+        if key in problems:
+            raise ValueError(
+                f'{op}: two problems share key {key}, so one would be dropped. Either the '
+                f'compiler keys on fewer fields than {problem_cols}, or these two hash '
+                f'to the same value.')
+        best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
+        perfconfigs, missing = select_perfconfigs(best, op, top_n)
+        problems[key] = perfconfigs
+        missing_non_split += missing
+        short += len(perfconfigs) < top_n
+    return problems, missing_non_split, short
+
+
+def to_camel_case(key):
+    return ''.join(part.capitalize() for part in key.split('_'))
 
 
 def format_shard(key, op, problems):
@@ -603,7 +604,7 @@ def format_shard(key, op, problems):
     Perfconfigs are interned and each problem indexes a variable-length run of
     them, so lists need no padding.
     """
-    suffix = ''.join(part.capitalize() for part in key.split('_'))
+    suffix = to_camel_case(key)
     hashes = sorted(problems)
     perfconfigs = sorted({p for h in hashes for p in problems[h]})
     if len(perfconfigs) > 65535:
@@ -640,16 +641,29 @@ def format_shard(key, op, problems):
 
 def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
     """Write this architecture's per-problem map shards."""
-    shard_dir = get_output_path().with_name('QuickTuningProblemMap')
+    print(f"\n=== {arch} per-problem maps ===\n")
+    shard_dir = get_output_path().with_name(PROBLEM_MAP_DIR)
     shard_dir.mkdir(parents=True, exist_ok=True)
     kernel_type = OP_TO_KERNEL_TYPE[op].lower()
-    for dtype, problems in find_per_problem_perfconfigs(df_arch, op, top_n, rocmlir_gen).items():
+
+    for dtype in sorted(df_arch['DataType'].unique()):
+        print(f"{dtype}: ", end='')
+        typed = df_arch[df_arch['DataType'] == dtype]
+        problems, missing_non_split, short = per_problem_perfconfigs(typed, op, top_n, rocmlir_gen)
         if not problems:
+            print("no problems")
             continue
+
         key = f'{arch}_{kernel_type}_{dtype}'
-        suffix = ''.join(part.capitalize() for part in key.split('_'))
-        (shard_dir / f'{suffix}.inc').write_text(format_shard(key, op, problems))
-        print(f'{key}: {len(problems)} problems')
+        name = f'{to_camel_case(key)}.inc'
+        shard = format_shard(key, op, problems)
+        (shard_dir / name).write_text(shard)
+        perfconfigs = {p for row in problems.values() for p in row}
+        print(f"{len(perfconfigs)} perfconfigs -> {PROBLEM_MAP_DIR}/{name}")
+        if short:
+            print(f"  {short} problem(s) measured fewer than {top_n} perfconfigs")
+        if missing_non_split:
+            print(f"  {missing_non_split} problem(s) have no measured splitKFactor=1 perfconfig")
 
 
 def process_arch(df, arch, op, threshold, update, top_n, no_splitk):
