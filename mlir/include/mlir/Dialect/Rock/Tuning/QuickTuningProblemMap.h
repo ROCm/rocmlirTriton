@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/xxhash.h"
 
+#include <cassert>
 #include <cstdint>
 #include <optional>
 
@@ -56,7 +57,14 @@ public:
                         ArrayRef<uint16_t> perfConfigIndices,
                         ArrayRef<StringRef> perfConfigs)
       : problems(problems), perfConfigIndices(perfConfigIndices),
-        perfConfigs(perfConfigs) {}
+        perfConfigs(perfConfigs) {
+    assert(llvm::is_sorted(problems,
+                           [](const QuickTuningProblemRef &lhs,
+                              const QuickTuningProblemRef &rhs) {
+                             return lhs.hash < rhs.hash;
+                           }) &&
+           "problems must be sorted by hash for lookup's binary search");
+  }
 
   SmallVector<StringRef> lookup(QuickTuningProblemKeyHash hash) const {
     const QuickTuningProblemRef *it = llvm::lower_bound(

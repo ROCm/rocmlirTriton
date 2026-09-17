@@ -50,3 +50,13 @@ TEST(QuickTuningProblemMapTest, EmptyMapMisses) {
   QuickTuningProblemMap map({}, {}, {});
   EXPECT_TRUE(map.lookup(10).empty());
 }
+
+TEST(QuickTuningProblemMapDeathTest, UnsortedProblemsTripTheAssert) {
+  constexpr QuickTuningProblemRef unsorted[] = {{20, 0, 1}, {10, 1, 1}};
+  EXPECT_DEBUG_DEATH(
+      {
+        QuickTuningProblemMap map(unsorted, perfConfigIndices, perfConfigs);
+        (void)map;
+      },
+      "sorted by hash");
+}
