@@ -178,10 +178,9 @@ subtree root and confirm there are no rejects:
 ```
 
 Offsets and small fuzz are expected (upstream shifted the surrounding
-lines); rejects are not. A patch that applies with fuzz can still land in the
-wrong place, so once the tree builds, verify the survivors with
-`check-triton-lit-tests` (Step 12): most records ship the lit tests for the
-behavior they change.
+lines); rejects are not. Neither guarantees the result still matches the code,
+so once the tree builds, verify the survivors with `check-triton-lit-tests`
+(Step 12): most records ship the lit tests for the behavior they change.
 
 ## Step 3: Rebuild LLVM/MLIR
 

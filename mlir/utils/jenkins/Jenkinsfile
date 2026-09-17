@@ -688,11 +688,9 @@ int setLitWorkerCount() {
     return limit_lit_workers
 }
 
-// The suites that belong to the vendored trees -- check-mlir over
-// external/llvm-project and check-triton-lit-tests over external/triton -- run on
-// one codepath, like the static checks do: apart from check-mlir's six
-// Integration/GPU/ROCM tests they are host-only, so they would repeat identically
-// on every row. mfma is the row that is always enabled when nightly runs.
+// check-mlir and check-triton-lit-tests are host-only apart from check-mlir's six
+// Integration/GPU/ROCM tests, so they run on one row rather than every row. That
+// row is mfma, which nightly runs whenever xdlops and an MFMA arch are enabled.
 boolean runsVendoredSuites(String codepath) {
     return params.nightly && codepath == "mfma"
 }
@@ -1285,9 +1283,8 @@ pipeline {
                                                         }
                                                     }
 
-                                                    // Both run before the GPU suite: apart from check-mlir's six
-                                                    // Integration/GPU/ROCM tests they are host-only and finish in
-                                                    // seconds, so regressions in the vendored trees are reported early.
+                                                    // Before the GPU suite: both finish in seconds, so regressions
+                                                    // in the vendored trees surface early.
                                                     if (runsVendoredSuites(CODEPATH)) {
                                                         stage('Upstream MLIR: check-mlir') {
                                                             int limit_lit_workers = setLitWorkerCount()

@@ -76,8 +76,8 @@ cd build && ninja check-rocmlir
 ```
 
 The vendored trees keep their own suites: `check-mlir` for `external/llvm-project`
-and `check-triton-lit-tests` for `external/triton`. They are the only coverage the
-patches under `llvm-patches/` and `triton-patches/` have, and nightly CI runs both.
+and `check-triton-lit-tests` for `external/triton`. They are the only suites that
+exercise those trees directly, and nightly CI runs both.
 
 ## Contributing
 
