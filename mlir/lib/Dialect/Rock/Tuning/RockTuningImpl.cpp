@@ -1009,7 +1009,8 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   // config to the front of the list.
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
-           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+           info.quantBlockSize, info.aScaleType, info.bScaleType,
+           info.problemKeyHash)) {
     if (!supportsSplitK && param.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
@@ -1729,6 +1730,158 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
   }
 
   return success();
+}
+
+namespace {
+/// Joins the fields identifying a problem into one string.
+struct ProblemKeyBuilder {
+  std::string key;
+  llvm::raw_string_ostream os{key};
+
+  template <typename T>
+  ProblemKeyBuilder &operator<<(const T &field) {
+    if (!key.empty())
+      os << '_';
+    os << field;
+    return *this;
+  }
+};
+} // namespace
+
+static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
+                                              ProblemKeyBuilder &out) {
+  KernelType opType = gemmIF.getKernelType();
+  Operation *gemmOp = gemmIF.getOperation();
+
+  if (opType == KernelType::Conv || opType == KernelType::ConvBwdData) {
+    auto convIF = cast<RockConvInterface>(gemmOp);
+    llvm::StringMap<unsigned> fLayoutMap, iLayoutMap, oLayoutMap;
+    SmallString<6> fLayout, iLayout, oLayout;
+    if (failed(extractLayouts(gemmOp, fLayoutMap, iLayoutMap, oLayoutMap,
+                              fLayout, iLayout, oLayout)))
+      return failure();
+
+    ArrayRef<int64_t> inShape = convIF.getConvInput().getType().getShape();
+    ArrayRef<int64_t> filShape = convIF.getConvFilter().getType().getShape();
+    auto padding = extractFromIntegerArrayAttr<int64_t>(convIF.getPadding());
+    auto stride = extractFromIntegerArrayAttr<int64_t>(convIF.getStrides());
+    auto dilation = extractFromIntegerArrayAttr<int64_t>(convIF.getDilations());
+
+    out << (opType == KernelType::Conv ? "fwd" : "bwd") << fLayout << iLayout
+        << oLayout << inShape[iLayoutMap["ni"]]
+        << inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]]
+        << inShape[iLayoutMap["0i"]] << inShape[iLayoutMap["1i"]]
+        << filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]]
+        << filShape[fLayoutMap["0"]] << filShape[fLayoutMap["1"]] << dilation[0]
+        << dilation[1] << stride[0] << stride[1] << padding[0] << padding[2];
+    return success();
+  }
+
+  if (opType == KernelType::Gemm) {
+    auto rGemmOp = cast<rock::GemmOp>(gemmOp);
+    GemmSize size = gemmIF.getGemmSize();
+    out << rGemmOp.getATransposed() << rGemmOp.getBTransposed()
+        << rGemmOp.getOTransposed() << size.g << size.m << size.k << size.n;
+    return success();
+  }
+
+  return failure();
+}
+
+static LogicalResult
+getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
+                         ProblemKeyBuilder &out) {
+  ArrayRef<int64_t> qShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
+  ArrayRef<int64_t> kShape = cast<ShapedType>(gemmGemmOp.getBType()).getShape();
+  ArrayRef<int64_t> vShape = cast<ShapedType>(gemmGemmOp.getCType()).getShape();
+  bool transposedA = gemmGemmOp.getTransposedA();
+  bool transposedB = gemmGemmOp.getTransposedB();
+  bool transposedC = gemmGemmOp.getTransposedC();
+  int64_t seqLenQ = qShape[transposedA ? 2 : 1];
+  int64_t headDimQK = qShape[transposedA ? 1 : 2];
+  int64_t seqLenK = kShape[transposedB ? 1 : 2];
+  int64_t headDimV = vShape[transposedC ? 1 : 2];
+
+  if (auto attnOp = dyn_cast<AttentionOp>(gemmGemmOp.getOperation())) {
+    Type elemTypeQ = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+    bool hasAttnScale, hasAttnBias, hasTransposedAttnBias;
+    getAttentionScaleBias(attnOp, elemTypeQ.isInteger(8), hasAttnScale,
+                          hasAttnBias, hasTransposedAttnBias);
+    auto lookBack = attnOp.getSlidingWindowLookBack();
+    out << transposedA << transposedB << transposedC
+        << gemmGemmOp.getTransposedOut() << attnOp.getCausal()
+        << attnOp.getLse() << attnOp.getSplitKV()
+        << (lookBack && *lookBack > 0 ? *lookBack : -1) << hasAttnScale
+        << hasAttnBias << hasTransposedAttnBias
+        << qShape[0] / attnOp.getNumHeadsQ() << seqLenQ << seqLenK
+        << attnOp.getNumHeadsQ() << attnOp.getNumHeadsKV() << headDimQK
+        << headDimV;
+    return success();
+  }
+
+  if (auto convGemmOp =
+          dyn_cast<ConvElementwiseGemmOp>(gemmGemmOp.getOperation())) {
+    llvm::StringMap<unsigned> fLayoutMap, iLayoutMap, oLayoutMap;
+    SmallString<6> fLayout, iLayout, oLayout;
+    if (failed(extractLayouts(gemmGemmOp, fLayoutMap, iLayoutMap, oLayoutMap,
+                              fLayout, iLayout, oLayout, false)))
+      return failure();
+
+    ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();
+    ArrayRef<int64_t> filShape = convGemmOp.getFilter().getType().getShape();
+    auto padding =
+        extractFromIntegerArrayAttr<int64_t>(convGemmOp.getPadding());
+    auto stride = extractFromIntegerArrayAttr<int64_t>(convGemmOp.getStrides());
+    auto dilation =
+        extractFromIntegerArrayAttr<int64_t>(convGemmOp.getDilations());
+
+    out << fLayout << iLayout << transposedC << gemmGemmOp.getTransposedOut()
+        << inShape[iLayoutMap["ni"]]
+        << inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]]
+        << inShape[iLayoutMap["0i"]] << inShape[iLayoutMap["1i"]]
+        << filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]]
+        << filShape[fLayoutMap["0"]] << filShape[fLayoutMap["1"]] << dilation[0]
+        << dilation[1] << stride[0] << stride[1] << padding[0] << padding[2]
+        << headDimV;
+    return success();
+  }
+
+  out << transposedA << transposedB << transposedC
+      << gemmGemmOp.getTransposedOut() << qShape[0] << seqLenQ << headDimQK
+      << seqLenK << headDimV;
+  return success();
+}
+
+std::optional<QuickTuningProblemKeyHash>
+getQuickTuningProblemKeyHash(RockGemmWrapperInterface op) {
+  ProblemKeyBuilder builder;
+  if (failed(getQuickTuningProblemKey(op, builder)))
+    return std::nullopt;
+  return hashQuickTuningProblemKey(builder.key);
+}
+
+std::optional<QuickTuningProblemKeyHash>
+getQuickTuningProblemKeyHash(RockGemmGemmWrapperInterface op) {
+  ProblemKeyBuilder builder;
+  if (failed(getQuickTuningProblemKey(op, builder)))
+    return std::nullopt;
+  return hashQuickTuningProblemKey(builder.key);
+}
+
+std::optional<QuickTuningProblemKeyHash>
+getQuickTuningProblemKeyHash(ModuleOp mod) {
+  std::optional<QuickTuningProblemKeyHash> hash;
+  mod->walk([&](RockGemmWrapperInterface op) {
+    hash = getQuickTuningProblemKeyHash(op);
+    return WalkResult::interrupt();
+  });
+  if (hash)
+    return hash;
+  mod->walk([&](RockGemmGemmWrapperInterface op) {
+    hash = getQuickTuningProblemKeyHash(op);
+    return WalkResult::interrupt();
+  });
+  return hash;
 }
 
 // Suppose to return the structure of the given problem to tune, currently
