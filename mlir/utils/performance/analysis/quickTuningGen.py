@@ -578,6 +578,11 @@ def find_per_problem_perfconfigs(df_arch, op, top_n, rocmlir_gen):
             groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
             keys = pool.map(lambda rows: problem_key_hash(rows.iloc[0], op, rocmlir_gen), groups)
         for rows, key in zip(groups, keys):
+            if key in problems:
+                raise ValueError(
+                    f'{op}: two problems share key {key}, so one would be dropped. Either the '
+                    f'compiler keys on fewer fields than {problem_cols}, or these two hash '
+                    f'to the same value.')
             best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
             perfconfigs, missing = select_perfconfigs(best, op, top_n)
             problems[key] = perfconfigs
