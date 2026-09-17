@@ -82,6 +82,21 @@ static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
   llvm_unreachable("unknown rock::CacheModifier");
 }
 
+// Carry rock metadata from a rock op onto the triton op it lowered to, so it
+// survives into the Triton pipeline. Only rock.*-prefixed discardable attrs
+// are forwarded: copying unrelated attrs that rock does not own could trip
+// another dialect's verifier downstream.
+static void forwardRockDiscardableAttrs(Operation *from, Operation *to) {
+  if (!from || !to)
+    return;
+  std::string rockPrefix =
+      (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
+  for (NamedAttribute attr : from->getDiscardableAttrs()) {
+    if (attr.getName().getValue().starts_with(rockPrefix))
+      to->setDiscardableAttr(attr.getName(), attr.getValue());
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
 //===----------------------------------------------------------------------===//
@@ -212,6 +227,9 @@ struct RockLoadPtrOpRewritePattern
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
         /*other=*/otherTensor, cacheAttr, evictAttr, isVolatileAttr);
 
+    // Carry rock metadata (e.g. rock.load_tensor_bytes) onto the lowered load.
+    forwardRockDiscardableAttrs(op, result.getDefiningOp());
+
     // Replace the op with the loaded tensor result
     rewriter.replaceOp(op, result);
     return success();
@@ -286,18 +304,8 @@ struct RockBlockwiseGemmOpRewritePattern
                                      /*maxNumImpreciseAcc=*/0);
     }
 
-    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
-    // survives into the Triton pipeline. Only forward rock.*-prefixed
-    // discardable attrs: copying unrelated attrs that rock does not own could
-    // trip another dialect's verifier downstream.
-    if (Operation *dotOp = result.getDefiningOp()) {
-      std::string rockPrefix =
-          (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
-      for (NamedAttribute attr : op->getDiscardableAttrs()) {
-        if (attr.getName().getValue().starts_with(rockPrefix))
-          dotOp->setDiscardableAttr(attr.getName(), attr.getValue());
-      }
-    }
+    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot.
+    forwardRockDiscardableAttrs(op, result.getDefiningOp());
 
     rewriter.replaceOp(op, result);
     return success();

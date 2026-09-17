@@ -1740,21 +1740,19 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
     if (!func)
       return failure();
 
-    // MIGraphX calls mlirRockTuningGetKey, which routes here. The fusions
-    // around a kernel change how much LDS and how many registers a perf config
-    // needs, so they are part of the problem's identity: without them a config
-    // tuned for the bare GEMM is reused for a fused one and could potentially
-    // overflow LDS.
+    // MIGraphX calls mlirRockTuningGetKey, which routes here. The surrounding
+    // fusions are deliberately left out of the key so that a config tuned for
+    // the bare GEMM is reused for the fused variants, which is what MIGraphX
+    // already assumes when it caches against the unfused problem.
+    //
+    // That reuse is only safe because a fusion no longer changes what the
+    // kernel costs in LDS: an epilogue that would need a round trip through
+    // shared memory is bypassed (rock-optimize-epilogue), the loads of a fused
+    // dot operand are given one layout so they need no conversion to meet
+    // (rock-unify-dot-operand-loads), and whatever is left is checked against
+    // the caller's ceiling (rock.max_lds in rock-resolve-kernel-launch-params).
+    // Adding a fusion that breaks that would need the key to change again.
     llvm::raw_svector_ostream problemOS(out);
-    auto emitFusions = [&](StringRef attrName, StringRef flag) {
-      auto fusions = func->template getAttrOfType<ArrayAttr>(attrName);
-      if (fusions && !fusions.empty())
-        problemOS << flag
-                  << llvm::join(fusions.template getAsValueRange<StringAttr>(),
-                                ",");
-    };
-    emitFusions(rock::InputFusionsAttr::getMnemonic(), " -inputFusions=");
-    emitFusions(rock::OutputFusionsAttr::getMnemonic(), " -outputFusions=");
 
     // Append split-K fusion legality so the same GEMM problem gets distinct
     // tuning keys when the surrounding fusion does or does not allow split-K.

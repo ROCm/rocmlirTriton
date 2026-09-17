@@ -406,7 +406,6 @@ def extract_tuning_key_metadata(argv: list,
     filtered = []
     # Most config files describe unfused generated kernels, which support
     # split-K. Attention overrides this default because it uses splitKV instead.
-    # Emitted fusion tuning keys carry an explicit false value when needed.
     supports_split_k = default_supports_split_k
     i = 0
     while i < len(argv):
@@ -418,23 +417,6 @@ def extract_tuning_key_metadata(argv: list,
                 raise ValueError(f"Invalid value for tuning-key metadata -supportsSplitK: {value}")
             supports_split_k = value == "true"
             i += 2
-            continue
-        if argv[i].startswith(('-inputFusions=', '-outputFusions=')):
-            # getTuningProblemStr emits fusions as one word carrying its own
-            # value. MIGraphX uses them for exact key lookup on fused kernels;
-            # this tooling only ever generates the standalone problem, so strip
-            # them during canonicalization rather than treating them as a
-            # parse error. read_tuning_db() may therefore collapse fused and
-            # unfused rows onto the same (arch, config) key; that is deliberate
-            # so MIGraphX-authored rows stay reachable here. perfRunner never
-            # runs fused kernels, so both rows name the same benchmark problem.
-            # DBs from tuningRunner omit fusion words entirely; collisions only
-            # arise when importing mixed external DBs, where last-write-wins is
-            # an acceptable deterministic fallback.
-            flag, _, value = argv[i].partition('=')
-            if not value:
-                raise ValueError(f"Missing value for tuning-key metadata {flag}")
-            i += 1
             continue
         filtered.append(argv[i])
         i += 1

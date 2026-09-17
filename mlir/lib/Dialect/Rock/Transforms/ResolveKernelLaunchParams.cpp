@@ -135,25 +135,45 @@ struct ResolveKernelLaunchParamsPass
     }
 
     // Find the target architecture from rock.arch on any kernel function
-    // (`rock::getArchOnFunc` walks up to the module attribute if needed).
+    // (`rock::getArchOnFunc` walks up to the module attribute if needed), and
+    // collect the tightest caller-supplied LDS ceiling along the way. The
+    // ceiling is a per-kernel attribute but @global_smem is sized once for the
+    // whole module, so a module with several kernels has to respect the
+    // smallest of their budgets.
     StringRef archStr;
+    std::optional<int64_t> callerMaxLDS;
     for (auto funcOp : moduleOp.getOps<LLVM::LLVMFuncOp>()) {
-      if (auto arch = rock::getArchOnFunc(funcOp); succeeded(arch)) {
-        archStr = *arch;
-        break;
-      }
+      if (archStr.empty())
+        if (auto arch = rock::getArchOnFunc(funcOp); succeeded(arch))
+          archStr = *arch;
+
+      FailureOr<std::optional<int64_t>> budget = rock::getMaxLdsOnFunc(funcOp);
+      if (failed(budget))
+        return signalPassFailure();
+      if (*budget)
+        callerMaxLDS =
+            callerMaxLDS ? std::min(*callerMaxLDS, **budget) : **budget;
     }
     if (archStr.empty()) {
       moduleOp.emitError("rock.arch not found on kernel function or module");
       return signalPassFailure();
     }
 
-    int64_t maxLDS = rock::getLDSSize(archStr);
+    // The caller can only tighten the hardware limit, never raise it.
+    int64_t archMaxLDS = rock::getLDSSize(archStr);
+    int64_t maxLDS =
+        callerMaxLDS ? std::min(archMaxLDS, *callerMaxLDS) : archMaxLDS;
     if (sharedMemSize > maxLDS) {
       rock::markAsNotApplicable(moduleOp);
-      mlir::emitError(moduleOp.getLoc(), "ttg.shared (")
+      InFlightDiagnostic diag =
+          mlir::emitError(moduleOp.getLoc(), "ttg.shared (")
           << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
           << archStr;
+      // Name the binding constraint: a caller chasing an over-budget kernel
+      // needs to know whether to raise its own ceiling or shrink the config.
+      if (callerMaxLDS && *callerMaxLDS < archMaxLDS)
+        diag << ", capped by " << rock::MaxLdsAttr::getMnemonic() << " = "
+             << *callerMaxLDS << " (architecture allows " << archMaxLDS << ")";
       return signalPassFailure();
     }
 
@@ -181,9 +201,13 @@ struct ResolveKernelLaunchParamsPass
                  << "ttg.shared is 0; leaving @global_smem as-is\n");
     }
 
-    // Always remove ttg.shared — after this pass, LDS is either statically
-    // baked into the binary or zero. Downstream code should not rely on it.
-    moduleOp->removeAttr("ttg.shared");
+    // `ttg.shared` is deliberately left in place. It is no longer a request
+    // for an allocation -- that is now baked into @global_smem -- but it stays
+    // an accurate record of how much LDS the kernel ended up using, and it is
+    // how Triton itself reports shared memory (its AMD backend finishes with
+    // `metadata["shared"] = src.get_int_attr("ttg.shared")`).
+    // `mlirGetKernelAttrs` reads it back out for callers that need to bound a
+    // later compilation.
 
     // ---------------------------------------------------------------
     // Step 2: Remove the two trailing workspace arguments that

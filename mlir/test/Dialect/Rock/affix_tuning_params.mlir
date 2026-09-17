@@ -847,3 +847,16 @@ func.func @rock_attention_named_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>
   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
   return %out : tensor<1x16384x512xf32>
 }
+
+// Verifies that a caller-supplied rock.max_lds is accepted by the kernel
+// attribute allowlist and left on the function for the backend LDS gate to
+// read, rather than being rejected as an unknown attribute.
+// CHECK-LABEL: func.func @rock_gemm_max_lds
+// CHECK-SAME: rock.max_lds = 16384
+func.func @rock_gemm_max_lds(%arg0: tensor<1x128x128xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x128x128xf32>) -> tensor<1x128x128xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.max_lds = 16384 : i64} {
+  // CHECK: rock.gemm
+  %result = rock.gemm %arg0 * %arg1
+    : tensor<1x128x128xf32> * tensor<1x128x128xf32> -> tensor<1x128x128xf32>
+  %out = rock.store %result to %arg2 by set : tensor<1x128x128xf32> -> tensor<1x128x128xf32> to tensor<1x128x128xf32>
+  return %out : tensor<1x128x128xf32>
+}

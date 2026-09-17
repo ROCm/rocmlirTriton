@@ -64,6 +64,86 @@ module attributes {
 
 // -----
 
+// Verifies that ttg.shared within the architecture's LDS size but over a
+// caller-supplied rock.max_lds is still rejected and marked not applicable,
+// and that the diagnostic names the caller's ceiling as the binding constraint
+// so a caller knows to raise its budget rather than to blame the hardware.
+// gfx90a has 65536 bytes of LDS, so only the budget rejects this kernel.
+// expected-error @+2 {{ttg.shared (32768) exceeds LDS limit (16384) for amdgcn-amd-amdhsa:gfx90a, capped by rock.max_lds = 16384 (architecture allows 65536)}}
+// NA: module attributes {rock.not_applicable, {{.*}}ttg.shared = 32768
+module attributes {
+    "ttg.shared" = 32768 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @over_caller_budget(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.max_lds = 16384 : i64} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that when the architecture is the binding constraint the diagnostic
+// does not blame the caller's (looser) ceiling.
+// expected-error @+2 {{ttg.shared (65537) exceeds LDS limit (65536) for amdgcn-amd-amdhsa:gfx90a}}
+// NA: module attributes {rock.not_applicable, {{.*}}ttg.shared = 65537
+module attributes {
+    "ttg.shared" = 65537 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @arch_binds_not_budget(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.max_lds = 1048576 : i64} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that a module sized for the loosest of several kernels is rejected:
+// @global_smem is sized once for the whole module, so the tightest budget
+// across the kernels has to bind.
+// expected-error @+2 {{ttg.shared (8192) exceeds LDS limit (4096) for amdgcn-amd-amdhsa:gfx90a, capped by rock.max_lds = 4096 (architecture allows 65536)}}
+// NA: module attributes {rock.not_applicable, {{.*}}ttg.shared = 8192
+module attributes {
+    "ttg.shared" = 8192 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @roomy(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.max_lds = 16384 : i64} {
+    llvm.return
+  }
+
+  llvm.func @tight(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.max_lds = 4096 : i64} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that a non-positive rock.max_lds is a caller error rather than
+// being silently read as "no ceiling", which would let an over-budget kernel
+// through.
+module attributes {
+    "ttg.shared" = 4096 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{rock.max_lds must be greater than zero, got 0}}
+  llvm.func @zero_budget(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.max_lds = 0 : i64} {
+    llvm.return
+  }
+}
+
+// -----
+
 // Verifies that a grid larger than the runtime's uint32 grid-size limit is
 // rejected and marked not applicable.
 // NA: module attributes {rock.grid_size.oversized_grid_dimension = 4294967296 : i64, rock.not_applicable

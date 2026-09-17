@@ -33,7 +33,9 @@ extern "C" {
 // Version 6: Adds mlirMIGraphXLDSUsageFitsArch() to check whether the
 // estimated LDS usage of a GEMM+GEMM/attention problem fits within the target
 // arch's shared-memory capacity.
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 6
+// Version 7: Breaking change: mlirGetKernelAttrs() returns uint32_t[4]
+//   {block_size, grid_size, cluster_size, lds_size} instead of uint32_t[3].
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 7
 
 typedef struct MlirMIGraphXBackendOptions {
   const char *arch;
@@ -56,7 +58,9 @@ MLIR_CAPI_EXPORTED MlirType rocmlirMIXRShapedTypeGet(intptr_t rank,
 
 MLIR_CAPI_EXPORTED MlirType rocmlirMIXRShapedTypeAsTensor(MlirType type);
 
-// Returns block_size, grid_size and cluster_size as uint32_t[3]
+// Returns block_size, grid_size, cluster_size and lds_size as uint32_t[4].
+// lds_size is the static LDS (shared memory) the compiled kernel uses, in
+// bytes.
 MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs);
 
 // Returns the size of compiled binary if called with null ptr

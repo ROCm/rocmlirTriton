@@ -7,6 +7,7 @@ This directory holds downstream patch records against the vendored Triton tree
 ----------------------------------------------------------------------
 patch-free-var-mask-register-dim-name.patch
 patch-wmma-preserve-discardable-attrs.patch
+patch-preserve-load-discardable-attrs.patch
 patch-float-atomic-minmax-lowering.patch
 patch-preserve-arith-bitcast-lowering.patch
 patch-roundeven-lowering.patch
@@ -84,6 +85,26 @@ patch-wmma-preserve-discardable-attrs.patch
   FMA paths) so downstream metadata such as `rock.o_transposed` survives the
   rewrite. It adds no Triton-side decision logic; the orientation is chosen
   by the downstream rock pass.
+
+patch-preserve-load-discardable-attrs.patch
+  The tt.load counterpart of patch-wmma-preserve-discardable-attrs: keeps
+  discardable attributes alive across the two Triton patterns that replace a
+  load with a new one.
+
+  rocmlirTriton tags each input-fusion load with `rock.load_tensor_bytes`
+  (rock-lower-blockwise-to-ptr, carried onto tt.load by RockToTTIR) and reads
+  it back after coalescing in rock-unify-dot-operand-loads, which uses it to
+  give every load feeding one dot operand a single layout. Losing the tag
+  loses that layout unification, which silently costs LDS rather than failing
+  the build.
+
+  Two upstream patterns rebuilt the load without its attributes:
+    - CanonicalizeMaskedLoadPattern (lib/Dialect/Triton/IR/Ops.cpp), when it
+      drops an all-true splat mask.
+    - CombineSelectMaskedLoadPattern (lib/Dialect/Triton/Transforms/Combine.cpp),
+      when it folds a select into the load's `other`.
+  Both now carry the original load's discardable attribute dictionary onto the
+  replacement. No behavior beyond attribute propagation changes.
 
 patch-float-atomic-minmax-lowering.patch
   Fixes Triton atomic max/min lowering for floating-point element types. The

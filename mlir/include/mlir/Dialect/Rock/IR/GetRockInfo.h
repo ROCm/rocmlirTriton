@@ -51,6 +51,12 @@ FailureOr<int64_t> getNumChipletsOnFunc(FunctionOpInterface func);
 // missing.
 int64_t getNumChipletsValueOnFunc(FunctionOpInterface func);
 
+// Get the caller-supplied LDS ceiling in bytes, looking on the function and
+// then its enclosing symbol-table parent. Returns `std::nullopt` when the
+// caller named no ceiling, so only the architecture's own limit applies, and
+// fails only when the attribute is present but not a positive value.
+FailureOr<std::optional<int64_t>> getMaxLdsOnFunc(FunctionOpInterface func);
+
 // Convenience overloads that look up the attribute on `op`'s parent function.
 FailureOr<StringAttr> getArch(Operation *op);
 StringAttr getArchValue(Operation *op);

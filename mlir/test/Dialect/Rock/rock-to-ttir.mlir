@@ -28,6 +28,22 @@ func.func @test_load_cache_modifier(%arg0: tensor<64x64xi32>, %arg1: tensor<64x6
 
 // -----
 
+// rock.* metadata rides along onto the lowered tt.load, the same way the dot
+// pattern carries rock.o_transposed. rock.load_tensor_bytes has to survive
+// into Triton IR, where the pass that unifies the layouts of one dot operand's
+// loads reads it. Attributes rock does not own are left behind, since they
+// could trip another dialect's verifier downstream.
+// CHECK-LABEL: @test_load_forwards_rock_attrs
+// CHECK:       tt.load
+// CHECK-SAME:    rock.load_tensor_bytes = 32768 : i64
+// CHECK-NOT:   not_a_rock_attr
+func.func @test_load_forwards_rock_attrs(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>, not_a_rock_attr, rock.load_tensor_bytes = 32768 : i64} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  return %0 : tensor<64x64xf16>
+}
+
+// -----
+
 // CHECK-LABEL: @test_store_conversion
 // CHECK-SAME: (%[[VALUE:.*]]: tensor<64x64xf32>, %[[PTRS:.*]]: tensor<64x64xi32>, %[[MASK:.*]]: tensor<64x64xi1>)
 //      CHECK:   %[[PTR_TENSOR:.*]] = rock.cast_to_ptr %[[PTRS]] : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f32>>

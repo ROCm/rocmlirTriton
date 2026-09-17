@@ -165,6 +165,24 @@ int64_t mlir::rock::getNumChipletsValueOnFunc(FunctionOpInterface func) {
   return maxChiplets;
 }
 
+FailureOr<std::optional<int64_t>>
+mlir::rock::getMaxLdsOnFunc(FunctionOpInterface func) {
+  FailureOr<IntegerAttr> maybeMaxLds = getAttrFromFuncOrParent<IntegerAttr>(
+      func, rock::MaxLdsAttr::getMnemonic());
+  if (failed(maybeMaxLds)) {
+    LLVM_DEBUG(llvm::dbgs() << "Could not find max_lds\n");
+    return std::optional<int64_t>(std::nullopt);
+  }
+  int64_t maxLds = maybeMaxLds.value().getValue().getSExtValue();
+  if (maxLds <= 0)
+    return func->emitError()
+           << rock::MaxLdsAttr::getMnemonic()
+           << " must be greater than zero, got " << maxLds
+           << "; omit the attribute to leave the kernel bounded only by the "
+              "architecture's LDS size";
+  return std::optional<int64_t>(maxLds);
+}
+
 int64_t mlir::rock::getNumChipletsValue(Operation *op) {
   return rock::getNumChipletsValueOnFunc(rock::getParentFuncOp(op));
 }

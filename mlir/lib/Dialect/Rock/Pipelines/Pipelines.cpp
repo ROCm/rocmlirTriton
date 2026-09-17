@@ -172,6 +172,12 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       {"hip:" + options.arch, options.numWarps, threadPerWarp,
        options.numCTAs}));
   pm->addPass(mlir::triton::gpu::createTritonGPUCoalesce());
+  // --- rocmlirTriton pass ----
+  // Must run right after coalesce, which is what puts the loads of one fused
+  // dot operand in different layouts, and before remove-layout-conversions,
+  // which folds away the conversions this pass leaves behind.
+  pm->addPass(rock::createRockUnifyDotOperandLoadsPass());
+  // --- rocmlirTriton pass ----
   pm->addPass(mlir::triton::gpu::createTritonGPUF32DotTC({false}));
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeThreadLocality());

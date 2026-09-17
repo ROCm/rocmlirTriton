@@ -100,9 +100,12 @@ public:
     if (splatCond != condSelect)
       return failure();
 
-    rewriter.replaceOpWithNewOp<LoadOp>(
+    // The select is what gets replaced, so the original load is left dead and
+    // its metadata would go with it. Carry it onto the load that takes over.
+    auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+    newLoad->setDiscardableAttrs(loadOp->getDiscardableAttrDictionary());
     return success();
   }
 };

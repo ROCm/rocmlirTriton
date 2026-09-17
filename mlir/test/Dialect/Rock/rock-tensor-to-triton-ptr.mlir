@@ -37,6 +37,24 @@ func.func @test_conv_kernel_attr_preserved(%arg0: tensor<4096xf16>) attributes {
 
 // -----
 
+// Verifies the caller's LDS ceiling reaches Triton IR on the tt.func, which is
+// where the AMD epilogue and allocation passes look for it. Like
+// rock.conv_kernel above it rides along in getDiscardableAttrs(), so this is a
+// regression guard on that ride-along rather than on a dedicated rewrite.
+// CHECK-LABEL: tt.func @test_max_lds_preserved
+// CHECK-SAME: attributes {
+// CHECK-SAME: rock.max_lds = 16384 : i64
+func.func @test_max_lds_preserved(%arg0: tensor<4096xf16>) attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel, rock.max_lds = 16384 : i64, rock.grid_size = 1 : i32, rock.block_size = 256 : i32} {
+  %cst_mask = arith.constant dense<true> : tensor<64x64xi1>
+  %0 = rock.extract_ptr %arg0 : tensor<4096xf16> -> i32
+  %1 = tt.splat %0 : i32 -> tensor<64x64xi32>
+  %2 = rock.cast_to_ptr %1 : tensor<64x64xi32> -> tensor<64x64x!tt.ptr<f16>>
+  %3 = tt.load %2, %cst_mask : tensor<64x64x!tt.ptr<f16>>
+  return
+}
+
+// -----
+
 // Verifies arith.addi on pointer tensor is converted to tt.addptr
 // CHECK-LABEL: tt.func @test_addi_to_addptr
 // CHECK-SAME: (%[[ARG0:.*]]: !tt.ptr<f16>)

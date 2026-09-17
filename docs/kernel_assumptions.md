@@ -283,6 +283,34 @@ The assumption is unconditional -- there is no option to turn it off. It is what
 lets min/max ops carry the `nnan` fast-math flag, which in turn lets a clamp
 become a single `v_med3`.
 
+### 2.11 LDS ceiling (`rock.max_lds`)
+
+The caller may set `rock.max_lds` on the kernel function, alongside `rock.arch`
+and `rock.num_cu`, to cap how much LDS the compiled kernel is allowed to use.
+The value is in bytes and must be positive; a non-positive value is an error,
+not a way to ask for no ceiling. Omitting the attribute is how a caller asks
+for no ceiling beyond the architecture's own limit.
+
+In return the compiler guarantees that the kernel it emits fits:
+`ResolveKernelLaunchParams` checks the peak LDS Triton allocated (the module's
+`ttg.shared`) against `min(architecture limit, rock.max_lds)` and rejects the
+perf config as `not_applicable` when it does not fit, rather than emitting a
+kernel that will not launch. The surviving figure stays on the module as
+`ttg.shared`, so the caller can read back what the kernel actually uses.
+
+The ceiling exists because MIGraphX looks perf configs up by problem key and
+caches them against the **unfused** problem, then reuses them for the fused
+variants of that problem. That reuse is only sound if fusing does not raise
+the kernel's LDS, so the compiler keeps fusions LDS-neutral from both sides: an
+epilogue that would otherwise round-trip the accumulator through shared memory
+is bypassed, and the loads feeding one dot operand are given a single layout so
+they need no conversion to meet. `rock.max_lds` is the backstop that turns any
+remaining overage into a clean rejection instead of a launch failure.
+
+A caller that tunes with one ceiling and deploys with a lower one can therefore
+find previously-applicable configs rejected, since the ceiling is part of what
+makes a config applicable.
+
 ---
 
 ## Summary Table
@@ -310,3 +338,4 @@ become a single `v_med3`.
 | Static LDS (no dynamic shmem) | **External** | LDS size baked into binary; pass `sharedMem = 0` |
 | KV-cache: full allocation required | **External** | Static tensor shape; runtime `lastValidKVIndex` bounds N-loop |
 | No NaN in float dataflow | **External** | `nan_mode = IGNORE`, `nnan` fast-math flag |
+| LDS ceiling | **External** | `rock.max_lds` on the kernel func; enforced against `ttg.shared` |

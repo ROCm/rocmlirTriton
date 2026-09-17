@@ -267,6 +267,10 @@ We also carry a **downstream patch** to this file: `triton-patches/patch-wmma-pr
 
 Because this is a downstream patch, the `AccelerateAMDMatmul.cpp.diff` generated in Step 4 will show `copyDiscardableAttrs` and its call sites as *removed* (our patched old tree vs. pristine new upstream) — that is expected and is the signal to **re-apply the patch**, not a deletion to accept. After a bump, confirm `copyDiscardableAttrs` is present in the vendored `AccelerateAMDMatmul.cpp` with a call at every dot-creation site, and that `accelerate-matmul-preserve-rock-metadata*.mlir` / `set-matmul-output-transpose.mlir` still pass.
 
+The same reasoning applies to `tt.load`, via `triton-patches/patch-preserve-load-discardable-attrs.patch`. Anything that rebuilds a load has to carry its discardable attributes over, because `rock.load_tensor_bytes` (set in `rock-lower-blockwise-to-ptr`) has to reach `rock-unify-dot-operand-loads`, which runs after coalescing. The patch covers the two upstream patterns that rebuild a load: `CanonicalizeMaskedLoadPattern` in `lib/Dialect/Triton/IR/Ops.cpp` and `CombineSelectMaskedLoadPattern` in `lib/Dialect/Triton/Transforms/Combine.cpp`.
+
+Losing this one is quieter than losing the WMMA patch: nothing fails to compile and no test crashes, the fused kernel just allocates more LDS than the unfused one it shares a tuning key with, which surfaces later as a perf config rejected for overflowing `rock.max_lds`. After a bump, re-check those two patterns (and any newly added pattern that replaces a `LoadOp`) and confirm `unify-dot-operand-loads.mlir` still passes, since its LDS check is what would catch the regression.
+
 ### 5.3.1 Kernel Launch Wrapper (from `driver.c`)
 
 The tuning driver has a local launch helper that mirrors Triton's AMD backend

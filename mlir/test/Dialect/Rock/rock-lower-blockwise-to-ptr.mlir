@@ -5,8 +5,9 @@
 //      CHECK:   %[[TRANS0:.*]] = rock.transform %[[ARG0]] by
 //      CHECK:   %[[TRANS1:.*]] = rock.transform %[[TRANS0]] by
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %[[TRANS1]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] : tensor<4x1x1x2x64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-// The cache modifier on the blockwise_load is propagated to blockwise_load_ptr.
-//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier cs>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+// The cache modifier on the blockwise_load is propagated to blockwise_load_ptr,
+// as is the size of the tensor under the view the load reads (32768xf16).
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier cs>, rock.load_tensor_bytes = 65536 : i64} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //      CHECK:   rock.blockwise_store_ptr %[[RESULT]] -> %{{.*}}({{.*}}) by  set
 //      CHECK:   return
 //  CHECK-NOT:   rock.blockwise_load
@@ -125,7 +126,7 @@ func.func @test_store_atomic_max(%arg0: tensor<64x64xf32>, %arg1: tensor<4096xf3
 // CHECK-LABEL: @test_load_i8
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xi8>, %[[DST:.*]]: tensor<4096xi8>)
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}} : tensor<1x64x64xi8> -> tensor<64x64xi32>, tensor<64x64xi1>
-//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>, rock.load_tensor_bytes = 4096 : i64} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xi8>
 //      CHECK:   rock.blockwise_store_ptr %[[RESULT]] -> %{{.*}}({{.*}}) by  set
 //  CHECK-NOT:   rock.blockwise_load
 //  CHECK-NOT:   rock.blockwise_store
@@ -147,7 +148,7 @@ func.func @test_load_i8(%arg0: tensor<4096xi8>, %dst: tensor<4096xi8>) -> tensor
 // CHECK-LABEL: @test_nonsquare_tile
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xf16>, %[[DST:.*]]: tensor<4096xf16>)
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}} : tensor<1x32x128xf16> -> tensor<32x128xi32>, tensor<32x128xi1>
-//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>} : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf16>
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>, rock.load_tensor_bytes = 8192 : i64} : tensor<32x128xi32>, tensor<32x128xi1> -> tensor<32x128xf16>
 //      CHECK:   rock.blockwise_store_ptr %[[RESULT]] -> %{{.*}}({{.*}}) by  set
 //  CHECK-NOT:   rock.blockwise_load
 //  CHECK-NOT:   rock.blockwise_store
@@ -199,7 +200,7 @@ func.func @test_inside_scf_for(%arg0: tensor<8192xf16>, %dst: tensor<4096xf16>) 
 // CHECK-LABEL: @test_no_indices
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4096xf16>, %[[DST:.*]]: tensor<4096xf16>)
 //      CHECK:   %[[PTRS:.*]], %[[MASK:.*]] = rock.transforms_to_ptr %{{.*}} : tensor<64x64xf16> -> tensor<64x64xi32>, tensor<64x64xi1>
-//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+//      CHECK:   %[[RESULT:.*]] = rock.blockwise_load_ptr %[[PTRS]][%[[MASK]]] {cacheModifier = #rock<CacheModifier none>, rock.load_tensor_bytes = 8192 : i64} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
 //      CHECK:   rock.blockwise_store_ptr %[[RESULT]] -> %{{.*}}({{.*}}) by  set
 //  CHECK-NOT:   rock.blockwise_load
 //  CHECK-NOT:   rock.blockwise_store
@@ -287,4 +288,58 @@ func.func @test_non_kernel_func_untouched(%arg0: tensor<64x64xf32>, %arg1: tenso
   %1 = rock.blockwise_store %arg0 -> %0 alias %arg1 by set : tensor<64x64xf32> -> tensor<64x64xf32> alias tensor<4096xf32> -> tensor<4096xf32>
 
   return %1 : tensor<4096xf32>
+}
+
+// -----
+
+// rock.load_tensor_bytes totals the bits of the tensor under the view before
+// dividing, so a packed sub-byte type is not rounded up per element: 8192 f4
+// elements are 4096 bytes, not the 8192 that rounding each element up to a
+// byte would report. The Triton pass that unifies the layouts of one dot
+// operand's loads orders them by this number, so f4 has to stay smaller than
+// the f8 tensor of the same element count.
+// CHECK-LABEL: @test_load_tensor_bytes_subbyte
+//      CHECK:   rock.blockwise_load_ptr
+// CHECK-SAME:     rock.load_tensor_bytes = 4096 : i64
+func.func @test_load_tensor_bytes_subbyte(%arg0: tensor<8192xf4E2M1FN>, %dst: tensor<8192xf4E2M1FN>) -> tensor<8192xf4E2M1FN> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %c0_i32 = arith.constant 0 : i32
+
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2) -> (d1 * 64 + d2)> by [<Unmerge{128, 64} ["m", "n"] at [1, 2] -> ["raw"] at [0]>, <AddDim{1} ["block"] at [0] -> [] at []>] bounds = [1, 128, 64] -> [8192]> : tensor<8192xf4E2M1FN> to tensor<1x128x64xf4E2M1FN>
+  %1 = rock.blockwise_load %0[%c0_i32] {cacheModifier = #rock<CacheModifier none>} : tensor<1x128x64xf4E2M1FN> -> tensor<128x64xf4E2M1FN>
+
+  %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{128, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [128, 64] -> [8192]> : tensor<8192xf4E2M1FN> to tensor<128x64xf4E2M1FN>
+  %2 = rock.blockwise_store %1 -> %dstView alias %dst by set : tensor<128x64xf4E2M1FN> -> tensor<128x64xf4E2M1FN> alias tensor<8192xf4E2M1FN> -> tensor<8192xf4E2M1FN>
+
+  return %2 : tensor<8192xf4E2M1FN>
+}
+
+// -----
+
+// Two loads reading the same tile shape from differently sized tensors, the
+// shape an input fusion takes: the tile says nothing about which load should
+// win, so the tag reports the tensor behind the view instead.
+// CHECK-LABEL: @test_load_tensor_bytes_orders_fused_inputs
+//      CHECK:   rock.blockwise_load_ptr
+// CHECK-SAME:     rock.load_tensor_bytes = 32768 : i64
+//      CHECK:   rock.blockwise_load_ptr
+// CHECK-SAME:     rock.load_tensor_bytes = 8192 : i64
+func.func @test_load_tensor_bytes_orders_fused_inputs(%arg0: tensor<16384xf16>, %arg1: tensor<4096xf16>, %dst: tensor<4096xf16>) -> tensor<4096xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %c0_i32 = arith.constant 0 : i32
+
+  // The dense operand: 16384 f16 elements, read one 64x64 tile at a time.
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{256, 64} ["m", "k"] at [0, 1] -> ["raw"] at [0]>] bounds = [256, 64] -> [16384]> : tensor<16384xf16> to tensor<256x64xf16>
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2) -> (d0 * 64 + d1, d2)> by [<Unmerge{4, 64} ["m_block", "m_iter"] at [0, 1] -> ["m"] at [0]>, <PassThrough ["k"] at [2] -> ["k"] at [1]>] bounds = [4, 64, 64] -> [256, 64]> : tensor<256x64xf16> to tensor<4x64x64xf16>
+  %2 = rock.blockwise_load %1[%c0_i32] {cacheModifier = #rock<CacheModifier none>} : tensor<4x64x64xf16> -> tensor<64x64xf16>
+
+  // The fused input: one tile's worth of data, so the same tile view covers
+  // the whole tensor.
+  %3 = rock.transform %arg1 by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
+  %4 = rock.blockwise_load %3 {cacheModifier = #rock<CacheModifier none>} : tensor<64x64xf16> -> tensor<64x64xf16>
+
+  %5 = arith.addf %2, %4 : tensor<64x64xf16>
+
+  %dstView = rock.transform %dst by <affine_map<(d0, d1) -> (d0 * 64 + d1)> by [<Unmerge{64, 64} ["m", "n"] at [0, 1] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]> : tensor<4096xf16> to tensor<64x64xf16>
+  %6 = rock.blockwise_store %5 -> %dstView alias %dst by set : tensor<64x64xf16> -> tensor<64x64xf16> alias tensor<4096xf16> -> tensor<4096xf16>
+
+  return %6 : tensor<4096xf16>
 }

@@ -569,12 +569,15 @@ def ResolveKernelLaunchParamsPass
     supported by the runtime's limit of the AMDGPU dispatch packet. Such
     launches are marked not applicable so tuning can skip the configuration.
 
-    The pass also validates that `ttg.shared` does not exceed the hardware LDS
-    limit for the target architecture (read from the `rock.arch` attribute on
-    the kernel function).
+    The pass also validates that `ttg.shared` does not exceed the LDS limit,
+    which is the hardware limit for the target architecture (read from the
+    `rock.arch` attribute on the kernel function), tightened by a
+    caller-supplied `rock.max_lds` when one is present.
 
-    After this pass the `ttg.shared` attribute is removed (shared memory is now
-    static), so downstream launch code should pass 0 for dynamic shared memory.
+    Shared memory is static after this pass, so downstream launch code should
+    pass 0 for dynamic shared memory. `ttg.shared` itself is left on the module
+    as the record of how much LDS the kernel uses, which is what Triton's own
+    backend reports shared memory from and what `mlirGetKernelAttrs` returns.
   }];
   let dependentDialects = ["LLVM::LLVMDialect"];
 }
@@ -882,6 +885,43 @@ def RockSetMatmulOutputTransposePass
     accelerator layouts keep their default. The version-dependent mapping is:
       row-major output (oTransposed = false): isTransposed = (version > 1)
       col-major output (oTransposed = true):  isTransposed = (version == 1)
+  }];
+  let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
+                           "triton::gpu::TritonGPUDialect"];
+}
+
+def RockUnifyDotOperandLoadsPass
+    : Pass<"rock-unify-dot-operand-loads", "::mlir::ModuleOp"> {
+  let summary = "Give the loads feeding one dot operand a single layout";
+  let description = [{
+    Runs immediately after Triton's `tritongpu-coalesce`, which picks a layout
+    per memory op from that op's own pointer contiguity. When an input fusion
+    puts more than one load in a `tt.dot` operand's chain, the loads can land
+    in different layouts, and the elementwise op that combines them then needs
+    a `ttg.convert_layout` to bring them together. That conversion is scratch
+    LDS the unfused kernel never allocated, which is what breaks a perf config
+    MIGraphX cached against the unfused problem key.
+
+    In this project broadcasts and transposes live in the `rock.transform`
+    index math, so every load in a fused chain has the same shape. A layout
+    says which thread holds which logical element and the indexing says which
+    address it reads, so one common layout is always legal for same-shape
+    tensors, and the conversion can be removed outright rather than made
+    cheaper.
+
+    The chain's layout is taken from its largest load, as reported by the
+    `rock.load_tensor_bytes` tag: the largest tensor is the dense one whose
+    coalescing is worth keeping, and it is the one whose layout the operand
+    load would have received had the kernel not been fused. The other loads are
+    rewritten to that layout with `convertDistributedOpEncoding`, which
+    relayouts the pointer and mask subtrees along with the load.
+
+    The pass no-ops when a chain's loads already agree, which is the common
+    no-transpose case, and when only one load is tagged.
+
+    `tritongpu-remove-layout-conversions` also tries to undo Coalesce's
+    per-op choices, but it is heuristic and guarantees nothing, which is why
+    this runs as its own chain-aware pass rather than relying on it.
   }];
   let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
                            "triton::gpu::TritonGPUDialect"];

@@ -53,6 +53,30 @@ struct RockLowerBlockwiseToPtrPass
 
 namespace {
 
+// Size in bytes of the global tensor `source` views, found by walking its
+// `rock.transform` chain back to the untransformed value. Returns nothing for
+// a dynamic shape or a type with no sensible byte size, in which case the load
+// goes untagged and the Triton side leaves it out of the running.
+static std::optional<int64_t> getUnderlyingTensorBytes(Value source) {
+  SmallVector<TransformOp> transforms;
+  auto [base, _] = untransform(source, transforms);
+
+  auto baseType = dyn_cast<RankedTensorType>(base.getType());
+  if (!baseType || !baseType.hasStaticShape())
+    return std::nullopt;
+
+  Type elemType = baseType.getElementType();
+  if (!elemType.isIntOrFloat())
+    return std::nullopt;
+
+  // Total the bits before dividing, since sub-byte element types are packed:
+  // rounding each f4 element up to a byte would report the same size as f8
+  // and lose the very ordering the tag exists to give.
+  int64_t totalBits =
+      baseType.getNumElements() * elemType.getIntOrFloatBitWidth();
+  return llvm::divideCeil(totalBits, 8);
+}
+
 //===----------------------------------------------------------------------===//
 // BlockwiseLoadOp lowering.
 //===----------------------------------------------------------------------===//
@@ -74,6 +98,14 @@ struct BlockwiseLoadRewritePattern : public OpRewritePattern<BlockwiseLoadOp> {
     auto loadOp = BlockwiseLoadPtrOp::create(b, loc, op.getResult().getType(),
                                              pointerTensor, maskTensor,
                                              op.getCacheModifier());
+
+    // Record how big the tensor behind this load is while the view is still
+    // here to say so. Once the source becomes a pointer tensor, the shape it
+    // came from is no longer recoverable, and the Triton pass that unifies the
+    // layouts of one dot operand's loads needs it to pick between them.
+    if (std::optional<int64_t> bytes = getUnderlyingTensorBytes(source))
+      loadOp->setDiscardableAttr(rock::LoadTensorBytesAttr::getMnemonic(),
+                                 b.getI64IntegerAttr(*bytes));
 
     b.replaceOp(op, loadOp.getResult());
     return success();

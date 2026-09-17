@@ -279,11 +279,11 @@ static bool constructAndTraverseIr(MlirContext ctx) {
     return false;
   }
 
-  uint32_t attrs[3];
-  // returns cluster size, block size, and grid size
+  uint32_t attrs[4];
+  // returns block size, grid size, cluster size, and LDS size
   mlirGetKernelAttrs(module, attrs);
-  printf("block size : %d, grid size : %d, cluster size : %d\n", attrs[0],
-         attrs[1], attrs[2]);
+  printf("block size : %d, grid size : %d, cluster size : %d, lds size : %d\n",
+         attrs[0], attrs[1], attrs[2], attrs[3]);
 
   // returns binary size
   size_t binSize = 0;

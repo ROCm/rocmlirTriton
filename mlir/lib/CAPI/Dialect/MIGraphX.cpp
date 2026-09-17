@@ -64,7 +64,7 @@ MlirType rocmlirMIXRShapedTypeAsTensor(MlirType type) {
       llvm::cast<mlir::migraphx::MIXRShapedType>(unwrap(type)).asTensor());
 }
 
-// Returns block_size, grid_size and cluster_size as uint32_t[3]
+// Returns block_size, grid_size, cluster_size and lds_size as uint32_t[4]
 MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
   auto mod = unwrap(module);
   size_t count = 0;
@@ -87,6 +87,15 @@ MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
     }
   });
   assert(count == 1 && "invalid number of kernels");
+
+  // LDS is allocated once per module rather than per kernel, so it lives on
+  // the module rather than in the per-kernel metadata above. `ttg.shared` is
+  // the same attribute Triton's own backend reports shared memory from, and
+  // `rock-resolve-kernel-launch-params` has already bounded it by the target
+  // architecture and by any caller-supplied `rock.max_lds`.
+  auto shared = mod->getAttrOfType<mlir::IntegerAttr>("ttg.shared");
+  assert(shared && "ttg.shared missing; backend pipeline did not run");
+  attrs[3] = shared ? shared.getInt() : 0;
 }
 
 // Returns the size of compiled binary if called with null ptr

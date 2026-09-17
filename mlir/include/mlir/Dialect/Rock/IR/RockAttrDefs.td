@@ -745,6 +745,52 @@ def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
   }];
 }
 
+def Rock_MaxLds : Rock_Attr<"MaxLds"> {
+  let mnemonic = "rock.max_lds";
+  let description = [{
+    Caller-supplied ceiling, in bytes, on the LDS a kernel may use. Carried as
+    an `IntegerAttr` on the kernel function; absent means the caller names no
+    ceiling and only the architecture limit applies. A non-positive value is
+    an error rather than another way to say "no ceiling", since omitting the
+    attribute already says that.
+
+    The caller sets it on the kernel function of the module it hands us, the
+    same way `rock.arch` and `rock.num_cu` arrive. MIGraphX needs it because it
+    caches perf configs against an unfused problem key and reuses them for
+    fused variants, which can relayout more than the unfused kernel did.
+
+    `rock-resolve-kernel-launch-params` enforces
+    `ttg.shared <= min(arch limit, rock.max_lds)`. `rock-tensor-to-triton-ptr`
+    carries it onto the `tt.func` along with the other discardable attributes,
+    so `OptimizeEpilogue` can drop an epilogue LDS round trip that would not
+    fit rather than leaving the gate to fail on it.
+
+    Over-budget is a compile failure, not a fallback: the gate calls
+    `markAsNotApplicable` and `signalPassFailure()`, and the CAPI pipeline
+    path never reads that marker. See `docs/kernel_assumptions.md` 2.11.
+  }];
+}
+
+def Rock_LoadTensorBytes : Rock_Attr<"LoadTensorBytes"> {
+  let mnemonic = "rock.load_tensor_bytes";
+  let description = [{
+    Size in bytes of the global tensor a blockwise load reads from, before any
+    `rock.transform` view is applied. Carried as an `IntegerAttr` on
+    `rock.blockwise_load_ptr` and copied onto the lowered `tt.load` by
+    `rock-to-ttir`.
+
+    Triton's `Coalesce` picks a layout per memory op from that op's own
+    pointer contiguity, so the loads feeding one `tt.dot` operand can land in
+    different layouts and need a conversion to meet. Which of them should win
+    is a question about the tensors, not the pointer arithmetic, and this
+    project folds broadcasts and transposes into `rock.transform` index math,
+    which is exactly where `AxisInfo` turns conservative. So Rock records the
+    size here and leaves the Triton pass to take the maximum: the largest
+    tensor is the dense one whose coalescing is worth keeping, and it is the
+    one whose layout the operand load would have had unfused.
+  }];
+}
+
 def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{

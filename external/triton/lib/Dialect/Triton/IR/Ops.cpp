@@ -81,9 +81,14 @@ struct CanonicalizeMaskedLoadPattern : public OpRewritePattern<LoadOp> {
 
     if (splatMask.getSplatValue<IntegerAttr>().getValue() == true) {
       // mask = splat(1)
-      rewriter.replaceOpWithNewOp<LoadOp>(
+      // Read the attributes before the replacement erases the op. Dropping a
+      // mask that admits everything says nothing about the metadata riding on
+      // the load, which downstream passes still need to find.
+      DictionaryAttr attrs = loadOp->getDiscardableAttrDictionary();
+      auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
           loadOp, loadOp.getType(), loadOp.getPtr(), Value(), Value(),
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      newLoad->setDiscardableAttrs(attrs);
     } else {
       // mask = splat(0)
 
