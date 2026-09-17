@@ -325,24 +325,32 @@ patch-free-var-mask-register-dim-name.patch
   Not filed upstream yet; upstream Triton has the same defect.
 
 patch-cost-aware-dot-rematerialization.patch
-  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
-  isRematBeneficial cost model instead of hoisting unconditionally. The pass
-  previously moved every ttg.convert_layout next to its load once the backward
-  slice was elementwise-pure, even when rematerializing the slice in a
-  replicated dot-operand layout cost more than keeping the convert (e.g.
-  expensive math scaled by getCostFactor replication and the 8x
-  isExpensiveMathOp multiplier).
-  Also XFAILs test/TritonGPU/combine.mlir and
-  test/TritonGPU/amd/accelerate-amd-matmul-mfma-decompose-scaled-dot.mlir, whose
-  expectations predate the gate: five sections of the former and all three
-  functions of the latter assume the unconditional hoist. Rewriting them would
-  freeze an unmeasured trade -- on gfx950 the gate keeps the mfma scale chains
-  blocked instead of linear, and it leaves a fourth ttg.convert_layout in the
-  fp8_mxfp4_matmul_decompose loop -- so measure first, then replace the XFAILs
-  with updated expectations.
-  The RemoveLayoutConversions.cpp hunk header claimed 21 new lines instead of 20,
-  which made this record impossible to reverse-apply in Step 1.2 of
-  docs/bump_triton_version.md; corrected here.
+  Upstream PR: https://github.com/triton-lang/triton/pull/11551
+  Upstream title: [TRITONGPU] Avoid expensive math rematerialization when
+  hoisting dot operands
+  Stops LayoutRematerialization::hoistConvertDotOperand from rematerializing
+  expensive math. The pass moved every ttg.convert_layout next to its load once
+  the backward slice was elementwise-pure, even when the slice had to be
+  duplicated or ran in a dot-operand layout that replicates the operand across
+  warps, multiplying transcendental work.
+  Mirrors the upstream PR: the cost computation is split into getSliceOps,
+  getValuesUsedOutsideSlice and getRematerializationCost, which reports
+  totalCost, expensiveMathCost and splitsSlice, and the hoist is rejected only
+  when expensiveMathCost is non-zero. Cheap elementwise chains still hoist,
+  because the payoff there is pipelining the loads rather than a cheaper
+  convert. test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir is
+  byte-identical to the version in that PR.
+  Two deviations from the PR, both because the pinned Triton predates the
+  feature: isRematBeneficial keeps its four-parameter signature and the
+  disableRematSplitting rejection is omitted. The splitsSlice field is kept so
+  the next bump can drop this record without further edits.
+  An earlier revision of this record gated on total cost instead, which also
+  suppressed cheap chains and left five sections of test/TritonGPU/combine.mlir
+  and all three functions of
+  test/TritonGPU/amd/accelerate-amd-matmul-mfma-decompose-scaled-dot.mlir
+  failing; both are untouched upstream tests and now pass unmodified. That
+  revision also declared 21 new lines in a hunk with 20, so it could not be
+  reverse-applied in Step 1.2 of docs/bump_triton_version.md.
 
   After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
   the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,

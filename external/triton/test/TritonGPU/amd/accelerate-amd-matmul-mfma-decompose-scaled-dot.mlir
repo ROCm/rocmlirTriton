@@ -1,9 +1,5 @@
 // RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx950 matrix-instruction-size=0" -tritongpu-remove-layout-conversions | FileCheck %s --check-prefixes CHECK
 
-// The scale chains stay blocked instead of linear because the dot-operand hoist
-// is cost-gated, see triton-patches/patch-cost-aware-dot-rematerialization.patch.
-// XFAIL: *
-
 // CHECK-LABEL: mfma_dot_scaled_bf16_fp8e4
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [2, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 2], warpsPerCTA = [4, 1], order = [1, 0]}>
