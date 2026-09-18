@@ -1,22 +1,162 @@
 diff --git a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-index cc9919cbc6..a1b2c3d4e5 100644
+index cc9919c..062ed88 100644
 --- a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
 +++ b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-@@ -1314,6 +1314,21 @@ bool LayoutRematerialization::hoistConvertDotOperand(
+@@ -1046,23 +1046,26 @@ static unsigned getCostFactor(Value result, Attribute rematEncoding) {
+   return std::max(1u, newElemsPerThread / oldElemsPerThread);
+ }
+ 
+-/// Determine whether rematerializing \p slice is beneficial given that it will
+-/// eliminate \p convertOp and require creating new convert ops with cost \p
+-/// newCvtCost.
+-bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+-                       const DenseMap<Value, Attribute> &layout,
+-                       int64_t newCvtCost) {
+-  // Identify all operations in the slice
++/// Collect the operations defining the values of \p slice.
++static SetVector<Operation *> getSliceOps(const SetVector<Value> &slice) {
+   SetVector<Operation *> sliceOps;
+   for (Value v : slice) {
+     if (Operation *op = v.getDefiningOp()) {
+       sliceOps.insert(op);
+     }
+   }
++  return sliceOps;
++}
+ 
+-  // Determine which values used by operations outside the slice. We can use
+-  // this to determine whether they will actually survive and therefore need to
+-  // contribute to the cost.
++/// Determine which values of \p slice are used by operations outside the slice.
++/// Rematerializing the slice leaves those values, and everything they depend
++/// on, behind in the original layout, so they get duplicated rather than
++/// rewritten. \p convertOp is the conversion being eliminated and so does not
++/// count as an outside user.
++static SetVector<Value>
++getValuesUsedOutsideSlice(ConvertLayoutOp convertOp,
++                          const SetVector<Value> &slice,
++                          const SetVector<Operation *> &sliceOps) {
+   SetVector<Value> nonSliceOnlyValues;
+ 
+   // Identify values that directly have uses outside the slice.
+@@ -1119,11 +1122,33 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+         nonSliceOnlyValues.insert(operand);
+   }
+ 
+-  int64_t convertLayoutCost =
+-      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
+-  int64_t rematerialisationCost = newCvtCost;
++  return nonSliceOnlyValues;
++}
++
++/// Estimated additional work caused by rematerializing a slice. Expensive math
++/// is tracked separately so transformations with benefits outside this cost
++/// model, such as enabling pipelining, can apply a more targeted policy.
++struct RematerializationCost {
++  int64_t totalCost = 0;
++  int64_t expensiveMathCost = 0;
++  bool splitsSlice = false;
++};
+ 
+-  // Evaluate single-use status for every operation in slice
++/// Compute the additional cost of rematerializing \p slice in the layouts in
++/// \p layout. This includes operations duplicated because their original
++/// values survive and extra per-thread work introduced by the new layouts.
++static FailureOr<RematerializationCost>
++getRematerializationCost(ConvertLayoutOp convertOp,
++                         const SetVector<Value> &slice,
++                         const DenseMap<Value, Attribute> &layout) {
++  SetVector<Operation *> sliceOps = getSliceOps(slice);
++  SetVector<Value> nonSliceOnlyValues =
++      getValuesUsedOutsideSlice(convertOp, slice, sliceOps);
++
++  RematerializationCost rematCost;
++  rematCost.splitsSlice = !nonSliceOnlyValues.empty();
++
++  // Evaluate single-use status for every operation in slice.
+   for (Operation *op : sliceOps) {
+     auto dialect = op->getDialect();
+     bool isOpUsedOutsideSlice = llvm::any_of(op->getResults(), [&](Value v) {
+@@ -1139,7 +1164,8 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+       // as halves of a single-cycle FMA instruction) and expensive
+       // operations which use the special function unit and/or involve
+       // multiple instructions.
+-      int64_t multiplier = isExpensiveMathOp(op) ? 8 : 1;
++      bool isExpensive = isExpensiveMathOp(op);
++      int64_t multiplier = isExpensive ? 8 : 1;
+       for (Value result : op->getResults()) {
+         Attribute rematEncoding = layout.lookup(result);
+         int64_t cost = multiplier * getByteCount(result);
+@@ -1148,7 +1174,10 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+         unsigned factor = getCostFactor(result, rematEncoding);
+         if (!isOpUsedOutsideSlice)
+           factor -= 1;
+-        rematerialisationCost += cost * factor;
++        cost *= factor;
++        rematCost.totalCost += cost;
++        if (isExpensive)
++          rematCost.expensiveMathCost += cost;
+       }
+       continue;
+     }
+@@ -1162,7 +1191,7 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+     if (isa<LoadOp>(op) || isa<LocalLoadOp>(op)) {
+       // optimistically assume L1-cached:
+       for (Value result : op->getResults()) {
+-        rematerialisationCost += 8 * getByteCount(result);
++        rematCost.totalCost += 8 * getByteCount(result);
+       }
+     } else if (isa<ReduceOp>(op)) {
+       // Reduce op introduce much cost.
+@@ -1173,13 +1202,31 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+         // use chain.
+         LDBG("  skipped rematerialization due to non-associative reduce in the "
+              "slice");
+-        return false;
++        return failure();
+       }
+-      rematerialisationCost += helper.getIntraWarpSizeWithUniqueData();
+-      rematerialisationCost += 8 * helper.getInterWarpSizeWithUniqueData();
++      rematCost.totalCost += helper.getIntraWarpSizeWithUniqueData();
++      rematCost.totalCost += 8 * helper.getInterWarpSizeWithUniqueData();
+     }
+   }
+ 
++  return rematCost;
++}
++
++/// Determine whether rematerializing \p slice is beneficial given that it will
++/// eliminate \p convertOp and require creating new convert ops with cost \p
++/// newCvtCost.
++bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
++                       const DenseMap<Value, Attribute> &layout,
++                       int64_t newCvtCost) {
++  FailureOr<RematerializationCost> rematCost =
++      getRematerializationCost(convertOp, slice, layout);
++  if (failed(rematCost))
++    return false;
++
++  int64_t convertLayoutCost =
++      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
++  int64_t rematerialisationCost = newCvtCost + rematCost->totalCost;
++
+   LLVM_DEBUG({
+     DBGS() << "  convert layout cost: " << convertLayoutCost << "\n";
+     DBGS() << "  rematerialisation cost: " << rematerialisationCost << "\n";
+@@ -1314,6 +1361,19 @@ bool LayoutRematerialization::hoistConvertDotOperand(
    if (result.failed())
      return false;
  
-+  // Hoist only if rematerializing the slice in the dot-operand layout (plus
-+  // converts inserted at each load leaf) is no more expensive than the convert
-+  // we would eliminate.
-+  int64_t newCvtCost = 0;
-+  for (Value v : slice) {
-+    if (Operation *op = v.getDefiningOp())
-+      if (isa<LoadOp, DescriptorLoadLikeOpInterface>(op))
-+        newCvtCost += getConvertCost(op->getResult(0), layout[v]);
-+  }
-+  if (!isRematBeneficial(convertOp, slice, layout, newCvtCost)) {
-+    LDBG("  skipped dot-operand hoist due to higher cost");
++  // The payoff of this hoist is pipelining the loads, so the conversions moved
++  // next to the loads should not be treated as ordinary, fully exposed costs.
++  // Still reject additional expensive math, whether it comes from preserving
++  // the original slice or from a layout that increases per-thread work.
++  FailureOr<RematerializationCost> rematCost =
++      getRematerializationCost(convertOp, slice, layout);
++  if (failed(rematCost))
++    return false;
++  if (rematCost->expensiveMathCost > 0) {
++    LDBG("  skipped dot-operand hoist: would add expensive math");
 +    return false;
 +  }
 +
@@ -25,10 +165,10 @@ index cc9919cbc6..a1b2c3d4e5 100644
    SetVector<Value> innerSlice;
 diff --git a/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir b/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir
 new file mode 100644
-index 000000000..f33c749ea
+index 0000000..6ad30d8
 --- /dev/null
 +++ b/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,137 @@
 +// RUN: triton-opt %s -split-input-file -tritongpu-remove-layout-conversions -cse | FileCheck %s
 +
 +// hoistConvertDotOperand still moves a cheap elementwise chain into the
@@ -62,14 +202,15 @@ index 000000000..f33c749ea
 +
 +// -----
 +
-+// Two same-sized load leaves would each need a convert. That is more expensive
-+// than keeping the original convert after the add, so the hoist is skipped.
++// Multiple converts moved next to loads can be pipelined. Do not reject the
++// hoist just because their combined ordinary conversion cost is higher than
++// the conversion after the add.
 +
 +#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [8, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
 +#mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1], instrShape = [32, 32, 8], isTransposed = true}>
 +module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32, ttg.target = "hip:gfx942"} {
-+  // CHECK-LABEL: @dot_operand_skip_two_load_leaves
-+  tt.func @dot_operand_skip_two_load_leaves(
++  // CHECK-LABEL: @dot_operand_hoist_two_load_leaves
++  tt.func @dot_operand_hoist_two_load_leaves(
 +      %pa1: tensor<128x64x!tt.ptr<f16>, #blocked>,
 +      %pa2: tensor<128x64x!tt.ptr<f16>, #blocked>,
 +      %b: tensor<64x128xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>,
@@ -89,16 +230,17 @@ index 000000000..f33c749ea
 +}
 +
 +// CHECK: %[[LOAD0:.*]] = tt.load
++// CHECK-NEXT: %[[CVT0:.*]] = ttg.convert_layout %[[LOAD0]]
 +// CHECK-NEXT: %[[LOAD1:.*]] = tt.load
-+// CHECK-NEXT: %[[ADD:.*]] = arith.addf %[[LOAD0]], %[[LOAD1]]
-+// CHECK-NEXT: ttg.convert_layout %[[ADD]]
-+// CHECK-NEXT: tt.dot
++// CHECK-NEXT: %[[CVT1:.*]] = ttg.convert_layout %[[LOAD1]]
++// CHECK-NEXT: %[[ADD:.*]] = arith.addf %[[CVT0]], %[[CVT1]]
++// CHECK-NEXT: tt.dot %[[ADD]]
 +
 +// -----
 +
 +// Expensive math that is also stored must stay in the original layout. Hoisting
 +// would rematerialize log/tanh in the dot-operand layout while keeping the
-+// stored copy, which the cost model rejects.
++// stored copy, duplicating both.
 +
 +#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [8, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
 +#mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1], instrShape = [32, 32, 8], isTransposed = true}>
@@ -132,3 +274,35 @@ index 000000000..f33c749ea
 +// CHECK-NEXT: ttg.convert_layout
 +// CHECK-NEXT: tt.dot
 +// CHECK-NEXT: tt.store
++
++// -----
++
++// Operand B is replicated across the MFMA layout's M warps. Even when expensive
++// math has no other users, hoisting it into this layout would increase the
++// amount of expensive work performed by each CTA.
++
++#blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [8, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
++#mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1], instrShape = [32, 32, 8], isTransposed = true}>
++module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 64 : i32, ttg.target = "hip:gfx942"} {
++  // CHECK-LABEL: @dot_operand_skip_expensive_math_replication
++  tt.func @dot_operand_skip_expensive_math_replication(
++      %a: tensor<128x64xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>>,
++      %pb: tensor<64x128x!tt.ptr<f16>, #blocked>,
++      %c: tensor<128x128xf32, #mma>, %n: i32) -> tensor<128x128xf32, #mma> {
++    %c0 = arith.constant 0 : i32
++    %c1 = arith.constant 1 : i32
++    %out = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %c) -> (tensor<128x128xf32, #mma>) : i32 {
++      %b = tt.load %pb : tensor<64x128x!tt.ptr<f16>, #blocked>
++      %e = math.log %b : tensor<64x128xf16, #blocked>
++      %bc = ttg.convert_layout %e : tensor<64x128xf16, #blocked> -> tensor<64x128xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>>
++      %r = tt.dot %a, %bc, %acc : tensor<128x64xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 4}>> * tensor<64x128xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 4}>> -> tensor<128x128xf32, #mma>
++      scf.yield %r : tensor<128x128xf32, #mma>
++    }
++    tt.return %out : tensor<128x128xf32, #mma>
++  }
++}
++
++// CHECK: tt.load
++// CHECK-NEXT: math.log
++// CHECK-NEXT: ttg.convert_layout
++// CHECK-NEXT: tt.dot

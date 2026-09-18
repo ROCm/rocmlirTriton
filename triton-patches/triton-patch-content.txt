@@ -20,6 +20,7 @@ patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
+patch-lit-registered-target-features.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -54,6 +55,9 @@ patch-buffer-atomics.patch
   atomic add; gfx11 only F32; gfx942 no PK_ADD_BF16; gfx12 no F64).
   Upstreaming was attempted in https://github.com/triton-lang/triton/pull/10408
   but it was rejected.
+  Enabling RMW on RDNA3/GFX1170 also makes f32 buffer atomic fmin/fmax reachable
+  there, so patch11018 lists those rows of
+  test/TritonGPU/amd/amd-convert-buffer-ops-atomic-fminmax.mlir as BUF-F32.
 
 patch10498.patch
   Extends patch10450's soffset-split safety check to peel sign-preserving
@@ -273,6 +277,10 @@ patch11018.patch
   CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
   fallback always has a CAS expansion. That is what lets rocMLIR drop its
   isFastAtomicMaxSupported() fusion gate.
+  The gfx1100 and gfx1170 rows of the test matrix use BUF-F32 where upstream uses
+  NO-F32: upstream reaches those families with no buffer atomic RMW at all, while
+  patch-buffer-atomics enables it and GFX11 does carry
+  AtomicFMinFMaxF32GlobalInsts.
 
   Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
   the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
@@ -317,13 +325,32 @@ patch-free-var-mask-register-dim-name.patch
   Not filed upstream yet; upstream Triton has the same defect.
 
 patch-cost-aware-dot-rematerialization.patch
-  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
-  isRematBeneficial cost model instead of hoisting unconditionally. The pass
-  previously moved every ttg.convert_layout next to its load once the backward
-  slice was elementwise-pure, even when rematerializing the slice in a
-  replicated dot-operand layout cost more than keeping the convert (e.g.
-  expensive math scaled by getCostFactor replication and the 8x
-  isExpensiveMathOp multiplier).
+  Upstream PR: https://github.com/triton-lang/triton/pull/11551
+  Upstream title: [TRITONGPU] Avoid expensive math rematerialization when
+  hoisting dot operands
+  Stops LayoutRematerialization::hoistConvertDotOperand from rematerializing
+  expensive math. The pass moved every ttg.convert_layout next to its load once
+  the backward slice was elementwise-pure, even when the slice had to be
+  duplicated or ran in a dot-operand layout that replicates the operand across
+  warps, multiplying transcendental work.
+  Mirrors the upstream PR: the cost computation is split into getSliceOps,
+  getValuesUsedOutsideSlice and getRematerializationCost, which reports
+  totalCost, expensiveMathCost and splitsSlice, and the hoist is rejected only
+  when expensiveMathCost is non-zero. Cheap elementwise chains still hoist,
+  because the payoff there is pipelining the loads rather than a cheaper
+  convert. test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir is
+  byte-identical to the version in that PR.
+  Two deviations from the PR, both because the pinned Triton predates the
+  feature: isRematBeneficial keeps its four-parameter signature and the
+  disableRematSplitting rejection is omitted. The splitsSlice field is kept so
+  the next bump can drop this record without further edits.
+  An earlier revision of this record gated on total cost instead, which also
+  suppressed cheap chains and left five sections of test/TritonGPU/combine.mlir
+  and all three functions of
+  test/TritonGPU/amd/accelerate-amd-matmul-mfma-decompose-scaled-dot.mlir
+  failing; both are untouched upstream tests and now pass unmodified. That
+  revision also declared 21 new lines in a hunk with 20, so it could not be
+  reverse-applied in Step 1.2 of docs/bump_triton_version.md.
 
   After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
   the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,
@@ -440,3 +467,16 @@ patch-fma-lds-swizzle.patch
 
   Not filed upstream yet; upstream Triton has the same performance gap.
 
+patch-lit-registered-target-features.patch
+  Adds the `<target>-registered-target` lit features to test/lit.cfg.py and
+  guards the llc pipelines of test/Conversion/tritongpu_to_ptx.mlir and
+  test/Conversion/tritongpu_to_ptx_mmav3.mlir with them. Same code as
+  llvm/test/lit.cfg.py, over config.targets_to_build, which
+  configure_lit_site_cfg fills in from LLVM_TARGETS_TO_BUILD.
+  rocmlirTriton builds LLVM with X86;AMDGPU only (see cmake/triton.cmake), so
+  `llc -mtriple nvptx64-nvidia-cuda` cannot resolve a target and both tests fail
+  rather than being skipped. The three RUN lines of tritongpu_to_ptx.mlir that
+  only need triton-opt keep running; tritongpu_to_ptx_mmav3.mlir is nothing but
+  an llc pipeline, so it reports unsupported.
+  Nothing in it is AMD-specific, so it can go upstream; drop this patch if it
+  does.
