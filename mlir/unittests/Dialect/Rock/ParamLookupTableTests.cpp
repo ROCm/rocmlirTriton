@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/STLExtras.h"
 #include <gtest/gtest.h>
 
 using namespace mlir;
@@ -534,11 +535,11 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
 }
 
 TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
-  // gfx1150 ships both lists for gemm f16, so supportsSplitK must select the
-  // regular 32-entry list or the split-K-free 36-entry list respectively.
+  // gfx1151's regular gemm f16 list contains split-K configs, while its
+  // no-split-K list does not.
   MLIRContext ctx;
   Type f16 = Float16Type::get(&ctx);
-  StringRef arch = "amdgcn-amd-amdhsa:gfx1150";
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1151";
   auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
       arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
   auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
@@ -546,26 +547,12 @@ TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
 
   EXPECT_FALSE(regular.empty());
   EXPECT_FALSE(noSplitK.empty());
-  EXPECT_EQ(32u, regular.size());
-  EXPECT_EQ(36u, noSplitK.size());
   EXPECT_FALSE(regular == noSplitK);
-}
-
-TEST(LookupTest, MissingRegularListUsesNoSplitKPair) {
-  // gfx1201 dropped its regular gemm lists but kept split-K-free ones. Since
-  // pair fallback is unconditional, lookup uses its 19-entry split-K-free list
-  // before changing architecture.
-  MLIRContext ctx;
-  Type f16 = Float16Type::get(&ctx);
-  auto get = [&](StringRef arch) {
-    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f16,
-                                                    /*supportsSplitK=*/true);
+  auto hasSplitK = [](StringRef config) {
+    return !config.contains("splitKFactor=1,");
   };
-
-  auto rdna4 = get("amdgcn-amd-amdhsa:gfx1201");
-  EXPECT_FALSE(rdna4.empty());
-  EXPECT_EQ(19u, rdna4.size());
-  EXPECT_FALSE(rdna4 == get("amdgcn-amd-amdhsa:gfx1200"));
+  EXPECT_TRUE(llvm::any_of(regular, hasSplitK));
+  EXPECT_FALSE(llvm::any_of(noSplitK, hasSplitK));
 }
 
 TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
@@ -583,9 +570,9 @@ TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
   EXPECT_TRUE(noSplitK == regular);
 }
 
-TEST(LookupTest, CloserNoSplitKArchitectureWins) {
-  // gfx1202 has no exact key in either table, so architecture fallback uses
-  // gfx1201's closer split-K-free list rather than gfx1200's regular list.
+TEST(LookupTest, ArchitectureFallbackPreservesSplitKPreference) {
+  // gfx1202 has no exact key in either table, so both fallbacks use gfx1201
+  // while preserving the selected table.
   MLIRContext ctx;
   Type f32 = Float32Type::get(&ctx);
   auto get = [&](StringRef arch, bool supportsSplitK) {
@@ -593,9 +580,11 @@ TEST(LookupTest, CloserNoSplitKArchitectureWins) {
                                                     supportsSplitK);
   };
 
-  auto next = get("amdgcn-amd-amdhsa:gfx1202", true);
-  EXPECT_FALSE(next.empty());
-  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1201", false));
-  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1202", false));
-  EXPECT_FALSE(next == get("amdgcn-amd-amdhsa:gfx1200", true));
+  auto regular = get("amdgcn-amd-amdhsa:gfx1202", true);
+  auto noSplitK = get("amdgcn-amd-amdhsa:gfx1202", false);
+  EXPECT_FALSE(regular.empty());
+  EXPECT_FALSE(noSplitK.empty());
+  EXPECT_TRUE(regular == get("amdgcn-amd-amdhsa:gfx1201", true));
+  EXPECT_TRUE(noSplitK == get("amdgcn-amd-amdhsa:gfx1201", false));
+  EXPECT_FALSE(regular == noSplitK);
 }
