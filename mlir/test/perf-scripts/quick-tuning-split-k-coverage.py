@@ -113,6 +113,33 @@ class QuickTuningSplitKCoverageTest(unittest.TestCase):
         self.assertEqual(len(seen_coverage), 1)
         self.assertEqual(list(seen_coverage[0].values()), [[winner]])
 
+    def test_priority_aggregation_uses_numeric_max(self):
+        winner = gemm_perfconfig(64, 1)
+        df = make_df('gemm', [(winner, 100.0), (winner, 100.0)])
+        df['DataType'] = 'f32'
+        df['PerfPriority'] = ['2', '10']
+        seen_priorities = []
+        original_build_coverage = quickTuningGen.build_coverage
+
+        def capture_priority(typed, *args, **kwargs):
+            seen_priorities.append(typed['PerfPriority'].iloc[0])
+            return original_build_coverage(typed, *args, **kwargs)
+
+        def solve(coverage, _dtype):
+            problems = sorted(coverage)
+            configs = sorted({config for candidates in coverage.values() for config in candidates})
+            config_idx = {config: i for i, config in enumerate(configs)}
+            matrix = quickTuningGen.np.ones((len(problems), len(configs)), dtype=int)
+            return [configs[0]], problems, configs, config_idx, matrix
+
+        with mock.patch.object(quickTuningGen,
+                               'build_coverage',
+                               side_effect=capture_priority), \
+                mock.patch.object(quickTuningGen, 'solve_full_coverage', side_effect=solve):
+            quickTuningGen.find_perfconfigs(df, 'gemm', THRESHOLD, max_configs=40)
+
+        self.assertEqual(seen_priorities, [10])
+
     def test_bounded_weights_follow_coverage_keys(self):
         split_k_winner = gemm_perfconfig(128, 4)
         no_split_k_winner = gemm_perfconfig(64, 1)
