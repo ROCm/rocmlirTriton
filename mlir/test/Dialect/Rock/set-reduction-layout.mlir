@@ -489,6 +489,54 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
+// A prologue ending in a math library call. tt.extern_elementwise is how an
+// OCML symbol is carried at this level, and it is accepted as long as its marked as pure.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_pure_ocml_call
+  // CHECK-DAG:     tt.load {{.*}}tensor<32x64x!tt.ptr<f32>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     tt.extern_elementwise {{.*}}__ocml_exp_f32{{.*}} -> tensor<32x64xf32, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
+  tt.func @gather_through_pure_ocml_call(%pa: !tt.ptr<f32>, %pb: !tt.ptr<f32>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f32> -> tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>, #blocked>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<f32>, #blocked>
+    %e = tt.extern_elementwise %lb {libname = "libdevice", libpath = "", symbol = "__ocml_exp_f32", pure = true} : (tensor<32x64xf32, #blocked>) -> tensor<32x64xf32, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf32, #blockedA> -> tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %e : tensor<32x64xf32, #blocked> -> tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// The same call marked impure is refused by the memory-effect guard
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_impure_ocml_call
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @gather_through_impure_ocml_call(%pa: !tt.ptr<f32>, %pb: !tt.ptr<f32>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f32> -> tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>, #blocked>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<f32>, #blocked>
+    %e = tt.extern_elementwise %lb {libname = "libdevice", libpath = "", symbol = "__ocml_exp_f32", pure = false} : (tensor<32x64xf32, #blocked>) -> tensor<32x64xf32, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf32, #blockedA> -> tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %e : tensor<32x64xf32, #blocked> -> tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
 // Reject tranpose 
 //
 // The guard that rejects it today is the trait check: tt.trans carries
