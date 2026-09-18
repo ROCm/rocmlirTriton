@@ -14,11 +14,16 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Diagnostics.h"
 
+#include "triton/Analysis/Allocation.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
+#include "amd/include/Analysis/AMDGPUAllocation.h"
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
+#include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -100,22 +105,23 @@ Operation *findGatherAnchor(Value operand) {
 // consuming it) rather than applied module-wide: TTG
 // encodings are uniqued by content, so a module-wide substitution keyed on the
 // encoding would also rewrite unrelated values that merely happen to share it.
-void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
+// Returns true if the layout was rewritten.
+bool rewriteGatherLoad(Operation *anchor, unsigned kDim) {
   MLIRContext *ctx = anchor->getContext();
   auto ty = dyn_cast<RankedTensorType>(anchor->getResult(0).getType());
   if (!ty)
-    return;
+    return false;
   auto oldBlocked =
       dyn_cast<triton::gpu::BlockedEncodingAttr>(ty.getEncoding());
   if (!oldBlocked)
-    return;
+    return false;
   ArrayRef<int64_t> shape = ty.getShape();
 
   // Only act on the "gather" operand (i.e., the reduction operand whose K is
   // the strided/slow axis)
   SmallVector<unsigned> order(oldBlocked.getOrder());
   if (order.empty() || order.back() != kDim)
-    return;
+    return false;
 
   SmallVector<unsigned> sizePerThread(oldBlocked.getSizePerThread());
   SmallVector<unsigned> threadsPerWarp(oldBlocked.getThreadsPerWarp());
@@ -144,7 +150,7 @@ void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
   if (!tiles) {
     anchor->emitWarning("rock-set-reduction-layout: warps do not tile the "
                         "reduction dim; skipping");
-    return;
+    return false;
   }
 
   auto newBlocked = triton::gpu::BlockedEncodingAttr::get(
@@ -153,7 +159,7 @@ void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
   if (newBlocked == oldBlocked) {
     LLVM_DEBUG(llvm::dbgs() << "rock-set-reduction-layout: load already in the "
                                "desired layout; skipping\n");
-    return;
+    return false;
   }
 
   // in_thread_transpose pairs this blocked encoding with a #linear derived via
@@ -253,7 +259,7 @@ void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
                      << "rock-set-reduction-layout: rewrite would escape its "
                         "scope (value shared with an outside consumer); "
                         "skipping\n");
-          return;
+          return false;
         }
     }
   }
@@ -273,7 +279,7 @@ void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
                    << "rock-set-reduction-layout: loop-carried slot has a "
                       "post-loop use that would keep the old layout; "
                       "skipping\n");
-        return;
+        return false;
       }
     }
   }
@@ -321,12 +327,13 @@ void rewriteGatherLoad(Operation *anchor, unsigned kDim) {
       res.setType(newResTy);
     }
   }
+  return true;
 }
-} // end anonymous namespace
 
-void RockSetReductionLayoutPass::runOnOperation() {
-  ModuleOp mod = getOperation();
-
+// Redistribute every gather in `mod` that feeds a dot unambiguously. With
+// `forceAll`, every kernel is considered; otherwise only convolution ones.
+// Returns true if any gather was rewritten.
+bool redistributeGathers(ModuleOp mod, bool forceAll) {
   // Associate each dot operand with the gather anchor that feeds it and the
   // reduction (K) dim implied by its operand position.
   llvm::MapVector<Operation *, unsigned> anchorKDim;
@@ -341,16 +348,6 @@ void RockSetReductionLayoutPass::runOnOperation() {
     if (!inserted && it->second != kDim)
       conflicting.insert(anchor);
   };
-  // The `useReductionLayout` perfConfig knob is a tri-state gate:
-  //   -1 (heuristic default): rewrite only convolution kernels (those carrying
-  //      the `rock.conv_kernel` attribute).
-  //    0 (off): disable the rewrite entirely; no kernel is touched.
-  //    1 (on): force the rewrite on every kernel.
-  // TODO(AIROCMLIR-1049): Investigate if this can be beneficial for
-  // non-convolution kernels.
-  if (useReductionLayout == 0)
-    return;
-  bool forceAll = useReductionLayout == 1;
   mod.walk([&](triton::FuncOp func) {
     if (!forceAll && !func->hasAttr(rock::ConvKernelAttr::getMnemonic()))
       return;
@@ -363,7 +360,7 @@ void RockSetReductionLayoutPass::runOnOperation() {
     LLVM_DEBUG(llvm::dbgs()
                << "rock-set-reduction-layout: no dot operand is fed "
                   "by a global load; nothing to redistribute\n");
-    return;
+    return false;
   }
 
   // A single gather that feeds two dots as different operands (conflicting
@@ -371,12 +368,84 @@ void RockSetReductionLayoutPass::runOnOperation() {
   //
   // TODO: Duplicating the gather (one clone per reduction dim) would let each
   // dot keep its ideal layout, but whether it's beneficial is not clear.
+  bool rewrote = false;
   for (auto [anchor, kDim] : anchorKDim) {
     if (conflicting.contains(anchor)) {
       anchor->emitWarning("rock-set-reduction-layout: load feeds dot operands "
                           "with conflicting reduction dims; skipping");
       continue;
     }
-    rewriteGatherLoad(anchor, kDim);
+    rewrote |= rewriteGatherLoad(anchor, kDim);
   }
+  return rewrote;
+}
+
+// The shared-memory footprint `mod` will be allocated, computed with the very
+// analysis `AllocateAMDGPUSharedMemory` runs a few passes downstream. Nothing
+// between the two passes changes tensor encodings, so this is the figure the
+// kernel really ends up with. Returns nullopt when the module carries no AMD
+// target to derive it from.
+std::optional<size_t> sharedMemoryFootprint(ModuleOp mod) {
+  std::optional<StringRef> arch = getAMDArch(mod);
+  if (!arch)
+    return std::nullopt;
+  triton::AMD::TargetInfo targetInfo(arch->str());
+  auto scratchSizeGetter = [&targetInfo](Operation *op) {
+    return triton::AMD::AMDAllocationAnalysisScratchSizeFn(op, targetInfo);
+  };
+  return ModuleAllocation(mod, scratchSizeGetter,
+                          targetInfo.getSharedMemoryPartitionSize())
+      .getSharedMemorySize();
+}
+} // end anonymous namespace
+
+void RockSetReductionLayoutPass::runOnOperation() {
+  ModuleOp mod = getOperation();
+
+  // The `useReductionLayout` perfConfig knob is a tri-state gate:
+  //   -1 (heuristic default): rewrite only convolution kernels (those carrying
+  //      the `rock.conv_kernel` attribute).
+  //    0 (off): disable the rewrite entirely; no kernel is touched.
+  //    1 (on): force the rewrite on every kernel.
+  // TODO(AIROCMLIR-1049): Investigate if this can be beneficial for
+  // non-convolution kernels.
+  if (useReductionLayout == 0)
+    return;
+  bool forceAll = useReductionLayout == 1;
+
+  // Redistributing the gather moves its layout further from the one its
+  // consumer wants, and the conversion closing that gap may then need a
+  // shared-memory round-trip it did not need before. That trade is only worth
+  // taking while the address arithmetic it saves is paid on every reduction
+  // iteration: on a kernel with a short (or fully unrolled) reduction loop the
+  // extra LDS traffic dominates, and the larger footprint can cost occupancy on
+  // top. So decide on a clone -- rewrite it there and keep the result only if
+  // the kernel's shared-memory footprint does not grow.
+  // The probe is the run that reports skipped gathers: it happens
+  // unconditionally, whereas the applying run below is reached only once the
+  // footprint check passes. Cloned ops keep their locations, so its diagnostics
+  // read the same as the originals'.
+  OwningOpRef<ModuleOp> probe(mod.clone());
+  if (!redistributeGathers(*probe, forceAll))
+    return;
+
+  // With no target attribute to size shared memory from, keep the rewrite
+  // rather than silently dropping it.
+  std::optional<size_t> before = sharedMemoryFootprint(mod);
+  std::optional<size_t> after = sharedMemoryFootprint(*probe);
+  if (before && after && *after > *before) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "rock-set-reduction-layout: rewrite would grow shared memory "
+                  "from "
+               << *before << " to " << *after << " bytes; skipping\n");
+    return;
+  }
+
+  // This repeats what the probe already decided, so consume the duplicate
+  // diagnostics it produces; anything more severe than a warning still falls
+  // through to the real handler.
+  ScopedDiagnosticHandler quiet(mod.getContext(), [](Diagnostic &diag) {
+    return success(diag.getSeverity() == DiagnosticSeverity::Warning);
+  });
+  redistributeGathers(mod, forceAll);
 }
