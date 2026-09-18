@@ -10,6 +10,12 @@
 // segments of its K dimension, so that the fully unrolled `accumulators * K`
 // FMAs become `accumulators * dotK` per loop body.
 //
+// What makes the unrolled block expensive is mainly Triton itself:
+// ConvertTritonAMDGPUToLLVM scales badly in the number of ops one dot expands
+// to (https://github.com/ROCm/triton/issues/940), and the AMDGPU backend's
+// register allocation and scheduling then pay again for the size of the block
+// they are handed.
+//
 // The operands stay in the shared-memory buffer the pipeliner already gave
 // them. A dot operand's shared encoding stores K as the slowest-varying
 // dimension, so a K segment is a contiguous range of the buffer and the
@@ -112,26 +118,18 @@ ttg::LocalLoadOp findStagingLoad(Value operand) {
 /// write, which is also what puts barriers on the wrong side of this: they
 /// make another thread's stores visible.
 bool mayWriteMemory(Operation *op) {
-  bool writes = false;
-  op->walk([&](Operation *nested) {
-    if (isMemoryEffectFree(nested))
-      return WalkResult::advance();
-    auto iface = dyn_cast<MemoryEffectOpInterface>(nested);
-    if (!iface) {
-      writes = true;
-      return WalkResult::interrupt();
-    }
-    SmallVector<MemoryEffects::EffectInstance> effects;
-    iface.getEffects(effects);
-    for (const MemoryEffects::EffectInstance &effect : effects) {
-      if (isa<MemoryEffects::Write, MemoryEffects::Free>(effect.getEffect())) {
-        writes = true;
-        return WalkResult::interrupt();
-      }
-    }
-    return WalkResult::advance();
-  });
-  return writes;
+  // Nullopt is an op that neither declares its effects nor defers to its
+  // body, which is the case that has to count as a write. An op that does
+  // defer, as scf.for and scf.if do, is answered for by its body.
+  std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
+      getEffectsRecursively(op);
+  if (!effects)
+    return true;
+  return llvm::any_of(*effects,
+                      [](const MemoryEffects::EffectInstance &effect) {
+                        return isa<MemoryEffects::Write, MemoryEffects::Free>(
+                            effect.getEffect());
+                      });
 }
 
 /// Whether memory may be written on the way from `from` to `to`. `from`
@@ -199,16 +197,18 @@ bool mayWriteBetween(Operation *from, Operation *to) {
 ///
 /// `toLinearLayout` is assert-based for shared encodings. In particular,
 /// SharedLinearEncodingAttr requires the shape to match the shape captured by
-/// its layout, and a partitioned encoding applies that requirement to its
-/// per-partition shape. Check both the original and segmented shapes before
-/// calling it.
+/// its layout. Check both the original and segmented shapes before calling it.
 bool canConvertToLinearLayout(ArrayRef<int64_t> shape, Attribute enc) {
   if (!llvm::all_of(shape, [](int64_t dim) {
         return dim > 0 && llvm::isPowerOf2_64(dim);
       }))
     return false;
 
-  if (isa<ttg::PaddedSharedEncodingAttr>(enc))
+  // A padded encoding does not address a dense tile, and memdesc_reinterpret
+  // has no lowering for a partitioned one, whose segmented byte addressing is
+  // otherwise fine.
+  if (isa<ttg::PaddedSharedEncodingAttr, ttg::PartitionedSharedEncodingAttr>(
+          enc))
     return false;
 
   auto layout = dyn_cast<ttg::LayoutEncodingTrait>(enc);
@@ -221,19 +221,6 @@ bool canConvertToLinearLayout(ArrayRef<int64_t> shape, Attribute enc) {
       if (size != llSize)
         return false;
     return true;
-  }
-
-  if (auto partitioned = dyn_cast<ttg::PartitionedSharedEncodingAttr>(enc)) {
-    unsigned partitionDim = partitioned.getPartitionDim();
-    unsigned numPieces = partitioned.getNumLogicalPieces();
-    if (partitionDim >= shape.size() || numPieces == 0 ||
-        shape[partitionDim] % numPieces != 0)
-      return false;
-
-    SmallVector<int64_t> partitionShape(shape);
-    partitionShape[partitionDim] /= numPieces;
-    return canConvertToLinearLayout(partitionShape,
-                                    partitioned.getPartitionLayout());
   }
 
   // These are the AMD shared encodings this pass can encounter that are
@@ -429,10 +416,11 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
     Value a = loadSegment(aSeg, aSegShape, aTy);
     Value bVal = loadSegment(bSeg, bSegShape, bTy);
-    Value acc2 = triton::DotOp::create(b, loc, acc.getType(), a, bVal, acc,
-                                       dot.getInputPrecision(),
-                                       dot.getMaxNumImpreciseAcc());
-    scf::YieldOp::create(b, loc, ValueRange{acc2});
+    auto acc2 = triton::DotOp::create(b, loc, acc.getType(), a, bVal, acc,
+                                      dot.getInputPrecision(),
+                                      dot.getMaxNumImpreciseAcc());
+    acc2->setDiscardableAttrs(dot->getDiscardableAttrDictionary());
+    scf::YieldOp::create(b, loc, ValueRange{acc2.getResult()});
   }
 
   dot.getResult().replaceAllUsesWith(loop.getResult(0));
@@ -444,8 +432,11 @@ void RockRollDotKPass::runOnOperation() {
   ModuleOp mod = getOperation();
 
   mod.walk([&](FunctionOpInterface func) {
-    if (func.isExternal())
+    if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "skipping " << func.getName() << ": not a rock.kernel\n");
       return;
+    }
 
     StringRef funcArch = arch;
     StringAttr archAttr;

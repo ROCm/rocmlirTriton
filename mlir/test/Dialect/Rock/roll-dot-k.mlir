@@ -1,5 +1,9 @@
 // RUN: rocmlir-opt --split-input-file --rock-roll-dot-k %s | FileCheck %s
 
+// The pass is idempotent: a second run rolls nothing further, so every
+// expectation below still holds.
+// RUN: rocmlir-opt --split-input-file --rock-roll-dot-k %s | rocmlir-opt --split-input-file --rock-roll-dot-k | FileCheck %s
+
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
@@ -24,7 +28,35 @@
 // CHECK:           scf.yield %[[D]]
 // CHECK:         tt.return %[[LOOP]]
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_f32_fma_dot(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_f32_fma_dot(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The same dot in a function that is not a `rock.kernel`. Only kernels get
+// rewritten, so the pipeline can hand this pass a module holding both.
+
+// CHECK-LABEL: tt.func @no_roll_not_a_kernel
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_not_a_kernel(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -63,7 +95,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK:           scf.for
 // CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_multi_buffer(%acc: tensor<128x64xf32, #blocked2>, %n: i32, %cond: i1) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_multi_buffer(%acc: tensor<128x64xf32, #blocked2>, %n: i32, %cond: i1) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %alloc_a = ttg.local_alloc : () -> !ttg.memdesc<2x128x64xf32, #shared, #smem, mutable>
@@ -111,7 +143,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx942", "ttg.threads-per-warp" = 64 : i32} {
-  tt.func @no_roll_on_cdna(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_on_cdna(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -138,7 +170,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_wmma(%acc: tensor<128x64xf32, #wmma>) -> tensor<128x64xf32, #wmma> {
+  tt.func @no_roll_wmma(%acc: tensor<128x64xf32, #wmma>) -> tensor<128x64xf32, #wmma> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf16, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf16, #shared, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf16, #shared, #smem, mutable> -> tensor<128x64xf16, #ttg.dot_op<{opIdx = 0, parent = #wmma, kWidth = 16}>>
@@ -164,7 +196,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_k_not_slowest(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_k_not_slowest(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -194,7 +226,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_padded_shared(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_padded_shared(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -211,12 +243,40 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// The same padding, reached through a partitioned encoding that wraps it.
-// This is the case that has to be rejected on the encoding kind rather than
-// left to the layout comparison: `toLinearLayout` does answer for a
-// partitioned encoding, but it drops the padding on the way, so the layouts
-// it returns would compare equal and the segmentation would be accepted even
-// though the holes make it wrong.
+// A partitioned encoding wrapping a plain swizzled layout. Segmenting this
+// does address the same bytes, so the layout comparison accepts it, but
+// memdesc_reinterpret has no lowering for a partitioned encoding and the
+// rolled loop would fail to legalize. Rejected on the encoding kind instead.
+#inner = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 1, partitionDim = 0, partitionLayout = #inner}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @no_roll_partitioned_shared
+// CHECK-NOT:     memdesc_reinterpret
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_partitioned_shared(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// The same padding as above, reached through a partitioned encoding. What the
+// partitioned encoding wraps does not matter, and in particular the layout
+// comparison is never reached here: `toLinearLayout` asserts on a partitioned
+// encoding wrapping a padded one.
 #padded = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
 #shared = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 2, partitionDim = 0, partitionLayout = #padded}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
@@ -226,7 +286,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_partitioned_wrapping_padded(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_partitioned_wrapping_padded(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -258,7 +318,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_partitioned_shared_linear(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_partitioned_shared_linear(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -289,7 +349,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_store_between_load_and_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_store_between_load_and_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -321,7 +381,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_store_before_drain_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_store_before_drain_dot(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %cond: i1) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
@@ -359,7 +419,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     ttg.memdesc_index
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_loop_invariant_load_clobbered(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %n: i32) -> tensor<128x64xf32, #blocked2> {
+  tt.func @no_roll_loop_invariant_load_clobbered(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %n: i32) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
@@ -399,7 +459,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK:           scf.for
 // CHECK:             tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_loop_invariant_load(%acc: tensor<128x64xf32, #blocked2>, %n: i32) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_loop_invariant_load(%acc: tensor<128x64xf32, #blocked2>, %n: i32) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
@@ -425,6 +485,86 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
+// A loop that only reads shared memory sits between the loads and the dot.
+// An scf.for carries no memory effects of its own and reports its body's
+// instead, so it is not memory-effect-free as soon as that body reads, and
+// judging it by that alone would call a buffer nothing writes a clobber. The
+// body is what has to be looked at, one op at a time;
+// `no_roll_store_nested_in_region` below is the control.
+
+// CHECK-LABEL: tt.func @roll_read_only_loop_between_load_and_dot
+// The probe loop is left as it is, and the dot is rolled behind it.
+// CHECK:         scf.for
+// CHECK:           ttg.local_load
+// CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
+// CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<64x64xf32, {{.*}}> -> !ttg.memdesc<16x4x64xf32, {{.*}}>
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_read_only_loop_between_load_and_dot(%acc: tensor<128x64xf32, #blocked2>, %n: i32) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %probe = scf.for %i = %c0 to %n step %c1 iter_args(%it = %acc) -> (tensor<128x64xf32, #blocked2>)  : i32 {
+      %rl = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+      %rc = ttg.convert_layout %rl : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #blocked2>
+      %sum = arith.addf %it, %rc : tensor<128x64xf32, #blocked2>
+      scf.yield %sum : tensor<128x64xf32, #blocked2>
+    }
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %probe : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The control for the loop above: an intervening region is not waved through
+// for being a region, it is judged by what is in it, however deep that sits.
+// The store here is two regions down from the block the dot is in.
+
+// CHECK-LABEL: tt.func @no_roll_store_nested_in_region
+// CHECK-NOT:     memdesc_reinterpret
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_store_nested_in_region(%acc: tensor<128x64xf32, #blocked2>, %next: tensor<128x64xf32, #blocked1>, %n: i32, %cond: i1) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    scf.for %i = %c0 to %n step %c1 : i32 {
+      scf.if %cond {
+        ttg.local_store %next, %a : tensor<128x64xf32, #blocked1> -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+      }
+    }
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
 // Only 16 accumulators per thread here, so even unrolled the dot is 256 FMAs
 // and the block is nowhere near the size where the scheduler struggles.
 
@@ -432,7 +572,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK-NOT:     memdesc_reinterpret
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> {
+  tt.func @no_roll_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<16x16xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<16x32xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<16x16xf32, #shared, #smem, mutable> -> tensor<16x16xf32, #blocked1>
@@ -467,7 +607,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK:         tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_until_block_fits(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+  tt.func @roll_until_block_fits(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
     %a0 = ttg.local_alloc : () -> !ttg.memdesc<128x4xf32, #shared, #smem, mutable>
     %b0 = ttg.local_alloc : () -> !ttg.memdesc<4x64xf32, #shared1, #smem, mutable>
     %a1 = ttg.local_alloc : () -> !ttg.memdesc<128x4xf32, #shared, #smem, mutable>
@@ -506,7 +646,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // CHECK:         scf.for
 // CHECK:           tt.dot {{.*}} tensor<256x1xf32, {{.*}}> * tensor<1x128xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @roll_to_accumulator_floor(%acc: tensor<256x128xf32, #blocked2>) -> tensor<256x128xf32, #blocked2> {
+  tt.func @roll_to_accumulator_floor(%acc: tensor<256x128xf32, #blocked2>) -> tensor<256x128xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<256x4xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<4x128xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<256x4xf32, #shared, #smem, mutable> -> tensor<256x4xf32, #blocked1>
@@ -515,5 +655,70 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     %bc = ttg.convert_layout %bl : tensor<4x128xf32, #blocked> -> tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
     %d = tt.dot %ac, %bc, %acc : tensor<256x4xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<256x128xf32, #blocked2>
     tt.return %d : tensor<256x128xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// The floor above, but past the target rather than on it: 1024 accumulators
+// per thread, so even a single K per iteration leaves a body of 1024 FMAs.
+// Rolling still divides the block by K, which is why it is worth doing, but
+// the result is the one rolled body that stays over budget. That makes this
+// the case where the second run of the pass is not stopped by the block
+// budget, so it is what covers the rest of the fixed point: K is 1 by then,
+// and a dot with no K left to halve is left alone.
+
+// CHECK-LABEL: tt.func @roll_past_accumulator_floor
+// CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<512x4xf32, {{.*}}> -> !ttg.memdesc<4x512x1xf32, {{.*}}>
+// CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<4x128xf32, {{.*}}> -> !ttg.memdesc<4x1x128xf32, {{.*}}>
+// CHECK:         scf.for
+// A second run would put its own views and loop here, inside this body.
+// CHECK-NOT:       ttg.memdesc_reinterpret
+// CHECK:           tt.dot {{.*}} tensor<512x1xf32, {{.*}}> * tensor<1x128xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_past_accumulator_floor(%acc: tensor<512x128xf32, #blocked2>) -> tensor<512x128xf32, #blocked2> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<512x4xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<4x128xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<512x4xf32, #shared, #smem, mutable> -> tensor<512x4xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<4x128xf32, #shared1, #smem, mutable> -> tensor<4x128xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<512x4xf32, #blocked1> -> tensor<512x4xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<4x128xf32, #blocked> -> tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<512x4xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<512x128xf32, #blocked2>
+    tt.return %d : tensor<512x128xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// Whatever an earlier pass left on the dot has to end up on the rolled one.
+// Segmenting K changes the operands and nothing else, so no attribute becomes
+// stale for being on a narrower dot.
+
+// CHECK-LABEL: tt.func @roll_preserves_dot_attributes
+// CHECK:         tt.dot {{.*}}inputPrecision = tf32 {amd.arbitrary = "keep-me", tt.latency = 3 : i32} : tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_preserves_dot_attributes(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc, inputPrecision = tf32 {amd.arbitrary = "keep-me", tt.latency = 3 : i32} : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
   }
 }

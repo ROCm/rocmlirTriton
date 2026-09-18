@@ -919,10 +919,14 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
   let description = [{
     A `tt.dot` with a blocked result encoding (rather than a WMMA or MFMA one)
     lowers to `accumulators * K` scalar FMAs in one basic block, 8192 of them
-    for a 128x64 tile with a K of 64, and register allocation and scheduling
-    cost grows superlinearly in the size of that block. This pass rolls such a
-    dot into an `scf.for` over `K / dotK` segments accumulating into the same
-    tile, leaving `accumulators * dotK` FMAs in the body.
+    for a 128x64 tile with a K of 64. Compiling that block is slow mainly
+    because of Triton inefficiencies in ConvertTritonAMDGPUToLLVM, which
+    scales badly in the number of ops it emits for a single dot; the AMDGPU
+    backend's register allocation and scheduling then pay again for the size
+    of the block they are handed. See
+    https://github.com/ROCm/triton/issues/940 for more background. This pass
+    rolls such a dot into an `scf.for` over `K / dotK` segments accumulating
+    into the same tile, leaving `accumulators * dotK` FMAs in the body.
 
     The operands keep the shared-memory buffer they already have. Their shared
     encoding stores K as the slowest-varying dimension, so a segment is a
@@ -931,9 +935,8 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
     byte layout untouched. That is checked per operand against the linear
     layout, so swizzling that would cross a segment boundary is left alone.
 
-    Runs after Triton's pipeliner, which is what puts the operands in shared
-    memory, and covers every qualifying f32 dot on RDNA, including the drain
-    dots left after the loop and chained dots sharing one block (as
+    Covers every qualifying f32 dot on RDNA, including the drain dots a
+    pipelined loop leaves behind and chained dots sharing one block (as
     `rock-decompose-nonpow2-k` produces).
   }];
   let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",

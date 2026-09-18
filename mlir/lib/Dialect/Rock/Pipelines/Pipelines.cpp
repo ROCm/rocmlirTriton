@@ -209,10 +209,14 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 
   // --- rocmlirTriton pass ----
   // Must run after the pipeliner, which is what stages the dot operands in
-  // shared memory, and before block-pingpong, which slices dots itself.
-  rock::RockRollDotKPassOptions rollDotKOpts;
-  rollDotKOpts.arch = options.arch;
-  pm->addPass(rock::createRockRollDotKPass(rollDotKOpts));
+  // shared memory, and before block-pingpong, which slices dots itself. Only
+  // RDNA lowers a dot to the scalar FMAs this rolls; the pass checks the same
+  // thing itself, for when it is run on its own.
+  if (rock::isRDNA(options.arch)) {
+    rock::RockRollDotKPassOptions rollDotKOpts;
+    rollDotKOpts.arch = options.arch;
+    pm->addPass(rock::createRockRollDotKPass(rollDotKOpts));
+  }
   // --- rocmlirTriton pass ----
 
   if (useAsyncCopy) {
