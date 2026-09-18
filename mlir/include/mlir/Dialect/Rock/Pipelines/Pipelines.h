@@ -127,9 +127,8 @@ struct TritonOptions : public PassPipelineOptions<TritonOptions> {
   PassOptions::Option<int64_t> useReductionLayout{
       *this, "useReductionLayout",
       desc("Gate the rock-set-reduction-layout pass (warp redistribution "
-           "onto the reduction dim). kKnobDefault=-1 (heuristic: convolution "
-           "kernels only), 0=off, 1=every kernel. Not tuned; set via the "
-           "perfConfig."),
+           "onto the reduction dim). kKnobDefault=-1 (heuristic, currently "
+           "off), 0=off, 1=on. Not tuned; opt-in via the perfConfig."),
       init(kKnobDefault)};
   PassOptions::Option<int64_t> useOptimizeEpilogue{
       *this, "useOptimizeEpilogue",
