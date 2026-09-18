@@ -224,6 +224,28 @@ TEST(FindFallbackTest, F4FallsBackToI8) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_f4"));
 }
 
+TEST(FindFallbackTest, Bf16FallsBackToF16WhereNoBf16ListExists) {
+  // No gemm or conv list is tuned for bf16 on any architecture, so those have
+  // to substitute the datatype. Attention is what keeps the substitution
+  // honest: gfx942 has a bf16 list there, and it must win.
+  EXPECT_EQ("gfx942_gemm_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_gemm_bf16"));
+  EXPECT_EQ("gfx942_conv_f16",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx942_conv_bf16"));
+  EXPECT_EQ("gfx942_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx942_attention_bf16"));
+}
+
+TEST(FindFallbackTest, Bf16PrefersRelativeArchOverF16) {
+  // Precision is the last axis to give way, exactly as for fp8 above. gfx1150
+  // ships no bf16 attention list but gfx1151 does, and borrowing that beats
+  // dropping to gfx1150's own f16 one.
+  EXPECT_EQ("gfx1151_attention_bf16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1150_attention_bf16"));
+}
+
 TEST(FindFallbackTest, Gfx908ExactMatches) {
   // gfx908 now ships its own gemm/conv quick-tuning lists, so each dtype is an
   // exact match rather than a fallback.
@@ -428,4 +450,53 @@ TEST(LookupTest, Gfx1100GemmAndConvServeGfx1101Lists) {
   auto gemmF16 = get("gfx1101", KernelType::Gemm, dataTypes[0]);
   EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Gemm, dataTypes[1]));
   EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Conv, dataTypes[0]));
+}
+
+TEST(DataTypeStringTest, Bf16IsKeyedSeparatelyFromF16) {
+  // The two 16-bit floats used to share the "f16" key, which left every
+  // *_attention_bf16 list in the table unreachable.
+  MLIRContext ctx;
+  EXPECT_EQ("bf16", getDataTypeString(BFloat16Type::get(&ctx)));
+  EXPECT_EQ("f16", getDataTypeString(Float16Type::get(&ctx)));
+}
+
+TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
+  // End-to-end through the public entry point, which is where the keying used
+  // to go wrong: makeKey spelled bf16 as f16, so these lists could never be
+  // served.
+  MLIRContext ctx;
+  Type bf16 = BFloat16Type::get(&ctx);
+  Type f16 = Float16Type::get(&ctx);
+  auto get = [&](StringRef arch, Type t) {
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, KernelType::Attention, t);
+  };
+
+  // gfx1100 and gfx1201 ship no f16 attention list at all, so their bf16
+  // kernels used to borrow a *different* chip's f16 list even though these
+  // same-chip measurements were sitting in the table.
+  for (StringRef arch : {"gfx942", "gfx1100", "gfx1201"}) {
+    auto attentionBf16 = get(arch, bf16);
+    EXPECT_FALSE(attentionBf16.empty()) << "for " << arch;
+    EXPECT_FALSE(attentionBf16 == get(arch, f16)) << "for " << arch;
+  }
+}
+
+TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
+  // The other half: with no bf16 gemm or conv list anywhere, the datatype
+  // fallback has to land bf16 on exactly the f16 list it used to key as, or
+  // splitting the key would have cost these kernels their tuning entirely.
+  MLIRContext ctx;
+  Type bf16 = BFloat16Type::get(&ctx);
+  Type f16 = Float16Type::get(&ctx);
+  auto get = [&](KernelType kernel, Type t) {
+    return ParamLookupTable<GemmParamsAttr>::lookup("gfx942", kernel, t);
+  };
+
+  for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
+    auto bf16List = get(kernel, bf16);
+    EXPECT_FALSE(bf16List.empty()) << "for " << stringifyEnum(kernel).lower();
+    EXPECT_TRUE(bf16List == get(kernel, f16))
+        << "for " << stringifyEnum(kernel).lower();
+  }
 }

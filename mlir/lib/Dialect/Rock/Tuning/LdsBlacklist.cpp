@@ -70,11 +70,19 @@ static std::optional<unsigned> gfxId(StringRef arch) {
   return n;
 }
 
+// The dtype component of a blacklist key. This is getDataTypeString's spelling
+// except that bf16 folds onto f16. Without the fold a bf16 key would miss the
+// table and the arch fallback.
+static std::string ldsDataTypeString(Type dataType) {
+  std::string dataTypeStr = getDataTypeString(dataType);
+  return dataTypeStr == "bf16" ? "f16" : dataTypeStr;
+}
+
 // Returns the raw config array for (arch, dtype), applying the LDS-size arch
 // fallback. Empty on a miss. lookupGemm wraps this into a queryable set.
 static ArrayRef<GemmLdsKey> findGemmKeys(StringRef arch, Type dataType) {
   std::string key = (Twine(normalizeArch(arch)) + Twine(kSeparator) + "gemm" +
-                     Twine(kSeparator) + getDataTypeString(dataType))
+                     Twine(kSeparator) + ldsDataTypeString(dataType))
                         .str();
 
   const auto &table = getTable();
