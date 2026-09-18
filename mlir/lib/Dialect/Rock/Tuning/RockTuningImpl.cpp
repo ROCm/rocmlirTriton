@@ -1008,7 +1008,10 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   // config to the front of the list.
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
-           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+           supportsSplitK, info.quantBlockSize, info.aScaleType,
+           info.bScaleType)) {
+    // A regular-list fallback is still possible when no no-split-K list exists
+    // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && param.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
@@ -1022,8 +1025,10 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   OpBuilder b(gemmGemmOp.getContext());
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
-  for (GemmGemmParamsAttr params :
-       PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
+  for (GemmGemmParamsAttr params : PopulateParamsGemmGemm::getTuningParameters(
+           b, gemmGemmOp, supportsSplitK)) {
+    // A regular-list fallback is still possible when no no-split-K list exists
+    // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && params.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));

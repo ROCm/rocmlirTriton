@@ -18,15 +18,16 @@ using namespace mlir;
 using namespace mlir::rock;
 
 template <typename ParamsType>
-ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
-                                                         KernelType op,
-                                                         Type dataType) {
+ArrayRef<StringRef>
+ParamLookupTable<ParamsType>::lookup(StringRef arch, KernelType op,
+                                     Type dataType, bool supportsSplitK) {
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
-  const auto &table = getTable();
+  const auto &table = supportsSplitK ? getTable() : getNoSplitKTable();
+  const auto &pairedTable = supportsSplitK ? getNoSplitKTable() : getTable();
   auto it = table.find(key);
   if (it != table.end())
     return it->second;
@@ -37,7 +38,7 @@ ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
                             << fallbackKey << "\n");
     if (auto fallback = table.find(fallbackKey); fallback != table.end())
       return fallback->second;
-    return getNoSplitKTable().at(fallbackKey);
+    return pairedTable.at(fallbackKey);
   }
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);

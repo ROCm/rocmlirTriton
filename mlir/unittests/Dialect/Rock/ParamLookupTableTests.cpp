@@ -419,7 +419,8 @@ TEST(LookupTest, GemmGemmResolvesToItsOwnListOnTunedArch) {
   Type i8 = IntegerType::get(&ctx, 8);
   StringRef arch = "amdgcn-amd-amdhsa:gfx1100";
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, t, /*supportsSplitK=*/true);
   };
 
   auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
@@ -439,7 +440,8 @@ TEST(LookupTest, GemmGemmResolvesToAttentionListOfSamePrecision) {
   Type i8 = IntegerType::get(&ctx, 8);
   StringRef arch = "amdgcn-amd-amdhsa:gfx942";
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, t, /*supportsSplitK=*/true);
   };
 
   auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
@@ -461,7 +463,8 @@ TEST(LookupTest, Gfx1100GemmAndConvServeGfx1101Lists) {
                                     Float32Type::get(&ctx),
                                     IntegerType::get(&ctx, 8)};
   auto get = [&](StringRef arch, KernelType kernel, Type t) {
-    return ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, t);
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, t,
+                                                    /*supportsSplitK=*/true);
   };
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
@@ -497,7 +500,7 @@ TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
   Type f16 = Float16Type::get(&ctx);
   auto get = [&](StringRef arch, Type t) {
     return ParamLookupTable<GemmGemmParamsAttr>::lookup(
-        arch, KernelType::Attention, t);
+        arch, KernelType::Attention, t, /*supportsSplitK=*/true);
   };
 
   // gfx1100 and gfx1201 ship no f16 attention list at all, so their bf16
@@ -518,7 +521,8 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
   Type bf16 = BFloat16Type::get(&ctx);
   Type f16 = Float16Type::get(&ctx);
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmParamsAttr>::lookup("gfx942", kernel, t);
+    return ParamLookupTable<GemmParamsAttr>::lookup("gfx942", kernel, t,
+                                                    /*supportsSplitK=*/true);
   };
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
@@ -529,17 +533,22 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
   }
 }
 
-TEST(LookupTest, RegularListWinsWhenBothTablesContainTheKey) {
-  // gfx1150 ships both lists for gemm f16. With no selection option, the
-  // regular 32-entry list wins over the 36-entry split-K-free list.
+TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
+  // gfx1150 ships both lists for gemm f16, so supportsSplitK must select the
+  // regular 32-entry list or the split-K-free 36-entry list respectively.
   MLIRContext ctx;
   Type f16 = Float16Type::get(&ctx);
   StringRef arch = "amdgcn-amd-amdhsa:gfx1150";
-  auto regular =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f16);
+  auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
+  auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/false);
 
   EXPECT_FALSE(regular.empty());
+  EXPECT_FALSE(noSplitK.empty());
   EXPECT_EQ(32u, regular.size());
+  EXPECT_EQ(36u, noSplitK.size());
+  EXPECT_FALSE(regular == noSplitK);
 }
 
 TEST(LookupTest, MissingRegularListUsesNoSplitKPair) {
@@ -549,8 +558,8 @@ TEST(LookupTest, MissingRegularListUsesNoSplitKPair) {
   MLIRContext ctx;
   Type f16 = Float16Type::get(&ctx);
   auto get = [&](StringRef arch) {
-    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm,
-                                                    f16);
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f16,
+                                                    /*supportsSplitK=*/true);
   };
 
   auto rdna4 = get("amdgcn-amd-amdhsa:gfx1201");
@@ -559,18 +568,34 @@ TEST(LookupTest, MissingRegularListUsesNoSplitKPair) {
   EXPECT_FALSE(rdna4 == get("amdgcn-amd-amdhsa:gfx1200"));
 }
 
+TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
+  // gfx942 has no split-K-free lists, so a problem that does not support
+  // split-K must still fall back to the exact regular key.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx942";
+  auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
+  auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/false);
+
+  EXPECT_FALSE(noSplitK.empty());
+  EXPECT_TRUE(noSplitK == regular);
+}
+
 TEST(LookupTest, CloserNoSplitKArchitectureWins) {
   // gfx1202 has no exact key in either table, so architecture fallback uses
   // gfx1201's closer split-K-free list rather than gfx1200's regular list.
   MLIRContext ctx;
   Type f32 = Float32Type::get(&ctx);
-  auto get = [&](StringRef arch) {
-    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm,
-                                                    f32);
+  auto get = [&](StringRef arch, bool supportsSplitK) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f32,
+                                                    supportsSplitK);
   };
 
-  auto next = get("amdgcn-amd-amdhsa:gfx1202");
+  auto next = get("amdgcn-amd-amdhsa:gfx1202", true);
   EXPECT_FALSE(next.empty());
-  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1201"));
-  EXPECT_FALSE(next == get("amdgcn-amd-amdhsa:gfx1200"));
+  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1201", false));
+  EXPECT_TRUE(next == get("amdgcn-amd-amdhsa:gfx1202", false));
+  EXPECT_FALSE(next == get("amdgcn-amd-amdhsa:gfx1200", true));
 }

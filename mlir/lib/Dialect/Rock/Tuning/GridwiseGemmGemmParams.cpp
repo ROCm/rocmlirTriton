@@ -33,16 +33,16 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
       b, perfConfig, getTuningParameters(b, op));
 }
 
-std::vector<GemmGemmParamsAttr>
-PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
-                                            RockGemmGemmWrapperInterface op) {
+std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
+    OpBuilder &b, RockGemmGemmWrapperInterface op, bool supportsSplitK) {
   // Bump the first applicable config (Q + K + V LDS fit, kpack/splitK/numCTAs
   // == 1) to the front for skip-benchmarking consumers.
   auto aElemType = cast<ShapedType>(op.getAType()).getElementType();
   auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
   auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType);
+  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType,
+                                  supportsSplitK);
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
         return isGemmGemmParamsConservativelyApplicable(
@@ -60,9 +60,10 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
 }
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
-    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType) {
+    OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
+    bool supportsSplitK) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      arch, kernelType, elementType);
+      arch, kernelType, elementType, supportsSplitK);
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(perfConfigs.size());
   for (StringRef config : perfConfigs) {

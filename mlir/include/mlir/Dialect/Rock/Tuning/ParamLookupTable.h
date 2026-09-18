@@ -34,8 +34,10 @@ std::string getDataTypeString(Type dataType);
 template <typename ParamsType>
 class ParamLookupTable {
 public:
+  // Prefer the regular table when `supportsSplitK` is true and the no-split-K
+  // table otherwise. Fallback between the pair is always enabled.
   static ArrayRef<StringRef> lookup(StringRef arch, KernelType op,
-                                    Type dataType);
+                                    Type dataType, bool supportsSplitK);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.
