@@ -51,9 +51,9 @@ TEST(FindFallbackTest, OldestRelative) {
 }
 
 TEST(FindFallbackTest, YoungestRelative) {
-  // gfx1200 is the youngest available relative for gfx1900 with a conv_f16
-  // tuning list; gfx1201's overlapping conv list was removed.
-  EXPECT_EQ("gfx1200_conv_f16",
+  // gfx1201 is the youngest available relative for gfx1900 with a conv_f16
+  // tuning list.
+  EXPECT_EQ("gfx1201_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1900_conv_f16"));
 }
 
@@ -88,9 +88,6 @@ TEST(FindFallbackTest, NoRelativesBySuffix) {
 }
 
 TEST(FindFallbackTest, UnavailableTuningList) {
-  // Fall back for single-config lists
-  EXPECT_EQ("gfx1200_gemm_f16",
-            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
   // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
@@ -100,10 +97,17 @@ TEST(FindFallbackTest, UnavailableTuningList) {
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
 
-TEST(FindFallbackTest, Gfx1201UsesGfx1200ForRemovedLists) {
+TEST(FindFallbackTest, Gfx1201UsesRefreshedLists) {
+  for (StringRef dataType : {"f16", "f32", "i8"}) {
+    std::string gemmTarget = (Twine("gfx1201_gemm_") + dataType).str();
+    EXPECT_EQ(gemmTarget,
+              ParamLookupTable<GemmParamsAttr>::findFallback(gemmTarget))
+        << "for target " << gemmTarget;
+  }
+
   for (StringRef dataType : {"f16", "f32", "i8"}) {
     std::string convTarget = (Twine("gfx1201_conv_") + dataType).str();
-    EXPECT_EQ((Twine("gfx1200_conv_") + dataType).str(),
+    EXPECT_EQ(convTarget,
               ParamLookupTable<GemmParamsAttr>::findFallback(convTarget))
         << "for target " << convTarget;
   }
@@ -112,16 +116,15 @@ TEST(FindFallbackTest, Gfx1201UsesGfx1200ForRemovedLists) {
     std::string attentionTarget =
         (Twine("gfx1201_attention_") + dataType).str();
     EXPECT_EQ(
-        (Twine("gfx1200_attention_") + dataType).str(),
+        attentionTarget,
         ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
 }
 
 TEST(FindFallbackTest, Gfx1201KeepsItsRemainingLists) {
-  // The other half of the same change: dropping only some of an architecture's
-  // lists must not disturb the ones it keeps, so these still resolve to
-  // themselves rather than to a gfx12/gfx11 relative.
+  // Refreshing the tier-1 lists must not disturb other data types, which still
+  // resolve to themselves rather than to a gfx12/gfx11 relative.
   EXPECT_EQ("gfx1201_attention_bf16",
             ParamLookupTable<GemmGemmParamsAttr>::findFallback(
                 "gfx1201_attention_bf16"));
