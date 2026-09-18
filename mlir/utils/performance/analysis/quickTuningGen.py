@@ -336,6 +336,11 @@ def find_perfconfigs(df, op, threshold, max_configs=40):
         # Aggregate by keeping only the best TFlops per (problem, config)
         grouping = target_cols + ['PerfConfig']
         if 'PerfPriority' in df_typed:
+            # Repeated header rows can leave this column as strings. Normalize
+            # before max(), otherwise values such as "9" sort above "10".
+            df_typed = df_typed.copy()
+            df_typed['PerfPriority'] = pd.to_numeric(df_typed['PerfPriority'],
+                                                      errors='coerce')
             df_typed = df_typed.groupby(grouping,
                                         as_index=False).agg(TFlops=('TFlops', 'max'),
                                                             PerfPriority=('PerfPriority', 'max'))
