@@ -11,6 +11,7 @@
 #include "llvm/Support/Debug.h"
 
 #include <cassert>
+#include <cstdlib>
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
@@ -18,24 +19,44 @@ using namespace mlir;
 using namespace mlir::rock;
 
 template <typename ParamsType>
-ArrayRef<StringRef> ParamLookupTable<ParamsType>::lookup(StringRef arch,
-                                                         KernelType op,
-                                                         Type dataType) {
+SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
+    StringRef arch, KernelType op, Type dataType,
+    std::optional<QuickTuningProblemKeyHash> problemKeyHash) {
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
+  // Set ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING to any value, including "0",
+  // to fall back to the set cover everywhere. Presence-based like
+  // ROCMLIR_DISABLE_LDS_BLACKLIST, and read once so getenv cannot race a
+  // concurrent setenv.
+  static const bool perProblemDisabled =
+      std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING") != nullptr;
+
+  // Deliberately no key fallback: a ranking only holds for the problem it was
+  // measured on.
+  if (problemKeyHash && !perProblemDisabled) {
+    const auto &problemMap = getProblemMap();
+    if (auto it = problemMap.find(key); it != problemMap.end()) {
+      SmallVector<StringRef> perfConfigs = it->second.lookup(*problemKeyHash);
+      LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
+                              << perfConfigs.size() << " perfconfigs\n");
+      if (!perfConfigs.empty())
+        return perfConfigs;
+    }
+  }
+
   static const auto &table = getTable();
   auto it = table.find(key);
   if (it != table.end())
-    return it->second;
+    return SmallVector<StringRef>(it->second);
 
   auto fallbackKey = findFallback(key);
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
                             << fallbackKey << "\n");
-    return table.at(fallbackKey);
+    return SmallVector<StringRef>(table.at(fallbackKey));
   }
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
@@ -258,6 +279,34 @@ ParamLookupTable<GemmGemmParamsAttr>::buildTable() {
 #define GemmGemm_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef GemmGemm_LOOKUP_TABLE_GEN
+  };
+}
+
+#define Gemm_PER_PROBLEM_DEFINITIONS_GEN
+#include "QuickTuningProblemMap.inc"
+#undef Gemm_PER_PROBLEM_DEFINITIONS_GEN
+
+template <>
+llvm::StringMap<QuickTuningProblemMap>
+ParamLookupTable<GemmParamsAttr>::buildProblemMap() {
+  return {
+#define Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+#include "QuickTuningProblemMap.inc"
+#undef Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+  };
+}
+
+#define GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
+#include "QuickTuningProblemMap.inc"
+#undef GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
+
+template <>
+llvm::StringMap<QuickTuningProblemMap>
+ParamLookupTable<GemmGemmParamsAttr>::buildProblemMap() {
+  return {
+#define GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+#include "QuickTuningProblemMap.inc"
+#undef GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
   };
 }
 

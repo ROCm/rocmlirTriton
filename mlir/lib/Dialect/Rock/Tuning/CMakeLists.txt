@@ -23,3 +23,24 @@ target_link_libraries(MLIRRockTuning
 
 # RockTuningImpl.cpp includes Triton's TargetFeatures.h for the ISAFamily enum
 rocmlir_add_triton_includes(MLIRRockTuning)
+
+# One generated .inc per <arch, kernel, data type> key, so that regenerating one
+# architecture touches only its own files. Collect whatever is checked in into
+# the manifest ParamLookupTable.cpp includes. CONFIGURE_DEPENDS so a newly
+# generated architecture is picked up by a plain `ninja`.
+set(_problem_map_dir
+  ${PROJECT_SOURCE_DIR}/mlir/include/mlir/Dialect/Rock/Tuning/QuickTuningProblemMap)
+file(GLOB _problem_map_shards CONFIGURE_DEPENDS
+  RELATIVE ${_problem_map_dir} ${_problem_map_dir}/*.inc)
+list(SORT _problem_map_shards)
+set(_problem_map_inc "")
+foreach(_shard ${_problem_map_shards})
+  string(APPEND _problem_map_inc
+    "#include \"mlir/Dialect/Rock/Tuning/QuickTuningProblemMap/${_shard}\"\n")
+endforeach()
+file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/QuickTuningProblemMap.inc
+  CONTENT "${_problem_map_inc}")
+target_include_directories(MLIRRockTuning PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if(TARGET obj.MLIRRockTuning)
+  target_include_directories(obj.MLIRRockTuning PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endif()

@@ -259,7 +259,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
             f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
             f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t{PERFCONFIG}\t1.0\n")
 
-        df = load_data([str(debug_path)], no_splitk=False)
+        df = load_data([str(debug_path)])
         self.assertIn("TransBias", df.columns)
         self.assertTrue(df["TransBias"].eq(False).all())
         self.assertIn("SlidingWindowLookBack", df.columns)
@@ -294,7 +294,7 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
             f"False\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
             f"{PERFCONFIG}\t1.0\tFalse\t-1\n")
 
-        df = load_data([str(legacy_path), str(current_path)], no_splitk=False)
+        df = load_data([str(legacy_path), str(current_path)])
         self.assertFalse(df["SlidingWindowLookBack"].isna().any())
 
         grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
