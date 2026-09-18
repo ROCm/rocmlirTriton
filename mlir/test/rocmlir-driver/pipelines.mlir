@@ -279,6 +279,7 @@
 // TRITON_RDNA-NEXT:tritonamdgpu-optimize-descriptor-encoding,
 // TRITON_RDNA-NEXT:tritonamdgpu-schedule-loops{num_stages=2},
 // TRITON_RDNA-NEXT:tritonamdgpu-pipeline{use_async_copy=false use_pingpong=false},
+// TRITON_RDNA-NEXT:rock-roll-dot-k{arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:tritonamdgpu-convert-tensor-ops,
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:tritongpu-remove-layout-conversions,
