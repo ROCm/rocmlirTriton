@@ -3,6 +3,12 @@
 //
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch %arch | rocmlir-gen --emit-tuning-space=quick - | FileCheck %s --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
 // CHECK: splitKFactor=1,
+//
+// gfx1150 has a dedicated no-split-K list. This entry is absent from its
+// regular conv list, so finding it proves that selection happened before the
+// remaining legality filter.
+// RUN: sed s/##TOKEN_ARCH##/gfx1150/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1150 | rocmlir-gen --emit-tuning-space=quick - | FileCheck %s --check-prefix=GFX1150 --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
+// GFX1150: mPerBlock=128,nPerBlock=128,kPerBlock=16,{{.*}}matrixInstrNonkdim=0,splitKFactor=1
 
 module {
   func.func @conv_add_relu(%input: !migraphx.shaped<1x3x32x32xf32, 3072x1024x32x1>,

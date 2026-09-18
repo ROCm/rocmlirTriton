@@ -1422,7 +1422,8 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
   // the same perf_config. A different perf_config could give the CPU and GPU
   // a different split count in split-KV, causing verification failures.
   std::vector<rock::GemmGemmParamsAttr> defaults =
-      rock::PopulateParamsGemmGemm::getTuningParameters(builder, op);
+      rock::PopulateParamsGemmGemm::getTuningParameters(
+          builder, op, /*supportsSplitK=*/true);
   FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
       rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
           builder, params.perfConfig, defaults);
