@@ -421,6 +421,10 @@ bool redistributeGathers(ModuleOp mod, bool forceAll) {
 // between the two passes changes tensor encodings, so the value returned here
 // is the same that will actually be allocated later. Returns nullopt when the
 // module carries no AMD target to derive it from.
+//
+// Also, we dont want to grow the LDS size because MIGraphX assumes one
+// perfConfig would not change its LDS size if fusions are involved.
+// So making sure the LDS size does not grow also enforces that assumption.
 std::optional<size_t> sharedMemoryFootprint(ModuleOp mod) {
   std::optional<StringRef> arch = getAMDArch(mod);
   if (!arch)
