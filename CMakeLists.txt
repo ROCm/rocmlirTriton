@@ -4,8 +4,8 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0048 NEW)
 
 # Resolve the ROCm/HIP root once before project(). The Windows toolchain setup
-# below needs it this early, and cmake/triton.cmake reuses the same value for
-# package discovery. Precedence is:
+# below takes it as a search hint, and cmake/triton.cmake reuses the same value
+# for package discovery. Precedence is:
 #   -DROCM_PATH -> ENV{ROCM_PATH} -> ENV{HIP_PATH} -> platform default
 if(NOT DEFINED ROCM_PATH)
   if(DEFINED ENV{ROCM_PATH})
@@ -28,20 +28,20 @@ file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 if(CMAKE_HOST_WIN32)
   if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     # clang-cl lives under lib/llvm/bin in TheRock and under bin in the HIP SDK.
-    if(EXISTS "${ROCM_PATH}/lib/llvm/bin/clang-cl.exe")
-      set(_rocmlir_compiler_dir "${ROCM_PATH}/lib/llvm/bin")
-    elseif(EXISTS "${ROCM_PATH}/bin/clang-cl.exe")
-      set(_rocmlir_compiler_dir "${ROCM_PATH}/bin")
-    else()
+    # CMAKE_PREFIX_PATH needs HINTS since prefix search only visits <prefix>/bin.
+    find_program(ROCMLIR_CLANG_CL
+      NAMES clang-cl
+      HINTS "${ROCM_PATH}" ${CMAKE_PREFIX_PATH} ENV CMAKE_PREFIX_PATH
+      PATH_SUFFIXES lib/llvm/bin bin
+      DOC "clang-cl driver used to build rocMLIR on Windows")
+    if(NOT ROCMLIR_CLANG_CL)
       message(FATAL_ERROR
-        "clang-cl not found under ${ROCM_PATH} "
-        "(checked lib/llvm/bin and bin). Set ROCM_PATH/HIP_PATH or -DROCM_PATH to "
-        "your ROCm/HIPSDK install (or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER).")
+        "clang-cl not found. Put it on PATH, add its prefix to CMAKE_PREFIX_PATH, "
+        "set ROCM_PATH/HIP_PATH, or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER.")
     endif()
-    set(CMAKE_C_COMPILER
-        "${_rocmlir_compiler_dir}/clang-cl.exe" CACHE FILEPATH "")
-    set(CMAKE_CXX_COMPILER
-        "${_rocmlir_compiler_dir}/clang-cl.exe" CACHE FILEPATH "")
+    set(CMAKE_C_COMPILER "${ROCMLIR_CLANG_CL}" CACHE FILEPATH "")
+    set(CMAKE_CXX_COMPILER "${ROCMLIR_CLANG_CL}" CACHE FILEPATH "")
+    get_filename_component(_rocmlir_compiler_dir "${ROCMLIR_CLANG_CL}" DIRECTORY)
   else()
     if(NOT EXISTS "${CMAKE_C_COMPILER}" OR
        NOT EXISTS "${CMAKE_CXX_COMPILER}")
