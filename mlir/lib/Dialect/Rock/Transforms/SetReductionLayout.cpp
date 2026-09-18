@@ -15,6 +15,7 @@
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "triton/Analysis/Allocation.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -56,19 +57,24 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
-// Walk from a dot operand back to the global load that produces it, or trough
-// the blocked layout anchor, if the kernel is fused. For the load case, step
-// trough the layout-only convert_layout / in_thread_transpose, and the
-// local_alloc / local_load pair that stages an operand through shared memory.
-// Returns null if the def chain does not find a tt.load / amdgpu.buffer_load.
-Operation *findGatherAnchor(Value operand) {
-  Operation *def = operand.getDefiningOp();
-  while (def) {
+// Walk from a dot operand back to the op whose blocked layout the rewrite
+// should redistribute, stepping through the layout-only convert_layout /
+// in_thread_transpose and the local_alloc / local_load pair that stages an
+// operand through shared memory.
+//
+// On an unfused kernel the walk ends on the global load itself. On a fused one
+// it ends on the tail of the fusion prologue, which is anchored on instead
+// under the conditions spelled out below. Returns the value to redistribute,
+// which is the result the walk arrived through, or null when neither is
+// reached.
+Value findGatherAnchor(Value operand) {
+  Value gathered = operand;
+  while (Operation *def = gathered.getDefiningOp()) {
     if (isa<triton::LoadOp, triton::amdgpu::BufferLoadOp>(def))
-      return def;
+      return gathered;
     if (isa<triton::gpu::ConvertLayoutOp, triton::amdgpu::InThreadTransposeOp>(
             def)) {
-      def = def->getOperand(0).getDefiningOp();
+      gathered = def->getOperand(0);
       continue;
     }
 
@@ -77,15 +83,48 @@ Operation *findGatherAnchor(Value operand) {
           localLoad.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
       if (!alloc || !alloc.getSrc())
         return nullptr;
-      def = alloc.getSrc().getDefiningOp();
+      gathered = alloc.getSrc();
       continue;
     }
-    // Anchor on this op as long as it carries a blocked layout to redistribute.
-    // Fused ops will be catched here.
-    auto ty = dyn_cast<RankedTensorType>(def->getResult(0).getType());
-    if (ty && isa<triton::gpu::BlockedEncodingAttr>(ty.getEncoding()))
-      return def;
-    return nullptr;
+
+    // Search for anchors on fusions
+
+    // Bail out on loops/conditionals.
+    if (def->getNumRegions() != 0)
+      return nullptr;
+
+    // The anchor must be a compute op.
+    if (!isMemoryEffectFree(def))
+      return nullptr;
+
+    // The checks below prove the anchor's operands and result agree on one
+    // layout; these traits prove the op does not care which layout that is.
+    // tt.gather is why both are needed: its source, indices and result can all
+    // carry the same shape and encoding, yet its lowering reads the layout.
+    //
+    // This is also what Triton's LayoutConversion checks before rewriting (ie
+    // in RemoveLayoutConversions.cpp in LayoutPropagation class)
+    if (!(def->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
+          def->hasTrait<OpTrait::Elementwise>()))
+      return nullptr;
+
+    // The walk ends on this op. Everything below either takes `gathered` as the
+    // anchor or gives up on this dot operand.
+    auto ty = dyn_cast<RankedTensorType>(gathered.getType());
+    if (!ty || !isa<triton::gpu::BlockedEncodingAttr>(ty.getEncoding()))
+      return nullptr;
+
+    // Make sure the encodings and the shapes of the operands agree with the
+    // anchor. The checks above only cover one of the two.
+    for (Value anchorOperand : def->getOperands()) {
+      auto operandTy = dyn_cast<RankedTensorType>(anchorOperand.getType());
+      if (!operandTy)
+        continue; // A scalar operand carries no encoding to keep in step.
+      if (operandTy.getEncoding() != ty.getEncoding() ||
+          operandTy.getShape() != ty.getShape())
+        return nullptr;
+    }
+    return gathered;
   }
   return nullptr;
 }
@@ -99,9 +138,10 @@ Operation *findGatherAnchor(Value operand) {
 // encodings are uniqued by content, so a module-wide substitution keyed on the
 // encoding would also rewrite unrelated values that merely happen to share it.
 // Returns true if the layout was rewritten.
-bool rewriteGatherLoad(Operation *anchor, unsigned kDim) {
-  MLIRContext *ctx = anchor->getContext();
-  auto ty = dyn_cast<RankedTensorType>(anchor->getResult(0).getType());
+bool rewriteGatherLoad(Value anchor, unsigned kDim) {
+  Operation *anchorOp = anchor.getDefiningOp();
+  MLIRContext *ctx = anchor.getContext();
+  auto ty = dyn_cast<RankedTensorType>(anchor.getType());
   if (!ty)
     return false;
   auto oldBlocked =
@@ -141,8 +181,8 @@ bool rewriteGatherLoad(Operation *anchor, unsigned kDim) {
     }
   }
   if (!tiles) {
-    anchor->emitWarning("rock-set-reduction-layout: warps do not tile the "
-                        "reduction dim; skipping");
+    anchorOp->emitWarning("rock-set-reduction-layout: warps do not tile the "
+                          "reduction dim; skipping");
     return false;
   }
 
@@ -177,9 +217,9 @@ bool rewriteGatherLoad(Operation *anchor, unsigned kDim) {
   llvm::SetVector<Operation *> scope;
   BackwardSliceOptions sliceOpts;
   sliceOpts.omitBlockArguments = true;
-  (void)getBackwardSlice(anchor, &scope, sliceOpts);
-  scope.insert(anchor);
-  for (Operation *user : anchor->getResult(0).getUsers())
+  (void)getBackwardSlice(anchorOp, &scope, sliceOpts);
+  scope.insert(anchorOp);
+  for (Operation *user : anchor.getUsers())
     if (isa<triton::amdgpu::InThreadTransposeOp>(user))
       scope.insert(user);
 
@@ -329,12 +369,12 @@ bool rewriteGatherLoad(Operation *anchor, unsigned kDim) {
 bool redistributeGathers(ModuleOp mod, bool forceAll) {
   // Associate each dot operand with the gather anchor that feeds it and the
   // reduction (K) dim implied by its operand position.
-  llvm::MapVector<Operation *, unsigned> anchorKDim;
-  llvm::DenseSet<Operation *> conflicting;
+  llvm::MapVector<Value, unsigned> anchorKDim;
+  llvm::DenseSet<Value> conflicting;
   // TODO: Support the case where the same gather is assigned to multiple
   // tt.dots. This can be beneficial specially if we used DecomposeNonPow2 pass.
   auto record = [&](Value operand, unsigned kDim) {
-    Operation *anchor = findGatherAnchor(operand);
+    Value anchor = findGatherAnchor(operand);
     if (!anchor)
       return;
     auto [it, inserted] = anchorKDim.try_emplace(anchor, kDim);
@@ -364,8 +404,9 @@ bool redistributeGathers(ModuleOp mod, bool forceAll) {
   bool rewrote = false;
   for (auto [anchor, kDim] : anchorKDim) {
     if (conflicting.contains(anchor)) {
-      anchor->emitWarning("rock-set-reduction-layout: load feeds dot operands "
-                          "with conflicting reduction dims; skipping");
+      anchor.getDefiningOp()->emitWarning(
+          "rock-set-reduction-layout: load feeds dot operands "
+          "with conflicting reduction dims; skipping");
       continue;
     }
     rewrote |= rewriteGatherLoad(anchor, kDim);
