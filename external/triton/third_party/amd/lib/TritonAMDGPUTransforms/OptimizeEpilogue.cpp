@@ -527,16 +527,16 @@ public:
       if (curMask) {
         auto maskType = cast<RankedTensorType>(curMask.getType());
         curMask = triton::gpu::ConvertLayoutOp::create(
-            rewriter, curMask.getLoc(),
-            maskType.cloneWithEncoding(newEncoding), curMask);
+            rewriter, curMask.getLoc(), maskType.cloneWithEncoding(newEncoding),
+            curMask);
       }
 
       triton::StoreOp newStoreOp = usePermlaneSwapToOptimizeStore(
           rewriter, curPtr, curVal, curMask, curSt);
       if (!newStoreOp) {
-        newStoreOp =
-            triton::StoreOp::create(rewriter, curSt.getLoc(), curPtr, curVal,
-                                    curMask, curSt.getCache(), curSt.getEvict());
+        newStoreOp = triton::StoreOp::create(rewriter, curSt.getLoc(), curPtr,
+                                             curVal, curMask, curSt.getCache(),
+                                             curSt.getEvict());
       }
       rewriter.replaceOp(curSt, newStoreOp);
     }
