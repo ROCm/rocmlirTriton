@@ -833,6 +833,11 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
     constexpr uint64_t swizzleEnable = 1, typeMask = 3 << 2;
     return (bits & (swizzleEnable | typeMask)) == 0;
   }
+  // The gfx13 descriptor layout has not been modelled yet, so keep the
+  // hardware bounds check and decline the fold.
+  // TODO: revisit once the encoding is published.
+  case triton::amdgpu::ISAFamily::GFX1310:
+    return false;
   case triton::amdgpu::ISAFamily::Unknown:
     return false;
   }
