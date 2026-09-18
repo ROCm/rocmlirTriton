@@ -441,6 +441,39 @@ module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32}
 
 // -----
 
+// A per-channel bias, which reaches the epilogue as a broadcast of an Mx1
+// load rather than as a full-tile one. `tt.broadcast` is not elementwise, so
+// halting the cone at it would put an unclassifiable value on the boundary and
+// refuse the whole epilogue; it relayouts like an elementwise op instead, and
+// the Mx1 load is the one reissued in the accumulator layout.
+// CHECK-LABEL: side_load_broadcast_bias
+// CHECK-NOT:   ttg.convert_layout %{{.*}} : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+// CHECK:       %[[PTR:.+]] = ttg.convert_layout %{{.*}} : tensor<32x1x!tt.ptr<f32>, #blocked> -> tensor<32x1x!tt.ptr<f32>, #mma>
+// CHECK:       %[[BIAS:.+]] = tt.load %[[PTR]] : tensor<32x1x!tt.ptr<f32>, #mma>
+// CHECK:       %[[BCAST:.+]] = tt.broadcast %[[BIAS]] : tensor<32x1xf32, #mma> -> tensor<32x32xf32, #mma>
+// CHECK:       %[[SUM:.+]] = arith.addf %{{.*}}, %[[BCAST]] : tensor<32x32xf32, #mma>
+// CHECK:       tt.store %{{.*}}, %[[SUM]] : tensor<32x32x!tt.ptr<f32>, #mma>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [16, 4], warpsPerCTA = [1, 1], order = [0, 1]}>
+#mma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [1, 1], instrShape = [32, 32, 8], isTransposed = false}>
+module attributes {"ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {
+  tt.func public @side_load_broadcast_bias(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
+    %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
+    %cst_0 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
+    %cst_1 = arith.constant dense<1.230000e+02> : tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>>
+    %0 = tt.dot %cst_0, %cst_1, %cst : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>> * tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>> -> tensor<32x32xf32, #mma>
+    %1 = ttg.convert_layout %0 : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+    %biasptr = tt.splat %arg1 : !tt.ptr<f32> -> tensor<32x1x!tt.ptr<f32>, #blocked>
+    %bias = tt.load %biasptr : tensor<32x1x!tt.ptr<f32>, #blocked>
+    %bcast = tt.broadcast %bias : tensor<32x1xf32, #blocked> -> tensor<32x32xf32, #blocked>
+    %2 = arith.addf %1, %bcast : tensor<32x32xf32, #blocked>
+    %3 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.store %3, %2 : tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.return
+  }
+}
+
+// -----
+
 // The epilogue value feeds two stores, which is how a kernel with several
 // results reads one accumulator. Neither store can move alone, since the one
 // left behind would be reading a value whose layout just changed, so both are

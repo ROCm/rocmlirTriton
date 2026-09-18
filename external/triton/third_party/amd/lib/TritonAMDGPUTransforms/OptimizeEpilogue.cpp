@@ -41,14 +41,24 @@ namespace mlir {
 
 namespace {
 
-// Whether the bypass can retype `op` in place. Elementwise means every lane's
-// result depends only on that lane's operands, so the layout is a free choice,
-// and memory-effect-free means the retype cannot be observed through memory.
-// This replaces a hand-maintained opcode list that omitted the entire binary
-// arith set, `arith::AddFOp` and `arith::MulFOp` among them, and so rejected
-// most real epilogues. The same predicate is used to select ops for the
-// backward slice and to halt the traversal through anything else.
-static bool isBypassableElementwise(Operation *op) {
+// Whether the bypass can retype `op` in place, given its operands retyped to
+// the same layout. Elementwise means every lane's result depends only on that
+// lane's operands, so the layout is a free choice, and memory-effect-free
+// means the retype cannot be observed through memory. This replaces a
+// hand-maintained opcode list that omitted the entire binary arith set,
+// `arith::AddFOp` and `arith::MulFOp` among them, and so rejected most real
+// epilogues. The same predicate is used to select ops for the backward slice
+// and to halt the traversal through anything else.
+//
+// `tt.broadcast` is not elementwise, since it changes the shape, but it
+// carries SameOperandsAndResultEncoding and stretching a unit dimension is a
+// per-lane read of the source element, so it relayouts exactly like one. It
+// has to be included: a bias or per-channel scale reaches the epilogue as a
+// broadcast of an Mx1 load, so halting on it puts an unclassifiable value on
+// the cone's boundary and refuses the whole epilogue.
+static bool isRelayoutableInPlace(Operation *op) {
+  if (isa<triton::BroadcastOp>(op))
+    return true;
   return op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op);
 }
 
@@ -304,11 +314,11 @@ public:
     // the conversion directly.
     SetVector<Operation *> cone;
     if (!isa<triton::gpu::ConvertLayoutOp>(valDef)) {
-      if (!isBypassableElementwise(valDef))
+      if (!isRelayoutableInPlace(valDef))
         return mlir::failure();
       BackwardSliceOptions options;
       options.omitBlockArguments = true;
-      options.filter = isBypassableElementwise;
+      options.filter = isRelayoutableInPlace;
       if (failed(getBackwardSlice(valDef, &cone, options)))
         return mlir::failure();
       // getBackwardSlice omits its own root, which is topologically last.
