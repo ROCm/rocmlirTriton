@@ -1488,7 +1488,7 @@ def find_best_perfconfig(
 
         config.set_perfconfig(perfconfig)
         entry = config.table_entry(nano_seconds)
-        if options.debug_quick_tune_data:
+        if options.debug or options.debug_quick_tune_data:
             entry["PerfPriority"] = getattr(config, "perf_priority", None)
         if options.debug:
             entry["MeasurementsMs"] = measurements
@@ -2239,6 +2239,7 @@ def _benchmark_one_artifact(test_vector: str, ctx: TuningContext, gpu_id: int,
     command_line = test_vector.split(sep=" ")
     config = ctx.conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                               options.num_chiplets)
+    config.perf_priority = ctx.perf_priorities.get(test_vector)
 
     # Benchmark. The C++ tool runs the target-identity guardrail internally and
     # emits perfConfig\t<ns|N/A>.

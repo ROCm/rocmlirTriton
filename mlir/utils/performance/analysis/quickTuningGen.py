@@ -134,9 +134,10 @@ def get_problem_priority(group):
 def threshold_for_priority(priority, threshold):
     """Relax coverage for low-priority tier-1 problems.
 
-    With the default 93% threshold, priorities 1, 2, and 3 permit 10%, 9%,
-    and 8% gaps respectively. Priority 4 and above retain the original 7%
-    gap. The relaxation scales with a user-supplied ``--th`` value.
+    Priorities 1, 2, and 3 lower the requested coverage threshold by fixed
+    offsets of 3, 2, and 1 percentage points respectively. Priority 4 and above
+    retain the requested threshold. With the default 93%, this permits gaps of
+    10%, 9%, 8%, and 7% respectively.
     """
     if priority is None:
         return threshold
@@ -285,15 +286,9 @@ def solve_full_coverage(coverage, dtype):
     return chosen, problems, configs, config_idx, matrix
 
 
-def solve_bounded_coverage(coverage, problem_weights, configs, max_configs):
-    """Select at most ``max_configs`` configs covering the most important problems."""
-    problems = sorted(coverage.keys())
-    config_idx = {c: i for i, c in enumerate(configs)}
-    n_problems, n_configs = len(problems), len(configs)
-    matrix = np.zeros((n_problems, n_configs), dtype=int)
-    for i, problem in enumerate(problems):
-        for config in coverage[problem]:
-            matrix[i, config_idx[config]] = 1
+def solve_bounded_coverage(problems, problem_weights, configs, config_idx, matrix, max_configs):
+    """Select at most ``max_configs`` configs using a precomputed coverage matrix."""
+    n_problems, n_configs = len(problems), len(config_idx)
 
     problem = pulp.LpProblem("BoundedCoverage", pulp.LpMaximize)
     selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
@@ -362,24 +357,16 @@ def find_perfconfigs(df, op, threshold, max_configs=40):
 
         # Extract selected configs, sorted by how many problems they cover.
         if max_configs is not None and len(selected) > max_configs:
-            problem_weights = {}
+            weights_by_name = {}
             for name, group in df_typed.groupby(target_cols):
                 priority = get_problem_priority(group)
-                weight = max(priority, 1) if priority is not None else 1
-                problem_weights[name, True] = weight
-                if op in SPLIT_K_AWARE_OPS:
-                    is_split_k_free = group['PerfConfig'].apply(
-                        lambda config: get_splitk_value(config) in (None, '1'))
-                    no_splitk = group[is_split_k_free]
-                    if not no_splitk.empty:
-                        top = coverage.get((name, True), [])
-                        top_no_splitk = coverage.get((name, False), top)
-                        if set(top_no_splitk) != set(top):
-                            problem_weights[name, False] = weight
+                weights_by_name[name] = max(priority, 1) if priority is not None else 1
+            problem_weights = {problem: weights_by_name[problem[0]] for problem in coverage}
 
             print(f"WARNING: {dtype} needs {len(selected)} configs for full coverage; "
                   f"limiting quick tuning to {max_configs}")
-            selected = solve_bounded_coverage(coverage, problem_weights, configs, max_configs)
+            selected = solve_bounded_coverage(problems, problem_weights, configs, config_idx,
+                                              matrix, max_configs)
             covered = [
                 problem for problem, candidates in coverage.items()
                 if any(config in candidates for config in selected)
