@@ -1184,17 +1184,23 @@ LogicalResult MemDescSubsliceOp::verify() {
 
   auto ctx = getContext();
   LinearLayout ll;
-  bool isPadded = false;
   if (auto paddedEncoding = triton::gpu::getPaddedEncoding(srcEnc)) {
     if (paddedEncoding.getRank() < srcTy.getRank()) {
       return emitError("SubSlice of low rank PaddedSharedEncoding from higher "
                        "rank tensors is not supported yet");
     }
     ll = triton::gpu::paddedLinearLayout(srcTy);
-    isPadded = true;
   } else {
     ll = triton::gpu::toLinearLayout(srcTy);
   }
+
+  // The widest shared-memory access is 128 bits, so this is the most elements
+  // a load or store of this type may cover in one instruction.
+  Type elemTy = srcTy.getElementType();
+  unsigned maxVecElems =
+      elemTy.isIntOrFloat()
+          ? std::max<unsigned>(1, 128 / elemTy.getIntOrFloatBitWidth())
+          : 1;
 
   auto llInv = ll.pseudoinvert();
   for (auto dim : splitDims) {
@@ -1209,18 +1215,30 @@ LogicalResult MemDescSubsliceOp::verify() {
       auto offsetAndBlock = llInv.apply(namedOffsets);
       auto offset = offsetAndBlock[0];
       auto block = offsetAndBlock[1];
-      // An unpadded shared encoding is a GF(2)-linear map, so an element's
-      // physical offset splits exactly as L^-1(coords + offsets) ==
-      // L^-1(coords) ^ L^-1(offsets), which is the decomposition the lowering
-      // computes: getShmemOffset applies L^-1 to the accumulated logical
-      // offsets and materializeLocalAddrs XORs it into the per-element offset.
-      // A split that crosses a swizzle's phase pattern lands a second bit in
-      // L^-1(offsets), and that stays correct. Padding is not linear, so it
-      // keeps the stricter check.
-      if (isPadded && !llvm::isPowerOf2_32(offset.second) &&
-          offset.second != 0) {
-        return emitError(
-            "We don't support splitting along the swizzling pattern");
+      // A split that crosses a swizzle's phase pattern lands more than one bit
+      // in L^-1(offsets). An unpadded shared encoding is a GF(2)-linear map,
+      // so the element's physical offset still splits exactly as
+      // L^-1(coords + offsets) == L^-1(coords) ^ L^-1(offsets), which is what
+      // getShmemOffset plus the XOR in lowerLdSt computes.
+      //
+      // Only an indexed subslice is allowed to rely on that. A static one is
+      // also read through getShmemAffineBase, which adds L^-1(offsets) to the
+      // base pointer rather than XORing it, and the two agree only while
+      // L^-1(offsets) is a single bit disjoint from the coordinates.
+      if (!llvm::isPowerOf2_32(offset.second) && offset.second != 0) {
+        if (!getIndex()) {
+          return emitError(
+              "We don't support splitting along the swizzling pattern");
+        }
+        // lowerLdSt XORs L^-1(offsets) into the base of a vectorized access
+        // and then adds the index within that vector, so the two agree only
+        // while no bit of L^-1(offsets) falls inside the vector.
+        if (offset.second & (maxVecElems - 1)) {
+          return emitError("A split that crosses the swizzling pattern must "
+                           "land on a multiple of ")
+                 << maxVecElems << " elements, but it lands on "
+                 << offset.second;
+        }
       }
       if (block.second != 0) {
         return emitError("We don't support splitting along CTA dimensions");

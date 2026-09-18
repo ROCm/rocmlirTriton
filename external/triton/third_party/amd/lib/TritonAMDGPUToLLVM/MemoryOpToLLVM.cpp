@@ -370,9 +370,10 @@ private:
     Value paddedAffineOffsetI8 = b.i32_val(0);
     if (hasPadding && maskSpanAffineOffset != 0) {
       // `maskSpanAffineOffset != 0` indicates the affine offsets come from
-      // MemDescSubsliceOp, whose verifier guarantees that the affine offsets
-      // are bitwise disjoint from other offset contributors. Padding can thus
-      // be applied separately. This helps LLVM reuse base pointers.
+      // MemDescSubsliceOp. Padding keeps the verifier's strict rule that an
+      // affine offset is a single bit disjoint from the other offset
+      // contributors, so padding can be applied to it separately. This helps
+      // LLVM reuse base pointers.
       paddedAffineOffsetI8 =
           applyPadding(loc, rewriter, affineOffsetI8, paddingShifts);
     } else {

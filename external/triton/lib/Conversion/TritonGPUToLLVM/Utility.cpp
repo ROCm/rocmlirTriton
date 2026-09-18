@@ -628,13 +628,12 @@ materializeLocalAddrs(Location loc, triton::gpu::MemDescType memDescTy,
     // For subslices, the physical offset is computed as:
     //   physical_offset = L⁻¹(coords) ⊕ L⁻¹(subslice_logical_offset)
     //
-    // We use XOR for consistency with lowerLdSt. MemDescSubsliceOp::verify()
-    // enforces:
-    // 1. Subslice offsets must be multiples of the tile size
-    // 2. Subslice offsets must map to power-of-2 physical offsets
-    //
-    // These constraints ensure the bit ranges of L⁻¹(coords) and
-    // L⁻¹(subslice_offset) are disjoint, so XOR and addition are equivalent.
+    // We use XOR for consistency with lowerLdSt. It is the operation the
+    // decomposition calls for whatever the offset looks like, because an
+    // unpadded shared layout is GF(2)-linear and MemDescSubsliceOp::verify()
+    // requires the offsets to be multiples of the tile size, which makes the
+    // logical addition above an XOR. This lowering is per element, so unlike
+    // lowerLdSt it does not additionally need the offset to clear a vector.
     offset = b.xor_(offset, affineOffset);
 
     // Add padding offset for padded layouts (non-linear component)
@@ -893,9 +892,10 @@ SmallVector<Value> lowerLdSt(
   Value paddedAffineOffsetI8 = b.i32_val(0);
   if (hasPadding && maskSpanAffineOffset != 0) {
     // `maskSpanAffineOffset != 0` indicates the affine offsets come from
-    // MemDescSubsliceOp, whose verifier guarantees that the affine offsets are
-    // bitwise disjoint from other offset contributors. Padding can thus be
-    // applied separately. This helps LLVM reuse base pointers.
+    // MemDescSubsliceOp. Padding keeps the verifier's strict rule that an
+    // affine offset is a single bit disjoint from the other offset
+    // contributors, so padding can be applied to it separately. This helps
+    // LLVM reuse base pointers.
     paddedAffineOffsetI8 =
         applyPadding(loc, rewriter, affineOffsetI8, paddingShifts);
   } else {

@@ -162,6 +162,20 @@ tt.func public @indexed_subslice_padded(%arg0: !ttg.memdesc<8x16xf32, #padded, #
 
 // -----
 
+// Splitting a 16-element row into 1-element tiles crosses this swizzle, so a
+// tile lands at 16 ^ 1 = 17. An index is allowed to cross the pattern, but 17
+// is odd, so the lowering's 4-element f32 vector would straddle the bit the
+// segment offset toggles.
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 16, order = [1, 0]}>
+#smem = #ttg.shared_memory
+tt.func public @indexed_subslice_across_swizzling_pattern_unaligned(%arg0: !ttg.memdesc<16x16xf32, #shared, #smem>, %i: i32) {
+    // expected-error @+1 {{must land on a multiple of 4 elements, but it lands on 17}}
+    %a = ttg.memdesc_subslice %arg0 [0, 0] index %i : !ttg.memdesc<16x16xf32, #shared, #smem> -> !ttg.memdesc<1x16xf32, #shared, #smem, 16x16>
+    tt.return
+}
+
+// -----
+
 #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
 #smem = #ttg.shared_memory
 tt.func public @too_few_offsets(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>) {
@@ -202,6 +216,19 @@ tt.func public @result_1d_to_1d(%arg0: !ttg.memdesc<8xf32, #shared, #smem>) {
     tt.return
 }
 
+
+// -----
+
+// A static subview is also read through getShmemAffineBase, which adds the
+// tile's physical offset to the base rather than XORing it, so it keeps the
+// rule that the offset is a single bit. Only an index may cross the pattern.
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 16, order = [0, 1]}>
+#smem = #ttg.shared_memory
+tt.func public @subview_along_swizzling_pattern(%arg0: !ttg.memdesc<8x16xf32, #shared, #smem>) {
+    // expected-error @+1 {{swizzling pattern}}
+    %a = ttg.memdesc_subslice %arg0 [0, 0] : !ttg.memdesc<8x16xf32, #shared, #smem> -> !ttg.memdesc<8x4xf32, #shared, #smem>
+    tt.return
+}
 
 // -----
 

@@ -21,8 +21,9 @@
 // pattern's period. The indexed subslice absorbs that: a shared layout is a
 // GF(2)-linear map, so an element's physical offset splits exactly into the
 // offset of the segment and the offset within it, and the lowering computes
-// the segment's half from the index. That holds for any segment width, which
-// is what lets `dotK` go below the period.
+// the segment's half from the index. That is what lets `dotK` go below the
+// period, as long as the segment's own offset clears the widest load the
+// element type can use, since the lowering XORs it into that load's base.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +40,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -273,8 +276,17 @@ bool canConvertToLinearLayout(ArrayRef<int64_t> shape, Attribute enc) {
 /// inverse layout, which is only a function of the index when the layout is
 /// linear. Padding inserts gaps and a partitioned encoding selects a base per
 /// partition, so its verifier rejects both, and so does this.
-bool canIndexSubslice(ArrayRef<int64_t> shape, Attribute enc, unsigned kDim,
-                      int64_t dotK) {
+///
+/// A segment that crosses the buffer's swizzling pattern lands more than one
+/// bit in that physical offset. The lowering XORs it into the base of a
+/// vectorized access and then adds the index within that vector, so those
+/// bits have to clear the widest access the element type can use. The
+/// subslice verifier says so too, and an op that fails verification would
+/// fail the compilation rather than leave the dot unrolled, so the same
+/// condition has to be checked before emitting one.
+bool canIndexSubslice(ttg::MemDescType memTy, unsigned kDim, int64_t dotK) {
+  ArrayRef<int64_t> shape = memTy.getShape();
+  Attribute enc = memTy.getEncoding();
   assert(shape.size() == 2 && "expected a 2-D dot operand tile");
   if (isa<ttg::PaddedSharedEncodingAttr, ttg::PartitionedSharedEncodingAttr>(
           enc))
@@ -282,8 +294,35 @@ bool canIndexSubslice(ArrayRef<int64_t> shape, Attribute enc, unsigned kDim,
 
   SmallVector<int64_t> segShape(shape);
   segShape[kDim] = dotK;
-  return canConvertToLinearLayout(shape, enc) &&
-         canConvertToLinearLayout(segShape, enc);
+  if (!canConvertToLinearLayout(shape, enc) ||
+      !canConvertToLinearLayout(segShape, enc))
+    return false;
+
+  Type elemTy = memTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return false;
+  auto maxVecElems = std::max<int32_t>(1, 128 / elemTy.getIntOrFloatBitWidth());
+
+  MLIRContext *ctx = enc.getContext();
+  triton::LinearLayout llInv = ttg::toLinearLayout(shape, enc).pseudoinvert();
+  SmallVector<std::pair<StringAttr, int32_t>> namedOffsets;
+  for (StringAttr dim : triton::standardOutDimNames(ctx, shape.size()))
+    namedOffsets.push_back({dim, 0});
+
+  // The segment offsets an index can reach are the XORs of these, and the
+  // layout is linear, so checking each one covers every index.
+  for (int64_t segOffset = dotK; segOffset < shape[kDim]; segOffset *= 2) {
+    namedOffsets[kDim].second = static_cast<int32_t>(segOffset);
+    SmallVector<std::pair<StringAttr, int32_t>> offsetAndBlock =
+        llInv.apply(namedOffsets);
+    int32_t offset = offsetAndBlock[0].second;
+    if (offsetAndBlock[1].second != 0)
+      return false;
+    if (!llvm::isPowerOf2_32(offset) && offset != 0 &&
+        (offset & (maxVecElems - 1)))
+      return false;
+  }
+  return true;
 }
 
 /// Recognizes a dot this pass can roll, without yet deciding whether it
@@ -382,20 +421,21 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
   auto aMemTy = cand.aMem.getType();
   auto bMemTy = cand.bMem.getType();
 
-  auto canSegment = [&](StringRef which, ArrayRef<int64_t> shape, Attribute enc,
+  auto canSegment = [&](StringRef which, ttg::MemDescType memTy,
                         unsigned kDim) {
-    if (canIndexSubslice(shape, enc, kDim, dotK))
+    if (canIndexSubslice(memTy, kDim, dotK))
       return true;
     LLVM_DEBUG(llvm::dbgs()
                << "  operand " << which
                << " cannot be segmented at dotK=" << dotK
-               << ": its shared encoding pads, partitions, or has a "
-                  "linear layout this pass cannot reason about\n");
+               << ": its shared encoding pads, partitions, has a linear "
+                  "layout this pass cannot reason about, or splits the "
+                  "swizzling pattern too finely for a vectorized load\n");
     return false;
   };
   // A is [M, K] and B is [K, N], so K is dimension 1 of A and 0 of B.
-  if (!canSegment("A", aMemTy.getShape(), aMemTy.getEncoding(), /*kDim=*/1) ||
-      !canSegment("B", bMemTy.getShape(), bMemTy.getEncoding(), /*kDim=*/0))
+  if (!canSegment("A", aMemTy, /*kDim=*/1) ||
+      !canSegment("B", bMemTy, /*kDim=*/0))
     return failure();
 
   OpBuilder b(dot);
@@ -533,7 +573,9 @@ void RockRollDotKPass::runOnOperation() {
       for (const RollableDot *cand : alreadyFit) {
         if (residual <= kTargetBlockFMAs)
           break;
-        tryRoll(*cand, cand->k / 2);
+        // A K of 1 has no narrower segment to halve into.
+        if (cand->k > 1)
+          tryRoll(*cand, cand->k / 2);
       }
       if (residual > kTargetBlockFMAs)
         LLVM_DEBUG(llvm::dbgs()

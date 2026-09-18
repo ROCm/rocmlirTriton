@@ -255,12 +255,22 @@ def TTG_MemDescSubsliceOp : TTG_Op<"memdesc_subslice", [Pure, MemDescViewTrait]>
 
     The offsets must be larger or equal to the tile of the tensor (or zero).
 
+    A static subview may not split along the swizzling pattern, that is, a
+    tile boundary has to map to a single bit of the physical offset.
+
     An optional `index` operand selects the subview at runtime. It counts in
     units of the result tile, so the offset it contributes along the split
     dimension is `index * result_shape[split_dim]` and stays tile-aligned by
     construction. It requires a single split dimension, all-zero static
     offsets, and an unpadded, non-partitioned shared encoding, so that the
     physical offset the lowering computes is a linear function of the index.
+
+    In return, an indexed subview may split along the swizzling pattern, as
+    long as each tile boundary maps to a multiple of the widest access this
+    element type can use, which is 128 bits. The lowering XORs the tile's
+    physical offset into the base of a vectorized access and adds the index
+    within that vector, so the two only agree while the offset clears the
+    vector.
   }];
   let arguments = (ins TTG_MemDescType:$src, DenseI32ArrayAttr:$offsets,
                        Optional<I32>:$index);

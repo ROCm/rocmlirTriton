@@ -933,9 +933,15 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
     before it. The indexed subslice absorbs that: an unpadded shared encoding
     is a GF(2)-linear map, so an element's physical offset splits exactly into
     the offset of its segment and the offset within it, and the lowering
-    derives the first from the index. This holds for any segment width, so
-    `dotK` is set by the FMA target rather than by the swizzle. Padded and
-    partitioned encodings are not linear in that way and are left alone.
+    derives the first from the index. So `dotK` is set by the FMA target
+    rather than by the swizzle, as long as a segment's physical offset clears
+    the widest load the element type can use, which is what lets the lowering
+    XOR that offset into the base of a vectorized load.
+
+    Padding is not linear, so an element's offset does not split that way at
+    all. A partitioned encoding is linear but picks a base pointer per
+    partition, which the lowering derives from the static offsets and so
+    cannot derive from an index. Both are left alone.
 
     Runs after Triton's pipeliner, which is what puts the operands in shared
     memory, and covers every qualifying f32 dot on RDNA, including the drain

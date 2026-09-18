@@ -137,6 +137,67 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// A's swizzle displaces a row by one element at a time, so the 4-wide K
+// segment the heuristic wants lands at 512 ^ 1. That is odd, and the lowering
+// XORs a segment's offset into the base of a 4-element f32 load and then adds
+// the index within it, so the two would disagree. The subslice verifier says
+// so, and emitting one anyway would fail the compilation rather than leave
+// the dot alone, so the pass has to decline here.
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 4, maxPhase = 16, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @no_roll_segment_offset_splits_a_vector
+// CHECK-NOT:     ttg.memdesc_subslice
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_segment_offset_splits_a_vector(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #shared, #smem, mutable> -> tensor<128x64xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #shared1, #smem, mutable> -> tensor<64x64xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<128x64xf32, #blocked1> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
+    tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [1, 32], warpsPerCTA = [1, 2], order = [1, 0]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [2, 1], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// 1024 accumulators over a K of 1 is over the target, but there is no segment
+// narrower than the whole K, so this dot is deferred as already-unrollable
+// and the block it is alone in still overflows. Halving its K would ask for a
+// segment of zero.
+
+// CHECK-LABEL: tt.func @no_roll_k_is_one
+// CHECK-NOT:     ttg.memdesc_subslice
+// CHECK-NOT:     scf.for
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @no_roll_k_is_one(%acc: tensor<256x256xf32, #blocked2>) -> tensor<256x256xf32, #blocked2> {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<256x1xf32, #shared, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<1x256xf32, #shared1, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<256x1xf32, #shared, #smem, mutable> -> tensor<256x1xf32, #blocked1>
+    %bl = ttg.local_load %b : !ttg.memdesc<1x256xf32, #shared1, #smem, mutable> -> tensor<1x256xf32, #blocked>
+    %ac = ttg.convert_layout %al : tensor<256x1xf32, #blocked1> -> tensor<256x1xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>>
+    %bc = ttg.convert_layout %bl : tensor<1x256xf32, #blocked> -> tensor<1x256xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
+    %d = tt.dot %ac, %bc, %acc : tensor<256x1xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<1x256xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<256x256xf32, #blocked2>
+    tt.return %d : tensor<256x256xf32, #blocked2>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
+#blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
