@@ -56,19 +56,11 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
-// Walk from a dot operand back to the op that produces the distributed tensor
-// staged into shared memory for it, through the ops the pipeline interposes
-// between that tensor and tt.dot: the layout-only convert_layout /
-// in_thread_transpose, and the local_alloc / local_load pair that stages an
-// operand through shared memory.
-//
-// On an unfused kernel that producer is the global load itself. On a fused one
-// it is the tail of the fusion prologue (arith.select and friends), so a walk
-// that insisted on reaching a tt.load / amdgpu.buffer_load would give up and
-// leave every fused kernel unrewritten. The rewrite does not need the load: it
-// needs the tensor whose blocked layout is about to be redistributed, and
-// anchoring on its producer makes the backward slice below cover the fusion
-// chain and every load feeding it. Returns null if no such producer is found.
+// Walk from a dot operand back to the global load that produces it, or trough
+// the blocked layout anchor, if the kernel is fused. For the load case, step
+// trough the layout-only convert_layout / in_thread_transpose, and the
+// local_alloc / local_load pair that stages an operand through shared memory.
+// Returns null if the def chain does not find a tt.load / amdgpu.buffer_load.
 Operation *findGatherAnchor(Value operand) {
   Operation *def = operand.getDefiningOp();
   while (def) {
@@ -89,6 +81,7 @@ Operation *findGatherAnchor(Value operand) {
       continue;
     }
     // Anchor on this op as long as it carries a blocked layout to redistribute.
+    // Fused ops will be catched here.
     auto ty = dyn_cast<RankedTensorType>(def->getResult(0).getType());
     if (ty && isa<triton::gpu::BlockedEncodingAttr>(ty.getEncoding()))
       return def;
@@ -380,11 +373,12 @@ bool redistributeGathers(ModuleOp mod, bool forceAll) {
   return rewrote;
 }
 
-// The shared-memory footprint `mod` will be allocated, computed with the very
-// analysis `AllocateAMDGPUSharedMemory` runs a few passes downstream. Nothing
-// between the two passes changes tensor encodings, so this is the figure the
-// kernel really ends up with. Returns nullopt when the module carries no AMD
-// target to derive it from.
+// The LDS that `mod` will allocate, computed with the very
+// analysis `AllocateAMDGPUSharedMemory` (which is the one that allocates LDS)
+// runs a few passes later. Nothing
+// between the two passes changes tensor encodings, so the value returned here
+// is the same that will actually be allocated later. Returns nullopt when the
+// module carries no AMD target to derive it from.
 std::optional<size_t> sharedMemoryFootprint(ModuleOp mod) {
   std::optional<StringRef> arch = getAMDArch(mod);
   if (!arch)
@@ -413,18 +407,11 @@ void RockSetReductionLayoutPass::runOnOperation() {
     return;
   bool forceAll = useReductionLayout == 1;
 
-  // Redistributing the gather moves its layout further from the one its
-  // consumer wants, and the conversion closing that gap may then need a
-  // shared-memory round-trip it did not need before. That trade is only worth
-  // taking while the address arithmetic it saves is paid on every reduction
-  // iteration: on a kernel with a short (or fully unrolled) reduction loop the
-  // extra LDS traffic dominates, and the larger footprint can cost occupancy on
-  // top. So decide on a clone -- rewrite it there and keep the result only if
-  // the kernel's shared-memory footprint does not grow.
-  // The probe is the run that reports skipped gathers: it happens
-  // unconditionally, whereas the applying run below is reached only once the
-  // footprint check passes. Cloned ops keep their locations, so its diagnostics
-  // read the same as the originals'.
+  // Redistributing the layout may hurt performance if LDS size is increased.
+  // So we decide if we should rewrite the layout or not based on the LDS size.
+  // First, we perform the rewrite on a cloned module and compare the LDS size
+  // before and after the rewrite. Only if the LDS size does not grow, we
+  // perform the rewrite on the original module.
   OwningOpRef<ModuleOp> probe(mod.clone());
   if (!redistributeGathers(*probe, forceAll))
     return;
