@@ -218,9 +218,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-LABEL: tt.func @shared_encoding_guard_defeated
   // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     tt.load {{.*}}tensor<2x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
-  // The first gather is rewritten, so the pass runs the rewrite twice: once on
-  // a throwaway copy to weigh its LDS cost, then for real. The second
-  // gather's bail-out must still be reported exactly once.
+  // The rewrite is weighed on a clone that then replaces the module, and the
+  // clone's diagnostics reach the same engine as the module's. Pin that the
+  // second gather's bail-out is therefore reported exactly once.
   // CONFLICT-COUNT-1: warps do not tile the reduction dim
   // CONFLICT-NOT:     warps do not tile the reduction dim
   tt.func @shared_encoding_guard_defeated(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt.ptr<i8>, %arg3: !tt.ptr<i8>) -> (tensor<128x64xi32, #blockedA>, tensor<128x64xi32, #blockedA2>) {
@@ -489,18 +489,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// Not every op carrying a blocked layout can be anchored on. The rewrite swaps
-// one blocked encoding for another across the anchor's backward slice, so an
-// anchor has to keep the same encoding (and shape) on its result and on its
-// tensor operands; an op relating two *different* encodings would have one side
-// rewritten and the other left behind.
+// Reject tranpose 
 //
-// tt.trans is the dangerous case: it is lowered as a no-op relabel that trusts
-// its two encodings to describe the same data movement, and its verifier only
-// checks shapes, so anchoring on it would miscompile in silence rather than
-// fail. The tensor reaching the dot here is a 32x64 gather on
-// warpsPerCTA = [2, 2] with order [1, 0], so it would be rewritten to [4, 1]
-// if the transpose were anchored on.
+// The guard that rejects it today is the trait check: tt.trans carries
+// SameOperandsAndResultElementType, and neither SameOperandsAndResultEncoding
+// nor Elementwise, so it never reaches the encoding and shape comparison.
 
 #blockedT = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [2, 2], order = [0, 1]}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
@@ -524,8 +517,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
-// Same reasoning for tt.reshape: it changes the shape, so its operand and its
-// result cannot be held on one encoding, whatever the two encodings compare as.
+// Same hazard for tt.reshape, and the same guard turns it away: it carries
+// SameOperandsAndResultElementType and is not Elementwise either. Were the
+// trait check relaxed, the shape comparison would still catch a reshape that
+// changes the shape, as this one does -- but not an identity reshape, nor a
+// rank-1 tt.trans, whose encodings a transpose leaves alone.
 
 #blockedR = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
