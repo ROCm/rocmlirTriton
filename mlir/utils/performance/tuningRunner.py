@@ -909,6 +909,7 @@ class TuningContext:
     options: Options
     gpu_topology: Optional[GpuTopology]
     numa_topology: NumaTopology
+    perf_priorities: Dict[str, int] = field(default_factory=dict)
 
     _threads_per_gpu: Dict[int, int] = field(default_factory=dict, init=False)
 
@@ -1487,6 +1488,8 @@ def find_best_perfconfig(
 
         config.set_perfconfig(perfconfig)
         entry = config.table_entry(nano_seconds)
+        if options.debug or options.debug_quick_tune_data:
+            entry["PerfPriority"] = getattr(config, "perf_priority", None)
         if options.debug:
             entry["MeasurementsMs"] = measurements
             entry["Status"] = time if np.isnan(nano_seconds) else "Measured"
@@ -1507,8 +1510,14 @@ def find_best_perfconfig(
     return winning_config, max_tflops, entries
 
 
-def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Options, gpu_id: int,
-                num_compile_threads: int, numa_lock: NumaNodeLock) -> TuningResult:
+def tune_config(test_vector: str,
+                conf_class: type,
+                paths: Paths,
+                options: Options,
+                gpu_id: int,
+                num_compile_threads: int,
+                numa_lock: NumaNodeLock,
+                perf_priority: Optional[int] = None) -> TuningResult:
     """Tune a single configuration and return the result."""
     gpu_logger = get_gpu_logger(gpu_id)
 
@@ -1558,6 +1567,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                 command_line = test_vector.split()
                 config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                       options.num_chiplets)
+                config.perf_priority = perf_priority
                 command_line_options = config.generate_mlir_driver_commandline(
                     options.rocmlir_gen_flags, kernel_repeats=None)
                 # Note, we don't need the -ph, this goes to the tuning driver.
@@ -1582,6 +1592,7 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
                 command_line = result[3].split()
                 config = conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                                       options.num_chiplets)
+                config.perf_priority = perf_priority
                 tuning_driver_command += [test_vector]
                 tuning_commands = [tuning_driver_command]
 
@@ -2228,6 +2239,7 @@ def _benchmark_one_artifact(test_vector: str, ctx: TuningContext, gpu_id: int,
     command_line = test_vector.split(sep=" ")
     config = ctx.conf_class.from_command_line(command_line, options.arch, options.num_cu,
                                               options.num_chiplets)
+    config.perf_priority = ctx.perf_priorities.get(test_vector)
 
     # Benchmark. The C++ tool runs the target-identity guardrail internally and
     # emits perfConfig\t<ns|N/A>.
@@ -2392,7 +2404,7 @@ def tune_configs(ctx: TuningContext, status_only: bool) -> bool:
             start_time = time.time()
             compile_threads = ctx.get_compile_threads(gpu_id)
             result = tune_config(test_vector, ctx.conf_class, ctx.paths, ctx.options, gpu_id,
-                                 compile_threads, numa_lock)
+                                 compile_threads, numa_lock, ctx.perf_priorities.get(test_vector))
             result.duration_seconds = time.time() - start_time
             result.timestamp = timestamp
             return result
@@ -2533,15 +2545,23 @@ def load_configs(op_type: Operation,
                  arch: str,
                  num_cu: int,
                  num_chiplets: int,
-                 target_chip: Optional[str] = None) -> List[str]:
+                 target_chip: Optional[str] = None,
+                 priority_map: Optional[Dict[str, int]] = None) -> List[str]:
     """Load configurations based on operation type and arguments."""
     if parsed_args.config:
+        priority = perfRunner.get_perf_priority(parsed_args.config.split())
+        if priority_map is not None and priority is not None:
+            priority_map[parsed_args.config] = priority
         return [parsed_args.config]
 
     loaders = {
         Operation.CONV:
-            lambda: perfRunner.get_conv_configurations(
-                paths.configuration_file_path, arch, num_cu, num_chiplets, target_chip=target_chip),
+            lambda: perfRunner.get_conv_configurations(paths.configuration_file_path,
+                                                       arch,
+                                                       num_cu,
+                                                       num_chiplets,
+                                                       target_chip=target_chip,
+                                                       priority_map=priority_map),
         Operation.GEMM:
             lambda: perfRunner.get_gemm_configurations(paths.configuration_file_path,
                                                        arch,
@@ -2550,16 +2570,17 @@ def load_configs(op_type: Operation,
                                                        *perfRunner.parse_data_types(parsed_args.
                                                                                     data_type),
                                                        parsed_args.scale_type,
-                                                       target_chip=target_chip),
+                                                       target_chip=target_chip,
+                                                       priority_map=priority_map),
         Operation.ATTENTION:
             lambda: perfRunner.get_attn_configurations(paths.configuration_file_path, arch, num_cu,
-                                                       num_chiplets),
+                                                       num_chiplets, priority_map),
         Operation.GEMM_GEMM:
             lambda: perfRunner.get_gemm_gemm_configurations(paths.configuration_file_path, arch,
-                                                            num_cu, num_chiplets),
+                                                            num_cu, num_chiplets, priority_map),
         Operation.CONV_GEMM:
             lambda: perfRunner.get_conv_gemm_configurations(paths.configuration_file_path, arch,
-                                                            num_cu, num_chiplets),
+                                                            num_cu, num_chiplets, priority_map),
     }
 
     if op_type not in loaders:
@@ -2921,6 +2942,7 @@ def main(args=None):
         stdin_temp_file = load_configs_from_stdin()
         parsed_args.configs_file = stdin_temp_file
 
+    perf_priorities = {}
     try:
         paths = resolve_paths(op_type, parsed_args)
         if not paths.mlir_paths:
@@ -2936,7 +2958,8 @@ def main(args=None):
                                arch,
                                num_cu,
                                num_chiplets,
-                               target_chip=chip)
+                               target_chip=chip,
+                               priority_map=perf_priorities)
     finally:
         if stdin_temp_file:
             os.unlink(stdin_temp_file)
@@ -2944,7 +2967,13 @@ def main(args=None):
     conf_class = get_config_class(op_type)
     # Canonicalize configs so the persisted DB key, the dedup/state-file keys,
     # and the perfRunner ``to_command_line()`` lookup key all match.
-    configs = canonicalize_configs(configs, conf_class, arch, num_cu, num_chiplets)
+    raw_configs = configs
+    configs = canonicalize_configs(raw_configs, conf_class, arch, num_cu, num_chiplets)
+    perf_priorities = {
+        canonical_config: perf_priorities[raw_config]
+        for raw_config, canonical_config in zip(raw_configs, configs)
+        if raw_config in perf_priorities
+    }
 
     # --- Resolve the two-stage coarse budget ------------------------------
     # --two-stage is the friendly toggle: the user opts in and we pick a coarse
@@ -3012,6 +3041,7 @@ def main(args=None):
                       allow_commit_mismatch=parsed_args.allow_commit_mismatch)
 
     ctx = TuningContext(configs=configs,
+                        perf_priorities=perf_priorities,
                         conf_class=get_config_class(op_type),
                         paths=paths,
                         options=options,
