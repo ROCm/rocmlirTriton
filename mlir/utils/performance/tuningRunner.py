@@ -228,6 +228,7 @@ class Options:
     num_cpus: Optional[int]
     wait_for_compiles: bool
     flush_last_level_cache: bool
+    verify_passes: bool
     timeout: Optional[int]
     verify_timeout: int
     perf_config_timeout: int
@@ -1536,6 +1537,8 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
         tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
         tuning_driver_args.append("--flush-last-level-cache")
+    if options.verify_passes:
+        tuning_driver_args.append("--verify-passes")
 
     env = make_isolated_gpu_env(gpu_id)
 
@@ -1930,6 +1933,8 @@ def run_compile_only(ctx: TuningContext) -> bool:
         ]
         if options.num_cpus:
             td_cmd.append(f"--num-compile-threads={options.num_cpus}")
+        if options.verify_passes:
+            td_cmd.append("--verify-passes")
         pipeline = " | ".join(" ".join(cmd) for cmd in [gen_cmd, td_cmd])
 
         logger.info(f"Compiling problem {problem_idx}/{total_problems}: {problem_hash}")
@@ -2988,6 +2993,7 @@ def main(args=None):
                       num_cpus=parsed_args.num_cpus,
                       wait_for_compiles=parsed_args.wait_for_compiles,
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
+                      verify_passes=parsed_args.verify_passes,
                       timeout=parsed_args.timeout,
                       verify_timeout=parsed_args.verify_timeout,
                       perf_config_timeout=parsed_args.perf_config_timeout,
