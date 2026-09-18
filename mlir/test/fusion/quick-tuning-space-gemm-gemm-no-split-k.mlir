@@ -7,7 +7,7 @@
 // list has no splitKFactor > 1 to begin with, this check would pass even if
 // the filter were dropped.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx950 %s | rocmlir-gen --emit-tuning-space=quick - | FileCheck %s --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
-// CHECK: splitKFactor=1
+// CHECK: splitKFactor=1,
 
 module {
   func.func private @mlir_gemm_gemm_relu(%arg0: !migraphx.shaped<1x7x3xf32, 21x3x1>,
