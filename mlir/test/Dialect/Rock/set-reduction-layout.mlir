@@ -219,7 +219,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     tt.load {{.*}}tensor<2x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
   // The first gather is rewritten, so the pass runs the rewrite twice: once on
-  // a throwaway copy to weigh its shared-memory cost, then for real. The second
+  // a throwaway copy to weigh its LDS cost, then for real. The second
   // gather's bail-out must still be reported exactly once.
   // CONFLICT-COUNT-1: warps do not tile the reduction dim
   // CONFLICT-NOT:     warps do not tile the reduction dim
@@ -470,7 +470,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     arith.select {{.*}} : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // The free A operand is untouched.
   // CHECK-DAG:     tt.load {{.*}}tensor<128x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
   tt.func @gather_through_fusion_prologue(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
     %cst = arith.constant dense<0> : tensor<64x64xi8, #blocked1>
