@@ -30,7 +30,7 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
           dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
     perfConfig = mayBePerfConfig.getValue();
   return materializeTuningParams<GemmGemmParamsAttr>(
-      b, perfConfig, getTuningParameters(b, op));
+      b, perfConfig, getTuningParameters(b, op, /*supportsSplitK=*/true));
 }
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(

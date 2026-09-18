@@ -121,11 +121,6 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
   if (!splitKey(target, arch, kernelType, dataType))
     return StringRef();
 
-  // The split-K/no-split-K pair is the cheapest fallback and applies only to
-  // this exact key. `lookup` already checked the regular table.
-  if (auto it = getNoSplitKTable().find(target); it != getNoSplitKTable().end())
-    return it->first;
-
   StringRef fallbackKernelType = getFallbackKernelType(kernelType);
   StringRef fallbackDataType = getFallbackDataType(dataType);
 
@@ -140,8 +135,7 @@ StringRef ParamLookupTable<ParamsType>::findFallback(StringRef target) {
   // its perf-config format, so an attention list tuned for *this* chip beats
   // the same fusion tuned for a different one.
   //
-  // The exact split-K pair was handled above. Pairing remains unconditional on
-  // the later axes, so each candidate is searched in both tables.
+  // Search both tables, starting with `target` before trying substitutions.
   for (StringRef data : {dataType, fallbackDataType}) {
     if (data.empty())
       continue;
