@@ -129,6 +129,16 @@ struct EmbeddedDeviceLibrary {
 constexpr std::array<EmbeddedDeviceLibrary, 2> embeddedDeviceLibraries = {
     {{"ocml.bc", "__ocml_"}, {"ockl.bc", "__ockl_"}}};
 
+/// Deliberate divergence from upstream Triton, which verifies unconditionally
+/// in llvm.cc's to_module() and its codegen pipeline: two full IR walks over
+/// IR our own lowering just produced. Keep the check only in assert-enabled
+/// builds.
+#ifndef NDEBUG
+constexpr bool kVerifyLLVMIR = true;
+#else
+constexpr bool kVerifyLLVMIR = false;
+#endif
+
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
@@ -621,13 +631,11 @@ bool emitMachineCode(llvm::Module &module, llvm::TargetMachine *machine,
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
       f.addFnAttr(llvm::Attribute::AlwaysInline);
 
-  // run inliner (matches llvm.cc lines 333-344)
-  //
-  // Deliberate divergence from upstream Triton: llvm.cc also adds
-  // createVerifierPass() here; we drop it to avoid re-verifying IR our
-  // lowering just produced on every compile.
+  // verify and run inliner (matches llvm.cc lines 333-344), see kVerifyLLVMIR
   llvm::legacy::PassManager pm;
   pm.add(llvm::createAlwaysInlinerLegacyPass());
+  if constexpr (kVerifyLLVMIR)
+    pm.add(llvm::createVerifierPass());
   pm.run(module);
 
   // emit machine code (matches llvm.cc lines 360-377)
@@ -893,10 +901,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
   llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
-  // Deliberate divergence from upstream Triton: llvm.cc's to_module() calls
-  // translateModuleToLLVMIR with verification enabled; we disable it here.
-  std::unique_ptr<llvm::Module> llvmModule = translateModuleToLLVMIR(
-      module, llvmContext, "LLVMDialectModule", /*disableVerification=*/true);
+  // llvm.cc's to_module() calls translateModuleToLLVMIR with verification
+  // always enabled, see kVerifyLLVMIR.
+  std::unique_ptr<llvm::Module> llvmModule =
+      translateModuleToLLVMIR(module, llvmContext, "LLVMDialectModule",
+                              /*disableVerification=*/!kVerifyLLVMIR);
   if (!llvmModule) {
     llvm::errs() << "Failed to translate module to LLVM IR\n";
     return failure();

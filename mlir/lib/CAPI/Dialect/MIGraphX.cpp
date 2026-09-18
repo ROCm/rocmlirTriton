@@ -40,6 +40,15 @@
 #include <mutex>
 #include <vector>
 
+// Re-verifying the module after every pass is a measurable share of every
+// MIGraphX compile, and rocmlir-driver's lit tests already verify these
+// pipelines. Keep the check only in assert-enabled builds.
+#ifndef NDEBUG
+static constexpr bool kVerifyPasses = true;
+#else
+static constexpr bool kVerifyPasses = false;
+#endif
+
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(MIGraphX, migraphx,
                                       mlir::migraphx::MIGraphXDialect)
 
@@ -224,7 +233,7 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
-    pm.enableVerifier(false);
+    pm.enableVerifier(kVerifyPasses);
     // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI so
     // MIGraphX can request IEEE NaN semantics; until then every entry point
     // assumes no NaN operands.
@@ -281,7 +290,7 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
-    pm.enableVerifier(false);
+    pm.enableVerifier(kVerifyPasses);
     mlir::rock::KernelOptions kOpts;
     // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI (see
     // above).
@@ -354,7 +363,7 @@ void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
   if (failed(applyPassManagerCLOptions(*passMan)))
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  passMan->enableVerifier(false);
+  passMan->enableVerifier(kVerifyPasses);
   // TODO: expose fast-math control through this entry point so MIGraphX can
   // request IEEE NaN semantics; for now the lowering assumes no NaN operands.
   mlir::migraphx::addMIGraphXPipeline(*passMan, /*disableFastMath=*/false);
@@ -409,7 +418,7 @@ mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
   if (failed(applyPassManagerCLOptions(*passMan)))
     return false;
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  passMan->enableVerifier(false);
+  passMan->enableVerifier(kVerifyPasses);
   mlir::rock::KernelOptions kOpts;
   // TODO: add a fast-math field to MlirMIGraphXBackendOptions and plumb it
   // here; for now the kernel and backend pipelines assume no NaN operands.
