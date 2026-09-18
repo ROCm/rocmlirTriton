@@ -66,9 +66,11 @@ template <typename ParamsType>
 StringRef
 ParamLookupTable<ParamsType>::getFallbackDataType(StringRef dataType) {
   // Map datatypes without their own tuning entries to the closest datatype that
-  // has them in a single hop. fp8 and i8 share the 8-bit MFMA/tile space; f4
+  // has them in a single hop. bf16 and f16 have the same element width, and so
+  // the same tile footprint; fp8 and i8 share the 8-bit MFMA/tile space; f4
   // has no 4-bit neighbour so it also borrows i8.
   return llvm::StringSwitch<StringRef>(dataType)
+      .Case("bf16", "f16")
       .Case("fp8", "i8")
       .Case("f4", "i8")
       .Default(StringRef());
@@ -234,8 +236,8 @@ std::string mlir::rock::getDataTypeString(Type dataType) {
     return "fp8";
   } else if (dataType.getIntOrFloatBitWidth() == 16 &&
              isa<FloatType>(dataType)) {
-    // We use "f16" for bf16 and f16 generically
-    return "f16";
+    // bf16 gets its own key rather than sharing f16's
+    return isa<BFloat16Type>(dataType) ? "bf16" : "f16";
   } else {
     std::string result;
     llvm::raw_string_ostream os(result);

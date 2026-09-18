@@ -28,9 +28,9 @@ namespace rock {
 StringRef normalizeArch(StringRef arch);
 
 // Canonicalize a data type to its tuning-key spelling: all 4-bit floats -> f4,
-// all 8-bit floats -> fp8, all 16-bit floats (incl. bf16) -> f16; other types
-// print as-is with a leading integer sign char ('s'/'u') dropped. Shared so the
-// keys emitted here match those baked into the generated .inc tables.
+// all 8-bit floats -> fp8, 16-bit floats except bf16 -> f16; other
+// types print as-is with a leading integer sign char ('s'/'u') dropped. Shared
+// so the keys emitted here match those baked into the generated .inc tables.
 std::string getDataTypeString(Type dataType);
 
 template <typename ParamsType>
@@ -73,8 +73,8 @@ private:
   }
 
   // Returns the closest datatype to borrow tuning configs from when `dataType`
-  // has no entries of its own (e.g. fp8 -> i8, f4 -> i8). Returns an empty
-  // StringRef when there is no fallback datatype.
+  // has no entries of its own (e.g. bf16 -> f16, fp8 -> i8, f4 -> i8). Returns
+  // an empty StringRef when there is no fallback datatype.
   static StringRef getFallbackDataType(StringRef dataType);
 
   // Returns the closest kernel type to borrow tuning configs from when
