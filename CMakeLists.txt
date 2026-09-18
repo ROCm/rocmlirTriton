@@ -28,16 +28,26 @@ file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 if(CMAKE_HOST_WIN32)
   if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     # clang-cl lives under lib/llvm/bin in TheRock and under bin in the HIP SDK.
-    # CMAKE_PREFIX_PATH needs HINTS since prefix search only visits <prefix>/bin.
+    # Search ROCM_PATH alone first so it keeps the precedence documented above:
+    # HINTS is consulted after cache and environment CMAKE_PREFIX_PATH, which
+    # would otherwise outrank it. CMAKE_PREFIX_PATH needs HINTS in the fallback
+    # since prefix search only visits <prefix>/bin.
     find_program(ROCMLIR_CLANG_CL
       NAMES clang-cl
-      HINTS "${ROCM_PATH}" ${CMAKE_PREFIX_PATH} ENV CMAKE_PREFIX_PATH
+      HINTS "${ROCM_PATH}"
+      PATH_SUFFIXES lib/llvm/bin bin
+      NO_DEFAULT_PATH
+      DOC "clang-cl driver used to build rocMLIR on Windows")
+    find_program(ROCMLIR_CLANG_CL
+      NAMES clang-cl
+      HINTS ${CMAKE_PREFIX_PATH} ENV CMAKE_PREFIX_PATH
       PATH_SUFFIXES lib/llvm/bin bin
       DOC "clang-cl driver used to build rocMLIR on Windows")
     if(NOT ROCMLIR_CLANG_CL)
       message(FATAL_ERROR
-        "clang-cl not found. Put it on PATH, add its prefix to CMAKE_PREFIX_PATH, "
-        "set ROCM_PATH/HIP_PATH, or pass -DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER.")
+        "clang-cl not found (ROCM_PATH=${ROCM_PATH}). Put it on PATH, add its "
+        "prefix to CMAKE_PREFIX_PATH, set ROCM_PATH/HIP_PATH, or pass "
+        "-DCMAKE_C_COMPILER/-DCMAKE_CXX_COMPILER.")
     endif()
     set(CMAKE_C_COMPILER "${ROCMLIR_CLANG_CL}" CACHE FILEPATH "")
     set(CMAKE_CXX_COMPILER "${ROCMLIR_CLANG_CL}" CACHE FILEPATH "")
@@ -51,7 +61,7 @@ if(CMAKE_HOST_WIN32)
     get_filename_component(
       _rocmlir_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
   endif()
-  message(STATUS "Using ROCm clang-cl at ${CMAKE_CXX_COMPILER}")
+  message(STATUS "Using clang-cl at ${CMAKE_CXX_COMPILER}")
 
   if(NOT CMAKE_LINKER)
     set(CMAKE_LINKER
