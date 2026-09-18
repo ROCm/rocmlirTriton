@@ -14,7 +14,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "triton/Analysis/Allocation.h"
@@ -450,9 +449,8 @@ void RockSetReductionLayoutPass::runOnOperation() {
 
   // Redistributing the layout may hurt performance if LDS size is increased.
   // So we decide if we should rewrite the layout or not based on the LDS size.
-  // First, we perform the rewrite on a cloned module and compare the LDS size
-  // before and after the rewrite. Only if the LDS size does not grow, we
-  // perform the rewrite on the original module.
+  // The rewrite is performed on a cloned module, and that clone replaces the
+  // original only if its shared-memory footprint did not grow.
   OwningOpRef<ModuleOp> probe(mod.clone());
   if (!redistributeGathers(*probe, forceAll))
     return;
@@ -469,11 +467,5 @@ void RockSetReductionLayoutPass::runOnOperation() {
     return;
   }
 
-  // This repeats what the probe already decided, so consume the duplicate
-  // diagnostics it produces; anything more severe than a warning still falls
-  // through to the real handler.
-  ScopedDiagnosticHandler quiet(mod.getContext(), [](Diagnostic &diag) {
-    return success(diag.getSeverity() == DiagnosticSeverity::Warning);
-  });
-  redistributeGathers(mod, forceAll);
+  mod.getBodyRegion().takeBody(probe->getBodyRegion());
 }
