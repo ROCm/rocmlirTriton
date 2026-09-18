@@ -248,6 +248,17 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 on **`allow_flush_denorm`**: stamp the `denormal_fpenv` enum attribute, not
 upstream's legacy `"denormal-fp-math-f32"` string (see section 8.1).
 
+`TritonToHsaco.cpp` also deliberately diverges on **LLVM IR verification**.
+Upstream verifies unconditionally in two places: `to_module()` calls
+`translateModuleToLLVMIR` with verification enabled, and the codegen pass
+manager adds `createVerifierPass()` after the always-inliner (llvm.cc lines
+333-344, mirrored by `emitMachineCode()`). Each is a full IR walk on every
+compile over IR our own MLIR lowering just produced. We gate both on the
+`kVerifyLLVMIR` constant, which follows `NDEBUG`, so assert-enabled builds
+verify and release builds do not. A bump that reintroduces either call
+unconditionally should be re-gated on `kVerifyLLVMIR` rather than taking the
+upstream spelling.
+
 ### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a
@@ -732,6 +743,7 @@ Use this checklist to track progress:
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Preserve `TritonToHsaco.cpp::setKernelAttributes()` denormal stamping via `denormal_fpenv` enum (do not copy upstream `"denormal-fp-math-f32"` string; see section 8.1)
+- [ ] Keep LLVM IR verification in `TritonToHsaco.cpp` gated on `kVerifyLLVMIR` (upstream verifies unconditionally in `to_module()` and in the codegen pass manager; see section 5.2)
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
