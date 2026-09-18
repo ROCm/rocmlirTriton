@@ -28,9 +28,13 @@ import pandas as pd
 MLIR_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MLIR_DIR / "utils" / "performance" / "analysis"))
 
-# PuLP is only needed to solve the set cover; the coverage construction under
-# test here does not touch it.
-sys.modules.setdefault("pulp", types.SimpleNamespace())
+
+def stub_optional_pulp():
+    """Let this coverage-only test import quickTuningGen without PuLP installed."""
+    sys.modules.setdefault("pulp", types.SimpleNamespace())
+
+
+stub_optional_pulp()
 
 import quickTuningGen  # noqa: E402
 from quickTuningGen import build_coverage, get_target_columns, threshold_for_priority  # noqa: E402
@@ -108,6 +112,35 @@ class QuickTuningSplitKCoverageTest(unittest.TestCase):
 
         self.assertEqual(len(seen_coverage), 1)
         self.assertEqual(list(seen_coverage[0].values()), [[winner]])
+
+    def test_bounded_weights_follow_coverage_keys(self):
+        split_k_winner = gemm_perfconfig(128, 4)
+        no_split_k_winner = gemm_perfconfig(64, 1)
+        df = make_df('gemm', [(split_k_winner, 100.0), (no_split_k_winner, 90.0)])
+        df['DataType'] = 'f32'
+        df['PerfPriority'] = 7
+        bounded_args = {}
+
+        def solve(coverage, _dtype):
+            problems = sorted(coverage)
+            configs = sorted({config for candidates in coverage.values() for config in candidates})
+            config_idx = {config: i for i, config in enumerate(configs)}
+            matrix = quickTuningGen.np.ones((len(problems), len(configs)), dtype=int)
+            return configs, problems, configs, config_idx, matrix
+
+        def solve_bounded(problems, problem_weights, configs, _config_idx, _matrix, _max_configs):
+            bounded_args['problems'] = problems
+            bounded_args['problem_weights'] = problem_weights
+            return [configs[0]]
+
+        with mock.patch.object(quickTuningGen, 'solve_full_coverage', side_effect=solve), \
+                mock.patch.object(quickTuningGen,
+                                  'solve_bounded_coverage',
+                                  side_effect=solve_bounded):
+            quickTuningGen.find_perfconfigs(df, 'gemm', THRESHOLD, max_configs=1)
+
+        self.assertEqual(set(bounded_args['problem_weights']), set(bounded_args['problems']))
+        self.assertEqual(set(bounded_args['problem_weights'].values()), {7})
 
     def test_split_k_winner_gets_a_split_k_free_duplicate(self):
         split_k_winner = gemm_perfconfig(128, 4)
