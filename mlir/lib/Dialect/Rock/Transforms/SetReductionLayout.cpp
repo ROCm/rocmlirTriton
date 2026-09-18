@@ -56,16 +56,18 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
-// Walk from a dot operand back to the op whose blocked layout the rewrite
-// should redistribute, stepping through the layout-only convert_layout /
-// in_thread_transpose and the local_alloc / local_load pair that stages an
-// operand through shared memory.
+// Walk from a dot operand back to the value the rewrite should redistribute,
+// stepping through the layout-only convert_layout / in_thread_transpose and
+// the local_alloc / local_load pair that stages an operand through shared
+// memory.
 //
 // On an unfused kernel the walk ends on the global load itself. On a fused one
-// it ends on the tail of the fusion prologue, which is anchored on instead
-// under the conditions spelled out below. Returns the value to redistribute,
-// which is the result the walk arrived through, or null when neither is
-// reached.
+// it ends on the tail of the fusion prologue, which is anchored on only under
+// the conditions below. Returns the result the walk arrived through, or null
+// when neither is reached. The fusion path requires a blocked encoding; on the
+// load path that is rewriteGatherLoad's to check.
+//
+// Please note that this will not rewrite direct-to-LDS loads or TDM.
 Value findGatherAnchor(Value operand) {
   Value gathered = operand;
   while (Operation *def = gathered.getDefiningOp()) {
