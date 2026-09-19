@@ -40,6 +40,8 @@ namespace mlir {
 
 namespace {
 
+constexpr llvm::StringLiteral kLoopedGeluAttr = "amdg.looped_gelu";
+
 // Return true iff the given value v is a tensor splatting from 1 (int).
 // The usefulness of this func stems from the fact than if a buffer-op's mask
 // operand is a all-1-tensor, it does not need to take this operand.
@@ -618,9 +620,12 @@ struct ConvertTritonStoreToBufferStore
           getBlockStride(op->getLoc(), tensorOffset, rewriter), rewriter,
           op->getLoc(), op);
 
-      rewriter.replaceOpWithNewOp<triton::amdgpu::BufferStoreOp>(
-          op, op.getValue(), basePtr, tensorOffset, blockStride, op.getCache(),
-          maybeMask, contig);
+      auto bufferStore = triton::amdgpu::BufferStoreOp::create(
+          rewriter, op.getLoc(), op.getValue(), basePtr, tensorOffset,
+          blockStride, op.getCache(), maybeMask, contig);
+      if (Attribute loopedGelu = op->getAttr(kLoopedGeluAttr))
+        bufferStore->setAttr(kLoopedGeluAttr, loopedGelu);
+      rewriter.replaceOp(op, bufferStore);
       return success();
     }
     LDBG("Failed to convert: " << op);

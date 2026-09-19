@@ -30,6 +30,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -66,7 +67,11 @@ namespace {
 /// without any oversized block. Going lower keeps shaving compile time but
 /// buys progressively less, while each iteration has fewer FMAs to amortize
 /// its loop overhead over.
-constexpr int64_t kTargetBlockFMAs = 512;
+constexpr int64_t kTargetBlockFMAs = 128;
+// Avoid trading an oversized FMA block for excessive loop overhead. Small K
+// tiles may roll down to one element, while K >= 16 keeps at least four
+// elements per segment.
+constexpr int64_t kMaxMinimumDotK = 4;
 
 struct RockRollDotKPass
     : public rock::impl::RockRollDotKPassBase<RockRollDotKPass> {
@@ -265,6 +270,14 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
     return std::nullopt;
   };
 
+  // The segment width deliberately has a floor to keep loop overhead bounded,
+  // so a generated body may remain above the FMA target. Marking that loop
+  // makes the pass idempotent instead of recursively nesting another loop
+  // around its dot on a later invocation.
+  if (auto loop = dot->getParentOfType<scf::ForOp>();
+      loop && loop->hasAttr("rock.rolled_dot_k"))
+    return reject("it is already the body of a rolled-dot loop");
+
   auto dTy = dot.getD().getType();
   // The same test the AMD backend uses to route a dot to convertAMDFMADot: a
   // blocked result encoding is exactly the scalar-FMA path, while WMMA and
@@ -326,16 +339,79 @@ std::optional<RollableDot> matchDot(triton::DotOp dot) {
   return cand;
 }
 
-/// The widest segment that gets a dot's loop body under `budget`, or 0 if the
-/// dot's full K already fits, in which case rolling would shrink nothing.
-int64_t chooseDotK(const RollableDot &cand, int64_t budget) {
-  // A body holds `accs * dotK` FMAs, so `accs` is the floor rolling can reach.
-  // A dot whose accumulators alone are over `budget` cannot get under it, but
-  // rolling to the floor still divides the block by K, so narrow all the way.
-  int64_t dotK = cand.k;
-  while (dotK > 1 && cand.accs * dotK > budget)
-    dotK /= 2;
-  return dotK < cand.k ? dotK : 0;
+/// Whether both operands can be reinterpreted as `dotK`-wide K segments
+/// without changing any shared-memory address.
+bool canSegmentDot(const RollableDot &cand, int64_t dotK) {
+  auto canSegment = [&](StringRef which, ttg::MemDescType memTy,
+                        unsigned kDim) {
+    if (segmentingPreservesAddresses(memTy.getShape(), memTy.getEncoding(),
+                                     kDim, dotK))
+      return true;
+    LLVM_DEBUG(llvm::dbgs()
+               << "  rejecting dotK=" << dotK << " for operand " << which
+               << ": its shared encoding does not store K as the "
+                  "slowest-varying dimension with a per-segment swizzling "
+                  "pattern, or it pads, or its linear layout is not one this "
+                  "pass can reason about\n");
+    return false;
+  };
+
+  // A is [M, K] and B is [K, N], so K is dimension 1 of A and 0 of B.
+  return canSegment("A", cand.aMem.getType(), /*kDim=*/1) &&
+         canSegment("B", cand.bMem.getType(), /*kDim=*/0);
+}
+
+/// Selects an address-preserving proper divisor of K. Prefer the widest
+/// segment whose loop body meets `budget`; when the shared layouts make every
+/// such segment illegal, use the narrowest legal wider segment so the dot is
+/// still rolled instead of silently remaining fully unrolled.
+///
+/// Returns 0 when rolling would not shrink a dot that already fits, or when no
+/// proper divisor is legal. `forceProper` is used when several individually
+/// small dots overflow the block they share.
+int64_t chooseDotK(const RollableDot &cand, int64_t budget,
+                   bool forceProper = false) {
+  if (!forceProper && cand.accs * cand.k <= budget)
+    return 0;
+
+  int64_t fallback = 0;
+  int64_t minDotK = std::min(kMaxMinimumDotK, std::max<int64_t>(1, cand.k / 4));
+  for (int64_t dotK = cand.k / 2; dotK >= 1; dotK /= 2) {
+    if (dotK < minDotK)
+      break;
+    if (!canSegmentDot(cand, dotK))
+      continue;
+
+    int64_t bodyFMAs = cand.accs * dotK;
+    if (bodyFMAs <= budget) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  selected dotK=" << dotK << " (" << bodyFMAs
+                 << " FMAs): widest address-preserving segment within the "
+                 << budget << " FMA target\n");
+      return dotK;
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "  rejecting dotK=" << dotK << " for the target: " << bodyFMAs
+               << " FMAs exceeds " << budget
+               << "; retaining it as a legal fallback\n");
+    // Candidates are visited widest first, so the last legal over-budget
+    // candidate is the smallest legal fallback.
+    fallback = dotK;
+  }
+
+  if (fallback != 0) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  selected fallback dotK=" << fallback << " ("
+               << cand.accs * fallback
+               << " FMAs): no address-preserving segment meets the " << budget
+               << " FMA target\n");
+  } else {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  no address-preserving proper K divisor is legal; "
+                  "leaving the dot unrolled\n");
+  }
+  return fallback;
 }
 
 /// Replaces `cand.dot` with a loop over `cand.k / dotK` narrower dots.
@@ -348,25 +424,8 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
 
   auto aTy = dot.getA().getType();
   auto bTy = dot.getB().getType();
-  auto aMemTy = cand.aMem.getType();
-  auto bMemTy = cand.bMem.getType();
 
-  auto canSegment = [&](StringRef which, ArrayRef<int64_t> shape, Attribute enc,
-                        unsigned kDim) {
-    if (segmentingPreservesAddresses(shape, enc, kDim, dotK))
-      return true;
-    LLVM_DEBUG(llvm::dbgs()
-               << "  operand " << which
-               << " cannot be segmented at dotK=" << dotK
-               << ": its shared encoding does not store K as the "
-                  "slowest-varying dimension with a per-segment swizzling "
-                  "pattern, or it pads, or its linear layout is not one this "
-                  "pass can reason about\n");
-    return false;
-  };
-  // A is [M, K] and B is [K, N], so K is dimension 1 of A and 0 of B.
-  if (!canSegment("A", aMemTy.getShape(), aMemTy.getEncoding(), /*kDim=*/1) ||
-      !canSegment("B", bMemTy.getShape(), bMemTy.getEncoding(), /*kDim=*/0))
+  if (!canSegmentDot(cand, dotK))
     return failure();
 
   OpBuilder b(dot);
@@ -393,6 +452,17 @@ LogicalResult rollDot(const RollableDot &cand, int64_t dotK) {
   Value ub = arith::ConstantIntOp::create(b, loc, nseg, 32);
   Value step = arith::ConstantIntOp::create(b, loc, 1, 32);
   auto loop = scf::ForOp::create(b, loc, lb, ub, step, ValueRange{dot.getC()});
+  // This loop exists specifically to keep the scalar-FMA body bounded. Without
+  // explicit metadata, LLVM's unroller reconstructs the original fully
+  // unrolled dot after Triton lowering, restoring its code size and register
+  // pressure.
+  auto unroll = LLVM::LoopUnrollAttr::get(b.getContext(), b.getBoolAttr(true),
+                                          {}, {}, {}, {}, {}, {});
+  auto loopAnnotation =
+      LLVM::LoopAnnotationAttr::get(b.getContext(), {}, {}, {}, unroll, {}, {},
+                                    {}, {}, {}, {}, {}, {}, {}, {}, {});
+  loop->setAttr("llvm.loop_annotation", loopAnnotation);
+  loop->setAttr("rock.rolled_dot_k", b.getUnitAttr());
 
   {
     OpBuilder::InsertionGuard guard(b);
@@ -515,8 +585,9 @@ void RockRollDotKPass::runOnOperation() {
       for (const RollableDot *cand : alreadyFit) {
         if (residual <= kTargetBlockFMAs)
           break;
-        if (cand->k > 1)
-          tryRoll(*cand, cand->k / 2);
+        if (int64_t dotK =
+                chooseDotK(*cand, kTargetBlockFMAs, /*forceProper=*/true))
+          tryRoll(*cand, dotK);
       }
       if (residual > kTargetBlockFMAs)
         LLVM_DEBUG(llvm::dbgs()

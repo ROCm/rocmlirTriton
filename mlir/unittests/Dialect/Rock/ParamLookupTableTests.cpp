@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/STLExtras.h"
 #include <gtest/gtest.h>
 
 using namespace mlir;
@@ -120,6 +121,48 @@ TEST(FindFallbackTest, Gfx1201UsesItsOwnLists) {
         ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
+}
+
+TEST(LookupTest, Gfx1201F32ContainsWhisper128x128x4Candidate) {
+  MLIRContext ctx;
+  constexpr StringLiteral config =
+      "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=4,kpack=1,numCTAs=1,"
+      "numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=3,"
+      "wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,"
+      "useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,"
+      "useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1";
+
+  auto candidates = ParamLookupTable<GemmParamsAttr>::lookup(
+      "gfx1201", KernelType::Gemm, Float32Type::get(&ctx));
+  EXPECT_TRUE(llvm::is_contained(candidates, config));
+}
+
+TEST(LookupTest, Gfx1201F32ContainsWhisper32x64x16OccupancyCandidate) {
+  MLIRContext ctx;
+  constexpr StringLiteral config =
+      "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,"
+      "numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=3,"
+      "wavesPerEU=1,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,"
+      "useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,"
+      "useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1";
+
+  auto candidates = ParamLookupTable<GemmParamsAttr>::lookup(
+      "gfx1201", KernelType::Gemm, Float32Type::get(&ctx));
+  EXPECT_TRUE(llvm::is_contained(candidates, config));
+}
+
+TEST(LookupTest, Gfx1201F32ContainsWhisper256x32x16Candidate) {
+  MLIRContext ctx;
+  constexpr StringLiteral config =
+      "gemm:mPerBlock=256,nPerBlock=32,kPerBlock=16,kpack=1,numCTAs=1,"
+      "numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2,"
+      "wavesPerEU=2,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,"
+      "useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,"
+      "useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1";
+
+  auto candidates = ParamLookupTable<GemmParamsAttr>::lookup(
+      "gfx1201", KernelType::Gemm, Float32Type::get(&ctx));
+  EXPECT_TRUE(llvm::is_contained(candidates, config));
 }
 
 TEST(FindFallbackTest, StrixFallsBackToGfx1151) {

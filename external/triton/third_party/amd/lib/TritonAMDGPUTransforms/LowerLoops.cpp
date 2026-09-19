@@ -9,6 +9,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 #include <variant>
 
 #undef DEBUG_TYPE
@@ -186,11 +187,47 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
 // cover and upstream leaves unswizzled. Transposing a K-contiguous operand into
 // an operand-major buffer can make lanes along the strided dimension revisit
 // the same LDS banks. Pick the smallest XOR swizzle that separates them.
-static ttg::SharedEncodingTrait
-composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
-                            ArrayRef<unsigned> order, ttg::CGAEncodingAttr cga,
-                            unsigned bitWidth,
-                            const tt::AMD::TargetInfo &targetInfo) {
+static std::optional<int64_t> getRequiredFMARolledK(Value dotOperand) {
+  // Keep this target synchronized with RockRollDotK. This pass chooses the
+  // shared layout before RockRollDotK runs, so it has to reserve a swizzle
+  // period that the later pass can reinterpret at its preferred segment.
+  constexpr int64_t targetBlockFMAs = 128;
+  constexpr int64_t maxMinimumDotK = 4;
+  std::optional<int64_t> requiredK;
+
+  for (Operation *user : dotOperand.getUsers()) {
+    auto dot = dyn_cast<tt::DotOp>(user);
+    if (!dot)
+      continue;
+    FunctionOpInterface func = dot->getParentOfType<FunctionOpInterface>();
+    if (!func || !func->hasAttr("rock.kernel"))
+      continue;
+    auto dTy = dot.getD().getType();
+    if (!isa<ttg::BlockedEncodingAttr>(dTy.getEncoding()) ||
+        !dTy.getElementType().isF32())
+      continue;
+
+    int64_t k = dot.getA().getType().getShape()[1];
+    if (k != dot.getB().getType().getShape()[0] || !llvm::isPowerOf2_64(k))
+      continue;
+
+    int64_t dotK = k;
+    int64_t accs = ttg::getTotalElemsPerThread(dTy);
+    int64_t minDotK = std::min(maxMinimumDotK, std::max<int64_t>(1, k / 4));
+    while (dotK > minDotK && accs * dotK > targetBlockFMAs)
+      dotK /= 2;
+    if (dotK == k)
+      continue;
+    requiredK =
+        requiredK ? std::min(*requiredK, dotK) : std::optional<int64_t>(dotK);
+  }
+  return requiredK;
+}
+
+static ttg::SharedEncodingTrait composeSwizzledLayoutForFMA(
+    ttg::TensorOrMemDesc srcTy, ArrayRef<unsigned> order,
+    ttg::CGAEncodingAttr cga, unsigned bitWidth,
+    const tt::AMD::TargetInfo &targetInfo, Value dotOperand) {
   if (!srcTy.getElementType().isF32()) {
     LDBG("No FMA LDS swizzle: only f32 operands are supported, got "
          << srcTy.getElementType());
@@ -232,6 +269,24 @@ composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
   int64_t maxPhase =
       std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
                          shape[contig] / vec, shape[strided] / perPhase});
+  if (std::optional<int64_t> dotK = getRequiredFMARolledK(dotOperand);
+      dotK && maxPhase > 1) {
+    int64_t originalPerPhase = perPhase;
+    int64_t originalMaxPhase = maxPhase;
+    // A reinterpretation is address-preserving when each K segment starts at
+    // the same point in the XOR pattern. Keep as many conflict-removing phases
+    // as possible by reducing their granularity before their count.
+    while (*dotK % (perPhase * maxPhase) != 0) {
+      if (perPhase > 1)
+        perPhase /= 2;
+      else
+        maxPhase /= 2;
+    }
+    if (perPhase != originalPerPhase || maxPhase != originalMaxPhase)
+      LDBG("Capped FMA LDS swizzle period for rolled dotK="
+           << *dotK << ": perPhase " << originalPerPhase << " -> " << perPhase
+           << ", maxPhase " << originalMaxPhase << " -> " << maxPhase);
+  }
   if (maxPhase <= 1) {
     LDBG("No FMA LDS swizzle: no two lanes share a bank, or the tile is too "
          "small to step over (vec="
@@ -378,8 +433,8 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
         // falls through unswizzled, so compute one here.
         if (!tempAttr && !pinnedByMemDescUser &&
             isa<ttg::BlockedEncodingAttr>(dotOpEnc.getParent()))
-          tempAttr = composeSwizzledLayoutForFMA(srcTy, sharedOrder, cgaLayout,
-                                                 bitWidth, targetInfo);
+          tempAttr = composeSwizzledLayoutForFMA(
+              srcTy, sharedOrder, cgaLayout, bitWidth, targetInfo, userResult);
         if (!tempAttr) {
           tempAttr = ttg::SwizzledSharedEncodingAttr::get(
               loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,

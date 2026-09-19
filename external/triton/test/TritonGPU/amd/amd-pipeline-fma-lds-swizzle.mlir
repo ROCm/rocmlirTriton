@@ -88,6 +88,36 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 // -----
 
+// Kernel 4's A operand has four K elements per thread and would normally use
+// a 16-row XOR period. The result has 128 accumulators per thread, so
+// RockRollDotK needs K16 split into K4 segments to keep 512 FMAs in its body.
+// Keep K slowest and reduce the phase granularity so every segment starts at
+// the same point in the swizzle while retaining all four conflict-removing
+// phases.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [2, 1], order = [1, 0]}>
+#fma = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// CHECK: #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: fma_operand_a_swizzle_fits_rolled_k4
+  tt.func @fma_operand_a_swizzle_fits_rolled_k4(
+                %argA: tensor<128x16x!tt.ptr<f32>, #blocked>,
+                %argB: tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>>,
+                %lb: i32, %ub: i32, %step: i32) -> tensor<128x64xf32, #fma> attributes {rock.kernel} {
+    // CHECK: ttg.local_alloc {{.*}} #shared
+    %cst_acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #fma>
+    %result = scf.for %iv = %lb to %ub step %step iter_args(%acc = %cst_acc) -> (tensor<128x64xf32, #fma>) : i32 {
+      %a = tt.load %argA : tensor<128x16x!tt.ptr<f32>, #blocked>
+      %a_dot = ttg.convert_layout %a : tensor<128x16xf32, #blocked> -> tensor<128x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>>
+      %c = tt.dot %a_dot, %argB, %acc : tensor<128x16xf32, #ttg.dot_op<{opIdx = 0, parent = #fma}>> * tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #fma}>> -> tensor<128x64xf32, #fma>
+      scf.yield %c : tensor<128x64xf32, #fma>
+    }
+    tt.return %result : tensor<128x64xf32, #fma>
+  }
+}
+
+// -----
+
 // A 16-element f32 row occupies half of the 32 LDS banks, so adjacent rows
 // start 16 banks apart. Change phase every two rows, when the row stride wraps.
 

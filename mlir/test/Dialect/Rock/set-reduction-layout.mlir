@@ -154,6 +154,83 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
+// RockRollDotK inserts memdesc_reinterpret -> memdesc_index between the
+// pipeliner's shared allocation and each narrower local_load. Feeding-load
+// discovery must look through those views, otherwise the convolution gather
+// stays at [2, 2] instead of placing all four warps on K.
+
+#gather = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#free = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
+#sharedA = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @reduction_redistributed_through_rolled_views
+  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<8x128xf32, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     arith.constant dense<true> : tensor<8x128xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK:         ttg.memdesc_reinterpret
+  // CHECK:         ttg.memdesc_index
+  // CHECK:         ttg.local_load
+  tt.func @reduction_redistributed_through_rolled_views(%argA: !tt.ptr<f32>, %argB: !tt.ptr<f32>) -> tensor<64x128xf32, #out> attributes {rock.conv_kernel} {
+    %c0 = arith.constant 0 : i32
+    %offA = arith.constant dense<0> : tensor<64x4xi32, #free>
+    %offB = arith.constant dense<0> : tensor<8x128xi32, #gather>
+    %maskB = arith.constant dense<true> : tensor<8x128xi1, #gather>
+    %acc = arith.constant dense<0.000000e+00> : tensor<64x128xf32, #out>
+    %a = amdg.buffer_load %argA[%offA] : tensor<64x4xf32, #free>
+    %b = amdg.buffer_load %argB[%offB], %maskB : tensor<8x128xf32, #gather>
+    %aAlloc = ttg.local_alloc %a : (tensor<64x4xf32, #free>) -> !ttg.memdesc<64x4xf32, #sharedA, #smem>
+    %bAlloc = ttg.local_alloc %b : (tensor<8x128xf32, #gather>) -> !ttg.memdesc<8x128xf32, #sharedB, #smem>
+    %bSegments = ttg.memdesc_reinterpret %bAlloc : !ttg.memdesc<8x128xf32, #sharedB, #smem> -> !ttg.memdesc<2x4x128xf32, #sharedB, #smem>
+    %bView = ttg.memdesc_index %bSegments[%c0] : !ttg.memdesc<2x4x128xf32, #sharedB, #smem> -> !ttg.memdesc<4x128xf32, #sharedB, #smem>
+    %aLoad = ttg.local_load %aAlloc : !ttg.memdesc<64x4xf32, #sharedA, #smem> -> tensor<64x4xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bLoad = ttg.local_load %bView : !ttg.memdesc<4x128xf32, #sharedB, #smem> -> tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %dot = tt.dot %aLoad, %bLoad, %acc : tensor<64x4xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<64x128xf32, #out>
+    tt.return %dot : tensor<64x128xf32, #out>
+  }
+}
+
+// -----
+
+// The same rolled view can sit on an scf.for descriptor iter_arg after
+// pipelining. Follow both the initial value and backedge, and only proceed when
+// they resolve to the same allocation.
+
+#gather = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#free = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
+#sharedA = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @reduction_redistributed_through_pipelined_rolled_views
+  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<8x128xf32, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @reduction_redistributed_through_pipelined_rolled_views(%argA: !tt.ptr<f32>, %argB: !tt.ptr<f32>) -> tensor<64x128xf32, #out> attributes {rock.conv_kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %ci0 = arith.constant 0 : i32
+    %offA = arith.constant dense<0> : tensor<64x4xi32, #free>
+    %offB = arith.constant dense<0> : tensor<8x128xi32, #gather>
+    %acc = arith.constant dense<0.000000e+00> : tensor<64x128xf32, #out>
+    %a = amdg.buffer_load %argA[%offA] : tensor<64x4xf32, #free>
+    %b = amdg.buffer_load %argB[%offB] : tensor<8x128xf32, #gather>
+    %aAlloc = ttg.local_alloc %a : (tensor<64x4xf32, #free>) -> !ttg.memdesc<64x4xf32, #sharedA, #smem>
+    %bAlloc = ttg.local_alloc %b : (tensor<8x128xf32, #gather>) -> !ttg.memdesc<8x128xf32, #sharedB, #smem>
+    %result:2 = scf.for %i = %c0 to %c1 step %c1 iter_args(%iterAcc = %acc, %iterB = %bAlloc) -> (tensor<64x128xf32, #out>, !ttg.memdesc<8x128xf32, #sharedB, #smem>) {
+      %bSegments = ttg.memdesc_reinterpret %iterB : !ttg.memdesc<8x128xf32, #sharedB, #smem> -> !ttg.memdesc<2x4x128xf32, #sharedB, #smem>
+      %bView = ttg.memdesc_index %bSegments[%ci0] : !ttg.memdesc<2x4x128xf32, #sharedB, #smem> -> !ttg.memdesc<4x128xf32, #sharedB, #smem>
+      %aLoad = ttg.local_load %aAlloc : !ttg.memdesc<64x4xf32, #sharedA, #smem> -> tensor<64x4xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+      %bLoad = ttg.local_load %bView : !ttg.memdesc<4x128xf32, #sharedB, #smem> -> tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+      %dot = tt.dot %aLoad, %bLoad, %iterAcc : tensor<64x4xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<4x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<64x128xf32, #out>
+      scf.yield %dot, %iterB : tensor<64x128xf32, #out>, !ttg.memdesc<8x128xf32, #sharedB, #smem>
+    }
+    tt.return %result#0 : tensor<64x128xf32, #out>
+  }
+}
+
+// -----
+
 // Gate check on the buffer_load path: when the reduction operand is already
 // reduction-contiguous (dim 0 is the fastest-varying dim, order = [0, 1]) it is
 // not a gather and every layout is left untouched, even though it is an
