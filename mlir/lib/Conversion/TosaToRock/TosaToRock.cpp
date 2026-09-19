@@ -363,9 +363,8 @@ static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
           cast<ShapedType>(returnOp->getOperand(resNumber).getType())
               .getElementType();
       if (!rock::isAtomicAddTypeSupported(elementType))
-        return op.emitOpError()
-               << "split-K output element type " << elementType
-               << " does not support atomic add";
+        return op.emitOpError() << "split-K output element type " << elementType
+                                << " does not support atomic add";
     }
 
     for (int64_t resNumber : resIndices) {
