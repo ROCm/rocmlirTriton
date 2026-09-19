@@ -466,23 +466,6 @@ TEST(PerfConfigOrderingGemmTest, TuningSpaceIncludesNonPow2KDivisorsOnFma) {
   EXPECT_TRUE(kValues.count(24)) << "expected non-pow2 kPerBlock=24 in space";
 }
 
-TEST(PerfConfigOrderingGemmTest,
-     QuickSpaceDerivesGfx1201TallNarrowFmaCandidate) {
-  TuningSpaceGemmEnv e([](OpBuilder &b) { return b.getF32Type(); },
-                       /*m=*/1500, /*n=*/64, /*k=*/1500, "gfx1201");
-  std::unique_ptr<TuningParamSet> space(
-      createTunableParamSpace(*e.module, TuningParamSetKind::Quick));
-  ASSERT_TRUE(space);
-
-  auto isDerivedCandidate = [](RockTuningParamAttrInterface param) {
-    auto gemm = cast<GemmParamsAttr>(param);
-    return gemm.getMPerBlock() == 256 && gemm.getNPerBlock() == 32 &&
-           gemm.getKPerBlock() == 16 && gemm.getNumWaves() == 4 &&
-           gemm.getNumStages() == 3 && gemm.getWavesPerEU() == 1;
-  };
-  EXPECT_TRUE(llvm::any_of(space->tuningRange, isDerivedCandidate));
-}
-
 // A K that no power-of-two tile divides has no remainder-free kPerBlock in the
 // default space, which is what the widened range exists to reach. It stays shut
 // on a plain gemm though: without a conv's merge alignment to narrow it, it

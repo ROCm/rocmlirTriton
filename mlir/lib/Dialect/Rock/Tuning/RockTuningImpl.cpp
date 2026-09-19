@@ -24,7 +24,6 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/LdsBlacklist.h"
-#include "mlir/Dialect/Rock/Tuning/ParamLookupTable.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -998,49 +997,6 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
   }
 }
 
-static void addTallNarrowFmaQuickCandidate(TuningParamSet *newSpace,
-                                           RockGemmWrapperInterface gemmOp,
-                                           const PopulateParamsInfo &info,
-                                           OpBuilder &b) {
-  // The static quick table is intentionally problem-shape independent. Add one
-  // derived candidate for the gfx1201 scalar-FMA corner where M is tall and N
-  // is narrow: keeping two 32-wide N blocks while growing M to 256 preserves
-  // enough grid parallelism and amortizes each K load over a larger output
-  // tile. The fixed 8192-element tile gives 64 accumulators per thread at four
-  // waves, while K=16 and three stages stay below the 64-KiB LDS limit.
-  //
-  // This is generated from shape and target properties rather than stored in
-  // QuickTuningPerfconfigs.inc, so unrelated gfx1201 quick sweeps do not gain
-  // another candidate.
-  GemmSize size = info.gemmSize;
-  if (normalizeArch(info.arch) != "gfx1201" ||
-      info.kernelType != KernelType::Gemm || !info.gemmAType.isF32() ||
-      !info.gemmBType.isF32() || rock::hasAccel(info.arch, gemmOp) ||
-      size.m < 1024 || size.n < 32 || size.n > 64 || size.k < 16)
-    return;
-
-  constexpr int64_t targetOutputElements = 8192;
-  constexpr int64_t nPerBlock = 32;
-  constexpr int64_t maxMPerBlock = 256;
-  int64_t mPerBlock = std::min(maxMPerBlock, targetOutputElements / nPerBlock);
-  auto params = GemmParamsAttr::get(
-      b.getContext(), mPerBlock, nPerBlock,
-      /*kPerBlock=*/16, /*kpack=*/1, /*numCTAs=*/1, /*numWaves=*/4,
-      /*matrixInstrNonkdim=*/0, /*splitKFactor=*/1, /*numStages=*/3,
-      /*wavesPerEU=*/1, /*gridGroupSize=*/0,
-      /*useAsyncCopy=*/kKnobDefault,
-      /*useBlockPingpong=*/kKnobDefault,
-      /*useInThreadTranspose=*/kKnobDefault,
-      /*useBufferOps=*/kKnobDefault,
-      /*useBufferAtomics=*/kKnobDefault,
-      /*useReductionLayout=*/kKnobDefault,
-      /*useOptimizeEpilogue=*/kKnobDefault,
-      /*useBf16x3ForF32=*/kKnobDefault);
-  if (isGemmParamsConservativelyApplicable(params, info.gemmAType,
-                                           info.gemmBType, info.arch))
-    newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));
-}
-
 static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
                                        RockGemmWrapperInterface gemmOp,
                                        bool supportsSplitK) {
@@ -1057,7 +1013,6 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
   }
-  addTallNarrowFmaQuickCandidate(newSpace, gemmOp, info, b);
 }
 
 static void
