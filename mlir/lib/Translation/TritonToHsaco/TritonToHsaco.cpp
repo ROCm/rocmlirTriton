@@ -508,7 +508,10 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
 /// Inlining a nontrivial callee at every site multiplies code size and keeps
 /// the whole tile live across each expansion. Use a call-count x body-size
 /// budget instead of naming a particular math operation: small helpers and
-/// routines with only a few call sites retain the normal always-inline path.
+/// routines whose call overhead still outweighs the saved code size retain the
+/// normal always-inline path. On gfx1201, 64-call scalar epilogues pay call
+/// overhead without a compensating occupancy gain, while 128-call tiles
+/// already see large wins from avoiding duplication.
 void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
   llvm::DenseMap<llvm::Function *, uint64_t> directCallCounts;
   for (llvm::Function &caller : module) {
@@ -523,7 +526,7 @@ void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
     }
   }
 
-  constexpr uint64_t minCallSites = 8;
+  constexpr uint64_t minCallSites = 128;
   constexpr uint64_t duplicatedInstructionBudget = 1024;
   for (auto [callee, callCount] : directCallCounts) {
     if (callCount < minCallSites || callee->isDeclaration() ||

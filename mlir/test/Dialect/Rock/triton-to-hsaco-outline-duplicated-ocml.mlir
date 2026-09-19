@@ -5,9 +5,9 @@
 // RUN:   -triton-to-hsaco='arch=gfx1200' %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s
 
-// A scalarized tensor epilogue can contain many calls to the same nontrivial
-// OCML function. The call-count x body-size budget keeps that function out of
-// line instead of cloning its body at every call site.
+// A 128-element scalarized tensor epilogue can contain as many calls to the
+// same nontrivial OCML function. The call-count x body-size budget keeps that
+// function out of line instead of cloning its body at every call site.
 //
 // CHECK-DAG: define internal fastcc noundef float @__ocml_erf_f32
 // CHECK-DAG: call fastcc float @__ocml_erf_f32
@@ -82,7 +82,71 @@ module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
     %c61 = llvm.call @__ocml_erf_f32(%c60) : (f32) -> f32
     %c62 = llvm.call @__ocml_erf_f32(%c61) : (f32) -> f32
     %c63 = llvm.call @__ocml_erf_f32(%c62) : (f32) -> f32
-    llvm.store %c63, %arg0 : f32, !llvm.ptr
+    %c64 = llvm.call @__ocml_erf_f32(%c63) : (f32) -> f32
+    %c65 = llvm.call @__ocml_erf_f32(%c64) : (f32) -> f32
+    %c66 = llvm.call @__ocml_erf_f32(%c65) : (f32) -> f32
+    %c67 = llvm.call @__ocml_erf_f32(%c66) : (f32) -> f32
+    %c68 = llvm.call @__ocml_erf_f32(%c67) : (f32) -> f32
+    %c69 = llvm.call @__ocml_erf_f32(%c68) : (f32) -> f32
+    %c70 = llvm.call @__ocml_erf_f32(%c69) : (f32) -> f32
+    %c71 = llvm.call @__ocml_erf_f32(%c70) : (f32) -> f32
+    %c72 = llvm.call @__ocml_erf_f32(%c71) : (f32) -> f32
+    %c73 = llvm.call @__ocml_erf_f32(%c72) : (f32) -> f32
+    %c74 = llvm.call @__ocml_erf_f32(%c73) : (f32) -> f32
+    %c75 = llvm.call @__ocml_erf_f32(%c74) : (f32) -> f32
+    %c76 = llvm.call @__ocml_erf_f32(%c75) : (f32) -> f32
+    %c77 = llvm.call @__ocml_erf_f32(%c76) : (f32) -> f32
+    %c78 = llvm.call @__ocml_erf_f32(%c77) : (f32) -> f32
+    %c79 = llvm.call @__ocml_erf_f32(%c78) : (f32) -> f32
+    %c80 = llvm.call @__ocml_erf_f32(%c79) : (f32) -> f32
+    %c81 = llvm.call @__ocml_erf_f32(%c80) : (f32) -> f32
+    %c82 = llvm.call @__ocml_erf_f32(%c81) : (f32) -> f32
+    %c83 = llvm.call @__ocml_erf_f32(%c82) : (f32) -> f32
+    %c84 = llvm.call @__ocml_erf_f32(%c83) : (f32) -> f32
+    %c85 = llvm.call @__ocml_erf_f32(%c84) : (f32) -> f32
+    %c86 = llvm.call @__ocml_erf_f32(%c85) : (f32) -> f32
+    %c87 = llvm.call @__ocml_erf_f32(%c86) : (f32) -> f32
+    %c88 = llvm.call @__ocml_erf_f32(%c87) : (f32) -> f32
+    %c89 = llvm.call @__ocml_erf_f32(%c88) : (f32) -> f32
+    %c90 = llvm.call @__ocml_erf_f32(%c89) : (f32) -> f32
+    %c91 = llvm.call @__ocml_erf_f32(%c90) : (f32) -> f32
+    %c92 = llvm.call @__ocml_erf_f32(%c91) : (f32) -> f32
+    %c93 = llvm.call @__ocml_erf_f32(%c92) : (f32) -> f32
+    %c94 = llvm.call @__ocml_erf_f32(%c93) : (f32) -> f32
+    %c95 = llvm.call @__ocml_erf_f32(%c94) : (f32) -> f32
+    %c96 = llvm.call @__ocml_erf_f32(%c95) : (f32) -> f32
+    %c97 = llvm.call @__ocml_erf_f32(%c96) : (f32) -> f32
+    %c98 = llvm.call @__ocml_erf_f32(%c97) : (f32) -> f32
+    %c99 = llvm.call @__ocml_erf_f32(%c98) : (f32) -> f32
+    %c100 = llvm.call @__ocml_erf_f32(%c99) : (f32) -> f32
+    %c101 = llvm.call @__ocml_erf_f32(%c100) : (f32) -> f32
+    %c102 = llvm.call @__ocml_erf_f32(%c101) : (f32) -> f32
+    %c103 = llvm.call @__ocml_erf_f32(%c102) : (f32) -> f32
+    %c104 = llvm.call @__ocml_erf_f32(%c103) : (f32) -> f32
+    %c105 = llvm.call @__ocml_erf_f32(%c104) : (f32) -> f32
+    %c106 = llvm.call @__ocml_erf_f32(%c105) : (f32) -> f32
+    %c107 = llvm.call @__ocml_erf_f32(%c106) : (f32) -> f32
+    %c108 = llvm.call @__ocml_erf_f32(%c107) : (f32) -> f32
+    %c109 = llvm.call @__ocml_erf_f32(%c108) : (f32) -> f32
+    %c110 = llvm.call @__ocml_erf_f32(%c109) : (f32) -> f32
+    %c111 = llvm.call @__ocml_erf_f32(%c110) : (f32) -> f32
+    %c112 = llvm.call @__ocml_erf_f32(%c111) : (f32) -> f32
+    %c113 = llvm.call @__ocml_erf_f32(%c112) : (f32) -> f32
+    %c114 = llvm.call @__ocml_erf_f32(%c113) : (f32) -> f32
+    %c115 = llvm.call @__ocml_erf_f32(%c114) : (f32) -> f32
+    %c116 = llvm.call @__ocml_erf_f32(%c115) : (f32) -> f32
+    %c117 = llvm.call @__ocml_erf_f32(%c116) : (f32) -> f32
+    %c118 = llvm.call @__ocml_erf_f32(%c117) : (f32) -> f32
+    %c119 = llvm.call @__ocml_erf_f32(%c118) : (f32) -> f32
+    %c120 = llvm.call @__ocml_erf_f32(%c119) : (f32) -> f32
+    %c121 = llvm.call @__ocml_erf_f32(%c120) : (f32) -> f32
+    %c122 = llvm.call @__ocml_erf_f32(%c121) : (f32) -> f32
+    %c123 = llvm.call @__ocml_erf_f32(%c122) : (f32) -> f32
+    %c124 = llvm.call @__ocml_erf_f32(%c123) : (f32) -> f32
+    %c125 = llvm.call @__ocml_erf_f32(%c124) : (f32) -> f32
+    %c126 = llvm.call @__ocml_erf_f32(%c125) : (f32) -> f32
+    %c127 = llvm.call @__ocml_erf_f32(%c126) : (f32) -> f32
+    llvm.store %c127, %arg0 : f32, !llvm.ptr
     llvm.return
   }
 }
