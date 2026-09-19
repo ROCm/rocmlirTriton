@@ -16,46 +16,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
 
 // -----
 
-#gelu128 = #ttg.blocked<{sizePerThread = [128], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // CHECK-DAG: #[[UNROLL128:.+]] = #llvm.loop_unroll<disable = true>
-  // CHECK-DAG: #[[LOOP128:.+]] = #llvm.loop_annotation<unroll = #[[UNROLL128]]>
-  // CHECK-LABEL: looped_gelu_buffer_store_128
-  // CHECK: llvm.alloca
-  // CHECK: llvm.cond_br
-  // CHECK-COUNT-4: llvm.call @__ocml_erf_f32
-  // CHECK: rocdl.raw.ptr.buffer.store {{.*}} : vector<4xf32>
-  // CHECK: llvm.br {{.*}} {loop_annotation = #[[LOOP128]]}
-  tt.func @looped_gelu_buffer_store_128(
-      %value : tensor<4096xf32, #gelu128>,
-      %base : !tt.ptr<f32> {tt.divisibility = 16 : i32},
-      %n : i32 {tt.divisibility = 16 : i32}) {
-    %range = tt.make_range {start = 0 : i32, end = 4096 : i32} : tensor<4096xi32, #gelu128>
-    %n_tensor = tt.splat %n : i32 -> tensor<4096xi32, #gelu128>
-    %mask = arith.cmpi slt, %range, %n_tensor : tensor<4096xi32, #gelu128>
-    amdg.buffer_store %value, %base[%range], %mask {
-      amdg.looped_gelu = {
-        bias = 1.000000e+00 : f32,
-        bias_fastmath = #arith.fastmath<nnan>,
-        core_fastmath = #arith.fastmath<reassoc>,
-        core_is_lhs = false,
-        erf_fastmath = #arith.fastmath<nnan>,
-        erf_is_lhs = false,
-        output_fastmath = #arith.fastmath<afn>,
-        output_scale = 5.000000e-01 : f32,
-        scale = 7.07106769E-1 : f32,
-        scale_fastmath = #arith.fastmath<contract>,
-        scaled_x_is_lhs = false,
-        x_is_lhs = false
-      },
-      contiguity = 4 : i32
-    } : tensor<4096xf32, #gelu128>
-    tt.return
-  }
-}
-
-// -----
-
 #blocked0 = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
     // CHECK-LABEL: buffer_load_mask

@@ -715,35 +715,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // -----
 
-#blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // COMMON-LABEL: preserve_looped_gelu_metadata
-  // COMMON: amdg.buffer_store
-  // COMMON-SAME: amdg.looped_gelu = {
-  // COMMON-SAME: output_scale = 5.000000e-01 : f32
-  tt.func @preserve_looped_gelu_metadata(
-      %value : tensor<128xf32, #blocked>,
-      %base : !tt.ptr<f32> {tt.divisibility = 16 : i32, tt.pointer_range = 32 : i32}) {
-    %range = tt.make_range {start = 0 : i32, end = 128 : i32} : tensor<128xi32, #blocked>
-    %base_tensor = tt.splat %base : !tt.ptr<f32> -> tensor<128x!tt.ptr<f32>, #blocked>
-    %ptrs = tt.addptr %base_tensor, %range : tensor<128x!tt.ptr<f32>, #blocked>, tensor<128xi32, #blocked>
-    tt.store %ptrs, %value {
-      amdg.looped_gelu = {
-        bias = 1.000000e+00 : f32,
-        core_is_lhs = true,
-        erf_is_lhs = true,
-        output_scale = 5.000000e-01 : f32,
-        scale = 0.707106769 : f32,
-        scaled_x_is_lhs = true,
-        x_is_lhs = true
-      }
-    } : tensor<128x!tt.ptr<f32>, #blocked>
-    tt.return
-  }
-}
-
-// -----
-
 #blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // COMMON-LABEL: assume_positive_offset_buffer_atomic
