@@ -61,6 +61,12 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
+/// Return true if `type` can be lowered as an atomic add by the Rock-to-Triton
+/// pipeline. Low-precision floating-point types are represented as integers
+/// after Triton type conversion and therefore cannot use floating-point
+/// atomic add operations.
+bool isAtomicAddTypeSupported(Type type);
+
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
 /// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
 /// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K

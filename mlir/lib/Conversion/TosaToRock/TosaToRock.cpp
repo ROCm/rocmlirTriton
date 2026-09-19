@@ -362,6 +362,16 @@ static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
       Type elementType =
           cast<ShapedType>(returnOp->getOperand(resNumber).getType())
               .getElementType();
+      if (!rock::isAtomicAddTypeSupported(elementType))
+        return op.emitOpError()
+               << "split-K output element type " << elementType
+               << " does not support atomic add";
+    }
+
+    for (int64_t resNumber : resIndices) {
+      Type elementType =
+          cast<ShapedType>(returnOp->getOperand(resNumber).getType())
+              .getElementType();
       Attribute outputInitVal = rw.getZeroAttr(elementType);
       func.setResultAttr(resNumber, rock::PrefillAttr::getMnemonic(),
                          outputInitVal);

@@ -88,6 +88,21 @@ bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
   return !region.front().without_terminator().empty();
 }
 
+static LogicalResult checkValidSplitKOutputTypes(Value output,
+                                                 func::FuncOp func) {
+  FailureOr<SmallVector<BlockArgument>> outputArgs =
+      traceRootOutputToArgs(output, func);
+  if (failed(outputArgs))
+    return failure();
+
+  for (BlockArgument outputArg : *outputArgs) {
+    Type elementType = cast<ShapedType>(outputArg.getType()).getElementType();
+    if (!isAtomicAddTypeSupported(elementType))
+      return failure();
+  }
+  return success();
+}
+
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
   // can't fuse reduce_max with split-k
   WalkResult reduceMaxRes = func.walk([](ReduceOp reduceOp) -> WalkResult {
@@ -102,7 +117,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // Use the result directly if there's no output argument (e.g., GemmOp)
         Value gemmResult = gemmOp->getResult(0);
 
-        if (failed(traceRootOutputToArgs(gemmResult, func)))
+        if (failed(checkValidSplitKOutputTypes(gemmResult, func)))
           return WalkResult::interrupt();
 
         SmallVector<std::tuple<Operation *, int>> adds;
@@ -121,7 +136,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // Only gemm+gemm reaches here, so there is a single result.
         auto gemmGemmResult = gemmGemmOp->getResult(0);
 
-        if (failed(traceRootOutputToArgs(gemmGemmResult, func)))
+        if (failed(checkValidSplitKOutputTypes(gemmGemmResult, func)))
           return WalkResult::interrupt();
 
         // The output fusion has to survive being applied once per split and
