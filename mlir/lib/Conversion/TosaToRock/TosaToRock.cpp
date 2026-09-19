@@ -358,6 +358,7 @@ static LogicalResult setSplitKAttrs(OpT op, PatternRewriter &rw) {
 
     func::ReturnOp returnOp;
     func.walk([&](func::ReturnOp op) { returnOp = op; });
+    // Validate every result before mutating the function to avoid stale attrs.
     for (int64_t resNumber : resIndices) {
       Type elementType =
           cast<ShapedType>(returnOp->getOperand(resNumber).getType())

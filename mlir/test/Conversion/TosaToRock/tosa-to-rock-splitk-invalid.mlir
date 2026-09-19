@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --tosa-to-rock --verify-diagnostics %s
 
 func.func @test_fp8_splitk(
