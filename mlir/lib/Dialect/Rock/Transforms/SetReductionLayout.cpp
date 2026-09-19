@@ -51,11 +51,73 @@ struct RockSetReductionLayoutPass
   void runOnOperation() override;
 };
 
+// Collect the allocation(s) a shared-memory descriptor may name. RockRollDotK
+// interposes memdesc_reinterpret -> memdesc_index between a local_load and the
+// allocation, while the pipeliner may carry that descriptor through an
+// scf.for. Follow both the initial and backedge values and require them to
+// converge on one allocation; any unfamiliar descriptor producer makes the
+// result ambiguous and is rejected.
+LogicalResult
+collectDescriptorAllocs(Value descriptor, llvm::DenseSet<Value> &visited,
+                        llvm::DenseSet<triton::gpu::LocalAllocOp> &allocs) {
+  if (!visited.insert(descriptor).second)
+    return success();
+
+  if (auto blockArg = dyn_cast<BlockArgument>(descriptor)) {
+    auto forOp =
+        dyn_cast_or_null<scf::ForOp>(blockArg.getOwner()->getParentOp());
+    if (!forOp || blockArg.getArgNumber() == 0)
+      return failure();
+    unsigned iterIdx = blockArg.getArgNumber() - 1;
+    auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (failed(collectDescriptorAllocs(forOp.getInitArgs()[iterIdx], visited,
+                                       allocs)) ||
+        failed(collectDescriptorAllocs(yield.getOperand(iterIdx), visited,
+                                       allocs)))
+      return failure();
+    return success();
+  }
+
+  Operation *def = descriptor.getDefiningOp();
+  if (!def)
+    return failure();
+  if (auto alloc = dyn_cast<triton::gpu::LocalAllocOp>(def)) {
+    allocs.insert(alloc);
+    return success();
+  }
+
+  if (auto forOp = dyn_cast<scf::ForOp>(def)) {
+    unsigned iterIdx = cast<OpResult>(descriptor).getResultNumber();
+    auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (failed(collectDescriptorAllocs(forOp.getInitArgs()[iterIdx], visited,
+                                       allocs)) ||
+        failed(collectDescriptorAllocs(yield.getOperand(iterIdx), visited,
+                                       allocs)))
+      return failure();
+    return success();
+  }
+
+  if (isa<triton::gpu::MemDescIndexOp, triton::gpu::MemDescReinterpretOp,
+          triton::gpu::MemDescSubsliceOp>(def)) {
+    return collectDescriptorAllocs(def->getOperand(0), visited, allocs);
+  }
+  return failure();
+}
+
+triton::gpu::LocalAllocOp findUniqueDescriptorAlloc(Value descriptor) {
+  llvm::DenseSet<Value> visited;
+  llvm::DenseSet<triton::gpu::LocalAllocOp> allocs;
+  if (failed(collectDescriptorAllocs(descriptor, visited, allocs)) ||
+      allocs.size() != 1)
+    return {};
+  return *allocs.begin();
+}
+
 // Walk from a dot operand back to the global load that produces it, through the
 // ops the pipeline interposes between a gather load and tt.dot: the layout-only
-// convert_layout / in_thread_transpose, and the local_alloc / local_load pair
-// that stages an operand through shared memory. Returns null if the def chain
-// does not find a tt.load / amdgpu.buffer_load.
+// convert_layout / in_thread_transpose, and shared-memory descriptor views
+// around the local_alloc / local_load pair. Returns null if the def chain does
+// not find one unambiguous tt.load / amdgpu.buffer_load.
 Operation *findFeedingLoad(Value operand) {
   Operation *def = operand.getDefiningOp();
   while (def) {
@@ -68,8 +130,7 @@ Operation *findFeedingLoad(Value operand) {
     }
 
     if (auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(def)) {
-      auto alloc =
-          localLoad.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
+      auto alloc = findUniqueDescriptorAlloc(localLoad.getSrc());
       if (!alloc || !alloc.getSrc())
         return nullptr;
       def = alloc.getSrc().getDefiningOp();

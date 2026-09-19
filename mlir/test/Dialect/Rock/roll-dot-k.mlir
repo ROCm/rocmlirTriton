@@ -12,8 +12,8 @@
 #smem = #ttg.shared_memory
 
 // A 128x64 by 64x64 f32 dot on an RDNA target. The result layout puts 128
-// accumulators in each thread, so the unrolled dot is 8192 FMAs and the
-// heuristic cuts K into sixteen segments of 4 to land on 512.
+// accumulators in each thread, so the unrolled dot is 8192 FMAs. The K4 floor
+// bounds loop overhead, producing sixteen 512-FMA segments.
 
 // CHECK-LABEL: tt.func @roll_f32_fma_dot
 // CHECK-DAG:     %[[A:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x64xf32, {{.*}}> -> !ttg.memdesc<16x128x4xf32, {{.*}}>
@@ -26,6 +26,7 @@
 // CHECK-DAG:       %[[BL:.*]] = ttg.local_load %[[BV]] : {{.*}} -> tensor<4x64xf32, #ttg.dot_op<{opIdx = 1,{{.*}}>>
 // CHECK:           %[[D:.*]] = tt.dot %[[AL]], %[[BL]], %[[ACC]]
 // CHECK:           scf.yield %[[D]]
+// CHECK:         } {llvm.loop_annotation = #{{.*}}, rock.rolled_dot_k}
 // CHECK:         tt.return %[[LOOP]]
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @roll_f32_fma_dot(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
@@ -565,14 +566,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// Only 16 accumulators per thread here, so even unrolled the dot is 256 FMAs
-// and the block is nowhere near the size where the scheduler struggles.
+// Sixteen accumulators times K16 is 256 FMAs, so the 128-FMA target rolls this
+// to two K8 segments.
 
-// CHECK-LABEL: tt.func @no_roll_small_dot
-// CHECK-NOT:     memdesc_reinterpret
-// CHECK-NOT:     scf.for
+// CHECK-LABEL: tt.func @roll_small_dot_to_target
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<16x16xf32, {{.*}}> -> !ttg.memdesc<2x16x8xf32, {{.*}}>
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<16x8xf32, {{.*}}> * tensor<8x32xf32, {{.*}}>
+// CHECK:         } {llvm.loop_annotation = #{{.*}}}
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @no_roll_small_dot(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> attributes {rock.kernel} {
+  tt.func @roll_small_dot_to_target(%acc: tensor<16x32xf32, #blocked2>) -> tensor<16x32xf32, #blocked2> attributes {rock.kernel} {
     %a = ttg.local_alloc : () -> !ttg.memdesc<16x16xf32, #shared, #smem, mutable>
     %b = ttg.local_alloc : () -> !ttg.memdesc<16x32xf32, #shared1, #smem, mutable>
     %al = ttg.local_load %a : !ttg.memdesc<16x16xf32, #shared, #smem, mutable> -> tensor<16x16xf32, #blocked1>
@@ -593,18 +596,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// Two chained dots of 128 accumulators and a K of 4, so each one is exactly
-// the 512-FMA target on its own and neither can shrink against it, yet the
-// block they share holds 1024. Halving the first one's K puts its body under
-// the target and moves it out of this block, which leaves 512 here and stops
-// the second one from being touched.
+// Two chained dots of 128 accumulators and a K of 4 each exceed the 128-FMA
+// target. Both therefore roll to four K1 segments.
 
 // CHECK-LABEL: tt.func @roll_until_block_fits
-// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x4xf32, {{.*}}> -> !ttg.memdesc<2x128x2xf32, {{.*}}>
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x4xf32, {{.*}}> -> !ttg.memdesc<4x128x1xf32, {{.*}}>
 // CHECK:         scf.for
-// CHECK:           tt.dot {{.*}} tensor<128x2xf32, {{.*}}> * tensor<2x64xf32, {{.*}}>
-// The second dot keeps its full K: what is left unrolled already fits.
-// CHECK:         tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+// CHECK:           tt.dot {{.*}} tensor<128x1xf32, {{.*}}> * tensor<1x64xf32, {{.*}}>
+// CHECK:         } {llvm.loop_annotation = #{{.*}}}
+// CHECK:         ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<128x4xf32, {{.*}}> -> !ttg.memdesc<4x128x1xf32, {{.*}}>
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<128x1xf32, {{.*}}> * tensor<1x64xf32, {{.*}}>
+// CHECK:         } {llvm.loop_annotation = #{{.*}}}
 // CHECK-NOT:     scf.for
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @roll_until_block_fits(%acc: tensor<128x64xf32, #blocked2>) -> tensor<128x64xf32, #blocked2> attributes {rock.kernel} {
@@ -635,10 +638,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
-// A 256x128 tile over 64 threads leaves 512 accumulators in each one, which is
-// the whole target on its own, so no segment width gets the body under it. A
-// body still holds `accs * dotK`, so narrowing to a single K per iteration is
-// what divides this block the furthest, taking it from 2048 FMAs down to 512.
+// A 256x128 tile over 64 threads leaves 512 accumulators in each one, already
+// above the target before K contributes anything. A body still holds
+// `accs * dotK`, so narrowing to a single K per iteration is what divides this
+// block the furthest, taking it from 2048 FMAs down to 512.
 
 // CHECK-LABEL: tt.func @roll_to_accumulator_floor
 // CHECK-DAG:     %[[A:.*]] = ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<256x4xf32, {{.*}}> -> !ttg.memdesc<4x256x1xf32, {{.*}}>
@@ -670,16 +673,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 // The floor above, but past the target rather than on it: 1024 accumulators
 // per thread, so even a single K per iteration leaves a body of 1024 FMAs.
 // Rolling still divides the block by K, which is why it is worth doing, but
-// the result is the one rolled body that stays over budget. That makes this
-// the case where the second run of the pass is not stopped by the block
-// budget, so it is what covers the rest of the fixed point: K is 1 by then,
-// and a dot with no K left to halve is left alone.
+// the result remains over budget. The generated-loop marker makes a second
+// pass leave that intentional floor alone.
 
 // CHECK-LABEL: tt.func @roll_past_accumulator_floor
 // CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<512x4xf32, {{.*}}> -> !ttg.memdesc<4x512x1xf32, {{.*}}>
 // CHECK-DAG:     ttg.memdesc_reinterpret %{{.*}} : !ttg.memdesc<4x128xf32, {{.*}}> -> !ttg.memdesc<4x1x128xf32, {{.*}}>
 // CHECK:         scf.for
-// A second run would put its own views and loop here, inside this body.
+// A second run must not put its own views and loop here, inside this body.
 // CHECK-NOT:       ttg.memdesc_reinterpret
 // CHECK:           tt.dot {{.*}} tensor<512x1xf32, {{.*}}> * tensor<1x128xf32, {{.*}}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
@@ -720,5 +721,117 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     %bc = ttg.convert_layout %bl : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>>
     %d = tt.dot %ac, %bc, %acc, inputPrecision = tf32 {amd.arbitrary = "keep-me", tt.latency = 3 : i32} : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked2}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked2}>> -> tensor<128x64xf32, #blocked2>
     tt.return %d : tensor<128x64xf32, #blocked2>
+  }
+}
+
+// -----
+
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+// This A layout repeats its XOR pattern every 16 K rows. K4 is the preferred
+// budget width, but K32 and K16 are the only address-preserving proper
+// divisors. The search must exhaust every divisor and choose the smaller K16
+// fallback instead of giving up after K4 fails.
+#sharedA = #ttg.swizzled_shared<{vec = 8, perPhase = 4, maxPhase = 4, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @roll_uses_smallest_legal_wider_fallback
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x128x16xf32
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x16x64xf32
+// CHECK:         scf.for
+// CHECK:           tt.dot {{.*}} tensor<128x16xf32, {{.*}}> * tensor<16x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_uses_smallest_legal_wider_fallback(%acc: tensor<128x64xf32, #out>) -> tensor<128x64xf32, #out> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf32, #sharedA, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #sharedB, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x64xf32, #sharedA, #smem, mutable> -> tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bl = ttg.local_load %b : !ttg.memdesc<64x64xf32, #sharedB, #smem, mutable> -> tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %d = tt.dot %al, %bl, %acc : tensor<128x64xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<64x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<128x64xf32, #out>
+    tt.return %d : tensor<128x64xf32, #out>
+  }
+}
+
+// -----
+
+// Kernel 1's larger 128x64/K16 four-wave tile has 64 accumulators per thread.
+// The K4 floor bounds loop overhead, producing four 256-FMA segments.
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 2], order = [1, 0]}>
+#sharedA = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @roll_whisper_k1_large_tile
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x128x4xf32
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x4x64xf32
+// CHECK:           tt.dot {{.*}} tensor<128x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_whisper_k1_large_tile(%acc: tensor<128x64xf32, #out>) -> tensor<128x64xf32, #out> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x16xf32, #sharedA, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<16x64xf32, #sharedB, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<128x16xf32, #sharedA, #smem, mutable> -> tensor<128x16xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bl = ttg.local_load %b : !ttg.memdesc<16x64xf32, #sharedB, #smem, mutable> -> tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %d = tt.dot %al, %bl, %acc : tensor<128x16xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<128x64xf32, #out>
+    tt.return %d : tensor<128x64xf32, #out>
+  }
+}
+
+// -----
+
+// Kernels 3 and 5 both exercise a 64x128/K8 two-wave tile with 128
+// accumulators per thread. The K2 floor produces four 256-FMA segments.
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
+#sharedA = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @roll_whisper_k3_large_tile
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x64x2xf32
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x2x128xf32
+// CHECK:           tt.dot {{.*}} tensor<64x2xf32, {{.*}}> * tensor<2x128xf32, {{.*}}>
+// CHECK-LABEL: tt.func @roll_whisper_k5_large_tile
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x64x2xf32
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x2x128xf32
+// CHECK:           tt.dot {{.*}} tensor<64x2xf32, {{.*}}> * tensor<2x128xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_whisper_k3_large_tile(%acc: tensor<64x128xf32, #out>) -> tensor<64x128xf32, #out> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<64x8xf32, #sharedA, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<8x128xf32, #sharedB, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<64x8xf32, #sharedA, #smem, mutable> -> tensor<64x8xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bl = ttg.local_load %b : !ttg.memdesc<8x128xf32, #sharedB, #smem, mutable> -> tensor<8x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %d = tt.dot %al, %bl, %acc : tensor<64x8xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<8x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<64x128xf32, #out>
+    tt.return %d : tensor<64x128xf32, #out>
+  }
+
+  tt.func @roll_whisper_k5_large_tile(%acc: tensor<64x128xf32, #out>) -> tensor<64x128xf32, #out> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<64x8xf32, #sharedA, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<8x128xf32, #sharedB, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<64x8xf32, #sharedA, #smem, mutable> -> tensor<64x8xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bl = ttg.local_load %b : !ttg.memdesc<8x128xf32, #sharedB, #smem, mutable> -> tensor<8x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %d = tt.dot %al, %bl, %acc : tensor<64x8xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<8x128xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<64x128xf32, #out>
+    tt.return %d : tensor<64x128xf32, #out>
+  }
+}
+
+// -----
+
+// Kernel 4's 256x64/K16 four-wave tile has 128 accumulators per thread and
+// therefore forms four K4 segments.
+#out = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+#sharedA = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+#sharedB = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+// CHECK-LABEL: tt.func @roll_whisper_k4_k16
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x256x4xf32
+// CHECK-DAG:     ttg.memdesc_reinterpret {{.*}} -> !ttg.memdesc<4x4x64xf32
+// CHECK:           tt.dot {{.*}} tensor<256x4xf32, {{.*}}> * tensor<4x64xf32, {{.*}}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @roll_whisper_k4_k16(%acc: tensor<256x64xf32, #out>) -> tensor<256x64xf32, #out> attributes {rock.kernel} {
+    %a = ttg.local_alloc : () -> !ttg.memdesc<256x16xf32, #sharedA, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<16x64xf32, #sharedB, #smem, mutable>
+    %al = ttg.local_load %a : !ttg.memdesc<256x16xf32, #sharedA, #smem, mutable> -> tensor<256x16xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>>
+    %bl = ttg.local_load %b : !ttg.memdesc<16x64xf32, #sharedB, #smem, mutable> -> tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>>
+    %d = tt.dot %al, %bl, %acc : tensor<256x16xf32, #ttg.dot_op<{opIdx = 0, parent = #out}>> * tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #out}>> -> tensor<256x64xf32, #out>
+    tt.return %d : tensor<256x64xf32, #out>
   }
 }

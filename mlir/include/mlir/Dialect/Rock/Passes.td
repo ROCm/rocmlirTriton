@@ -941,7 +941,7 @@ def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
   }];
   let dependentDialects = ["rock::RockDialect", "triton::TritonDialect",
                            "triton::gpu::TritonGPUDialect", "scf::SCFDialect",
-                           "arith::ArithDialect"];
+                           "arith::ArithDialect", "LLVM::LLVMDialect"];
   let options = [Option<
       "arch", "arch", "std::string", /*default=*/"std::string{}",
       "Target architecture. Defaults to the module's ttg.target.">];
