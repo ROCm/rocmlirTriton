@@ -22,10 +22,6 @@
  */
 
 #include "TritonAMDGPUTransforms/Passes.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
@@ -40,8 +36,6 @@ namespace mlir {
 #include "TritonAMDGPUTransforms/Passes.h.inc"
 
 namespace {
-
-constexpr llvm::StringLiteral kLoopedGeluAttr = "amdg.looped_gelu";
 
 bool isOneOperandElementwiseOp(Operation *op) {
   if (llvm::isa<arith::ExtFOp, arith::ExtSIOp, arith::ExtUIOp, arith::FPToSIOp,
@@ -64,197 +58,6 @@ bool isOneOperandElementwiseOp(Operation *op) {
            externElementwiseOp.getPure();
   return false;
 }
-
-FloatAttr getSplatF32Constant(Value value) {
-  if (auto splat = value.getDefiningOp<triton::SplatOp>())
-    return getSplatF32Constant(splat.getSrc());
-
-  auto constant = value.getDefiningOp<arith::ConstantOp>();
-  if (!constant)
-    return {};
-  if (auto scalar = dyn_cast<FloatAttr>(constant.getValueAttr()))
-    return scalar.getType().isF32() ? scalar : FloatAttr{};
-  auto elements = dyn_cast<DenseFPElementsAttr>(constant.getValueAttr());
-  if (!elements || !elements.isSplat() || !elements.getElementType().isF32())
-    return {};
-  return FloatAttr::get(elements.getElementType(),
-                        elements.getSplatValue<APFloat>());
-}
-
-struct ValueAndConstant {
-  Value value;
-  FloatAttr constant;
-  bool valueIsLhs;
-};
-
-std::optional<ValueAndConstant> matchValueAndConstant(arith::MulFOp mul) {
-  if (FloatAttr rhs = getSplatF32Constant(mul.getRhs()))
-    return ValueAndConstant{mul.getLhs(), rhs, /*valueIsLhs=*/true};
-  if (FloatAttr lhs = getSplatF32Constant(mul.getLhs()))
-    return ValueAndConstant{mul.getRhs(), lhs, /*valueIsLhs=*/false};
-  return std::nullopt;
-}
-
-std::optional<ValueAndConstant> matchValueAndConstant(arith::AddFOp add) {
-  if (FloatAttr rhs = getSplatF32Constant(add.getRhs()))
-    return ValueAndConstant{add.getLhs(), rhs, /*valueIsLhs=*/true};
-  if (FloatAttr lhs = getSplatF32Constant(add.getLhs()))
-    return ValueAndConstant{add.getRhs(), lhs, /*valueIsLhs=*/false};
-  return std::nullopt;
-}
-
-bool isFedByBlockedF32Dot(Value value, llvm::DenseSet<Value> &visited) {
-  if (!visited.insert(value).second)
-    return false;
-  Operation *def = value.getDefiningOp();
-  if (!def)
-    return false;
-  if (auto dot = dyn_cast<triton::DotOp>(def)) {
-    auto resultTy = dot.getD().getType();
-    return resultTy.getElementType().isF32() &&
-           isa<triton::gpu::BlockedEncodingAttr>(resultTy.getEncoding());
-  }
-  if (auto forOp = dyn_cast<scf::ForOp>(def)) {
-    auto result = dyn_cast<OpResult>(value);
-    if (!result)
-      return false;
-    unsigned resultNumber = result.getResultNumber();
-    auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-    return isFedByBlockedF32Dot(forOp.getInitArgs()[resultNumber], visited) ||
-           isFedByBlockedF32Dot(yield.getOperand(resultNumber), visited);
-  }
-  if (!isa<arith::AddFOp, arith::MulFOp, triton::gpu::ConvertLayoutOp>(def))
-    return false;
-  return llvm::any_of(def->getOperands(), [&](Value operand) {
-    auto tensorTy = dyn_cast<RankedTensorType>(operand.getType());
-    return tensorTy && tensorTy.getElementType().isF32() &&
-           isFedByBlockedF32Dot(operand, visited);
-  });
-}
-
-bool isFedByBlockedF32Dot(Value value) {
-  llvm::DenseSet<Value> visited;
-  return isFedByBlockedF32Dot(value, visited);
-}
-
-void addFastMathMetadata(NamedAttrList &metadata, StringRef name,
-                         Operation *op) {
-  auto fastMath = dyn_cast<arith::ArithFastMathInterface>(op);
-  if (!fastMath)
-    return;
-  arith::FastMathFlagsAttr attr = fastMath.getFastMathFlagsAttr();
-  if (attr && attr.getValue() != arith::FastMathFlags::none)
-    metadata.append(name, attr);
-}
-
-// Marks an exact x * (erf(x * scale) + bias) [* outputScale] store for a
-// compact store-side lowering. Keeping only x as the store value prevents the
-// ordinary elementwise conversion from cloning the GELU once per accumulator;
-// the dictionary records everything needed to reconstruct the exact scalar
-// expression inside a bounded LLVM loop.
-class MarkLoopedGeluStore : public OpRewritePattern<triton::StoreOp> {
-public:
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(triton::StoreOp store,
-                                PatternRewriter &rewriter) const override {
-    if (store->hasAttr(kLoopedGeluAttr))
-      return failure();
-    auto storedTy = dyn_cast<RankedTensorType>(store.getValue().getType());
-    if (!storedTy || !storedTy.getElementType().isF32() ||
-        !isa<triton::gpu::BlockedEncodingAttr>(storedTy.getEncoding()) ||
-        triton::gpu::getTotalElemsPerThread(storedTy) < 32)
-      return failure();
-
-    Value coreValue = store.getValue();
-    arith::SelectOp maskedValueSelect;
-    if (auto select = coreValue.getDefiningOp<arith::SelectOp>()) {
-      // MIGraphX materializes masked stores as
-      //   store(ptr, select(mask, value, 0), mask).
-      // The false arm is unobservable because the same lanes are suppressed by
-      // the store. Peel that wrapper so the production GELU chain can be
-      // recognized, but only when the predicates are the exact same SSA value.
-      if (!select->hasOneUse() || !store.getMask() ||
-          select.getCondition() != store.getMask())
-        return failure();
-      maskedValueSelect = select;
-      coreValue = select.getTrueValue();
-    }
-
-    arith::MulFOp outputMul;
-    std::optional<ValueAndConstant> outputScale;
-    if (auto maybeOutputMul = coreValue.getDefiningOp<arith::MulFOp>()) {
-      if (auto matched = matchValueAndConstant(maybeOutputMul)) {
-        outputMul = maybeOutputMul;
-        outputScale = matched;
-        coreValue = matched->value;
-      }
-    }
-
-    auto coreMul = coreValue.getDefiningOp<arith::MulFOp>();
-    if (!coreMul || !coreMul->hasOneUse())
-      return failure();
-    arith::AddFOp biasAdd = coreMul.getRhs().getDefiningOp<arith::AddFOp>();
-    Value x = coreMul.getLhs();
-    bool xIsLhs = true;
-    if (!biasAdd) {
-      biasAdd = coreMul.getLhs().getDefiningOp<arith::AddFOp>();
-      x = coreMul.getRhs();
-      xIsLhs = false;
-    }
-    if (!biasAdd || !biasAdd->hasOneUse())
-      return failure();
-
-    std::optional<ValueAndConstant> bias = matchValueAndConstant(biasAdd);
-    if (!bias)
-      return failure();
-    auto erf = bias->value.getDefiningOp<math::ErfOp>();
-    if (!erf || !erf->hasOneUse())
-      return failure();
-    auto scaleMul = erf.getOperand().getDefiningOp<arith::MulFOp>();
-    if (!scaleMul || !scaleMul->hasOneUse())
-      return failure();
-    std::optional<ValueAndConstant> scale = matchValueAndConstant(scaleMul);
-    if (!scale || scale->value != x || !isFedByBlockedF32Dot(x))
-      return failure();
-    if (outputMul &&
-        (!outputMul->hasOneUse() || outputScale->value != coreMul.getResult()))
-      return failure();
-
-    NamedAttrList metadata;
-    metadata.append("scale", scale->constant);
-    metadata.append("bias", bias->constant);
-    metadata.append("x_is_lhs", rewriter.getBoolAttr(xIsLhs));
-    metadata.append("scaled_x_is_lhs", rewriter.getBoolAttr(scale->valueIsLhs));
-    metadata.append("erf_is_lhs", rewriter.getBoolAttr(bias->valueIsLhs));
-    if (outputScale) {
-      metadata.append("output_scale", outputScale->constant);
-      metadata.append("core_is_lhs",
-                      rewriter.getBoolAttr(outputScale->valueIsLhs));
-    }
-    addFastMathMetadata(metadata, "scale_fastmath", scaleMul);
-    addFastMathMetadata(metadata, "erf_fastmath", erf);
-    addFastMathMetadata(metadata, "bias_fastmath", biasAdd);
-    addFastMathMetadata(metadata, "core_fastmath", coreMul);
-    if (outputMul)
-      addFastMathMetadata(metadata, "output_fastmath", outputMul);
-
-    rewriter.modifyOpInPlace(store, [&] {
-      store.getValueMutable().assign(x);
-      store->setAttr(kLoopedGeluAttr,
-                     DictionaryAttr::get(store.getContext(), metadata));
-    });
-    if (maskedValueSelect)
-      rewriter.eraseOp(maskedValueSelect);
-    if (outputMul)
-      rewriter.eraseOp(outputMul);
-    rewriter.eraseOp(coreMul);
-    rewriter.eraseOp(biasAdd);
-    rewriter.eraseOp(erf);
-    rewriter.eraseOp(scaleMul);
-    return success();
-  }
-};
 
 // Tries to optimize oldStoreOp with v_permlane*_swap instruction when possible.
 // Returns null store op if not suitable.
@@ -448,8 +251,6 @@ public:
           triton::StoreOp::create(rewriter, stOp.getLoc(), newPtr, newVal,
                                   newMask, stOp.getCache(), stOp.getEvict());
     }
-    if (Attribute loopedGelu = stOp->getAttr(kLoopedGeluAttr))
-      newStoreOp->setAttr(kLoopedGeluAttr, loopedGelu);
 
     rewriter.replaceOp(stOp, newStoreOp);
     return mlir::success();
@@ -470,7 +271,7 @@ public:
 
     mlir::RewritePatternSet patterns(context);
 
-    patterns.add<MarkLoopedGeluStore, BypassEpilogueSMEM>(context);
+    patterns.add<BypassEpilogueSMEM>(context);
 
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();

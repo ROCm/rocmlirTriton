@@ -6,10 +6,8 @@
 #include "TDMUtility.h"
 #include "TargetInfo.h"
 #include "Utility.h"
-#include "mlir/Conversion/ArithCommon/AttrToLLVMConverter.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -21,7 +19,6 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
-#include "llvm/ADT/STLFunctionalExtras.h"
 
 #include <cassert>
 
@@ -32,7 +29,6 @@ using ::mlir::LLVM::getSharedMemoryBase;
 using ::mlir::LLVM::AMD::getVectorSize;
 using ::mlir::LLVM::AMD::llLoad;
 using ::mlir::LLVM::AMD::llStore;
-using ::mlir::triton::gpu::appendOrGetExternFuncOp;
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 using triton::amdgpu::ISAFamily;
 
@@ -286,219 +282,6 @@ protected:
   ModuleAxisInfoAnalysis &axisAnalysisPass;
   const DataFlowSolver *uniformitySolver = nullptr;
 };
-
-constexpr llvm::StringLiteral kLoopedGeluAttr = "amdg.looped_gelu";
-
-struct LoopedGeluMetadata {
-  FloatAttr scale;
-  FloatAttr bias;
-  FloatAttr outputScale;
-  bool xIsLhs;
-  bool scaledXIsLhs;
-  bool erfIsLhs;
-  bool coreIsLhs;
-  LLVM::FastmathFlagsAttr scaleFastMath;
-  LLVM::FastmathFlagsAttr erfFastMath;
-  LLVM::FastmathFlagsAttr biasFastMath;
-  LLVM::FastmathFlagsAttr coreFastMath;
-  LLVM::FastmathFlagsAttr outputFastMath;
-};
-
-FailureOr<LoopedGeluMetadata> parseLoopedGeluMetadata(DictionaryAttr metadata) {
-  auto scale = metadata.getAs<FloatAttr>("scale");
-  auto bias = metadata.getAs<FloatAttr>("bias");
-  auto xIsLhs = metadata.getAs<BoolAttr>("x_is_lhs");
-  auto scaledXIsLhs = metadata.getAs<BoolAttr>("scaled_x_is_lhs");
-  auto erfIsLhs = metadata.getAs<BoolAttr>("erf_is_lhs");
-  if (!scale || !bias || !xIsLhs || !scaledXIsLhs || !erfIsLhs ||
-      !scale.getType().isF32() || !bias.getType().isF32())
-    return failure();
-
-  LoopedGeluMetadata result{scale,
-                            bias,
-                            metadata.getAs<FloatAttr>("output_scale"),
-                            xIsLhs.getValue(),
-                            scaledXIsLhs.getValue(),
-                            erfIsLhs.getValue(),
-                            true};
-  if (result.outputScale) {
-    auto coreIsLhs = metadata.getAs<BoolAttr>("core_is_lhs");
-    if (!coreIsLhs || !result.outputScale.getType().isF32())
-      return failure();
-    result.coreIsLhs = coreIsLhs.getValue();
-  }
-
-  auto convertFastMath = [&](StringRef name) -> LLVM::FastmathFlagsAttr {
-    auto attr = metadata.getAs<arith::FastMathFlagsAttr>(name);
-    return attr ? arith::convertArithFastMathAttrToLLVM(attr)
-                : LLVM::FastmathFlagsAttr{};
-  };
-  result.scaleFastMath = convertFastMath("scale_fastmath");
-  result.erfFastMath = convertFastMath("erf_fastmath");
-  result.biasFastMath = convertFastMath("bias_fastmath");
-  result.coreFastMath = convertFastMath("core_fastmath");
-  result.outputFastMath = convertFastMath("output_fastmath");
-  return result;
-}
-
-// Stages the canonical per-thread values in private memory before entering the
-// loop. Dynamic indexing intentionally prevents scalar replacement from
-// recreating the long live ranges that this lowering is meant to avoid.
-LogicalResult
-emitLoopedGeluStore(Operation *sourceOp, DictionaryAttr metadata,
-                    ArrayRef<Value> addressElems, ArrayRef<Value> valueElems,
-                    ArrayRef<Value> maskElems,
-                    ArrayRef<unsigned> canonicalStarts, Value threadPred,
-                    unsigned vec, ConversionPatternRewriter &rewriter,
-                    llvm::function_ref<void(Value, Value, Value)> emitStore) {
-  FailureOr<LoopedGeluMetadata> parsed = parseLoopedGeluMetadata(metadata);
-  if (failed(parsed))
-    return sourceOp->emitError("invalid looped GELU lowering metadata");
-  if (canonicalStarts.empty() || vec == 0)
-    return sourceOp->emitError("looped GELU store has no canonical elements");
-
-  Location loc = sourceOp->getLoc();
-  MLIRContext *ctx = rewriter.getContext();
-  TritonLLVMOpBuilder b(loc, rewriter);
-  Type i32Ty = rewriter.getI32Type();
-  Type f32Ty = rewriter.getF32Type();
-  Type privatePtrTy = LLVM::LLVMPointerType::get(
-      ctx, ROCDL::ROCDLDialect::kPrivateMemoryAddressSpace);
-
-  auto createPrivateArray = [&](Type elementType, unsigned count) -> Value {
-    auto function = sourceOp->getParentOfType<LLVM::LLVMFuncOp>();
-    if (!function)
-      return {};
-    OpBuilder::InsertionGuard guard(rewriter);
-    // Keep constant-sized allocas in the entry block. An alloca in the
-    // post-K-loop store block is classified by LLVM as a dynamic stack even
-    // when its count is constant, so the code-object metadata does not reserve
-    // its storage and the kernel faults when the loop accesses it.
-    rewriter.setInsertionPointToStart(&function.getBody().front());
-    return LLVM::AllocaOp::create(rewriter, loc, privatePtrTy, elementType,
-                                  b.i32_val(count), /*alignment=*/0);
-  };
-  auto getSlot = [&](Value array, Type elementType, Value index) -> Value {
-    return LLVM::GEPOp::create(rewriter, loc, privatePtrTy, elementType, array,
-                               ValueRange{index});
-  };
-  auto storeAt = [&](Value value, Value array, Type elementType,
-                     unsigned index) {
-    Value slot = getSlot(array, elementType, b.i32_val(index));
-    LLVM::StoreOp::create(rewriter, loc, value, slot);
-  };
-
-  const unsigned groupCount = canonicalStarts.size();
-  Value valueArray = createPrivateArray(f32Ty, groupCount * vec);
-  Type addressType = addressElems.front().getType();
-  Value addressArray = createPrivateArray(addressType, groupCount);
-  Value maskArray;
-  if (!maskElems.empty())
-    maskArray = createPrivateArray(rewriter.getI1Type(), groupCount);
-  if (!valueArray || !addressArray || (!maskElems.empty() && !maskArray))
-    return sourceOp->emitError(
-        "looped GELU private arrays require an LLVM function");
-
-  for (auto [group, start] : llvm::enumerate(canonicalStarts)) {
-    if (start + vec > valueElems.size() || start >= addressElems.size() ||
-        (!maskElems.empty() && start >= maskElems.size()))
-      return sourceOp->emitError("looped GELU staging index is out of bounds");
-    storeAt(addressElems[start], addressArray, addressType, group);
-    if (maskArray)
-      storeAt(maskElems[start], maskArray, rewriter.getI1Type(), group);
-    for (unsigned lane = 0; lane < vec; ++lane)
-      storeAt(valueElems[start + lane], valueArray, f32Ty, group * vec + lane);
-  }
-
-  auto erfTy = LLVM::LLVMFunctionType::get(f32Ty, {f32Ty});
-  LLVM::LLVMFuncOp erfFunc =
-      appendOrGetExternFuncOp(rewriter, sourceOp, "__ocml_erf_f32", erfTy);
-
-  auto makeConstant = [&](FloatAttr attr) -> Value {
-    return LLVM::ConstantOp::create(rewriter, loc, f32Ty, attr);
-  };
-  Value scale = makeConstant(parsed->scale);
-  Value bias = makeConstant(parsed->bias);
-  Value outputScale =
-      parsed->outputScale ? makeConstant(parsed->outputScale) : Value{};
-
-  rewriter.setInsertionPoint(sourceOp);
-  Block *preheader = rewriter.getInsertionBlock();
-  Block *after = rewriter.splitBlock(preheader, rewriter.getInsertionPoint());
-  Block *header = rewriter.createBlock(after);
-  BlockArgument group = header->addArgument(i32Ty, loc);
-  Block *body = rewriter.createBlock(after);
-
-  rewriter.setInsertionPointToEnd(preheader);
-  LLVM::BrOp::create(rewriter, loc, ValueRange{b.i32_val(0)}, header);
-
-  rewriter.setInsertionPointToEnd(header);
-  Value inRange = b.icmp_ult(group, b.i32_val(groupCount));
-  LLVM::CondBrOp::create(rewriter, loc, inRange, body, after);
-
-  rewriter.setInsertionPointToEnd(body);
-  Value valueIndex = b.mul(group, b.i32_val(vec));
-  Value valuePtr = getSlot(valueArray, f32Ty, valueIndex);
-  auto vectorType = VectorType::get({static_cast<int64_t>(vec)}, f32Ty);
-  Value stagedValues =
-      LLVM::LoadOp::create(rewriter, loc, vectorType, valuePtr);
-  Value stagedAddress = LLVM::LoadOp::create(
-      rewriter, loc, addressType, getSlot(addressArray, addressType, group));
-  Value pred = threadPred;
-  if (maskArray) {
-    Value stagedMask =
-        LLVM::LoadOp::create(rewriter, loc, rewriter.getI1Type(),
-                             getSlot(maskArray, rewriter.getI1Type(), group));
-    pred = b.and_(threadPred, stagedMask);
-  }
-
-  Value resultVector = b.undef(vectorType);
-  for (unsigned lane = 0; lane < vec; ++lane) {
-    Value laneIndex = b.i32_val(lane);
-    Value x = b.extract_element(f32Ty, stagedValues, laneIndex);
-    Value scaled = parsed->scaledXIsLhs
-                       ? LLVM::FMulOp::create(rewriter, loc, x, scale,
-                                              parsed->scaleFastMath)
-                       : LLVM::FMulOp::create(rewriter, loc, scale, x,
-                                              parsed->scaleFastMath);
-    auto erfCall =
-        LLVM::createLLVMCallOp(rewriter, loc, erfFunc, ValueRange{scaled});
-    if (parsed->erfFastMath)
-      erfCall.setFastmathFlagsAttr(parsed->erfFastMath);
-    Value erf = erfCall.getResult();
-    Value biased = parsed->erfIsLhs
-                       ? LLVM::FAddOp::create(rewriter, loc, erf, bias,
-                                              parsed->biasFastMath)
-                       : LLVM::FAddOp::create(rewriter, loc, bias, erf,
-                                              parsed->biasFastMath);
-    Value result = parsed->xIsLhs
-                       ? LLVM::FMulOp::create(rewriter, loc, x, biased,
-                                              parsed->coreFastMath)
-                       : LLVM::FMulOp::create(rewriter, loc, biased, x,
-                                              parsed->coreFastMath);
-    if (outputScale)
-      result = parsed->coreIsLhs
-                   ? LLVM::FMulOp::create(rewriter, loc, result, outputScale,
-                                          parsed->outputFastMath)
-                   : LLVM::FMulOp::create(rewriter, loc, outputScale, result,
-                                          parsed->outputFastMath);
-    resultVector =
-        b.insert_element(vectorType, resultVector, result, laneIndex);
-  }
-  emitStore(stagedAddress, resultVector, pred);
-
-  Value nextGroup = b.add(group, b.i32_val(1));
-  auto latch = LLVM::BrOp::create(rewriter, loc, ValueRange{nextGroup}, header);
-  auto unroll = LLVM::LoopUnrollAttr::get(ctx, rewriter.getBoolAttr(true), {},
-                                          {}, {}, {}, {}, {});
-  auto loopAnnotation = LLVM::LoopAnnotationAttr::get(
-      ctx, {}, {}, {}, unroll, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});
-  latch.setLoopAnnotationAttr(loopAnnotation);
-
-  rewriter.eraseOp(sourceOp);
-  rewriter.setInsertionPointToStart(after);
-  return success();
-}
 
 // Contains some helper functions for direct to lds loads.
 struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
@@ -1893,19 +1676,6 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         freeVarMasks, rewriter, loc, targetInfo);
     uint32_t regMask =
         static_cast<uint32_t>(freeVarMasks[str_attr("register")]);
-    if (auto metadata = op->getAttrOfType<DictionaryAttr>(kLoopedGeluAttr)) {
-      SmallVector<unsigned> canonicalStarts;
-      for (unsigned start = 0; start < elemsPerThread; start += vec)
-        if (isCanonicalIndex(start, regMask))
-          canonicalStarts.push_back(start);
-      return emitLoopedGeluStore(
-          op, metadata, ptrElems, valueElems, maskElems, canonicalStarts,
-          threadPred, vec, rewriter,
-          [&](Value address, Value storeValue, Value pred) {
-            llStore(rewriter, loc, address, storeValue, pred, cacheMod);
-          });
-    }
-
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
       if (!isCanonicalIndex(vecStart, regMask)) {
         // Don't emit store ops for redundant elements within a thread
@@ -2237,21 +2007,6 @@ struct BufferStoreOpConversion
     Value threadPred = emitRedundantThreadPredicateNonNull(
         freeVarMasks, rewriter, loc, targetInfo);
     uint32_t regMask = freeVarMasks[str_attr("register")];
-    if (auto metadata = op->getAttrOfType<DictionaryAttr>(kLoopedGeluAttr)) {
-      SmallVector<unsigned> canonicalStarts;
-      for (unsigned start = 0; start < numElems; start += vec)
-        if (isCanonicalIndex(start, regMask))
-          canonicalStarts.push_back(start);
-      return emitLoopedGeluStore(
-          op, metadata, offsetElems, valueElems, maskElems, canonicalStarts,
-          threadPred, vec, rewriter,
-          [&](Value offset, Value storeValue, Value pred) {
-            bufferEmitter.emitStore(rsrcDesc, offset, storeValue, pred,
-                                    cacheMod,
-                                    op->hasAttr("amdgpu.split_soffset_safe"));
-          });
-    }
-
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
       if (!isCanonicalIndex(vecStart, regMask)) {
         // Don't emit store ops for redundant elements within a thread
