@@ -58,6 +58,11 @@ bool mlir::rock::is4GBMemoryType(ShapedType type) {
          (int64_t)std::numeric_limits<uint32_t>::max();
 }
 
+bool mlir::rock::isAtomicAddTypeSupported(Type type) {
+  auto floatType = dyn_cast<FloatType>(type);
+  return !floatType || floatType.getWidth() >= 16;
+}
+
 // Per-field perf-config validators. A violation is treated as a hard
 // diagnostic; `markAsNotApplicable` is reserved for arch-feature mismatches.
 static bool isPositivePowerOfTwo(int64_t v) {
