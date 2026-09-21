@@ -44,6 +44,7 @@
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -501,49 +502,55 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
   return valid;
 }
 
-/// Keep a heavily replicated device-library routine as one callable function.
+/// Keep heavily replicated device-library call sites out of line.
 ///
 /// Triton scalarizes tensor elementwise operations before LLVM translation, so
 /// a per-thread tile can contain dozens or hundreds of identical OCML calls.
-/// Inlining a nontrivial callee at every site multiplies code size and keeps
-/// the whole tile live across each expansion. Use a call-count x body-size
-/// budget instead of naming a particular math operation: small helpers and
-/// routines whose call overhead still outweighs the saved code size retain the
-/// normal always-inline path. On gfx1201, 64-call scalar epilogues pay call
-/// overhead without a compensating occupancy gain, while 128-call tiles
-/// already see large wins from avoiding duplication.
+/// Inlining a nontrivial callee at every site multiplies code size and makes
+/// tile values live across a call interfere with every temporary in each
+/// cloned callee body. Outlining does not shorten those values' semantic
+/// lifetimes, but keeps the callee's temporaries out of the caller's register
+/// allocation scope at the cost of call and preservation overhead. Apply the
+/// call-count x body-size budget independently to each basic block so dense
+/// fusion regions can be outlined without preventing calls in sparse regions
+/// from taking the normal always-inline path.
 void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
-  llvm::DenseMap<llvm::Function *, uint64_t> directCallCounts;
+  constexpr uint64_t minCallSites = 128;
+  constexpr uint64_t duplicatedInstructionBudget = 1024;
+
   for (llvm::Function &caller : module) {
     for (llvm::BasicBlock &block : caller) {
+      llvm::DenseMap<llvm::Function *,
+                     llvm::SmallVector<llvm::CallBase *, /*InlineCapacity=*/8>>
+          directCallSites;
       for (llvm::Instruction &inst : block) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
         if (!call)
           continue;
         if (llvm::Function *callee = call->getCalledFunction())
-          ++directCallCounts[callee];
+          directCallSites[callee].push_back(call);
+      }
+
+      for (auto &[callee, callSites] : directCallSites) {
+        uint64_t callCount = callSites.size();
+        if (callCount < minCallSites || callee->isDeclaration() ||
+            !callee->hasInternalLinkage())
+          continue;
+        StringRef name = callee->getName();
+        if (!name.starts_with("__ocml_"))
+          continue;
+        uint64_t instructionCount = callee->getInstructionCount();
+        if (callCount * instructionCount <= duplicatedInstructionBudget)
+          continue;
+
+        LLVM_DEBUG(llvm::dbgs() << "keeping replicated calls to " << name
+                                << " out of line in one basic block: "
+                                << callCount << " call sites x "
+                                << instructionCount << " instructions\n");
+        for (llvm::CallBase *call : callSites)
+          call->setIsNoInline();
       }
     }
-  }
-
-  constexpr uint64_t minCallSites = 128;
-  constexpr uint64_t duplicatedInstructionBudget = 1024;
-  for (auto [callee, callCount] : directCallCounts) {
-    if (callCount < minCallSites || callee->isDeclaration() ||
-        !callee->hasInternalLinkage())
-      continue;
-    StringRef name = callee->getName();
-    if (!name.starts_with("__ocml_"))
-      continue;
-    uint64_t instructionCount = callee->getInstructionCount();
-    if (callCount * instructionCount <= duplicatedInstructionBudget)
-      continue;
-
-    LLVM_DEBUG(llvm::dbgs() << "keeping replicated device function " << name
-                            << " out of line: " << callCount << " call sites x "
-                            << instructionCount << " instructions\n");
-    callee->removeFnAttr(llvm::Attribute::AlwaysInline);
-    callee->addFnAttr(llvm::Attribute::NoInline);
   }
 }
 

@@ -5,13 +5,15 @@
 // RUN:   -triton-to-hsaco='arch=gfx1200' %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s
 
-// A 128-element scalarized tensor epilogue can contain as many calls to the
-// same nontrivial OCML function. The call-count x body-size budget keeps that
-// function out of line instead of cloning its body at every call site.
+// Keep the 128 calls in the dense block out of line, but still inline the
+// single call in the following sparse block.
 //
-// CHECK-DAG: define internal fastcc noundef float @__ocml_erf_f32
-// CHECK-DAG: call fastcc float @__ocml_erf_f32
-// CHECK-DAG: attributes #{{[0-9]+}} = { {{.*}}noinline
+// CHECK-LABEL: define amdgpu_kernel void @kernel
+// CHECK: call fastcc float @__ocml_erf_f32({{.*}}) #[[NOINLINE:[0-9]+]]
+// CHECK-COUNT-127: call fastcc float @__ocml_erf_f32
+// CHECK-NOT: call fastcc float @__ocml_erf_f32
+// CHECK: define internal fastcc noundef float @__ocml_erf_f32
+// CHECK: attributes #[[NOINLINE]] = { noinline }
 
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.func @__ocml_erf_f32(f32) -> f32
@@ -147,6 +149,11 @@ module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
     %c126 = llvm.call @__ocml_erf_f32(%c125) : (f32) -> f32
     %c127 = llvm.call @__ocml_erf_f32(%c126) : (f32) -> f32
     llvm.store %c127, %arg0 : f32, !llvm.ptr
+    llvm.br ^bb1
+  ^bb1:
+    %sparseValue = llvm.load %arg0 : !llvm.ptr -> f32
+    %sparseCall = llvm.call @__ocml_erf_f32(%sparseValue) : (f32) -> f32
+    llvm.store %sparseCall, %arg0 : f32, !llvm.ptr
     llvm.return
   }
 }
