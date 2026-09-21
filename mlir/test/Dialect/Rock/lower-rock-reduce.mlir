@@ -48,6 +48,39 @@ func.func @test_reduce_sum_bf16(%arg0: tensor<2x12x12xbf16>, %arg1: tensor<2x12x
   return %result : tensor<2x12x1xbf16>
 }
 
+// CHECK-LABEL: func.func @test_reduce_max_f16
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x12x12xf16>, %[[OUTPUT:.*]]: tensor<2x12x1xf16> {rock.prefill = {{.*}} : f16})
+// CHECK-NOT: rock.reduce
+// CHECK: %[[BC:.*]] = rock.transform %[[OUTPUT]] by {{.*}}Broadcast{{.*}} : tensor<2x12x1xf16> to tensor<2x12x12xf16>
+// CHECK: rock.store %[[INPUT]] to %[[BC]] by atomic_max : tensor<2x12x12xf16> -> tensor<2x12x1xf16> to tensor<2x12x12xf16>
+func.func @test_reduce_max_f16(%arg0: tensor<2x12x12xf16>, %arg1: tensor<2x12x1xf16>) -> tensor<2x12x1xf16> {
+  %reduced = rock.reduce max %arg0 {axis = 2 : index} : tensor<2x12x12xf16> -> tensor<2x12x1xf16>
+  %result = rock.store %reduced to %arg1 by set : tensor<2x12x1xf16> -> tensor<2x12x1xf16> to tensor<2x12x1xf16>
+  return %result : tensor<2x12x1xf16>
+}
+
+// CHECK-LABEL: func.func @test_reduce_max_bf16
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x12x12xbf16>, %[[OUTPUT:.*]]: tensor<2x12x1xbf16> {rock.prefill = {{.*}} : bf16})
+// CHECK-NOT: rock.reduce
+// CHECK: %[[BC:.*]] = rock.transform %[[OUTPUT]] by {{.*}}Broadcast{{.*}} : tensor<2x12x1xbf16> to tensor<2x12x12xbf16>
+// CHECK: rock.store %[[INPUT]] to %[[BC]] by atomic_max : tensor<2x12x12xbf16> -> tensor<2x12x1xbf16> to tensor<2x12x12xbf16>
+func.func @test_reduce_max_bf16(%arg0: tensor<2x12x12xbf16>, %arg1: tensor<2x12x1xbf16>) -> tensor<2x12x1xbf16> {
+  %reduced = rock.reduce max %arg0 {axis = 2 : index} : tensor<2x12x12xbf16> -> tensor<2x12x1xbf16>
+  %result = rock.store %reduced to %arg1 by set : tensor<2x12x1xbf16> -> tensor<2x12x1xbf16> to tensor<2x12x1xbf16>
+  return %result : tensor<2x12x1xbf16>
+}
+
+// CHECK-LABEL: func.func @test_reduce_max_i32
+// CHECK-SAME: (%[[INPUT:.*]]: tensor<2x12x12xi32>, %[[OUTPUT:.*]]: tensor<2x12x1xi32> {rock.prefill = -2147483648 : i32})
+// CHECK-NOT: rock.reduce
+// CHECK: %[[BC:.*]] = rock.transform %[[OUTPUT]] by {{.*}}Broadcast{{.*}} : tensor<2x12x1xi32> to tensor<2x12x12xi32>
+// CHECK: rock.store %[[INPUT]] to %[[BC]] by atomic_max : tensor<2x12x12xi32> -> tensor<2x12x1xi32> to tensor<2x12x12xi32>
+func.func @test_reduce_max_i32(%arg0: tensor<2x12x12xi32>, %arg1: tensor<2x12x1xi32>) -> tensor<2x12x1xi32> {
+  %reduced = rock.reduce max %arg0 {axis = 2 : index} : tensor<2x12x12xi32> -> tensor<2x12x1xi32>
+  %result = rock.store %reduced to %arg1 by set : tensor<2x12x1xi32> -> tensor<2x12x1xi32> to tensor<2x12x1xi32>
+  return %result : tensor<2x12x1xi32>
+}
+
 // Verify that an intermediate Merge transform between reduce and store
 // is handled: the dest gets an Unmerge (inverse of Merge) followed by Broadcast.
 

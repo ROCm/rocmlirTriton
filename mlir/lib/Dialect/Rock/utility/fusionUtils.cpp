@@ -38,8 +38,7 @@ static bool validOperationGemmOut(Operation *op) {
 }
 
 LogicalResult mlir::rock::checkValidOutputFusion(
-    Value gemmResult,
-    SmallVector<std::tuple<Operation *, int>> &adds) {
+    Value gemmResult, SmallVector<std::tuple<Operation *, int>> &adds) {
   /* We can only fuse:
   - add/sub gemmResult, otherTensor (which will be converted to add gemmResult,
   otherTensor/splitKFactor)
@@ -97,7 +96,7 @@ static LogicalResult checkValidSplitKOutputTypes(Value output,
 
   for (BlockArgument outputArg : *outputArgs) {
     Type elementType = cast<ShapedType>(outputArg.getType()).getElementType();
-    if (!isAtomicAddTypeSupported(elementType))
+    if (!isAtomicRMWTypeSupported(elementType))
       return failure();
   }
   return success();

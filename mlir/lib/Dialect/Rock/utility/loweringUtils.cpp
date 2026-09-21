@@ -58,9 +58,12 @@ bool mlir::rock::is4GBMemoryType(ShapedType type) {
          (int64_t)std::numeric_limits<uint32_t>::max();
 }
 
-bool mlir::rock::isAtomicAddTypeSupported(Type type) {
+bool mlir::rock::isAtomicRMWTypeSupported(Type type) {
+  if (isa<IntegerType>(type))
+    return true;
+
   auto floatType = dyn_cast<FloatType>(type);
-  return !floatType || floatType.getWidth() >= 16;
+  return floatType && floatType.getWidth() >= 16;
 }
 
 // Per-field perf-config validators. A violation is treated as a hard
@@ -785,8 +788,6 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
   if (newStoreMethod == StoreMethod::Set)
     return success();
 
-  storeOp.setStoreMethodAttr(builder.getAttr<StoreMethodAttr>(newStoreMethod));
-
   auto func = storeOp->getParentOfType<func::FuncOp>();
   if (!func)
     return storeOp->emitError("store op not inside a function");
@@ -797,6 +798,11 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
         "can't trace store destination to function argument");
 
   auto elementType = cast<ShapedType>(destArg->getType()).getElementType();
+  if (!isAtomicRMWTypeSupported(elementType))
+    return storeOp->emitError()
+           << "source element type " << elementType << " does not support "
+           << getNameForStoreMethod(newStoreMethod);
+
   bool isMax = (newStoreMethod == StoreMethod::AtomicMax);
   Attribute prefillValue;
   if (auto floatTy = dyn_cast<FloatType>(elementType)) {
@@ -807,15 +813,19 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
     else
       prefillValue = builder.getFloatAttr(floatTy, 0.0);
   } else if (auto intTy = dyn_cast<IntegerType>(elementType)) {
-    if (isMax)
-      prefillValue = builder.getIntegerAttr(
-          intTy, APInt::getSignedMinValue(intTy.getWidth()));
-    else
+    if (isMax) {
+      APInt minValue = intTy.isUnsigned()
+                           ? APInt::getMinValue(intTy.getWidth())
+                           : APInt::getSignedMinValue(intTy.getWidth());
+      prefillValue = builder.getIntegerAttr(intTy, minValue);
+    } else {
       prefillValue = builder.getIntegerAttr(intTy, 0);
+    }
   } else {
     return storeOp->emitError("expecting float or int element type");
   }
 
+  storeOp.setStoreMethodAttr(builder.getAttr<StoreMethodAttr>(newStoreMethod));
   func.setArgAttr(destArg->getArgNumber(), PrefillAttr::getMnemonic(),
                   prefillValue);
   return success();

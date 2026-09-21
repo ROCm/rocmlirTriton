@@ -61,11 +61,12 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
-/// Return true if `type` can be lowered as an atomic add by the Rock-to-Triton
-/// pipeline. Low-precision floating-point types are represented as integers
-/// after Triton type conversion and therefore cannot use floating-point
-/// atomic add operations.
-bool isAtomicAddTypeSupported(Type type);
+/// Return true if `type` can be lowered as an atomic RMW by the Rock-to-Triton
+/// pipeline. Integer types are lowered directly or through LLVM's cmpxchg
+/// fallback. Floating-point types must be at least 16 bits wide because
+/// narrower types are represented as integers after Triton type conversion
+/// and therefore cannot preserve floating-point atomic semantics.
+bool isAtomicRMWTypeSupported(Type type);
 
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
 /// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
@@ -117,9 +118,10 @@ FailureOr<IntegerAttr> getBlockSize(Operation *op);
 
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
-// Check that `newStoreMethod` is compatible with the store's current method,
-// then set a prefill attribute on the function argument that the store
-// destination traces back to.  AtomicAdd -> zero, AtomicMax -> -inf/INT_MIN.
+// Check that `newStoreMethod` is compatible with the store's current method
+// and element type, then update the store and set a prefill attribute on the
+// function argument that its destination traces back to. AtomicAdd -> zero,
+// AtomicMax -> -inf/INT_MIN.
 LogicalResult setStoreMethodAndPrefill(OpBuilder &builder, StoreOp storeOp,
                                        StoreMethod newStoreMethod);
 
