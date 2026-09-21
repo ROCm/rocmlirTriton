@@ -6,28 +6,29 @@
 
 // BEGIN_GEMM_Gemm_f32_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersF32GemmGfx90a[] = {
-    "gemm:v4:64,64,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,32,1,1,8,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,128,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,128,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,32,128,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,32,1,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,128,64,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,64,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,128,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,4,64,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,64,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,64,2,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,64,16,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,1,1,1,1,2,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:80,128,16,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=1,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=32,kPerBlock=1,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=1,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=1,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=4,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_GEMM_Gemm_f32_gfx90a_DEFS
 
@@ -99,75 +100,80 @@ const StringRef PopulateParamsGemm::initParametersF32GemmGfx950[] = {
 
 // BEGIN_CONV_Gemm_f32_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersF32ConvGfx90a[] = {
-    "gemm:v4:64,64,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,128,16,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,128,16,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,32,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,32,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,32,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,16,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,32,32,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,32,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,128,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:48,64,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,64,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,32,32,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,32,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,32,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,16,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,32,16,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:192,64,16,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,64,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,64,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,128,4,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,16,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:192,32,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,128,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:48,128,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,16,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,256,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,64,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,64,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,32,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,256,32,1,1,16,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,32,16,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:48,32,16,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,64,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:24,16,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,9,2,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,64,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,128,16,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,16,128,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,9,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:80,128,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,4,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:160,32,16,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,16,32,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,16,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:72,64,16,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,32,1,1,1,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,16,32,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:36,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,1,64,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,9,8,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,1,4,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,128,8,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=4,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=48,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=24,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=72,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=48,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=128,kPerBlock=8,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=1,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=72,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=18,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=36,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=128,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=36,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=72,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=36,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=192,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=24,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=16,kPerBlock=72,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=2,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=128,kPerBlock=36,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=128,kPerBlock=36,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=160,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=2,nPerBlock=16,kPerBlock=72,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=64,kPerBlock=48,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=16,kPerBlock=108,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=64,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=12,nPerBlock=128,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=12,nPerBlock=32,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=2,nPerBlock=16,kPerBlock=36,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=2,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_CONV_Gemm_f32_gfx90a_DEFS
 
@@ -356,41 +362,47 @@ const StringRef PopulateParamsGemm::initParametersF32ConvGfx950[] = {
 
 // BEGIN_GEMM_Gemm_f16_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersF16GemmGfx90a[] = {
-    "gemm:v4:128,128,64,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,64,1,1,4,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,256,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,128,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,256,64,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,512,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,128,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,128,1,1,8,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,256,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,64,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,128,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,256,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,16,1,1,4,32,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,1,1,1,16,32,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,128,64,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,32,128,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,1,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:80,128,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:80,128,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,32,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,128,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,4,256,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,512,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,2,1024,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,16,2,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,256,64,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,128,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,1,32,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=80,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=1,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=2,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=80,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=80,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=1,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=80,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=80,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=160,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=2,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_GEMM_Gemm_f16_gfx90a_DEFS
 
@@ -479,84 +491,117 @@ const StringRef PopulateParamsGemm::initParametersF16GemmGfx950[] = {
 
 // BEGIN_CONV_Gemm_f16_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersF16ConvGfx90a[] = {
-    "gemm:v4:64,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,16,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,128,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,128,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,128,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,32,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,64,1,1,8,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,128,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,64,64,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,64,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,128,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,64,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,256,64,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,256,64,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,128,32,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,64,1,1,4,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,32,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,64,32,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,16,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,32,1,1,16,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,16,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,128,64,1,1,16,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,256,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,256,4,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,64,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,64,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,256,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,128,16,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:48,128,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,32,128,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,256,16,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,16,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,16,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,32,1,1,4,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,256,16,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,64,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,128,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,128,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,128,16,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,32,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:192,32,64,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,32,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,256,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,32,1,1,8,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,16,256,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,256,32,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,256,32,1,1,16,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,128,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,32,64,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,128,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,16,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,64,4,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:48,32,16,1,1,2,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,32,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,256,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:160,32,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:24,16,64,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,16,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:72,128,16,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,64,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,32,8,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,64,1,1,1,32,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:192,16,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,256,128,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:36,256,16,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,256,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=192,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=512,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=256,kPerBlock=4,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=48,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=192,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=48,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=192,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=24,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=128,kPerBlock=72,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=160,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=160,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=192,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=64,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=48,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=3,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=16,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=3,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=72,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=256,nPerBlock=256,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=36,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=3,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=4,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=4,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=48,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=256,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=8,nPerBlock=64,kPerBlock=72,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=96,nPerBlock=16,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_CONV_Gemm_f16_gfx90a_DEFS
 
@@ -733,29 +778,20 @@ const StringRef PopulateParamsGemm::initParametersF16ConvGfx950[] = {
 
 // BEGIN_GEMM_Gemm_i8_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersI8GemmGfx90a[] = {
-    "gemm:v4:64,128,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,128,1,1,4,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,128,64,1,1,4,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,16,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,64,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,64,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,64,1,1,8,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,256,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,32,256,1,1,1,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,32,1,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,128,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,4,256,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,16,512,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,16,32,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,512,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,1,64,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:2,16,2,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:4,128,32,1,1,1,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:8,16,128,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:80,128,32,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=128,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=64,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=256,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=1,kPerBlock=32,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=64,kPerBlock=1,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=128,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_GEMM_Gemm_i8_gfx90a_DEFS
 
@@ -815,31 +851,19 @@ const StringRef PopulateParamsGemm::initParametersI8GemmGfx950[] = {
 
 // BEGIN_CONV_Gemm_i8_gfx90a_DEFS
 const StringRef PopulateParamsGemm::initParametersI8ConvGfx90a[] = {
-    "gemm:v4:64,16,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,16,256,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,32,64,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,16,128,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:16,128,32,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,64,16,1,1,1,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,16,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,32,128,1,1,4,32,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,64,256,1,1,8,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,128,32,1,1,8,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:128,64,64,1,1,8,32,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,32,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,16,256,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:32,128,64,1,1,4,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,128,128,1,1,16,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,32,64,1,1,2,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,32,128,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:256,64,32,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,64,64,1,1,4,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:64,256,16,1,1,8,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:12,16,256,1,1,16,16,1,1,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:3,16,256,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:1,32,64,1,1,2,16,1,3,0,0,-1,-1,-1,-1,-1,-1",
-    "gemm:v4:96,128,128,1,1,16,16,1,2,0,0,-1,-1,-1,-1,-1,-1"
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=32,kPerBlock=64,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=1,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=4,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=16,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=16,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=3,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=16,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_CONV_Gemm_i8_gfx90a_DEFS
 
@@ -2683,7 +2707,7 @@ const StringRef PopulateParamsGemm::initParametersI8ConvGfx1201[] = {
 #ifdef Gemm_DECLARATIONS_GEN
 
 // BEGIN_GEMM_Gemm_f32_gfx90a_DECS
-static constexpr size_t nInitParametersF32GemmGfx90a = 22;
+static constexpr size_t nInitParametersF32GemmGfx90a = 23;
 static const StringRef initParametersF32GemmGfx90a[nInitParametersF32GemmGfx90a];
 // END_GEMM_Gemm_f32_gfx90a_DECS
 
@@ -2698,7 +2722,7 @@ static const StringRef initParametersF32GemmGfx950[nInitParametersF32GemmGfx950]
 // END_GEMM_Gemm_f32_gfx950_DECS
 
 // BEGIN_CONV_Gemm_f32_gfx90a_DECS
-static constexpr size_t nInitParametersF32ConvGfx90a = 69;
+static constexpr size_t nInitParametersF32ConvGfx90a = 74;
 static const StringRef initParametersF32ConvGfx90a[nInitParametersF32ConvGfx90a];
 // END_CONV_Gemm_f32_gfx90a_DECS
 
@@ -2713,7 +2737,7 @@ static const StringRef initParametersF32ConvGfx950[nInitParametersF32ConvGfx950]
 // END_CONV_Gemm_f32_gfx950_DECS
 
 // BEGIN_GEMM_Gemm_f16_gfx90a_DECS
-static constexpr size_t nInitParametersF16GemmGfx90a = 35;
+static constexpr size_t nInitParametersF16GemmGfx90a = 41;
 static const StringRef initParametersF16GemmGfx90a[nInitParametersF16GemmGfx90a];
 // END_GEMM_Gemm_f16_gfx90a_DECS
 
@@ -2728,7 +2752,7 @@ static const StringRef initParametersF16GemmGfx950[nInitParametersF16GemmGfx950]
 // END_GEMM_Gemm_f16_gfx950_DECS
 
 // BEGIN_CONV_Gemm_f16_gfx90a_DECS
-static constexpr size_t nInitParametersF16ConvGfx90a = 78;
+static constexpr size_t nInitParametersF16ConvGfx90a = 111;
 static const StringRef initParametersF16ConvGfx90a[nInitParametersF16ConvGfx90a];
 // END_CONV_Gemm_f16_gfx90a_DECS
 
@@ -2743,7 +2767,7 @@ static const StringRef initParametersF16ConvGfx950[nInitParametersF16ConvGfx950]
 // END_CONV_Gemm_f16_gfx950_DECS
 
 // BEGIN_GEMM_Gemm_i8_gfx90a_DECS
-static constexpr size_t nInitParametersI8GemmGfx90a = 23;
+static constexpr size_t nInitParametersI8GemmGfx90a = 14;
 static const StringRef initParametersI8GemmGfx90a[nInitParametersI8GemmGfx90a];
 // END_GEMM_Gemm_i8_gfx90a_DECS
 
@@ -2758,7 +2782,7 @@ static const StringRef initParametersI8GemmGfx950[nInitParametersI8GemmGfx950];
 // END_GEMM_Gemm_i8_gfx950_DECS
 
 // BEGIN_CONV_Gemm_i8_gfx90a_DECS
-static constexpr size_t nInitParametersI8ConvGfx90a = 25;
+static constexpr size_t nInitParametersI8ConvGfx90a = 13;
 static const StringRef initParametersI8ConvGfx90a[nInitParametersI8ConvGfx90a];
 // END_CONV_Gemm_i8_gfx90a_DECS
 
@@ -3068,34 +3092,31 @@ const StringRef PopulateParamsGemmGemm::initParametersBf16AttentionGfx90a[] = {
 
 // BEGIN_ATTENTION_GemmGemm_f16_gfx90a_DEFS
 const StringRef PopulateParamsGemmGemm::initParametersF16AttentionGfx90a[] = {
-    "attn:v1:16,16,64,1,1,4,16,1,2,0,0",
-    "attn:v1:32,64,32,1,1,4,16,1,3,0,0",
-    "attn:v1:128,32,64,1,1,4,32,1,2,0,0",
-    "attn:v1:16,64,128,1,1,4,16,1,2,0,0",
-    "attn:v1:64,32,64,2,1,4,16,1,2,0,0",
-    "attn:v1:64,64,128,2,1,8,16,1,2,0,0",
-    "attn:v1:128,32,128,2,1,4,32,1,2,0,0",
-    "attn:v1:16,16,128,1,1,1,16,1,1,0,0",
-    "attn:v1:64,64,32,2,1,4,32,1,2,0,0",
-    "attn:v1:128,32,128,2,1,8,16,1,2,0,0",
-    "attn:v1:16,256,16,1,1,1,16,1,1,0,0"
+    "attn:mPerBlockG0=128,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=64,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=256,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=128,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=32,kpack=2,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=128,nPerBlockG1=128,kPerBlock=128,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=16,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=16,kpack=2,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_ATTENTION_GemmGemm_f16_gfx90a_DEFS
 
 // BEGIN_ATTENTION_GemmGemm_f32_gfx90a_DEFS
 const StringRef PopulateParamsGemmGemm::initParametersF32AttentionGfx90a[] = {
-    "attn:v1:32,32,64,2,1,4,16,1,2,0,0",
-    "attn:v1:64,16,64,2,1,4,16,1,2,0,0",
-    "attn:v1:64,32,16,2,1,4,16,1,3,0,0",
-    "attn:v1:16,16,64,2,1,4,16,1,3,0,0",
-    "attn:v1:16,16,512,2,1,4,16,1,1,0,0",
-    "attn:v1:128,64,32,2,1,4,32,1,1,0,0",
-    "attn:v1:16,128,16,1,1,1,16,1,2,0,0",
-    "attn:v1:16,64,64,1,1,4,16,1,3,0,0",
-    "attn:v1:32,128,32,1,1,4,16,1,2,0,0",
-    "attn:v1:32,32,16,2,1,8,16,1,1,0,0",
-    "attn:v1:64,16,128,2,1,4,16,1,1,0,0",
-    "attn:v1:64,32,128,2,1,8,16,1,2,0,0"
+    "attn:mPerBlockG0=16,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=32,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=0,kPerBlock=64,kpack=2,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=128,kPerBlock=64,kpack=2,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=16,nPerBlockG0=64,nPerBlockG1=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=32,nPerBlockG0=64,nPerBlockG1=128,kPerBlock=64,kpack=2,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=16,nPerBlockG1=0,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
+    "attn:mPerBlockG0=64,nPerBlockG0=64,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
 // END_ATTENTION_GemmGemm_f32_gfx90a_DEFS
 
@@ -3585,12 +3606,12 @@ static const StringRef initParametersBf16AttentionGfx90a[nInitParametersBf16Atte
 // END_ATTENTION_GemmGemm_bf16_gfx90a_DECS
 
 // BEGIN_ATTENTION_GemmGemm_f16_gfx90a_DECS
-static constexpr size_t nInitParametersF16AttentionGfx90a = 11;
+static constexpr size_t nInitParametersF16AttentionGfx90a = 13;
 static const StringRef initParametersF16AttentionGfx90a[nInitParametersF16AttentionGfx90a];
 // END_ATTENTION_GemmGemm_f16_gfx90a_DECS
 
 // BEGIN_ATTENTION_GemmGemm_f32_gfx90a_DECS
-static constexpr size_t nInitParametersF32AttentionGfx90a = 12;
+static constexpr size_t nInitParametersF32AttentionGfx90a = 7;
 static const StringRef initParametersF32AttentionGfx90a[nInitParametersF32AttentionGfx90a];
 // END_ATTENTION_GemmGemm_f32_gfx90a_DECS
 
