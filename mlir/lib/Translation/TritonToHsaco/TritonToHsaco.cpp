@@ -36,6 +36,7 @@
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
@@ -128,6 +129,16 @@ struct EmbeddedDeviceLibrary {
 constexpr std::array<EmbeddedDeviceLibrary, 2> embeddedDeviceLibraries = {
     {{"ocml.bc", "__ocml_"}, {"ockl.bc", "__ockl_"}}};
 
+/// Deliberate divergence from upstream Triton, which verifies unconditionally
+/// in llvm.cc's to_module() and its codegen pipeline: two full IR walks over
+/// IR our own lowering just produced. Keep the check only in assert-enabled
+/// builds.
+#ifndef NDEBUG
+constexpr bool kVerifyLLVMIR = true;
+#else
+constexpr bool kVerifyLLVMIR = false;
+#endif
+
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
@@ -178,11 +189,10 @@ void initializeLLVMTargets() {
 }
 
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
-std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
-                                                         llvm::Triple &triple,
-                                                         StringRef archStr,
-                                                         StringRef features,
-                                                         bool enableFpFusion) {
+std::unique_ptr<llvm::TargetMachine>
+createTargetMachine(llvm::Module &module, llvm::Triple &triple,
+                    StringRef archStr, StringRef features, bool enableFpFusion,
+                    bool asmComments) {
   std::string error;
   auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
   if (!target) {
@@ -194,8 +204,8 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(llvm::Module &module,
   if (enableFpFusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
   opt.TrapUnreachable = true;
-  opt.MCOptions.AsmVerbose = true;
-  opt.MCOptions.PreserveAsmComments = true;
+  opt.MCOptions.AsmVerbose = asmComments;
+  opt.MCOptions.PreserveAsmComments = asmComments;
 
   return std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
       triple, archStr, features, opt, llvm::Reloc::PIC_, std::nullopt,
@@ -433,8 +443,8 @@ bool linkExternalDeviceLibraries(llvm::Module &module,
                                  const std::vector<std::string> &paths) {
   for (const std::string &path : paths) {
     llvm::SMDiagnostic err;
-    std::unique_ptr<llvm::Module> libMod =
-        llvm::getLazyIRFileModule(path, err, module.getContext());
+    std::unique_ptr<llvm::Module> libMod = llvm::getLazyIRFileModule(
+        path, err, module.getContext(), /*ShouldLazyLoadMetadata=*/true);
     if (!libMod) {
       llvm::errs() << "Failed to parse library at " << path << "\n";
       return false;
@@ -459,7 +469,8 @@ bool linkEmbeddedDeviceLibrary(llvm::Module &module, StringRef filename) {
       library->getValue(), filename, /*RequiresNullTerminator=*/false);
   llvm::SMDiagnostic err;
   std::unique_ptr<llvm::Module> libMod =
-      llvm::getLazyIRModule(std::move(buffer), err, module.getContext());
+      llvm::getLazyIRModule(std::move(buffer), err, module.getContext(),
+                            /*ShouldLazyLoadMetadata=*/true);
   if (!libMod) {
     llvm::errs() << "Failed to parse packaged AMD device library " << filename
                  << ": " << err.getMessage() << "\n";
@@ -620,10 +631,11 @@ bool emitMachineCode(llvm::Module &module, llvm::TargetMachine *machine,
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
       f.addFnAttr(llvm::Attribute::AlwaysInline);
 
-  // verify and run inliner (matches llvm.cc lines 333-344)
+  // verify and run inliner (matches llvm.cc lines 333-344), see kVerifyLLVMIR
   llvm::legacy::PassManager pm;
   pm.add(llvm::createAlwaysInlinerLegacyPass());
-  pm.add(llvm::createVerifierPass());
+  if constexpr (kVerifyLLVMIR)
+    pm.add(llvm::createVerifierPass());
   pm.run(module);
 
   // emit machine code (matches llvm.cc lines 360-377)
@@ -889,8 +901,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
   llvm::LLVMContext llvmContext;
   llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
+  // llvm.cc's to_module() calls translateModuleToLLVMIR with verification
+  // always enabled, see kVerifyLLVMIR.
   std::unique_ptr<llvm::Module> llvmModule =
-      translateModuleToLLVMIR(module, llvmContext);
+      translateModuleToLLVMIR(module, llvmContext, "LLVMDialectModule",
+                              /*disableVerification=*/!kVerifyLLVMIR);
   if (!llvmModule) {
     llvm::errs() << "Failed to translate module to LLVM IR\n";
     return failure();
@@ -919,9 +934,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Set target triple and data layout (attach_target_triple in compiler.py)
   llvmModule->setTargetTriple(triple);
 
-  // attach_datalayout in compiler.py
+  // attach_datalayout in compiler.py. This target machine only drives the
+  // optimizer and the data layout, so it never prints assembly.
   auto tm = createTargetMachine(*llvmModule, triple, arch, features,
-                                options.enableFpFusion);
+                                options.enableFpFusion,
+                                /*asmComments=*/false);
   if (!tm) {
     return failure();
   }
@@ -1024,27 +1041,23 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   std::string asmFeatures;
   if (disableTrue16)
     asmFeatures = "-real-true16";
-  auto tmAsm = createTargetMachine(*llvmModule, triple, arch, asmFeatures,
-                                   options.enableFpFusion);
+  // Only annotate the assembly when someone has asked to see it below.
+  // getBoolEnv asserts the name is registered in Triton's
+  // CACHE_INVALIDATING_ENV_VARS; a rocMLIR-specific switch must be added there.
+  const bool dumpAmdgcn = triton::tools::getBoolEnv("AMDGCN_ENABLE_DUMP");
+  auto tmAsm =
+      createTargetMachine(*llvmModule, triple, arch, asmFeatures,
+                          options.enableFpFusion, /*asmComments=*/dumpAmdgcn);
   if (!tmAsm) {
     return failure();
   }
 
-  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set (matches upstream Triton's
-  // env var name; see external/triton/include/triton/Tools/Sys/GetEnv.h).
-  if (const char *dumpEnv = std::getenv("LLVM_IR_ENABLE_DUMP")) {
-    std::string envVal(dumpEnv);
-    if (envVal == "1") {
-      llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
-      llvmModule->print(llvm::errs(), nullptr);
-      llvm::errs() << "\n";
-    }
+  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set.
+  if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
+    llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
+    llvmModule->print(llvm::errs(), nullptr);
+    llvm::errs() << "\n";
   }
-
-  // Unlike the LLVM IR dump above this is needed before the AMDGCN text is
-  // produced, because it decides whether the text is produced at all.
-  const char *amdgcnDumpEnv = std::getenv("AMDGCN_ENABLE_DUMP");
-  bool dumpAmdgcn = amdgcnDumpEnv && StringRef(amdgcnDumpEnv) == "1";
 
   // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
   // records DiagnosticHandler::HasErrors and prints the message. Backend
