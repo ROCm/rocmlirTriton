@@ -501,21 +501,6 @@ def add_type_aliases(from_type, to_type):
 
 
 # =============================================================================
-# Main
-# =============================================================================
-
-
-def print_results(results, arch):
-    """Print selected perfconfigs for an architecture."""
-    print(f"\n=== {arch} ===")
-    for dtype, configs in results.items():
-        print(f"\n{dtype}: {len(configs)} configs")
-        for i, cfg in enumerate(configs, 1):
-            print(f"{i:4d}: {cfg}")
-    print()
-
-
-# =============================================================================
 # Per-Problem Maps
 # =============================================================================
 
@@ -670,6 +655,21 @@ def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
             print(f"  {short} problem(s) measured fewer than {top_n} perfconfigs")
         if missing_non_split:
             print(f"  {missing_non_split} problem(s) have no measured splitKFactor=1 perfconfig")
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+
+def print_results(results, arch):
+    """Print selected perfconfigs for an architecture."""
+    print(f"\n=== {arch} ===")
+    for dtype, configs in results.items():
+        print(f"\n{dtype}: {len(configs)} configs")
+        for i, cfg in enumerate(configs, 1):
+            print(f"{i:4d}: {cfg}")
+    print()
 
 
 def process_arch(df, arch, op, threshold, update, top_n, no_splitk):
