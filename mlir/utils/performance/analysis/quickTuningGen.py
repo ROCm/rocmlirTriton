@@ -258,6 +258,24 @@ def build_coverage(df_typed, target_cols, op, threshold, use_perf_priority=False
     return coverage
 
 
+def create_selection_model(name, sense, n_configs):
+    """Create an ILP model and one binary selection variable per config."""
+    model = pulp.LpProblem(name, sense)
+    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
+    return model, selected
+
+
+def solve_selection_model(model, selected, configs, failure_message):
+    """Solve a config-selection model and return its selected configs."""
+    status = model.solve(pulp.PULP_CBC_CMD(msg=0))
+    if status != pulp.LpStatusOptimal:
+        status_name = pulp.LpStatus.get(status, "Unknown")
+        raise RuntimeError(f"{failure_message}: {status_name}. "
+                           f"This likely indicates corrupted input data or a bug.")
+
+    return [configs[j] for j in range(len(configs)) if selected[j].varValue == 1]
+
+
 def solve_full_coverage(coverage, dtype):
     """Return the minimum config set and its coverage matrix."""
     problems = sorted(coverage.keys())
@@ -270,19 +288,12 @@ def solve_full_coverage(coverage, dtype):
         for config in coverage[problem]:
             matrix[i, config_idx[config]] = 1
 
-    problem = pulp.LpProblem("SetCover", pulp.LpMinimize)
-    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
-    problem += pulp.lpSum(selected[j] for j in range(n_configs))
+    model, selected = create_selection_model("SetCover", pulp.LpMinimize, n_configs)
+    model += pulp.lpSum(selected[j] for j in range(n_configs))
     for i in range(n_problems):
-        problem += pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs)) >= 1
+        model += pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs)) >= 1
 
-    status = problem.solve(pulp.PULP_CBC_CMD(msg=0))
-    if status != pulp.LpStatusOptimal:
-        status_name = pulp.LpStatus.get(status, "Unknown")
-        raise RuntimeError(f"Set cover failed for {dtype}: {status_name}. "
-                           f"This likely indicates corrupted input data or a bug.")
-
-    chosen = [configs[j] for j in range(n_configs) if selected[j].varValue == 1]
+    chosen = solve_selection_model(model, selected, configs, f"Set cover failed for {dtype}")
     return chosen, problems, configs, config_idx, matrix
 
 
@@ -290,27 +301,21 @@ def solve_bounded_coverage(problems, problem_weights, configs, config_idx, matri
     """Select at most ``max_configs`` configs using a precomputed coverage matrix."""
     n_problems, n_configs = len(problems), len(config_idx)
 
-    problem = pulp.LpProblem("BoundedCoverage", pulp.LpMaximize)
-    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
+    model, selected = create_selection_model("BoundedCoverage", pulp.LpMaximize, n_configs)
     covered = pulp.LpVariable.dicts("covered", range(n_problems), cat='Binary')
 
     # The small tie-breaker prefers a shorter list without changing the primary
     # objective of maximizing weighted problem coverage.
-    problem += (pulp.lpSum(problem_weights.get(p, 1) * covered[i] for i, p in enumerate(problems)) -
-                1e-6 * pulp.lpSum(selected[j] for j in range(n_configs)))
-    problem += pulp.lpSum(selected[j] for j in range(n_configs)) <= max_configs
+    model += (pulp.lpSum(problem_weights.get(p, 1) * covered[i] for i, p in enumerate(problems)) -
+              1e-6 * pulp.lpSum(selected[j] for j in range(n_configs)))
+    model += pulp.lpSum(selected[j] for j in range(n_configs)) <= max_configs
     for i in range(n_problems):
-        problem += covered[i] <= pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs))
+        model += covered[i] <= pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs))
 
-    status = problem.solve(pulp.PULP_CBC_CMD(msg=0))
-    if status != pulp.LpStatusOptimal:
-        status_name = pulp.LpStatus.get(status, "Unknown")
-        raise RuntimeError(f"Bounded quick-tuning coverage failed: {status_name}.")
-
-    return [configs[j] for j in range(n_configs) if selected[j].varValue == 1]
+    return solve_selection_model(model, selected, configs, "Bounded quick-tuning coverage failed")
 
 
-def find_perfconfigs(df, op, threshold, max_configs=40):
+def find_perfconfigs(df, op, threshold, max_configs=None):
     """Find minimal covering set of perfconfigs using set cover optimization.
 
     For each problem (unique combination of problem dimensions), we identify
