@@ -155,8 +155,7 @@ TEST(FindFallbackTest, Gfx1100UsesOwnGemmAndConvLists) {
     for (StringRef dataType : kNavi3TunedDataTypes) {
       std::string target =
           (Twine("gfx1100") + "_" + kernelType + "_" + dataType).str();
-      EXPECT_EQ(target,
-                ParamLookupTable<GemmParamsAttr>::findFallback(target))
+      EXPECT_EQ(target, ParamLookupTable<GemmParamsAttr>::findFallback(target))
           << "for target " << target;
     }
   }
