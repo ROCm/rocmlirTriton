@@ -88,10 +88,9 @@ StringRef ParamLookupTable<ParamsType>::pickClosestRelative(
     StringRef target, ArrayRef<StringRef> relatives) {
   assert(!relatives.empty() &&
          "pickClosestRelative requires at least one relative");
-  // Nothing sorts `relatives` explicitly: getRelatives, the only producer,
-  // appends candidates while iterating the table, and that table is a
-  // `std::map` keyed on StringRef, so the vector inherits the map's ascending
-  // key order. The assert pins that incidental guarantee down.
+  // getRelatives explicitly sorts the candidates merged from both lookup
+  // tables so lower_bound can search them. Keep the assertion here to pin down
+  // that producer/consumer contract.
   assert(llvm::is_sorted(relatives) && "relatives must be sorted ascending");
 
   auto it = std::lower_bound(relatives.begin(), relatives.end(), target);
@@ -200,6 +199,9 @@ ParamLookupTable<ParamsType>::getRelatives(StringRef target) {
   appendRelatives(getTable());
   appendRelatives(getNoSplitKTable());
 
+  // Each std::map is sorted independently, but concatenating their keys does
+  // not preserve global ordering. Sorting also groups duplicate keys so the
+  // following unique removes entries present in both tables.
   llvm::sort(relatives);
   relatives.erase(std::unique(relatives.begin(), relatives.end()),
                   relatives.end());

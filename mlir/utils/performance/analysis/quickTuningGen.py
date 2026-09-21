@@ -480,15 +480,18 @@ def add_type_aliases(from_type, to_type):
             continue
 
         from_key = f"{arch}_{kernel}_{from_type}"
+        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
+        section_name = get_lookup_section(arch, op, from_type)
+        content = ensure_section(content, section_name)
+        section_start = content.find(f"#ifdef {section_name}")
+        section_end = find_endif(content, section_name)
 
-        # Don't overwrite existing entries - aliases are fallbacks only
-        if f'"{from_key}"' in content:
+        # Don't overwrite existing entries in the target section. The same key
+        # may legitimately exist in the no-split-K lookup table.
+        if f'"{from_key}"' in content[section_start:section_end]:
             print(f"Skipping {from_key}: already exists")
             continue
 
-        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
-
-        section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
 
         content = add_lookup_entry(content, section_name, entry)
