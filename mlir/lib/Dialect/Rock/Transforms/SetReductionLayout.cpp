@@ -442,6 +442,16 @@ std::optional<size_t> sharedMemoryFootprint(ModuleOp mod) {
 void RockSetReductionLayoutPass::runOnOperation() {
   ModuleOp mod = getOperation();
 
+  // numStages > 1 is not supported intentionally. Experiments showed that,
+  // on pipelined kernels, the performance impact of this pass is mostly
+  // negative. It was not explored why, but documenting this finding here in
+  // case somebody wants to explore this at some point.
+  if (numStages != 1) {
+    LLVM_DEBUG(llvm::dbgs() << "rock-set-reduction-layout: numStages="
+                            << numStages << " is pipelined; skipping\n");
+    return;
+  }
+
   // The `useReductionLayout` perfConfig knob is a tri-state gate:
   //   -1 (heuristic default): rewrite only convolution kernels (those carrying
   //      the `rock.conv_kernel` attribute).

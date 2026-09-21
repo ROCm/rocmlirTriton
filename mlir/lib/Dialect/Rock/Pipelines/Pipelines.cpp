@@ -282,16 +282,13 @@ static void makeLLIR(mlir::OpPassManager *pm,
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
   // --- rocmlirTriton pass ----
   // Redistribute the layout of the reduction dimension to reduce register
-  // pressure. Once scheduled, the `useReductionLayout` knob controls whether
-  // it actually runs.
-  //
-  // We limit this pass to non-pipelined kernels, since experiments showed that
-  // this pass is generally bad in terms of performance for those kernels.
-  if (options.numStages == 1) {
-    rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
-    reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
-    pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
-  }
+  // pressure. Always scheduled; `useReductionLayout` decides which kernels it
+  // rewrites and `numStages` holds it back on pipelined ones, for the reasons
+  // documented on the pass itself.
+  rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
+  reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
+  reductionLayoutOpts.numStages = options.numStages;
+  pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
   // --- rocmlirTriton pass ----
   pm->addPass(mlir::createSCFToControlFlowPass());
 

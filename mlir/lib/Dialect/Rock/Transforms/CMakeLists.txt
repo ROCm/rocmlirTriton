@@ -92,15 +92,23 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   # Triton dependencies
   # TritonIR depends on TritonGPUIR because Traits.cpp uses MemDescType
   # TritonGPUIR depends on TritonNvidiaGPUIR because it references NVIDIA types/ops
-  # TritonAnalysis provides supportMMA, getReshapeDecomposition
-  # TritonGPUTransforms provides inferDstEncoding, verifyBarrierType
+  # TritonAnalysis provides supportMMA, getReshapeDecomposition and
+  # ModuleAllocation, which rock-set-reduction-layout uses to size the shared
+  # memory its rewrite would need
+  # TritonGPUTransforms provides inferDstEncoding, verifyBarrierType, getAMDArch
   # TritonAMDGPUIR defines amdgpu.in_thread_transpose and its
   # deduceOutputLayout helper, used by rock-set-reduction-layout.
+  # TritonAMDAnalysis provides AMDAllocationAnalysisScratchSizeFn and
+  # TritonAMDGPUToLLVM the AMD::TargetInfo it takes, together giving
+  # rock-set-reduction-layout the same shared-memory sizing the downstream
+  # AllocateAMDGPUSharedMemory pass performs.
   TritonGPUTransforms
   TritonIR
   TritonGPUIR
   TritonAnalysis
   TritonAMDGPUIR
+  TritonAMDAnalysis
+  TritonAMDGPUToLLVM
 )
 
 rocmlir_add_triton_includes(MLIRRockTransforms)
