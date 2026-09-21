@@ -10,7 +10,7 @@
 //
 // CHECK-LABEL: define amdgpu_kernel void @kernel
 // CHECK: call fastcc float @__ocml_erf_f32({{.*}}) #[[NOINLINE:[0-9]+]]
-// CHECK-COUNT-127: call fastcc float @__ocml_erf_f32
+// CHECK-COUNT-127: call fastcc float @__ocml_erf_f32({{.*}}) #[[NOINLINE]]
 // CHECK-NOT: call fastcc float @__ocml_erf_f32
 // CHECK: define internal fastcc noundef float @__ocml_erf_f32
 // CHECK: attributes #[[NOINLINE]] = { noinline }

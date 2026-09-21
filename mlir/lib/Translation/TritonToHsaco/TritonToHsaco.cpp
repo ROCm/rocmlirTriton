@@ -527,7 +527,9 @@ void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
         if (!call)
           continue;
-        if (llvm::Function *callee = call->getCalledFunction())
+        auto *callee = llvm::dyn_cast<llvm::Function>(
+            call->getCalledOperand()->stripPointerCasts());
+        if (callee)
           directCallSites[callee].push_back(call);
       }
 
