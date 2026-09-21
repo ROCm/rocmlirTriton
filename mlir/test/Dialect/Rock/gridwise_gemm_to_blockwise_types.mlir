@@ -18,6 +18,12 @@
 // The CHECK lines anchor on tt.get_program_id -> arith.select (end of XCC
 // rearrangement) -> groupSize/blocksPerGroup/mBlocks/mnBlocks constants ->
 // their uses.
+//
+// Both the m_block remainder and the n_block quotient must divide the
+// group-local id (bid % blocksPerGroup), never the grid-wide bid. Their
+// divisor is a runtime value, so the backend expands the division in f32,
+// which stops being exact past roughly 2^23; a grid-wide dividend then yields
+// an off-by-one quotient and out-of-bounds tile coordinates.
 
 // -----
 
@@ -38,9 +44,9 @@
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_i8_i32(%arg0: tensor<51200xi8>, %arg1: tensor<320000xi8>, %arg2: tensor<51200xi32>) -> tensor<51200xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -72,9 +78,9 @@ func.func @gemm_basic_i8_i32(%arg0: tensor<51200xi8>, %arg1: tensor<320000xi8>, 
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_f32_f32(%arg0: tensor<51200xf32>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -106,9 +112,9 @@ func.func @gemm_basic_f32_f32(%arg0: tensor<51200xf32>, %arg1: tensor<320000xf32
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_f16_f16(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf16>, %arg2: tensor<51200xf16>) -> tensor<51200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -140,9 +146,9 @@ func.func @gemm_basic_f16_f16(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf16
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_f16_f32(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf16>, %arg2: tensor<51200xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -174,9 +180,9 @@ func.func @gemm_basic_f16_f32(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf16
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_bf16_bf16(%arg0: tensor<51200xbf16>, %arg1: tensor<320000xbf16>, %arg2: tensor<51200xbf16>) -> tensor<51200xbf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -208,9 +214,9 @@ func.func @gemm_basic_bf16_bf16(%arg0: tensor<51200xbf16>, %arg1: tensor<320000x
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_basic_bf16_f32(%arg0: tensor<51200xbf16>, %arg1: tensor<320000xbf16>, %arg2: tensor<51200xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
