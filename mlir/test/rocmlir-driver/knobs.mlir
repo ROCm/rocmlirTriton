@@ -213,10 +213,10 @@
 // RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
-// RL_DEFAULT: rock-set-reduction-layout{use-reduction-layout=-1}
-// RL_HEURISTIC: rock-set-reduction-layout{use-reduction-layout=-1}
-// RL_OFF: rock-set-reduction-layout{use-reduction-layout=0}
-// RL_ON: rock-set-reduction-layout{use-reduction-layout=1}
+// RL_DEFAULT: rock-set-reduction-layout{num-stages=2 use-reduction-layout=-1}
+// RL_HEURISTIC: rock-set-reduction-layout{num-stages=2 use-reduction-layout=-1}
+// RL_OFF: rock-set-reduction-layout{num-stages=2 use-reduction-layout=0}
+// RL_ON: rock-set-reduction-layout{num-stages=2 use-reduction-layout=1}
 
 //===----------------------------------------------------------------------===//
 // useOptimizeEpilogue
