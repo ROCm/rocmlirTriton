@@ -332,19 +332,32 @@ patch-free-var-mask-register-dim-name.patch
   Not filed upstream yet; upstream Triton has the same defect.
 
 patch-cost-aware-dot-rematerialization.patch
-  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
-  isRematBeneficial cost model instead of hoisting unconditionally. The pass
-  previously moved every ttg.convert_layout next to its load once the backward
-  slice was elementwise-pure, even when rematerializing the slice in a
-  replicated dot-operand layout cost more than keeping the convert (e.g.
-  expensive math scaled by getCostFactor replication and the 8x
-  isExpensiveMathOp multiplier).
-
-  After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
-  the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,
-  newCvtCost), matching hoistConvertOnTopOfExtOrBroadcast. Hoist proceeds only
-  when eliminating the use-site convert is at least as cheap as rematerializing
-  the slice plus the load-side converts.
+  Upstream PR: https://github.com/triton-lang/triton/pull/11551
+  Upstream title: [TRITONGPU] Avoid expensive math rematerialization when
+  hoisting dot operands
+  Stops LayoutRematerialization::hoistConvertDotOperand from rematerializing
+  expensive math. The pass moved every ttg.convert_layout next to its load once
+  the backward slice was elementwise-pure, even when the slice had to be
+  duplicated or ran in a dot-operand layout that replicates the operand across
+  warps, multiplying transcendental work.
+  Mirrors the upstream PR: the cost computation is split into getSliceOps,
+  getValuesUsedOutsideSlice and getRematerializationCost, which reports
+  totalCost, expensiveMathCost and splitsSlice, and the hoist is rejected only
+  when expensiveMathCost is non-zero. Cheap elementwise chains still hoist,
+  because the payoff there is pipelining the loads rather than a cheaper
+  convert. test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir is
+  byte-identical to the version in that PR.
+  Two deviations from the PR, both because the pinned Triton predates the
+  feature: isRematBeneficial keeps its four-parameter signature and the
+  disableRematSplitting rejection is omitted. The splitsSlice field is kept so
+  the next bump can drop this record without further edits.
+  An earlier revision of this record gated on total cost instead, which also
+  suppressed cheap chains and left five sections of test/TritonGPU/combine.mlir
+  and all three functions of
+  test/TritonGPU/amd/accelerate-amd-matmul-mfma-decompose-scaled-dot.mlir
+  failing; both are untouched upstream tests and now pass unmodified. That
+  revision also declared 21 new lines in a hunk with 20, so it could not be
+  reverse-applied in Step 1.2 of docs/bump_triton_version.md.
 
   Motivation: fused elementwise + conv kernels on RDNA (e.g. log/tanh/mul on
   the B operand before a WMMA dot) regressed ~15% vs rocMLIR because a
@@ -352,12 +365,10 @@ patch-cost-aware-dot-rematerialization.patch
   replicated WMMA dot-operand layout. Keeping the convert after the expensive
   chain lets each warp compute once and store to LDS.
 
-  No upstream PR yet. If the shared model is too weak or too strong for dot-
-  operand hoists, tune getCostFactor or the expensive-math multiplier in one
+  Drop this record once the upstream PR lands and the vendored Triton contains
+  it. If the expensive-math policy turns out to be too weak or too strong for
+  dot-operand hoists, tune getCostFactor or the expensive-math multiplier in one
   place rather than adding a second heuristic.
-
-  Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
-  from hoistConvertDotOperand or upstreams this change.
 
 patch-negligible-anchor-layout-conflict.patch
   Adds the tie-break that LayoutPropagation::resolveConflicts asked for in its
