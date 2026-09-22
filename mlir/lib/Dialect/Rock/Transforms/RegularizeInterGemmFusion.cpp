@@ -355,12 +355,12 @@ externalizeBodyTransforms(OpBuilder &builder, Operation *op, Block &block,
   if (!chains[0].transforms.empty()) {
     SmallVector<Attribute> arg0Attrs(chains[0].transforms.begin(),
                                      chains[0].transforms.end());
-    ArrayAttr inverted =
+    FailureOr<ArrayAttr> inverted =
         invertTransforms(builder, loc, builder.getArrayAttr(arg0Attrs));
-    if (!inverted)
+    if (failed(inverted))
       return op->emitOpError()
              << "failed to invert first-GEMM argument transforms";
-    invertedArg0Transforms.append(inverted.begin(), inverted.end());
+    invertedArg0Transforms.append(inverted->begin(), inverted->end());
     chains[0].chainEnd.replaceAllUsesWith(block.getArgument(0));
   }
 
