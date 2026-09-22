@@ -197,10 +197,17 @@ class LayoutHelpersTest(unittest.TestCase):
                          layout)
 
 
-def make_conv_commandline(fil, inp, out, group=1):
-    """Build a minimal conv commandline (as a token list) with the given layouts."""
-    return ("conv -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
-            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(f=fil, i=inp, o=out,
+def make_conv_commandline(fil, inp, out, group=1, prefix="conv"):
+    """Build a minimal conv commandline (as a token list) with the given layouts.
+
+    ``prefix`` is the MIOpen-style argv[0] that selects the datatype ("conv" for
+    f32, "convfp8" for fp8, ...).
+    """
+    return ("{pfx} -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
+            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(pfx=prefix,
+                                                                     f=fil,
+                                                                     i=inp,
+                                                                     o=out,
                                                                      g=group).split()
 
 
@@ -276,6 +283,38 @@ class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
         self.assertIsNone(
             perfRunner.conv_commandline_to_miopen_layouts(
                 make_conv_commandline("GNC01", "NGC01", "N01GC")))
+
+
+class MiopenSupportedDtypesTest(unittest.TestCase):
+    """MIOpenDriver has no fp8 conv support, so those configs skip the MIOpen side.
+
+    The skip returns a NaN table entry rather than dropping the config, which is
+    what lets fp8 conv still be benchmarked with MLIR on chips MIOpen can't follow.
+    Since benchmark_external now raises on a driver error instead of returning NaN,
+    reaching the driver with an fp8 config would fail the whole run.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, perfRunner, 'run_pipeline', perfRunner.run_pipeline)
+        perfRunner.run_pipeline = self._forbidden
+
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("MIOpenDriver invoked for an unsupported datatype")
+
+    def benchmark(self, prefix):
+        return perfRunner.ConvConfiguration.benchmark_external(
+            make_conv_commandline("GNC01", "NGC01", "NGC01", prefix=prefix), None, 'gfx942', 304, 1)
+
+    def test_fp8_conv_skips_the_driver(self):
+        for prefix in ('convfp8', 'convfp8_fp8'):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(math.isnan(self.benchmark(prefix)['TFlops']))
+
+    def test_supported_dtype_reaches_the_driver(self):
+        """f32 is supported, so the guard must not swallow it."""
+        with self.assertRaises(AssertionError):
+            self.benchmark('conv')
 
 
 class GetNanosecondsTest(TempFileTestCase):

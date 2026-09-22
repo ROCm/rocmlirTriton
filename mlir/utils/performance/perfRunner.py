@@ -757,7 +757,7 @@ def get_conv_configurations(filename,
 
                 # Skip unsupported datatypes
                 if datatype == 'convfp8':
-                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
+                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx1030', 'gfx1101'}
                     if chip is None:
                         chip = get_chip()
                     if chip in unsupported_chips:
@@ -805,6 +805,11 @@ class ConvConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.CONV_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
     EXTERNAL_NAME = "MIOpen"
     SWEEP_KIND = "conv"
+
+    # MIOpenDriver only supports these conv datatypes as base arguments. Configs
+    # on any other type (fp8, ...) still get benchmarked with MLIR; only the
+    # MIOpen side of the comparison is skipped.
+    MIOPEN_SUPPORTED_DTYPES = {'f32', 'f16', 'bf16', 'i8'}
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -1091,6 +1096,9 @@ class ConvConfiguration(PerfConfiguration):
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME))
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
+        if config.datatype not in cls.MIOPEN_SUPPORTED_DTYPES:
+            print(f"Skipping MIOpen benchmark for unsupported datatype: {config.datatype}")
+            return config.table_entry(np.nan)
         config_args, _ = extract_tuning_key_metadata(commandline)
         config_args = drop_perf_priority(config_args)
         # rocMLIR configs use layout names (e.g. GNC01) that MIOpenDriver rejects.
@@ -1161,7 +1169,7 @@ def get_gemm_configurations(filename,
                         continue
 
                 if datatype == 'fp8':
-                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
+                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx1030', 'gfx1101'}
                     if chip is None:
                         chip = get_chip()
                     if chip in unsupported_chips:
@@ -2939,6 +2947,9 @@ def tune_mlir_kernels(configs, arch, num_cu, num_chiplets):
         envs['MIOPEN_DEBUG_FIND_ONLY_SOLVER'] = solver_names[test_vector]
         commandline = test_vector.split(sep=' ')
         config = ConvConfiguration.from_command_line(commandline, arch, num_cu, num_chiplets)
+        if config.datatype not in ConvConfiguration.MIOPEN_SUPPORTED_DTYPES:
+            print(f"Skipping MIOpen tuning for unsupported datatype: {config.datatype}")
+            continue
         config_args, _ = extract_tuning_key_metadata(commandline)
         if config.input_layout == 'nchw':
             miopen_driver_cmd = [MIOPENDRIVER, *config_args, '-V', '0']
