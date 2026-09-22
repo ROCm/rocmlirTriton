@@ -490,14 +490,16 @@ void RockSetReductionLayoutPass::runOnOperation() {
 
   // Recompute vector-width hints once all layouts have reached their final
   // form. This uses the same AMD axis analysis as buffer-op lowering.
-  triton::AMD::ModuleAxisInfoAnalysis axisInfo(*probe);
-  for (triton::amdgpu::BufferLoadOp load : retypedBufferLoads) {
-    unsigned contiguity =
-        LLVM::AMD::getVectorSize(load.getPtr(), load.getOffsets(), axisInfo);
-    if (Value mask = load.getMask())
-      contiguity =
-          std::min<unsigned>(contiguity, axisInfo.getMaskAlignment(mask));
-    load.setContiguity(contiguity);
+  if (!retypedBufferLoads.empty()) {
+    triton::AMD::ModuleAxisInfoAnalysis axisInfo(*probe);
+    for (triton::amdgpu::BufferLoadOp load : retypedBufferLoads) {
+      unsigned contiguity =
+          LLVM::AMD::getVectorSize(load.getPtr(), load.getOffsets(), axisInfo);
+      if (Value mask = load.getMask())
+        contiguity =
+            std::min<unsigned>(contiguity, axisInfo.getMaskAlignment(mask));
+      load.setContiguity(contiguity);
+    }
   }
 
   // With no target attribute to size shared memory from, keep the rewrite

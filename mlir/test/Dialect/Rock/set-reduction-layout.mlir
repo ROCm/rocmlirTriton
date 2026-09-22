@@ -97,7 +97,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   }
 
   // CHECK-LABEL: tt.func @buffer_load_contiguity_limited_by_mask
-  // CHECK:           amdg.buffer_load %{{.*}}[%{{.*}}], %{{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK:           amdg.buffer_load %{{[0-9a-zA-Z_]+}}[%{{[0-9a-zA-Z_]+}}], %{{[0-9a-zA-Z_]+}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
   tt.func @buffer_load_contiguity_limited_by_mask(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %limit: i32) -> tensor<128x64xi32, #blockedA> {
     %offA = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
     %range = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedB}>>
@@ -137,7 +137,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // Gather buffer_load + its offsets/mask are moved onto K (warpsPerCTA = [4, 1]).
   // Its vector-width hint is recomputed for the new layout; these splat offsets
   // safely produce scalar loads, so the default contiguity = 1 is omitted.
-  // CHECK-DAG:     amdg.buffer_load %{{.*}}[%{{.*}}], %{{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     amdg.buffer_load %{{[0-9a-zA-Z_]+}}[%{{[0-9a-zA-Z_]+}}], %{{[0-9a-zA-Z_]+}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // The in_thread_transpose #linear is remapped to the redistributed layout.
   // CHECK-DAG:     amdg.in_thread_transpose {{.*}} -> tensor<64x64xi8, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [4, 0], [0, 32], [32, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[8, 0], [16, 0]], block = []}>>
