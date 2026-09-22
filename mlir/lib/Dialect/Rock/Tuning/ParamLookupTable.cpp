@@ -35,10 +35,8 @@ SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
       std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING") != nullptr;
 
   // Deliberately no key fallback: a ranking only holds for the problem it was
-  // measured on. The rankings were measured with split-K allowed, so a caller
-  // that cannot use split-K takes the no-split-K set cover instead of a list
-  // that may consist entirely of illegal configs.
-  if (problemKeyHash && supportsSplitK && !perProblemDisabled) {
+  // measured on.
+  if (problemKeyHash && !perProblemDisabled) {
     const auto &problemMap = getProblemMap();
     if (auto it = problemMap.find(key); it != problemMap.end()) {
       SmallVector<StringRef> perfConfigs = it->second.lookup(*problemKeyHash);

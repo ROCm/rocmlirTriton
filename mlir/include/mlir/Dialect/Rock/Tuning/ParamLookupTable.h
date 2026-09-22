@@ -39,10 +39,10 @@ public:
   /// Perfconfigs to try, narrowed to `problemKeyHash` when this key has an
   /// entry for it.
   ///
-  /// Prefer the regular table when `supportsSplitK` is true and the no-split-K
-  /// table otherwise. Fallback between the pair is always enabled. The
-  /// per-problem rankings were all measured with split-K allowed, so they are
-  /// only consulted when `supportsSplitK` is true.
+  /// `supportsSplitK` selects between the set-cover tables: the regular one
+  /// when true and the no-split-K one otherwise, with fallback between the
+  /// pair always enabled. It does not gate the per-problem rankings, whose
+  /// split-K-illegal members are dropped by the caller.
   static SmallVector<StringRef> lookup(
       StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
       std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
