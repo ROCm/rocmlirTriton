@@ -1868,7 +1868,8 @@ RocmlirSplitKSelectionLikelihood isSplitKFaster(int64_t gDim, int64_t mDim,
 }
 
 bool isModuleFusible(ModuleOp module, StringRef perfConfig) {
-  bool fusible = succeeded(rock::testFusionLegalityBwdDataConv(module));
+  bool fusible = succeeded(rock::testFusionLegalityReduce(module)) &&
+                 succeeded(rock::testFusionLegalityBwdDataConv(module));
   if (!rock::isSplitKRequested(module, perfConfig))
     return fusible;
   return fusible && succeeded(rock::testFusionLegalitySplitK(module));
