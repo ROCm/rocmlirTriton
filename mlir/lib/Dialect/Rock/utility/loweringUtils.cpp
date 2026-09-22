@@ -707,17 +707,24 @@ FusionInfo mlir::rock::collectFusionInfo(Value root) {
   SmallVector<Value> worklist;
   worklist.push_back(root);
   SmallVector<Operation *> fusionOps;
+  SmallVector<Operation *> reduceOps;
   DenseSet<Operation *> visited;
 
   while (!worklist.empty()) {
     Value current = worklist.pop_back_val();
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
-      if (!(isFusionOp(owner) || isa<ViewLikeOpInterface>(owner)) ||
-          !visited.insert(owner).second)
+      if (!isForwardTraceOp(owner) || !visited.insert(owner).second)
         continue;
       if (isFusionOp(owner))
         fusionOps.push_back(owner);
+      if (isa<ReduceOp>(owner)) {
+        // A reduction rewrites the shape, so the chain past it no longer
+        // matches the tile the fusion machinery pads and types. Record the op
+        // for legality checks, but stop tracing here.
+        reduceOps.push_back(owner);
+        continue;
+      }
 
       for (Value result : owner->getResults()) {
         chainValues.insert(result);
@@ -735,7 +742,7 @@ FusionInfo mlir::rock::collectFusionInfo(Value root) {
     }
   }
 
-  return {extraInputs, chainValues, fusionOps};
+  return {extraInputs, chainValues, fusionOps, reduceOps};
 }
 
 DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {

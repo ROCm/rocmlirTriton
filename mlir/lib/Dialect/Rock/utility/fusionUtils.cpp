@@ -178,6 +178,60 @@ LogicalResult mlir::rock::testFusionLegalityReduce(ModuleOp mod) {
   return testFusionLegalityReduce(func);
 }
 
+// Matches a pure element-wise widening of the attention result: a lone
+// `arith.extf` fed directly by the result. Widening is lossless, so it
+// commutes with the split-kv LSE combine; anything chained onto it does not.
+static bool isPureElementwiseExtF(const FusionInfo &fusionInfo) {
+  if (fusionInfo.fusionOps.size() != 1 || !fusionInfo.reduceOps.empty())
+    return false;
+  auto extFOp = dyn_cast<ExtFOp>(fusionInfo.fusionOps.front());
+  return extFOp && fusionInfo.chainValues.contains(extFOp.getIn());
+}
+
+// Whether the fusion chain hanging off `partial` survives the split-kv
+// combine. Only a missing epilogue or a lone widening does.
+static bool splitKVOutputFusionIsLegal(Value partial) {
+  FusionInfo fusionInfo = rock::collectFusionInfo(partial);
+  bool hasOutputFusion =
+      !fusionInfo.fusionOps.empty() || !fusionInfo.reduceOps.empty();
+  return !hasOutputFusion || isPureElementwiseExtF(fusionInfo);
+}
+
+LogicalResult
+mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
+  // Input fusions and fusions between the two gemms stay legal under
+  // splitKV > 1; only output fusions are rejected, because each split produces
+  // a partial result that an LSE-based combine has yet to rescale.
+  WalkResult walkResult = func.walk([](rock::AttentionOp attnOp) -> WalkResult {
+    if (attnOp.getSplitKV() <= 1)
+      return WalkResult::advance();
+
+    if (!splitKVOutputFusionIsLegal(attnOp.getResult()))
+      return WalkResult::interrupt();
+
+    // The LSE is a per-split partial log-sum-exp that the same combine has to
+    // reconcile, so an epilogue on it is no more legal than one on the result.
+    // The verifier guarantees it is present once splitKV > 1.
+    if (Value lse = attnOp.getLse())
+      if (!splitKVOutputFusionIsLegal(lse))
+        return WalkResult::interrupt();
+
+    return WalkResult::advance();
+  });
+
+  return success(!walkResult.wasInterrupted());
+}
+
+LogicalResult mlir::rock::testFusionLegalityAttentionSplitKV(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  bool isFusible = true;
+  for (auto f : funcs) {
+    isFusible &= succeeded(testFusionLegalityAttentionSplitKV(f));
+  }
+
+  return success(isFusible);
+}
+
 LogicalResult mlir::rock::testFusionLegalityBwdDataConv(func::FuncOp func) {
   // For right now, no BwdDataConv ops are fusible
   WalkResult walkResult = func.walk([&](Operation *op) -> WalkResult {

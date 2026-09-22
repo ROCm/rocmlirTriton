@@ -31,6 +31,12 @@ LogicalResult testFusionLegalityReduce(func::FuncOp func);
 // fusion legality for backward data convolutions
 LogicalResult testFusionLegalityBwdDataConv(func::FuncOp func);
 
+// Checks whether any `rock::AttentionOp` has splitKV > 1. Output fusions
+// are rejected because the partial results need an LSE-based combine in a
+// subsequent stage; a pure element-wise `arith.extf` reader is the one
+// exception (lossless widening commutes with the combine).
+LogicalResult testFusionLegalityAttentionSplitKV(func::FuncOp func);
+
 // This is an overload of the `testFusionLegalitySplitK` which is more
 // convenient to use in CAPI. Given a `ModuleOp`, the function retrieve the
 // embedded `func:FuncOp` and calls the implementation
@@ -43,6 +49,10 @@ LogicalResult testFusionLegalityReduce(ModuleOp mod);
 
 // Same as above, overload of `testFusionLegalityBwdDataConv` for `ModuleOp`.
 LogicalResult testFusionLegalityBwdDataConv(ModuleOp mod);
+
+// Same as above, overload for `testFusionLegalityAttentionSplitKV` for
+// `ModuleOp`.
+LogicalResult testFusionLegalityAttentionSplitKV(ModuleOp mod);
 
 // Whether a gemm+gemm-like operation has any pre-second-GEMM fusions.
 bool gemmGemmHasPreSecondGemmFusion(RockGemmGemmWrapperInterface op);

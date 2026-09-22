@@ -185,6 +185,11 @@ struct FusionInfo {
   DenseMap<Value, Value> extraInputs;
   DenseSet<Value> chainValues;
   SmallVector<Operation *> fusionOps;
+  /// `rock.reduce` readers of the chain. Kept apart from `fusionOps` because a
+  /// reduction is not an element-wise op: it changes the output shape, so the
+  /// extra-input and output-type machinery must not treat it as one. Callers
+  /// asking "is there any output fusion?" need to check both.
+  SmallVector<Operation *> reduceOps;
 };
 
 FusionInfo collectFusionInfo(Value root);
