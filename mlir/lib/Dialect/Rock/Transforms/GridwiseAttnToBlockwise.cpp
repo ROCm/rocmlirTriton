@@ -195,6 +195,46 @@ struct GridwiseAttentionRewritePattern
     return level.front();
   }
 
+  static bool isFiniteFloatSplat(Value value) {
+    auto constant = value.getDefiningOp<arith::ConstantOp>();
+    if (!constant)
+      return false;
+    Attribute attr = constant.getValue();
+    if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+      return floatAttr.getValue().isFinite();
+    auto elements = dyn_cast<DenseFPElementsAttr>(attr);
+    return elements && elements.isSplat() &&
+           elements.getSplatValue<APFloat>().isFinite();
+  }
+
+  // Identity and multiplication by compile-time finite splats cannot turn a
+  // row of finite QK scores into a fully masked row. Everything else is
+  // conservatively treated as capable of doing so (for example, a runtime
+  // bias can contain -inf).
+  static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
+    if (value == qk)
+      return true;
+    auto mul = value.getDefiningOp<arith::MulFOp>();
+    if (!mul)
+      return false;
+    return (isFiniteFloatSplat(mul.getLhs()) &&
+            isFiniteConstantScaleOf(mul.getRhs(), qk)) ||
+           (isFiniteFloatSplat(mul.getRhs()) &&
+            isFiniteConstantScaleOf(mul.getLhs(), qk));
+  }
+
+  static bool preSoftmaxMayFullyMask(GridwiseAttentionOp op) {
+    Region &region = op.getPreSoftmaxBody();
+    if (region.empty())
+      return false;
+    Block &block = region.front();
+    if (block.getNumArguments() == 0)
+      return true;
+    auto yield = dyn_cast<rock::YieldOp>(block.getTerminator());
+    return !yield ||
+           !isFiniteConstantScaleOf(yield.getOperand(0), block.getArgument(0));
+  }
+
   // This function computes exp(gemm0 - rowmax_j)
   Value expSubstractMaxFromGemm0(PatternRewriter &rewriter, Location loc,
                                 Value softmaxInput,
@@ -287,7 +327,9 @@ struct GridwiseAttentionRewritePattern
     // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
     sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
 
-    return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
+    Value scaledOutput =
+        arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
+    return scaledOutput;
   }
 
   // This function does the corrections to row-based tiled reductions
@@ -1082,6 +1124,12 @@ struct GridwiseAttentionRewritePattern
     bool isCausal = op.getCausal();
     bool isPrefixCausal = isCausal && prefixOffsetTensor;
     int64_t splitKV = op.getSplitKV();
+    int64_t slidingWindowLookBack =
+        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
+    bool mayHaveFullyMaskedRows =
+        op.getEnableSoftmax() && (preSoftmaxMayFullyMask(op) ||
+                                  (isCausal && slidingWindowLookBack > 0) ||
+                                  splitKV > 1 || op.getPrePadG0M().has_value());
 
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
@@ -1206,9 +1254,21 @@ struct GridwiseAttentionRewritePattern
 
     auto blockMTensorType =
         RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
-    Value maxRow = createConstantFloatOp(
-        rewriter, loc, blockMTensorType, elemTypeSoftmax,
-        -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    Value maxRow;
+    if (mayHaveFullyMaskedRows) {
+      auto floatType = cast<FloatType>(elemTypeSoftmax);
+      APFloat lowestFinite =
+          APFloat::getLargest(floatType.getFloatSemantics(), /*Negative=*/true);
+      maxRow = arith::ConstantOp::create(
+          rewriter, loc, blockMTensorType,
+          SplatElementsAttr::get(
+              blockMTensorType,
+              rewriter.getFloatAttr(elemTypeSoftmax, lowestFinite)));
+    } else {
+      maxRow = createConstantFloatOp(
+          rewriter, loc, blockMTensorType, elemTypeSoftmax,
+          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    }
     Value sumRow = createConstantFloatOp(rewriter, loc, blockMTensorType,
                                          elemTypeSoftmax, 0.0, APFloat::opOK);
     Value zero = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
@@ -1218,8 +1278,6 @@ struct GridwiseAttentionRewritePattern
     Value prefixOffset;
     Value slidingWindowLowerBound;
     Value start, end;
-    int64_t slidingWindowLookBack =
-        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
     // get nLoop
     std::tie(start, end, gemm0NBlocksLastIter, lastValidKVIndex, prefixOffset,
              slidingWindowLowerBound) =
@@ -1577,9 +1635,17 @@ struct GridwiseAttentionRewritePattern
     sumRow = nLoopOp.getResult(gemm1NChunks + 1);
 
     if (op.getEnableSoftmax()) {
+      Value normalizationSum = sumRow;
+      if (mayHaveFullyMaskedRows) {
+        Value oneFloat =
+            createConstantFloatOp(rewriter, loc, blockMTensorType,
+                                  elemTypeSoftmax, 1.0, APFloat::opOK);
+        normalizationSum =
+            arith::MaxNumFOp::create(rewriter, loc, sumRow, oneFloat);
+      }
       for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
         outAccs[chunk] =
-            scaleFinalOutput(rewriter, loc, outAccs[chunk], sumRow);
+            scaleFinalOutput(rewriter, loc, outAccs[chunk], normalizationSum);
     }
 
     // Concatenate the per-chunk [gemm1MPerBlock, gemm1NPerBlock] output tiles

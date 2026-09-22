@@ -23,6 +23,8 @@ module {
   // CHECK: %[[LB_SPLAT:.*]] = tt.splat %[[LOWER_BOUND]] : i32 -> tensor<32x32xi32>
   // CHECK: %[[SW_MASK:.*]] = arith.cmpi ult, %{{.*}}, %[[LB_SPLAT]] : tensor<32x32xi32>
   // CHECK: arith.select %[[SW_MASK]], %{{.*}}, %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
+  // Padded query rows can be fully masked even without causal masking.
+  // CHECK: arith.maxnumf
 
   func.func @mlir_attention(
       %lastValidKVIndex: tensor<1xi32>,
