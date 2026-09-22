@@ -29,14 +29,16 @@ namespace rock {
 
 class PopulateParamsGemmGemm {
 public:
+  // `supportsSplitK` selects the preferred quick tuning list.
   static std::vector<GemmGemmParamsAttr>
-  getTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op);
+  getTuningParameters(OpBuilder &b, RockGemmGemmWrapperInterface op,
+                      bool supportsSplitK);
 
   // Same as above, but for callers without a concrete op (e.g. rocmlir-gen
   // computing default block sizes before the kernel exists).
   static std::vector<GemmGemmParamsAttr>
   getTuningParameters(OpBuilder &b, StringRef arch, KernelType kernelType,
-                      Type elementType);
+                      Type elementType, bool supportsSplitK);
 
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,

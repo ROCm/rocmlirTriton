@@ -218,6 +218,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-LABEL: tt.func @shared_encoding_guard_defeated
   // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     tt.load {{.*}}tensor<2x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // The rewrite is weighed on a clone that then replaces the module, and the
+  // clone's diagnostics reach the same engine as the module's. Pin that the
+  // second gather's bail-out is therefore reported exactly once.
+  // CONFLICT-COUNT-1: warps do not tile the reduction dim
+  // CONFLICT-NOT:     warps do not tile the reduction dim
   tt.func @shared_encoding_guard_defeated(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>, %arg2: !tt.ptr<i8>, %arg3: !tt.ptr<i8>) -> (tensor<128x64xi32, #blockedA>, tensor<128x64xi32, #blockedA2>) {
     %cst = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
     %cst2 = arith.constant dense<0> : tensor<128x64xi32, #blockedA2>
@@ -409,7 +414,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-LABEL: tt.func @conflicting_operand_roles
   // CHECK:         tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
   // CHECK-NOT:     warpsPerCTA = [4, 1]
-  // CONFLICT: load feeds dot operands with conflicting reduction dims
+  // CONFLICT-COUNT-1: load feeds dot operands with conflicting reduction dims
+  // CONFLICT-NOT:     load feeds dot operands with conflicting reduction dims
   tt.func @conflicting_operand_roles(%ptr: !tt.ptr<i8>) -> tensor<64x64xi32, #blocked> {
     %cst = arith.constant dense<0> : tensor<64x64xi32, #blocked>
     %s = tt.splat %ptr : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked>
@@ -445,5 +451,325 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %cb = ttg.convert_layout %lb : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
     %d = tt.dot %ca, %cb, %cst : tensor<64x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<64x64xi32, #blocked>
     tt.return %d : tensor<64x64xi32, #blocked>
+  }
+}
+
+// -----
+
+// Fused kernel: the dot operand is not produced by a load but by a fusion
+// prologue (here an arith.select standing in for a fused batchnorm/where) that
+// consumes the gather. The walk back from the dot operand ends on the select,
+// so the pass anchors on it rather than insisting on reaching a load. The new
+// encoding still reaches the load and the prologue's constants, because they
+// are all in the anchor's backward slice.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_fusion_prologue
+  // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     arith.select {{.*}} : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     tt.load {{.*}}tensor<128x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  tt.func @gather_through_fusion_prologue(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
+    %cst = arith.constant dense<0> : tensor<64x64xi8, #blocked1>
+    %cstMask = arith.constant dense<true> : tensor<64x64xi1, #blocked1>
+    %cstAcc = arith.constant dense<0> : tensor<128x64xi32, #blocked>
+    %0 = tt.splat %arg0 : !tt.ptr<i8> -> tensor<128x64x!tt.ptr<i8>, #blocked>
+    %1 = tt.splat %arg1 : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked1>
+    %2 = tt.load %0 : tensor<128x64x!tt.ptr<i8>, #blocked>
+    %3 = tt.load %1 : tensor<64x64x!tt.ptr<i8>, #blocked1>
+    %sel = arith.select %cstMask, %3, %cst : tensor<64x64xi1, #blocked1>, tensor<64x64xi8, #blocked1>
+    %4 = ttg.convert_layout %2 : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+    %5 = ttg.convert_layout %sel : tensor<64x64xi8, #blocked1> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
+    %6 = tt.dot %4, %5, %cstAcc : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<128x64xi32, #blocked>
+    tt.return %6 : tensor<128x64xi32, #blocked>
+  }
+}
+
+// -----
+
+// A prologue ending in a math library call. tt.extern_elementwise is how an
+// OCML symbol is carried at this level, and it is accepted as long as its marked as pure.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_pure_ocml_call
+  // CHECK-DAG:     tt.load {{.*}}tensor<32x64x!tt.ptr<f32>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK-DAG:     tt.extern_elementwise {{.*}}__ocml_exp_f32{{.*}} -> tensor<32x64xf32, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
+  tt.func @gather_through_pure_ocml_call(%pa: !tt.ptr<f32>, %pb: !tt.ptr<f32>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f32> -> tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>, #blocked>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<f32>, #blocked>
+    %e = tt.extern_elementwise %lb {libname = "libdevice", libpath = "", symbol = "__ocml_exp_f32", pure = true} : (tensor<32x64xf32, #blocked>) -> tensor<32x64xf32, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf32, #blockedA> -> tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %e : tensor<32x64xf32, #blocked> -> tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// The same call marked impure is refused by the memory-effect guard
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_impure_ocml_call
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @gather_through_impure_ocml_call(%pa: !tt.ptr<f32>, %pb: !tt.ptr<f32>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f32> -> tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f32> -> tensor<32x64x!tt.ptr<f32>, #blocked>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<f32>, #blocked>
+    %e = tt.extern_elementwise %lb {libname = "libdevice", libpath = "", symbol = "__ocml_exp_f32", pure = false} : (tensor<32x64xf32, #blocked>) -> tensor<32x64xf32, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf32, #blockedA> -> tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %e : tensor<32x64xf32, #blocked> -> tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// Reject tranpose 
+//
+// The guard that rejects it today is the trait check: tt.trans carries
+// SameOperandsAndResultElementType, and neither SameOperandsAndResultEncoding
+// nor Elementwise, so it never reaches the encoding and shape comparison.
+
+#blockedT = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [2, 2], order = [0, 1]}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @anchor_rejects_trans
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @anchor_rejects_trans(%pa: !tt.ptr<f16>, %pb: !tt.ptr<f16>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f16> -> tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f16> -> tensor<64x32x!tt.ptr<f16>, #blockedT>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %lb = tt.load %sb : tensor<64x32x!tt.ptr<f16>, #blockedT>
+    %tb = tt.trans %lb {order = array<i32: 1, 0>} : tensor<64x32xf16, #blockedT> -> tensor<32x64xf16, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf16, #blockedA> -> tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %tb : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// Same hazard for tt.reshape, and the same guard turns it away: it carries
+// SameOperandsAndResultElementType and is not Elementwise either. Were the
+// trait check relaxed, the shape comparison would still catch a reshape that
+// changes the shape, as this one does -- but not an identity reshape, nor a
+// rank-1 tt.trans, whose encodings a transpose leaves alone.
+
+#blockedR = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @anchor_rejects_reshape
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @anchor_rejects_reshape(%pa: !tt.ptr<f16>, %pb: !tt.ptr<f16>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %sa = tt.splat %pa : !tt.ptr<f16> -> tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f16> -> tensor<16x128x!tt.ptr<f16>, #blockedR>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %lb = tt.load %sb : tensor<16x128x!tt.ptr<f16>, #blockedR>
+    %rb = tt.reshape %lb allow_reorder : tensor<16x128xf16, #blockedR> -> tensor<32x64xf16, #blocked>
+    %ca = ttg.convert_layout %la : tensor<128x32xf16, #blockedA> -> tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %rb : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// A dot whose blocked result feeds another dot's operand. Anchoring on the
+// producer would redistribute its warps onto the consumer's reduction dim:
+// valid IR, but not a trade this pass is in a position to make. The producer's
+// own operands are deliberately reduction-contiguous, so it has no gather of
+// its own and any [4, 1] here would have to come from anchoring on it.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedK = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [0, 1]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @anchor_rejects_producer_dot
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @anchor_rejects_producer_dot(%pa: !tt.ptr<f32>, %pb: !tt.ptr<f32>) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %acc1 = arith.constant dense<0.000000e+00> : tensor<32x64xf32, #blocked>
+    %s0 = tt.splat %pa : !tt.ptr<f32> -> tensor<32x16x!tt.ptr<f32>, #blocked>
+    %s1 = tt.splat %pb : !tt.ptr<f32> -> tensor<16x64x!tt.ptr<f32>, #blockedK>
+    %l0 = tt.load %s0 : tensor<32x16x!tt.ptr<f32>, #blocked>
+    %l1 = tt.load %s1 : tensor<16x64x!tt.ptr<f32>, #blockedK>
+    %c0 = ttg.convert_layout %l0 : tensor<32x16xf32, #blocked> -> tensor<32x16xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+    %c1 = ttg.convert_layout %l1 : tensor<16x64xf32, #blockedK> -> tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
+    %d1 = tt.dot %c0, %c1, %acc1 : tensor<32x16xf32, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<16x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<32x64xf32, #blocked>
+    %sa = tt.splat %pa : !tt.ptr<f32> -> tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f32>, #blockedA>
+    %ca = ttg.convert_layout %la : tensor<128x32xf32, #blockedA> -> tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %d1 : tensor<32x64xf32, #blocked> -> tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d2 = tt.dot %ca, %cb, %acc : tensor<128x32xf32, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf32, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d2 : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// A region-carrying op. The backward slice does not enter the region, so
+// retyping the result would leave the yielded value on the old encoding and
+// produce invalid IR.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @anchor_rejects_region_op
+  //   CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @anchor_rejects_region_op(%pa: !tt.ptr<f16>, %pb: !tt.ptr<f16>, %cond: i1) -> tensor<128x64xf32, #blockedA> {
+    %acc = arith.constant dense<0.000000e+00> : tensor<128x64xf32, #blockedA>
+    %zero = arith.constant dense<0.000000e+00> : tensor<32x64xf16, #blocked>
+    %sa = tt.splat %pa : !tt.ptr<f16> -> tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<f16> -> tensor<32x64x!tt.ptr<f16>, #blocked>
+    %la = tt.load %sa : tensor<128x32x!tt.ptr<f16>, #blockedA>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<f16>, #blocked>
+    %guarded = scf.if %cond -> tensor<32x64xf16, #blocked> {
+      scf.yield %lb : tensor<32x64xf16, #blocked>
+    } else {
+      scf.yield %zero : tensor<32x64xf16, #blocked>
+    }
+    %ca = ttg.convert_layout %la : tensor<128x32xf16, #blockedA> -> tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %guarded : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
+    tt.return %d : tensor<128x64xf32, #blockedA>
+  }
+}
+
+// -----
+
+// The B operand is read from a mutable shared buffer that is allocated empty
+// (no source tensor), as pipelining leaves behind. There is no distributed
+// producer to anchor on, so the walk has to give up instead of dereferencing
+// the missing source. The kernel must come through unchanged.
+
+#blocked1 = #ttg.blocked<{sizePerThread = [1, 16], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
+#mma = #ttg.amd_wmma<{version = 2, isTranspose = true, ctaLayout = {warp = [[0, 1], [1, 0]]}}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 8, order = [1, 0]}>
+#shared1 = #ttg.amd_rotating_shared<{vec = 8, perPhase = 2, maxPhase = 8, order = [0, 1]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_through_sourceless_alloc
+  // CHECK:         ttg.local_alloc : () -> !ttg.memdesc<64x64xi8, #ttg.amd_rotating_shared<{vec = 8, perPhase = 2, maxPhase = 8, order = [0, 1]}>, #ttg.shared_memory, mutable>
+  // CHECK:         ttg.local_load
+  tt.func @gather_through_sourceless_alloc(%argA: !tt.ptr<i8>) -> tensor<128x64xi32, #mma> {
+    %offA = arith.constant dense<0> : tensor<128x64xi32, #blocked1>
+    %cstOut = arith.constant dense<0> : tensor<128x64xi32, #mma>
+    %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blocked1>
+    %aAlloc = ttg.local_alloc %a : (tensor<128x64xi8, #blocked1>) -> !ttg.memdesc<128x64xi8, #shared, #smem>
+    %aLoad = ttg.local_load %aAlloc : !ttg.memdesc<128x64xi8, #shared, #smem> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
+    %bAlloc = ttg.local_alloc : () -> !ttg.memdesc<64x64xi8, #shared1, #smem, mutable>
+    %bLoad = ttg.local_load %bAlloc : !ttg.memdesc<64x64xi8, #shared1, #smem, mutable> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
+    %out = tt.dot %aLoad, %bLoad, %cstOut : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xi32, #mma>
+    tt.return %out : tensor<128x64xi32, #mma>
+  }
+}
+
+// -----
+
+// Shared-memory gate, permitting case. Same kernel as the first test, but the
+// module now carries a target, so the pass can size shared memory and actually
+// compares the footprints instead of falling back to applying the rewrite
+// blind. The gather's layout is far enough from the dot operand's that the
+// conversion between them already needs a 2 KB staging buffer, and it still
+// needs exactly 2 KB after the warps move onto K, so the rewrite is kept.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @shared_memory_flat_keeps_rewrite
+  // CHECK:         tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @shared_memory_flat_keeps_rewrite(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
+    %cst = arith.constant dense<0> : tensor<64x64xi8, #blocked1>
+    %cst_0 = arith.constant dense<true> : tensor<64x64xi1, #blocked1>
+    %cst_1 = arith.constant dense<0> : tensor<128x64xi32, #blocked>
+    %0 = tt.splat %arg0 : !tt.ptr<i8> -> tensor<128x64x!tt.ptr<i8>, #blocked>
+    %1 = tt.splat %arg1 : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked1>
+    %2 = tt.load %0 : tensor<128x64x!tt.ptr<i8>, #blocked>
+    %3 = tt.load %1, %cst_0, %cst : tensor<64x64x!tt.ptr<i8>, #blocked1>
+    %4 = ttg.convert_layout %2 : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+    %5 = ttg.convert_layout %3 : tensor<64x64xi8, #blocked1> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
+    %6 = tt.dot %4, %5, %cst_1 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<128x64xi32, #blocked>
+    tt.return %6 : tensor<128x64xi32, #blocked>
+  }
+}
+
+// -----
+
+// Shared-memory gate, declining case. Here the gather is loaded in exactly the
+// layout the dot wants, so feeding the dot costs no shared memory at all.
+// Moving the warps onto K would pull the gather away from that layout and force
+// the conversion through a 2 KB staging buffer (0 -> 2048 bytes for this 64x64
+// i8 tile, confirmed with -allocate-amdgpu-shared-memory). Trading shared
+// memory -- and with it occupancy -- for the layout change is not a deal we
+// want, so the pass throws the rewrite away and emits the original kernel.
+//
+// Keep this case in sync with @gather_matching_dot_layout_no_target below: the
+// two are the same kernel and differ only in whether the module names a target,
+// which is what makes the gate observable here.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @shared_memory_growth_declines_rewrite
+  // CHECK:         tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // CHECK-NOT:     warpsPerCTA = [4, 1]
+  tt.func @shared_memory_growth_declines_rewrite(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
+    %cst = arith.constant dense<0> : tensor<64x64xi8, #blocked>
+    %cst_0 = arith.constant dense<true> : tensor<64x64xi1, #blocked>
+    %cst_1 = arith.constant dense<0> : tensor<128x64xi32, #blocked>
+    %0 = tt.splat %arg0 : !tt.ptr<i8> -> tensor<128x64x!tt.ptr<i8>, #blocked>
+    %1 = tt.splat %arg1 : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked>
+    %2 = tt.load %0 : tensor<128x64x!tt.ptr<i8>, #blocked>
+    %3 = tt.load %1, %cst_0, %cst : tensor<64x64x!tt.ptr<i8>, #blocked>
+    %4 = ttg.convert_layout %2 : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+    %5 = ttg.convert_layout %3 : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
+    %6 = tt.dot %4, %5, %cst_1 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<128x64xi32, #blocked>
+    tt.return %6 : tensor<128x64xi32, #blocked>
+  }
+}
+
+// -----
+
+// The kernel that the gate declines above, with the target dropped. Without a
+// target there is no way to size shared memory, so the gate cannot weigh the
+// rewrite and the pass applies it. This pins down that it really is the
+// footprint comparison rejecting the case above, and not the gather walk or one
+// of the other bail-outs: the only difference between the two kernels is the
+// ttg.target attribute.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_matching_dot_layout_no_target
+  // CHECK:         tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @gather_matching_dot_layout_no_target(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
+    %cst = arith.constant dense<0> : tensor<64x64xi8, #blocked>
+    %cst_0 = arith.constant dense<true> : tensor<64x64xi1, #blocked>
+    %cst_1 = arith.constant dense<0> : tensor<128x64xi32, #blocked>
+    %0 = tt.splat %arg0 : !tt.ptr<i8> -> tensor<128x64x!tt.ptr<i8>, #blocked>
+    %1 = tt.splat %arg1 : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blocked>
+    %2 = tt.load %0 : tensor<128x64x!tt.ptr<i8>, #blocked>
+    %3 = tt.load %1, %cst_0, %cst : tensor<64x64x!tt.ptr<i8>, #blocked>
+    %4 = ttg.convert_layout %2 : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
+    %5 = ttg.convert_layout %3 : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
+    %6 = tt.dot %4, %5, %cst_1 : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<128x64xi32, #blocked>
+    tt.return %6 : tensor<128x64xi32, #blocked>
   }
 }

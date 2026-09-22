@@ -16,8 +16,10 @@ import contextlib
 import io
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
+from unittest import mock
 
 import pandas as pd
 
@@ -30,6 +32,7 @@ sys.path.insert(0, str(MLIR_DIR / "utils" / "performance" / "analysis"))
 # test here does not touch it.
 sys.modules.setdefault("pulp", types.SimpleNamespace())
 
+import quickTuningGen  # noqa: E402
 from quickTuningGen import build_coverage, get_target_columns  # noqa: E402
 
 THRESHOLD = 0.93
@@ -129,6 +132,24 @@ class QuickTuningSplitKCoverageTest(unittest.TestCase):
         # Only the split-K-won problem needs the extra constraint.
         self.assertEqual(len(coverage), 3)
         self.assertEqual(sum(1 for _, split_k_allowed in coverage if not split_k_allowed), 1)
+
+    def test_no_splitk_output_is_separate(self):
+        regular = {"f16": [gemm_perfconfig(128, 4), gemm_perfconfig(64, 1)]}
+        no_splitk = {"f16": [gemm_perfconfig(64, 1)]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "QuickTuningPerfconfigs.inc"
+            with mock.patch.object(quickTuningGen, "get_output_path", return_value=output):
+                quickTuningGen.update_inc_file(regular, "gfx942", "gemm")
+                quickTuningGen.update_inc_file(no_splitk, "gfx942", "gemm", no_splitk=True)
+                once = output.read_text()
+                quickTuningGen.update_inc_file(no_splitk, "gfx942", "gemm", no_splitk=True)
+
+            self.assertEqual(once, output.read_text())
+            self.assertIn("initParametersF16GemmGfx942[]", once)
+            self.assertIn("initParametersF16GemmGfx942NoSplitK[]", once)
+            self.assertIn("#ifdef Gemm_NOSPLITK_LOOKUP_TABLE_GEN", once)
+            self.assertEqual(once.count('"gfx942_gemm_f16"'), 2)
 
 
 if __name__ == "__main__":
