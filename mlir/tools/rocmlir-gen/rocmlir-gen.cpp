@@ -6179,6 +6179,27 @@ static LogicalResult populateHostHarnessLogic(
   if (allOutIndices.empty())
     allOutIndices = outIndices;
 
+  // Page-lock the host buffers before anything is copied to the device. HIP can
+  // silently drop small asynchronous host-to-device copies out of pageable
+  // memory, leaving a kernel to read zeros from an input that never arrived,
+  // with no error reported. Registering the buffers keeps the copies off that
+  // path. Sub-byte element types are skipped because they cannot be cast to an
+  // unranked memref here, and their tensors are far larger than the sizes the
+  // defect affects anyway. The CPU-only harness (-prc) never touches the
+  // device, so there is nothing to register there.
+  if (!isCPUKernel) {
+    for (Value buffer : localVars) {
+      auto bufferType = cast<MemRefType>(buffer.getType());
+      Type elemType = bufferType.getElementType();
+      if (!elemType.isIntOrFloat() || elemType.getIntOrFloatBitWidth() < 8)
+        continue;
+      auto unrankedType =
+          UnrankedMemRefType::get(elemType, bufferType.getMemorySpace());
+      Value unranked = memref::CastOp::create(b, loc, unrankedType, buffer);
+      gpu::HostRegisterOp::create(b, loc, unranked);
+    }
+  }
+
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
   // If willBeWrapped is true, the call will be redirected to a GPU wrapper that
