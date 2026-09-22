@@ -14,7 +14,9 @@
 #define MLIR_DIALECT_ROCK_PARAM_LOOKUP_TABLE_H
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/StringMap.h"
 
 namespace mlir {
 namespace rock {
@@ -34,10 +36,16 @@ std::string getDataTypeString(Type dataType);
 template <typename ParamsType>
 class ParamLookupTable {
 public:
-  // Prefer the regular table when `supportsSplitK` is true and the no-split-K
-  // table otherwise. Fallback between the pair is always enabled.
-  static ArrayRef<StringRef> lookup(StringRef arch, KernelType op,
-                                    Type dataType, bool supportsSplitK);
+  /// Perfconfigs to try, narrowed to `problemKeyHash` when this key has an
+  /// entry for it.
+  ///
+  /// Prefer the regular table when `supportsSplitK` is true and the no-split-K
+  /// table otherwise. Fallback between the pair is always enabled. The
+  /// per-problem rankings were all measured with split-K allowed, so they are
+  /// only consulted when `supportsSplitK` is true.
+  static SmallVector<StringRef> lookup(
+      StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
+      std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.
@@ -114,6 +122,13 @@ private:
 
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
   static std::map<StringRef, ArrayRef<StringRef>> buildNoSplitKTable();
+
+  static const llvm::StringMap<QuickTuningProblemMap> &getProblemMap() {
+    static const llvm::StringMap<QuickTuningProblemMap> map = buildProblemMap();
+    return map;
+  }
+
+  static llvm::StringMap<QuickTuningProblemMap> buildProblemMap();
 
   static std::string getKernelTypeString(KernelType kernelType);
 

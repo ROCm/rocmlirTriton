@@ -83,6 +83,7 @@ struct PopulateParamsInfo {
   std::optional<int64_t> quantBlockSize;
   Type aScaleType;
   Type bScaleType;
+  std::optional<QuickTuningProblemKeyHash> problemKeyHash;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
@@ -261,8 +262,9 @@ public:
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
                       Type dataTypeB, StringRef arch, bool supportsSplitK,
                       std::optional<int64_t> quantBlockSize = std::nullopt,
-                      Type aScaleType = nullptr,
-                      Type bScaleType = nullptr) const;
+                      Type aScaleType = nullptr, Type bScaleType = nullptr,
+                      std::optional<QuickTuningProblemKeyHash> problemKeyHash =
+                          std::nullopt) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;
