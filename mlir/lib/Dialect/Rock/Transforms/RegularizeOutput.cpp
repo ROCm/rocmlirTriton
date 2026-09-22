@@ -50,7 +50,7 @@ struct RegularizeContext {
   DenseMap<Value, SmallVector<Attribute>> &transformsFromRoot;
   DenseMap<Value, Value> &gemmEquiv;
 
-  ArrayAttr getInverse(const SmallVector<Attribute> &attrs) {
+  FailureOr<ArrayAttr> getInverse(const SmallVector<Attribute> &attrs) {
     SmallVector<Attribute> reversed(attrs.rbegin(), attrs.rend());
     ArrayAttr arr = builder.getArrayAttr(reversed);
     return invertTransforms(builder, loc, arr);
@@ -123,13 +123,13 @@ static FailureOr<Value> getGemmSpaceEquiv(Value v, RegularizeContext &ctx) {
     }
 
     // External tensor: apply inverse transforms to bring to gemm space.
-    ArrayAttr inv = ctx.getInverse(accTfAttrs);
-    if (!inv)
+    FailureOr<ArrayAttr> inv = ctx.getInverse(accTfAttrs);
+    if (failed(inv))
       return ctx.rootOp->emitError(
           "cannot regularize: transforms are not invertible "
           "and extra operand is not a splat constant");
     ctx.builder.setInsertionPointAfterValue(orig);
-    Value invOrig = rock::transform(ctx.builder, orig, inv);
+    Value invOrig = rock::transform(ctx.builder, orig, *inv);
     newOperands.push_back(invOrig);
   }
 
@@ -204,8 +204,8 @@ static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
 
     auto tfIt = ctx.transformsFromRoot.find(storeSource);
     if (tfIt != ctx.transformsFromRoot.end() && !tfIt->second.empty()) {
-      ArrayAttr inv = ctx.getInverse(tfIt->second);
-      if (!inv) {
+      FailureOr<ArrayAttr> inv = ctx.getInverse(tfIt->second);
+      if (failed(inv)) {
         ctx.rootOp->emitError(
             "cannot regularize: transforms are not invertible "
             "for store destination rewrite");
@@ -213,7 +213,7 @@ static LogicalResult rewireStoresToGemmSpace(ArrayRef<StoreOp> stores,
       }
       ctx.builder.setInsertionPoint(storeOp);
       Value dest = storeOp.getDest();
-      Value newDest = rock::transform(ctx.builder, dest, inv);
+      Value newDest = rock::transform(ctx.builder, dest, *inv);
       storeOp.getDestMutable().assign(newDest);
     }
   }

@@ -65,7 +65,6 @@ def make_options(output, arch=ARCH, num_cu=NUM_CU, num_chiplets=NUM_CHIPLETS, tu
         retry_states=frozenset(),
         gpu_ids=[0],
         num_cpus=None,
-        wait_for_compiles=False,
         flush_last_level_cache=False,
         verify_passes=False,
         timeout=None,
