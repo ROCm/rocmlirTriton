@@ -30,6 +30,7 @@ if _script is None:
 sys.path.insert(0, os.path.dirname(_script))
 
 import tuningRunner  # noqa: E402
+from tuningRunner import _benchmark_one_artifact  # noqa: E402
 from tuningRunner import NumaNodeLock, find_best_perfconfig, tune_config  # noqa: E402
 
 
@@ -40,6 +41,7 @@ class FindBestPerfconfigTest(unittest.TestCase):
     def make_options():
         options = MagicMock()
         options.debug = False
+        options.debug_quick_tune_data = False
         options.verify_all_perfconfigs = False
         return options
 
@@ -72,6 +74,63 @@ class FindBestPerfconfigTest(unittest.TestCase):
         self.assertEqual(winner, "perf_cfg_1")
         self.assertEqual(tflops, 1.5)
         self.assertEqual(len(entries), 1)
+
+    def test_full_debug_preserves_perf_priority(self):
+        config = MagicMock()
+        config.perf_priority = 17
+        config.table_entry.return_value = {"TFlops": 1.5}
+        options = self.make_options()
+        options.debug = True
+
+        _, _, entries = find_best_perfconfig(["perf_cfg_1\t[1.0]\t12345"],
+                                             config,
+                                             MagicMock(),
+                                             options,
+                                             gpu_id=0,
+                                             numa_lock=NumaNodeLock())
+
+        self.assertEqual(entries[0]["PerfPriority"], 17)
+        self.assertEqual(entries[0]["MeasurementsMs"], [1.0])
+        self.assertEqual(entries[0]["Status"], "Measured")
+
+
+class BenchmarkArtifactTest(unittest.TestCase):
+    """Tests for priorities propagated through remote artifact benchmarking."""
+
+    def test_artifact_benchmark_preserves_perf_priority(self):
+        test_vector = "-g 1 -m 1024 -k 769 -n 512"
+        config = MagicMock()
+        ctx = MagicMock()
+        ctx.conf_class.from_command_line.return_value = config
+        ctx.perf_priorities = {test_vector: 17}
+        ctx.options.benchmark_artifacts_dir = "/artifacts"
+        ctx.options.arch = "gfx900"
+        ctx.options.num_cu = 64
+        ctx.options.num_chiplets = 1
+        ctx.options.timeout = None
+        ctx.options.gpu_run_timeout = 30
+        ctx.options.verify_winning_config = False
+        ctx.options.verify_all_perfconfigs = False
+        ctx.paths.mlir_paths.rocmlir_tuning_driver_path = "rocmlir-tuning-driver"
+
+        def find_best(_lines, benchmark_config, _paths, _options, _gpu_id, _numa_lock):
+            self.assertEqual(benchmark_config.perf_priority, 17)
+            return "perf_cfg_1", 1.5, [{"TFlops": 1.5, "PerfPriority": 17}]
+
+        with patch.object(tuningRunner, "_problem_hash", return_value="problem"), \
+                patch.object(tuningRunner.os.path, "isdir", return_value=True), \
+                patch.object(tuningRunner, "_check_artifact_commit", return_value=True), \
+                patch.object(tuningRunner, "_run_pipeline", return_value=(0, "perf_cfg_1\t12345", "")), \
+                patch.object(tuningRunner, "find_best_perfconfig", side_effect=find_best), \
+                patch.object(tuningRunner, "replace", side_effect=lambda options, **_changes: options):
+            result = _benchmark_one_artifact(test_vector,
+                                             ctx,
+                                             gpu_id=0,
+                                             timing_args=[],
+                                             numa_lock=NumaNodeLock())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.entries[0]["PerfPriority"], 17)
 
 
 class StubConfiguration:

@@ -752,12 +752,23 @@ def drop_perf_priority(argv):
     return argv[:idx] + argv[idx + 2:]
 
 
+def get_perf_priority(argv):
+    """Extract the optional tier-1 priority from a tokenized config."""
+    if '-perf_priority' not in argv:
+        return None
+    idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
+    return int(argv[idx + 1])
+
+
 # convolution configurations.
 def get_conv_configurations(filename,
                             arch,
                             num_cu,
                             num_chiplets,
-                            target_chip: Optional[str] = None):
+                            target_chip: Optional[str] = None,
+                            priority_map: Optional[Dict[str, int]] = None):
     configs = []
     chip = target_chip
     if filename:
@@ -812,7 +823,7 @@ def get_conv_configurations(filename,
 
                 one_config = f"{datatype}{direction}{filter_layout}{input_layout}{output_layout}{line}"
                 canonical = canonicalize_or_raise(filename, line, one_config, ConvConfiguration,
-                                                  arch, num_cu, num_chiplets)
+                                                  arch, num_cu, num_chiplets, priority_map)
                 if canonical not in configs:
                     configs.append(canonical)
     return configs
@@ -1178,7 +1189,8 @@ def get_gemm_configurations(filename,
                             datatypes=DATA_TYPES_GEMM,
                             out_dtype_map=OUTPUT_DATA_TYPES_MAP,
                             scale_types=DATA_TYPES_GEMM_SCALES,
-                            target_chip: Optional[str] = None):
+                            target_chip: Optional[str] = None,
+                            priority_map: Optional[Dict[str, int]] = None):
     configs = []
     chip = target_chip
 
@@ -1258,7 +1270,7 @@ def get_gemm_configurations(filename,
                         )
                         canonical = canonicalize_or_raise(filename, line, one_config,
                                                           GemmConfiguration, arch, num_cu,
-                                                          num_chiplets)
+                                                          num_chiplets, priority_map)
                         if canonical not in configs:
                             configs.append(canonical)
                 else:
@@ -1266,13 +1278,17 @@ def get_gemm_configurations(filename,
                     one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{line}".strip(
                     )
                     canonical = canonicalize_or_raise(filename, line, one_config, GemmConfiguration,
-                                                      arch, num_cu, num_chiplets)
+                                                      arch, num_cu, num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_conv_gemm_configurations(filename, arch, num_cu, num_chiplets):
+def get_conv_gemm_configurations(filename,
+                                 arch,
+                                 num_cu,
+                                 num_chiplets,
+                                 priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_CONV_GEMM,
@@ -1311,13 +1327,17 @@ def get_conv_gemm_configurations(filename, arch, num_cu, num_chiplets):
                         one_config = f"{arg} {value} {one_config}"
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       ConvGemmConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_gemm_gemm_configurations(filename, arch, num_cu, num_chiplets):
+def get_gemm_gemm_configurations(filename,
+                                 arch,
+                                 num_cu,
+                                 num_chiplets,
+                                 priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_GEMM_GEMM,
@@ -1356,13 +1376,17 @@ def get_gemm_gemm_configurations(filename, arch, num_cu, num_chiplets):
                         one_config = f"{arg} {value} {one_config}"
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       GemmGemmConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_attn_configurations(filename, arch, num_cu, num_chiplets):
+def get_attn_configurations(filename,
+                            arch,
+                            num_cu,
+                            num_chiplets,
+                            priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     # if not defined, set it to false
     default_to_false = ['false']
@@ -1416,7 +1440,7 @@ def get_attn_configurations(filename, arch, num_cu, num_chiplets):
 
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       AttentionConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
 
@@ -2594,14 +2618,25 @@ def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: in
         raise ValueError(f"Failed to parse '{config_str}' as {resolved_class.__name__}: {e}") from e
 
 
-def canonicalize_or_raise(filename, raw_line, expanded, conf_class, arch, num_cu, num_chiplets):
+def canonicalize_or_raise(filename,
+                          raw_line,
+                          expanded,
+                          conf_class,
+                          arch,
+                          num_cu,
+                          num_chiplets,
+                          priority_map: Optional[Dict[str, int]] = None):
     """Canonicalize a config produced by op-specific expansion of ``raw_line`` under ``conf_class``.
 
     Returns the canonical command-line. Raises ValueError with both the source filename and
     the original (pre-expansion) line so users can locate the offending input quickly.
     """
     try:
-        return canonicalize_config(expanded, conf_class, arch, num_cu, num_chiplets)
+        canonical = canonicalize_config(expanded, conf_class, arch, num_cu, num_chiplets)
+        priority = get_perf_priority(expanded.split())
+        if priority_map is not None and priority is not None:
+            priority_map[canonical] = max(priority_map.get(canonical, 0), priority)
+        return canonical
     except ValueError as e:
         raise ValueError(f"Failed to canonicalize config from {filename} '{raw_line}': {e}") from e
 
