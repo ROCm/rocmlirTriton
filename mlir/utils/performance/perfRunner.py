@@ -2973,6 +2973,7 @@ def tune_mlir_kernels(configs, arch, num_cu, num_chiplets):
             print(f"Skipping MIOpen tuning for unsupported datatype: {config.datatype}")
             continue
         config_args, _ = extract_tuning_key_metadata(commandline)
+        config_args = drop_perf_priority(config_args)
         # Same layout constraint as the benchmark path: MIOpenDriver rejects rocMLIR
         # layout names, so translate them and skip the configs it cannot express.
         miopen_commandline = conv_commandline_to_miopen_layouts(config_args)
