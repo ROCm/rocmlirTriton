@@ -72,6 +72,8 @@
 // GFX1250-DAG: v_maximum_f32
 // GFX1250-DAG: v_{{maximumminimum|minimummaximum}}_f32
 
+// Pin the dot tile so bounds masking does not add unrelated v_cndmask
+// instructions and make the gfx1170/gfx1250 checks tuning-list-dependent.
 module {
   func.func @mlir_minmax_f32(%a: !migraphx.shaped<1x256x256xf32, 65536x256x1>,
                              %b: !migraphx.shaped<1x256x256xf32, 65536x256x1>,
@@ -81,7 +83,7 @@ module {
     %hi = migraphx.literal (dense<6.000000e+00> : tensor<1xf32>) : <1xf32, 0>
     %blo = migraphx.multibroadcast %lo {out_dyn_dims = [], out_lens = [1, 256, 256]} : <1xf32, 0> -> <1x256x256xf32, 0x0x0>
     %bhi = migraphx.multibroadcast %hi {out_dyn_dims = [], out_lens = [1, 256, 256]} : <1xf32, 0> -> <1x256x256xf32, 0x0x0>
-    %d = migraphx.dot %a, %b : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 65536x256x1> -> <1x256x256xf32, 65536x256x1>
+    %d = migraphx.dot %a, %b {perf_config = "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=16,kpack=1,numWaves=4,numStages=2"} : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 65536x256x1> -> <1x256x256xf32, 65536x256x1>
     %clipped = migraphx.clip %d, %blo, %bhi : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 0x0x0>, <1x256x256xf32, 0x0x0> -> <1x256x256xf32, 65536x256x1>
     %m = migraphx.max %clipped, %c : <1x256x256xf32, 65536x256x1>, <1x256x256xf32, 65536x256x1> -> <1x256x256xf32, 65536x256x1>
     return %m : !migraphx.shaped<1x256x256xf32, 65536x256x1>

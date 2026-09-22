@@ -383,16 +383,20 @@ def add_lookup_entry(content, section_name, entry):
 
     key = match.group(1)  # e.g., "gfx942_gemm_f16"
 
-    # Check for existing entry
+    content = ensure_section(content, section_name)
+    section_start = content.find(f"#ifdef {section_name}")
+    section_end = find_endif(content, section_name)
+
+    # Both lookup sections use the same keys, so only replace entries in the
+    # requested section.
     remove_pattern = re.compile(r'\{' + re.escape(key) + r',\s*\{[^}]+\}\},?[^\n]*\n*')
-    existing = remove_pattern.search(content)
+    existing = remove_pattern.search(content, section_start, section_end)
 
     if existing:
         insert_pos = existing.start()
         content = content[:existing.start()] + content[existing.end():]
     else:
-        content = ensure_section(content, section_name)
-        insert_pos = find_endif(content, section_name)
+        insert_pos = section_end
 
     return content[:insert_pos] + f'{entry}\n\n' + content[insert_pos:]
 
@@ -404,7 +408,7 @@ def get_lookup_section(arch, op, dtype):
     return "Gemm_LOOKUP_TABLE_GEN"
 
 
-def update_inc_file(results, arch, op):
+def update_inc_file(results, arch, op, no_splitk=False):
     """Update the .inc file with results."""
     path = get_output_path()
     if not path.exists():
@@ -415,11 +419,15 @@ def update_inc_file(results, arch, op):
     # Identifiers and section markers use the PascalCase KernelType; the lookup key uses its
     # lowercase form
     kernel_type = OP_TO_KERNEL_TYPE[op]
+    marker = f"{arch}_NOSPLITK" if no_splitk else arch
 
     for dtype, configs in results.items():
         instr = get_instruction_type(arch, dtype, op)
         class_name = get_class_name(arch, dtype, op)
         param_name, count_name = get_param_names(arch, dtype, op)
+        if no_splitk:
+            param_name += "NoSplitK"
+            count_name += "NoSplitK"
 
         # Generate definition. Perf configs are `prefix:key=value,...` strings
         # containing only identifier, digit, `-`, `=`, `,` and `:` characters,
@@ -431,8 +439,8 @@ def update_inc_file(results, arch, op):
         def_lines.append("};")
 
         content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DEFS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DEFS",
                                   "\n".join(def_lines))
 
         # Generate declaration
@@ -442,12 +450,14 @@ def update_inc_file(results, arch, op):
         ]
 
         content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DECS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DECS",
                                   "\n".join(dec_lines))
 
         # Add lookup entry
         section_name = get_lookup_section(arch, op, dtype)
+        if no_splitk:
+            section_name = section_name.replace("_LOOKUP", "_NOSPLITK_LOOKUP")
         key = f"{arch}_{kernel_type.lower()}_{dtype}"
         value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
         entry = f'{{"{key}", {value}}},'
@@ -472,19 +482,22 @@ def add_type_aliases(from_type, to_type):
         dtype = match.group(4)  # e.g., "f16"
         value = match.group(5)  # e.g., "{PopulateParamsGemm::..., ...}"
 
-        if dtype != to_type:
+        if dtype != to_type or "NoSplitK" in value:
             continue
 
         from_key = f"{arch}_{kernel}_{from_type}"
+        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
+        section_name = get_lookup_section(arch, op, from_type)
+        content = ensure_section(content, section_name)
+        section_start = content.find(f"#ifdef {section_name}")
+        section_end = find_endif(content, section_name)
 
-        # Don't overwrite existing entries - aliases are fallbacks only
-        if f'"{from_key}"' in content:
+        # Don't overwrite existing entries in the target section. The same key
+        # may legitimately exist in the no-split-K lookup table.
+        if f'"{from_key}"' in content[section_start:section_end]:
             print(f"Skipping {from_key}: already exists")
             continue
 
-        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
-
-        section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
 
         content = add_lookup_entry(content, section_name, entry)
@@ -672,7 +685,7 @@ def print_results(results, arch):
     print()
 
 
-def process_arch(df, arch, op, threshold, update, top_n, no_splitk):
+def process_arch(df, arch, op, threshold, update, top_n, no_splitk=False):
     """Process data for a single architecture."""
     df_arch = df[df['Chip'] == arch]
 
@@ -683,7 +696,7 @@ def process_arch(df, arch, op, threshold, update, top_n, no_splitk):
     print_results(results, arch)
 
     if update:
-        update_inc_file(results, arch, op)
+        update_inc_file(results, arch, op, no_splitk)
         print(f"Updated {get_output_path()} for {arch}")
         update_problem_maps(df_arch, arch, op, top_n,
                             os.environ.get('ROCMLIR_GEN_PATH', 'rocmlir-gen'))
@@ -722,7 +735,7 @@ Examples:
     parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
     parser.add_argument('--no-splitk',
                         action='store_true',
-                        help='Exclude Split-K configurations from the set cover')
+                        help='Create a separate set cover excluding Split-K configurations')
     parser.add_argument('--per-problem-top-n',
                         type=positive_int,
                         default=PER_PROBLEM_TOP_N,

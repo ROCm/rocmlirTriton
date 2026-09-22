@@ -254,13 +254,13 @@ public:
                          const StringRef perfConfig);
 
   // Return the set of heuristic tuning parameters for the given opType, data
-  // types, and architecture. Pass `quantBlockSize` / `aScaleType` /
-  // `bScaleType` for block-scaled (MXFP-style) GEMMs so the applicability
-  // check accounts for scale-tile LDS use and the `kPerBlock %
-  // quantBlockSize == 0` constraint.
+  // types, and architecture. `supportsSplitK` selects the preferred quick
+  // tuning list. Pass `quantBlockSize` / `aScaleType` / `bScaleType` for
+  // block-scaled (MXFP-style) GEMMs so the applicability check accounts for
+  // scale-tile LDS use and the `kPerBlock % quantBlockSize == 0` constraint.
   std::vector<GemmParamsAttr>
   getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch,
+                      Type dataTypeB, StringRef arch, bool supportsSplitK,
                       std::optional<int64_t> quantBlockSize = std::nullopt,
                       Type aScaleType = nullptr, Type bScaleType = nullptr,
                       std::optional<QuickTuningProblemKeyHash> problemKeyHash =

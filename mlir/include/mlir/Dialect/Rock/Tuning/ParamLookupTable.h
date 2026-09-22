@@ -38,8 +38,13 @@ class ParamLookupTable {
 public:
   /// Perfconfigs to try, narrowed to `problemKeyHash` when this key has an
   /// entry for it.
+  ///
+  /// Prefer the regular table when `supportsSplitK` is true and the no-split-K
+  /// table otherwise. Fallback between the pair is always enabled. The
+  /// per-problem rankings were all measured with split-K allowed, so they are
+  /// only consulted when `supportsSplitK` is true.
   static SmallVector<StringRef> lookup(
-      StringRef arch, KernelType op, Type dataType,
+      StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
       std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
 
   // Finds the lexicographically closest architecture variant when the exact
@@ -61,6 +66,10 @@ public:
   // attention list is preferred over the same fusion tuned for a relative
   // architecture, and both are preferred over any change of precision.
   // Returns an empty StringRef when nothing applies.
+  //
+  // Split-K pairing is unconditional: if the regular entry is missing, its
+  // no-split-K pair is tried before kernel type, architecture, or data type,
+  // and candidates on those later axes may also come from either table.
   static StringRef findFallback(StringRef target);
 
 private:
@@ -105,7 +114,14 @@ private:
     return table;
   }
 
+  static const std::map<StringRef, ArrayRef<StringRef>> &getNoSplitKTable() {
+    static const std::map<StringRef, ArrayRef<StringRef>> table =
+        buildNoSplitKTable();
+    return table;
+  }
+
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
+  static std::map<StringRef, ArrayRef<StringRef>> buildNoSplitKTable();
 
   static const llvm::StringMap<QuickTuningProblemMap> &getProblemMap() {
     static const llvm::StringMap<QuickTuningProblemMap> map = buildProblemMap();
@@ -116,7 +132,7 @@ private:
 
   static std::string getKernelTypeString(KernelType kernelType);
 
-  // Get all related entries sorted lexicographically
+  // Get all related entries across both tables, sorted lexicographically.
   static SmallVector<StringRef, 12> getRelatives(StringRef target);
 };
 

@@ -30,20 +30,20 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
           dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
     perfConfig = mayBePerfConfig.getValue();
   return materializeTuningParams<GemmGemmParamsAttr>(
-      b, perfConfig, getTuningParameters(b, op));
+      b, perfConfig, getTuningParameters(b, op, /*supportsSplitK=*/true));
 }
 
-std::vector<GemmGemmParamsAttr>
-PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
-                                            RockGemmGemmWrapperInterface op) {
+std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
+    OpBuilder &b, RockGemmGemmWrapperInterface op, bool supportsSplitK) {
   // Bump the first applicable config (Q + K + V LDS fit, kpack/splitK/numCTAs
   // == 1) to the front for skip-benchmarking consumers.
   auto aElemType = cast<ShapedType>(op.getAType()).getElementType();
   auto bElemType = cast<ShapedType>(op.getBType()).getElementType();
   auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
-  auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType,
-                                  getQuickTuningProblemKeyHash(op));
+  auto list =
+      getTuningParameters(b, arch, op.getKernelType(), aElemType,
+                          supportsSplitK, getQuickTuningProblemKeyHash(op));
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
         return isGemmGemmParamsConservativelyApplicable(
@@ -62,9 +62,10 @@ PopulateParamsGemmGemm::getTuningParameters(OpBuilder &b,
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
     OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
+    bool supportsSplitK,
     std::optional<QuickTuningProblemKeyHash> problemKeyHash) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      arch, kernelType, elementType, problemKeyHash);
+      arch, kernelType, elementType, supportsSplitK, problemKeyHash);
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(perfConfigs.size());
   for (StringRef config : perfConfigs) {
