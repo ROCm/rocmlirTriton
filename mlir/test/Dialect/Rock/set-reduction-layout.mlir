@@ -215,6 +215,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [0, 1]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @reduction_already_contiguous_buffer_load
+  // CHECK-NOT:     warpsPerCTA = [4, 1]
   // A skipped load keeps both its original layout and its contiguity hint.
   // CHECK:         amdg.buffer_load {{.*}} {contiguity = 8 : i32} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [0, 1]}>>
   // CHECK-NOT:     warpsPerCTA = [4, 1]
