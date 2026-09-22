@@ -1593,3 +1593,43 @@ func.func @conv_elementwise_gemm_non_string_layout(
   return %r : tensor<1x8x3xf32>
 }
 
+// =============================================================================
+// rock.reduce tests
+// =============================================================================
+
+// The axis must be within the input rank
+func.func @reduce_axis_out_of_range(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{Axis is out of range}}
+  %0 = rock.reduce sum %arg0 {axis = 3 : index} : tensor<2x12x12xf32> -> tensor<2x12x12xf32>
+  return
+}
+
+// Input and output must have the same rank
+func.func @reduce_rank_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{Input and output rank is not the same}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12xf32>
+  return
+}
+
+// The reduction dimension must collapse to size 1
+func.func @reduce_axis_not_one(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{The size of the reduction dimension should be 1.}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12x12xf32>
+  return
+}
+
+// Non-reduction dimensions must match the input shape
+func.func @reduce_nonaxis_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{The size of the non-reduction dimension should match the input.}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x13x1xf32>
+  return
+}
+
+// Element type mismatch, caught by the ODS AllElementTypesMatch trait before
+// the custom verifier runs
+func.func @reduce_elem_type_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{failed to verify that all of {in, result} have same element type}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12x1xf16>
+  return
+}
+
