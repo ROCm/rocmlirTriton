@@ -197,10 +197,17 @@ class LayoutHelpersTest(unittest.TestCase):
                          layout)
 
 
-def make_conv_commandline(fil, inp, out, group=1):
-    """Build a minimal conv commandline (as a token list) with the given layouts."""
-    return ("conv -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
-            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(f=fil, i=inp, o=out,
+def make_conv_commandline(fil, inp, out, group=1, prefix="conv"):
+    """Build a minimal conv commandline (as a token list) with the given layouts.
+
+    ``prefix`` is the MIOpen-style argv[0] that selects the datatype ("conv" for
+    f32, "convfp8" for fp8, ...).
+    """
+    return ("{pfx} -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
+            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(pfx=prefix,
+                                                                     f=fil,
+                                                                     i=inp,
+                                                                     o=out,
                                                                      g=group).split()
 
 
@@ -210,6 +217,9 @@ class RocmlirLayoutToMiopenTest(unittest.TestCase):
     MIOpenDriver only accepts NCHW/NHWC, so a rocMLIR layout is only usable once the
     group dim is dropped (MIOpen passes the group count via -g) and the spatial dims
     are renamed 0->H, 1->W. Anything else has no faithful MIOpen equivalent.
+
+    Unless a test says otherwise these call the helper without a grouped dim, which
+    is the group == 1 case: the G dim is degenerate there, so it can sit anywhere.
     """
 
     def test_channel_first_maps_to_nchw(self):
@@ -228,15 +238,23 @@ class RocmlirLayoutToMiopenTest(unittest.TestCase):
         self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NCHW"), "NCHW")
         self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NHWC"), "NHWC")
 
-    def test_output_channel_letter_k_treated_as_c(self):
-        """The output tensor spells the channel dim as K; MIOpen still wants NCHW/NHWC."""
-        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGK01"), "NCHW")
-        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GK"), "NHWC")
-
     def test_unrepresentable_orderings_return_none(self):
         """Orderings that aren't NCHW/NHWC (channel or spatial in the wrong slot) skip."""
         self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("G0NC1"))
         self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("01NGC"))
+
+    def test_grouped_dim_accepts_the_miopen_split(self):
+        """G in front of the dim MIOpen splits: filter [G][K/G]..., input [N][G][C/G]..."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GNC01", "N"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GN01C", "N"), "NHWC")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGC01", "C"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GC", "C"), "NHWC")
+
+    def test_grouped_dim_rejects_other_g_positions(self):
+        """Same letters, different memory layout: NGC01 as a filter is [K/G][G][C/G][Y][X]."""
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("NGC01", "N"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("GNC01", "C"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("NC0G1", "C"))
 
 
 class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
@@ -265,6 +283,29 @@ class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[result.index("-g") + 1], "2")
 
+    def test_group_conv_with_misplaced_g_is_skipped(self):
+        """Once group > 1, G has to sit where MIOpen splits the tensor, or the config skips."""
+        # The filter wants G leading, so NGC01 ([K/G][G][C/G][Y][X]) is not MIOpen's.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("NGC01", "NGC01", "NGC01", group=2)))
+        # The input wants G right before the channel dim, so GNC01 is not MIOpen's.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "GNC01", "NGC01", group=2)))
+        # Same for the output tensor.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "NGC01", "NC0G1", group=2)))
+
+    def test_misplaced_g_is_accepted_without_groups(self):
+        """With a single group the G dim is degenerate, so its position does not matter."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("NGC01", "NC0G1", "NGC01"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NCHW")
+
     def test_unrepresentable_layout_is_skipped(self):
         """A layout with no NCHW/NHWC equivalent makes the whole config skip."""
         self.assertIsNone(
@@ -276,6 +317,38 @@ class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
         self.assertIsNone(
             perfRunner.conv_commandline_to_miopen_layouts(
                 make_conv_commandline("GNC01", "NGC01", "N01GC")))
+
+
+class MiopenSupportedDtypesTest(unittest.TestCase):
+    """MIOpenDriver has no fp8 conv support, so those configs skip the MIOpen side.
+
+    The skip returns a NaN table entry rather than dropping the config, which is
+    what lets fp8 conv still be benchmarked with MLIR on chips MIOpen can't follow.
+    Since benchmark_external now raises on a driver error instead of returning NaN,
+    reaching the driver with an fp8 config would fail the whole run.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, perfRunner, 'run_pipeline', perfRunner.run_pipeline)
+        perfRunner.run_pipeline = self._forbidden
+
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("MIOpenDriver invoked for an unsupported datatype")
+
+    def benchmark(self, prefix):
+        return perfRunner.ConvConfiguration.benchmark_external(
+            make_conv_commandline("GNC01", "NGC01", "NGC01", prefix=prefix), None, 'gfx942', 304, 1)
+
+    def test_fp8_conv_skips_the_driver(self):
+        for prefix in ('convfp8', 'convfp8_fp8'):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(math.isnan(self.benchmark(prefix)['TFlops']))
+
+    def test_supported_dtype_reaches_the_driver(self):
+        """f32 is supported, so the guard must not swallow it."""
+        with self.assertRaises(AssertionError):
+            self.benchmark('conv')
 
 
 class GetNanosecondsTest(TempFileTestCase):
