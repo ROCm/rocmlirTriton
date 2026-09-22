@@ -207,13 +207,15 @@ struct GridwiseAttentionRewritePattern
            elements.getSplatValue<APFloat>().isFinite();
   }
 
-  // Identity and multiplication by compile-time finite splats cannot turn a
-  // row of finite QK scores into a fully masked row. Everything else is
-  // conservatively treated as capable of doing so (for example, a runtime
-  // bias can contain -inf).
+  // Identity, widening conversions, and multiplication by compile-time finite
+  // splats cannot turn a row of finite QK scores into a fully masked row.
+  // Everything else is conservatively treated as capable of doing so (for
+  // example, a runtime bias can contain -inf).
   static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
     if (value == qk)
       return true;
+    if (auto ext = value.getDefiningOp<arith::ExtFOp>())
+      return isFiniteConstantScaleOf(ext.getIn(), qk);
     auto mul = value.getDefiningOp<arith::MulFOp>();
     if (!mul)
       return false;
@@ -329,9 +331,7 @@ struct GridwiseAttentionRewritePattern
     sumRowBroadcast =
         createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
 
-    Value scaledOutput =
-        arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
-    return scaledOutput;
+    return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
   }
 
   // This function does the corrections to row-based tiled reductions
@@ -1135,6 +1135,11 @@ struct GridwiseAttentionRewritePattern
     int64_t splitKV = op.getSplitKV();
     int64_t slidingWindowLookBack =
         static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
+    // Causal-only and KV-cache-only attention retain at least one key for each
+    // logical row. A causal window can have disjoint lower/upper bounds, while
+    // split-KV partials and padded query rows can execute with no valid score.
+    // Arbitrary pre-softmax fusion is guarded unless its result is proven to
+    // preserve finite QK scores.
     bool mayHaveFullyMaskedRows =
         op.getEnableSoftmax() && (preSoftmaxMayFullyMask(op) ||
                                   (isCausal && slidingWindowLookBack > 0) ||

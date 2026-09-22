@@ -1,3 +1,7 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
 // REQUIRES: rocm-runner
 // RUN: rocmlir-driver --host-pipeline=backend %s \
 // RUN: | mlir-runner -O2 --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext --entry-point-result=void \

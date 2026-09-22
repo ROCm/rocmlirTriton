@@ -1,3 +1,7 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
 // Host split-KV combine reference for narrow storage types.
 //
 // computeFinalAttentionStage() reduces the per-split partial outputs and LSE

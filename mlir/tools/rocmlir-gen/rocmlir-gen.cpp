@@ -1432,9 +1432,12 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
   return {attnPerfConfig->getMPerBlockG0(), attnPerfConfig->getNPerBlockG0()};
 }
 
-// Compute the number of valid split-KV entries, either one per batch-head or,
-// under causal / prefix-causal masking, one per (batch-head, query-row). This
-// determines which splits should have valid results vs -inf.
+// Compute a conservative number of valid split-KV entries, either one per
+// batch-head or, under causal / prefix-causal masking, one per (batch-head,
+// query-row). The GPU partitions keys using the last row in an M block, while
+// this host calculation uses each row independently, so it can include extra
+// empty splits but cannot exclude a split containing valid row data. Empty
+// splits have defined zero output and -inf LSE and are harmless in the combine.
 // Note on the M/N convention: rocMLIR's blockwise attention computes the
 // transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
 // which puts the key-sequence dimension on GEMM0's M axis. The Triton

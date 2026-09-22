@@ -1,7 +1,9 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=COUNT
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=PLAIN
 
 // COUNT-COUNT-1: arith.maxnumf
+// COUNT-NOT: arith.maxnumf
 
 // Same shape as gridwise_attn_simple in toblockwise_attention_lowering.mlir, but
 // params1 tiles the second gemm's N dim (head_dim_v = 64) into nPerBlockG1 = 32
@@ -93,5 +95,38 @@ func.func @gridwise_attn_nperblockg1(
     slidingWindowLookBack = 1 : i32,
     splitKV = 1 : i32
   } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+// -----
+
+// Keep the ordinary chunked-GEMM path covered separately from the masked-row
+// path above. Its outer loop retains the original static [0, 12) bounds and
+// does not need a denominator guard.
+// PLAIN-LABEL: func @gridwise_attn_nperblockg1_plain
+// PLAIN-DAG: %[[C0:.+]] = arith.constant 0 : i32
+// PLAIN-DAG: %[[C12:.+]] = arith.constant 12 : i32
+// PLAIN: %{{.+}}:4 = scf.for %{{.*}} = %[[C0]] to %[[C12]] step %{{.*}}
+// PLAIN-NOT: arith.maxnumf
+// PLAIN: return
+func.func @gridwise_attn_nperblockg1_plain(
+    %q: tensor<1x384x64xf32>,
+    %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {
+      rock.block_size = 64 : i32,
+      rock.grid_size = 24 : i32,
+      rock.kernel,
+      rock.arch = "##TOKEN_ARCH##"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x16x32xf32>):
+    rock.yield %arg_qk : tensor<1x16x32xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
   return %result : tensor<1x384x64xf32>
 }

@@ -1,3 +1,7 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
 // Host split-KV validity mask: per-(batch-head, query-row) layout.
 //
 // computeValidSplitKV() emits one validity count per batch-head for the plain

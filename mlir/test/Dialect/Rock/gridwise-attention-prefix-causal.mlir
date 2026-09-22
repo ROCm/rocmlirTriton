@@ -29,6 +29,8 @@ module {
   // CHECK: %[[COL_PLUS_OFFSET:.*]] = arith.addi %{{.*}}, %{{.*}} : tensor<32x32xi32>
   // CHECK: %[[MASK_COND:.*]] = arith.cmpi ugt, %{{.*}}, %[[COL_PLUS_OFFSET]] : tensor<32x32xi32>
   // CHECK: arith.select %[[MASK_COND]], %{{.*}}, %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
+  // Prefix-causal masking with a non-negative offset always retains key zero.
+  // CHECK-NOT: arith.maxnumf
 
   func.func @mlir_attention(
       %prefixOffset: tensor<1xi32>,
@@ -49,7 +51,6 @@ module {
     } {
       operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 1>,
       causal,
-      prePadG0M = 16 : index,
       prePadG0N = 4 : index,
       softmaxType = f32,
       splitKV = 1 : i32,
