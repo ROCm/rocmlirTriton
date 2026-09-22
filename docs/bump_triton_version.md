@@ -259,6 +259,15 @@ verify and release builds do not. A bump that reintroduces either call
 unconditionally should be re-gated on `kVerifyLLVMIR` rather than taking the
 upstream spelling.
 
+`TritonToHsaco.cpp::disableHighDuplicationDeviceLibInlining()` is another
+deliberate downstream-only step with no upstream Triton counterpart. Before
+the default LLVM optimization pipeline, it applies call-site `noinline` to
+dense groups of sufficiently large linked OCML/OCKL functions. Preserve both
+the call from `translateTritonToHsaco()` and its per-basic-block,
+per-device-library-callee behavior when reconciling `make_llir()` with
+upstream. Regression coverage lives in the
+`triton-to-hsaco-*-ocml.mlir` tests.
+
 ### 5.3 Triton Utility Functions (from `AccelerateAMDMatmul.cpp`)
 
 All Triton-internal helper functions that we replicate are centralized in a

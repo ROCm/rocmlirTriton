@@ -514,15 +514,20 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
 /// call-count x body-size budget independently to each basic block so dense
 /// fusion regions can be outlined without preventing calls in sparse regions
 /// from taking the normal always-inline path.
+///
+/// This downstream-only step has no upstream Triton counterpart; preserve it
+/// when reconciling make_llir() as documented in
+/// docs/bump_triton_version.md section 5.2.
 void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
   constexpr uint64_t minCallSites = 128;
   constexpr uint64_t duplicatedInstructionBudget = 1024;
 
+  llvm::DenseMap<llvm::Function *,
+                 llvm::SmallVector<llvm::CallBase *, /*InlineCapacity=*/2>>
+      directCallSites;
   for (llvm::Function &caller : module) {
     for (llvm::BasicBlock &block : caller) {
-      llvm::DenseMap<llvm::Function *,
-                     llvm::SmallVector<llvm::CallBase *, /*InlineCapacity=*/8>>
-          directCallSites;
+      directCallSites.clear();
       for (llvm::Instruction &inst : block) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
         if (!call)
@@ -539,7 +544,9 @@ void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
             !callee->hasInternalLinkage())
           continue;
         StringRef name = callee->getName();
-        if (!name.starts_with("__ocml_"))
+        if (llvm::none_of(embeddedDeviceLibraries, [&](const auto &library) {
+              return name.starts_with(library.symbolPrefix);
+            }))
           continue;
         uint64_t instructionCount = callee->getInstructionCount();
         if (callCount * instructionCount <= duplicatedInstructionBudget)

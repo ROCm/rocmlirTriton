@@ -4,6 +4,9 @@
 // RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt \
 // RUN:   -triton-to-hsaco='arch=gfx1200' %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt \
+// RUN:   -triton-to-hsaco='arch=gfx1200' %s -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=ASM
 
 // Keep the 128 calls in the dense block out of line, but still inline the
 // single call in the following sparse block.
@@ -14,6 +17,13 @@
 // CHECK-NOT: call fastcc float @__ocml_erf_f32
 // CHECK: define internal fastcc noundef float @__ocml_erf_f32
 // CHECK: attributes #[[NOINLINE]] = { noinline }
+
+// Verify that emitMachineCode()'s always-inliner still honors the call-site
+// noinline attributes and that all dense-block calls survive to final ISA.
+// ASM-LABEL: __ocml_erf_f32:
+// ASM-LABEL: kernel:
+// ASM: __ocml_erf_f32@rel32@lo
+// ASM-COUNT-128: s_swappc_b64
 
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.func @__ocml_erf_f32(f32) -> f32
