@@ -144,20 +144,40 @@ def inverse_filter_layouts(filter_layout):
 # different layout (which would be an unfair comparison).
 MIOPEN_CONV_LAYOUTS = {'NCHW', 'NHWC'}
 
+# A grouped convolution keeps those same NCHW/NHWC shapes in MIOpen, whichever of the
+# two it is, with the group count folded into a single dim: the filter's output-channel
+# dim holds K == G * (K/G) and the input's and output's channel dim holds
+# C == G * (C/G), so NCHW input [N][C][H][W] is really [N][G][C/G][H][W] and NHWC input
+# [N][H][W][C] is really [N][H][W][G][C/G]. The G dim of a rocMLIR layout must therefore
+# sit immediately in front of the dim it splits -- the output-channel dim for the filter
+# (spelled N on the commandline) and the channel dim for the input and output. This maps
+# each layout flag to that dim.
+MIOPEN_GROUPED_DIM = {'-f': 'N', '-I': 'C', '-O': 'C'}
 
-def rocmlir_layout_to_miopen(layout):
+
+def rocmlir_layout_to_miopen(layout, grouped_dim=None):
     """Map a rocMLIR conv layout name onto a MIOpenDriver layout, or None.
 
     The group dimension ``G`` is dropped (MIOpen passes the group count through the
     separate ``-g`` flag) and the spatial dims are renamed (``0`` -> ``H``, ``1`` ->
-    ``W``). MIOpen spells every tensor's layout generically as NCHW/NHWC, so the
-    output tensor's channel letter ``K`` is treated like ``C``.
+    ``W``). Every tensor spells its channel dim ``C`` on the commandline, including the
+    output (see ``OUTPUT_LAYOUT_MAP``), so there is no ``K`` to rename here.
+
+    ``grouped_dim`` is the dim MIOpen folds the group count into (see
+    ``MIOPEN_GROUPED_DIM``) and must be passed whenever the group count is greater
+    than one: ``G`` then has to sit immediately in front of that dim, because in any
+    other slot it describes an ordering MIOpen cannot express. With a single group
+    the G dim is degenerate and its position carries no meaning, so callers leave
+    ``grouped_dim`` at ``None``.
 
     Returns ``"NCHW"`` or ``"NHWC"`` when the layout is exactly one of those orderings,
     otherwise ``None`` -- meaning the config is not MIOpen-representable and should be
     skipped to keep the comparison fair.
     """
-    normalized = layout.replace('0', 'H').replace('1', 'W').replace('G', '').replace('K', 'C')
+    normalized = layout.replace('0', 'H').replace('1', 'W')
+    if grouped_dim is not None and 'G' in normalized and f"G{grouped_dim}" not in normalized:
+        return None
+    normalized = normalized.replace('G', '')
     if normalized in MIOPEN_CONV_LAYOUTS:
         return normalized
     return None
@@ -169,16 +189,18 @@ def conv_commandline_to_miopen_layouts(commandline):
     Returns a new commandline list with the layout values replaced by their MIOpen
     equivalents, or ``None`` when the configuration has no faithful MIOpen
     representation -- either because a layout uses an ordering MIOpen cannot express,
-    or because the filter/input/output tensors do not share a single NCHW/NHWC layout.
-    Callers should skip the MIOpen benchmark in the ``None`` case rather than run an
-    unfair comparison.
+    because a grouped config puts G somewhere MIOpen does not (see
+    ``MIOPEN_GROUPED_DIM``), or because the filter/input/output tensors do not share a
+    single NCHW/NHWC layout. Callers should skip the MIOpen benchmark in the ``None``
+    case rather than run an unfair comparison.
     """
     result = list(commandline)
-    layout_flags = {'-f', '-I', '-O'}
+    group = int(result[result.index('-g') + 1]) if '-g' in result else 1
     seen_layouts = set()
     for i in range(len(result) - 1):
-        if result[i] in layout_flags:
-            miopen_layout = rocmlir_layout_to_miopen(result[i + 1])
+        if result[i] in MIOPEN_GROUPED_DIM:
+            grouped_dim = MIOPEN_GROUPED_DIM[result[i]] if group > 1 else None
+            miopen_layout = rocmlir_layout_to_miopen(result[i + 1], grouped_dim)
             if miopen_layout is None:
                 return None
             result[i + 1] = miopen_layout
@@ -2951,22 +2973,28 @@ def tune_mlir_kernels(configs, arch, num_cu, num_chiplets):
             print(f"Skipping MIOpen tuning for unsupported datatype: {config.datatype}")
             continue
         config_args, _ = extract_tuning_key_metadata(commandline)
-        if config.input_layout == 'nchw':
-            miopen_driver_cmd = [MIOPENDRIVER, *config_args, '-V', '0']
-            print(' '.join(miopen_driver_cmd))
-            p1 = subprocess.Popen(miopen_driver_cmd,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  env=envs)
-            # get output.
-            try:
-                _, errs = p1.communicate(timeout=300)
-                if len(errs) > 0 and p1.returncode != 0:
-                    raise OSError(errs.decode('utf-8'))
-            except subprocess.TimeoutExpired:
-                p1.kill()
-                print("MIOpen tuning timed out")
-                _, errs = p1.communicate()
+        # Same layout constraint as the benchmark path: MIOpenDriver rejects rocMLIR
+        # layout names, so translate them and skip the configs it cannot express.
+        miopen_commandline = conv_commandline_to_miopen_layouts(config_args)
+        if miopen_commandline is None:
+            print("Skipping MIOpen tuning: conv layout has no equivalent MIOpen "
+                  f"NCHW/NHWC representation: {' '.join(config_args)}")
+            continue
+        miopen_driver_cmd = [MIOPENDRIVER, *miopen_commandline, '-V', '0']
+        print(' '.join(miopen_driver_cmd))
+        p1 = subprocess.Popen(miopen_driver_cmd,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              env=envs)
+        # get output.
+        try:
+            _, errs = p1.communicate(timeout=300)
+            if len(errs) > 0 and p1.returncode != 0:
+                raise OSError(errs.decode('utf-8'))
+        except subprocess.TimeoutExpired:
+            p1.kill()
+            print("MIOpen tuning timed out")
+            _, errs = p1.communicate()
 
 
 def parse_data_types(data_types):
