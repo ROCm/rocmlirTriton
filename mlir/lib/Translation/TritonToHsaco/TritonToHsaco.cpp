@@ -40,9 +40,11 @@
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -53,6 +55,7 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -497,6 +500,60 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
     }
   }
   return valid;
+}
+
+/// Keep heavily replicated device-library call sites out of line.
+///
+/// Triton scalarizes tensor elementwise operations before LLVM translation, so
+/// a per-thread tile can contain dozens or hundreds of identical OCML calls.
+/// Inlining a nontrivial callee at every site multiplies code size and makes
+/// tile values live across a call interfere with every temporary in each
+/// cloned callee body. Outlining does not shorten those values' semantic
+/// lifetimes, but keeps the callee's temporaries out of the caller's register
+/// allocation scope at the cost of call and preservation overhead. Apply the
+/// call-count x body-size budget independently to each basic block so dense
+/// fusion regions can be outlined without preventing calls in sparse regions
+/// from taking the normal always-inline path.
+void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
+  constexpr uint64_t minCallSites = 128;
+  constexpr uint64_t duplicatedInstructionBudget = 1024;
+
+  for (llvm::Function &caller : module) {
+    for (llvm::BasicBlock &block : caller) {
+      llvm::DenseMap<llvm::Function *,
+                     llvm::SmallVector<llvm::CallBase *, /*InlineCapacity=*/8>>
+          directCallSites;
+      for (llvm::Instruction &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        if (!call)
+          continue;
+        auto *callee = llvm::dyn_cast<llvm::Function>(
+            call->getCalledOperand()->stripPointerCasts());
+        if (callee)
+          directCallSites[callee].push_back(call);
+      }
+
+      for (auto &[callee, callSites] : directCallSites) {
+        uint64_t callCount = callSites.size();
+        if (callCount < minCallSites || callee->isDeclaration() ||
+            !callee->hasInternalLinkage())
+          continue;
+        StringRef name = callee->getName();
+        if (!name.starts_with("__ocml_"))
+          continue;
+        uint64_t instructionCount = callee->getInstructionCount();
+        if (callCount * instructionCount <= duplicatedInstructionBudget)
+          continue;
+
+        LLVM_DEBUG(llvm::dbgs() << "keeping replicated calls to " << name
+                                << " out of line in one basic block: "
+                                << callCount << " call sites x "
+                                << instructionCount << " instructions\n");
+        for (llvm::CallBase *call : callSites)
+          call->setIsNoInline();
+      }
+    }
+  }
 }
 
 static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
@@ -998,6 +1055,8 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   if (!validateDeviceLibSymbols(*llvmModule))
     return failure();
+
+  disableHighDuplicationDeviceLibInlining(*llvmModule);
 
   std::optional<llvm::OptimizationLevel> optLevel =
       mapToLevel(options.optLevel);
