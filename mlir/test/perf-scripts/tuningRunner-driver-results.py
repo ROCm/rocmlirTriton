@@ -101,7 +101,6 @@ class TuneConfigTest(unittest.TestCase):
         options.tuning_space_kind = "quick"
         options.debug = False
         options.verbose = False
-        options.wait_for_compiles = False
         options.flush_last_level_cache = False
         options.gpu_run_timeout = 30
         options.perf_config_timeout = 0

@@ -905,12 +905,18 @@ def RockSetReductionLayoutPass
   let dependentDialects = ["rock::RockDialect", "triton::gpu::TritonGPUDialect",
                            "triton::amdgpu::TritonAMDGPUDialect",
                            "arith::ArithDialect"];
-  let options = [Option<
-      "useReductionLayout", "use-reduction-layout", "int64_t", /*default=*/"-1",
-      "Tri-state gate: -1 (default / heuristic) rewrites only convolution "
-      "kernels (those carrying the `rock.conv_kernel` attribute); 0 disables "
-      "the rewrite entirely (no kernel is touched); 1 forces the rewrite on "
-      "every kernel.">];
+  let options =
+      [Option<
+           "useReductionLayout", "use-reduction-layout", "int64_t",
+           /*default=*/"-1",
+           "Tri-state gate: -1 (default / heuristic) rewrites only convolution "
+           "kernels (those carrying the `rock.conv_kernel` attribute); 0 "
+           "disables the rewrite entirely (no kernel is touched); 1 forces the "
+           "rewrite on every kernel.">,
+       Option<"numStages", "num-stages", "int64_t", /*default=*/"1",
+              "The kernel's software-pipelining depth. Anything other than 1 "
+              "disables the rewrite, which measured as a consistent loss on "
+              "pipelined kernels.">];
 }
 
 def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {

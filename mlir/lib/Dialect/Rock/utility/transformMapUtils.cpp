@@ -220,7 +220,9 @@ struct VectorizationData {
 /// consideration cannot be completely traversed using vector operations,
 /// meaning that the unmerged result isn't guaranteed to be traversable with
 /// unit stride (the dimension that broke things could have jumps, padding,
-/// etc.).
+/// etc.). A held-constant dimension of length > 1 also stops the walk, since
+/// it leaves gaps in the lower coordinate. Either way, the alignment
+/// accumulated before stopping is kept.
 template <typename T>
 static std::optional<VectorizationInfo>
 propagateUnmergeVectorization(T &&dimAndLength,
@@ -256,6 +258,15 @@ propagateUnmergeVectorization(T &&dimAndLength,
         previousAlign = previousDimsStride;
       else
         previousAlign = std::gcd(*previousAlign, previousDimsStride);
+      // A held-constant upper dim with size > 1 means only one of its
+      // many values is being accessed. Within the unmerge embedding
+      // (lower = sum_i upper[i] * stride_i), this introduces stride-N
+      // gaps in the lower coordinate, so any further dim's vectorization
+      // would produce non-contiguous lower accesses. Stop extending the
+      // contiguous vectorization length here, but preserve the alignment
+      // computed so far.
+      if (dimLength > 1)
+        break;
     }
     previousDimsStride *= dimLength;
   }
@@ -1538,14 +1549,14 @@ ArrayAttr mlir::rock::prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,
   return b.getArrayAttr(views);
 }
 
-ArrayAttr mlir::rock::invertTransforms(OpBuilder &b, Location loc,
-                                       ArrayAttr transforms) {
+FailureOr<ArrayAttr> mlir::rock::invertTransforms(OpBuilder &b, Location loc,
+                                                  ArrayAttr transforms) {
   SmallVector<Attribute, 4> invertedTrs;
   for (Attribute tr : llvm::reverse(transforms)) {
     auto trMap = cast<TransformMapAttr>(tr);
     TransformMapAttr invertedTrMap = invertTransformMap(b, trMap, loc);
     if (!invertedTrMap)
-      return nullptr;
+      return failure();
     invertedTrs.push_back(invertedTrMap);
   }
   return b.getArrayAttr(invertedTrs);

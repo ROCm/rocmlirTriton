@@ -799,6 +799,7 @@ def Rock_BlockwiseStorePtrOp
     attr-dict $source  `->` $pointerTensor `(` $maskTensor `)` `by` $storeMethod
     `:` type($source) `->` type($pointerTensor) `(` type($maskTensor) `)`
   }];
+  let hasVerifier = 1;
 }
 
 def Rock_TransformsToPtrOp
