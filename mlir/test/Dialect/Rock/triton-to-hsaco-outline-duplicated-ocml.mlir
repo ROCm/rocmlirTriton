@@ -7,6 +7,12 @@
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt \
 // RUN:   -triton-to-hsaco='arch=gfx1200' %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ASM
+// RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt \
+// RUN:   -triton-to-hsaco='arch=gfx1250' %s -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=ATTR
+// RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt \
+// RUN:   -triton-to-hsaco='arch=gfx1250 allow-flush-denorm=false use-expert-scheduling=0' \
+// RUN:   %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ATTR-OFF
 
 // Keep the 128 calls in the dense block out of line, but still inline the
 // single call in the following sparse block.
@@ -24,6 +30,20 @@
 // ASM-LABEL: kernel:
 // ASM: __ocml_erf_f32@rel32@lo
 // ASM-COUNT-128: s_swappc_b64
+
+// Linked functions that survive outlining must use the same denormal and
+// expert-scheduling policy as the kernel.
+// ATTR-LABEL: define internal fastcc noundef float @__ocml_erf_f32
+// ATTR-SAME: #[[OCML_ATTRS:[0-9]+]]
+// ATTR: attributes #[[OCML_ATTRS]] = {
+// ATTR-SAME: denormal_fpenv(float: preservesign)
+// ATTR-SAME: "amdgpu-expert-scheduling-mode"="true"
+
+// ATTR-OFF-LABEL: define internal fastcc noundef float @__ocml_erf_f32
+// ATTR-OFF-SAME: #[[OCML_ATTRS_OFF:[0-9]+]]
+// ATTR-OFF: attributes #[[OCML_ATTRS_OFF]] = {
+// ATTR-OFF-SAME: denormal_fpenv(ieee)
+// ATTR-OFF-SAME: "amdgpu-expert-scheduling-mode"="false"
 
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.func @__ocml_erf_f32(f32) -> f32

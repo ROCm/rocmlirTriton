@@ -259,11 +259,46 @@ static bool isCoexecSchedulerSupported(llvm::StringRef arch) {
   return arch.starts_with("gfx1250");
 }
 
-/// Set kernel function attributes
+/// Set code-generation attributes shared by all emitted functions.
+///
+/// Device-library definitions are linked before this runs because some can
+/// remain outlined. Those functions execute under the kernel's denormal mode
+/// and must follow the same expert-scheduling policy.
+void setModuleFunctionAttributes(llvm::Module &module, bool allowFlushDenorm,
+                                 bool enableExpertScheduling) {
+  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
+  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
+  // controls to the `denormal_fpenv` enum attribute and only honours the string
+  // spelling through the auto-upgrade that runs when a module is parsed. A
+  // module built in memory therefore keeps it as an inert string and stays on
+  // the IEEE default. Express upstream's intended mode explicitly instead.
+  llvm::DenormalMode floatMode = allowFlushDenorm
+                                     ? llvm::DenormalMode::getPreserveSign()
+                                     : llvm::DenormalMode::getIEEE();
+  llvm::AttrBuilder denormalAttr(module.getContext());
+  denormalAttr.addDenormalFPEnvAttr(
+      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
+
+  // compiler.py passes "amdgpu-expert-scheduling-mode" as a
+  // translate_to_asm flag, which the Python llvm.cc binding applies by
+  // mutating LLVM's process-global cl::opt. rocmlir-tuning-driver compiles
+  // configs concurrently in one process, so stamp the backend's per-function
+  // attribute instead. SIInsertWaitcnts reads it when the global option was not
+  // set on the process command line.
+  for (llvm::Function &fn : module) {
+    if (fn.isDeclaration())
+      continue;
+    fn.addFnAttr("amdgpu-expert-scheduling-mode",
+                 enableExpertScheduling ? "true" : "false");
+    fn.removeFnAttr(llvm::Attribute::DenormalFPEnv);
+    fn.addFnAttrs(denormalAttr);
+  }
+}
+
+/// Set kernel-specific function attributes.
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
-                         int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         bool enableExpertScheduling, StringRef llvmFnAttrs) {
+                         int numCTAs, bool enableAsan, StringRef llvmFnAttrs) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -323,34 +358,6 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   if (isCoexecSchedulerSupported(archStr) && numWarps <= 4) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "coexec");
   }
-
-  // Deliberate divergence from upstream Triton: compiler.py passes
-  // "amdgpu-expert-scheduling-mode" as a translate_to_asm flag, which the
-  // Python llvm.cc binding applies by mutating LLVM's process-global cl::opt.
-  // rocmlir-tuning-driver compiles configs concurrently in one process, so
-  // stamp the backend's per-function attribute on every defined function
-  // instead. This keeps upstream's "all functions" behavior without touching
-  // process-global state. SIInsertWaitcnts reads this attribute when the global
-  // option was not set on the process command line.
-  for (llvm::Function &fn : module) {
-    if (!fn.isDeclaration())
-      fn.addFnAttr("amdgpu-expert-scheduling-mode",
-                   enableExpertScheduling ? "true" : "false");
-  }
-
-  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
-  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
-  // controls to the `denormal_fpenv` enum attribute and only honours the string
-  // spelling through the auto-upgrade that runs when a module is parsed. A
-  // module built in memory therefore keeps it as an inert string and stays on
-  // the IEEE default. Express upstream's intended mode explicitly instead.
-  llvm::DenormalMode floatMode = allowFlushDenorm
-                                     ? llvm::DenormalMode::getPreserveSign()
-                                     : llvm::DenormalMode::getIEEE();
-  llvm::AttrBuilder denormalAttr(module.getContext());
-  denormalAttr.addDenormalFPEnvAttr(
-      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
-  kernelFn->addFnAttrs(denormalAttr);
 
   // ASan support
   // Only stamp `target-features` on the kernel when the caller actually has
@@ -1039,11 +1046,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                << " vs options.numCTAs=" << options.numCTAs << "\n");
   }
 
-  // Set kernel attributes
-  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
-                      numCTAs, options.allowFlushDenorm, enableAsan,
-                      enableExpertScheduling, options.llvmFnAttrs);
-
   // Preserve explicit caller-provided libraries, then satisfy any remaining
   // OCML/OCKL references from the copies packaged into rockCompiler.
   if (!linkExternalDeviceLibraries(*llvmModule, options.externLibPaths))
@@ -1063,6 +1065,14 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   if (!validateDeviceLibSymbols(*llvmModule))
     return failure();
+
+  // Stamp shared attributes only after linking so outlined device-library
+  // definitions use the same backend policy as the kernel. Apply
+  // kernel-specific attributes afterward so llvmFnAttrs overrides remain last.
+  setModuleFunctionAttributes(*llvmModule, options.allowFlushDenorm,
+                              enableExpertScheduling);
+  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
+                      numCTAs, enableAsan, options.llvmFnAttrs);
 
   disableHighDuplicationDeviceLibInlining(*llvmModule);
 

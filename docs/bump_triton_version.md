@@ -244,9 +244,10 @@ The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Pyt
 | `createTargetMachine()` | `TritonToHsaco.cpp::createTargetMachine()` |
 | `optimize_module()` | `TritonToHsaco.cpp::optimizeModule()` |
 
-`TritonToHsaco.cpp::setKernelAttributes()` deliberately diverges from upstream
-on **`allow_flush_denorm`**: stamp the `denormal_fpenv` enum attribute, not
-upstream's legacy `"denormal-fp-math-f32"` string (see section 8.1).
+`TritonToHsaco.cpp::setModuleFunctionAttributes()` deliberately diverges from
+upstream on **`allow_flush_denorm`**: after linking device libraries, stamp the
+`denormal_fpenv` enum attribute on every definition, not upstream's legacy
+`"denormal-fp-math-f32"` string (see section 8.1).
 
 `TritonToHsaco.cpp` also deliberately diverges on **LLVM IR verification**.
 Upstream verifies unconditionally in two places: `to_module()` calls
@@ -560,10 +561,10 @@ implementation at the final LLVM codegen step. Upstream appends
 `python/src/llvm.cc` applies those flags by mutating LLVM's process-global
 command-line options. `rocmlir-tuning-driver` compiles perf configs in parallel
 worker threads, so `TritonToHsaco.cpp` must instead stamp the LLVM function
-attribute `amdgpu-expert-scheduling-mode=true/false` on every defined function.
-LLVM's AMDGPU backend reads this attribute when no process command-line
-occurrence of the global option exists; do not replace it with the upstream
-global-option path during a Triton bump.
+attribute `amdgpu-expert-scheduling-mode=true/false` on every defined function
+after linking device libraries. LLVM's AMDGPU backend reads this attribute when
+no process command-line occurrence of the global option exists; do not replace
+it with the upstream global-option path during a Triton bump.
 
 `HIPOptions.allow_flush_denorm` deliberately diverges from upstream at the
 final LLVM codegen step. Upstream `compiler.py` stamps the legacy
@@ -574,11 +575,13 @@ auto-upgrades the string spelling when a module is **parsed** from IR text.
 `TritonToHsaco.cpp` builds the LLVM module in memory, so copying upstream's
 string attribute would leave it inert: f32 denormals would stay unflushed and
 the AMDGPU backend would insert denormal range guards around every
-`llvm.exp2`/`llvm.log2`. Instead, `setKernelAttributes()` stamps
+`llvm.exp2`/`llvm.log2`. Instead, `setModuleFunctionAttributes()` stamps
 `denormal_fpenv(float: preservesign)` when `allowFlushDenorm` is true (the
-rocmlir default) and IEEE otherwise. Do not replace this with upstream's
-string attribute during a Triton bump. Regression coverage:
-`mlir/test/Dialect/Rock/triton-to-hsaco-denormal-mode.mlir`.
+rocmlir default) and IEEE otherwise on every definition after device-library
+linking. This keeps outlined device-library bodies consistent with the kernel's
+hardware mode. Do not replace this with upstream's string attribute during a
+Triton bump. Regression coverage: `triton-to-hsaco-denormal-mode.mlir` and
+`triton-to-hsaco-outline-duplicated-ocml.mlir`.
 
 If upstream adds a new `knobs.amd.*` switch around an existing pass we
 already replicate, decide whether it's a *tuner* knob (per-arch defaults
@@ -751,7 +754,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
-- [ ] Preserve `TritonToHsaco.cpp::setKernelAttributes()` denormal stamping via `denormal_fpenv` enum (do not copy upstream `"denormal-fp-math-f32"` string; see section 8.1)
+- [ ] Preserve `TritonToHsaco.cpp::setModuleFunctionAttributes()` stamping of linked definitions for expert scheduling and `denormal_fpenv` (do not copy upstream's process-global expert-scheduling option or `"denormal-fp-math-f32"` string; see section 8.1)
 - [ ] Keep LLVM IR verification in `TritonToHsaco.cpp` gated on `kVerifyLLVMIR` (upstream verifies unconditionally in `to_module()` and in the codegen pass manager; see section 5.2)
 - [ ] Preserve `TritonToHsaco.cpp::disableHighDuplicationDeviceLibInlining()` and its call from `translateTritonToHsaco()` (see section 5.2)
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
