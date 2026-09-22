@@ -130,11 +130,7 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
               intermediateOps, [](TransformOp tOp) -> Attribute {
                 return tOp.getTransform();
               })));
-<<<<<<< HEAD
       if (failed(inverted))
-=======
-      if (!inverted)
->>>>>>> e9b981289db3 (Addressing PR comments)
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
       transformedDest = rock::transform(rewriter, transformedDest, *inverted);
