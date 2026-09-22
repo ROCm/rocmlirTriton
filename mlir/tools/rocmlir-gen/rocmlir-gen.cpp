@@ -6185,8 +6185,9 @@ static LogicalResult populateHostHarnessLogic(
   // with no error reported. Registering the buffers keeps the copies off that
   // path. Sub-byte element types are skipped because they cannot be cast to an
   // unranked memref here, and their tensors are far larger than the sizes the
-  // defect affects anyway. The CPU-only harness (-prc) never touches the
-  // device, so there is nothing to register there.
+  // defect affects anyway. A root that is not a rock kernel runs entirely on
+  // the host, so there is nothing to register there.
+  SmallVector<Value, 5> registeredBuffers;
   if (!isCPUKernel) {
     for (Value buffer : localVars) {
       auto bufferType = cast<MemRefType>(buffer.getType());
@@ -6197,6 +6198,7 @@ static LogicalResult populateHostHarnessLogic(
           UnrankedMemRefType::get(elemType, bufferType.getMemorySpace());
       Value unranked = memref::CastOp::create(b, loc, unrankedType, buffer);
       gpu::HostRegisterOp::create(b, loc, unranked);
+      registeredBuffers.push_back(unranked);
     }
   }
 
@@ -6321,6 +6323,12 @@ static LogicalResult populateHostHarnessLogic(
         emitPrintTensor(b, lvar);
     }
   }
+
+  // Drop the page-locked mappings taken above, now that the kernel and any
+  // validation are done with the buffers. Freeing an allocation that is still
+  // registered leaves the mapping dangling in the runtime.
+  for (Value unranked : registeredBuffers)
+    gpu::HostUnregisterOp::create(b, loc, unranked);
 
   for (auto &vvar : valVars) {
     memref::DeallocOp::create(b, loc, vvar);

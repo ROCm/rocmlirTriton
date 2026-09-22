@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The host harness page-locks the buffers it hands to the kernel before they are
 // copied to the device. HIP can silently drop small asynchronous host-to-device
 // copies made out of pageable memory, which leaves the kernel reading zeros from
@@ -11,6 +14,15 @@
 // REGISTER-NEXT: gpu.host_register %[[BUF]] : memref<*xf32>
 // REGISTER-COUNT-2: gpu.host_register {{.*}} : memref<*xf32>
 // REGISTER: call @rock_gemm{{.*}}_gpu
+
+// Every registration is dropped once the kernel is done with the buffers and
+// before they are freed, so the runtime is not left holding a mapping onto a
+// freed allocation. The unranked casts are reused, not rebuilt.
+// RUN: rocmlir-gen --arch %arch --operation gemm -p -ph | FileCheck %s --check-prefix=UNREGISTER
+// UNREGISTER: call @rock_gemm{{.*}}_gpu
+// UNREGISTER-COUNT-3: gpu.host_unregister {{.*}} : memref<*xf32>
+// UNREGISTER-NOT: gpu.host_unregister
+// UNREGISTER: memref.dealloc
 
 // Validation runs on the host, so only the three buffers the kernel receives are
 // registered and the reference buffers are left alone.

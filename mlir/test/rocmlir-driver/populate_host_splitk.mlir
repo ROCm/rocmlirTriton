@@ -45,6 +45,9 @@
 // CHECK-NEXT: memref.cast %[[output]]
 // CHECK-NEXT: gpu.host_register
 // CHECK-NEXT: call @rock_conv_gkc01_ngc01_ngk01_gpu({{.*}}, {{.*}}, {{.*}}) : (memref<[[GKCYX]]x[[TYPE]]>, memref<[[NGCHIWI]]x[[TYPE]]>, memref<[[NGKHOWO]]x[[OTYPE]]>) -> ()
+// CHECK-NEXT: gpu.host_unregister
+// CHECK-NEXT: gpu.host_unregister
+// CHECK-NEXT: gpu.host_unregister
 // CHECK-NEXT: memref.dealloc %[[filter]]
 // CHECK-NEXT: memref.dealloc %[[input]]
 // CHECK-NEXT: memref.dealloc %[[output]]
