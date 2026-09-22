@@ -1080,6 +1080,22 @@ static LogicalResult verifyStoreResultAlias(StoreOpT op) {
   return success();
 }
 
+template <typename StoreOpT>
+static LogicalResult verifyStoreMethod(StoreOpT op) {
+  StoreMethod storeMethod = op.getStoreMethod();
+  if (storeMethod == StoreMethod::Set)
+    return success();
+
+  Type elementType =
+      cast<ShapedType>(op.getSource().getType()).getElementType();
+  if (!rock::isAtomicRMWTypeSupported(elementType))
+    return op.emitOpError()
+           << "source element type " << elementType << " does not support "
+           << getNameForStoreMethod(storeMethod);
+
+  return success();
+}
+
 LogicalResult StoreOp::verify() {
   auto sourceType = cast<ShapedType>(getSource().getType());
   auto destType = cast<ShapedType>(getDest().getType());
@@ -1092,6 +1108,9 @@ LogicalResult StoreOp::verify() {
     return failure();
 
   if (failed(verifyStoreDest(*this)))
+    return failure();
+
+  if (failed(verifyStoreMethod(*this)))
     return failure();
 
   return verifyStoreResultUses(*this, getResult());
@@ -1564,8 +1583,13 @@ LogicalResult BlockwiseStoreOp::verify() {
   if (failed(verifyStoreDest(*this)))
     return failure();
 
+  if (failed(verifyStoreMethod(*this)))
+    return failure();
+
   return verifyStoreResultUses(*this, getResult());
 }
+
+LogicalResult BlockwiseStorePtrOp::verify() { return verifyStoreMethod(*this); }
 
 //===----------------------------------------------------------------------===//
 // BlockwiseGemmOp

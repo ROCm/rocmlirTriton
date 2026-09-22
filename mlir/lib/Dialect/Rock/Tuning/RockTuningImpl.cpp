@@ -1008,7 +1008,10 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   // config to the front of the list.
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
-           info.quantBlockSize, info.aScaleType, info.bScaleType)) {
+           supportsSplitK, info.quantBlockSize, info.aScaleType,
+           info.bScaleType)) {
+    // A regular-list fallback is still possible when no no-split-K list exists
+    // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && param.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
@@ -1022,8 +1025,10 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   OpBuilder b(gemmGemmOp.getContext());
   // `getTuningParameters` already bumps the first conservatively-applicable
   // config to the front of the list.
-  for (GemmGemmParamsAttr params :
-       PopulateParamsGemmGemm::getTuningParameters(b, gemmGemmOp)) {
+  for (GemmGemmParamsAttr params : PopulateParamsGemmGemm::getTuningParameters(
+           b, gemmGemmOp, supportsSplitK)) {
+    // A regular-list fallback is still possible when no no-split-K list exists
+    // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && params.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(params));
@@ -1033,7 +1038,12 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
 TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
-  bool supportsSplitK = succeeded(rock::testFusionLegalitySplitK(mod));
+
+  // Match the split-K legality used for this op's problem key.
+  auto opSupportsSplitK = [](Operation *op) {
+    auto func = op->getParentOfType<func::FuncOp>();
+    return func && succeeded(rock::testFusionLegalitySplitK(func));
+  };
 
   // create range and heuristic
   WalkResult findPrimary =
@@ -1046,7 +1056,7 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
           // so they cannot produce a worse search space than quick tuning.
           [[fallthrough]];
         case TuningParamSetKind::Quick:
-          createGemmTuningRangeQuick(newSpace, op, supportsSplitK);
+          createGemmTuningRangeQuick(newSpace, op, opSupportsSplitK(op));
           break;
         }
         newSpace->primaryOpType = op.getKernelType();
@@ -1062,7 +1072,7 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
           // so they cannot produce a worse search space than quick tuning.
           [[fallthrough]];
         case TuningParamSetKind::Quick:
-          createGemmGemmTuningRangeQuick(newSpace, op, supportsSplitK);
+          createGemmGemmTuningRangeQuick(newSpace, op, opSupportsSplitK(op));
           break;
         }
         return WalkResult::interrupt();
@@ -1858,7 +1868,8 @@ RocmlirSplitKSelectionLikelihood isSplitKFaster(int64_t gDim, int64_t mDim,
 }
 
 bool isModuleFusible(ModuleOp module, StringRef perfConfig) {
-  bool fusible = succeeded(rock::testFusionLegalityBwdDataConv(module));
+  bool fusible = succeeded(rock::testFusionLegalityReduce(module)) &&
+                 succeeded(rock::testFusionLegalityBwdDataConv(module));
   if (!rock::isSplitKRequested(module, perfConfig))
     return fusible;
   return fusible && succeeded(rock::testFusionLegalitySplitK(module));
