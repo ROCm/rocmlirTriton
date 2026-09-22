@@ -6162,6 +6162,27 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
 
+  // Tensor functions return their outputs instead of receiving output
+  // buffers as arguments. Materialize one correctly-shaped buffer per result
+  // so the harness can copy and print those results. Previously the fallback
+  // below reused the last input buffer, which fails whenever an input and
+  // result have different shapes.
+  if (isCPUKernel && outIndices.empty() && !root0.resultTypes.empty()) {
+    for (Type resultType : root0.resultTypes) {
+      auto shapedType = dyn_cast<ShapedType>(resultType);
+      if (!shapedType) {
+        root0.func.emitError()
+            << "host harness only supports shaped function results";
+        return failure();
+      }
+      auto resultMemrefType =
+          MemRefType::get(shapedType.getShape(), shapedType.getElementType());
+      outIndices.push_back(localVars.size());
+      localVars.push_back(
+          memref::AllocOp::create(b, loc, resultMemrefType).getResult());
+    }
+  }
+
   // Stop memory initialization timer
   if (cpuTimers) {
     func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
@@ -6218,7 +6239,9 @@ static LogicalResult populateHostHarnessLogic(
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
       SmallVector<Value, 8> tensorArgs;
-      for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+      for (auto [idx, memrefArg] :
+           llvm::enumerate(ArrayRef<Value>(memrefArgs)
+                               .take_front(callee.getNumArguments()))) {
         bool isWritable = llvm::is_contained(outputIndices, idx);
         tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
       }
@@ -6234,7 +6257,7 @@ static LogicalResult populateHostHarnessLogic(
           auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-          memrefArgs[outIdx] = resultMemref;
+          memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
         }
       }
     } else if (willBeWrapped) {
@@ -6260,6 +6283,7 @@ static LogicalResult populateHostHarnessLogic(
   for (auto &root : roots) {
     // Is the root also a kernel?
     bool rootKernel =
+        root.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
         std::find_if(kernels.begin(), kernels.end(), [&](const KernelIF &k) {
           return k.func == root.func;
         }) != kernels.end();
