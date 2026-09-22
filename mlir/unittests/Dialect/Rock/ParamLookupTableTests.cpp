@@ -33,8 +33,8 @@ static constexpr StringLiteral kTunedGemmGemmDataTypes[] = {"f16", "f32"};
 static constexpr StringLiteral kAttentionDataTypes[] = {"bf16", "f16", "f32",
                                                         "i8"};
 
-// Data types gfx1100 borrows from gfx1101 for gemm and conv.
-static constexpr StringLiteral kNavi3SharedDataTypes[] = {"f16", "f32", "i8"};
+// Data types with dedicated gfx1100 and gfx1101 gemm and conv lists.
+static constexpr StringLiteral kNavi3TunedDataTypes[] = {"f16", "f32", "i8"};
 
 TEST(FindFallbackTest, ExactMatch) {
   // Exact match should return itself
@@ -95,8 +95,7 @@ TEST(FindFallbackTest, UnavailableTuningList) {
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
-  // gfx1100 now has an exact no-split-K pair, which wins before architecture
-  // fallback to gfx1101.
+  // gfx1100 is the closest gfx11* relative with a gemm_f16 list.
   EXPECT_EQ("gfx1100_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
@@ -179,11 +178,10 @@ TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
                 "gfx1152_attention_i8"));
 }
 
-TEST(FindFallbackTest, Gfx1100UsesItsNoSplitKPairsForGemmAndConv) {
-  // gfx1100 has exact no-split-K gemm and conv lists, so pair fallback wins
-  // before changing architecture to gfx1101.
+TEST(FindFallbackTest, Gfx1100UsesOwnGemmAndConvLists) {
+  // gfx1100 ships dedicated gemm and conv lists at each tuned precision.
   for (StringRef kernelType : {"gemm", "conv"}) {
-    for (StringRef dataType : kNavi3SharedDataTypes) {
+    for (StringRef dataType : kNavi3TunedDataTypes) {
       std::string target =
           (Twine("gfx1100") + "_" + kernelType + "_" + dataType).str();
       EXPECT_EQ(target, ParamLookupTable<GemmParamsAttr>::findFallback(target))
@@ -192,8 +190,8 @@ TEST(FindFallbackTest, Gfx1100UsesItsNoSplitKPairsForGemmAndConv) {
   }
 }
 
-TEST(FindFallbackTest, Gfx1100UsesItsOwnAttentionLists) {
-  // bf16/i8 are regular entries and f16/f32 are exact no-split-K pairs.
+TEST(FindFallbackTest, Gfx1100UsesOwnAttentionLists) {
+  // gfx1100 ships dedicated attention lists at each tuned precision.
   for (StringRef dataType : kAttentionDataTypes) {
     std::string target = (Twine("gfx1100_attention_") + dataType).str();
     EXPECT_EQ(target,
@@ -447,9 +445,8 @@ TEST(LookupTest, GemmGemmResolvesToAttentionListOfSamePrecision) {
   EXPECT_FALSE(gemmGemmF16 == attentionI8);
 }
 
-TEST(LookupTest, Gfx1100GemmAndConvServeTheirNoSplitKLists) {
-  // Verify an exact no-split-K pair wins before architecture fallback even
-  // when the caller prefers the regular table.
+TEST(LookupTest, Gfx1100GemmAndConvUseOwnLists) {
+  // Verify the public lookup returns gfx1100's dedicated lists.
   MLIRContext ctx;
   SmallVector<Type, 3> dataTypes = {Float16Type::get(&ctx),
                                     Float32Type::get(&ctx),
@@ -462,14 +459,13 @@ TEST(LookupTest, Gfx1100GemmAndConvServeTheirNoSplitKLists) {
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
     for (Type dataType : dataTypes) {
-      auto preferredRegular =
-          get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType, true);
-      auto preferredNoSplitK =
-          get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType, false);
-      EXPECT_FALSE(preferredRegular.empty());
-      EXPECT_TRUE(preferredRegular == preferredNoSplitK)
-          << "for " << stringifyEnum(kernel).lower() << " at "
-          << getDataTypeString(dataType);
+      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType,
+                        /*supportsSplitK=*/true);
+      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType,
+                        /*supportsSplitK=*/true);
+      EXPECT_FALSE(navi31.empty());
+      EXPECT_FALSE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
+                                     << " at " << getDataTypeString(dataType);
     }
   }
 
@@ -501,8 +497,7 @@ TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
         arch, KernelType::Attention, t, /*supportsSplitK=*/true);
   };
 
-  // gfx1100 and gfx1201 have regular bf16 lists and no-split-K f16 lists; the
-  // two precisions must continue to resolve to distinct measurements.
+  // Each architecture's bf16 list must stay distinct from its f16 list.
   for (StringRef arch : {"gfx942", "gfx1100", "gfx1201"}) {
     auto attentionBf16 = get(arch, bf16);
     EXPECT_FALSE(attentionBf16.empty()) << "for " << arch;
