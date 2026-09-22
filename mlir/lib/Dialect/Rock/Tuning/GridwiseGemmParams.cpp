@@ -205,7 +205,8 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   return materializeTuningParams<GemmParamsAttr>(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
-                          info.arch, info.quantBlockSize, info.aScaleType,
+                          info.arch, /*supportsSplitK=*/true,
+                          info.quantBlockSize, info.aScaleType,
                           info.bScaleType));
 }
 
@@ -224,10 +225,10 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
 
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-    StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
-    Type bScaleType) const {
-  auto perfConfigs =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
+    StringRef arch, bool supportsSplitK, std::optional<int64_t> quantBlockSize,
+    Type aScaleType, Type bScaleType) const {
+  auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, opType, dataTypeA, supportsSplitK);
 
   LLVM_DEBUG(
       llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
