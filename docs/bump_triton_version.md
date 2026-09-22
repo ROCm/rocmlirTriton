@@ -753,6 +753,7 @@ Use this checklist to track progress:
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Preserve `TritonToHsaco.cpp::setKernelAttributes()` denormal stamping via `denormal_fpenv` enum (do not copy upstream `"denormal-fp-math-f32"` string; see section 8.1)
 - [ ] Keep LLVM IR verification in `TritonToHsaco.cpp` gated on `kVerifyLLVMIR` (upstream verifies unconditionally in `to_module()` and in the codegen pass manager; see section 5.2)
+- [ ] Preserve `TritonToHsaco.cpp::disableHighDuplicationDeviceLibInlining()` and its call from `translateTritonToHsaco()` (see section 5.2)
 - [ ] Update `TritonToHsaco.cpp` for LLVM function changes (`initializeLLVMTargets`, `createTargetMachine`, `optimizeModule`)
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed

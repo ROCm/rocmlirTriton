@@ -505,7 +505,8 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
 /// Keep heavily replicated device-library call sites out of line.
 ///
 /// Triton scalarizes tensor elementwise operations before LLVM translation, so
-/// a per-thread tile can contain dozens or hundreds of identical OCML calls.
+/// a per-thread tile can contain dozens or hundreds of identical device-library
+/// calls.
 /// Inlining a nontrivial callee at every site multiplies code size and makes
 /// tile values live across a call interfere with every temporary in each
 /// cloned callee body. Outlining does not shorten those values' semantic
