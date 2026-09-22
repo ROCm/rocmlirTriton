@@ -22,8 +22,10 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "amd/include/Analysis/AMDGPUAllocation.h"
+#include "amd/include/Analysis/AxisInfoExt.h"
 #include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "lib/TritonAMDGPUToLLVM/TargetInfo.h"
+#include "lib/TritonAMDGPUToLLVM/Utility.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -32,6 +34,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
@@ -42,6 +45,7 @@ namespace rock {
 } // namespace rock
 } // namespace mlir
 
+#undef DEBUG_TYPE
 #define DEBUG_TYPE "rock-set-reduction-layout"
 
 using namespace mlir;
@@ -139,7 +143,9 @@ Value findGatherAnchor(Value operand) {
 // encodings are uniqued by content, so a module-wide substitution keyed on the
 // encoding would also rewrite unrelated values that merely happen to share it.
 // Returns true if the layout was rewritten.
-bool rewriteGatherLoad(Value anchor, unsigned kDim) {
+bool rewriteGatherLoad(
+    Value anchor, unsigned kDim,
+    SmallVectorImpl<triton::amdgpu::BufferLoadOp> &retypedBufferLoads) {
   Operation *anchorOp = anchor.getDefiningOp();
   MLIRContext *ctx = anchor.getContext();
   auto ty = dyn_cast<RankedTensorType>(anchor.getType());
@@ -320,11 +326,19 @@ bool rewriteGatherLoad(Value anchor, unsigned kDim) {
 
   // The replacer recurses into nested encodings, so slice<{parent = #blocked}>
   // and the like are rewritten too. Applying it per scoped op rewrites
-  // attribute dictionaries and result types locally.
-  for (Operation *op : scope)
+  // attribute dictionaries and result types locally. Buffer-load contiguity is
+  // a vector-width hint computed for the old distributed layout, so invalidate
+  // it before rerunning axis analysis after all gather layouts are final.
+  for (Operation *op : scope) {
+    if (auto load = dyn_cast<triton::amdgpu::BufferLoadOp>(op);
+        load && replacer.replace(load.getType()) != load.getType()) {
+      load.setContiguity(1);
+      retypedBufferLoads.push_back(load);
+    }
     replacer.recursivelyReplaceElementsIn(op, /*replaceAttrs=*/true,
                                           /*replaceLocs=*/false,
                                           /*replaceTypes=*/true);
+  }
 
   // arith.constant keeps its value as an inherent attribute (a property), which
   // the dictionary rewrite above does not reach. Reshape any scoped constant so
@@ -367,7 +381,9 @@ bool rewriteGatherLoad(Value anchor, unsigned kDim) {
 // Redistribute every gather in `mod` that feeds a dot unambiguously. With
 // `forceAll`, every kernel is considered; otherwise only convolution ones.
 // Returns true if any gather was rewritten.
-bool redistributeGathers(ModuleOp mod, bool forceAll) {
+bool redistributeGathers(
+    ModuleOp mod, bool forceAll,
+    SmallVectorImpl<triton::amdgpu::BufferLoadOp> &retypedBufferLoads) {
   // Associate each dot operand with the gather anchor that feeds it and the
   // reduction (K) dim implied by its operand position.
   llvm::MapVector<Value, unsigned> anchorKDim;
@@ -410,7 +426,7 @@ bool redistributeGathers(ModuleOp mod, bool forceAll) {
           "with conflicting reduction dims; skipping");
       continue;
     }
-    rewrote |= rewriteGatherLoad(anchor, kDim);
+    rewrote |= rewriteGatherLoad(anchor, kDim, retypedBufferLoads);
   }
   return rewrote;
 }
@@ -468,8 +484,21 @@ void RockSetReductionLayoutPass::runOnOperation() {
   // The rewrite is performed on a cloned module, and that clone replaces the
   // original only if its shared-memory footprint did not grow.
   OwningOpRef<ModuleOp> probe(mod.clone());
-  if (!redistributeGathers(*probe, forceAll))
+  SmallVector<triton::amdgpu::BufferLoadOp> retypedBufferLoads;
+  if (!redistributeGathers(*probe, forceAll, retypedBufferLoads))
     return;
+
+  // Recompute vector-width hints once all layouts have reached their final
+  // form. This uses the same AMD axis analysis as buffer-op lowering.
+  triton::AMD::ModuleAxisInfoAnalysis axisInfo(*probe);
+  for (triton::amdgpu::BufferLoadOp load : retypedBufferLoads) {
+    unsigned contiguity =
+        LLVM::AMD::getVectorSize(load.getPtr(), load.getOffsets(), axisInfo);
+    if (Value mask = load.getMask())
+      contiguity =
+          std::min<unsigned>(contiguity, axisInfo.getMaskAlignment(mask));
+    load.setContiguity(contiguity);
+  }
 
   // With no target attribute to size shared memory from, keep the rewrite
   // rather than silently dropping it.
