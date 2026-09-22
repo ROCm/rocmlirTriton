@@ -68,8 +68,8 @@ if config.enable_assertions:
 # relocatable SDK). lit otherwise scrubs it from the test environment.
 llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP', 'ROCM_PATH'])
 
-# Likewise for HIP_VISIBLE_DEVICES, so the tests run on the device config.arch
-# was computed from.
+# Likewise for the GPU device-selection variables, so the tests run on the
+# device config.arch was computed from.
 apply_device_environment(config)
 
 ##############

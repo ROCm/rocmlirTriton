@@ -36,7 +36,7 @@ def get_agents():
 
 
 def apply_arch_features(config, lit_config):
-    """Populate `config.arch`, `config.no_AMD_GPU`, `config.multi_gpu_detected`,
+    """Populate `config.arch`, `config.no_AMD_GPU`, `config.mixed_arch_detected`,
     and the `arch_support_*` booleans from the `amd_arch_db` pybind11 binding.
     Shared by all lit.site.cfg.py.in files so per-arch gating stays in one place.
 
@@ -53,7 +53,7 @@ def apply_arch_features(config, lit_config):
                          "`rocmlir-common-python-test-utils`." % e)
 
     config.no_AMD_GPU = False
-    config.multi_gpu_detected = False
+    config.mixed_arch_detected = False
     config.arch = ""
     config.arch_support_accel_fp8 = False
     config.arch_support_scaled_gemm = False
@@ -80,8 +80,8 @@ def apply_arch_features(config, lit_config):
     # rocmlir-gen an unparseable chipset.
     config.arch = agents[0]
     distinct = sorted(set(agents))
-    config.multi_gpu_detected = len(distinct) > 1
-    if config.multi_gpu_detected:
+    config.mixed_arch_detected = len(distinct) > 1
+    if config.mixed_arch_detected:
         lit_config.note("Visible GPUs have mixed architectures (%s); tests will run on %s. "
                         "Set HIP_VISIBLE_DEVICES to select a different device." %
                         (', '.join(distinct), config.arch))
@@ -95,16 +95,29 @@ def apply_arch_features(config, lit_config):
     config.arch_prefers_bf16x3_for_f32_dot = (amd_arch_db.prefer_bf16x3_for_f32_dot(chip))
 
 
+# HIP honours all of these when it enumerates devices, so each one that is set
+# already shaped the device list `get_agents` saw.
+DEVICE_SELECTION_VARS = ('HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')
+
+
 def apply_device_environment(config):
     """Point the test environment at the same device `apply_arch_features` used
     to compute `config.arch`. Call from each lit.cfg.py alongside the other
     environment setup.
 
-    lit scrubs HIP_VISIBLE_DEVICES, so without this a user who selects a device
-    gets an arch describing their choice but kernels running on device 0.
+    lit scrubs the device-selection variables, so without this a user who
+    selects a device gets an arch describing their choice but kernels running
+    on device 0. Propagate every variable that is set rather than just the one
+    we would have picked: a selection that happens to leave a single
+    architecture visible looks homogeneous here, so the '0' fallback below
+    would not fire and the mismatch would go unannounced.
     """
-    visible_devices = os.environ.get('HIP_VISIBLE_DEVICES')
-    if visible_devices is not None:
-        config.environment['HIP_VISIBLE_DEVICES'] = visible_devices
-    elif getattr(config, 'multi_gpu_detected', False):
+    selected = False
+    for var in DEVICE_SELECTION_VARS:
+        value = os.environ.get(var)
+        if value is not None:
+            config.environment[var] = value
+            selected = True
+
+    if not selected and config.mixed_arch_detected:
         config.environment['HIP_VISIBLE_DEVICES'] = '0'
