@@ -459,8 +459,10 @@ TEST(LookupTest, Gfx1100GemmAndConvUseOwnLists) {
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
     for (Type dataType : dataTypes) {
-      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType);
-      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType);
+      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType,
+                        /*supportsSplitK=*/true);
+      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType,
+                        /*supportsSplitK=*/true);
       EXPECT_FALSE(navi31.empty());
       EXPECT_FALSE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
                                      << " at " << getDataTypeString(dataType);
