@@ -1,6 +1,7 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
+import os
 import subprocess
 
 from hip import hip
@@ -17,21 +18,27 @@ def hip_check(call_result):
 
 
 def get_agents():
-    agents = set()
+    """Return each visible device's `gcnArchName` in HIP device order.
+
+    HIP applies HIP_VISIBLE_DEVICES itself, so index 0 is the device the tests
+    will run on. Keep the duplicates and the ordering: callers need to tell a
+    homogeneous machine from a mixed one, and picking an arch out of a set
+    would vary between runs under hash randomization.
+    """
+    agents = []
     device_count = hip_check(hip.hipGetDeviceCount())
     for device in range(device_count):
         props = hip.hipDeviceProp_t()
         hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+        agents.append(props.gcnArchName.decode('utf-8'))
 
     return agents
 
 
 def apply_arch_features(config, lit_config):
-    """Populate `config.arch`, `config.no_AMD_GPU`, and the `arch_support_*`
-    booleans from the `amd_arch_db` pybind11 binding. Shared by all
-    lit.site.cfg.py.in files so per-arch gating stays in one place.
+    """Populate `config.arch`, `config.no_AMD_GPU`, `config.multi_gpu_detected`,
+    and the `arch_support_*` booleans from the `amd_arch_db` pybind11 binding.
+    Shared by all lit.site.cfg.py.in files so per-arch gating stays in one place.
 
     Fatals out if the binding isn't importable; the hasattr probe rejects the
     empty namespace-package shadow when the .so is missing but the sibling
@@ -46,6 +53,7 @@ def apply_arch_features(config, lit_config):
                          "`rocmlir-common-python-test-utils`." % e)
 
     config.no_AMD_GPU = False
+    config.multi_gpu_detected = False
     config.arch = ""
     config.arch_support_accel_fp8 = False
     config.arch_support_scaled_gemm = False
@@ -62,18 +70,41 @@ def apply_arch_features(config, lit_config):
         config.no_AMD_GPU = True
         return
 
-    config.arch = ','.join(agents)
-    if not config.arch:
+    if not agents:
         config.no_AMD_GPU = True
         return
 
-    # Take the first agent for feature gating. Multi-arch CI runners are
-    # expected to be homogeneous; if that ever changes, switch this to an
-    # all()/any() reduction over agents.
-    chip = next(iter(agents)).split(':')[0]
+    # Everything downstream -- the %arch substitution, rocmlir-gen --arch, the
+    # feature gating below -- takes a single architecture, so describe device 0
+    # only. Joining the architectures of a mixed machine would just hand
+    # rocmlir-gen an unparseable chipset.
+    config.arch = agents[0]
+    distinct = sorted(set(agents))
+    config.multi_gpu_detected = len(distinct) > 1
+    if config.multi_gpu_detected:
+        lit_config.note("Visible GPUs have mixed architectures (%s); tests will run on %s. "
+                        "Set HIP_VISIBLE_DEVICES to select a different device." %
+                        (', '.join(distinct), config.arch))
+
+    chip = config.arch.split(':')[0]
     config.arch_support_accel_fp8 = amd_arch_db.arch_supports_accel_fp8(chip)
     config.arch_support_scaled_gemm = amd_arch_db.arch_supports_scaled_gemm(chip)
     config.arch_support_non_k_packed_scaled_input = (
         amd_arch_db.arch_supports_non_k_packed_scaled_input(chip))
     config.arch_support_kpack = amd_arch_db.get_max_kpack(chip) > 1
     config.arch_prefers_bf16x3_for_f32_dot = (amd_arch_db.prefer_bf16x3_for_f32_dot(chip))
+
+
+def apply_device_environment(config):
+    """Point the test environment at the same device `apply_arch_features` used
+    to compute `config.arch`. Call from each lit.cfg.py alongside the other
+    environment setup.
+
+    lit scrubs HIP_VISIBLE_DEVICES, so without this a user who selects a device
+    gets an arch describing their choice but kernels running on device 0.
+    """
+    visible_devices = os.environ.get('HIP_VISIBLE_DEVICES')
+    if visible_devices is not None:
+        config.environment['HIP_VISIBLE_DEVICES'] = visible_devices
+    elif getattr(config, 'multi_gpu_detected', False):
+        config.environment['HIP_VISIBLE_DEVICES'] = '0'

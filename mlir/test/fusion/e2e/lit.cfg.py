@@ -18,6 +18,9 @@ from lit.llvm import llvm_config
 from lit.llvm.subst import ToolSubst
 from lit.llvm.subst import FindTool
 
+# lit.site.cfg.py puts the common test utils on sys.path before loading us.
+from common import apply_device_environment
+
 # Configuration file for the 'lit' test runner.
 
 # name: The name of this test suite.
@@ -50,6 +53,10 @@ if config.arch_prefers_bf16x3_for_f32_dot:
     config.available_features.add('bf16x3_f32_dot')
 
 llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
+
+# Likewise for HIP_VISIBLE_DEVICES, so the tests run on the device config.arch
+# was computed from.
+apply_device_environment(config)
 
 ##############
 # FIXME: adding a path to the environment isn't appearing to work as
