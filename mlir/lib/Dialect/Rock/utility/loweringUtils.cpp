@@ -714,8 +714,7 @@ FusionInfo mlir::rock::collectFusionInfo(Value root) {
     Value current = worklist.pop_back_val();
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
-      if (!(isForwardTraceOp(owner) || isa<ViewLikeOpInterface>(owner)) ||
-          !visited.insert(owner).second)
+      if (!isForwardTraceOp(owner) || !visited.insert(owner).second)
         continue;
       if (isFusionOp(owner))
         fusionOps.push_back(owner);

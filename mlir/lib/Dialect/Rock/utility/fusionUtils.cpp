@@ -224,10 +224,12 @@ mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
 
 LogicalResult mlir::rock::testFusionLegalityAttentionSplitKV(ModuleOp mod) {
   auto funcs = mod.getOps<func::FuncOp>();
-  assert(std::distance(funcs.begin(), funcs.end()) &&
-         "expected ModuleOp containing a single func::FuncOp");
-  func::FuncOp func = *(funcs.begin());
-  return testFusionLegalityAttentionSplitKV(func);
+  bool isFusible = true;
+  for (auto f : funcs) {
+    isFusible &= succeeded(testFusionLegalityAttentionSplitKV(f));
+  }
+
+  return success(isFusible);
 }
 
 LogicalResult mlir::rock::testFusionLegalityBwdDataConv(func::FuncOp func) {
