@@ -77,6 +77,11 @@ FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
 PopulateParamsGemmGemm::getGemmParams(OpBuilder &b,
                                       RockGemmGemmWrapperInterface op,
                                       GemmGemmParamsAttr params) {
+  int64_t gemm1N = llvm::PowerOf2Ceil(op.getGemmGemmSize().o);
+  // A second-GEMM N tile larger than the (padded) problem N cannot be lowered.
+  if (params.getNPerBlockG1() > gemm1N)
+    return failure();
+
   GemmParamsAttr params0 = getGemm0Params(b, params);
   GemmParamsAttr params1 = getGemm1Params(b, op, params);
 
