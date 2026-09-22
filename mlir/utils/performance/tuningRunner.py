@@ -226,7 +226,6 @@ class Options:
     retry_states: frozenset
     gpu_ids: List[int]
     num_cpus: Optional[int]
-    wait_for_compiles: bool
     flush_last_level_cache: bool
     verify_passes: bool
     timeout: Optional[int]
@@ -1533,8 +1532,6 @@ def tune_config(test_vector: str, conf_class: type, paths: Paths, options: Optio
             f"--coarse-chunk-iters={options.coarse_chunk_iters}",
             f"--coarse-min-rep-iters={options.coarse_min_rep_iters}",
         ]
-    if options.wait_for_compiles:
-        tuning_driver_args.append("--wait-for-compiles")
     if options.flush_last_level_cache:
         tuning_driver_args.append("--flush-last-level-cache")
     if options.verify_passes:
@@ -2736,14 +2733,6 @@ def parse_arguments(args=None) -> argparse.Namespace:
                         "Not applicable to --compile-only.")
 
     parser.add_argument(
-        "--wait-for-compiles",
-        action='store_true',
-        default=False,
-        help=
-        "Wait for all compilation tasks to complete before starting tuning. Useful for systems with shared CPU/GPU memory (e.g., APUs)."
-    )
-
-    parser.add_argument(
         "--gpu-run-timeout",
         type=int,
         default=0,
@@ -2991,7 +2980,6 @@ def main(args=None):
                       retry_states=frozenset(ConfigState(s) for s in parsed_args.retry),
                       gpu_ids=parsed_args.gpus,
                       num_cpus=parsed_args.num_cpus,
-                      wait_for_compiles=parsed_args.wait_for_compiles,
                       flush_last_level_cache=parsed_args.flush_last_level_cache,
                       verify_passes=parsed_args.verify_passes,
                       timeout=parsed_args.timeout,
