@@ -4,13 +4,19 @@
 // A host-only function that returns a tensor gets a fresh result buffer in the
 // harness. With clone validation the harness also keeps validation buffers
 // indexed like the regular ones, so the result needs its own validation buffer
-// for the CPU reference call and the verifier to use.
+// too. The function under test writes the regular result buffer and the
+// _cpu_host reference writes the validation one, and the verifier compares
+// the two.
 
 // RUN: rocmlir-gen -ph -pr -fut host_collapse --verifier clone %s | FileCheck %s
 
 // CHECK-LABEL: func.func @main()
 // CHECK: %[[RES:.+]] = memref.alloc() : memref<6xf32>
 // CHECK-NEXT: %[[VAL_RES:.+]] = memref.alloc() : memref<6xf32>
+// CHECK: call @host_collapse({{.*}}) : (tensor<2x3xf32>) -> tensor<6xf32>
+// CHECK: memref.copy %{{.+}}, %[[RES]] : memref<6xf32> to memref<6xf32>
+// CHECK: call @host_collapse_cpu_host({{.*}}) : (tensor<2x3xf32>) -> tensor<6xf32>
+// CHECK: memref.copy %{{.+}}, %[[VAL_RES]] : memref<6xf32> to memref<6xf32>
 // CHECK: call @host_collapse_verify1(%[[RES]], %[[VAL_RES]])
 // CHECK-DAG: memref.dealloc %[[RES]]
 // CHECK-DAG: memref.dealloc %[[VAL_RES]]

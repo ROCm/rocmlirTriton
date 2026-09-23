@@ -6323,7 +6323,9 @@ static LogicalResult populateHostHarnessLogic(
       if (cpuTimers) {
         func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
       }
-    } else if (!valVars.empty()) {
+    } else if (!valVars.empty() && !hasCloneValidation) {
+      // Clone validation fills valVars from the _cpu_host reference, so there
+      // the root under test takes the localVars path below.
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
         printValidationResults = true;

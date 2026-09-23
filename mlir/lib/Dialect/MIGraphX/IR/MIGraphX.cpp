@@ -415,9 +415,8 @@ static LogicalResult isValidDotOp(Operation *op, MIXRShapedType inAType,
 
   if (!llvm::all_of(
           ArrayRef<int64_t>{inAType.getRank(), inBType.getRank(), outputRank},
-          [](int64_t rank) { return rank >= 2; })) {
+          [](int64_t rank) { return rank >= 2; }))
     return op->emitOpError("expect operand to have rank greater or equal to 2");
-  }
 
   // Batch dimensions (all dims except the last two) must be compatible.
   // Broadcasting is only allowed on B: either B's batch dims are all ones or
@@ -447,13 +446,12 @@ static LogicalResult isValidDotOp(Operation *op, MIXRShapedType inAType,
            << ") have incompatible contraction dimensions";
   }
 
-  // checking the output dimension, which must match the input
+  // The result's batch dims and M must match A's, and its N must match B's.
   if (!std::equal(shapeA.rbegin() + 2, shapeA.rend(), shapeOut.rbegin() + 2,
                   shapeOut.rend()) ||
       *std::prev(shapeOut.end()) != *std::prev(shapeB.end()) ||
-      *std::prev(shapeOut.end(), 2) != *std::prev(shapeA.end(), 2)) {
+      *std::prev(shapeOut.end(), 2) != *std::prev(shapeA.end(), 2))
     return op->emitOpError("result type is inconsistent with input shapes");
-  }
 
   return success();
 }
@@ -533,9 +531,8 @@ LogicalResult DotOp::verify() {
 
 LogicalResult SigmoidOp::verify() {
   if (!getInA().getType().getElementType().isFloat() ||
-      !getResult().getType().getElementType().isFloat()) {
+      !getResult().getType().getElementType().isFloat())
     return emitOpError("only support floating point");
-  }
   return success();
 }
 
@@ -550,55 +547,46 @@ LogicalResult SliceOp::verify() {
                           starts = convertSliceAttribute(getStarts()),
                           ends = convertSliceAttribute(getEnds());
 
-  if (axes.size() != starts.size() || axes.size() != ends.size()) {
+  if (axes.size() != starts.size() || axes.size() != ends.size())
     return emitOpError("axes, starts, and ends must have the same size");
-  }
   ArrayRef<int64_t> inputShape = getInput().getType().getShape();
   ArrayRef<int64_t> outputShape = getOutput().getType().getShape();
-  if (inputShape.size() != outputShape.size()) {
+  if (inputShape.size() != outputShape.size())
     return emitOpError("input and output shapes must have the same rank");
-  }
 
   if (llvm::any_of(axes, [](int64_t axis) { return axis < 0; }) ||
       llvm::any_of(starts, [](int64_t start) { return start < 0; }) ||
-      llvm::any_of(ends, [](int64_t end) { return end < 0; })) {
+      llvm::any_of(ends, [](int64_t end) { return end < 0; }))
     return emitOpError("all attributes must be non-negative");
-  }
 
   int64_t inputRank = inputShape.size();
-  if (llvm::any_of(axes, [&](int64_t axis) { return axis >= inputRank; })) {
+  if (llvm::any_of(axes, [&](int64_t axis) { return axis >= inputRank; }))
     return emitOpError("axes must be less than the input rank");
-  }
 
   llvm::SmallDenseSet<int64_t, 4> seenAxes;
-  if (llvm::any_of(
-          axes, [&](int64_t axis) { return !seenAxes.insert(axis).second; })) {
+  if (llvm::any_of(axes,
+                   [&](int64_t axis) { return !seenAxes.insert(axis).second; }))
     return emitOpError("axes must not contain duplicates");
-  }
 
   // Each sliced range must be non-empty.
   if (llvm::any_of(llvm::zip(starts, ends), [&](auto value) {
         auto [start, end] = value;
         return start >= end;
-      })) {
+      }))
     return emitOpError("start is greater or equal to end");
-  }
 
   if (llvm::any_of(llvm::zip_equal(axes, ends), [&](auto value) {
         auto [axis, end] = value;
         return end > inputShape[axis];
-      })) {
+      }))
     return emitOpError("end is greater than input shape");
-  }
 
   SmallVector<int64_t, 4> inferredShape(inputShape);
-  for (auto [axis, start, end] : llvm::zip(axes, starts, ends)) {
+  for (auto [axis, start, end] : llvm::zip(axes, starts, ends))
     inferredShape[axis] = end - start;
-  }
 
-  if (inferredShape != outputShape) {
+  if (inferredShape != outputShape)
     return emitOpError("input shape and attribute does not infer output shape");
-  }
 
   return success();
 }
