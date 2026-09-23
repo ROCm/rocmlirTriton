@@ -19,10 +19,11 @@ prefix = "--transC="
 
 [[axis]]
 name = "data type"
-values = ["fp8_fp8", "fp8_bf8", "bf8_fp8", "bf8_bf8"]
+values = ["fp8_bf8", "bf8_fp8", "bf8_bf8"]
 prefix = "-t "
 
-# Same non-pow2 tiles as GemmVariantsNonPowerOfTwoTileSize, fp8-only.
+# Same non-pow2 tiles as GemmVariantsNonPowerOfTwoTileSize, whose data types
+# already include fp8_fp8, so this config only adds the bf8 combinations.
 [[axis]]
 name = "perf_config"
 values = ["gemm:v1:80,80,16,1,1,4,16,1,1,1,1", "gemm:v1:96,96,16,1,1,4,16,1,1,1,1", "gemm:v1:192,96,16,1,1,4,16,1,1,1,1", "gemm:v1:112,112,16,1,1,4,16,1,1,1,1"]

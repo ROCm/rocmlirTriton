@@ -5,10 +5,10 @@
 // The upstream gather_to_lds cases target AMDGPU rewrite patterns that this
 // pass does not run; cover a memref op the fork actually refuses to legalize.
 
-// RUN: not rocmlir-opt -rock-emulate-narrow-types -split-input-file %s 2>&1 | FileCheck %s
+// RUN: rocmlir-opt -rock-emulate-narrow-types -verify-diagnostics %s
 
-// CHECK: failed to legalize operation 'memref.copy'
 func.func @copy_distinct_layouts(%src: memref<32xi4>, %dst: memref<32xi4, strided<[2]>>) {
+  // expected-error @+1 {{failed to legalize operation 'memref.copy'}}
   memref.copy %src, %dst : memref<32xi4> to memref<32xi4, strided<[2]>>
   func.return
 }
