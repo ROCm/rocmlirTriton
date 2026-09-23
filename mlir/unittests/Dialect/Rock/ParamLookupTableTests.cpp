@@ -547,15 +547,15 @@ TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
 }
 
 TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
-  // gfx908 has no split-K-free lists, so a problem that does not support
+  // gfx1201 has no split-K-free fp8 list, so a problem that does not support
   // split-K must still fall back to the exact regular key.
   MLIRContext ctx;
-  Type f16 = Float16Type::get(&ctx);
-  StringRef arch = "amdgcn-amd-amdhsa:gfx908";
+  Type fp8 = Float8E4M3FNType::get(&ctx);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1201";
   auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
-      arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
+      arch, KernelType::Gemm, fp8, /*supportsSplitK=*/true);
   auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
-      arch, KernelType::Gemm, f16, /*supportsSplitK=*/false);
+      arch, KernelType::Gemm, fp8, /*supportsSplitK=*/false);
 
   EXPECT_FALSE(noSplitK.empty());
   EXPECT_TRUE(noSplitK == regular);
