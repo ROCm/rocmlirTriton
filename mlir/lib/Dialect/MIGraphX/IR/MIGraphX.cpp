@@ -301,10 +301,11 @@ OpFoldResult RecipOp::fold(FoldAdaptor operands) {
 LogicalResult LiteralOp::verify() {
   MIXRShapedType type = getResult().getType();
   ElementsAttr value = getValue();
+  if (value.getType() != type.asTensor())
+    return emitOpError(value.isSplat() ? "splat" : "non-splat")
+           << " literals must have a value that matches the literal's logical "
+              "shape";
   if (!value.isSplat()) {
-    if (value.getType() != type.asTensor())
-      return emitOpError("non-splat literals must have a value that matches "
-                         "the literal's logical shape");
     int64_t expectedStride = 1;
     for (auto [len, stride] : llvm::zip(llvm::reverse(type.getShape()),
                                         llvm::reverse(type.getStrides()))) {
@@ -418,10 +419,13 @@ static LogicalResult isValidDotOp(Operation *op, MIXRShapedType inAType,
   }
 
   // Batch dimensions (all dims except the last two) must be compatible.
-  // Broadcasting is allowed when one operand's batch dims are all ones
-  // or when one operand has no batch dims (rank 2). For example:
+  // Broadcasting is only allowed on B: either B's batch dims are all ones or
+  // B has no batch dims (rank 2). A is never broadcast, since the result's
+  // batch dims must match A's and MIGraphXToTosa lowers a broadcast B by
+  // folding A's batch into M. For example:
   // A = {3, 2, 2, 2} and B = {1, 1, 2, 2} (batch B is all ones) - valid
   // A = {3, 2, 2, 2} and B = {2, 2} (B has no batch dims) - valid
+  // A = {2, 2} and B = {3, 2, 2, 2} (A would need broadcasting) - invalid
   // A = {3, 2, 2, 2} and B = {2, 3, 2, 2} (batch dims differ) - invalid
   ArrayRef<int64_t> batchA = shapeA.drop_back(2);
   ArrayRef<int64_t> batchB = shapeB.drop_back(2);
@@ -560,7 +564,7 @@ LogicalResult SliceOp::verify() {
   if (llvm::any_of(axes, [](int64_t axis) { return axis < 0; }) ||
       llvm::any_of(starts, [](int64_t start) { return start < 0; }) ||
       llvm::any_of(ends, [](int64_t end) { return end < 0; })) {
-    return emitOpError("all attribute must non non-negative");
+    return emitOpError("all attributes must be non-negative");
   }
 
   int64_t inputRank = inputShape.size();

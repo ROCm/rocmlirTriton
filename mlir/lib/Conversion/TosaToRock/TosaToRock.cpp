@@ -974,17 +974,9 @@ public:
     // Get K from B data shape
     auto bDataType = cast<RankedTensorType>(bData.getType());
     ArrayRef<int64_t> bShape = bDataType.getShape();
-    // ODS requires 3D operands; still check rank before subscripting so a
-    // malformed tensor diagnoses instead of reading out of bounds.
-    if (bShape.size() != 3)
-      return op->emitOpError("B data tensor must be 3D, got rank ")
-             << bShape.size();
-    if (aScaleShape.size() != 3)
-      return op->emitOpError("A scale tensor must be 3D, got rank ")
-             << aScaleShape.size();
-    if (bScaleShape.size() != 3)
-      return op->emitOpError("B scale tensor must be 3D, got rank ")
-             << bScaleShape.size();
+    assert(bShape.size() == 3 && aScaleShape.size() == 3 &&
+           bScaleShape.size() == 3 &&
+           "ODS guarantees 3D B data and scale operands");
     // B shape depends on transpose:
     // By default B is transposed in tosa.matmul_t_block_scaled with shape
     // [batch, N, K]. If transpose_b is toggled, shape is [batch, K, N].

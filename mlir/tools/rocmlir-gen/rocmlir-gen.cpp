@@ -6166,7 +6166,9 @@ static LogicalResult populateHostHarnessLogic(
   // buffers as arguments. Materialize one correctly-shaped buffer per result
   // so the harness can copy and print those results. Previously the fallback
   // below reused the last input buffer, which fails whenever an input and
-  // result have different shapes.
+  // result have different shapes. outIndices indexes both localVars and
+  // valVars, so each result also gets a matching validation buffer when
+  // validation buffers exist.
   if (isCPUKernel && outIndices.empty() && !root0.resultTypes.empty()) {
     for (Type resultType : root0.resultTypes) {
       auto shapedType = dyn_cast<ShapedType>(resultType);
@@ -6180,6 +6182,12 @@ static LogicalResult populateHostHarnessLogic(
       outIndices.push_back(localVars.size());
       localVars.push_back(
           memref::AllocOp::create(b, loc, resultMemrefType).getResult());
+      if (!valVars.empty()) {
+        assert(valVars.size() + 1 == localVars.size() &&
+               "validation buffers must mirror localVars");
+        valVars.push_back(
+            memref::AllocOp::create(b, loc, resultMemrefType).getResult());
+      }
     }
   }
 

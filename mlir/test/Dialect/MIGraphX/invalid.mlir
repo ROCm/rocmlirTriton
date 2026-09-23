@@ -319,6 +319,15 @@ func.func @literal_shape_mismatch() {
 
 // -----
 
+// COM: splat literal whose value shape does not match the logical shape
+func.func @splat_literal_shape_mismatch() {
+  // expected-error @+1 {{'migraphx.literal' op splat literals must have a value that matches the literal's logical shape}}
+  %0 = migraphx.literal (dense<2> : tensor<10xsi8>) : <1xsi8, 1>
+  return
+}
+
+// -----
+
 // COM: non-splat literal whose strides are not in standard (row-major) form
 func.func @literal_non_standard_strides() {
   // expected-error @+1 {{strides of non-splat literal are not in standard shape}}
@@ -474,6 +483,14 @@ func.func @dot_invalid_broadcast(%arg0: !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>, 
 
 // -----
 
+func.func @dot_broadcast_a_unsupported(%arg0: !migraphx.shaped<2x2xf32, 2x1>, %arg1: !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>) -> !migraphx.shaped<3x2x2x2xf32, 8x4x2x1> {
+  // expected-error@+1 {{batch dimension mismatch: the first operand}}
+  %0 = migraphx.dot %arg0, %arg1 : <2x2xf32, 2x1>, <3x2x2x2xf32, 8x4x2x1> -> <3x2x2x2xf32, 8x4x2x1>
+  func.return %0 : !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>
+}
+
+// -----
+
 func.func @dot_result_shape_mismatch(%arg0: !migraphx.shaped<2x3x4xf16, 12x4x1>, %arg1: !migraphx.shaped<2x4x5xf16, 20x5x1>) -> !migraphx.shaped<2x3x4xf16, 12x4x1> {
   // expected-error @+1 {{result type is inconsistent with input shapes}}
   %0 = migraphx.dot %arg0, %arg1 : <2x3x4xf16, 12x4x1>, <2x4x5xf16, 20x5x1> -> <2x3x4xf16, 12x4x1>
@@ -501,7 +518,7 @@ func.func @invalid_rank_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
 // -----
 
 func.func @invalid_negative_axis(%input: !migraphx.shaped<10x10xf32, 10x1>) {
-  // expected-error @+1 {{all attribute must non non-negative}}
+  // expected-error @+1 {{all attributes must be non-negative}}
   %result = migraphx.slice %input {axes = [-1], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <10x5xf32, 5x1>
   func.return
 }

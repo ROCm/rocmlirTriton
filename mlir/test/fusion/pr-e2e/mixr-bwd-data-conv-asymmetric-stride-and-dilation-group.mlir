@@ -3,8 +3,10 @@
 // The CPU lowering pipeline is broken for grouped backwards data convolutions,
 // so the clone verifier cannot check this kernel. Inputs are all ones
 // (-rand none), so every output element is the number of filter taps that
-// reach it. The expected values come from the reference at the end of this
-// file.
+// reach it: 4 (the input channels per group) times the product over (H, W) of
+// the count of (input index, tap index) pairs satisfying
+// in * stride - pad + tap * dilation == out, which is how the expected values
+// below were derived.
 
 // CHECK: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 4, 4, 0, 0, 0, 0, 4, 4, 0, 4,
 module {

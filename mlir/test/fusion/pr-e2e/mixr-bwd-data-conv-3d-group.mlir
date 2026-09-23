@@ -3,11 +3,13 @@
 // The CPU lowering pipeline is broken for grouped backwards data convolutions
 // and rocmlir-gen cannot generate 3D convolutions, so neither the clone
 // verifier nor -pv can check this kernel. The inputs are all ones (-rand none),
-// which makes every output element the number of filter taps that reach it, so
-// the expected values below come from the reference in the comment at the end
-// of this file. The second pattern spans the boundary between the two groups:
-// element 1104 is the last one of channel 0 and element 1105 is the first one
-// of channel 1.
+// which makes every output element the number of filter taps that reach it.
+// With one channel per group, that number is the product over (D, H, W) of the
+// count of (input index, tap index) pairs satisfying
+// in * stride - pad + tap * dilation == out, which is how the expected values
+// below were derived. The second pattern spans the boundary between the two
+// groups: element 1104 is the last one of channel 0 and element 1105 is the
+// first one of channel 1.
 
 // CHECK: [8, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0, 8,
 // CHECK-SAME: 0, 0, 8, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0, 8, 8, 0, 0, 0, 12,
