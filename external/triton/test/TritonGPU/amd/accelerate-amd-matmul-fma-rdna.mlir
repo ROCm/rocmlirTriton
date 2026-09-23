@@ -1,4 +1,4 @@
-// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="arch-generation-name=gfx1100 matrix-instruction-size=0" --verify-diagnostics | FileCheck %s
+// RUN: triton-opt %s -split-input-file --tritonamdgpu-accelerate-matmul="gfx-arch=gfx1100 matrix-instruction-size=0" --verify-diagnostics | FileCheck %s
 
 // An f32 dot is not supported by WMMA, so it stays blocked and is lowered via
 // the FMA path. RebalanceBlockedFMA rewrites the layout
