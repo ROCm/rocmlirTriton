@@ -6184,14 +6184,14 @@ static LogicalResult populateHostHarnessLogic(
   // exist.
   if (isCPUKernel && outIndices.empty() && !root0.resultTypes.empty()) {
     for (Type resultType : root0.resultTypes) {
-      auto shapedType = dyn_cast<ShapedType>(resultType);
-      if (!shapedType) {
+      auto tensorType = dyn_cast<RankedTensorType>(resultType);
+      if (!tensorType) {
         root0.func.emitError()
-            << "host harness only supports shaped function results";
+            << "host harness only supports ranked tensor function results";
         return failure();
       }
       auto resultMemrefType =
-          MemRefType::get(shapedType.getShape(), shapedType.getElementType());
+          MemRefType::get(tensorType.getShape(), tensorType.getElementType());
       outIndices.push_back(localVars.size());
       localVars.push_back(
           memref::AllocOp::create(b, loc, resultMemrefType).getResult());
@@ -6252,10 +6252,13 @@ static LogicalResult populateHostHarnessLogic(
                                     SmallVectorImpl<Value> &memrefArgs,
                                     ArrayRef<int32_t> outputIndices,
                                     bool willBeWrapped = false) {
-    // Check if the function expects tensor arguments by looking at first arg
-    bool expectsTensors = !willBeWrapped &&
-                          !callee.getArgumentTypes().empty() &&
-                          isa<TensorType>(callee.getArgumentTypes().front());
+    // Check if the function uses the tensor interface by looking at its first
+    // argument, or at its first result when it takes no arguments.
+    TypeRange signatureTypes = callee.getNumArguments() > 0
+                                   ? callee.getArgumentTypes()
+                                   : callee.getResultTypes();
+    bool expectsTensors = !willBeWrapped && !signatureTypes.empty() &&
+                          isa<TensorType>(signatureTypes.front());
 
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
@@ -6270,7 +6273,7 @@ static LogicalResult populateHostHarnessLogic(
       // Call the function with tensor arguments
       auto callOp = func::CallOp::create(b, loc, callee, tensorArgs);
 
-      // If the function returns results, use them directly instead of copying
+      // Copy each returned result into its harness buffer.
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];

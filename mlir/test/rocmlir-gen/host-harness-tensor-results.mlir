@@ -4,10 +4,15 @@
 // A host-only function that returns tensors gets one harness buffer per
 // result, shaped like that result. Without a validator and without
 // small-float parameters there are no validation buffers, so the function is
-// called on the regular buffers. Non-shaped results are rejected.
+// called on the regular buffers. A function without arguments is still called
+// through the tensor interface, with no result buffers passed as arguments.
+// Results that are not ranked tensors, such as scalars or memrefs, are
+// rejected.
 
 // RUN: rocmlir-gen -ph -pr -fut host_two_results %s | rocmlir-opt | FileCheck %s
+// RUN: rocmlir-gen -ph -pr -fut host_no_args %s | rocmlir-opt | FileCheck %s --check-prefix=NOARGS
 // RUN: not rocmlir-gen -ph -pr -fut host_scalar_result %s 2>&1 | FileCheck %s --check-prefix=ERR
+// RUN: not rocmlir-gen -ph -pr -fut host_memref_result %s 2>&1 | FileCheck %s --check-prefix=MEMREF
 
 // CHECK-LABEL: func.func @main()
 // CHECK: %[[IN:.+]] = memref.alloc() : memref<2x3xf32>
@@ -23,12 +28,30 @@
 // CHECK: memref.cast %[[RES0]]
 // CHECK: memref.cast %[[RES1]]
 
-// ERR: error: host harness only supports shaped function results
+// NOARGS-LABEL: func.func @main()
+// NOARGS-NEXT: %[[RES:.+]] = memref.alloc() : memref<4xf32>
+// NOARGS-NEXT: %[[OUT:.+]] = call @host_no_args() : () -> tensor<4xf32>
+// NOARGS-NEXT: %[[OUT_M:.+]] = bufferization.to_buffer %[[OUT]]
+// NOARGS-NEXT: memref.copy %[[OUT_M]], %[[RES]] : memref<4xf32> to memref<4xf32>
+// NOARGS-NEXT: memref.cast %[[RES]]
+
+// ERR: error: host harness only supports ranked tensor function results
+// MEMREF: error: host harness only supports ranked tensor function results
 
 func.func @host_two_results(%arg0: tensor<2x3xf32>) -> (tensor<6xf32>, tensor<3x2xf32>) {
   %0 = tensor.collapse_shape %arg0 [[0, 1]] : tensor<2x3xf32> into tensor<6xf32>
   %1 = tensor.expand_shape %0 [[0, 1]] output_shape [3, 2] : tensor<6xf32> into tensor<3x2xf32>
   return %0, %1 : tensor<6xf32>, tensor<3x2xf32>
+}
+
+func.func @host_no_args() -> tensor<4xf32> {
+  %0 = arith.constant dense<[1.0, 2.0, 3.0, 4.0]> : tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+func.func @host_memref_result(%arg0: tensor<2x3xf32>) -> memref<2x3xf32> {
+  %0 = bufferization.to_buffer %arg0 : tensor<2x3xf32> to memref<2x3xf32>
+  return %0 : memref<2x3xf32>
 }
 
 func.func @host_scalar_result(%arg0: tensor<2x3xf32>) -> f32 {
