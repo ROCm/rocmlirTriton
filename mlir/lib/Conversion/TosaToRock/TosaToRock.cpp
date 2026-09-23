@@ -1660,9 +1660,24 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     auto shape = shapedType.getShape();
     assert(nonOneDimFromEnd < shape.size());
-    size_t couldBeDiffOne = shape.size() - nonOneDimFromEnd - 1;
+    size_t rangeDim = shape.size() - nonOneDimFromEnd - 1;
+
+    // For flash decoding with splitKV, the constant range tensor may have
+    // an additional non-1 dimension at index 1 or 2 (where heads or splitKV
+    // typically appear in attention layouts). We allow at most one such
+    // additional dimension.
+    bool foundExtraNonOneDim = false;
     for (auto [i, dim] : llvm::enumerate(shape)) {
-      if (i != couldBeDiffOne && dim != 1) {
+      if (dim != 1) {
+        // The range dimension is always allowed to be non-1
+        if (i == rangeDim)
+          continue;
+        // Allow one additional non-1 dimension at index 1 or 2
+        if (!foundExtraNonOneDim && (i == 1 || i == 2)) {
+          foundExtraNonOneDim = true;
+          continue;
+        }
+        // Any other non-1 dimension is not allowed
         return failure();
       }
     }
