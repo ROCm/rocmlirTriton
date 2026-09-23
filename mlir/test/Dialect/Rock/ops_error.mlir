@@ -120,25 +120,6 @@ func.func @gridwise_attention_wrong_terminator(
   return %r : tensor<1x384x64xf32>
 }
 
-// The pre-softmax body must be terminated by a `rock.yield`. Use a self-branch
-// to keep the region single-block while replacing the terminator.
-func.func @gridwise_attention_wrong_terminator(
-    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
-    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
-    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{pre-softmax body must be terminated by a rock.yield}}
-  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
-  ^bb0(%arg_qk: tensor<1x384x384xf32>):
-    cf.br ^bb0(%arg_qk : tensor<1x384x384xf32>)
-  } {
-    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
-    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
-    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
-    splitKV = 1 : i32
-  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
-  return %r : tensor<1x384x64xf32>
-}
-
 // An empty pre-softmax body has no rock.yield terminator.
 func.func @gridwise_attention_empty_body(
     %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
