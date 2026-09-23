@@ -919,6 +919,34 @@ def RockSetReductionLayoutPass
               "pipelined kernels.">];
 }
 
+def RockSetGatherWarpsPass : Pass<"rock-set-gather-warps", "::mlir::ModuleOp"> {
+  let summary = "Put every warp of an in-thread-transposed gather on K when "
+                "its per-row index math is recomputed every iteration";
+  let description = [{
+    Runs immediately after Triton's `tritonamdgpu-in-thread-transpose`, which
+    widens a gather load's `sizePerThread` along K and then redistributes its
+    warps greedily, fastest dim first. With K the slow dim and a wide free dim,
+    that puts most warps on the free dim, so every thread owns many distinct K
+    rows.
+
+    When the load's address math divides a per-K-row tensor by a
+    non-power-of-two constant inside a loop (e.g. a convolution's
+    gemmK -> (c, y, x) decomposition that `rock-incremental-pointer-arith`
+    could not make incremental), each of those rows costs a scalar division
+    sequence on every iteration. For such loads this pass sets `warpsPerCTA`
+    to all warps on K, cutting the rows each thread owns by the warp count.
+    Every load staged into the same shared-memory buffer (e.g. a pipeline's
+    prologue and in-loop copies) moves together; other loads are untouched.
+
+    Like `tritonamdgpu-in-thread-transpose`, the load is rebuilt in the new
+    layout between `ttg.convert_layout` ops, and the
+    `tritongpu-remove-layout-conversions` run that follows carries the layout
+    back into the address computation.
+  }];
+  let dependentDialects = ["triton::gpu::TritonGPUDialect",
+                           "triton::amdgpu::TritonAMDGPUDialect"];
+}
+
 def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {
   let summary = "Roll the K dimension of a scalar-FMA dot into an scf.for over "
                 "shared-memory segments";
