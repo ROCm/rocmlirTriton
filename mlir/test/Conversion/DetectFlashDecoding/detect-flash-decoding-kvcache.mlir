@@ -13,7 +13,7 @@
 // CHECK-DEBUG: Analyzing Q tensor for splitKV:
 // CHECK-DEBUG: Q: Found 4D Broadcast at dim 1, splitKV = 2
 // CHECK-DEBUG: Analyzing K tensor for splitKV:
-// CHECK-DEBUG: K: Found Merge{1, 32, 2}, splitKV = 2, dimensionality = 5D
+// CHECK-DEBUG: K: Found Merge{1, 32, 2}, splitKV = 2
 // CHECK-DEBUG: Analyzing V tensor for splitKV:
 // CHECK-DEBUG: V: No Merge pattern found
 // CHECK-DEBUG: Flash decoding detected: splitKV = 2, dimensionality = 4D

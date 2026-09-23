@@ -123,14 +123,13 @@ static std::pair<int64_t, int64_t> detectSplitKVFromQ(Value qTensor) {
 // - [batch, heads, splitKV] (3 params) for multi-head attention
 // - [batch, splitKV] (2 params) for single-head or no-head cases
 // In both cases, splitKV is the last parameter.
-// Returns (splitKV, dimensionality) or (1, 0) if not found.
-static std::pair<int64_t, int64_t> detectSplitKVFromKV(Value tensor,
-                                                       StringRef tensorName) {
+// Returns splitKV, or 1 if not found.
+static int64_t detectSplitKVFromKV(Value tensor, StringRef tensorName) {
   SmallVector<TransformMapAttr> transforms;
   rock::untransform(tensor, transforms);
 
   if (transforms.empty())
-    return {1, 0};
+    return 1;
 
   LLVM_DEBUG(llvm::dbgs() << "Analyzing " << tensorName
                           << " tensor for splitKV:\n");
@@ -152,15 +151,11 @@ static std::pair<int64_t, int64_t> detectSplitKVFromKV(Value tensor,
         int64_t possibleSplitKV = params.back();
 
         if (isSupportedSplitKV(possibleSplitKV)) {
-          size_t numLowerDims = transformMap.getLowerBounds().size();
-          int64_t dimensionality = (numLowerDims == 5) ? 5 : 4;
-
           LLVM_DEBUG(llvm::dbgs() << "\t" << tensorName << ": Found Merge{";
                      llvm::interleaveComma(params, llvm::dbgs());
                      llvm::dbgs()
-                     << "}, splitKV = " << possibleSplitKV
-                     << ", dimensionality = " << dimensionality << "D\n");
-          return {possibleSplitKV, dimensionality};
+                     << "}, splitKV = " << possibleSplitKV << "\n");
+          return possibleSplitKV;
         }
       }
     }
@@ -168,7 +163,7 @@ static std::pair<int64_t, int64_t> detectSplitKVFromKV(Value tensor,
 
   LLVM_DEBUG(llvm::dbgs() << "\t" << tensorName
                           << ": No Merge pattern found\n");
-  return {1, 0};
+  return 1;
 }
 
 // Helper function that validates tensor shape and unmerges batch dimension
@@ -366,14 +361,14 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
 
     // Try to detect splitKV from Q, K, and V input tensors
     auto [splitKVFromQ, qDim] = detectSplitKVFromQ(queries);
-    auto [splitKVFromK, kDim] = detectSplitKVFromKV(keys, "K");
-    auto [splitKVFromV, vDim] = detectSplitKVFromKV(values, "V");
+    int64_t splitKVFromK = detectSplitKVFromKV(keys, "K");
+    int64_t splitKVFromV = detectSplitKVFromKV(values, "V");
 
     LLVM_DEBUG(llvm::dbgs()
                << "splitKV detection results:\n"
                << "  Q: splitKV=" << splitKVFromQ << ", dim=" << qDim << "\n"
-               << "  K: splitKV=" << splitKVFromK << ", dim=" << kDim << "\n"
-               << "  V: splitKV=" << splitKVFromV << ", dim=" << vDim << "\n");
+               << "  K: splitKV=" << splitKVFromK << "\n"
+               << "  V: splitKV=" << splitKVFromV << "\n");
 
     // No flash decoding detected
     if (splitKVFromQ == 1 || qDim == 0) {
@@ -384,10 +379,7 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
     // Require one other tensor to agree on the splitKV value from Q for
     // reliable detection. K and V are occasionally optimized away by upstream
     // canonicalization passes which is why we don't require all three.
-    int agreements =
-        (splitKVFromK == splitKVFromQ) + (splitKVFromV == splitKVFromQ);
-
-    if (agreements < 1) {
+    if (splitKVFromK != splitKVFromQ && splitKVFromV != splitKVFromQ) {
       LLVM_DEBUG(
           llvm::dbgs()
           << "Insufficient agreement on splitKV, no flash decoding detected\n");
