@@ -42,6 +42,9 @@
 // CHECK: call @{{.*}}({{.*}}, {{.*}}, {{.*}}) : (memref<[[GKCYX]]x[[TYPE]]>, memref<[[NGCHIWI]]x[[TYPE]]>, memref<[[NGKHOWO]]x[[TYPE]]>) -> ()
 // CHECK-NEXT: memref.cast %{{.*}} : memref<[[NGKHOWO]]x[[TYPE]]> to memref<*x[[TYPE]]>
 // CHECK-NEXT: call @printMemrefF32(%{{.*}}) : (memref<*x[[TYPE]]>) -> ()
+// CHECK-NEXT: gpu.host_unregister %{{.*}} : memref<*x[[TYPE]]>
+// CHECK-NEXT: gpu.host_unregister %{{.*}} : memref<*x[[TYPE]]>
+// CHECK-NEXT: gpu.host_unregister %{{.*}} : memref<*x[[TYPE]]>
 // CHECK-NEXT: memref.dealloc {{.*}} : memref<[[GKCYX]]x[[TYPE]]>
 // CHECK-NEXT: memref.dealloc {{.*}} : memref<[[NGCHIWI]]x[[TYPE]]>
 
