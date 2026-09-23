@@ -409,16 +409,16 @@ TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
 
   auto expectGemmListWithinCap = [&](StringRef arch, KernelType kernel,
                                      Type dataType) {
-    auto configs =
-        ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, dataType);
+    auto configs = ParamLookupTable<GemmParamsAttr>::lookup(
+        arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
         << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
   };
   auto expectGemmGemmListWithinCap = [&](StringRef arch, KernelType kernel,
                                          Type dataType) {
-    auto configs =
-        ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, dataType);
+    auto configs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
         << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
