@@ -7,6 +7,10 @@
 // CHECK: rock.load_marker {{.*}}tensor<4096xi8> -> tensor<32x32xi8>
 // The arith.trunci from the body should be cloned with tile-sized types.
 // CHECK: arith.trunci {{.*}} tensor<32x32xi8> to tensor<32x32xi1>
+// The yielded value is still the QK argument, so unused body operations do not
+// make this a masked-row risk.
+// CHECK-NOT: arith.maxnumf
+// CHECK: rock.store_marker
 func.func @attn_mask_reshape_nonzero_qk_idx(
     %q: tensor<1x64x32xf32>,
     %k: tensor<1x32x64xf32>,
@@ -41,6 +45,8 @@ func.func @attn_mask_reshape_nonzero_qk_idx(
 // CHECK: rock.load_marker {{.*}}tensor<1xf32> -> tensor<32x32xf32>
 // The mulf should use tile-sized types.
 // CHECK: arith.mulf {{.*}} tensor<32x32xf32>
+// A runtime scale is not statically proven finite.
+// CHECK: arith.maxnumf
 func.func @attn_scalar_broadcast(
     %q: tensor<1x64x32xf32>,
     %k: tensor<1x32x64xf32>,
@@ -146,6 +152,7 @@ func.func @attn_splat_constants_in_body(
 
 // CHECK-LABEL: func @attn_no_presoftmax_ops
 // CHECK-NOT: rock.gridwise_attention
+// CHECK-NOT: arith.maxnumf
 // CHECK: rock.store_marker
 func.func @attn_no_presoftmax_ops(
     %q: tensor<1x64x32xf32>,

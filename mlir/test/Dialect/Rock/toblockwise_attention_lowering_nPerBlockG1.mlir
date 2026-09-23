@@ -1,4 +1,9 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=COUNT
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=PLAIN
+
+// COUNT-COUNT-1: arith.maxnumf
+// COUNT-NOT: arith.maxnumf
 
 // Same shape as gridwise_attn_simple in toblockwise_attention_lowering.mlir, but
 // params1 tiles the second gemm's N dim (head_dim_v = 64) into nPerBlockG1 = 32
@@ -7,7 +12,7 @@
 // back into a single [16x64] tile with pairwise tt.join + tt.trans + tt.reshape.
 
 // CHECK-LABEL: func @gridwise_attn_nperblockg1
-// CHECK-SAME: (%[[Q:.+]]: tensor<1x384x64xf32>, %[[K:.+]]: tensor<1x64x384xf32>, %[[V:.+]]: tensor<1x384x64xf32>)
+// CHECK-SAME: (%[[Q:.+]]: tensor<1x384x64xf32>, %[[K:.+]]: tensor<1x64x384xf32>, %[[V:.+]]: tensor<1x384x64xf32>, %{{.+}}: tensor<1xi32>)
 
 // The flash accumulators are now nPerBlockG1-wide ([16x32]), not the full
 // head-dim width ([16x64]).
@@ -16,7 +21,7 @@
 // CHECK-DAG: %[[c1:.+]] = arith.constant 1 : i32
 // CHECK-DAG: %[[c12:.+]] = arith.constant 12 : i32
 // CHECK-DAG: %[[zeroRow:.+]] = arith.constant dense<0.000000e+00> : tensor<16xf32>
-// CHECK-DAG: %[[negInf:.+]] = arith.constant dense<0xFF800000> : tensor<16xf32>
+// CHECK-DAG: %[[lowest:.+]] = arith.constant dense<-3.40282347E+38> : tensor<16xf32>
 // CHECK-DAG: %[[c24:.+]] = arith.constant 24 : i32
 // CHECK-DAG: %[[c4:.+]] = arith.constant 4 : i32
 // CHECK-DAG: %[[c0:.+]] = arith.constant 0 : i32
@@ -25,7 +30,7 @@
 
 // Outer N-tile loop now carries one accumulator per head-dim chunk (acc0, acc1)
 // plus running max/sum, so it yields 4 results instead of 3.
-// CHECK: %[[OUT:.+]]:4 = scf.for %{{.*}} = %[[c0]] to %[[c12]] step %[[c1]] iter_args(%[[acc0:.+]] = %[[zero32]], %[[acc1:.+]] = %[[zero32]], %[[rmax:.+]] = %[[negInf]], %[[rsum:.+]] = %[[zeroRow]])
+// CHECK: %[[OUT:.+]]:4 = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[c1]] iter_args(%[[acc0:.+]] = %[[zero32]], %[[acc1:.+]] = %[[zero32]], %[[rmax:.+]] = %[[lowest]], %[[rsum:.+]] = %[[zeroRow]])
 
 // gemm0 = Q @ K^T.
 // CHECK: %[[G0:.+]] = scf.for %{{.*}} = %[[c0]] to %[[c4]] step %[[c1]] iter_args(%[[g0acc:.+]] = %[[zero32]])
@@ -34,7 +39,7 @@
 
 // Softmax (shared across chunks): scale, online max, exp2, row-sum.
 // CHECK: %[[scaled:.+]] = arith.mulf %[[G0]], %[[ln2]]
-// CHECK: %[[tileMax:.+]] = rock.blockwise_reduce max %[[scaled]] {axis = 1 : index}
+// CHECK: %[[tileMax:.+]] = rock.blockwise_reduce max %{{.*}} {axis = 1 : index}
 // CHECK: %[[P:.+]] = math.exp2
 // CHECK: rock.blockwise_reduce sum %[[P]] {axis = 1 : index}
 
@@ -56,13 +61,55 @@
 
 // Final normalize each chunk by the row-sum, then fold the two [16x32] tiles
 // into one [16x64] tile via tt.join -> tt.trans -> tt.reshape, and store.
-// CHECK: %[[norm0:.+]] = arith.divf %[[OUT]]#0, %{{.*}}
-// CHECK: %[[norm1:.+]] = arith.divf %[[OUT]]#1, %{{.*}}
+// CHECK: %[[safeSum:.+]] = arith.maxnumf %[[OUT]]#3, %{{.*}}
+// CHECK: %[[sumExp0:.+]] = tt.expand_dims %[[safeSum]]
+// CHECK: %[[sumBcast0:.+]] = tt.broadcast %[[sumExp0]]
+// CHECK: %[[norm0:.+]] = arith.divf %[[OUT]]#0, %[[sumBcast0]]
+// CHECK: %[[sumExp1:.+]] = tt.expand_dims %[[safeSum]]
+// CHECK: %[[sumBcast1:.+]] = tt.broadcast %[[sumExp1]]
+// CHECK: %[[norm1:.+]] = arith.divf %[[OUT]]#1, %[[sumBcast1]]
 // CHECK: %[[joined:.+]] = tt.join %[[norm0]], %[[norm1]] : tensor<16x32xf32> -> tensor<16x32x2xf32>
 // CHECK: %[[transed:.+]] = tt.trans %[[joined]] {order = array<i32: 0, 2, 1>} : tensor<16x32x2xf32> -> tensor<16x2x32xf32>
 // CHECK: %[[reshaped:.+]] = tt.reshape %[[transed]] : tensor<16x2x32xf32> -> tensor<16x64xf32>
 // CHECK: rock.store_marker %[[reshaped]] views [#{{.*}}]
 func.func @gridwise_attn_nperblockg1(
+    %q: tensor<1x384x64xf32>,
+    %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>,
+    %lastValidKVIndex: tensor<1xi32>) -> tensor<1x384x64xf32>
+    attributes {
+      rock.block_size = 64 : i32,
+      rock.grid_size = 24 : i32,
+      rock.kernel,
+      rock.arch = "##TOKEN_ARCH##"
+    } {
+  %result = rock.gridwise_attention(
+      %q, %k, %v, %lastValidKVIndex) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x16x32xf32>):
+    rock.yield %arg_qk : tensor<1x16x32xf32>
+  } {
+    causal,
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 1, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    slidingWindowLookBack = 1 : i32,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32>, tensor<1xi32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+// -----
+
+// Keep the ordinary chunked-GEMM path covered separately from the masked-row
+// path above. Its outer loop retains the original static [0, 12) bounds and
+// does not need a denominator guard.
+// PLAIN-LABEL: func @gridwise_attn_nperblockg1_plain
+// PLAIN-DAG: %[[C0:.+]] = arith.constant 0 : i32
+// PLAIN-DAG: %[[C12:.+]] = arith.constant 12 : i32
+// PLAIN: %{{.+}}:4 = scf.for %{{.*}} = %[[C0]] to %[[C12]] step %{{.*}}
+// PLAIN-NOT: arith.maxnumf
+// PLAIN: return
+func.func @gridwise_attn_nperblockg1_plain(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,
     %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>

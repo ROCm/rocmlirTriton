@@ -17,6 +17,9 @@ module {
   // CHECK: %[[END:.*]] = arith.minui %[[END_UNBOUND]], %c1024{{.*}} : i32
   // The main loop uses the clamped bound.
   // CHECK: scf.for %{{.*}} = %c0{{.*}} to %[[END]] step %c1{{.*}}
+  // KV-cache masking alone always retains key P and needs no empty-row guard.
+  // CHECK-NOT: arith.maxnumf
+  // CHECK: return
   func.func @attn_kvcache_clamps_nloop(
       %q: tensor<1x16x64xf32>, %k: tensor<1x64x32768xf32>, %v: tensor<1x32768x64xf32>,
       %lastValidKVIndex: tensor<1xi32>) -> tensor<1x16x64xf32>
