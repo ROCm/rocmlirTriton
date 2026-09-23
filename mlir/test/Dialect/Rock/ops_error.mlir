@@ -1593,3 +1593,165 @@ func.func @conv_elementwise_gemm_non_string_layout(
   return %r : tensor<1x8x3xf32>
 }
 
+// =============================================================================
+// High-level dynamic-dimension policy
+// =============================================================================
+
+// G and M may be dynamic for projection GEMMs.
+func.func @gemm_dynamic_g_m(
+    %a: tensor<?x?x128xf32>, %b: tensor<?x128x32xf32>)
+    attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %r = rock.gemm %a * %b
+      : tensor<?x?x128xf32> * tensor<?x128x32xf32> -> tensor<?x?x32xf32>
+  func.return
+}
+
+// Transpose flags change physical positions, not which logical dimensions are
+// required to be static.
+func.func @gemm_dynamic_g_m_transposed(
+    %a: tensor<?x128x?xf32>, %b: tensor<?x32x128xf32>)
+    attributes {rock.arch = "##TOKEN_ARCH##"} {
+  %r = rock.gemm tr %a * tr %b {oTransposed}
+      : tensor<?x128x?xf32> * tensor<?x32x128xf32> -> tensor<?x32x?xf32>
+  func.return
+}
+
+func.func @gemm_dynamic_k(
+    %a: tensor<?x64x?xf32>, %b: tensor<?x128x32xf32>)
+    attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{matrix A K dimension (dim 2) must be static}}
+  %r = rock.gemm %a * %b
+      : tensor<?x64x?xf32> * tensor<?x128x32xf32> -> tensor<?x64x32xf32>
+  func.return
+}
+
+func.func @gemm_dynamic_n(
+    %a: tensor<?x64x128xf32>, %b: tensor<?x128x?xf32>)
+    attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{matrix B N dimension (dim 2) must be static}}
+  %r = rock.gemm %a * %b
+      : tensor<?x64x128xf32> * tensor<?x128x?xf32> -> tensor<?x64x?xf32>
+  func.return
+}
+
+// Attention permits dynamic G and query sequence length. K/V capacity and
+// head dimensions remain static.
+func.func @attention_dynamic_g_seq_q(
+    %q: tensor<?x?x64xf16>, %k: tensor<?x64x384xf16>,
+    %v: tensor<?x384x32xf16>) -> tensor<?x?x32xf16>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %r = rock.attention{
+   qk = %q * %k : tensor<?x?x64xf16>, tensor<?x64x384xf16>
+   softmax(qk) * %v : tensor<?x384x32xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+      -> tensor<?x?x32xf16>
+  return %r : tensor<?x?x32xf16>
+}
+
+func.func @attention_dynamic_g_seq_q_transposed(
+    %q: tensor<?x64x?xf16>, %k: tensor<?x64x384xf16>,
+    %v: tensor<?x384x32xf16>) -> tensor<?x?x32xf16>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %r = rock.attention{
+   qk = tr %q * %k : tensor<?x64x?xf16>, tensor<?x64x384xf16>
+   softmax(qk) * %v : tensor<?x384x32xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+      -> tensor<?x?x32xf16>
+  return %r : tensor<?x?x32xf16>
+}
+
+func.func @attention_dynamic_head_dim(
+    %q: tensor<?x128x?xf16>, %k: tensor<?x64x384xf16>,
+    %v: tensor<?x384x32xf16>) -> tensor<?x128x32xf16>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{A K dimension (dim 2) must be static}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<?x128x?xf16>, tensor<?x64x384xf16>
+   softmax(qk) * %v : tensor<?x384x32xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+      -> tensor<?x128x32xf16>
+  return %r : tensor<?x128x32xf16>
+}
+
+func.func @attention_dynamic_max_seq_len(
+    %q: tensor<?x128x64xf16>, %k: tensor<?x64x?xf16>,
+    %v: tensor<?x384x32xf16>) -> tensor<?x128x32xf16>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{B N dimension (dim 2) must be static}}
+  %r = rock.attention{
+   qk = %q * %k : tensor<?x128x64xf16>, tensor<?x64x?xf16>
+   softmax(qk) * %v : tensor<?x384x32xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32}
+      -> tensor<?x128x32xf16>
+  return %r : tensor<?x128x32xf16>
+}
+
+func.func @gemm_elementwise_gemm_dynamic_g_m(
+    %a: tensor<?x?x64xf32>, %b: tensor<?x64x128xf32>,
+    %c: tensor<?x128x32xf32>) -> tensor<?x?x32xf32>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<?x?x64xf32>, tensor<?x64x128xf32>
+   out = ab * %c : tensor<?x128x32xf32>
+  } -> tensor<?x?x32xf32>
+  return %r : tensor<?x?x32xf32>
+}
+
+func.func @gemm_elementwise_gemm_dynamic_n(
+    %a: tensor<?x?x64xf32>, %b: tensor<?x64x?xf32>,
+    %c: tensor<?x128x32xf32>) -> tensor<?x?x32xf32>
+    attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{B N dimension (dim 2) must be static}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<?x?x64xf32>, tensor<?x64x?xf32>
+   out = ab * %c : tensor<?x128x32xf32>
+  } -> tensor<?x?x32xf32>
+  return %r : tensor<?x?x32xf32>
+}
+
+func.func @conv_elementwise_gemm_dynamic_batch_spatial(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<?x?x?x1x2xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x?x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<?x?x?x1x2xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x?x3xf32>
+  return %r : tensor<1x?x3xf32>
+}
+
+func.func @conv_elementwise_gemm_dynamic_channel(
+    %filter: tensor<1x4x1x1x2xf32>, %input: tensor<?x?x?x1x?xf32>,
+    %c: tensor<1x4x3xf32>) -> tensor<1x?x3xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{input ci dimension (dim 4) must be static}}
+  %r = rock.conv_elementwise_gemm{
+   ab = conv(%filter, %input) : tensor<1x4x1x1x2xf32>, tensor<?x?x?x1x?xf32>
+   out = ab * %c : tensor<1x4x3xf32>
+  } {dilations = [1 : index, 1 : index],
+     filter_layout = ["g", "k", "0", "1", "c"],
+     input_layout = ["ni", "0i", "1i", "gi", "ci"],
+     padding = [0 : index, 0 : index, 0 : index, 0 : index],
+     strides = [1 : index, 1 : index]} -> tensor<1x?x3xf32>
+  return %r : tensor<1x?x3xf32>
+}
+
+func.func @reduce_dynamic_non_reduction_dims(
+    %input: tensor<?x?x64xf32>) -> tensor<?x?x1xf32> {
+  %r = rock.reduce sum %input {axis = 2 : index}
+      : tensor<?x?x64xf32> -> tensor<?x?x1xf32>
+  return %r : tensor<?x?x1xf32>
+}
+
+func.func @reduce_dynamic_reduction_dim(
+    %input: tensor<?x?x?xf32>) -> tensor<?x?x1xf32> {
+  // expected-error @+1 {{reduction dimension (dim 2) must be static}}
+  %r = rock.reduce sum %input {axis = 2 : index}
+      : tensor<?x?x?xf32> -> tensor<?x?x1xf32>
+  return %r : tensor<?x?x1xf32>
+}
+

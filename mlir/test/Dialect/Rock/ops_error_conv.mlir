@@ -149,3 +149,72 @@ func.func @conv_bwd_data_rank_mismatch(
   } : tensor<128x8x3x3xf32>, tensor<128x1x128x30x30xf32> -> tensor<128x1x8x32x32xf32>
   func.return
 }
+
+// -----
+
+// Batch and spatial extents may be dynamic when filter/channel extents remain
+// static.
+func.func @conv_dynamic_batch_and_spatial(
+    %filter: tensor<1x128x8x3x3xf32>,
+    %input: tensor<?x1x8x?x?xf32>) {
+  %result = rock.conv(%filter, %input) {
+    filter_layout = ["g", "k", "c", "0", "1"],
+    input_layout = ["ni", "gi", "ci", "0i", "1i"],
+    output_layout = ["no", "go", "ko", "0o", "1o"],
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    strides = [1 : index, 1 : index],
+    dilations = [1 : index, 1 : index]
+  } : tensor<1x128x8x3x3xf32>, tensor<?x1x8x?x?xf32> -> tensor<?x1x128x?x?xf32>
+  func.return
+}
+
+// -----
+
+func.func @conv_dynamic_filter_channel(
+    %filter: tensor<1x?x8x3x3xf32>,
+    %input: tensor<?x1x8x?x?xf32>) {
+  // expected-error @+1 {{filter k dimension (dim 1) must be static}}
+  %result = rock.conv(%filter, %input) {
+    filter_layout = ["g", "k", "c", "0", "1"],
+    input_layout = ["ni", "gi", "ci", "0i", "1i"],
+    output_layout = ["no", "go", "ko", "0o", "1o"],
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    strides = [1 : index, 1 : index],
+    dilations = [1 : index, 1 : index]
+  } : tensor<1x?x8x3x3xf32>, tensor<?x1x8x?x?xf32> -> tensor<?x1x128x?x?xf32>
+  func.return
+}
+
+// -----
+
+func.func @conv_dynamic_input_channel(
+    %filter: tensor<1x128x8x3x3xf32>,
+    %input: tensor<?x1x?x?x?xf32>) {
+  // expected-error @+1 {{input ci dimension (dim 2) must be static}}
+  %result = rock.conv(%filter, %input) {
+    filter_layout = ["g", "k", "c", "0", "1"],
+    input_layout = ["ni", "gi", "ci", "0i", "1i"],
+    output_layout = ["no", "go", "ko", "0o", "1o"],
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    strides = [1 : index, 1 : index],
+    dilations = [1 : index, 1 : index]
+  } : tensor<1x128x8x3x3xf32>, tensor<?x1x?x?x?xf32> -> tensor<?x1x128x?x?xf32>
+  func.return
+}
+
+// -----
+
+func.func @conv_dynamic_output_channel(
+    %filter: tensor<1x128x8x3x3xf32>,
+    %input: tensor<?x1x8x?x?xf32>) {
+  // expected-error @+1 {{output ko dimension (dim 2) must be static}}
+  %result = rock.conv(%filter, %input) {
+    filter_layout = ["g", "k", "c", "0", "1"],
+    input_layout = ["ni", "gi", "ci", "0i", "1i"],
+    output_layout = ["no", "go", "ko", "0o", "1o"],
+    padding = [0 : index, 0 : index, 0 : index, 0 : index],
+    strides = [1 : index, 1 : index],
+    dilations = [1 : index, 1 : index]
+  } : tensor<1x128x8x3x3xf32>, tensor<?x1x8x?x?xf32> -> tensor<?x1x?x?x?xf32>
+  func.return
+}

@@ -78,6 +78,51 @@ using namespace mlir::rock;
 // Utility Functions
 //===----------------------------------------------------------------------===//
 
+static bool areCompatibleDims(int64_t lhs, int64_t rhs) {
+  return ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs) || lhs == rhs;
+}
+
+static LogicalResult requireStaticDim(Operation *op, ShapedType type,
+                                      int64_t dim, StringRef tensorName,
+                                      StringRef dimensionName) {
+  if (ShapedType::isDynamic(type.getDimSize(dim)))
+    return op->emitOpError()
+           << tensorName << " " << dimensionName << " dimension (dim " << dim
+           << ") must be static, got " << type;
+  return success();
+}
+
+static FailureOr<ArrayAttr>
+getTensorLayout(Operation *op, StringRef attributeName, ShapedType type) {
+  auto layout = op->getAttrOfType<ArrayAttr>(attributeName);
+  if (!layout)
+    return op->emitOpError()
+           << "requires a '" << attributeName << "' array attribute";
+  if (static_cast<int64_t>(layout.size()) != type.getRank())
+    return op->emitOpError("'")
+           << attributeName
+           << "' must have one entry per tensor dimension (layout size = "
+           << layout.size() << ", rank = " << type.getRank() << ")";
+  if (!llvm::all_of(layout, llvm::IsaPred<StringAttr>))
+    return op->emitOpError("'")
+           << attributeName << "' must contain only strings";
+  return layout;
+}
+
+static LogicalResult
+verifyStaticLayoutDimensions(Operation *op, ShapedType type, ArrayAttr layout,
+                             StringRef tensorName,
+                             ArrayRef<StringRef> dynamicDimensionNames) {
+  for (auto [dim, attr] : llvm::enumerate(layout)) {
+    StringRef name = cast<StringAttr>(attr).getValue();
+    if (llvm::is_contained(dynamicDimensionNames, name))
+      continue;
+    if (failed(requireStaticDim(op, type, dim, tensorName, name)))
+      return failure();
+  }
+  return success();
+}
+
 // This function changes the shape of scaleA/scaleB to match the shape of A/B
 static SmallVector<int64_t> normalizeScaleShape(ArrayRef<int64_t> scaleShape,
                                                 uint64_t quantBlockSize,
@@ -1013,7 +1058,31 @@ static LogicalResult verifyConvLikeOp(RockConvInterface op) {
            << " (strides = " << strides.size()
            << ", spatial dims = " << numSpatialDims << ")";
 
-  // TODO: verify layouts
+  FailureOr<ArrayAttr> filterLayout =
+      getTensorLayout(op, "filter_layout", filterType);
+  FailureOr<ArrayAttr> inputLayout =
+      getTensorLayout(op, "input_layout", inputType);
+  FailureOr<ArrayAttr> outputLayout =
+      getTensorLayout(op, "output_layout", outputType);
+  if (failed(filterLayout) || failed(inputLayout) || failed(outputLayout))
+    return failure();
+
+  // Kernel/filter extents and all channel/group dimensions define the
+  // convolution's compile-time GEMM shape. Only the batch and spatial extents
+  // may remain dynamic at this high-level op.
+  static constexpr StringLiteral inputDynamicDims[] = {"n",  "ni", "hi", "wi",
+                                                       "di", "0i", "1i", "2i"};
+  static constexpr StringLiteral outputDynamicDims[] = {
+      "n", "no", "ho", "wo", "dout", "0o", "1o", "2o"};
+  if (failed(verifyStaticLayoutDimensions(op, filterType, *filterLayout,
+                                          "filter",
+                                          /*dynamicDimensionNames=*/{})) ||
+      failed(verifyStaticLayoutDimensions(op, inputType, *inputLayout, "input",
+                                          inputDynamicDims)) ||
+      failed(verifyStaticLayoutDimensions(op, outputType, *outputLayout,
+                                          "output", outputDynamicDims)))
+    return failure();
+
   // TODO: verify output shape (with ConvGenerator::outputDim)
   return success();
 }
@@ -1311,18 +1380,33 @@ LogicalResult GemmOp::verify() {
   int64_t offsetA = dimsA.size() == 2 ? 0 : 1,
           offsetB = dimsB.size() == 2 ? 0 : 1,
           offsetResult = dimsResult.size() == 2 ? 0 : 1;
+  int64_t mADim = offsetA + (getATransposed() ? 1 : 0),
+          kADim = offsetA + (getATransposed() ? 0 : 1),
+          kBDim = offsetB + (getBTransposed() ? 1 : 0),
+          nBDim = offsetB + (getBTransposed() ? 0 : 1),
+          mResultDim = offsetResult + (getOTransposed() ? 1 : 0),
+          nResultDim = offsetResult + (getOTransposed() ? 0 : 1);
   int64_t gA = offsetA ? dimsA[0] : 1, gB = offsetB ? dimsB[0] : 1,
           gResult = offsetResult ? dimsResult[0] : 1;
-  int64_t mA = dimsA[offsetA + (getATransposed() ? 1 : 0)],
-          kA = dimsA[offsetA + (getATransposed() ? 0 : 1)],
-          kB = dimsB[offsetB + (getBTransposed() ? 1 : 0)],
-          nB = dimsB[offsetB + (getBTransposed() ? 0 : 1)],
-          mResult = dimsResult[offsetResult + (getOTransposed() ? 1 : 0)],
-          nResult = dimsResult[offsetResult + (getOTransposed() ? 0 : 1)];
-  if (gA != gB || gA != gResult)
+  int64_t mA = dimsA[mADim], kA = dimsA[kADim], kB = dimsB[kBDim],
+          nB = dimsB[nBDim], mResult = dimsResult[mResultDim],
+          nResult = dimsResult[nResultDim];
+
+  // rock.gemm models a projection/weight GEMM. Batch/group (G) and the
+  // flattened token dimension (M) may be dynamic, but the contraction and
+  // output feature dimensions define the compiled kernel.
+  if (failed(requireStaticDim(getOperation(), typeA, kADim, "matrix A", "K")) ||
+      failed(requireStaticDim(getOperation(), typeB, kBDim, "matrix B", "K")) ||
+      failed(requireStaticDim(getOperation(), typeB, nBDim, "matrix B", "N")) ||
+      failed(requireStaticDim(getOperation(), typeResult, nResultDim, "result",
+                              "N")))
+    return failure();
+
+  if (!areCompatibleDims(gA, gB) || !areCompatibleDims(gA, gResult) ||
+      !areCompatibleDims(gB, gResult))
     return emitOpError("group dimensions don't match")
            << " g_a = " << gA << " g_b = " << gB << " g_result = " << gResult;
-  if (mA != mResult)
+  if (!areCompatibleDims(mA, mResult))
     return emitOpError("M dimensions don't match")
            << " m_a = " << mA << " m_result = " << mResult;
   if (nB != nResult)
@@ -1353,9 +1437,20 @@ LogicalResult GemmOp::verify() {
 
     bool transposed = isA ? getAScaleTransposed() : getBScaleTransposed();
     int64_t offset = dims.size() == 2 ? 0 : 1;
+    int64_t firstDim = offset + (transposed ? 1 : 0);
+    int64_t secondDim = offset + (transposed ? 0 : 1);
     int64_t g = offset ? dims[0] : 1;
-    int64_t first = dims[offset + (transposed ? 1 : 0)];
-    int64_t second = dims[offset + (transposed ? 0 : 1)];
+    int64_t first = dims[firstDim];
+    int64_t second = dims[secondDim];
+
+    // The scale K dimension is always kernel-defining. scaleB's first logical
+    // dimension is N and must also be static; scaleA's corresponding M may be
+    // dynamic with the token count.
+    if (failed(
+            requireStaticDim(getOperation(), ty, secondDim, scaleName, "K")) ||
+        (!isA && failed(requireStaticDim(getOperation(), ty, firstDim,
+                                         scaleName, "N"))))
+      return failure();
 
     int64_t expectedG = isA ? gA : gB;
     int64_t expectedFirst = isA ? mA : nB; // scaleA: M; scaleB: N
@@ -1373,14 +1468,14 @@ LogicalResult GemmOp::verify() {
                            << " " << scaleName << "_"
                            << "k = " << second << " " << (isA ? "k_a" : "k_b")
                            << " = " << expectedSecond;
-    if (first != expectedFirst)
+    if (!areCompatibleDims(first, expectedFirst))
       return emitOpError() << scaleName << "'s " << dDim
                            << " dimension must match matrix "
                            << (isA ? "A" : "B") << "'s " << dDim << " dimension"
                            << " " << scaleName << "_" << dDimLower << " = "
                            << first << " " << (isA ? "m_a" : "n_b") << " = "
                            << expectedFirst;
-    if (g != expectedG)
+    if (!areCompatibleDims(g, expectedG))
       return emitOpError() << scaleName << "'s G dimension must match matrix "
                            << (isA ? "A" : "B") << "'s G dimension"
                            << " " << scaleName << "_g = " << g << " "
@@ -1855,6 +1950,9 @@ LogicalResult ReduceOp::verify() {
   int64_t axis = getAxis().getSExtValue();
   if (axis < 0 || axis >= int64_t(inpShape.size()))
     return emitError("Axis is out of range");
+  if (ShapedType::isDynamic(inpShape[axis]))
+    return emitOpError("reduction dimension (dim ")
+           << axis << ") must be static, got " << getIn().getType();
   if (inpShape.size() != outShape.size())
     return emitError("Input and output rank is not the same");
   for (const auto &[dim, dimSize] : llvm::enumerate(outShape)) {
@@ -1862,7 +1960,7 @@ LogicalResult ReduceOp::verify() {
       if (dimSize != 1)
         return emitError("The size of the reduction dimension should be 1.");
     } else {
-      if (dimSize != inpShape[dim])
+      if (!areCompatibleDims(dimSize, inpShape[dim]))
         return emitError("The size of the non-reduction dimension should "
                          "match the input.");
     }
@@ -1998,29 +2096,62 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
   int64_t factorGQA = numHeadsQ / numHeadsKV;
 
   ShapedType qType = cast<ShapedType>(op.getAType());
+  ShapedType kType = cast<ShapedType>(op.getBType());
+  ShapedType vType = cast<ShapedType>(op.getCType());
+  ShapedType oType = cast<ShapedType>(op.getOutType());
+  auto verifyRank = [&](ShapedType type, StringRef name) -> LogicalResult {
+    if (type.getRank() != 2 && type.getRank() != 3)
+      return op.emitError() << name << " must be a rank 2 or rank 3 tensor";
+    return success();
+  };
+  if (failed(verifyRank(qType, "A")) || failed(verifyRank(kType, "B")) ||
+      failed(verifyRank(vType, "C")) || failed(verifyRank(oType, "output")))
+    return failure();
+
   int64_t qBatchDim = qType.getShape().size() == 3 ? qType.getShape()[0] : 1;
+  int64_t qMatrixOffset = qType.getRank() - 2;
   ArrayRef<int64_t> qLastDims = qType.getShape().slice(qType.getRank() - 2);
   auto [queryM, queryK] = op.getTransposedA()
                               ? std::tuple{qLastDims[1], qLastDims[0]}
                               : std::tuple{qLastDims[0], qLastDims[1]};
+  int64_t queryKDim = qMatrixOffset + (op.getTransposedA() ? 0 : 1);
 
-  ShapedType kType = cast<ShapedType>(op.getBType());
   int64_t kBatchDim = kType.getShape().size() == 3 ? kType.getShape()[0] : 1;
-  kBatchDim *= factorGQA;
+  if (!ShapedType::isDynamic(kBatchDim))
+    kBatchDim *= factorGQA;
+  int64_t kMatrixOffset = kType.getRank() - 2;
   ArrayRef<int64_t> kLastDims = kType.getShape().slice(kType.getRank() - 2);
   auto [keyK, keyN] = op.getTransposedB()
                           ? std::tuple{kLastDims[1], kLastDims[0]}
                           : std::tuple{kLastDims[0], kLastDims[1]};
+  int64_t keyKDim = kMatrixOffset + (op.getTransposedB() ? 1 : 0);
+  int64_t keyNDim = kMatrixOffset + (op.getTransposedB() ? 0 : 1);
 
-  ShapedType vType = cast<ShapedType>(op.getCType());
   int64_t vBatchDim = vType.getShape().size() == 3 ? vType.getShape()[0] : 1;
-  vBatchDim *= factorGQA;
+  if (!ShapedType::isDynamic(vBatchDim))
+    vBatchDim *= factorGQA;
+  int64_t vMatrixOffset = vType.getRank() - 2;
   ArrayRef<int64_t> vLastDims = vType.getShape().slice(vType.getRank() - 2);
   auto [valueK, valueN] = op.getTransposedC()
                               ? std::tuple{vLastDims[1], vLastDims[0]}
                               : std::tuple{vLastDims[0], vLastDims[1]};
+  int64_t valueKDim = vMatrixOffset + (op.getTransposedC() ? 1 : 0);
+  int64_t valueNDim = vMatrixOffset + (op.getTransposedC() ? 0 : 1);
 
-  if (qBatchDim != kBatchDim || kBatchDim != vBatchDim) {
+  // In attention, N is the statically compiled K/V capacity; the effective
+  // sequence length is supplied separately through lastValidKVIndex. In a
+  // GEMM-elementwise-GEMM, K/N/O are weight and feature dimensions. Thus both
+  // op families permit dynamic G and M only.
+  if (failed(requireStaticDim(op.getOperation(), qType, queryKDim, "A", "K")) ||
+      failed(requireStaticDim(op.getOperation(), kType, keyKDim, "B", "K")) ||
+      failed(requireStaticDim(op.getOperation(), kType, keyNDim, "B", "N")) ||
+      failed(requireStaticDim(op.getOperation(), vType, valueKDim, "C", "N")) ||
+      failed(requireStaticDim(op.getOperation(), vType, valueNDim, "C", "O")))
+    return failure();
+
+  if (!areCompatibleDims(qBatchDim, kBatchDim) ||
+      !areCompatibleDims(kBatchDim, vBatchDim) ||
+      !areCompatibleDims(qBatchDim, vBatchDim)) {
     return op.emitError("Batch dimensions do not match");
   }
   if (queryK != keyK) {
@@ -2031,29 +2162,34 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
   }
 
   // check output type
-  ShapedType oType = cast<ShapedType>(op.getOutType());
   int64_t oBatchDim = oType.getShape().size() == 3 ? oType.getShape()[0] : 1;
   int64_t oBatchDimOrig = oBatchDim;
   if (isa<AttentionOp>(op)) {
     int64_t splitKV = cast<AttentionOp>(op).getSplitKV();
-    if (oBatchDim % splitKV != 0)
+    if (!ShapedType::isDynamic(oBatchDim) && oBatchDim % splitKV != 0)
       return op.emitError("Batch size must be divisible by splitKV");
 
-    oBatchDim = oBatchDim / splitKV;
+    if (!ShapedType::isDynamic(oBatchDim))
+      oBatchDim = oBatchDim / splitKV;
   }
 
+  int64_t oMatrixOffset = oType.getRank() - 2;
   ArrayRef<int64_t> oLastDims = oType.getShape().slice(oType.getRank() - 2);
   auto [outputSeqLen, outputHeadDim] =
       op.getTransposedOut() ? std::tuple{oLastDims[1], oLastDims[0]}
                             : std::tuple{oLastDims[0], oLastDims[1]};
+  int64_t outputHeadDimIndex = oMatrixOffset + (op.getTransposedOut() ? 0 : 1);
+  if (failed(requireStaticDim(op.getOperation(), oType, outputHeadDimIndex,
+                              "output", "O")))
+    return failure();
 
   if (qType.getShape().size() != oType.getShape().size()) {
     return op.emitError("Number of dimensions do not match (Q and Output)");
   }
-  if (qBatchDim != oBatchDim) {
+  if (!areCompatibleDims(qBatchDim, oBatchDim)) {
     return op.emitError("Batch dimensions do not match (Q and Output)");
   }
-  if (queryM != outputSeqLen) {
+  if (!areCompatibleDims(queryM, outputSeqLen)) {
     return op.emitError("Sequence length does not match (Q and Output)");
   }
   if (valueN != outputHeadDim) {
@@ -2066,7 +2202,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     if (indexType.getShape().size() != 1) {
       return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
-    if (indexType.getShape()[0] != oBatchDim) {
+    if (!areCompatibleDims(indexType.getShape()[0], oBatchDim)) {
       return op.emitError(
           "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
@@ -2078,10 +2214,10 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     if (lseType.getShape().size() != 2) {
       return op.emitError("Number of dimensions is not two (LSE)");
     }
-    if (lseType.getShape()[0] != oBatchDimOrig) {
+    if (!areCompatibleDims(lseType.getShape()[0], oBatchDimOrig)) {
       return op.emitError("Batch dimensions do not match (LSE and Output)");
     }
-    if (lseType.getShape()[1] != queryM) {
+    if (!areCompatibleDims(lseType.getShape()[1], queryM)) {
       return op.emitError("SeqLenQ dimensions do not match (LSE and Q)");
     }
   }
@@ -2184,15 +2320,21 @@ GemmGemmSize ConvElementwiseGemmOp::getGemmGemmSize() {
   auto sizes = ConvolutionDims::fromOp(*this, false);
 
   // generate sizes.out with ConvGenerator
-  sizes.out[0] = rock::ConvGenerator::outputDim(sizes.in[0], sizes.fil[0],
-                                                paddingVal[0], paddingVal[1],
-                                                strideVal[0], dilationVal[0]);
-  sizes.out[1] = rock::ConvGenerator::outputDim(sizes.in[1], sizes.fil[1],
-                                                paddingVal[2], paddingVal[3],
-                                                strideVal[1], dilationVal[1]);
+  bool dynamicConvM = ShapedType::isDynamic(sizes.n);
+  for (size_t i = 0; i < sizes.out.size(); ++i) {
+    dynamicConvM |= ShapedType::isDynamic(sizes.in[i]);
+    sizes.out[i] =
+        ShapedType::isDynamic(sizes.in[i])
+            ? ShapedType::kDynamic
+            : rock::ConvGenerator::outputDim(
+                  sizes.in[i], sizes.fil[i], paddingVal[2 * i],
+                  paddingVal[2 * i + 1], strideVal[i], dilationVal[i]);
+  }
 
   rock::GemmSize gemmSize =
       rock::GemmSize::fromConvolution(rock::ConvOpType::Fwd, sizes);
+  if (dynamicConvM)
+    gemmSize.n = ShapedType::kDynamic;
   ArrayRef<int64_t> dimsC = getC().getType().getShape();
   int64_t offsetC = dimsC.size() == 2 ? 0 : 1;
   int64_t g = gemmSize.g, m = gemmSize.m, k = gemmSize.k, n = gemmSize.n,
@@ -2254,6 +2396,15 @@ verifyConvElementwiseGemmConvOperands(ConvElementwiseGemmOp op) {
     if (!llvm::all_of(layout, llvm::IsaPred<StringAttr>))
       return op.emitOpError("'") << name << "' must contain only strings";
   }
+
+  static constexpr StringLiteral inputDynamicDims[] = {"n",  "ni", "hi", "wi",
+                                                       "di", "0i", "1i", "2i"};
+  if (failed(verifyStaticLayoutDimensions(op, filterType, filterLayout,
+                                          "filter",
+                                          /*dynamicDimensionNames=*/{})) ||
+      failed(verifyStaticLayoutDimensions(op, inputType, inputLayout, "input",
+                                          inputDynamicDims)))
+    return failure();
 
   std::optional<int64_t> filterG = convDimSize(filterLayout, filterType, "g");
   std::optional<int64_t> filterC = convDimSize(filterLayout, filterType, "c");

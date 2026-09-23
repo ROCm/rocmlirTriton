@@ -85,8 +85,8 @@ func.func @dce_gemm(%a: tensor<32x64xf16>, %b: tensor<1x32x128xf16>,
 // CHECK-LABEL: func.func @dce_conv
 // CHECK-NOT:     rock.conv
 // CHECK:         return %arg2
-func.func @dce_conv(%filter: tensor<?x?x?x?x?xf32>, %input: tensor<?x?x?x?x?xf32>,
-                    %sink: tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32>
+func.func @dce_conv(%filter: tensor<1x64x32x3x3xf32>, %input: tensor<?x1x32x?x?xf32>,
+                    %sink: tensor<?x1x64x?x?xf32>) -> tensor<?x1x64x?x?xf32>
     attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %unused = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -95,8 +95,8 @@ func.func @dce_conv(%filter: tensor<?x?x?x?x?xf32>, %input: tensor<?x?x?x?x?xf32
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
     padding = [0 : index, 0 : index, 0 : index, 0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %sink : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf32>, tensor<?x1x32x?x?xf32> -> tensor<?x1x64x?x?xf32>
+  return %sink : tensor<?x1x64x?x?xf32>
 }
 
 // -----
@@ -104,9 +104,9 @@ func.func @dce_conv(%filter: tensor<?x?x?x?x?xf32>, %input: tensor<?x?x?x?x?xf32
 // CHECK-LABEL: func.func @dce_conv_bwd_data
 // CHECK-NOT:     rock.conv_bwd_data
 // CHECK:         return %arg2
-func.func @dce_conv_bwd_data(%filter: tensor<?x?x?x?x?xf32>,
-                             %output: tensor<?x?x?x?x?xf32>,
-                             %sink: tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32>
+func.func @dce_conv_bwd_data(%filter: tensor<1x64x32x3x3xf32>,
+                             %output: tensor<?x1x64x?x?xf32>,
+                             %sink: tensor<?x1x32x?x?xf32>) -> tensor<?x1x32x?x?xf32>
     attributes {rock.arch = "amdgcn-amd-amdhsa:gfx906"} {
   %unused = rock.conv_bwd_data(%filter, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -115,8 +115,8 @@ func.func @dce_conv_bwd_data(%filter: tensor<?x?x?x?x?xf32>,
     dilations = [1 : index, 1 : index],
     strides = [1 : index, 1 : index],
     padding = [0 : index, 0 : index, 0 : index, 0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %sink : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf32>, tensor<?x1x64x?x?xf32> -> tensor<?x1x32x?x?xf32>
+  return %sink : tensor<?x1x32x?x?xf32>
 }
 
 // -----

@@ -1,7 +1,7 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt | rocmlir-opt | FileCheck %s
 
-func.func @rock_conv(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv(%filter : tensor<1x64x32x3x3xf32>, %input : tensor<?x1x32x?x?xf32>) -> tensor<?x1x64x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -9,13 +9,13 @@ func.func @rock_conv(%filter : tensor<?x?x?x?x?xf32>, %input : tensor<?x?x?x?x?x
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf32>, tensor<?x1x32x?x?xf32> -> tensor<?x1x64x?x?xf32>
+  return %result : tensor<?x1x64x?x?xf32>
 }
 // CHECK-LABEL: func.func @rock_conv
 // CHECK-NEXT: rock.conv
 
-func.func @rock_conv_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv_f16(%filter : tensor<1x64x32x3x3xf16>, %input : tensor<?x1x32x?x?xf16>) -> tensor<?x1x64x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g" ,"k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -23,13 +23,13 @@ func.func @rock_conv_f16(%filter : tensor<?x?x?x?x?xf16>, %input : tensor<?x?x?x
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16> -> tensor<?x?x?x?x?xf16>
-  return %result : tensor<?x?x?x?x?xf16>
+  } : tensor<1x64x32x3x3xf16>, tensor<?x1x32x?x?xf16> -> tensor<?x1x64x?x?xf16>
+  return %result : tensor<?x1x64x?x?xf16>
 }
 // CHECK-LABEL: func.func @rock_conv_f16
 // CHECK-NEXT: rock.conv
 
-func.func @rock_conv_fp8_mixed(%filter : tensor<?x?x?x?x?xf8E4M3FNUZ>, %input : tensor<?x?x?x?x?xf8E5M2FNUZ>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv_fp8_mixed(%filter : tensor<1x64x32x3x3xf8E4M3FNUZ>, %input : tensor<?x1x32x?x?xf8E5M2FNUZ>) -> tensor<?x1x64x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -37,13 +37,13 @@ func.func @rock_conv_fp8_mixed(%filter : tensor<?x?x?x?x?xf8E4M3FNUZ>, %input : 
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf8E4M3FNUZ>, tensor<?x?x?x?x?xf8E5M2FNUZ> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf8E4M3FNUZ>, tensor<?x1x32x?x?xf8E5M2FNUZ> -> tensor<?x1x64x?x?xf32>
+  return %result : tensor<?x1x64x?x?xf32>
 }
 // CHECK-LABEL: func.func @rock_conv_fp8_mixed
 // CHECK-NEXT: rock.conv
 
-func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<?x?x?x?x?xf8E4M3FN>, %input : tensor<?x?x?x?x?xf8E5M2>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<1x64x32x3x3xf8E4M3FN>, %input : tensor<?x1x32x?x?xf8E5M2>) -> tensor<?x1x64x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -51,13 +51,13 @@ func.func @rock_conv_fp8_mixed_ocp(%filter : tensor<?x?x?x?x?xf8E4M3FN>, %input 
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf8E4M3FN>, tensor<?x?x?x?x?xf8E5M2> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf8E4M3FN>, tensor<?x1x32x?x?xf8E5M2> -> tensor<?x1x64x?x?xf32>
+  return %result : tensor<?x1x64x?x?xf32>
 }
 // CHECK-LABEL: func.func @rock_conv_fp8_mixed
 // CHECK-NEXT: rock.conv
 
-func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %output : tensor<?x?x?x?x?xf32>) -> tensor<?x?x?x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv_bwd_data(%filter : tensor<1x64x32x3x3xf32>, %output : tensor<?x1x64x?x?xf32>) -> tensor<?x1x32x?x?xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv_bwd_data(%filter, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -65,13 +65,13 @@ func.func @rock_conv_bwd_data(%filter : tensor<?x?x?x?x?xf32>, %output : tensor<
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf32>, tensor<?x?x?x?x?xf32> -> tensor<?x?x?x?x?xf32>
-  return %result : tensor<?x?x?x?x?xf32>
+  } : tensor<1x64x32x3x3xf32>, tensor<?x1x64x?x?xf32> -> tensor<?x1x32x?x?xf32>
+  return %result : tensor<?x1x32x?x?xf32>
 }
 // CHECK-LABEL: func.func @rock_conv_bwd_data
 // CHECK-NEXT: rock.conv_bwd_data
 
-func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %output : tensor<?x?x?x?x?xf16>) -> tensor<?x?x?x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
+func.func @rock_conv_bwd_data_f16(%filter : tensor<1x64x32x3x3xf16>, %output : tensor<?x1x64x?x?xf16>) -> tensor<?x1x32x?x?xf16> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.conv_bwd_data(%filter, %output) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["n", "gi", "c", "0i", "1i"],
@@ -79,8 +79,8 @@ func.func @rock_conv_bwd_data_f16(%filter : tensor<?x?x?x?x?xf16>, %output : ten
     dilations = [1 : index,  1 : index],
     strides = [1 : index,  1 : index],
     padding = [0 : index,  0 : index,  0 : index,  0 : index]
-  } : tensor<?x?x?x?x?xf16>, tensor<?x?x?x?x?xf16> -> tensor<?x?x?x?x?xf16>
-  return %result : tensor<?x?x?x?x?xf16>
+  } : tensor<1x64x32x3x3xf16>, tensor<?x1x64x?x?xf16> -> tensor<?x1x32x?x?xf16>
+  return %result : tensor<?x1x32x?x?xf16>
 }
 // CHECK-LABEL: func.func @rock_conv_bwd_data_f16
 // CHECK-NEXT: rock.conv_bwd_data

@@ -73,6 +73,8 @@ def Rock_ConvOp : Rock_ConvOpBase<"conv"> {
   let description = [{
     The `rock.conv` op computes N-D forward convolution.
     Takes filter and input tensors, produces the output feature map as $result.
+    Batch and spatial extents may be dynamic; filter and channel extents must
+    be static.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -96,6 +98,8 @@ def Rock_ConvBwdDataOp : Rock_ConvOpBase<"conv_bwd_data">
     of the result (e.g. when stride > 1). The ConvToGemm pass expands a single
     `conv_bwd_data` into the required set of GEMM + store pairs within the
     same function.
+    Batch and spatial extents may be dynamic; filter and channel extents must
+    be static.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -124,6 +128,10 @@ def Rock_GemmOp
     If none of the `transposed` attributes are set, then A is [G] x M x K,
     B is [G] x K x N, and c is [G] x M x N, where G is the optional group
     dimension (which is assumed to be 1 if not set).
+
+    G and M may be dynamic to represent runtime batch/group and flattened
+    token counts. K and N must be static because they define the projection's
+    contraction and output feature dimensions.
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument A should be
@@ -159,6 +167,11 @@ def Rock_ReduceOp
           ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Axes-wide reduction operation";
+  let description = [{
+    The reduction axis must have a static extent. Other dimensions may be
+    dynamic and are preserved in the result; the reduction dimension has
+    extent one.
+  }];
   let hasVerifier = 1;
   let assemblyFormat = [{
     $reduceMethod $in attr-dict `:` type($in) `->` type($result)
@@ -214,6 +227,11 @@ def Rock_AttentionOp
     position along the K/V sequence-length dimension, not the number of cached
     entries. For a value `P`, key positions `[0, P]` are valid before other
     masks are applied.
+
+    G and the query sequence length may be dynamic. The Q/K head width, V/O
+    head width, and K/V maximum sequence capacity must be static. Runtime K/V
+    sequence length is represented by `lastValidKVIndex`, not a dynamic K/V
+    tensor extent.
 
     Without `slidingWindowLookBack`, attention is non-sliding. If it is set to
     `L`, it specifies a strictly positive look-back index distance from
@@ -278,6 +296,9 @@ def Rock_GemmElementwiseGemmOp
     `b` is [G] x K x N, `c` is [G] x N x O and `out` is [G] x M x O, where G is the 
     optional group dimension (which is assumed to be 1 if not set).
 
+    G and M may be dynamic. K, the intermediate N, and output O must be
+    static.
+
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument `a` should be
     a [G] x K x M memory.
@@ -322,6 +343,9 @@ def Rock_ConvElementwiseGemmOp
     If none of the `transposed` attributes are set, then `c` is [G] x N x O and the result is
     [G] x M x O, where G is the optional group dimension (which is assumed to be 1 if not set).
     Note that input and filter layouts are defined by attributes "input_layout" and "filter_layout".
+
+    Convolution batch/spatial extents and the resulting M may be dynamic.
+    Filter/group/channel extents and the second GEMM's N and O must be static.
 
     The convolution must be ungrouped: the verifier requires the filter's `g`
     dimension to be 1, and the filter and input to agree on `g` and on the
