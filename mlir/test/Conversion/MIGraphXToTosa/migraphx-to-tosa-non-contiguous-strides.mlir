@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -split-input-file --migraphx-to-tosa -verify-diagnostics %s | FileCheck %s
 
 // CHECK-LABEL: func.func @mlir_dot_sigmoid

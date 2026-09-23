@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Negative tests for rock-emulate-narrow-types.
 // The upstream gather_to_lds cases target AMDGPU rewrite patterns that this
 // pass does not run; cover a memref op the fork actually refuses to legalize.

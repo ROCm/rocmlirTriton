@@ -19,6 +19,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
@@ -540,11 +541,8 @@ LogicalResult SigmoidOp::verify() {
 
 LogicalResult SliceOp::verify() {
   auto convertSliceAttribute = [](ArrayAttr attr) -> SmallVector<int64_t, 4> {
-    return llvm::map_to_vector(attr.getValue(), [](Attribute attr) {
-      IntegerAttr integerAttr = dyn_cast<IntegerAttr>(attr);
-      assert(integerAttr && "Tablegen asserts a I64 ArrayAttr");
-
-      return integerAttr.getInt();
+    return llvm::map_to_vector(attr.getValue(), [](Attribute elem) {
+      return cast<IntegerAttr>(elem).getInt();
     });
   };
 
@@ -569,10 +567,16 @@ LogicalResult SliceOp::verify() {
 
   int64_t inputRank = inputShape.size();
   if (llvm::any_of(axes, [&](int64_t axis) { return axis >= inputRank; })) {
-    return emitOpError("axes is greater than input rank");
+    return emitOpError("axes must be less than the input rank");
   }
 
-  // end is greater than start
+  llvm::SmallDenseSet<int64_t, 4> seenAxes;
+  if (llvm::any_of(
+          axes, [&](int64_t axis) { return !seenAxes.insert(axis).second; })) {
+    return emitOpError("axes must not contain duplicates");
+  }
+
+  // Each sliced range must be non-empty.
   if (llvm::any_of(llvm::zip(starts, ends), [&](auto value) {
         auto [start, end] = value;
         return start >= end;

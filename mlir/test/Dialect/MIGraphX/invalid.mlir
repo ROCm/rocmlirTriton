@@ -526,7 +526,7 @@ func.func @invalid_negative_axis(%input: !migraphx.shaped<10x10xf32, 10x1>) {
 // -----
 
 func.func @invalid_axis_out_of_range(%input: !migraphx.shaped<10x10xf32, 10x1>) {
-  // expected-error @+1 {{axes is greater than input rank}}
+  // expected-error @+1 {{axes must be less than the input rank}}
   %result = migraphx.slice %input {axes = [0, 10], starts = [0, 0], ends = [2, 2]} : <10x10xf32, 10x1> -> <2x2xf32, 2x1>
   func.return
 }
@@ -534,8 +534,40 @@ func.func @invalid_axis_out_of_range(%input: !migraphx.shaped<10x10xf32, 10x1>) 
 // -----
 
 func.func @invalid_axis_equals_rank(%input: !migraphx.shaped<10x10xf32, 10x1>) {
-  // expected-error @+1 {{axes is greater than input rank}}
+  // expected-error @+1 {{axes must be less than the input rank}}
   %result = migraphx.slice %input {axes = [2], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <10x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_duplicate_axes(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{axes must not contain duplicates}}
+  %result = migraphx.slice %input {axes = [0, 0], starts = [0, 2], ends = [5, 4]} : <10x10xf32, 10x1> -> <2x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_start_equals_end(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op start is greater or equal to end}}
+  %result = migraphx.slice %input {axes = [1], starts = [3], ends = [3]} : <10x10xf32, 10x1> -> <10x1xf32, 1x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_negative_start(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{all attributes must be non-negative}}
+  %result = migraphx.slice %input {axes = [0], starts = [-2], ends = [5]} : <10x10xf32, 10x1> -> <7x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_multi_axis_shape_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{input shape and attribute does not infer output shape}}
+  %result = migraphx.slice %input {axes = [0, 1], starts = [1, 2], ends = [4, 8]} : <10x10xf32, 10x1> -> <3x5xf32, 10x1>
   func.return
 }
 

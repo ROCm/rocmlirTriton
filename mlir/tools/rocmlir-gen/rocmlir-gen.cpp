@@ -6073,6 +6073,17 @@ static LogicalResult populateHostHarnessLogic(
       !lastValidKVIndex.empty() ? (root0.params.size() - offsetFromEnd - 1)
                                 : -1;
 
+  auto isSmallFloatType = [](Type type) {
+    return isa<FloatType>(type) && type.getIntOrFloatBitWidth() < 32;
+  };
+  // outIndices indexes localVars and valVars alike, so validation buffers are
+  // allocated for every parameter or for none.
+  bool hasValVars =
+      hasValidation ||
+      (isCPUKernel && llvm::any_of(root0.params, [&](Type paramType) {
+         return isSmallFloatType(getElementTypeOrSelf(paramType));
+       }));
+
   // Timer for memory initialization
   func::FuncOp initTimerStopFunc;
   if (cpuTimers) {
@@ -6087,8 +6098,7 @@ static LogicalResult populateHostHarnessLogic(
            "currently only supports shaped types (memref or tensor)");
     Type elemType = paramShapedType.getElementType();
     auto paramMRType = MemRefType::get(paramShapedType.getShape(), elemType);
-    bool isSmallFloat =
-        isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() < 32;
+    bool isSmallFloat = isSmallFloatType(elemType);
     if (isCPUKernel) { // -prc
       if (genParams.operation.has_value()) {
         if (idx < genParams.types.size())
@@ -6140,10 +6150,14 @@ static LogicalResult populateHostHarnessLogic(
         return failure();
     }
 
-    if (hasValidation || (isCPUKernel && isSmallFloat)) {
-      // Emit validation var
+    if (hasValVars) {
+      // Emit validation var. Without a validator, the root function runs on
+      // these buffers directly, so they must keep the parameter's type.
       Type valElemType = floatType;
-      if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
+      if (!hasValidation) {
+        valElemType = elemType;
+      } else if (genParams.operation.has_value() &&
+                 isa<IntegerType>(elemType)) {
         valElemType = elemType;
         if (llvm::is_contained(outIndices, idx))
           valElemType = b.getIntegerType(32);
@@ -6163,12 +6177,11 @@ static LogicalResult populateHostHarnessLogic(
   }
 
   // Tensor functions return their outputs instead of receiving output
-  // buffers as arguments. Materialize one correctly-shaped buffer per result
-  // so the harness can copy and print those results. Previously the fallback
-  // below reused the last input buffer, which fails whenever an input and
-  // result have different shapes. outIndices indexes both localVars and
-  // valVars, so each result also gets a matching validation buffer when
-  // validation buffers exist.
+  // buffers as arguments. Materialize one buffer per result, shaped like the
+  // result rather than like any input, so the harness can copy and print
+  // those results. outIndices indexes both localVars and valVars, so each
+  // result also gets a matching validation buffer when validation buffers
+  // exist.
   if (isCPUKernel && outIndices.empty() && !root0.resultTypes.empty()) {
     for (Type resultType : root0.resultTypes) {
       auto shapedType = dyn_cast<ShapedType>(resultType);
@@ -6182,7 +6195,7 @@ static LogicalResult populateHostHarnessLogic(
       outIndices.push_back(localVars.size());
       localVars.push_back(
           memref::AllocOp::create(b, loc, resultMemrefType).getResult());
-      if (!valVars.empty()) {
+      if (hasValVars) {
         assert(valVars.size() + 1 == localVars.size() &&
                "validation buffers must mirror localVars");
         valVars.push_back(
