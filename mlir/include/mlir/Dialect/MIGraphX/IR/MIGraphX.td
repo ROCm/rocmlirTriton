@@ -429,14 +429,11 @@ def MIGraphX_ReshapeOp :
   let hasVerifier = 1;
 }
 
-def MIGraphX_SliceOp :
-    MIGraphX_Op<"slice">,
-    Arguments<(ins AnyMIXRShaped:$input,
-                   I64ArrayAttr:$axes,
-                   I64ArrayAttr:$ends,
-                   I64ArrayAttr:$starts
-                   )>,
-	Results<(outs AnyMIXRShaped:$output)> {
+def MIGraphX_SliceOp
+    : MIGraphX_Op<"slice", [AllElementTypesMatch<["input", "output"]>]>,
+      Arguments<(ins AnyMIXRShaped:$input, I64ArrayAttr:$axes,
+          I64ArrayAttr:$ends, I64ArrayAttr:$starts)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "slice a tensor";
   let description = [{
     The `migraphx.slice` op.

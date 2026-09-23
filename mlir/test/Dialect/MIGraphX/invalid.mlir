@@ -594,3 +594,11 @@ func.func @invalid_shape_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
   %result = migraphx.slice %input {axes = [0], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <3x10xf32, 10x1>
   func.return
 }
+
+// -----
+
+func.func @invalid_element_type_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op failed to verify that all of {input, output} have same element type}}
+  %result = migraphx.slice %input {axes = [0], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <5x10xf16, 10x1>
+  func.return
+}
