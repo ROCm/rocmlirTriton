@@ -18,6 +18,9 @@ from lit.llvm import llvm_config
 from lit.llvm.subst import ToolSubst
 from lit.llvm.subst import FindTool
 
+# lit.site.cfg.py puts the common test utils on sys.path before loading us.
+from common import apply_device_environment
+
 # Configuration file for the 'lit' test runner.
 
 # name: The name of this test suite.
@@ -64,6 +67,10 @@ if config.enable_assertions:
 # such as rocminfo when ROCm is installed somewhere other than /opt/rocm (e.g. a
 # relocatable SDK). lit otherwise scrubs it from the test environment.
 llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP', 'ROCM_PATH'])
+
+# Likewise for the GPU device-selection variables, so the tests run on the
+# device config.arch was computed from.
+apply_device_environment(config)
 
 ##############
 # FIXME: adding a path to the environment isn't appearing to work as
