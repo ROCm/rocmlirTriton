@@ -1715,6 +1715,24 @@ LogicalResult GridwiseAttentionOp::verify() {
     return emitError("NPerBlock should be divisible by kpack.");
   }
 
+  Region &body = getPreSoftmaxBody();
+  if (!body.empty()) {
+    if (!body.hasOneBlock())
+      return emitOpError("pre-softmax region must contain a single block");
+    Block &block = body.front();
+    unsigned expectedArguments = 1 + getPreSoftmaxElemWiseInputs().size();
+    if (block.getNumArguments() != expectedArguments)
+      return emitOpError("pre-softmax body argument count must be ")
+             << expectedArguments
+             << " (the QK result plus one per elementwise input), but is "
+             << block.getNumArguments();
+    auto yieldOp = dyn_cast<rock::YieldOp>(block.getTerminator());
+    if (!yieldOp)
+      return emitOpError("pre-softmax body must be terminated by a rock.yield");
+    if (yieldOp.getNumOperands() != 1)
+      return emitOpError("pre-softmax body must yield exactly one value");
+  }
+
   if (!getEnableSoftmax() && getLse())
     return emitError("LSE only works for attention.");
 

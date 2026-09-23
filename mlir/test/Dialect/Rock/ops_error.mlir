@@ -44,6 +44,43 @@ func.func @gridwise_attention_elemwise_input_shape_mismatch(
   return %r : tensor<1x384x64xf32>
 }
 
+// The first body argument must be the QK result.
+func.func @gridwise_attention_missing_qk_argument(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body argument count must be 1 (the QK result plus one per elementwise input), but is 0}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0:
+    %zero = arith.constant dense<0.0> : tensor<1x384x384xf32>
+    rock.yield %zero : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// The pre-softmax body must yield the value consumed by softmax.
+func.func @gridwise_attention_empty_yield(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body must yield exactly one value}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // attention tests
 // -----------------------------------------------------------------------------
