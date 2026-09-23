@@ -590,15 +590,16 @@ TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
 }
 
 TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
-  // gfx908 has no split-K-free lists, so a problem that does not support
-  // split-K must still fall back to the exact regular key.
+  // gfx1100 ships gemm+elementwise+gemm lists in the regular table only. When
+  // split-K is unsupported, lookup must borrow that exact regular list rather
+  // than a different no-split-K gemm/conv/attention table.
   MLIRContext ctx;
   Type f16 = Float16Type::get(&ctx);
-  StringRef arch = "amdgcn-amd-amdhsa:gfx908";
-  auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
-      arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
-  auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
-      arch, KernelType::Gemm, f16, /*supportsSplitK=*/false);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1100";
+  auto regular = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+      arch, KernelType::GemmElementwiseGemm, f16, /*supportsSplitK=*/true);
+  auto noSplitK = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+      arch, KernelType::GemmElementwiseGemm, f16, /*supportsSplitK=*/false);
 
   EXPECT_FALSE(noSplitK.empty());
   EXPECT_TRUE(noSplitK == regular);
