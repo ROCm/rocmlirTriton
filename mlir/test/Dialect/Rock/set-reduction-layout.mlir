@@ -68,6 +68,56 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
+// Contiguity is recomputed for every changed buffer load after all gather
+// layouts in the module are final. The first kernel proves that a safe vector
+// width can be recovered and that an unrelated load keeps its original hint.
+// The second uses the same contiguous offsets, but its dynamic mask limits the
+// safe width to one.
+
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedB = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @buffer_load_contiguity_recomputed
+  // The unrelated A load is not retyped, so its explicit hint is preserved.
+  // CHECK-DAG:     amdg.buffer_load {{.*}} {contiguity = 8 : i32} : tensor<128x64xi8, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // The B load's original hint is replaced with the width proven after relayout.
+  // CHECK-DAG:     amdg.buffer_load {{.*}} {contiguity = 4 : i32} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @buffer_load_contiguity_recomputed(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8> {tt.divisibility = 16 : i32}) -> tensor<128x64xi32, #blockedA> {
+    %offA = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
+    %range = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedB}>>
+    %expanded = tt.expand_dims %range {axis = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedB}>> -> tensor<1x64xi32, #blockedB>
+    %offB = tt.broadcast %expanded : tensor<1x64xi32, #blockedB> -> tensor<64x64xi32, #blockedB>
+    %acc = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
+    %a = amdg.buffer_load %argA[%offA] {contiguity = 8 : i32} : tensor<128x64xi8, #blockedA>
+    %b = amdg.buffer_load %argB[%offB] {contiguity = 2 : i32} : tensor<64x64xi8, #blockedB>
+    %adot = ttg.convert_layout %a : tensor<128x64xi8, #blockedA> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %bdot = ttg.convert_layout %b : tensor<64x64xi8, #blockedB> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %out = tt.dot %adot, %bdot, %acc : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xi32, #blockedA>
+    tt.return %out : tensor<128x64xi32, #blockedA>
+  }
+
+  // CHECK-LABEL: tt.func @buffer_load_contiguity_limited_by_mask
+  // CHECK:           amdg.buffer_load %{{[0-9a-zA-Z_]+}}[%{{[0-9a-zA-Z_]+}}], %{{[0-9a-zA-Z_]+}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  tt.func @buffer_load_contiguity_limited_by_mask(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8> {tt.divisibility = 16 : i32}, %limit: i32) -> tensor<128x64xi32, #blockedA> {
+    %offA = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
+    %range = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedB}>>
+    %expanded = tt.expand_dims %range {axis = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedB}>> -> tensor<1x64xi32, #blockedB>
+    %offB = tt.broadcast %expanded : tensor<1x64xi32, #blockedB> -> tensor<64x64xi32, #blockedB>
+    %limitSplat = tt.splat %limit : i32 -> tensor<1x64xi32, #blockedB>
+    %rowMask = arith.cmpi slt, %expanded, %limitSplat : tensor<1x64xi32, #blockedB>
+    %mask = tt.broadcast %rowMask : tensor<1x64xi1, #blockedB> -> tensor<64x64xi1, #blockedB>
+    %acc = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
+    %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blockedA>
+    %b = amdg.buffer_load %argB[%offB], %mask {contiguity = 8 : i32} : tensor<64x64xi8, #blockedB>
+    %adot = ttg.convert_layout %a : tensor<128x64xi8, #blockedA> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %bdot = ttg.convert_layout %b : tensor<64x64xi8, #blockedB> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %out = tt.dot %adot, %bdot, %acc : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xi32, #blockedA>
+    tt.return %out : tensor<128x64xi32, #blockedA>
+  }
+}
+
+// -----
+
 // Real-pipeline case: by the time the pass runs (after ConvertToBufferOps /
 // ConvertWarpPipeline) the global gather load is an amdgpu.buffer_load, not a
 // tt.load, and it is consumed through amdgpu.in_thread_transpose. Layouts and
@@ -85,7 +135,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @reduction_redistributed_buffer_load
   // Gather buffer_load + its offsets/mask are moved onto K (warpsPerCTA = [4, 1]).
-  // CHECK-DAG:     amdg.buffer_load {{.*}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // Its vector-width hint is recomputed for the new layout; these splat offsets
+  // safely produce scalar loads, so the default contiguity = 1 is omitted.
+  // CHECK-DAG:     amdg.buffer_load %{{[0-9a-zA-Z_]+}}[%{{[0-9a-zA-Z_]+}}], %{{[0-9a-zA-Z_]+}} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK-DAG:     arith.constant dense<true> : tensor<64x64xi1, #ttg.blocked<{sizePerThread = [8, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // The in_thread_transpose #linear is remapped to the redistributed layout.
   // CHECK-DAG:     amdg.in_thread_transpose {{.*}} -> tensor<64x64xi8, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [4, 0], [0, 32], [32, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[8, 0], [16, 0]], block = []}>>
@@ -97,7 +149,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %maskB = arith.constant dense<true> : tensor<64x64xi1, #blocked>
     %cstOut = arith.constant dense<0> : tensor<128x64xi32, #mma>
     %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blocked1>
-    %b = amdg.buffer_load %argB[%offB], %maskB : tensor<64x64xi8, #blocked>
+    %b = amdg.buffer_load %argB[%offB], %maskB {contiguity = 8 : i32} : tensor<64x64xi8, #blocked>
     %bt = amdg.in_thread_transpose %b : tensor<64x64xi8, #blocked> -> tensor<64x64xi8, #linear>
     %adot = ttg.convert_layout %a : tensor<128x64xi8, #blocked1> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>>
     %bdot = ttg.convert_layout %bt : tensor<64x64xi8, #linear> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
@@ -163,13 +215,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [0, 1]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @reduction_already_contiguous_buffer_load
-  //   CHECK-NOT: warpsPerCTA = [4, 1]
+  // CHECK-NOT:     warpsPerCTA = [4, 1]
+  // A skipped load keeps both its original layout and its contiguity hint.
+  // CHECK:         amdg.buffer_load {{.*}} {contiguity = 8 : i32} : tensor<64x64xi8, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [0, 1]}>>
+  // CHECK-NOT:     warpsPerCTA = [4, 1]
   tt.func @reduction_already_contiguous_buffer_load(%argA: !tt.ptr<i8>, %argB: !tt.ptr<i8>) -> tensor<128x64xi32, #blocked> {
     %offA = arith.constant dense<0> : tensor<128x64xi32, #blocked>
     %offB = arith.constant dense<0> : tensor<64x64xi32, #blocked1>
     %cstOut = arith.constant dense<0> : tensor<128x64xi32, #blocked>
     %a = amdg.buffer_load %argA[%offA] : tensor<128x64xi8, #blocked>
-    %b = amdg.buffer_load %argB[%offB] : tensor<64x64xi8, #blocked1>
+    %b = amdg.buffer_load %argB[%offB] {contiguity = 8 : i32} : tensor<64x64xi8, #blocked1>
     %adot = ttg.convert_layout %a : tensor<128x64xi8, #blocked> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>>
     %bdot = ttg.convert_layout %b : tensor<64x64xi8, #blocked1> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>>
     %out = tt.dot %adot, %bdot, %cstOut : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blocked}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blocked}>> -> tensor<128x64xi32, #blocked>

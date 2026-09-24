@@ -6186,6 +6186,29 @@ static LogicalResult populateHostHarnessLogic(
   if (allOutIndices.empty())
     allOutIndices = outIndices;
 
+  // Page-lock the host buffers before anything is copied to the device. HIP can
+  // silently drop small asynchronous host-to-device copies out of pageable
+  // memory, leaving a kernel to read zeros from an input that never arrived,
+  // with no error reported. Registering the buffers keeps the copies off that
+  // path. Sub-byte element types are skipped because they cannot be cast to an
+  // unranked memref here, and their tensors are far larger than the sizes the
+  // defect affects anyway. A root that is not a rock kernel runs entirely on
+  // the host, so there is nothing to register there.
+  SmallVector<Value, 5> registeredBuffers;
+  if (!isCPUKernel) {
+    for (Value buffer : localVars) {
+      auto bufferType = cast<MemRefType>(buffer.getType());
+      Type elemType = bufferType.getElementType();
+      if (!elemType.isIntOrFloat() || elemType.getIntOrFloatBitWidth() < 8)
+        continue;
+      auto unrankedType =
+          UnrankedMemRefType::get(elemType, bufferType.getMemorySpace());
+      Value unranked = memref::CastOp::create(b, loc, unrankedType, buffer);
+      gpu::HostRegisterOp::create(b, loc, unranked);
+      registeredBuffers.push_back(unranked);
+    }
+  }
+
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
   // If willBeWrapped is true, the call will be redirected to a GPU wrapper that
@@ -6307,6 +6330,12 @@ static LogicalResult populateHostHarnessLogic(
         emitPrintTensor(b, lvar);
     }
   }
+
+  // Drop the page-locked mappings taken above, now that the kernel and any
+  // validation are done with the buffers. Freeing an allocation that is still
+  // registered leaves the mapping dangling in the runtime.
+  for (Value unranked : registeredBuffers)
+    gpu::HostUnregisterOp::create(b, loc, unranked);
 
   for (auto &vvar : valVars) {
     memref::DeallocOp::create(b, loc, vvar);

@@ -14,6 +14,10 @@
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt \
 // RUN:   -triton-to-hsaco='arch=gfx1250 use-expert-scheduling=0' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NOEXPERT
+// Case 4: gfx13 code generation is accepted, on the target's stock feature set
+// (no arch-specific features are forced for it).
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1310' %s 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=GFX13
 
 // Verify the gfx1250 expert-scheduling enablement in translateTritonToHsaco():
 // when isExpertSchedulingEnabled(arch) is true we set the
@@ -25,6 +29,7 @@
 
 // EXPERT: s_setreg_imm32_b32 hwreg(HW_REG_WAVE_SCHED_MODE{{.*}}), 2
 // NOEXPERT-NOT: HW_REG_WAVE_SCHED_MODE
+// GFX13: .amdgcn_target "amdgcn-amd-amdhsa--gfx1310"
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.func amdgpu_kernelcc @kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
     %0 = llvm.load %arg0 : !llvm.ptr -> f32

@@ -40,9 +40,11 @@
 
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Any.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -53,6 +55,7 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -256,11 +259,46 @@ static bool isCoexecSchedulerSupported(llvm::StringRef arch) {
   return arch.starts_with("gfx1250");
 }
 
-/// Set kernel function attributes
+/// Set code-generation attributes shared by all emitted functions.
+///
+/// Device-library definitions are linked before this runs because some can
+/// remain outlined. Those functions execute under the kernel's denormal mode
+/// and must follow the same expert-scheduling policy.
+void setModuleFunctionAttributes(llvm::Module &module, bool allowFlushDenorm,
+                                 bool enableExpertScheduling) {
+  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
+  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
+  // controls to the `denormal_fpenv` enum attribute and only honours the string
+  // spelling through the auto-upgrade that runs when a module is parsed. A
+  // module built in memory therefore keeps it as an inert string and stays on
+  // the IEEE default. Express upstream's intended mode explicitly instead.
+  llvm::DenormalMode floatMode = allowFlushDenorm
+                                     ? llvm::DenormalMode::getPreserveSign()
+                                     : llvm::DenormalMode::getIEEE();
+  llvm::AttrBuilder denormalAttr(module.getContext());
+  denormalAttr.addDenormalFPEnvAttr(
+      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
+
+  // compiler.py passes "amdgpu-expert-scheduling-mode" as a
+  // translate_to_asm flag, which the Python llvm.cc binding applies by
+  // mutating LLVM's process-global cl::opt. rocmlir-tuning-driver compiles
+  // configs concurrently in one process, so stamp the backend's per-function
+  // attribute instead. SIInsertWaitcnts reads it when the global option was not
+  // set on the process command line.
+  for (llvm::Function &fn : module) {
+    if (fn.isDeclaration())
+      continue;
+    fn.addFnAttr("amdgpu-expert-scheduling-mode",
+                 enableExpertScheduling ? "true" : "false");
+    fn.removeFnAttr(llvm::Attribute::DenormalFPEnv);
+    fn.addFnAttrs(denormalAttr);
+  }
+}
+
+/// Set kernel-specific function attributes.
 void setKernelAttributes(llvm::Module &module, StringRef archStr,
                          StringRef features, int numWarps, int wavesPerEU,
-                         int numCTAs, bool allowFlushDenorm, bool enableAsan,
-                         bool enableExpertScheduling, StringRef llvmFnAttrs) {
+                         int numCTAs, bool enableAsan, StringRef llvmFnAttrs) {
   int waveSize = rock::getWaveSize(archStr);
   int totalThreads = numWarps * waveSize;
 
@@ -320,34 +358,6 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   if (isCoexecSchedulerSupported(archStr) && numWarps <= 4) {
     kernelFn->addFnAttr("amdgpu-sched-strategy", "coexec");
   }
-
-  // Deliberate divergence from upstream Triton: compiler.py passes
-  // "amdgpu-expert-scheduling-mode" as a translate_to_asm flag, which the
-  // Python llvm.cc binding applies by mutating LLVM's process-global cl::opt.
-  // rocmlir-tuning-driver compiles configs concurrently in one process, so
-  // stamp the backend's per-function attribute on every defined function
-  // instead. This keeps upstream's "all functions" behavior without touching
-  // process-global state. SIInsertWaitcnts reads this attribute when the global
-  // option was not set on the process command line.
-  for (llvm::Function &fn : module) {
-    if (!fn.isDeclaration())
-      fn.addFnAttr("amdgpu-expert-scheduling-mode",
-                   enableExpertScheduling ? "true" : "false");
-  }
-
-  // Deliberate divergence from upstream Triton: compiler.py stamps the legacy
-  // "denormal-fp-math-f32" string attribute. LLVM has since moved the denormal
-  // controls to the `denormal_fpenv` enum attribute and only honours the string
-  // spelling through the auto-upgrade that runs when a module is parsed. A
-  // module built in memory therefore keeps it as an inert string and stays on
-  // the IEEE default. Express upstream's intended mode explicitly instead.
-  llvm::DenormalMode floatMode = allowFlushDenorm
-                                     ? llvm::DenormalMode::getPreserveSign()
-                                     : llvm::DenormalMode::getIEEE();
-  llvm::AttrBuilder denormalAttr(module.getContext());
-  denormalAttr.addDenormalFPEnvAttr(
-      llvm::DenormalFPEnv(llvm::DenormalMode::getIEEE(), floatMode));
-  kernelFn->addFnAttrs(denormalAttr);
 
   // ASan support
   // Only stamp `target-features` on the kernel when the caller actually has
@@ -497,6 +507,68 @@ bool validateDeviceLibSymbols(llvm::Module &module) {
     }
   }
   return valid;
+}
+
+/// Keep heavily replicated device-library call sites out of line.
+///
+/// Triton scalarizes tensor elementwise operations before LLVM translation, so
+/// a per-thread tile can contain dozens or hundreds of identical device-library
+/// calls.
+/// Inlining a nontrivial callee at every site multiplies code size and makes
+/// tile values live across a call interfere with every temporary in each
+/// cloned callee body. Outlining does not shorten those values' semantic
+/// lifetimes, but keeps the callee's temporaries out of the caller's register
+/// allocation scope at the cost of call and preservation overhead. Apply the
+/// call-count x body-size budget independently to each basic block so dense
+/// fusion regions can be outlined without preventing calls in sparse regions
+/// from taking the normal always-inline path.
+///
+/// This downstream-only step has no upstream Triton counterpart; preserve it
+/// when reconciling make_llir() as documented in
+/// docs/bump_triton_version.md section 5.2.
+void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
+  constexpr uint64_t minCallSites = 128;
+  constexpr uint64_t duplicatedInstructionBudget = 1024;
+
+  llvm::DenseMap<llvm::Function *,
+                 llvm::SmallVector<llvm::CallBase *, /*InlineCapacity=*/2>>
+      directCallSites;
+  for (llvm::Function &caller : module) {
+    for (llvm::BasicBlock &block : caller) {
+      directCallSites.clear();
+      for (llvm::Instruction &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        if (!call)
+          continue;
+        auto *callee = llvm::dyn_cast<llvm::Function>(
+            call->getCalledOperand()->stripPointerCasts());
+        if (callee)
+          directCallSites[callee].push_back(call);
+      }
+
+      for (auto &[callee, callSites] : directCallSites) {
+        uint64_t callCount = callSites.size();
+        if (callCount < minCallSites || callee->isDeclaration() ||
+            !callee->hasInternalLinkage())
+          continue;
+        StringRef name = callee->getName();
+        if (llvm::none_of(embeddedDeviceLibraries, [&](const auto &library) {
+              return name.starts_with(library.symbolPrefix);
+            }))
+          continue;
+        uint64_t instructionCount = callee->getInstructionCount();
+        if (callCount * instructionCount <= duplicatedInstructionBudget)
+          continue;
+
+        LLVM_DEBUG(llvm::dbgs() << "keeping replicated calls to " << name
+                                << " out of line in one basic block: "
+                                << callCount << " call sites x "
+                                << instructionCount << " instructions\n");
+        for (llvm::CallBase *call : callSites)
+          call->setIsNoInline();
+      }
+    }
+  }
 }
 
 static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
@@ -974,11 +1046,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                << " vs options.numCTAs=" << options.numCTAs << "\n");
   }
 
-  // Set kernel attributes
-  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
-                      numCTAs, options.allowFlushDenorm, enableAsan,
-                      enableExpertScheduling, options.llvmFnAttrs);
-
   // Preserve explicit caller-provided libraries, then satisfy any remaining
   // OCML/OCKL references from the copies packaged into rockCompiler.
   if (!linkExternalDeviceLibraries(*llvmModule, options.externLibPaths))
@@ -998,6 +1065,16 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   if (!validateDeviceLibSymbols(*llvmModule))
     return failure();
+
+  // Stamp shared attributes only after linking so outlined device-library
+  // definitions use the same backend policy as the kernel. Apply
+  // kernel-specific attributes afterward so llvmFnAttrs overrides remain last.
+  setModuleFunctionAttributes(*llvmModule, options.allowFlushDenorm,
+                              enableExpertScheduling);
+  setKernelAttributes(*llvmModule, arch, features, numWarps, options.wavesPerEU,
+                      numCTAs, enableAsan, options.llvmFnAttrs);
+
+  disableHighDuplicationDeviceLibInlining(*llvmModule);
 
   std::optional<llvm::OptimizationLevel> optLevel =
       mapToLevel(options.optLevel);

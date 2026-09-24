@@ -11,7 +11,7 @@
 // This config exists only in the no-split-K list, proving list selection rather
 // than filtering the regular list.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-space=quick - | FileCheck %s --check-prefix=SPACE-NO-SPLIT-K --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
-// SPACE-NO-SPLIT-K: mPerBlock=256,nPerBlock=9,kPerBlock=2,{{.*}}matrixInstrNonkdim=0,splitKFactor=1,numStages=3
+// SPACE-NO-SPLIT-K: mPerBlock=12,nPerBlock=256,kPerBlock=9,{{.*}}matrixInstrNonkdim=0,splitKFactor=1,numStages=1
 
 // Dropping the relu leaves a broadcast bias add, which is a legal split-K
 // output fusion.
