@@ -321,3 +321,24 @@ func.func @mul_broadcast_both_no_shift_broadcast(%arg0: tensor<1xf32>, %arg1: te
   %0 = "tosa.mul"(%arg0, %arg1, %shift) : (tensor<1xf32>, tensor<8xf32>, tensor<1xi8>) -> tensor<8xf32>
   return %0 : tensor<8xf32>
 }
+
+// -----
+
+// Hip-ep wraps NCHW conv as TP(NCHW2NHWC)+conv.NHWC+TP(NHWC2NCHW). After
+// those transposes fold, the result is NKHW, so the 1-D bias must expand
+// onto dim 1 ([1,K,1,1]), not the NHWK last dim ([1,1,1,K]).
+// CHECK-LABEL: @conv_nchw_bias
+// CHECK: rock.conv
+// CHECK-SAME: output_layout = ["no", "go", "ko", "ho", "wo"]
+// The expand_shape below is already rewritten by --rock-view-to-transform.
+// CHECK: rock.transform %arg2
+// CHECK-SAME: tensor<4xf32> to tensor<1x4x1x1xf32>
+// CHECK: tosa.add
+func.func @conv_nchw_bias(%arg0: tensor<1x3x8x8xf32>, %arg1: tensor<4x3x3x3xf32>, %arg2: tensor<4xf32>) -> tensor<1x4x8x8xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %zp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %in = tosa.transpose %arg0 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x3x8x8xf32>) -> tensor<1x8x8x3xf32>
+  %w = tosa.transpose %arg1 {perms = array<i32: 0, 2, 3, 1>} : (tensor<4x3x3x3xf32>) -> tensor<4x3x3x3xf32>
+  %conv = tosa.conv2d %in, %w, %arg2, %zp, %zp {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x8x8x3xf32>, tensor<4x3x3x3xf32>, tensor<4xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x4xf32>
+  %out = tosa.transpose %conv {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x8x8x4xf32>) -> tensor<1x4x8x8xf32>
+  return %out : tensor<1x4x8x8xf32>
+}

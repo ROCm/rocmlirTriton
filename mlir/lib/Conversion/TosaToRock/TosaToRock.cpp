@@ -598,25 +598,35 @@ static void addZeroInitPrefillAttribute(tosa::CustomOp op,
   }
 }
 
+// TOSA conv2d is NHWK, so a 1-D bias of length K broadcasts as [1,1,1,K].
+// Transpose folding rewrites that to another layout (NHWC→NCHW becomes NKHW)
+// and updates the conv result type, but the bias is still rank-1. Expand it
+// onto the 'k' axis of `outputLayout` so the add matches the folded result.
+static int64_t channelDimFromOutputLayout(StringRef outputLayout,
+                                          int64_t rank) {
+  size_t k = outputLayout.find('k');
+  if (k == StringRef::npos || static_cast<int64_t>(k) >= rank)
+    return rank - 1;
+  return static_cast<int64_t>(k);
+}
+
 static FailureOr<tosa::AddOp>
 replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
-                            Location loc, Type resTy, Value bias, Value input,
-                            Value result) {
-  // non-zero bias, replace with tosa.add w/ broadcast
+                            Location loc, Type resTy, Value bias, Value result,
+                            StringRef outputLayout) {
   auto biasType = cast<ShapedType>(bias.getType());
-  if (!biasType.hasStaticShape())
+  auto resultType = dyn_cast<RankedTensorType>(resTy);
+  if (!biasType.hasStaticShape() || !resultType || !resultType.hasStaticShape())
     return failure();
 
-  int64_t nDims = cast<ShapedType>(input.getType()).getRank();
-  SmallVector<int64_t> biasShape;
-  for (int i = 0; i < nDims - 1; i++)
-    biasShape.push_back(1);
-  biasShape.push_back(biasType.getShape()[0]);
+  int64_t nDims = resultType.getRank();
+  int64_t kDim = channelDimFromOutputLayout(outputLayout, nDims);
+  SmallVector<int64_t> biasShape(nDims, 1);
+  biasShape[kDim] = biasType.getShape()[0];
   auto newType = RankedTensorType::get(biasShape, biasType.getElementType());
 
-  // [[0, 1, 2, 3]]
   ReassociationExprs exprs;
-  for (int i = 0; i < nDims; i++)
+  for (int64_t i = 0; i < nDims; ++i)
     exprs.push_back(getAffineDimExpr(i, context));
   SmallVector<ReassociationExprs, 1> reassociations;
   reassociations.push_back(exprs);
@@ -625,6 +635,12 @@ replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
       tensor::ExpandShapeOp::create(rw, loc, newType, bias, reassociations);
 
   return tosa::AddOp::create(rw, loc, resTy, ValueRange{result, biasExpand});
+}
+
+static StringRef convOutputLayoutOrDefault(Operation *op) {
+  if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
+    return attr.getValue();
+  return "nhwk";
 }
 
 template <typename OpT>
@@ -675,7 +691,8 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(), bias, input, result);
+          context, rw, loc, op.getType(), bias, result,
+          convOutputLayoutOrDefault(op));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -745,7 +762,8 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(0), bias, input, result);
+          context, rw, loc, op.getType(0), bias, result,
+          convOutputLayoutOrDefault(op));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
