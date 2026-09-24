@@ -1777,7 +1777,7 @@ LogicalResult GridwiseAttentionOp::verify() {
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
-  // prefixOffset).
+  // prefixOffset)
   if (getPrefixOffset() && !getCausal())
     return emitError(
         "prefixOffset requires causal to be enabled. "
@@ -2389,7 +2389,7 @@ LogicalResult AttentionOp::verify() {
 
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
-  // prefixOffset).
+  // prefixOffset)
   if (getPrefixOffset() && !getCausal())
     return emitError(
         "prefixOffset requires causal to be enabled. "

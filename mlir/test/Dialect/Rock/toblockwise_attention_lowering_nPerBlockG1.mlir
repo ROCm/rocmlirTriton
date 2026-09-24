@@ -1,6 +1,8 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=COUNT
 
+// The second RUN line checks that exactly one arith.maxnumf is emitted across
+// the file: only the causal + sliding-window kernel takes the empty-row guard.
 // COUNT-COUNT-1: arith.maxnumf
 // COUNT-NOT: arith.maxnumf
 

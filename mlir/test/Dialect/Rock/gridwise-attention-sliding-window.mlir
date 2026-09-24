@@ -59,7 +59,9 @@ module {
 // -----
 
 module {
-  // Sliding-window masking without causal masking always retains key P.
+  // Without causal masking, every row shares the same non-empty key range
+  // [slidingWindowLowerBound, lastValidKVIndex], and the N-loop starts at the
+  // tile holding the lower bound, so no row is fully masked.
   // CHECK-LABEL: func @attn_sliding_window_unpadded
   // CHECK-NOT: arith.maxnumf
   // CHECK: return

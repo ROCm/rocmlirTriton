@@ -204,9 +204,9 @@ def Rock_AttentionOp
     If causal is enabled, we implement causal masking.
 
     If causal is enabled AND prefixOffset is not null, we implement prefix
-    causal masking where: mask = key_pos > (query_pos + offset), compared as
-    unsigned `ugt`. Unsigned 0 is never greater than the threshold, so key 0
-    is never masked regardless of the offset's sign.
+    causal masking where: mask = key_pos > (query_pos + offset). The offset is
+    expected to be non-negative; the comparison is unsigned (`ugt`), so key 0
+    is never masked.
     The prefixOffset can be either:
     - A scalar (shape [1]): a single global offset applied to all sequences
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix

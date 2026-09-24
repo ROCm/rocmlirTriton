@@ -241,37 +241,6 @@ func.func @gridwise_attn_overflowing_scale(
 
 // -----
 
-// A finite splat larger than 1 (here -FLT_MAX) can overflow a finite QK row
-// to -inf, so the empty-row guard must still be emitted.
-// CHECK-LABEL: func @gridwise_attn_overflowing_scale
-// CHECK: arith.maxnumf
-// CHECK: return
-func.func @gridwise_attn_overflowing_scale(
-    %q: tensor<1x384x64xf32>,
-    %k: tensor<1x64x384xf32>,
-    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
-    attributes {
-      rock.block_size = 64 : i32,
-      rock.grid_size = 24 : i32,
-      rock.kernel,
-      rock.arch = "##TOKEN_ARCH##"
-    } {
-  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
-  ^bb0(%arg_qk: tensor<1x16x32xf32>):
-    %scale = arith.constant dense<-3.40282347E+38> : tensor<1x16x32xf32>
-    %scaled = arith.mulf %arg_qk, %scale : tensor<1x16x32xf32>
-    rock.yield %scaled : tensor<1x16x32xf32>
-  } {
-    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
-    params0 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
-    params1 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
-    splitKV = 1 : i32
-  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
-  return %result : tensor<1x384x64xf32>
-}
-
-// -----
-
 // Widening the QK value before finite constant scaling is also statically safe.
 // This is the shape produced by f16 MIGraphX attention with f32 softmax.
 // CHECK-LABEL: func @gridwise_attn_finite_ext_scale
