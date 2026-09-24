@@ -92,6 +92,22 @@ SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                            ArrayRef<int64_t> dilationDims,
                                            ArrayRef<int64_t> filterDims);
 
+/// Filter phase (`iTilda`) of backward data kernel `kernelId` in each spatial
+/// dimension. Kernel IDs enumerate the phases with the last dimension varying
+/// fastest.
+SmallVector<int64_t> backwardDataTildaIndices(ArrayRef<int64_t> strideDims,
+                                              ArrayRef<int64_t> dilationDims,
+                                              int64_t kernelId);
+
+/// Number of filter taps that backward data kernel `kernelId` covers in each
+/// spatial dimension, or 0 where it covers none. The GEMM for `kernelId` has a
+/// K of the output channel count times the product of these, and kernel IDs
+/// with equal tap counts read the same view of the output gradient.
+SmallVector<int64_t> backwardDataDotSlices(ArrayRef<int64_t> strideDims,
+                                           ArrayRef<int64_t> dilationDims,
+                                           ArrayRef<int64_t> filterDims,
+                                           int64_t kernelId);
+
 /// Apply padding to a matrix in its `firstDim` and `secondDim` if applicable.
 Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad, StringRef secondDim, int64_t secondDimPad);
