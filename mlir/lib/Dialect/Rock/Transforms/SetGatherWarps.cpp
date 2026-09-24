@@ -11,10 +11,11 @@
 // fastest dim first. With K the slow dim and a wide free dim, most warps land
 // on the free dim and every thread owns many distinct K rows.
 //
-// When the load's address math divides a per-K-row tensor by a
-// non-power-of-two constant inside a loop, every one of those rows costs a
-// scalar division sequence per iteration. For those loads this pass puts every
-// warp on K, which cuts the rows each thread owns by the warp count.
+// When rock-incremental-pointer-arith marks the load
+// rock.loop_variant_index_math, its index math keeps a non-power-of-two
+// division inside the loop, so every one of those rows costs a scalar division
+// sequence per iteration. For those loads this pass puts every warp on K,
+// which cuts the rows each thread owns by the warp count.
 //
 // Like in-thread-transpose, the load is rebuilt in the new layout between
 // convert_layout ops; the remove-layout-conversions run that follows carries
@@ -22,12 +23,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
-#include "mlir/Analysis/SliceAnalysis.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Matchers.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -109,33 +108,6 @@ Value findStagingBuffer(amdg::InThreadTransposeOp transpose) {
     buffer = alloc.getResult();
   }
   return buffer;
-}
-
-// True when the address math of `load` divides (or takes the remainder of) a
-// per-K-row tensor by a non-power-of-two constant inside a loop.
-bool hasInLoopRowDivision(tt::LoadOp load, unsigned kDim) {
-  auto loadTy = cast<RankedTensorType>(load.getResult().getType());
-  llvm::SetVector<Operation *> slice;
-  BackwardSliceOptions sliceOpts;
-  sliceOpts.omitBlockArguments = true;
-  (void)getBackwardSlice(load.getOperation(), &slice, sliceOpts);
-  return llvm::any_of(slice, [&](Operation *op) {
-    if (!isa<arith::DivUIOp, arith::DivSIOp, arith::RemUIOp, arith::RemSIOp,
-             arith::FloorDivSIOp, arith::CeilDivSIOp, arith::CeilDivUIOp>(op))
-      return false;
-    if (!op->getParentOfType<scf::ForOp>())
-      return false;
-    auto ty = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-    if (!ty || ty.getRank() != loadTy.getRank())
-      return false;
-    for (auto [d, size] : llvm::enumerate(ty.getShape()))
-      if (size != (d == kDim ? loadTy.getDimSize(d) : 1))
-        return false;
-    // A power-of-two divisor lowers to a shift or a mask.
-    APInt divisor;
-    return matchPattern(op->getOperand(1), m_ConstantInt(&divisor)) &&
-           !divisor.isPowerOf2();
-  });
 }
 
 // `enc` with every warp on `kDim`, or null when that layout does not tile
@@ -233,11 +205,11 @@ void RockSetGatherWarpsPass::runOnOperation() {
     });
     if (!matched)
       continue;
-    if (llvm::none_of(loads, [&](tt::LoadOp load) {
-          return hasInLoopRowDivision(load, kDim);
+    if (llvm::none_of(loads, [](tt::LoadOp load) {
+          return load->hasAttr(LoopVariantIndexMathAttr::getMnemonic());
         })) {
-      LLVM_DEBUG(llvm::dbgs() << "rock-set-gather-warps: no in-loop per-row "
-                                 "index division; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-gather-warps: index math is not "
+                                 "marked loop-variant; skipping\n");
       continue;
     }
     ttg::BlockedEncodingAttr newEnc = getWarpsOnK(enc, srcTy.getShape(), kDim);

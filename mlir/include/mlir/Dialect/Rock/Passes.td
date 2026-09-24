@@ -395,6 +395,11 @@ def RockIncrementalPointerArithPass
 
     Both paths are conservative: any construct that cannot be proven to admit a
     constant-arithmetic recurrence leaves the op untouched.
+
+    Each `rock.blockwise_load_ptr` whose pointer neither path could handle and
+    whose induction variable goes through a `Merge` with a non-power-of-two
+    length is marked `rock.loop_variant_index_math`, so later layout passes
+    know that the loop keeps that division per coordinate.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
@@ -929,12 +934,13 @@ def RockSetGatherWarpsPass : Pass<"rock-set-gather-warps", "::mlir::ModuleOp"> {
     that puts most warps on the free dim, so every thread owns many distinct K
     rows.
 
-    When the load's address math divides a per-K-row tensor by a
-    non-power-of-two constant inside a loop (e.g. a convolution's
-    gemmK -> (c, y, x) decomposition that `rock-incremental-pointer-arith`
-    could not make incremental), each of those rows costs a scalar division
-    sequence on every iteration. For such loads this pass sets `warpsPerCTA`
-    to all warps on K, cutting the rows each thread owns by the warp count.
+    When `rock-incremental-pointer-arith` marks the load
+    `rock.loop_variant_index_math`, its index math keeps a non-power-of-two
+    division inside the loop (e.g. a convolution's gemmK -> (c, y, x)
+    decomposition it could not make incremental), so each of those rows costs
+    a scalar division sequence on every iteration. For such loads this pass
+    sets `warpsPerCTA` to all warps on K, cutting the rows each thread owns by
+    the warp count.
     Every load staged into the same shared-memory buffer (e.g. a pipeline's
     prologue and in-loop copies) moves together; other loads are untouched.
 

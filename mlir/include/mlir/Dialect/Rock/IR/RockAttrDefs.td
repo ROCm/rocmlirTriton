@@ -703,6 +703,20 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
   }];
 }
 
+def Rock_LoopVariantIndexMath : Rock_Attr<"LoopVariantIndexMath"> {
+  let mnemonic = "rock.loop_variant_index_math";
+  let description = [{
+    Marker set on a `rock.blockwise_load_ptr` by
+    `rock-incremental-pointer-arith` when it could not make the load's address
+    and mask arithmetic incremental, so it stays recomputed from scratch on
+    every loop iteration, and that arithmetic splits the induction variable
+    through a `Merge` with a non-power-of-two length.
+    The loop body then keeps a non-power-of-two division for every distinct
+    coordinate the load's threads own. The marker survives TTIR lowering onto
+    the `tt.load` and is consumed by `rock-set-gather-warps`.
+  }];
+}
+
 def Rock_GridSize : Rock_Attr<"GridSize"> {
   let mnemonic = "rock.grid_size";
 
