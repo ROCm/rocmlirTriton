@@ -6,7 +6,8 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   ConvToGemm.cpp
   SetMatmulOutputTranspose.cpp
   SetReductionLayout.cpp
-  SetGatherWarps.cpp
+  SetInThreadTransposeReductionLayout.cpp
+  WarpsOnK.cpp
   RollDotK.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp

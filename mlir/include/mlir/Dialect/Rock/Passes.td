@@ -924,7 +924,9 @@ def RockSetReductionLayoutPass
               "pipelined kernels.">];
 }
 
-def RockSetGatherWarpsPass : Pass<"rock-set-gather-warps", "::mlir::ModuleOp"> {
+def RockSetInThreadTransposeReductionLayoutPass
+    : Pass<"rock-set-in-thread-transpose-reduction-layout",
+           "::mlir::ModuleOp"> {
   let summary = "Put every warp of an in-thread-transposed gather on K when "
                 "its per-row index math is recomputed every iteration";
   let description = [{

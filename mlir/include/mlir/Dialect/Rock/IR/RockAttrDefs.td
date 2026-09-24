@@ -713,7 +713,8 @@ def Rock_LoopVariantIndexMath : Rock_Attr<"LoopVariantIndexMath"> {
     through a `Merge` with a non-power-of-two length.
     The loop body then keeps a non-power-of-two division for every distinct
     coordinate the load's threads own. The marker survives TTIR lowering onto
-    the `tt.load` and is consumed by `rock-set-gather-warps`.
+    the `tt.load` and is consumed by
+    `rock-set-in-thread-transpose-reduction-layout`.
   }];
 }
 

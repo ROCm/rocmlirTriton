@@ -1,4 +1,4 @@
-//===- SetGatherWarps.cpp - Put gather warps on the reduction dim ---------===//
+//===- SetInThreadTransposeReductionLayout.cpp - Every warp on K ----------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -23,6 +23,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "WarpsOnK.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
@@ -40,12 +42,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKSETGATHERWARPSPASS
+#define GEN_PASS_DEF_ROCKSETINTHREADTRANSPOSEREDUCTIONLAYOUTPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-set-gather-warps"
+#define DEBUG_TYPE "rock-set-in-thread-transpose-reduction-layout"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -54,8 +56,9 @@ namespace ttg = mlir::triton::gpu;
 namespace amdg = mlir::triton::amdgpu;
 
 namespace {
-struct RockSetGatherWarpsPass
-    : public rock::impl::RockSetGatherWarpsPassBase<RockSetGatherWarpsPass> {
+struct RockSetInThreadTransposeReductionLayoutPass
+    : public rock::impl::RockSetInThreadTransposeReductionLayoutPassBase<
+          RockSetInThreadTransposeReductionLayoutPass> {
   void runOnOperation() override;
 };
 
@@ -79,13 +82,14 @@ ttg::LocalAllocOp findRootAlloc(Value memDesc) {
     }
     if (auto arg = dyn_cast<BlockArgument>(memDesc)) {
       auto forOp = dyn_cast_or_null<scf::ForOp>(arg.getOwner()->getParentOp());
-      if (!forOp || arg.getArgNumber() == 0) // 0 == induction variable
+      OpOperand *init = forOp ? forOp.getTiedLoopInit(arg) : nullptr;
+      if (!init)
         return nullptr;
-      memDesc = forOp.getInitArgs()[arg.getArgNumber() - 1];
+      memDesc = init->get();
       continue;
     }
     if (auto forOp = memDesc.getDefiningOp<scf::ForOp>()) {
-      memDesc = forOp.getInitArgs()[cast<OpResult>(memDesc).getResultNumber()];
+      memDesc = forOp.getTiedLoopInit(cast<OpResult>(memDesc))->get();
       continue;
     }
     return nullptr;
@@ -110,33 +114,6 @@ Value findStagingBuffer(amdg::InThreadTransposeOp transpose) {
   return buffer;
 }
 
-// `enc` with every warp on `kDim`, or null when that layout does not tile
-// `shape` or is `enc` already.
-ttg::BlockedEncodingAttr getWarpsOnK(ttg::BlockedEncodingAttr enc,
-                                     ArrayRef<int64_t> shape, unsigned kDim) {
-  SmallVector<unsigned> warpsPerCTA(enc.getWarpsPerCTA());
-  unsigned numWarps = 1;
-  for (unsigned warps : warpsPerCTA)
-    numWarps *= warps;
-  for (unsigned d = 0; d < warpsPerCTA.size(); ++d)
-    warpsPerCTA[d] = d == kDim ? numWarps : 1;
-  for (auto [d, size] : llvm::enumerate(shape)) {
-    int64_t cover =
-        enc.getSizePerThread()[d] * enc.getThreadsPerWarp()[d] * warpsPerCTA[d];
-    if (size % cover != 0)
-      return nullptr;
-  }
-  auto newEnc = ttg::BlockedEncodingAttr::get(
-      enc.getContext(), enc.getSizePerThread(), enc.getThreadsPerWarp(),
-      warpsPerCTA, enc.getOrder(), enc.getCGALayout());
-  return newEnc == enc ? nullptr : newEnc;
-}
-
-RankedTensorType withEncoding(Type type, Attribute encoding) {
-  auto ty = cast<RankedTensorType>(type);
-  return RankedTensorType::get(ty.getShape(), ty.getElementType(), encoding);
-}
-
 // Rebuild `load` in `encoding`, converting its tensor operands in and its
 // result back out.
 void relayoutLoad(tt::LoadOp load, ttg::BlockedEncodingAttr encoding) {
@@ -144,15 +121,15 @@ void relayoutLoad(tt::LoadOp load, ttg::BlockedEncodingAttr encoding) {
   Location loc = load.getLoc();
   SmallVector<Value> operands;
   for (Value operand : load->getOperands()) {
-    if (isa<RankedTensorType>(operand.getType()))
+    if (auto ty = dyn_cast<RankedTensorType>(operand.getType()))
       operand = ttg::ConvertLayoutOp::create(
-          b, loc, withEncoding(operand.getType(), encoding), operand);
+          b, loc, ty.cloneWithEncoding(encoding), operand);
     operands.push_back(operand);
   }
   Operation *newLoad = b.clone(*load);
   newLoad->setOperands(operands);
-  Type oldTy = load.getResult().getType();
-  newLoad->getResult(0).setType(withEncoding(oldTy, encoding));
+  auto oldTy = cast<RankedTensorType>(load.getResult().getType());
+  newLoad->getResult(0).setType(oldTy.cloneWithEncoding(encoding));
   Value back =
       ttg::ConvertLayoutOp::create(b, loc, oldTy, newLoad->getResult(0));
   load.getResult().replaceAllUsesWith(back);
@@ -165,63 +142,87 @@ void relayoutTranspose(amdg::InThreadTransposeOp transpose,
                        ttg::BlockedEncodingAttr encoding) {
   OpBuilder b(transpose);
   Location loc = transpose.getLoc();
-  auto srcTy = withEncoding(transpose.getSrc().getType(), encoding);
+  RankedTensorType srcTy =
+      transpose.getSrc().getType().cloneWithEncoding(encoding);
   Value src = ttg::ConvertLayoutOp::create(b, loc, srcTy, transpose.getSrc());
   auto linear = ttg::LinearEncodingAttr::get(
       b.getContext(), amdg::InThreadTransposeOp::deduceOutputLayout(
                           srcTy.getShape(), encoding));
   auto newTranspose = amdg::InThreadTransposeOp::create(
-      b, loc, withEncoding(transpose.getType(), linear), src);
+      b, loc, transpose.getType().cloneWithEncoding(linear), src);
   transpose.getResult().replaceAllUsesWith(newTranspose.getResult());
   transpose.erase();
 }
 } // end anonymous namespace
 
-void RockSetGatherWarpsPass::runOnOperation() {
-  // Every transpose staging into one buffer moves together, so that a
-  // pipeline's prologue copy follows its in-loop copy.
+void RockSetInThreadTransposeReductionLayoutPass::runOnOperation() {
+  // Every InThreadTransposeOp referring to the same buffer moves together.
+  // This way we make sure that the prologue copy follows its in-loop copy.
   llvm::MapVector<Value, SmallVector<amdg::InThreadTransposeOp>> groups;
   getOperation().walk([&](amdg::InThreadTransposeOp transpose) {
     if (Value buffer = findStagingBuffer(transpose))
       groups[buffer].push_back(transpose);
   });
 
+  // Process each group of InThreadTranspose ops.
   for (auto &entry : groups) {
     SmallVector<amdg::InThreadTransposeOp> &transposes = entry.second;
     auto srcTy = cast<RankedTensorType>(transposes.front().getSrc().getType());
     auto enc = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
-    if (!enc || srcTy.getRank() != 2)
+    if (!enc || srcTy.getRank() != 2) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rock-set-in-thread-transpose-reduction-layout: tensor is "
+                    "not rank-2 blocked; skipping\n");
       continue;
-    // in_thread_transpose only stages loads whose K is the slowest dim.
+    }
+    // InThreadTranspose ops only affect loads whose K is the slowest dim.
     unsigned kDim = enc.getOrder().back();
 
     llvm::SetVector<tt::LoadOp> loads;
-    bool matched = llvm::all_of(transposes, [&](auto transpose) {
+    bool matched = true;
+    for (amdg::InThreadTransposeOp transpose : transposes) {
       tt::LoadOp load = findFeedingLoad(transpose.getSrc());
-      if (!load || transpose.getSrc().getType() != srcTy)
-        return false;
+      if (!load || transpose.getSrc().getType() != srcTy) {
+        matched = false;
+        break;
+      }
       loads.insert(load);
-      return true;
-    });
-    if (!matched)
+    }
+    if (!matched) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rock-set-in-thread-transpose-reduction-layout: a "
+                    "transpose staging into the buffer is not fed by a load, "
+                    "or its layout differs from the others; skipping\n");
       continue;
+    }
     if (llvm::none_of(loads, [](tt::LoadOp load) {
           return load->hasAttr(LoopVariantIndexMathAttr::getMnemonic());
         })) {
-      LLVM_DEBUG(llvm::dbgs() << "rock-set-gather-warps: index math is not "
-                                 "marked loop-variant; skipping\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rock-set-in-thread-transpose-reduction-layout: index math "
+                    "is not marked loop-variant; skipping\n");
       continue;
     }
-    ttg::BlockedEncodingAttr newEnc = getWarpsOnK(enc, srcTy.getShape(), kDim);
-    if (!newEnc) {
-      LLVM_DEBUG(llvm::dbgs() << "rock-set-gather-warps: warps already on K "
-                                 "or do not tile it; skipping\n");
+
+    // All checks out, now compute the new encoding and apply it to the loads.
+    FailureOr<ttg::BlockedEncodingAttr> newEnc =
+        computeLayoutWarpsOnK(enc, srcTy.getShape(), kDim);
+    if (failed(newEnc)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rock-set-in-thread-transpose-reduction-layout: warps do "
+                    "not tile K; skipping\n");
+      continue;
+    }
+    if (*newEnc == enc) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "rock-set-in-thread-transpose-reduction-layout: warps "
+                    "already on K; skipping\n");
       continue;
     }
 
     for (tt::LoadOp load : loads)
-      relayoutLoad(load, newEnc);
+      relayoutLoad(load, *newEnc);
     for (amdg::InThreadTransposeOp transpose : transposes)
-      relayoutTranspose(transpose, newEnc);
+      relayoutTranspose(transpose, *newEnc);
   }
 }
