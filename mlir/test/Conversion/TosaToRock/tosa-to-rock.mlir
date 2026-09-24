@@ -342,3 +342,20 @@ func.func @conv_nchw_bias(%arg0: tensor<1x3x8x8xf32>, %arg1: tensor<4x3x3x3xf32>
   %out = tosa.transpose %conv {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x8x8x4xf32>) -> tensor<1x4x8x8xf32>
   return %out : tensor<1x4x8x8xf32>
 }
+
+// -----
+
+// Rank-5 conv3d with no output_layout attr defaults to n012k, so K is last.
+// Using nhwk would put K at dim 3 ([1,1,1,K,1]).
+// CHECK-LABEL: @conv3d_bias
+// CHECK: rock.conv
+// CHECK-SAME: output_layout = ["no", "0o", "1o", "2o", "go", "ko"]
+// CHECK: rock.transform %arg2
+// CHECK-SAME: tensor<4xf32> to tensor<1x1x1x1x4xf32>
+// CHECK-NOT: tensor<1x1x1x4x1xf32>
+// CHECK: tosa.add
+func.func @conv3d_bias(%arg0: tensor<2x3x3x3x3xf32>, %arg1: tensor<4x2x2x2x3xf32>, %arg2: tensor<4xf32>) -> tensor<2x2x2x2x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %zp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+  %0 = tosa.conv3d %arg0, %arg1, %arg2, %zp, %zp {acc_type = f32, dilation = array<i64: 1, 1, 1>, group = 1 : i64, pad = array<i64: 0, 0, 0, 0, 0, 0>, stride = array<i64: 1, 1, 1>} : (tensor<2x3x3x3x3xf32>, tensor<4x2x2x2x3xf32>, tensor<4xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x2x2x2x4xf32>
+  return %0 : tensor<2x2x2x2x4xf32>
+}

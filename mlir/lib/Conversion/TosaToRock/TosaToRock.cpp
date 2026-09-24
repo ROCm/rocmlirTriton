@@ -637,10 +637,11 @@ replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
   return tosa::AddOp::create(rw, loc, resTy, ValueRange{result, biasExpand});
 }
 
-static StringRef convOutputLayoutOrDefault(Operation *op) {
+static StringRef convOutputLayoutOrDefault(Operation *op, int64_t rank) {
   if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
     return attr.getValue();
-  return "nhwk";
+  // Match commonConv: rank-4 TOSA conv is NHWK; rank-5 conv3d is N012K.
+  return rank > 4 ? StringRef("n012k") : StringRef("nhwk");
 }
 
 template <typename OpT>
@@ -690,9 +691,9 @@ public:
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
-      FailureOr<tosa::AddOp> maybeResult =
-          replaceCstZeroWithAddNBcast(context, rw, loc, op.getType(), bias,
-                                      result, convOutputLayoutOrDefault(op));
+      FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
+          context, rw, loc, op.getType(), bias, result,
+          convOutputLayoutOrDefault(op, outputType.getRank()));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -761,9 +762,9 @@ public:
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
-      FailureOr<tosa::AddOp> maybeResult =
-          replaceCstZeroWithAddNBcast(context, rw, loc, op.getType(0), bias,
-                                      result, convOutputLayoutOrDefault(op));
+      FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
+          context, rw, loc, op.getType(0), bias, result,
+          convOutputLayoutOrDefault(op, outputType.getRank()));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
