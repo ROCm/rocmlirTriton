@@ -95,6 +95,61 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
 // -----
 
+// The gather's loads are marked, but with 8 warps split [4, 2] each thread
+// owns 8 K rows rather than 16, so nothing changes.
+
+#blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 2], order = [1, 0]}>
+#linear = #ttg.linear<{register = [[1, 0], [2, 0], [16, 0]], lane = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = [[0, 32], [4, 0], [8, 0]], block = []}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @marked_gather_8_rows
+  // CHECK-NOT:     warpsPerCTA = [8, 1]
+  // CHECK:         tt.return
+  tt.func @marked_gather_8_rows(%argB: !tt.ptr<f16>) {
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c8_i32 = arith.constant 8 : i32
+    %c32_i32 = arith.constant 32 : i32
+    %cst9 = arith.constant dense<9> : tensor<32x1xi32, #blocked>
+    %cstStride = arith.constant dense<64> : tensor<32x1xi32, #blocked>
+    %ptrB = tt.splat %argB : !tt.ptr<f16> -> tensor<32x64x!tt.ptr<f16>, #blocked>
+    %rowRange = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked}>>
+    %rows = tt.expand_dims %rowRange {axis = 1 : i32} : tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<32x1xi32, #blocked>
+    %colRange = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %cols = tt.expand_dims %colRange {axis = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x64xi32, #blocked>
+    %colsB = tt.broadcast %cols : tensor<1x64xi32, #blocked> -> tensor<32x64xi32, #blocked>
+    %buf = ttg.local_alloc : () -> !ttg.memdesc<1x32x64xf16, #shared, #smem, mutable>
+    %slot = ttg.memdesc_index %buf[%c0_i32] : !ttg.memdesc<1x32x64xf16, #shared, #smem, mutable> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
+    %q0 = arith.divui %rows, %cst9 : tensor<32x1xi32, #blocked>
+    %rowOff0 = arith.muli %q0, %cstStride : tensor<32x1xi32, #blocked>
+    %rowOffB0 = tt.broadcast %rowOff0 : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
+    %offB0 = arith.addi %rowOffB0, %colsB : tensor<32x64xi32, #blocked>
+    %ptrB0 = tt.addptr %ptrB, %offB0 : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
+    %b0 = tt.load %ptrB0 {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+    %bt0 = amdg.in_thread_transpose %b0 : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
+    ttg.local_store %bt0, %slot : tensor<32x64xf16, #linear> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
+    scf.for %iv = %c0_i32 to %c8_i32 step %c1_i32 : i32 {
+      %next = arith.addi %iv, %c1_i32 : i32
+      %k = arith.muli %next, %c32_i32 : i32
+      %kSplat = tt.splat %k : i32 -> tensor<32x1xi32, #blocked>
+      %row = arith.addi %kSplat, %rows : tensor<32x1xi32, #blocked>
+      %q = arith.divui %row, %cst9 : tensor<32x1xi32, #blocked>
+      %rowOff = arith.muli %q, %cstStride : tensor<32x1xi32, #blocked>
+      %rowOffB = tt.broadcast %rowOff : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
+      %offB = arith.addi %rowOffB, %colsB : tensor<32x64xi32, #blocked>
+      %ptrBk = tt.addptr %ptrB, %offB : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
+      %b = tt.load %ptrBk {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+      %bt = amdg.in_thread_transpose %b : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
+      ttg.local_store %bt, %slot : tensor<32x64xf16, #linear> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
+    }
+    ttg.local_dealloc %buf : !ttg.memdesc<1x32x64xf16, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
+
 // Same kernel, division by 9 in the loop included, but the loads are not
 // marked: the pass keys on the marker rather than on the index math, so
 // nothing changes.

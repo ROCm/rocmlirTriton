@@ -16,7 +16,8 @@
 // iteration: either a non-power-of-two division sequence, when the index math
 // is still recomputed inside the loop, or advancing the coordinates its carry
 // path keeps across iterations. For those loads this pass puts every warp on
-// K, which cuts the rows each thread owns by the warp count.
+// K, which cuts the rows each thread owns by the warp count. For now it only
+// does so when each thread owns exactly 16 K rows.
 //
 // Like in-thread-transpose, the load is rebuilt in the new layout between
 // convert_layout ops; the remove-layout-conversions run that follows carries
@@ -200,6 +201,13 @@ void RockSetITTReductionLayoutPass::runOnOperation() {
         })) {
       LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: index math "
                                  "is not marked loop-variant; skipping\n");
+      continue;
+    }
+    // Hack: 16 K rows per thread is the only count measured to gain (the rxl
+    // encoder and decoder convolutions); leave the others alone.
+    if (ttg::getElemsPerThread(srcTy)[kDim] != 16) {
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: threads do "
+                                 "not own 16 K rows; skipping\n");
       continue;
     }
 
