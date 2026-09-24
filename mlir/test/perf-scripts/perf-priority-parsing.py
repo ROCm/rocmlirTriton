@@ -16,6 +16,7 @@ parser has to accept it, ignore it, and keep it out of the tuning DB key.
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 
 # perfRunner.py is on PATH (lit's mlir_rock_tools_dir, populated by
@@ -30,7 +31,8 @@ sys.path.insert(0, os.path.dirname(_script))
 
 from perfRunner import AttentionConfiguration, ConvConfiguration  # noqa: E402
 from perfRunner import ConvGemmConfiguration, GemmConfiguration  # noqa: E402
-from perfRunner import GemmGemmConfiguration, drop_perf_priority  # noqa: E402
+from perfRunner import GemmGemmConfiguration, drop_perf_priority, get_gemm_configurations  # noqa: E402
+from perfRunner import get_perf_priority  # noqa: E402
 
 ARCH = "gfx950:sramecc+:xnack-"
 NUM_CU = 256
@@ -127,6 +129,29 @@ class PerfPriorityParsingTest(unittest.TestCase):
                          ['-g', '1', '-m', '2'])
         self.assertEqual(drop_perf_priority(['-g', '1', '-perf_priority', '15']), ['-g', '1'])
         self.assertEqual(drop_perf_priority(['-g', '1']), ['-g', '1'])
+
+    def test_get_perf_priority_extracts_optional_value(self):
+        self.assertEqual(get_perf_priority(['-g', '1', '-perf_priority', '15']), 15)
+        self.assertIsNone(get_perf_priority(['-g', '1']))
+        with self.assertRaises(ValueError):
+            get_perf_priority(['-g', '1', '-perf_priority'])
+
+    def test_config_loader_preserves_priority_outside_tuning_key(self):
+        priority_map = {}
+        with tempfile.NamedTemporaryFile(mode="w") as config_file:
+            config_file.write(f"{GEMM} -transO false -perf_priority 15\n")
+            config_file.flush()
+            configs = get_gemm_configurations(config_file.name,
+                                              ARCH,
+                                              NUM_CU,
+                                              NUM_CHIPLETS,
+                                              datatypes=['f32'],
+                                              out_dtype_map={'f32': 'f32'},
+                                              priority_map=priority_map)
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(priority_map, {configs[0]: 15})
+        self.assertNotIn("perf_priority", configs[0])
 
 
 if __name__ == "__main__":
