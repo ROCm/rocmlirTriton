@@ -71,15 +71,25 @@ def hip_check(call_result):
 
 
 def get_arch():
-    agents = set()
+    """Architecture of HIP device 0, which is the device the generated tests
+    run on. HIP applies HIP_VISIBLE_DEVICES before we see the device list."""
     device_count = hip_check(hip.hipGetDeviceCount())
+    agents = []
     for device in range(device_count):
         props = hip.hipDeviceProp_t()
         hip_check(hip.hipGetDeviceProperties(props, device))
-        agent = props.gcnArchName.decode('utf-8')
-        agents.add(agent)
+        agents.append(props.gcnArchName.decode('utf-8'))
 
-    return agents
+    if not agents:
+        raise RuntimeError("no HIP devices visible; cannot determine the "
+                           "architecture to generate E2E tests for")
+
+    if len(set(agents)) > 1:
+        print("WARNING: visible GPUs have mixed architectures (%s); generating "
+              "tests for %s. Set HIP_VISIBLE_DEVICES to select a different device." %
+              (', '.join(sorted(set(agents))), agents[0]))
+
+    return agents[0]
 
 
 def generate_option_list(prefixes: dict, table: list, key1: str, key2: str):
@@ -155,8 +165,7 @@ if __name__ == '__main__':
         if "prefix" in axis:
             axis_prefixes[axis["name"]] = axis["prefix"]
 
-    arch_names = get_arch()
-    arch = ','.join(arch_names)
+    arch = get_arch()
     combinations = generate_option_list(axis_prefixes, toml_dict, "axis", "values")
 
     # Parse top-level [[require]] blocks. Each maps a lit feature name to a
