@@ -227,6 +227,9 @@ struct GridwiseAttentionRewritePattern
   // whose magnitude is at most 1 cannot turn a row of finite QK scores into a
   // fully masked row. Everything else is conservatively treated as capable of
   // doing so (for example, a runtime bias can contain -inf).
+  // This assumes scores also stay in range through the conversion to the
+  // softmax type and the fixed log2(e) scaling (|x| < FLT_MAX / log2(e) for
+  // f32); larger scores overflow regardless of masking and are out of scope.
   static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
     if (value == qk)
       return true;
