@@ -1,12 +1,14 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=COUNT
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=PLAIN
 
+// The second RUN line checks that exactly one arith.maxnumf is emitted across
+// the file: only the causal + sliding-window kernel takes the empty-row guard.
 // COUNT-COUNT-1: arith.maxnumf
 // COUNT-NOT: arith.maxnumf
 
-// Same shape as gridwise_attn_simple in toblockwise_attention_lowering.mlir, but
-// params1 tiles the second gemm's N dim (head_dim_v = 64) into nPerBlockG1 = 32
+// Same Q/K/V extents as gridwise_attn_simple, but this kernel is causal plus
+// sliding-window (so it takes the empty-row guard) and params1 tiles the
+// second gemm's N dim (head_dim_v = 64) into nPerBlockG1 = 32
 // wide chunks => gemm1NChunks = 2. Each chunk keeps its own accumulator and runs
 // its own V load + second GEMM; the per-chunk [16x32] output tiles are folded
 // back into a single [16x64] tile with pairwise tt.join + tt.trans + tt.reshape.
@@ -103,12 +105,12 @@ func.func @gridwise_attn_nperblockg1(
 // Keep the ordinary chunked-GEMM path covered separately from the masked-row
 // path above. Its outer loop retains the original static [0, 12) bounds and
 // does not need a denominator guard.
-// PLAIN-LABEL: func @gridwise_attn_nperblockg1_plain
-// PLAIN-DAG: %[[C0:.+]] = arith.constant 0 : i32
-// PLAIN-DAG: %[[C12:.+]] = arith.constant 12 : i32
-// PLAIN: %{{.+}}:4 = scf.for %{{.*}} = %[[C0]] to %[[C12]] step %{{.*}}
-// PLAIN-NOT: arith.maxnumf
-// PLAIN: return
+// CHECK-LABEL: func @gridwise_attn_nperblockg1_plain
+// CHECK-DAG: %[[C0:.+]] = arith.constant 0 : i32
+// CHECK-DAG: %[[C12:.+]] = arith.constant 12 : i32
+// CHECK: %{{.+}}:4 = scf.for %{{.*}} = %[[C0]] to %[[C12]] step %{{.*}}
+// CHECK-NOT: arith.maxnumf
+// CHECK: return
 func.func @gridwise_attn_nperblockg1_plain(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,

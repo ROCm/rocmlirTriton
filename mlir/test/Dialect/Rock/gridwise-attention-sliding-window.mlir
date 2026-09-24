@@ -23,8 +23,8 @@ module {
   // CHECK: %[[LB_SPLAT:.*]] = tt.splat %[[LOWER_BOUND]] : i32 -> tensor<32x32xi32>
   // CHECK: %[[SW_MASK:.*]] = arith.cmpi ult, %{{.*}}, %[[LB_SPLAT]] : tensor<32x32xi32>
   // CHECK: arith.select %[[SW_MASK]], %{{.*}}, %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
-  // Padded query rows can be fully masked even without causal masking.
-  // CHECK: arith.maxnumf
+  // Padded query rows are not stored, so sliding-window KV-cache needs no guard.
+  // CHECK-NOT: arith.maxnumf
 
   func.func @mlir_attention(
       %lastValidKVIndex: tensor<1xi32>,
@@ -59,7 +59,9 @@ module {
 // -----
 
 module {
-  // Sliding-window masking without causal masking always retains key P.
+  // Without causal masking, every row shares the same non-empty key range
+  // [slidingWindowLowerBound, lastValidKVIndex], and the N-loop starts at the
+  // tile holding the lower bound, so no row is fully masked.
   // CHECK-LABEL: func @attn_sliding_window_unpadded
   // CHECK-NOT: arith.maxnumf
   // CHECK: return
