@@ -1,4 +1,4 @@
-//===- SetInThreadTransposeReductionLayout.cpp - Every warp on K ----------===//
+//===- SetITTReductionLayout.cpp - Every warp on K ------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,10 +12,11 @@
 // on the free dim and every thread owns many distinct K rows.
 //
 // When rock-incremental-pointer-arith marks the load
-// rock.loop_variant_index_math, its index math keeps a non-power-of-two
-// division inside the loop, so every one of those rows costs a scalar division
-// sequence per iteration. For those loads this pass puts every warp on K,
-// which cuts the rows each thread owns by the warp count.
+// rock.loop_variant_index_math, every one of those rows costs scalar work per
+// iteration: either a non-power-of-two division sequence, when the index math
+// is still recomputed inside the loop, or advancing the coordinates its carry
+// path keeps across iterations. For those loads this pass puts every warp on
+// K, which cuts the rows each thread owns by the warp count.
 //
 // Like in-thread-transpose, the load is rebuilt in the new layout between
 // convert_layout ops; the remove-layout-conversions run that follows carries
@@ -42,12 +43,12 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKSETINTHREADTRANSPOSEREDUCTIONLAYOUTPASS
+#define GEN_PASS_DEF_ROCKSETITTREDUCTIONLAYOUTPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
 
-#define DEBUG_TYPE "rock-set-in-thread-transpose-reduction-layout"
+#define DEBUG_TYPE "rock-set-itt-reduction-layout"
 
 using namespace mlir;
 using namespace mlir::rock;
@@ -56,9 +57,9 @@ namespace ttg = mlir::triton::gpu;
 namespace amdg = mlir::triton::amdgpu;
 
 namespace {
-struct RockSetInThreadTransposeReductionLayoutPass
-    : public rock::impl::RockSetInThreadTransposeReductionLayoutPassBase<
-          RockSetInThreadTransposeReductionLayoutPass> {
+struct RockSetITTReductionLayoutPass
+    : public rock::impl::RockSetITTReductionLayoutPassBase<
+          RockSetITTReductionLayoutPass> {
   void runOnOperation() override;
 };
 
@@ -155,7 +156,7 @@ void relayoutTranspose(amdg::InThreadTransposeOp transpose,
 }
 } // end anonymous namespace
 
-void RockSetInThreadTransposeReductionLayoutPass::runOnOperation() {
+void RockSetITTReductionLayoutPass::runOnOperation() {
   // Every InThreadTransposeOp referring to the same buffer moves together.
   // This way we make sure that the prologue copy follows its in-loop copy.
   llvm::MapVector<Value, SmallVector<amdg::InThreadTransposeOp>> groups;
@@ -170,9 +171,8 @@ void RockSetInThreadTransposeReductionLayoutPass::runOnOperation() {
     auto srcTy = cast<RankedTensorType>(transposes.front().getSrc().getType());
     auto enc = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
     if (!enc || srcTy.getRank() != 2) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "rock-set-in-thread-transpose-reduction-layout: tensor is "
-                    "not rank-2 blocked; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: tensor is "
+                                 "not rank-2 blocked; skipping\n");
       continue;
     }
     // InThreadTranspose ops only affect loads whose K is the slowest dim.
@@ -190,17 +190,16 @@ void RockSetInThreadTransposeReductionLayoutPass::runOnOperation() {
     }
     if (!matched) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "rock-set-in-thread-transpose-reduction-layout: a "
-                    "transpose staging into the buffer is not fed by a load, "
-                    "or its layout differs from the others; skipping\n");
+                 << "rock-set-itt-reduction-layout: a transpose staging into "
+                    "the buffer is not fed by a load, or its layout differs "
+                    "from the others; skipping\n");
       continue;
     }
     if (llvm::none_of(loads, [](tt::LoadOp load) {
           return load->hasAttr(LoopVariantIndexMathAttr::getMnemonic());
         })) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "rock-set-in-thread-transpose-reduction-layout: index math "
-                    "is not marked loop-variant; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: index math "
+                                 "is not marked loop-variant; skipping\n");
       continue;
     }
 
@@ -208,15 +207,13 @@ void RockSetInThreadTransposeReductionLayoutPass::runOnOperation() {
     FailureOr<ttg::BlockedEncodingAttr> newEnc =
         computeLayoutWarpsOnK(enc, srcTy.getShape(), kDim);
     if (failed(newEnc)) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "rock-set-in-thread-transpose-reduction-layout: warps do "
-                    "not tile K; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: warps do "
+                                 "not tile K; skipping\n");
       continue;
     }
     if (*newEnc == enc) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "rock-set-in-thread-transpose-reduction-layout: warps "
-                    "already on K; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: warps "
+                                 "already on K; skipping\n");
       continue;
     }
 

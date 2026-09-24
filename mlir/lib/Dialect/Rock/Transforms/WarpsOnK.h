@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The layout rock-set-in-thread-transpose-reduction-layout and
-// rock-set-reduction-layout give a gather load. Both passes can see the same
-// load, and each recognizes one the other already rewrote only by comparing it
-// with this layout, so they must build it the same way.
+// The layout rock-set-itt-reduction-layout and rock-set-reduction-layout give
+// a gather load. Both passes can see the same load, and each recognizes one the
+// other already rewrote only by comparing it with this layout, so they must
+// build it the same way.
 //
 //===----------------------------------------------------------------------===//
 

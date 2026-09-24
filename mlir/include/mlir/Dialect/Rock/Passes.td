@@ -396,10 +396,13 @@ def RockIncrementalPointerArithPass
     Both paths are conservative: any construct that cannot be proven to admit a
     constant-arithmetic recurrence leaves the op untouched.
 
-    Each `rock.blockwise_load_ptr` whose pointer neither path could handle and
-    whose induction variable goes through a `Merge` with a non-power-of-two
-    length is marked `rock.loop_variant_index_math`, so later layout passes
-    know that the loop keeps that division per coordinate.
+    A `rock.blockwise_load_ptr` is marked `rock.loop_variant_index_math` when
+    its loop still does index work per coordinate: either the carry path
+    rewrote its pointer, so the loop advances the carried coordinates, or
+    neither path could handle it and its induction variable goes through a
+    `Merge` with a non-power-of-two length, so the loop keeps that division.
+    Later layout passes use the marker to decide whether to reduce the
+    coordinates each thread owns.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
@@ -924,11 +927,10 @@ def RockSetReductionLayoutPass
               "pipelined kernels.">];
 }
 
-def RockSetInThreadTransposeReductionLayoutPass
-    : Pass<"rock-set-in-thread-transpose-reduction-layout",
-           "::mlir::ModuleOp"> {
+def RockSetITTReductionLayoutPass
+    : Pass<"rock-set-itt-reduction-layout", "::mlir::ModuleOp"> {
   let summary = "Put every warp of an in-thread-transposed gather on K when "
-                "its per-row index math is recomputed every iteration";
+                "its index math costs work per row every iteration";
   let description = [{
     Runs immediately after Triton's `tritonamdgpu-in-thread-transpose`, which
     widens a gather load's `sizePerThread` along K and then redistributes its
@@ -937,12 +939,13 @@ def RockSetInThreadTransposeReductionLayoutPass
     rows.
 
     When `rock-incremental-pointer-arith` marks the load
-    `rock.loop_variant_index_math`, its index math keeps a non-power-of-two
-    division inside the loop (e.g. a convolution's gemmK -> (c, y, x)
-    decomposition it could not make incremental), so each of those rows costs
-    a scalar division sequence on every iteration. For such loads this pass
-    sets `warpsPerCTA` to all warps on K, cutting the rows each thread owns by
-    the warp count.
+    `rock.loop_variant_index_math`, each of those rows costs scalar work on
+    every iteration. Either the index math keeps a non-power-of-two division
+    inside the loop (e.g. a convolution's gemmK -> (c, y, x) decomposition it
+    could not make incremental), or its carry path advances per-row
+    coordinates carried across iterations. For such loads this pass sets
+    `warpsPerCTA` to all warps on K, cutting the rows each thread owns by the
+    warp count.
     Every load staged into the same shared-memory buffer (e.g. a pipeline's
     prologue and in-loop copies) moves together; other loads are untouched.
 

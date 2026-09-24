@@ -1,17 +1,16 @@
-// Unit tests for the rocmlirTriton pass
-// rock-set-in-thread-transpose-reduction-layout.
+// Unit tests for the rocmlirTriton pass rock-set-itt-reduction-layout.
 //
 // The inputs look like the IR tritonamdgpu-in-thread-transpose leaves behind
 // on a software-pipelined kernel: the gather is loaded once in the prologue
 // and once per iteration, and both copies go through amdg.in_thread_transpose
 // into the same shared-memory buffer. rock-incremental-pointer-arith marks the
 // gather's loads rock.loop_variant_index_math when their index math keeps a
-// non-power-of-two division in the loop.
-// RUN: rocmlir-opt -rock-set-in-thread-transpose-reduction-layout --mlir-print-local-scope --split-input-file %s | FileCheck %s
+// non-power-of-two division in the loop or advances carried coordinates.
+// RUN: rocmlir-opt -rock-set-itt-reduction-layout --mlir-print-local-scope --split-input-file %s | FileCheck %s
 //
 // The remove-layout-conversions run that follows in the pipeline carries the
 // new layout back into the address computation and leaves no conversion.
-// RUN: rocmlir-opt -rock-set-in-thread-transpose-reduction-layout -tritongpu-remove-layout-conversions --mlir-print-local-scope --split-input-file %s | FileCheck %s --check-prefix=PROP
+// RUN: rocmlir-opt -rock-set-itt-reduction-layout -tritongpu-remove-layout-conversions --mlir-print-local-scope --split-input-file %s | FileCheck %s --check-prefix=PROP
 
 // The gather's loads are marked, so both loads staged into the buffer move to
 // warpsPerCTA = [4, 1], between convert_layout ops, and their

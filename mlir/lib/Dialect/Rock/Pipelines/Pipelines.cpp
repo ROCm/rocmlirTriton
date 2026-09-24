@@ -232,7 +232,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     // --- rocmlirTriton pass ----
     // Must run after in-thread-transpose, which picks the gather's warps, and
     // before remove-layout-conversions, which propagates the new layout.
-    pm->addPass(rock::createRockSetInThreadTransposeReductionLayoutPass());
+    pm->addPass(rock::createRockSetITTReductionLayoutPass());
     // --- rocmlirTriton pass ----
     pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   }

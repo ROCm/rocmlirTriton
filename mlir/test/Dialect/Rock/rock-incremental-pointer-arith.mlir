@@ -361,11 +361,10 @@ func.func @affine_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Pointer = base + carried offset accumulator. Nothing is recomputed from
-// scratch any more, so the load is not marked:
+// Pointer = base + carried offset accumulator. The loop still advances the
+// carried coordinates every iteration, so the load is marked:
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]][
-//   CHECK-NOT:     rock.loop_variant_index_math
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][{{.*}}rock.loop_variant_index_math
 // Mixed-radix carry update (compare + select) advances the coordinate:
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select

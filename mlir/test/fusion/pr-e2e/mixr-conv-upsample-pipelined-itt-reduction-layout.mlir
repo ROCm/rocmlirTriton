@@ -4,10 +4,9 @@
 // software-pipelined (numStages = 2) perf_config. The input gather's gemmK
 // index is decomposed into (c, y, x) with divisions by 9 and 3 inside the main
 // loop, which rock-incremental-pointer-arith cannot make incremental, so it
-// marks the load rock.loop_variant_index_math and
-// rock-set-in-thread-transpose-reduction-layout moves every warp of that load
-// onto K, for both the prologue and the in-loop loads staged into the same
-// shared-memory buffer.
+// marks the load rock.loop_variant_index_math and rock-set-itt-reduction-layout
+// moves every warp of that load onto K, for both the prologue and the in-loop
+// loads staged into the same shared-memory buffer.
 
 module {
   // CHECK: [1 1 1]

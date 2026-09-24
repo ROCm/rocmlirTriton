@@ -707,14 +707,16 @@ def Rock_LoopVariantIndexMath : Rock_Attr<"LoopVariantIndexMath"> {
   let mnemonic = "rock.loop_variant_index_math";
   let description = [{
     Marker set on a `rock.blockwise_load_ptr` by
-    `rock-incremental-pointer-arith` when it could not make the load's address
-    and mask arithmetic incremental, so it stays recomputed from scratch on
-    every loop iteration, and that arithmetic splits the induction variable
-    through a `Merge` with a non-power-of-two length.
-    The loop body then keeps a non-power-of-two division for every distinct
-    coordinate the load's threads own. The marker survives TTIR lowering onto
-    the `tt.load` and is consumed by
-    `rock-set-in-thread-transpose-reduction-layout`.
+    `rock-incremental-pointer-arith` when the loop body still does index work
+    for every distinct coordinate the load's threads own, on every iteration.
+    That is the case in two situations. The pass made the load's address and
+    mask arithmetic incremental through its carry path, so the loop advances
+    the carried coordinates. Or it could not make that arithmetic incremental,
+    so it stays recomputed from scratch, and the arithmetic splits the
+    induction variable through a `Merge` with a non-power-of-two length, so
+    the loop keeps a non-power-of-two division per coordinate.
+    The marker survives TTIR lowering onto the `tt.load` and is consumed by
+    `rock-set-itt-reduction-layout`.
   }];
 }
 
