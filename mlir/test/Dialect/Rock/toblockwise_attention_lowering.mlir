@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefixes=CHECK,RISK,F16,SCALE,EXTSCALE,CAUSAL,SPLIT
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -canonicalize -verify-diagnostics | FileCheck %s --check-prefix=NO-CMP
 
 // CHECK-LABEL: func @gridwise_attn_simple
@@ -98,23 +98,23 @@ func.func @gridwise_attn_simple(
 // -----
 
 // Causal plus sliding-window masking can produce a fully masked row. It uses a
-// finite row-max sentinel and one row-vector denominator clamp, without the
-// score-tile floating compare/select guards from PR 416.
+// finite row-max sentinel and one row-vector denominator clamp, without
+// per-element compare/select guards on the score tile.
 // NO-CMP-LABEL: func @gridwise_attn_causal_sliding
 // NO-CMP-NOT: arith.cmpf
 // NO-CMP: return
-// RISK-LABEL: func @gridwise_attn_causal_sliding
-// RISK-DAG: %[[LOWEST:.+]] = arith.constant dense<-3.40282347E+38> : tensor<16xf32>
-// RISK-DAG: %[[ZERO_ROW:.+]] = arith.constant dense<0.000000e+00> : tensor<16xf32>
-// RISK-DAG: %[[ONE:.+]] = arith.constant dense<1.000000e+00> : tensor<16xf32>
-// RISK: %[[OUT:.+]]:3 = scf.for
-// RISK-SAME: %[[RMAX:.+]] = %[[LOWEST]]
-// RISK-SAME: %[[RSUM:.+]] = %[[ZERO_ROW]]
-// RISK: %[[SUB:.+]] = arith.subf
-// RISK-NEXT: %[[P:.+]] = math.exp2 %[[SUB]]
-// RISK: %[[SAFE_SUM:.+]] = arith.maxnumf %[[OUT]]#2, %[[ONE]]
-// RISK: %[[SUM_EXP:.+]] = tt.expand_dims %[[SAFE_SUM]]
-// RISK: arith.divf
+// CHECK-LABEL: func @gridwise_attn_causal_sliding
+// CHECK-DAG: %[[LOWEST:.+]] = arith.constant dense<-3.40282347E+38> : tensor<16xf32>
+// CHECK-DAG: %[[ZERO_ROW:.+]] = arith.constant dense<0.000000e+00> : tensor<16xf32>
+// CHECK-DAG: %[[ONE:.+]] = arith.constant dense<1.000000e+00> : tensor<16xf32>
+// CHECK: %[[OUT:.+]]:3 = scf.for
+// CHECK-SAME: %[[RMAX:.+]] = %[[LOWEST]]
+// CHECK-SAME: %[[RSUM:.+]] = %[[ZERO_ROW]]
+// CHECK: %[[SUB:.+]] = arith.subf
+// CHECK-NEXT: %[[P:.+]] = math.exp2 %[[SUB]]
+// CHECK: %[[SAFE_SUM:.+]] = arith.maxnumf %[[OUT]]#2, %[[ONE]]
+// CHECK: %[[SUM_EXP:.+]] = tt.expand_dims %[[SAFE_SUM]]
+// CHECK: arith.divf
 func.func @gridwise_attn_causal_sliding(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,
@@ -145,9 +145,9 @@ func.func @gridwise_attn_causal_sliding(
 
 // The finite sentinel follows the actual softmax type rather than using an
 // f32 literal that would round to -inf in f16.
-// F16-LABEL: func @gridwise_attn_causal_sliding_f16
-// F16: arith.constant dense<{{(-6.550400e\+04|0xFBFF)}}> : tensor<16xf16>
-// F16: arith.maxnumf
+// CHECK-LABEL: func @gridwise_attn_causal_sliding_f16
+// CHECK: arith.constant dense<{{(-6.550400e\+04|0xFBFF)}}> : tensor<16xf16>
+// CHECK: arith.maxnumf
 func.func @gridwise_attn_causal_sliding_f16(
     %q: tensor<1x384x64xf16>,
     %k: tensor<1x64x384xf16>,
@@ -177,12 +177,13 @@ func.func @gridwise_attn_causal_sliding_f16(
 
 // -----
 
-// Identity plus finite compile-time scaling is statically safe: retain the
-// original -inf running maximum and add no denominator clamp.
-// SCALE-LABEL: func @gridwise_attn_finite_scale
-// SCALE: arith.constant dense<0xFF800000> : tensor<16xf32>
-// SCALE-NOT: arith.maxnumf
-// SCALE: return
+// Identity plus |scale| <= 1 compile-time scaling cannot overflow finite QK
+// scores: retain the original -inf running maximum and add no denominator
+// clamp.
+// CHECK-LABEL: func @gridwise_attn_finite_scale
+// CHECK: arith.constant dense<0xFF800000> : tensor<16xf32>
+// CHECK-NOT: arith.maxnumf
+// CHECK: return
 func.func @gridwise_attn_finite_scale(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,
@@ -209,12 +210,74 @@ func.func @gridwise_attn_finite_scale(
 
 // -----
 
+// A finite splat larger than 1 (here -FLT_MAX) can overflow a finite QK row
+// to -inf, so the empty-row guard must still be emitted.
+// CHECK-LABEL: func @gridwise_attn_overflowing_scale
+// CHECK: arith.maxnumf
+// CHECK: return
+func.func @gridwise_attn_overflowing_scale(
+    %q: tensor<1x384x64xf32>,
+    %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {
+      rock.block_size = 64 : i32,
+      rock.grid_size = 24 : i32,
+      rock.kernel,
+      rock.arch = "##TOKEN_ARCH##"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x16x32xf32>):
+    %scale = arith.constant dense<-3.40282347E+38> : tensor<1x16x32xf32>
+    %scaled = arith.mulf %arg_qk, %scale : tensor<1x16x32xf32>
+    rock.yield %scaled : tensor<1x16x32xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+// -----
+
+// A finite splat larger than 1 (here -FLT_MAX) can overflow a finite QK row
+// to -inf, so the empty-row guard must still be emitted.
+// CHECK-LABEL: func @gridwise_attn_overflowing_scale
+// CHECK: arith.maxnumf
+// CHECK: return
+func.func @gridwise_attn_overflowing_scale(
+    %q: tensor<1x384x64xf32>,
+    %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {
+      rock.block_size = 64 : i32,
+      rock.grid_size = 24 : i32,
+      rock.kernel,
+      rock.arch = "##TOKEN_ARCH##"
+    } {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x16x32xf32>):
+    %scale = arith.constant dense<-3.40282347E+38> : tensor<1x16x32xf32>
+    %scaled = arith.mulf %arg_qk, %scale : tensor<1x16x32xf32>
+    rock.yield %scaled : tensor<1x16x32xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 32, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    params1 = #rock.gemm_params<mPerBlock = 16, nPerBlock = 64, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+
+// -----
+
 // Widening the QK value before finite constant scaling is also statically safe.
 // This is the shape produced by f16 MIGraphX attention with f32 softmax.
-// EXTSCALE-LABEL: func @gridwise_attn_finite_ext_scale
-// EXTSCALE: arith.constant dense<0xFF800000> : tensor<16xf32>
-// EXTSCALE-NOT: arith.maxnumf
-// EXTSCALE: return
+// CHECK-LABEL: func @gridwise_attn_finite_ext_scale
+// CHECK: arith.constant dense<0xFF800000> : tensor<16xf32>
+// CHECK-NOT: arith.maxnumf
+// CHECK: return
 func.func @gridwise_attn_finite_ext_scale(
     %q: tensor<1x384x64xf16>,
     %k: tensor<1x64x384xf16>,
@@ -244,10 +307,10 @@ func.func @gridwise_attn_finite_ext_scale(
 // -----
 
 // Causal-only attention always retains key zero and needs no empty-row guard.
-// CAUSAL-LABEL: func @gridwise_attn_causal_only
-// CAUSAL: arith.constant dense<0xFF800000> : tensor<16xf32>
-// CAUSAL-NOT: arith.maxnumf
-// CAUSAL: return
+// CHECK-LABEL: func @gridwise_attn_causal_only
+// CHECK: arith.constant dense<0xFF800000> : tensor<16xf32>
+// CHECK-NOT: arith.maxnumf
+// CHECK: return
 func.func @gridwise_attn_causal_only(
     %q: tensor<1x384x64xf32>,
     %k: tensor<1x64x384xf32>,
@@ -274,10 +337,10 @@ func.func @gridwise_attn_causal_only(
 // -----
 
 // A split-KV partial can contain no keys and therefore needs the guard.
-// SPLIT-LABEL: func @gridwise_attn_split_kv
-// SPLIT: arith.constant dense<-3.40282347E+38> : tensor<64xf32>
-// SPLIT: arith.maxnumf
-// SPLIT: return
+// CHECK-LABEL: func @gridwise_attn_split_kv
+// CHECK: arith.constant dense<-3.40282347E+38> : tensor<64xf32>
+// CHECK: arith.maxnumf
+// CHECK: return
 func.func @gridwise_attn_split_kv(
     %q: tensor<1x64x32xf32>,
     %k: tensor<1x32x128xf32>,

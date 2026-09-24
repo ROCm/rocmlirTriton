@@ -204,7 +204,9 @@ def Rock_AttentionOp
     If causal is enabled, we implement causal masking.
 
     If causal is enabled AND prefixOffset is not null, we implement prefix
-    causal masking where: mask = key_pos > (query_pos + offset).
+    causal masking where: mask = key_pos > (query_pos + offset), compared as
+    unsigned `ugt`. Unsigned 0 is never greater than the threshold, so key 0
+    is never masked regardless of the offset's sign.
     The prefixOffset can be either:
     - A scalar (shape [1]): a single global offset applied to all sequences
     - A tensor of shape [G]: per-group/batch offsets, allowing different prefix
@@ -564,6 +566,8 @@ def Rock_GridwiseAttentionOp
 
     `lastValidKVIndex` and `slidingWindowLookBack` use the same inclusive
     KV-cache index and look-back distance semantics as `rock.attention`.
+    Prefix-causal masking (`causal` plus `prefixOffset`) uses unsigned `ugt`,
+    so key 0 is never rejected.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{

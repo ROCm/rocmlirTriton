@@ -58,6 +58,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "GridLayoutEmitter.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -195,22 +196,37 @@ struct GridwiseAttentionRewritePattern
     return level.front();
   }
 
-  static bool isFiniteFloatSplat(Value value) {
+  // A compile-time splat is a non-overflowing scale if it is finite and its
+  // magnitude is at most 1. Finite scores multiplied by such a factor stay
+  // finite (they may underflow to zero). A finite splat larger than 1, such as
+  // -FLT_MAX, can overflow a finite QK row to +/-inf and must still be treated
+  // as capable of fully masking a row.
+  static bool isNonOverflowingFloatScale(const APFloat &value) {
+    if (!value.isFinite())
+      return false;
+    APFloat mag = value;
+    if (mag.isNegative())
+      mag.changeSign();
+    APFloat one = APFloat::getOne(value.getSemantics());
+    return mag.compare(one) != APFloat::cmpGreaterThan;
+  }
+
+  static bool isNonOverflowingFloatSplat(Value value) {
     auto constant = value.getDefiningOp<arith::ConstantOp>();
     if (!constant)
       return false;
     Attribute attr = constant.getValue();
     if (auto floatAttr = dyn_cast<FloatAttr>(attr))
-      return floatAttr.getValue().isFinite();
+      return isNonOverflowingFloatScale(floatAttr.getValue());
     auto elements = dyn_cast<DenseFPElementsAttr>(attr);
     return elements && elements.isSplat() &&
-           elements.getSplatValue<APFloat>().isFinite();
+           isNonOverflowingFloatScale(elements.getSplatValue<APFloat>());
   }
 
-  // Identity, widening conversions, and multiplication by compile-time finite
-  // splats cannot turn a row of finite QK scores into a fully masked row.
-  // Everything else is conservatively treated as capable of doing so (for
-  // example, a runtime bias can contain -inf).
+  // Identity, widening conversions, and multiplication by a compile-time splat
+  // whose magnitude is at most 1 cannot turn a row of finite QK scores into a
+  // fully masked row. Everything else is conservatively treated as capable of
+  // doing so (for example, a runtime bias can contain -inf).
   static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
     if (value == qk)
       return true;
@@ -219,9 +235,9 @@ struct GridwiseAttentionRewritePattern
     auto mul = value.getDefiningOp<arith::MulFOp>();
     if (!mul)
       return false;
-    return (isFiniteFloatSplat(mul.getLhs()) &&
+    return (isNonOverflowingFloatSplat(mul.getLhs()) &&
             isFiniteConstantScaleOf(mul.getRhs(), qk)) ||
-           (isFiniteFloatSplat(mul.getRhs()) &&
+           (isNonOverflowingFloatSplat(mul.getRhs()) &&
             isFiniteConstantScaleOf(mul.getLhs(), qk));
   }
 
@@ -233,8 +249,9 @@ struct GridwiseAttentionRewritePattern
     if (block.getNumArguments() == 0)
       return true;
     auto yield = dyn_cast<rock::YieldOp>(block.getTerminator());
-    return !yield ||
-           !isFiniteConstantScaleOf(yield.getOperand(0), block.getArgument(0));
+    if (!yield || yield.getNumOperands() != 1)
+      return true;
+    return !isFiniteConstantScaleOf(yield.getOperand(0), block.getArgument(0));
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -1135,15 +1152,19 @@ struct GridwiseAttentionRewritePattern
     int64_t splitKV = op.getSplitKV();
     int64_t slidingWindowLookBack =
         static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
-    // Causal-only and KV-cache-only attention retain at least one key for each
-    // logical row. A causal window can have disjoint lower/upper bounds, while
-    // split-KV partials and padded query rows can execute with no valid score.
-    // Arbitrary pre-softmax fusion is guarded unless its result is proven to
-    // preserve finite QK scores.
+    // A row goes NaN as soon as the first processed tile has no valid score
+    // (`exp2(-inf - -inf)` and `0 * NaN` stay NaN), even if later tiles are
+    // valid. Causal-only, KV-cache-only, and prefix-causal-only start at tile
+    // 0 and mask with unsigned `ugt`, so key 0 is never rejected. A
+    // causal+sliding window can have disjoint lower/upper bounds, and split-KV
+    // partials can execute with no valid score. Padded query rows are written
+    // through padded output/LSE views, so a NaN there is not observable and is
+    // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
+    // unless its result is proven not to overflow finite QK scores.
     bool mayHaveFullyMaskedRows =
-        op.getEnableSoftmax() && (preSoftmaxMayFullyMask(op) ||
-                                  (isCausal && slidingWindowLookBack > 0) ||
-                                  splitKV > 1 || op.getPrePadG0M().has_value());
+        op.getEnableSoftmax() &&
+        (preSoftmaxMayFullyMask(op) ||
+         (isCausal && slidingWindowLookBack > 0) || splitKV > 1);
 
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
