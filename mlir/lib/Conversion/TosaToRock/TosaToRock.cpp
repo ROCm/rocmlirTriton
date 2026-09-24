@@ -690,9 +690,9 @@ public:
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
-      FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(), bias, result,
-          convOutputLayoutOrDefault(op));
+      FailureOr<tosa::AddOp> maybeResult =
+          replaceCstZeroWithAddNBcast(context, rw, loc, op.getType(), bias,
+                                      result, convOutputLayoutOrDefault(op));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -761,9 +761,9 @@ public:
     // test for zero bias, and ignore
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
-      FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(0), bias, result,
-          convOutputLayoutOrDefault(op));
+      FailureOr<tosa::AddOp> maybeResult =
+          replaceCstZeroWithAddNBcast(context, rw, loc, op.getType(0), bias,
+                                      result, convOutputLayoutOrDefault(op));
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
