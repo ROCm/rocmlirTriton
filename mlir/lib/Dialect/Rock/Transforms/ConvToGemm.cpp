@@ -730,7 +730,9 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
         TransformOp::create(b, loc, op.getGradient(), embedTransformAttr);
 
     // Take the same slices in ydot, xdot, 0tilda, and 1tilda as were taken in
-    // the filter and input
+    // the filter and input. The gradient view must depend on the kernel ID
+    // only through `iDotSlice`: tuning assumes that kernel IDs with equal dot
+    // slices share one gradient tile in LDS (see `SiblingGemm`).
     auto sliceTransform =
         BottomUpTMBuilder::above(embedTransform, embedTransformAttr);
     sliceTransform.passThrough({"go", "no", "ko"});
