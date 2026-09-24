@@ -23,6 +23,7 @@ patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
 patch-gfx1310-isa-family.patch
 patch11295.patch
+patch-direct-to-lds-swizzle-check-vec.patch
 patch10497.patch
 patch10694.patch
 patch-fma-lds-swizzle.patch
@@ -369,6 +370,30 @@ patch-cost-aware-dot-rematerialization.patch
   it. If the expensive-math policy turns out to be too weak or too strong for
   dot-operand hoists, tune getCostFactor or the expensive-math multiplier in one
   place rather than adding a second heuristic.
+
+patch-direct-to-lds-swizzle-check-vec.patch
+  Measures the direct-to-LDS lane shuffle with the load's vector rather than the
+  shared encoding's, so the clamp patch11295.patch added fires when it should.
+
+  emitSwizzledLaneOffsets turns the swizzled-vs-flat offset delta into a lane
+  offset by dividing by the vector the load uses, and that vector is capped both
+  by the source's per-thread contiguity and by the widths the target can write
+  to LDS. swizzlesInsideWarp divided by enc.getVec() instead, which is larger
+  whenever the shared tile is wider than one load, so the displacement looked
+  smaller than it is and a shuffle that leaves the warp passed as in-warp.
+
+  The dot-operand hoist reaches this with f32 tiles carrying the dot-operand
+  layout of a bf16 dot, kWidth = 8 against a load vector of a single f32, since
+  CDNA4 writes only 32 and 128 bits to LDS. ROCK E2E PrGemm/pr_gemm_1_2.mlir
+  (f32 gemm, k = 769) read from a lane outside its warp and got half its output
+  wrong. With the load vector in the divisor maxPhase halves from 16 to 8 there
+  and to 4 for the k = 770 layout, while shapes whose load vector is four f32
+  keep maxPhase 16. patch-cost-aware-dot-rematerialization.patch is what lets
+  that hoist fire on the f32 path.
+
+  Stacks on patch11295.patch and must be applied after it.
+
+  Not filed upstream yet; upstream PR 11295 carries the same mismatch.
 
 patch-negligible-anchor-layout-conflict.patch
   Adds the tie-break that LayoutPropagation::resolveConflicts asked for in its

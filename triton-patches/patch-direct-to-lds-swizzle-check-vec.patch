@@ -1,0 +1,64 @@
+diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
+index 8d3f9dc92..add12d78d 100644
+--- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
++++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
+@@ -473,7 +473,8 @@ bool hasEnoughCTABytesForDirectToLds(tt::LoadOp loadOp,
+ // Return whether the shared-memory swizzle maps every register and lane of
+ // srcTy to a source lane within the same warp.
+ static bool swizzlesInsideWarp(RankedTensorType srcTy,
+-                               ttg::SwizzledSharedEncodingAttr enc) {
++                               ttg::SwizzledSharedEncodingAttr enc,
++                               const triton::AMD::TargetInfo &targetInfo) {
+   // maxPhase == 1 means no swizzling, so `requiresSrcPtrSwizzling` is false in
+   // the lowering and there is no lane shuffle.
+   if (!enc || enc.getMaxPhase() == 1)
+@@ -501,8 +502,17 @@ static bool swizzlesInsideWarp(RankedTensorType srcTy,
+   auto kBlock = StringAttr::get(ctx, "block");
+ 
+   // Mirror emitSwizzledLaneOffsets, which normalizes the swizzled-vs-flat
+-  // offset delta by the vector size to turn it into a lane offset.
+-  int64_t vec = enc.getVec();
++  // offset delta by the vector size to turn it into a lane offset. That vector
++  // is the load's, so it is capped by the source's per-thread contiguity and by
++  // the widths the target can write to LDS, not by enc.getVec().
++  unsigned loadContig = std::min<unsigned>(
++      enc.getVec(), triton::gpu::getContigPerThread(srcTy)[enc.getOrder()[0]]);
++  int64_t vec = triton::AMD::fitToValidDirectToLdsVecSize(
++      loadContig, srcTy.getElementTypeBitWidth(), targetInfo);
++  // No supported width means the load cannot go direct-to-LDS at all, so the
++  // shuffle this guards against is never emitted.
++  if (vec == 0)
++    return true;
+   // Enumerate lanes over the layout's own lane dimension: apply() silently
+   // ignores index bits above the in-dim size, so an out-of-range lane would
+   // alias onto a smaller one and yield a meaningless offset.
+@@ -536,8 +546,8 @@ static bool swizzlesInsideWarp(RankedTensorType srcTy,
+ // maxPhase monotonically reduces the swizzle reach, and maxPhase == 1 always
+ // passes, so the search terminates on the largest safe value.
+ static ttg::SharedEncodingTrait
+-clampSwizzleForDirectToLds(RankedTensorType srcTy,
+-                           ttg::SharedEncodingTrait enc) {
++clampSwizzleForDirectToLds(RankedTensorType srcTy, ttg::SharedEncodingTrait enc,
++                           const triton::AMD::TargetInfo &targetInfo) {
+   auto swizz = dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(enc);
+   if (!swizz)
+     return enc;
+@@ -549,7 +559,7 @@ clampSwizzleForDirectToLds(RankedTensorType srcTy,
+             : ttg::SwizzledSharedEncodingAttr::get(
+                   swizz.getContext(), swizz.getVec(), swizz.getPerPhase(),
+                   maxPhase, swizz.getOrder(), swizz.getCGALayout());
+-    if (swizzlesInsideWarp(srcTy, candidate)) {
++    if (swizzlesInsideWarp(srcTy, candidate, targetInfo)) {
+       if (candidate != swizz)
+         LDBG("Clamped direct-to-LDS swizzle maxPhase "
+              << swizz.getMaxPhase() << " -> " << maxPhase
+@@ -676,7 +686,8 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
+     // On non-scatter targets, direct-to-LDS realizes the shared-memory swizzle
+     // by shuffling source pointers between lanes, which must stay in one warp.
+     if (canUseAsyncCopy && !targetInfo.supportsDirectToLdsScatter()) {
+-      auto clampedEncoding = clampSwizzleForDirectToLds(ty, sharedEncoding);
++      auto clampedEncoding =
++          clampSwizzleForDirectToLds(ty, sharedEncoding, targetInfo);
+       // Clamping changes the shared layout used by the final eligibility
+       // check, so verify that the load remains convertible.
+       canUseAsyncCopy = canBeConvertedToAsyncLoad(
