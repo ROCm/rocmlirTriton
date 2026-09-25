@@ -926,14 +926,26 @@ def RockSetITTReductionLayoutPass
       "certain conditions (profitability) are met";
   let description = [{
     Rewrites the global load's layout (in particular, the `warpsPerCTA`) to
-    put every warp on K. For example, assume a load on B matrix (K,N) with
-    sizePerThread=[4,1],  threadsPerWarp=[1,32] and:
+    put every warp on K. For example, assume a 32x128 (K x N) tile of the
+    B matrix with sizePerThread=[4,1],  threadsPerWarp=[1,32].
+    `tritonamdgpu-in-thread-transpose` gives:
 
     warpsPerCTA = [2, 4]
 
-    then, this pass will rewrite the layout to:
+    This pass rewrites the layout to:
 
     warpsPerCTA = [8, 1]
+
+    - In the first case, each lane would load:
+      - 16 distinct rows:
+        because 32/(warpsPerCTA[0] * threadsPerWarp[0]) = 32/2 = 16
+      - 1 distinct column:
+        because 128/(warpsPerCTA[1] * threadsPerWarp[1]) = 128/(4 * 32) = 1
+    - In the second case, each thread would load:
+      - 4 distinct rows:
+        because 32/(warpsPerCTA[0] * threadsPerWarp[0]) = 32/8 = 4
+      - 4 distinct columns:
+        because 128/(warpsPerCTA[1] * threadsPerWarp[1]) = 128/(1 * 32) = 4
 
     Each thread still loads 16 elements, but they now come from 4 distinct K
     rows (4 rows x 4 columns) instead of 16. That matters when the loop
