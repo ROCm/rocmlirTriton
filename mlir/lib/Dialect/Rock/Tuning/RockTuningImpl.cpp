@@ -1509,6 +1509,16 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
   return success();
 }
 
+/// The tuning problem string's spelling of an 8-bit float, or nullopt for
+/// types it cannot serialize.
+static std::optional<StringLiteral> getTuningF8TypeStr(Type type) {
+  if (isa<Float8E4M3FNUZType, Float8E4M3FNType>(type))
+    return StringLiteral("fp8");
+  if (isa<Float8E5M2FNUZType, Float8E5M2Type>(type))
+    return StringLiteral("bf8");
+  return std::nullopt;
+}
+
 static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
                                          SmallVectorImpl<char> &out) {
   int64_t numCU = rock::getNumCUValue(gemmIF);
@@ -1519,14 +1529,6 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
 
   KernelType opType = gemmIF.getKernelType();
   Operation *gemmOp = gemmIF.getOperation();
-
-  auto f8TypeStr = [](const Type &type) -> std::optional<StringLiteral> {
-    if (isa<Float8E4M3FNUZType, Float8E4M3FNType>(type))
-      return StringLiteral("fp8");
-    if (isa<Float8E5M2FNUZType, Float8E5M2Type>(type))
-      return StringLiteral("bf8");
-    return std::nullopt;
-  };
 
   // ARCH string
   problemOS << StringRef(rock::getArchValue(gemmIF)).trim("\"") << tab;
@@ -1565,8 +1567,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
     } else if (inElemType.isInteger(8)) {
       problemOS << "convint8 ";
     } else {
-      auto inString = f8TypeStr(inElemType);
-      auto filString = f8TypeStr(filElemType);
+      auto inString = getTuningF8TypeStr(inElemType);
+      auto filString = getTuningF8TypeStr(filElemType);
       if (inString && filString)
         problemOS << llvm::formatv("conv{0}_{1} ", *inString, *filString);
       else
@@ -1641,8 +1643,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
                isa<Float4E2M1FNType>(elemTypeB)) {
       problemOS << "f4E2M1FN";
     } else {
-      auto aString = f8TypeStr(elemTypeA);
-      auto bString = f8TypeStr(elemTypeB);
+      auto aString = getTuningF8TypeStr(elemTypeA);
+      auto bString = getTuningF8TypeStr(elemTypeB);
       if (aString && bString)
         problemOS << llvm::formatv("{0}_{1}", *aString, *bString);
       else
@@ -1657,7 +1659,7 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
     else
       elemTypeC = outType;
     problemOS << " -out_datatype ";
-    auto outStr = f8TypeStr(elemTypeC);
+    auto outStr = getTuningF8TypeStr(elemTypeC);
     if (outStr)
       problemOS << *outStr << sep;
     else
@@ -1878,9 +1880,10 @@ static void classifyFusedReduction(Operation *op, ProblemKeyBuilder &out) {
     out.untunable("fused_reduction");
 }
 
+/// Only the 8-bit floats the tuning problem string can serialize count: any
+/// other one cannot enter the tuning pipeline, so retuning cannot cover it.
 static bool isQuickTuningF8Type(Type type) {
-  return isa<Float8E4M3FNUZType, Float8E4M3FNType, Float8E5M2FNUZType,
-             Float8E5M2Type>(type);
+  return getTuningF8TypeStr(type).has_value();
 }
 
 /// The output type `-t` implies for these inputs: rocmlir-gen, and so the
