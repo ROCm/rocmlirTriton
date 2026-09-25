@@ -58,6 +58,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "GridLayoutEmitter.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -193,6 +194,67 @@ struct GridwiseAttentionRewritePattern
       cols *= 2;
     }
     return level.front();
+  }
+
+  // A compile-time splat is a non-overflowing scale if it is finite and its
+  // magnitude is at most 1. Finite scores multiplied by such a factor stay
+  // finite (they may underflow to zero). A finite splat larger than 1, such as
+  // -FLT_MAX, can overflow a finite QK row to +/-inf and must still be treated
+  // as capable of fully masking a row.
+  static bool isNonOverflowingFloatScale(const APFloat &value) {
+    if (!value.isFinite())
+      return false;
+    APFloat mag = value;
+    if (mag.isNegative())
+      mag.changeSign();
+    APFloat one = APFloat::getOne(value.getSemantics());
+    return mag.compare(one) != APFloat::cmpGreaterThan;
+  }
+
+  static bool isNonOverflowingFloatSplat(Value value) {
+    auto constant = value.getDefiningOp<arith::ConstantOp>();
+    if (!constant)
+      return false;
+    Attribute attr = constant.getValue();
+    if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+      return isNonOverflowingFloatScale(floatAttr.getValue());
+    auto elements = dyn_cast<DenseFPElementsAttr>(attr);
+    return elements && elements.isSplat() &&
+           isNonOverflowingFloatScale(elements.getSplatValue<APFloat>());
+  }
+
+  // Identity, widening conversions, and multiplication by a compile-time splat
+  // whose magnitude is at most 1 cannot turn a row of finite QK scores into a
+  // fully masked row. Everything else is conservatively treated as capable of
+  // doing so (for example, a runtime bias can contain -inf).
+  // This assumes scores also stay in range through the conversion to the
+  // softmax type and the fixed log2(e) scaling (|x| < FLT_MAX / log2(e) for
+  // f32); larger scores overflow regardless of masking and are out of scope.
+  static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
+    if (value == qk)
+      return true;
+    if (auto ext = value.getDefiningOp<arith::ExtFOp>())
+      return isFiniteConstantScaleOf(ext.getIn(), qk);
+    auto mul = value.getDefiningOp<arith::MulFOp>();
+    if (!mul)
+      return false;
+    return (isNonOverflowingFloatSplat(mul.getLhs()) &&
+            isFiniteConstantScaleOf(mul.getRhs(), qk)) ||
+           (isNonOverflowingFloatSplat(mul.getRhs()) &&
+            isFiniteConstantScaleOf(mul.getLhs(), qk));
+  }
+
+  static bool preSoftmaxMayFullyMask(GridwiseAttentionOp op) {
+    Region &region = op.getPreSoftmaxBody();
+    if (region.empty())
+      return false;
+    Block &block = region.front();
+    if (block.getNumArguments() == 0)
+      return true;
+    auto yield = dyn_cast<rock::YieldOp>(block.getTerminator());
+    if (!yield || yield.getNumOperands() != 1)
+      return true;
+    return !isFiniteConstantScaleOf(yield.getOperand(0), block.getArgument(0));
   }
 
   // This function computes exp(gemm0 - rowmax_j)
@@ -623,6 +685,9 @@ struct GridwiseAttentionRewritePattern
 
     // Lambda to load a 1D tensor value (used for lastValidKVIndex and
     // prefixOffset)
+    // TODO: Emit llvm.intr.assume(value >= 0) on the loaded value. Both indices
+    // are expected to be non-negative (see RockOps.td), and Triton's AMD
+    // integer range analysis uses such assumptions.
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
 
@@ -816,6 +881,13 @@ struct GridwiseAttentionRewritePattern
   // Helper function to determine if early exit optimization is possible.
   // Early exit requires splitKV > 1 and at least one of: padding in gemm0M,
   // causal masking, or KV cache.
+  // TODO: Cover more workgroups that have no work:
+  // - Causal + sliding window where the M block's last query ends before the
+  //   window start, so every row is fully masked. This also applies with
+  //   splitKV == 1, which never exits early today.
+  // - Padding-only split-KV with prePadG0N < gemm0NPerBlock. It is excluded
+  //   below although the runtime check would handle it, so the trailing splits
+  //   run over padding only.
   static bool isEarlyExitPossible(int64_t splitKV, int64_t gemm0NPerBlock,
                                   std::optional<APInt> prePadG0N, bool isCausal,
                                   bool isKVCache) {
@@ -1093,6 +1165,26 @@ struct GridwiseAttentionRewritePattern
     bool isCausal = op.getCausal();
     bool isPrefixCausal = isCausal && prefixOffsetTensor;
     int64_t splitKV = op.getSplitKV();
+    int64_t slidingWindowLookBack =
+        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
+    // A row goes NaN as soon as the first processed tile has no valid score
+    // (`exp2(-inf - -inf)` and `0 * NaN` stay NaN), even if later tiles are
+    // valid. Causal-only, KV-cache-only, and prefix-causal-only start at tile
+    // 0 and mask with unsigned `ugt`, so key 0 is never rejected. A
+    // causal+sliding window can have disjoint lower/upper bounds, and split-KV
+    // partials can execute with no valid score. Padded query rows are written
+    // through padded output/LSE views, so a NaN there is not observable and is
+    // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
+    // unless its result is proven not to overflow finite QK scores.
+    // TODO: The splitKV clause is conservative: split-KV alone never fully
+    // masks a row. It needs causal/prefix-causal masking, or padding-only
+    // split-KV with prePadG0N < gemm0NPerBlock (see isEarlyExitPossible).
+    // Alternatively, emit the guard unconditionally and drop this predicate;
+    // it only adds one arith.maxnumf per row, but that needs perf data.
+    bool mayHaveFullyMaskedRows =
+        op.getEnableSoftmax() &&
+        (preSoftmaxMayFullyMask(op) ||
+         (isCausal && slidingWindowLookBack > 0) || splitKV > 1);
 
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
@@ -1219,9 +1311,21 @@ struct GridwiseAttentionRewritePattern
 
     auto blockMTensorType =
         RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
-    Value maxRow = createConstantFloatOp(
-        rewriter, loc, blockMTensorType, elemTypeSoftmax,
-        -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    Value maxRow;
+    if (mayHaveFullyMaskedRows) {
+      auto floatType = cast<FloatType>(elemTypeSoftmax);
+      APFloat lowestFinite =
+          APFloat::getLargest(floatType.getFloatSemantics(), /*Negative=*/true);
+      maxRow = arith::ConstantOp::create(
+          rewriter, loc, blockMTensorType,
+          SplatElementsAttr::get(
+              blockMTensorType,
+              rewriter.getFloatAttr(elemTypeSoftmax, lowestFinite)));
+    } else {
+      maxRow = createConstantFloatOp(
+          rewriter, loc, blockMTensorType, elemTypeSoftmax,
+          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    }
     Value sumRow = createConstantFloatOp(rewriter, loc, blockMTensorType,
                                          elemTypeSoftmax, 0.0, APFloat::opOK);
     Value zero =
@@ -1232,8 +1336,6 @@ struct GridwiseAttentionRewritePattern
     Value prefixOffset;
     Value slidingWindowLowerBound;
     Value start, end;
-    int64_t slidingWindowLookBack =
-        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
     // get nLoop
     std::tie(start, end, gemm0NBlocksLastIter, lastValidKVIndex, prefixOffset,
              slidingWindowLowerBound) =
@@ -1424,6 +1526,10 @@ struct GridwiseAttentionRewritePattern
 
         // Scale gemm0 output by (1/ln2)
         // So that we can use exp2 instead of exp.
+        // TODO: Apply this scale after subtracting the row max instead, so
+        // scores with |x| >= FLT_MAX / log2(e) (f32) can't overflow to inf
+        // here (see isFiniteConstantScaleOf). That changes the inner loop, so
+        // it needs perf data.
         Value ln2Recip = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(), elemTypeSoftmax, 1.44269504f,
             elemTypeSoftmax.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
@@ -1596,9 +1702,23 @@ struct GridwiseAttentionRewritePattern
     sumRow = nLoopOp.getResult(gemm1NChunks + 1);
 
     if (op.getEnableSoftmax()) {
+      Value normalizationSum = sumRow;
+      // A fully masked row ends with sumRow == 0: with the finite max sentinel,
+      // every exp2 term is 0. Clamp the denominator to 1 so that row is written
+      // as zeros instead of 0/0. A row with any valid score has sumRow >= 1
+      // (its max term is exp2(0) = 1), so the clamp leaves it unchanged. The
+      // LSE below keeps the unclamped sumRow, so a fully masked row still
+      // reports -inf.
+      if (mayHaveFullyMaskedRows) {
+        Value oneFloat =
+            createConstantFloatOp(rewriter, loc, blockMTensorType,
+                                  elemTypeSoftmax, 1.0, APFloat::opOK);
+        normalizationSum =
+            arith::MaxNumFOp::create(rewriter, loc, sumRow, oneFloat);
+      }
       for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
         outAccs[chunk] =
-            scaleFinalOutput(rewriter, loc, outAccs[chunk], sumRow);
+            scaleFinalOutput(rewriter, loc, outAccs[chunk], normalizationSum);
     }
 
     // Concatenate the per-chunk [gemm1MPerBlock, gemm1NPerBlock] output tiles

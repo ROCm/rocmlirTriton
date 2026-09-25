@@ -3235,24 +3235,29 @@ static Value addTensorArgToBlock(OpBuilder &builder, Location loc,
   return funcArgTensor;
 }
 
+static Value createFloatSplatTensor(OpBuilder builder, Location loc,
+                                    RankedTensorType type,
+                                    const APFloat &value) {
+  assert(isa<FloatType>(type.getElementType()) &&
+         "expected a float element type");
+  DenseElementsAttr valueAttr = DenseFPElementsAttr::get(type, value);
+  return tosa::ConstOp::create(builder, loc, valueAttr.getType(), valueAttr);
+}
+
+static Value createFloatSplatTensor(OpBuilder builder, Location loc,
+                                    RankedTensorType type, float value) {
+  std::pair<APFloat, llvm::detail::opStatus> floatRes =
+      rock::createAPFloat(type.getElementType(), value);
+  APFloat fpVal = floatRes.first;
+  [[maybe_unused]] auto status = floatRes.second;
+  assert(status == APFloat::opOK && "failed to create floating-point constant");
+  return createFloatSplatTensor(builder, loc, type, fpVal);
+}
+
 static Value applyMask(OpBuilder builder, Location loc, Value inputTensor,
                        Value mask, float initValue) {
   auto inpType = cast<RankedTensorType>(inputTensor.getType());
-  ArrayRef<int64_t> inpShape = inpType.getShape();
-
-  // create a tensor with a single value and broadcast it
-  assert(isa<FloatType>(inpType.getElementType()));
-  std::pair<APFloat, llvm::detail::opStatus> floatRes =
-      rock::createAPFloat(inpType.getElementType(), initValue);
-  APFloat fpVal = floatRes.first;
-  [[maybe_unused]] auto status = floatRes.second;
-  assert(status == APFloat::opOK);
-
-  DenseElementsAttr initValueAttr = DenseFPElementsAttr::get(
-      RankedTensorType::get(inpShape, inpType.getElementType()), fpVal);
-
-  Value initVal = tosa::ConstOp::create(builder, loc, initValueAttr.getType(),
-                                        initValueAttr);
+  Value initVal = createFloatSplatTensor(builder, loc, inpType, initValue);
 
   // mask is 1 for values we want to set to "initVal"
   auto result = rock::tosa::createOpAndInfer<tosa::SelectOp>(
@@ -4910,8 +4915,19 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   constexpr int64_t reductionAxis = 2;
   auto qkMaxs = rock::tosa::createOpAndInfer<tosa::ReduceMaxOp>(
       builder, loc, softmaxType, qkTensor, reductionAxis);
+
+  // A fully masked row reduces to -inf. Use the lowest finite value only for
+  // normalization so -inf - (-inf) cannot poison the exponential.
+  auto qkMaxsType = cast<RankedTensorType>(qkMaxs.getType());
+  APFloat lowestFinite = APFloat::getLargest(
+      cast<FloatType>(softmaxType).getFloatSemantics(), /*Negative=*/true);
+  Value lowestFiniteTensor =
+      createFloatSplatTensor(builder, loc, qkMaxsType, lowestFinite);
+  Value qkMaxsForNormalization = rock::tosa::createOpAndInfer<tosa::MaximumOp>(
+      builder, loc, softmaxType, qkMaxs, lowestFiniteTensor);
+
   auto normalizedQkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
-      builder, loc, softmaxType, qkTensor, qkMaxs);
+      builder, loc, softmaxType, qkTensor, qkMaxsForNormalization);
   auto expsTensor = rock::tosa::createOpAndInfer<tosa::ExpOp>(
       builder, loc, softmaxType, normalizedQkTensor);
   auto expsSums = rock::tosa::createOpAndInfer<tosa::ReduceSumOp>(
@@ -4937,8 +4953,16 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
         builder, loc, lseComputeType, lseTensor, qkMaxsForLSE);
   }
 
+  // A valid row contributes exp(max - max) = 1, while a fully masked row
+  // sums to zero. Clamp only the normalization denominator and retain the
+  // original sum above for LSE.
+  auto expsSumsType = cast<RankedTensorType>(expsSums.getType());
+  Value oneTensor = createFloatSplatTensor(builder, loc, expsSumsType, 1.0f);
+  Value expsSumsForNormalization =
+      rock::tosa::createOpAndInfer<tosa::MaximumOp>(builder, loc, softmaxType,
+                                                    expsSums, oneTensor);
   auto invExpsSums = rock::tosa::createOpAndInfer<tosa::ReciprocalOp>(
-      builder, loc, softmaxType, expsSums);
+      builder, loc, softmaxType, expsSumsForNormalization);
 
   Value softmaxTensor =
       rock::tosa::getMulOp(builder, loc, expsTensor, invExpsSums, softmaxType);
