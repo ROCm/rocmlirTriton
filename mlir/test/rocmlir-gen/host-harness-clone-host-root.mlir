@@ -21,7 +21,6 @@
 // CHECK-NEXT: %[[B_T:.+]] = bufferization.to_tensor %[[B]]
 // CHECK-NEXT: %[[OUT:.+]] = call @host_add(%[[A_T]], %[[B_T]])
 // CHECK-NEXT: %[[OUT_M:.+]] = bufferization.to_buffer %[[OUT]]
-// CHECK-NEXT: memref.copy %[[OUT_M]], %[[RES]]
 
 // CHECK-NEXT: %[[VAL_A_T:.+]] = bufferization.to_tensor %[[VAL_A]]
 // CHECK-NEXT: %[[VAL_B_T:.+]] = bufferization.to_tensor %[[VAL_B]]
@@ -29,8 +28,8 @@
 // CHECK-NEXT: %[[REF_M:.+]] = bufferization.to_buffer %[[REF]]
 // CHECK-NEXT: memref.copy %[[REF_M]], %[[VAL_RES]]
 
-// CHECK-NEXT: call @host_add_verify2(%[[RES]], %[[VAL_RES]])
-// CHECK: call @_memcpy_f16_f32_6(%[[RES]], %{{.+}})
+// CHECK-NEXT: call @host_add_verify2(%[[OUT_M]], %[[VAL_RES]])
+// CHECK: call @_memcpy_f16_f32_6(%[[OUT_M]], %{{.+}})
 // CHECK: call @printMemrefF32
 
 func.func @host_add_cpu_host(%arg0: tensor<6xf16>, %arg1: tensor<6xf16>) -> tensor<6xf16> {

@@ -16,12 +16,13 @@
 // CHECK: memref.alloc() : memref<4xi32>
 // CHECK: %[[VAL_C:.+]] = memref.alloc() : memref<4xi32>
 // CHECK: memref.alloc() : memref<6xf16>
-// CHECK-NEXT: %[[VAL_RES:.+]] = memref.alloc() : memref<6xf16>
+// CHECK-NEXT: memref.alloc() : memref<6xf16>
 // CHECK-NEXT: %[[A_T:.+]] = bufferization.to_tensor %[[VAL_A]]
 // CHECK-NEXT: %[[B_T:.+]] = bufferization.to_tensor %[[VAL_B]]
 // CHECK-NEXT: %[[C_T:.+]] = bufferization.to_tensor %[[VAL_C]]
-// CHECK-NEXT: call @host_mixed(%[[A_T]], %[[B_T]], %[[C_T]]) : (tensor<2x3xf16>, tensor<3xf32>, tensor<4xi32>) -> tensor<6xf16>
-// CHECK: memref.copy %{{.+}}, %[[VAL_RES]] : memref<6xf16> to memref<6xf16>
+// CHECK-NEXT: %[[OUT:.+]] = call @host_mixed(%[[A_T]], %[[B_T]], %[[C_T]]) : (tensor<2x3xf16>, tensor<3xf32>, tensor<4xi32>) -> tensor<6xf16>
+// CHECK-NEXT: %[[OUT_M:.+]] = bufferization.to_buffer %[[OUT]] : tensor<6xf16> to memref<6xf16>
+// CHECK: call @_memcpy_f16_f32_6(%[[OUT_M]], %{{.+}})
 
 func.func @host_mixed(%arg0: tensor<2x3xf16>, %arg1: tensor<3xf32>, %arg2: tensor<4xi32>) -> tensor<6xf16> {
   %0 = tensor.collapse_shape %arg0 [[0, 1]] : tensor<2x3xf16> into tensor<6xf16>

@@ -16,24 +16,21 @@
 
 // CHECK-LABEL: func.func @main()
 // CHECK: %[[IN:.+]] = memref.alloc() : memref<2x3xf32>
-// CHECK: %[[RES0:.+]] = memref.alloc() : memref<6xf32>
-// CHECK-NEXT: %[[RES1:.+]] = memref.alloc() : memref<3x2xf32>
+// CHECK: memref.alloc() : memref<6xf32>
+// CHECK-NEXT: memref.alloc() : memref<3x2xf32>
 // CHECK-NEXT: %[[IN_T:.+]] = bufferization.to_tensor %[[IN]]
 // CHECK-NEXT: %[[OUT:.+]]:2 = call @host_two_results(%[[IN_T]]) : (tensor<2x3xf32>) -> (tensor<6xf32>, tensor<3x2xf32>)
-// CHECK-NEXT: %[[OUT0:.+]] = bufferization.to_buffer %[[OUT]]#0
-// CHECK-NEXT: memref.copy %[[OUT0]], %[[RES0]] : memref<6xf32> to memref<6xf32>
-// CHECK-NEXT: %[[OUT1:.+]] = bufferization.to_buffer %[[OUT]]#1
-// CHECK-NEXT: memref.copy %[[OUT1]], %[[RES1]] : memref<3x2xf32> to memref<3x2xf32>
+// CHECK-NEXT: %[[OUT0:.+]] = bufferization.to_buffer %[[OUT]]#0 : tensor<6xf32> to memref<6xf32>
+// CHECK-NEXT: %[[OUT1:.+]] = bufferization.to_buffer %[[OUT]]#1 : tensor<3x2xf32> to memref<3x2xf32>
 // CHECK-NOT: memref.alloc()
-// CHECK: memref.cast %[[RES0]]
-// CHECK: memref.cast %[[RES1]]
+// CHECK: memref.cast %[[OUT0]]
+// CHECK: memref.cast %[[OUT1]]
 
 // NOARGS-LABEL: func.func @main()
-// NOARGS-NEXT: %[[RES:.+]] = memref.alloc() : memref<4xf32>
+// NOARGS-NEXT: memref.alloc() : memref<4xf32>
 // NOARGS-NEXT: %[[OUT:.+]] = call @host_no_args() : () -> tensor<4xf32>
-// NOARGS-NEXT: %[[OUT_M:.+]] = bufferization.to_buffer %[[OUT]]
-// NOARGS-NEXT: memref.copy %[[OUT_M]], %[[RES]] : memref<4xf32> to memref<4xf32>
-// NOARGS-NEXT: memref.cast %[[RES]]
+// NOARGS-NEXT: %[[OUT_M:.+]] = bufferization.to_buffer %[[OUT]] : tensor<4xf32> to memref<4xf32>
+// NOARGS-NEXT: memref.cast %[[OUT_M]]
 
 // ERR: error: host harness only supports ranked tensor function results
 // MEMREF: error: host harness only supports ranked tensor function results
