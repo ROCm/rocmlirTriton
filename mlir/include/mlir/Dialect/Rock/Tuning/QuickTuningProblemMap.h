@@ -42,7 +42,9 @@ struct QuickTuningProblemKey {
         unsupportedFields(std::move(unsupportedFields)),
         untunableFields(std::move(untunableFields)) {}
 
-  bool hasUnsupportedFields() const {
+  /// True if either `unsupportedFields` or `untunableFields` is non-empty, in
+  /// which case no per-problem key can be emitted for this problem.
+  bool hasUnrepresentedFields() const {
     return !unsupportedFields.empty() || !untunableFields.empty();
   }
 

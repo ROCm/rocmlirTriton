@@ -6859,7 +6859,7 @@ int main(int argc, char **argv) {
       llvm::errs() << "Failed to key module: " << *module << "\n";
       return EXIT_FAILURE;
     }
-    if (key->hasUnsupportedFields()) {
+    if (key->hasUnrepresentedFields()) {
       llvm::errs()
           << "Cannot generate a per-problem quick-tuning key: the current "
              "problem uses fields not represented by the shipped maps: "

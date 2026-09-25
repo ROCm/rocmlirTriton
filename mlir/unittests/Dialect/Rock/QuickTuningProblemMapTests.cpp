@@ -134,7 +134,7 @@ TEST(QuickTuningProblemKeyTest, ImpliedOutputTypeIsTheBaseProblem) {
        {gemm("i8", "i32"), conv("i8", "i32", kSymmetricPadding)}) {
     auto key = keyFor(ctx, func);
     ASSERT_TRUE(key);
-    EXPECT_FALSE(key->hasUnsupportedFields())
+    EXPECT_FALSE(key->hasUnrepresentedFields())
         << key->unsupportedFields << " / " << key->untunableFields;
   }
 }
