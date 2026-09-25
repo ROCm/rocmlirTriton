@@ -364,7 +364,7 @@ func.func @affine_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64
 // Pointer = base + carried offset accumulator. The loop still advances the
 // carried coordinates every iteration, so the load is marked:
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]][{{.*}}rock.loop_variant_index_math
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][{{.*}}rock.rewrite_itt_layout
 // Mixed-radix carry update (compare + select) advances the coordinate:
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select
@@ -790,7 +790,7 @@ func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (tensor<2x4xi8>)
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
-//   CHECK-NOT:     rock.loop_variant_index_math
+//   CHECK-NOT:     rock.rewrite_itt_layout
 //       CHECK:     scf.yield
 func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
@@ -827,7 +827,7 @@ func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> 
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<16xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<2x4xi8>)
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
-//       CHECK:     rock.blockwise_load_ptr {{.*}}rock.loop_variant_index_math
+//       CHECK:     rock.blockwise_load_ptr {{.*}}rock.rewrite_itt_layout
 //   CHECK-NOT:     arith.cmpi uge
 //   CHECK-NOT:     arith.select
 //       CHECK:     scf.yield
@@ -861,7 +861,7 @@ func.func @carry_nested_merge_below_iv_merge(%arg0: tensor<16xi8>, %arg1: tensor
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (tensor<2x4xi8>)
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
-//   CHECK-NOT:     rock.loop_variant_index_math
+//   CHECK-NOT:     rock.rewrite_itt_layout
 //       CHECK:     scf.yield
 func.func @skip_non_conv_kernel(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32

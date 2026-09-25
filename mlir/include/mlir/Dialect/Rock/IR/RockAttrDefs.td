@@ -703,20 +703,21 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
   }];
 }
 
-def Rock_LoopVariantIndexMath : Rock_Attr<"LoopVariantIndexMath"> {
-  let mnemonic = "rock.loop_variant_index_math";
+def Rock_RewriteITTLayout : Rock_Attr<"RewriteITTLayout"> {
+  let mnemonic = "rock.rewrite_itt_layout";
   let description = [{
     Marker set on a `rock.blockwise_load_ptr` by
-    `rock-incremental-pointer-arith` when the loop body still does index work
-    for every distinct coordinate the load's threads own, on every iteration.
+    `rock-incremental-pointer-arith` to have `rock-set-itt-reduction-layout`
+    put every warp of the load on K. It is set when the loop body still does
+    index work for every distinct coordinate the load's threads own, on every
+    iteration, so fewer coordinates per thread means less work.
     That is the case in two situations. The pass made the load's address and
     mask arithmetic incremental through its carry path, so the loop advances
     the carried coordinates. Or it could not make that arithmetic incremental,
     so it stays recomputed from scratch, and the arithmetic splits the
     induction variable through a `Merge` with a non-power-of-two length, so
     the loop keeps a non-power-of-two division per coordinate.
-    The marker survives TTIR lowering onto the `tt.load` and is consumed by
-    `rock-set-itt-reduction-layout`.
+    The marker survives TTIR lowering onto the `tt.load`.
   }];
 }
 

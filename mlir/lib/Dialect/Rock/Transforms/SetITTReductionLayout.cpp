@@ -11,13 +11,13 @@
 // fastest dim first. With K the slow dim and a wide free dim, most warps land
 // on the free dim and every thread owns many distinct K rows.
 //
-// When rock-incremental-pointer-arith marks the load
-// rock.loop_variant_index_math, every one of those rows costs scalar work per
-// iteration: either a non-power-of-two division sequence, when the index math
-// is still recomputed inside the loop, or advancing the coordinates its carry
-// path keeps across iterations. For those loads this pass puts every warp on
-// K, which cuts the rows each thread owns by the warp count. For now it only
-// does so when each thread owns exactly 16 K rows.
+// rock-incremental-pointer-arith marks a load rock.rewrite_itt_layout when
+// every one of those rows costs scalar work per iteration: either a
+// non-power-of-two division sequence, when the index math is still recomputed
+// inside the loop, or advancing the coordinates its carry path keeps across
+// iterations. For those loads this pass puts every warp on K, which cuts the
+// rows each thread owns by the warp count. For now it only does so when each
+// thread owns exactly 16 K rows.
 //
 // Like in-thread-transpose, the load is rebuilt in the new layout between
 // convert_layout ops; the remove-layout-conversions run that follows carries
@@ -61,6 +61,8 @@ namespace {
 struct RockSetITTReductionLayoutPass
     : public rock::impl::RockSetITTReductionLayoutPassBase<
           RockSetITTReductionLayoutPass> {
+  using rock::impl::RockSetITTReductionLayoutPassBase<
+      RockSetITTReductionLayoutPass>::RockSetITTReductionLayoutPassBase;
   void runOnOperation() override;
 };
 
@@ -197,10 +199,10 @@ void RockSetITTReductionLayoutPass::runOnOperation() {
       continue;
     }
     if (llvm::none_of(loads, [](tt::LoadOp load) {
-          return load->hasAttr(LoopVariantIndexMathAttr::getMnemonic());
+          return load->hasAttr(RewriteITTLayoutAttr::getMnemonic());
         })) {
-      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: index math "
-                                 "is not marked loop-variant; skipping\n");
+      LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: no load is "
+                                 "marked rock.rewrite_itt_layout; skipping\n");
       continue;
     }
     // Hack: 16 K rows per thread is the only count measured to gain (the rxl

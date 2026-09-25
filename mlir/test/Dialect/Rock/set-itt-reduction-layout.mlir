@@ -4,7 +4,7 @@
 // on a software-pipelined kernel: the gather is loaded once in the prologue
 // and once per iteration, and both copies go through amdg.in_thread_transpose
 // into the same shared-memory buffer. rock-incremental-pointer-arith marks the
-// gather's loads rock.loop_variant_index_math when their index math keeps a
+// gather's loads rock.rewrite_itt_layout when their index math keeps a
 // non-power-of-two division in the loop or advances carried coordinates.
 // RUN: rocmlir-opt -rock-set-itt-reduction-layout --mlir-print-local-scope --split-input-file %s | FileCheck %s
 //
@@ -30,11 +30,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // CHECK-LABEL: tt.func @marked_gather
   // CHECK:         tt.load {{.*}} : tensor<128x32x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
   // CHECK:         %[[PTR0:.*]] = ttg.convert_layout {{.*}} -> tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // CHECK:         tt.load %[[PTR0]] {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK:         tt.load %[[PTR0]] {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK:         amdg.in_thread_transpose {{.*}} -> tensor<32x64xf16, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [0, 32], [16, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[4, 0], [8, 0]], block = []}>>
   // CHECK:         scf.for
   // CHECK:           %[[PTR:.*]] = ttg.convert_layout {{.*}} -> tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
-  // CHECK:           tt.load %[[PTR]] {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // CHECK:           tt.load %[[PTR]] {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // CHECK:           amdg.in_thread_transpose {{.*}} -> tensor<32x64xf16, #ttg.linear<{register = {{\[}}[1, 0], [2, 0], [0, 32], [16, 0]], lane = {{\[}}[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = {{\[}}[4, 0], [8, 0]], block = []}>>
   // PROP-LABEL: tt.func @marked_gather
   // PROP-NOT:     ttg.convert_layout {{.*}} : tensor<32x
@@ -47,7 +47,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // PROP:         tt.return
   // OFF-LABEL: tt.func @marked_gather
   // OFF-NOT:     warpsPerCTA = [4, 1]
-  // OFF:         tt.load {{.*}} {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // OFF:         tt.load {{.*}} {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
   // OFF-NOT:     warpsPerCTA = [4, 1]
   // OFF:         tt.return
   tt.func @marked_gather(%argA: !tt.ptr<f16>, %argB: !tt.ptr<f16>) -> tensor<128x64xf32, #mma> {
@@ -74,7 +74,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %rowOffB0 = tt.broadcast %rowOff0 : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
     %offB0 = arith.addi %rowOffB0, %colsB : tensor<32x64xi32, #blocked>
     %ptrB0 = tt.addptr %ptrB, %offB0 : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
-    %b0 = tt.load %ptrB0 {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+    %b0 = tt.load %ptrB0 {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #blocked>
     %bt0 = amdg.in_thread_transpose %b0 : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
     ttg.local_store %bt0, %slot : tensor<32x64xf16, #linear> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
     %res:2 = scf.for %iv = %c0_i32 to %c8_i32 step %c1_i32 iter_args(%acc = %acc0, %cur = %slot) -> (tensor<128x64xf32, #mma>, !ttg.memdesc<32x64xf16, #shared, #smem, mutable>) : i32 {
@@ -87,7 +87,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
       %rowOffB = tt.broadcast %rowOff : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
       %offB = arith.addi %rowOffB, %colsB : tensor<32x64xi32, #blocked>
       %ptrBk = tt.addptr %ptrB, %offB : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
-      %b = tt.load %ptrBk {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+      %b = tt.load %ptrBk {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #blocked>
       %bdot = ttg.local_load %cur : !ttg.memdesc<32x64xf16, #shared, #smem, mutable> -> tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>>
       %d = tt.dot %adot, %bdot, %acc : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 8}>> * tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 8}>> -> tensor<128x64xf32, #mma>
       %bt = amdg.in_thread_transpose %b : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
@@ -134,7 +134,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, "ttg.thr
     %rowOffB0 = tt.broadcast %rowOff0 : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
     %offB0 = arith.addi %rowOffB0, %colsB : tensor<32x64xi32, #blocked>
     %ptrB0 = tt.addptr %ptrB, %offB0 : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
-    %b0 = tt.load %ptrB0 {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+    %b0 = tt.load %ptrB0 {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #blocked>
     %bt0 = amdg.in_thread_transpose %b0 : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
     ttg.local_store %bt0, %slot : tensor<32x64xf16, #linear> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
     scf.for %iv = %c0_i32 to %c8_i32 step %c1_i32 : i32 {
@@ -147,7 +147,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, "ttg.thr
       %rowOffB = tt.broadcast %rowOff : tensor<32x1xi32, #blocked> -> tensor<32x64xi32, #blocked>
       %offB = arith.addi %rowOffB, %colsB : tensor<32x64xi32, #blocked>
       %ptrBk = tt.addptr %ptrB, %offB : tensor<32x64x!tt.ptr<f16>, #blocked>, tensor<32x64xi32, #blocked>
-      %b = tt.load %ptrBk {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #blocked>
+      %b = tt.load %ptrBk {rock.rewrite_itt_layout} : tensor<32x64x!tt.ptr<f16>, #blocked>
       %bt = amdg.in_thread_transpose %b : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #linear>
       ttg.local_store %bt, %slot : tensor<32x64xf16, #linear> -> !ttg.memdesc<32x64xf16, #shared, #smem, mutable>
     }

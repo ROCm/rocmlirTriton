@@ -31,9 +31,9 @@ func.func @test_load_cache_modifier(%arg0: tensor<64x64xi32>, %arg1: tensor<64x6
 // Rock metadata on a blockwise_load_ptr (here the
 // rock-incremental-pointer-arith marker) is carried onto the tt.load.
 // CHECK-LABEL: @test_load_forwards_rock_attrs
-// CHECK: tt.load {{.*}} {rock.loop_variant_index_math} : tensor<64x64x!tt.ptr<f16>>
+// CHECK: tt.load {{.*}} {rock.rewrite_itt_layout} : tensor<64x64x!tt.ptr<f16>>
 func.func @test_load_forwards_rock_attrs(%arg0: tensor<64x64xi32>, %arg1: tensor<64x64xi1>) -> tensor<64x64xf16> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
-  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>, rock.loop_variant_index_math} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
+  %0 = rock.blockwise_load_ptr %arg0[%arg1] {cacheModifier = #rock<CacheModifier none>, rock.rewrite_itt_layout} : tensor<64x64xi32>, tensor<64x64xi1> -> tensor<64x64xf16>
   return %0 : tensor<64x64xf16>
 }
 

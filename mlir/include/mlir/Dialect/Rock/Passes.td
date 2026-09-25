@@ -396,13 +396,13 @@ def RockIncrementalPointerArithPass
     Both paths are conservative: any construct that cannot be proven to admit a
     constant-arithmetic recurrence leaves the op untouched.
 
-    A `rock.blockwise_load_ptr` is marked `rock.loop_variant_index_math` when
-    its loop still does index work per coordinate: either the carry path
+    A `rock.blockwise_load_ptr` is marked `rock.rewrite_itt_layout` when its
+    loop still does index work per coordinate: either the carry path
     rewrote its pointer, so the loop advances the carried coordinates, or
     neither path could handle it and its induction variable goes through a
     `Merge` with a non-power-of-two length, so the loop keeps that division.
-    Later layout passes use the marker to decide whether to reduce the
-    coordinates each thread owns.
+    `rock-set-itt-reduction-layout` then reduces the coordinates each thread
+    owns for the marked loads.
   }];
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect",
                            "scf::SCFDialect", "arith::ArithDialect",
@@ -938,16 +938,20 @@ def RockSetITTReductionLayoutPass
     that puts most warps on the free dim, so every thread owns many distinct K
     rows.
 
-    When `rock-incremental-pointer-arith` marks the load
-    `rock.loop_variant_index_math`, each of those rows costs scalar work on
-    every iteration. Either the index math keeps a non-power-of-two division
+    `rock-incremental-pointer-arith` marks a load `rock.rewrite_itt_layout`
+    when each of those rows costs scalar work on every iteration. Either the
+    index math keeps a non-power-of-two division
     inside the loop (e.g. a convolution's gemmK -> (c, y, x) decomposition it
     could not make incremental), or its carry path advances per-row
     coordinates carried across iterations. For such loads this pass sets
     `warpsPerCTA` to all warps on K, cutting the rows each thread owns by the
-    warp count.
+    warp count. For now it only does so when each thread owns exactly 16 K
+    rows, the only count measured to gain (on the rxl encoder and decoder
+    convolutions).
     Every load staged into the same shared-memory buffer (e.g. a pipeline's
     prologue and in-loop copies) moves together; other loads are untouched.
+    Setting the `useReductionLayout` perfConfig knob to 0 turns this pass off,
+    as it does `rock-set-reduction-layout`.
 
     Like `tritonamdgpu-in-thread-transpose`, the load is rebuilt in the new
     layout between `ttg.convert_layout` ops, and the
@@ -956,6 +960,12 @@ def RockSetITTReductionLayoutPass
   }];
   let dependentDialects = ["triton::gpu::TritonGPUDialect",
                            "triton::amdgpu::TritonAMDGPUDialect"];
+  let options = [Option<"useReductionLayout", "use-reduction-layout",
+                        "int64_t", /*default=*/"-1",
+                        "The perfConfig knob shared with "
+                        "`rock-set-reduction-layout`: 0 disables the rewrite; "
+                        "-1 and 1 leave it to the loads' "
+                        "`rock.rewrite_itt_layout` marker.">];
 }
 
 def RockRollDotKPass : Pass<"rock-roll-dot-k", "::mlir::ModuleOp"> {

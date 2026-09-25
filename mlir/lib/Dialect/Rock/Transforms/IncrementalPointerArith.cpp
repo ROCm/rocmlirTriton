@@ -549,17 +549,17 @@ static bool hasIvTraversedNonPow2Merge(const LoopPtrInfo &info) {
   return false;
 }
 
-/// Mark the loads reading `tp`'s pointers rock.loop_variant_index_math.
-static void markLoopVariantLoads(TransformsToPtrOp tp) {
+/// Mark the loads reading `tp`'s pointers rock.rewrite_itt_layout.
+static void markRewriteITTLayoutLoads(TransformsToPtrOp tp) {
   for (Operation *user : tp.getPointers().getUsers())
     if (isa<BlockwiseLoadPtrOp>(user))
-      user->setDiscardableAttr(LoopVariantIndexMathAttr::getMnemonic(),
+      user->setDiscardableAttr(RewriteITTLayoutAttr::getMnemonic(),
                                UnitAttr::get(tp.getContext()));
 }
 
 /// Mark the loads of `loop` whose pointer is still recomputed from scratch
 /// every iteration and splits the iv by a non-power-of-two Merge.
-static void markLoopVariantIndexMath(scf::ForOp loop) {
+static void markRewriteITTLayout(scf::ForOp loop) {
   for (Operation &o : loop.getBody()->without_terminator()) {
     auto tp = dyn_cast<TransformsToPtrOp>(&o);
     if (!tp)
@@ -567,7 +567,7 @@ static void markLoopVariantIndexMath(scf::ForOp loop) {
     FailureOr<LoopPtrInfo> info = analyzeLoopPointer(tp, loop);
     if (failed(info) || !hasIvTraversedNonPow2Merge(*info))
       continue;
-    markLoopVariantLoads(tp);
+    markRewriteITTLayoutLoads(tp);
   }
 }
 
@@ -1125,7 +1125,7 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   for (auto [plan, ptrAndMask] : llvm::zip_equal(plans, ptrsAndMasks)) {
     // The carried coordinates still advance every iteration, once for each
     // coordinate the load's threads own.
-    markLoopVariantLoads(plan.cand.op);
+    markRewriteITTLayoutLoads(plan.cand.op);
     plan.cand.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
     plan.cand.op.getMask().replaceAllUsesWith(ptrAndMask.second);
     plan.cand.op.erase();
@@ -1164,5 +1164,5 @@ void RockIncrementalPointerArithPass::runOnOperation() {
 
   // Every op the rewrites handled is pinned to iv == lb or gone, so what still
   // depends on the iv is what both paths gave up on.
-  func.walk([](scf::ForOp loop) { markLoopVariantIndexMath(loop); });
+  func.walk([](scf::ForOp loop) { markRewriteITTLayout(loop); });
 }
