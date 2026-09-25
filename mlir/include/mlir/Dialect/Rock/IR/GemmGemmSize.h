@@ -14,12 +14,15 @@
 #ifndef MLIR_DIALECT_ROCK_IR_GEMMGEMMCONTEXT_H
 #define MLIR_DIALECT_ROCK_IR_GEMMGEMMCONTEXT_H
 
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+
 #include <cstdint>
 
 namespace mlir {
 namespace rock {
 
 /// Structure for holding the sizes of a matrix multiplication operation.
+/// Dynamic dimensions are ShapedType::kDynamic.
 struct GemmGemmSize {
   int64_t g;
   int64_t m;
@@ -29,6 +32,12 @@ struct GemmGemmSize {
 
   GemmGemmSize(int64_t g, int64_t m, int64_t k, int64_t n, int64_t o)
       : g(g), m(m), k(k), n(n), o(o) {}
+
+  bool isDynamic() const {
+    return ShapedType::isDynamic(g) || ShapedType::isDynamic(m) ||
+           ShapedType::isDynamic(k) || ShapedType::isDynamic(n) ||
+           ShapedType::isDynamic(o);
+  }
 
   bool operator==(const GemmGemmSize &other) {
     return (g == other.g) && (m == other.m) && (k == other.k) &&

@@ -34,11 +34,12 @@ namespace mlir {
 namespace rock {
 namespace layout {
 
-/// Struct containing information that guide the layout heuristic selection
+/// Struct containing information that guide the layout heuristic selection.
+/// The block counts are i32 values when they are dynamic.
 struct GridLayoutInfo {
-  int64_t gBlocks;
-  int64_t mBlocks;
-  int64_t nBlocks;
+  OpFoldResult gBlocks;
+  OpFoldResult mBlocks;
+  OpFoldResult nBlocks;
   int64_t numCU;
   int64_t numChiplets;
   Type inputType;
@@ -54,10 +55,11 @@ GridCoordinates makeGroupedGridLayout(PatternRewriter &b, Location loc,
                                       Value bid, GridLayoutInfo info,
                                       StringRef arch);
 
+/// `mBlocks` and `gridSize` are i32 values when they are dynamic.
 AttnGridCoordinates makeGxNGridLayout(PatternRewriter &b, Location loc,
-                                      Value bid, int64_t mBlocks, Value nIter,
-                                      int64_t gridSize, StringRef arch,
-                                      int64_t numChiplets,
+                                      Value bid, OpFoldResult mBlocks,
+                                      Value nIter, OpFoldResult gridSize,
+                                      StringRef arch, int64_t numChiplets,
                                       Value splitKV = nullptr);
 
 } // namespace layout

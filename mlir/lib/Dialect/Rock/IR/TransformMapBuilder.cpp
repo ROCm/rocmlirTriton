@@ -9,7 +9,9 @@
 
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/IR/SymbolicExprUtils.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -29,13 +31,17 @@ using namespace mlir::rock;
 AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
                                          ArrayRef<TransformAttr> transforms,
                                          ArrayRef<int64_t> upperBounds,
-                                         ArrayRef<int64_t> lowerBounds) {
+                                         ArrayRef<int64_t> lowerBounds,
+                                         unsigned numSymbols) {
+  auto simplify = [&](AffineExpr e) {
+    return simplifyAffineExpr(e, 0, numSymbols);
+  };
   llvm::SmallMapVector<int64_t, AffineExpr, 8> affExprsMap;
   for (const TransformAttr transform : transforms) {
     TransformType type = transform.getType();
     ArrayRef<uint32_t> upperDims = transform.getUpperDims();
     ArrayRef<uint32_t> lowerDims = transform.getLowerDims();
-    ArrayRef<int64_t> params = transform.getParams();
+    SmallVector<AffineExpr> params = transform.getParamExprs();
     if (type == TransformType::PassThrough) {
       for (auto pair : llvm::zip(upperDims, lowerDims)) {
         uint32_t upper, lower;
@@ -50,11 +56,10 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
         // second run leftPad = 3 rightPad = 1
         // if your pad is one dim , example of pad parameters [1,2]
         // leftPad = 1 rightPad = 2
-        int64_t leftPad = params[i * 2];
+        AffineExpr leftPad = params[i * 2];
         uint32_t upperDim = upperDims[i];
         uint32_t lowerDim = lowerDims[i];
-        AffineExpr expr =
-            b.getAffineDimExpr(upperDim) - b.getAffineConstantExpr(leftPad);
+        AffineExpr expr = b.getAffineDimExpr(upperDim) - leftPad;
         affExprsMap.insert({lowerDim, expr});
       }
     } else if (type == TransformType::Slice) {
@@ -62,44 +67,41 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       for (uint32_t i = 0, e = upperDims.size(); i < e; ++i) {
         uint32_t upperDim = upperDims[i];
         uint32_t lowerDim = lowerDims[i];
-        int64_t begin = params[i * 2];
-        AffineExpr expr =
-            b.getAffineDimExpr(upperDim) + b.getAffineConstantExpr(begin);
+        AffineExpr begin = params[i * 2];
+        AffineExpr expr = b.getAffineDimExpr(upperDim) + begin;
         affExprsMap.insert({lowerDim, expr});
       }
     } else if (type == TransformType::Embed) {
-      ArrayRef<int64_t> coefficients = params;
+      ArrayRef<AffineExpr> coefficients = params;
       uint32_t lowerDim = lowerDims[0];
       AffineExpr expr = b.getAffineConstantExpr(0);
       for (auto pair : llvm::zip(upperDims, coefficients)) {
         uint32_t upperDim;
-        int64_t coefficient;
+        AffineExpr coefficient;
         std::tie(upperDim, coefficient) = pair;
-        expr = expr + (b.getAffineDimExpr(upperDim) *
-                       b.getAffineConstantExpr(coefficient));
+        expr = expr + (b.getAffineDimExpr(upperDim) * coefficient);
       }
       affExprsMap.insert({lowerDim, expr});
     } else if (type == TransformType::Unmerge) {
-      ArrayRef<int64_t> lengths = params;
+      ArrayRef<AffineExpr> lengths = params;
       AffineExpr expr = b.getAffineDimExpr(upperDims[0]);
       for (auto pair : llvm::zip(upperDims.slice(1), lengths.slice(1))) {
         uint32_t upperDim;
-        int64_t length;
+        AffineExpr length;
         std::tie(upperDim, length) = pair;
-        expr = expr * b.getAffineConstantExpr(length) +
-               b.getAffineDimExpr(upperDim);
+        expr = expr * length + b.getAffineDimExpr(upperDim);
       }
       affExprsMap.insert({lowerDims[0], expr});
     } else if (type == TransformType::Merge) {
       // Compute lower dimension strides.
-      llvm::SmallVector<int64_t, 4> lowerDimStrides;
-      int64_t totalStride = 1;
+      llvm::SmallVector<AffineExpr, 4> lowerDimStrides;
+      AffineExpr totalStride = b.getAffineConstantExpr(1);
       lowerDimStrides.push_back(totalStride);
       for (unsigned i = params.size() - 1; i > 0; --i) {
-        totalStride *= params[i];
+        totalStride = simplify(totalStride * params[i]);
         lowerDimStrides.push_back(totalStride);
       }
-      totalStride *= params[0];
+      totalStride = simplify(totalStride * params[0]);
       std::reverse(lowerDimStrides.begin(), lowerDimStrides.end());
 
       // The Merge can be decomposed in two equivalent ways. Writing
@@ -123,10 +125,14 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
       // the severe regressions we measured are 2x2 convs, whose innermost size
       // is two, and asking for a multiple of four excludes them.
       //
+      // Symbolic merges always use the peeled form.
+      //
       // TODO(AIROCMLIR-1238): This is a heuristic. We should fix AxisInfo
       // analysis to properly analyze our IR, instead of making our IR pretty so
       // that AxisInfo can analyze it.
-      bool useNestedForm = params.back() % 4 == 0;
+      bool isStaticMerge = transform.isStatic();
+      bool useNestedForm =
+          isStaticMerge && transform.getParams().back() % 4 == 0;
 
       // Build affine transformation expressions.
       AffineExpr remainder = b.getAffineDimExpr(upperDims[0]);
@@ -134,6 +140,8 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
         // If the constant we're about to divide by is the same as the total
         // stride in the input dimension, output 0, as, if you're above
         // said stride, the result of this merge is undefined behavior.
+        // (For symbolic strides the general formula below also yields 0 for
+        // in-range coordinates.)
         if (lowerDimStrides[i] == totalStride) {
           AffineExpr thisDim = b.getAffineConstantExpr(0);
           affExprsMap.insert({lowerDims[i], thisDim});
@@ -148,15 +156,18 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
           affExprsMap.insert({lowerDims[i], thisDim});
           continue;
         }
-        AffineExpr stride = b.getAffineConstantExpr(lowerDimStrides[i]);
+        AffineExpr stride = lowerDimStrides[i];
         AffineExpr thisDim;
         if (useNestedForm) {
           thisDim = b.getAffineDimExpr(upperDims[0]).floorDiv(stride);
           // Only mod when needed. The coordinate is below totalStride, so the
           // quotient stays under params[i] on its own when stride * params[i]
           // spans the whole merge.
-          if (lowerDimStrides[i] * params[i] < totalStride)
-            thisDim = thisDim % b.getAffineConstantExpr(params[i]);
+          ArrayRef<int64_t> staticParams = transform.getParams();
+          int64_t staticStride = cast<AffineConstantExpr>(stride).getValue();
+          int64_t staticTotal = cast<AffineConstantExpr>(totalStride).getValue();
+          if (staticStride * staticParams[i] < staticTotal)
+            thisDim = thisDim % params[i];
         } else {
           thisDim = remainder.floorDiv(stride);
           remainder = remainder % stride;
@@ -170,18 +181,16 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
     } else if (type == TransformType::Broadcast) {
       // Compute lower dimension strides.
       for (auto tuple : llvm::zip(params, lowerDims, upperDims)) {
-        int64_t param = std::get<0>(tuple);
+        AffineExpr param = std::get<0>(tuple);
         uint32_t lowerDim = std::get<1>(tuple);
         uint32_t upperDim = std::get<2>(tuple);
-        AffineExpr expr =
-            b.getAffineDimExpr(upperDim) % b.getAffineConstantExpr(param);
+        AffineExpr expr = b.getAffineDimExpr(upperDim) % param;
         affExprsMap.insert({lowerDim, expr});
       }
     } else if (type == TransformType::ConstDim) {
       for (unsigned i = 0, e = lowerDims.size(); i < e; ++i) {
         uint32_t lowerDim = lowerDims[i];
-        int64_t constant = params[2 * i];
-        AffineExpr expr = b.getAffineConstantExpr(constant);
+        AffineExpr expr = params[2 * i];
         affExprsMap.insert({lowerDim, expr});
       }
     } else {
@@ -196,9 +205,73 @@ AffineMapAttr mlir::rock::assembleMapFor(Builder &b,
            "Lower dimension must have associated output expression");
     affExprsVec.push_back(affExprsMap[i]);
   }
-  AffineMap ret =
-      AffineMap::get(upperBounds.size(), 0, affExprsVec, b.getContext());
+  AffineMap ret = AffineMap::get(upperBounds.size(), numSymbols, affExprsVec,
+                                 b.getContext());
   return AffineMapAttr::get(ret);
+}
+
+/// Drops symbols that no expression uses and renumbers the rest, then returns
+/// the static or symbolic form of the map as appropriate.
+static TransformMapAttr
+buildTransformMap(llvm::function_ref<InFlightDiagnostic()> emitError,
+                  Builder &b, ArrayRef<TransformAttr> transforms,
+                  ArrayRef<AffineExpr> upperBounds,
+                  ArrayRef<AffineExpr> lowerBounds,
+                  ArrayRef<ArgDimAttr> symbols) {
+  MLIRContext *ctx = b.getContext();
+  SmallVector<bool> used;
+  for (AffineExpr e : llvm::concat<const AffineExpr>(upperBounds, lowerBounds))
+    collectUsedSymbols(e, used);
+  for (TransformAttr t : transforms)
+    for (AffineExpr e : t.getSymParams())
+      collectUsedSymbols(e, used);
+  used.resize(std::max<size_t>(used.size(), symbols.size()), false);
+
+  SmallVector<ArgDimAttr> newSymbols;
+  SmallVector<AffineExpr> replacements;
+  for (auto [i, s] : llvm::enumerate(symbols)) {
+    if (used[i]) {
+      replacements.push_back(getAffineSymbolExpr(newSymbols.size(), ctx));
+      newSymbols.push_back(s);
+    } else {
+      replacements.push_back(getAffineConstantExpr(0, ctx));
+    }
+  }
+  unsigned numSymbols = newSymbols.size();
+  auto remap = [&](AffineExpr e) {
+    return simplifyAffineExpr(e.replaceSymbols(replacements), 0, numSymbols);
+  };
+
+  SmallVector<TransformAttr> newTransforms;
+  newTransforms.reserve(transforms.size());
+  for (TransformAttr t : transforms) {
+    if (t.isStatic()) {
+      newTransforms.push_back(t);
+      continue;
+    }
+    SmallVector<AffineExpr> params =
+        llvm::map_to_vector(t.getSymParams(), remap);
+    newTransforms.push_back(getTransformAttrChecked(
+        emitError, ctx, t.getType(), params, t.getUpperNames(),
+        t.getUpperDims(), t.getLowerNames(), t.getLowerDims()));
+    if (!newTransforms.back())
+      return {};
+  }
+
+  SmallVector<AffineExpr> ub = llvm::map_to_vector(upperBounds, remap);
+  SmallVector<AffineExpr> lb = llvm::map_to_vector(lowerBounds, remap);
+  SmallVector<int64_t> ubInts = llvm::map_to_vector(ub, getStaticOrDynamic);
+  SmallVector<int64_t> lbInts = llvm::map_to_vector(lb, getStaticOrDynamic);
+  if (numSymbols == 0) {
+    ub.clear();
+    lb.clear();
+  }
+  AffineMapAttr map =
+      assembleMapFor(b, newTransforms, ubInts, lbInts, numSymbols);
+  return getTransformMapAttrChecked(emitError, ctx, newTransforms, map,
+                                    b.getDenseI64ArrayAttr(ubInts),
+                                    b.getDenseI64ArrayAttr(lbInts), newSymbols,
+                                    ub, lb);
 }
 
 /// Builder for when we know what we're doing.
@@ -206,6 +279,9 @@ TransformMapAttr TransformMapAttr::get(ArrayRef<TransformAttr> transforms,
                                        ArrayRef<int64_t> upperBounds,
                                        ArrayRef<int64_t> lowerBounds) {
   assert(!transforms.empty() && "This builder does not support the empty map");
+  assert(llvm::all_of(transforms,
+                      [](TransformAttr t) { return t.isStatic(); }) &&
+         "Use the AffineExpr builder for symbolic transforms");
   Builder b(transforms.front().getContext());
   AffineMapAttr map = assembleMapFor(b, transforms, upperBounds, lowerBounds);
   return TransformMapAttr::get(map.getContext(), transforms, map,
@@ -213,7 +289,96 @@ TransformMapAttr TransformMapAttr::get(ArrayRef<TransformAttr> transforms,
                                b.getDenseI64ArrayAttr(lowerBounds));
 }
 
+TransformMapAttr TransformMapAttr::get(ArrayRef<TransformAttr> transforms,
+                                       ArrayRef<AffineExpr> upperBounds,
+                                       ArrayRef<AffineExpr> lowerBounds,
+                                       ArrayRef<ArgDimAttr> symbols) {
+  assert(!transforms.empty() && "This builder does not support the empty map");
+  Builder b(transforms.front().getContext());
+  auto emitError = [&]() {
+    return mlir::emitError(UnknownLoc::get(b.getContext()),
+                           "invalid symbolic transform map: ");
+  };
+  return buildTransformMap(emitError, b, transforms, upperBounds, lowerBounds,
+                           symbols);
+}
+
+/// Symbol binding helpers
+
+AffineExpr mlir::rock::bindArgDim(ArgDimAttr argDim,
+                                  SmallVectorImpl<ArgDimAttr> &symbols) {
+  auto it = llvm::find(symbols, argDim);
+  unsigned pos = std::distance(symbols.begin(), it);
+  if (it == symbols.end())
+    symbols.push_back(argDim);
+  return getAffineSymbolExpr(pos, argDim.getContext());
+}
+
+AffineExpr mlir::rock::rebindSymbols(AffineExpr expr, ArrayRef<ArgDimAttr> from,
+                                     SmallVectorImpl<ArgDimAttr> &to) {
+  if (from.empty())
+    return expr;
+  SmallVector<AffineExpr> replacements = llvm::map_to_vector(
+      from, [&](ArgDimAttr a) { return bindArgDim(a, to); });
+  return simplifyAffineExpr(expr.replaceSymbols(replacements), 0, to.size());
+}
+
+FailureOr<AffineExpr>
+mlir::rock::getDimExpr(Value value, uint32_t dim,
+                       SmallVectorImpl<ArgDimAttr> &symbols) {
+  auto type = dyn_cast<ShapedType>(value.getType());
+  if (!type || !type.hasRank() || dim >= type.getRank())
+    return failure();
+  MLIRContext *ctx = value.getContext();
+  if (!type.isDynamicDim(dim))
+    return getAffineConstantExpr(type.getDimSize(dim), ctx);
+
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    Block *owner = arg.getOwner();
+    if (!owner->isEntryBlock() || !isa<func::FuncOp>(owner->getParentOp()))
+      return failure();
+    return bindArgDim(ArgDimAttr::get(ctx, arg.getArgNumber(), dim), symbols);
+  }
+  Operation *def = value.getDefiningOp();
+  if (auto transform = dyn_cast<TransformOp>(def)) {
+    TransformMapAttr map = transform.getTransform();
+    return rebindSymbols(map.getUpperBoundExprs()[dim], map.getSymbols(),
+                         symbols);
+  }
+  if (auto cast = dyn_cast<tensor::CastOp>(def))
+    return getDimExpr(cast.getSource(), dim, symbols);
+  // Ops whose result has the shape of their destination / first operand.
+  if (auto dps = dyn_cast<DestinationStyleOpInterface>(def)) {
+    auto res = cast<OpResult>(value);
+    if (res.getResultNumber() < dps.getNumDpsInits())
+      return getDimExpr(dps.getDpsInits()[res.getResultNumber()], dim,
+                        symbols);
+  }
+  return failure();
+}
+
+FailureOr<SmallVector<AffineExpr>>
+mlir::rock::getShapeExprs(Value value, SmallVectorImpl<ArgDimAttr> &symbols) {
+  auto type = dyn_cast<ShapedType>(value.getType());
+  if (!type || !type.hasRank())
+    return failure();
+  SmallVector<AffineExpr> ret;
+  for (int64_t i = 0, e = type.getRank(); i < e; ++i) {
+    FailureOr<AffineExpr> expr = getDimExpr(value, i, symbols);
+    if (failed(expr))
+      return failure();
+    ret.push_back(*expr);
+  }
+  return ret;
+}
+
 /// Accessors and common infrastructure
+
+static void assertStaticShape(ArrayRef<int64_t> shape) {
+  if (llvm::any_of(shape, ShapedType::isDynamic))
+    llvm::report_fatal_error("Transform map builders need the AffineExpr "
+                             "constructor to describe dynamic shapes");
+}
 
 TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
                                          ArrayRef<StringRef> startNamesArg,
@@ -223,13 +388,53 @@ TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
       startShape(), endIndices(), endNames(), endShape() {
   assert(startNamesArg.size() == startShapeArg.size() &&
          "Start names and shape must have the same size");
+  assertStaticShape(startShapeArg);
   for (auto pair : llvm::enumerate(startNamesArg)) {
     uint32_t index = pair.index();
     StringRef value = pair.value();
 
     startNames.push_back(value);
     startIndices.insert_or_assign(value, index);
-    startShape.push_back(startShapeArg[index]);
+    startShape.push_back(b.getAffineConstantExpr(startShapeArg[index]));
+  }
+}
+
+TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
+                                         ArrayRef<StringRef> startNamesArg,
+                                         ArrayRef<AffineExpr> startShapeArg,
+                                         ArrayRef<ArgDimAttr> startSymbols,
+                                         mlir::Location loc)
+    : b(builder), result(), loc(loc), startIndices(), startNames(),
+      startShape(), endIndices(), endNames(), endShape() {
+  initStart(startNamesArg, startShapeArg, startSymbols);
+}
+
+TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
+                                         ArrayRef<StringRef> startNamesArg,
+                                         Value shaped, mlir::Location loc)
+    : b(builder), result(), loc(loc), startIndices(), startNames(),
+      startShape(), endIndices(), endNames(), endShape() {
+  SmallVector<ArgDimAttr> shapeSymbols;
+  FailureOr<SmallVector<AffineExpr>> shape =
+      getShapeExprs(shaped, shapeSymbols);
+  if (failed(shape))
+    llvm::report_fatal_error("cannot express the dynamic shape of a value in "
+                             "terms of function-argument dimensions");
+  initStart(startNamesArg, *shape, shapeSymbols);
+}
+
+void TransformMapBuilder::initStart(ArrayRef<StringRef> startNamesArg,
+                                    ArrayRef<AffineExpr> startShapeArg,
+                                    ArrayRef<ArgDimAttr> startSymbols) {
+  assert(startNamesArg.size() == startShapeArg.size() &&
+         "Start names and shape must have the same size");
+  for (auto pair : llvm::enumerate(startNamesArg)) {
+    uint32_t index = pair.index();
+    StringRef value = pair.value();
+
+    startNames.push_back(value);
+    startIndices.insert_or_assign(value, index);
+    startShape.push_back(rebind(startShapeArg[index], startSymbols));
   }
 }
 
@@ -238,6 +443,7 @@ TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
                                          mlir::Location loc)
     : b(builder), result(), loc(loc), startIndices(), startNames(),
       startShape(), endIndices(), endNames(), endShape() {
+  assertStaticShape(startShapeArg);
   for (auto pair : llvm::enumerate(startShapeArg)) {
     uint32_t index = pair.index();
     int64_t value = pair.value();
@@ -248,14 +454,35 @@ TransformMapBuilder::TransformMapBuilder(mlir::Builder &builder,
     startNames.push_back(name);
     startIndices.insert_or_assign(startNames.back(), index);
 
-    startShape.push_back(value);
+    startShape.push_back(b.getAffineConstantExpr(value));
   }
 }
 
+AffineExpr TransformMapBuilder::bindArg(uint32_t arg, uint32_t dim) {
+  return bindArg(ArgDimAttr::get(b.getContext(), arg, dim));
+}
+
+AffineExpr TransformMapBuilder::bindArg(ArgDimAttr argDim) {
+  return bindArgDim(argDim, symbols);
+}
+
+AffineExpr TransformMapBuilder::rebind(AffineExpr expr,
+                                       ArrayRef<ArgDimAttr> exprSymbols) {
+  return rebindSymbols(expr, exprSymbols, symbols);
+}
+
+AffineExpr TransformMapBuilder::simplify(AffineExpr expr) {
+  return simplifyAffineExpr(expr, 0, symbols.size());
+}
+
+SmallVector<AffineExpr> TransformMapBuilder::toExprs(ArrayRef<int64_t> values) {
+  return llvm::map_to_vector(
+      values, [&](int64_t v) { return b.getAffineConstantExpr(v); });
+}
+
 TransformMapAttr TransformMapBuilder::get() {
-  SmallVector<int64_t, 8> upperBounds, lowerBounds;
+  SmallVector<AffineExpr, 8> upperBounds, lowerBounds;
   extractBounds(upperBounds, lowerBounds);
-  AffineMapAttr map = assembleMapFor(b, result, upperBounds, lowerBounds);
   auto errorEmitter = [&]() -> InFlightDiagnostic {
     InFlightDiagnostic err =
         mlir::emitError(loc, "Error assembling transform map: ");
@@ -265,9 +492,8 @@ TransformMapAttr TransformMapBuilder::get() {
     return err;
   };
   frozen = true;
-  return getTransformMapAttrChecked(errorEmitter, b.getContext(), result, map,
-                                    b.getDenseI64ArrayAttr(upperBounds),
-                                    b.getDenseI64ArrayAttr(lowerBounds));
+  return buildTransformMap(errorEmitter, b, result, upperBounds, lowerBounds,
+                           symbols);
 }
 
 void TransformMapBuilder::getEndNames(SmallVectorImpl<StringRef> &names) {
@@ -310,23 +536,43 @@ uint32_t TransformMapBuilder::endIndex(StringRef name) {
 }
 
 int64_t TransformMapBuilder::startSize(StringRef name) {
+  return getStaticOrDynamic(startSizeExpr(name));
+}
+
+int64_t TransformMapBuilder::startSize(uint32_t dim) {
+  return getStaticOrDynamic(startSizeExpr(dim));
+}
+
+int64_t TransformMapBuilder::endSize(StringRef name) {
+  return getStaticOrDynamic(endSizeExpr(name));
+}
+
+int64_t TransformMapBuilder::endSize(uint32_t dim) {
+  return getStaticOrDynamic(endSizeExpr(dim));
+}
+
+AffineExpr TransformMapBuilder::startSizeExpr(StringRef name) {
   return startShape[startIndices[name]];
 }
 
-int64_t TransformMapBuilder::startSize(uint32_t dim) { return startShape[dim]; }
+AffineExpr TransformMapBuilder::startSizeExpr(uint32_t dim) {
+  return startShape[dim];
+}
 
-int64_t TransformMapBuilder::endSize(StringRef name) {
+AffineExpr TransformMapBuilder::endSizeExpr(StringRef name) {
   return endShape[endIndices[name]];
+}
+
+AffineExpr TransformMapBuilder::endSizeExpr(uint32_t dim) {
+  return endShape[dim];
 }
 
 uint32_t TransformMapBuilder::nStartDims() { return startShape.size(); }
 
 uint32_t TransformMapBuilder::nEndDims() { return endShape.size(); }
 
-int64_t TransformMapBuilder::endSize(uint32_t dim) { return endShape[dim]; }
-
 void TransformMapBuilder::defineDim(StringRef name, uint32_t dim,
-                                    int64_t size) {
+                                    AffineExpr size) {
   assert(!frozen && "It's a bug to add to a coordinate transform after "
                     "fetching the attribute");
   [[maybe_unused]] bool nameInsertResult =
@@ -339,41 +585,64 @@ void TransformMapBuilder::defineDim(StringRef name, uint32_t dim,
   assert(dimInsertResult &&
          "Trying to redefine a result dimension in a coordinate transform");
   for (uint32_t e = endShape.size(); e <= dim; ++e) {
-    endShape.push_back(0);
+    endShape.push_back(b.getAffineConstantExpr(0));
   }
-  endShape[dim] = size;
+  endShape[dim] = simplify(size);
+}
+
+void TransformMapBuilder::addTransform(TransformType type,
+                                       ArrayRef<int64_t> params,
+                                       ArrayRef<StringRef> fromNames,
+                                       ArrayRef<uint32_t> fromDims,
+                                       ArrayRef<StringRef> toNames,
+                                       ArrayRef<uint32_t> toDims) {
+  addTransformImpl(type, toExprs(params), fromNames, fromDims, toNames,
+                   toDims);
+}
+
+void TransformMapBuilder::addTransform(TransformType type,
+                                       ArrayRef<AffineExpr> params,
+                                       ArrayRef<StringRef> fromNames,
+                                       ArrayRef<uint32_t> fromDims,
+                                       ArrayRef<StringRef> toNames,
+                                       ArrayRef<uint32_t> toDims) {
+  SmallVector<AffineExpr> simplified =
+      llvm::map_to_vector(params, [&](AffineExpr e) { return simplify(e); });
+  addTransformImpl(type, simplified, fromNames, fromDims, toNames, toDims);
 }
 
 /// Transformations that work basically the same in either direction
 void TransformMapBuilder::passThrough(StringRef name) {
   uint32_t dim = startIndex(name);
-  int64_t size = startSize(dim);
+  AffineExpr size = startSizeExpr(dim);
   defineDim(name, dim, size);
-  addTransform(TransformType::PassThrough, {}, {name}, {dim}, {name}, {dim});
+  addTransform(TransformType::PassThrough, ArrayRef<int64_t>{}, {name}, {dim},
+               {name}, {dim});
 }
 
 void TransformMapBuilder::passThrough(StringRef outName, StringRef inName) {
   uint32_t dim = startIndex(inName);
-  int64_t size = startSize(dim);
+  AffineExpr size = startSizeExpr(dim);
   defineDim(outName, dim, size);
-  addTransform(TransformType::PassThrough, {}, {inName}, {dim}, {outName},
-               {dim});
+  addTransform(TransformType::PassThrough, ArrayRef<int64_t>{}, {inName},
+               {dim}, {outName}, {dim});
 }
 
 void TransformMapBuilder::passThrough(ArrayRef<StringRef> names) {
   llvm::SmallVector<uint32_t> dims;
-  llvm::SmallVector<uint32_t> sizes;
+  llvm::SmallVector<AffineExpr> sizes;
   dims.reserve(names.size());
   sizes.reserve(names.size());
   for (const auto name : names) {
     uint32_t dim = startIndex(name);
     dims.push_back(dim);
-    sizes.push_back(startSize(dim));
+    sizes.push_back(startSizeExpr(dim));
   }
   for (uint32_t i = 0, e = names.size(); i < e; ++i) {
     defineDim(names[i], dims[i], sizes[i]);
   }
-  addTransform(TransformType::PassThrough, {}, names, dims, names, dims);
+  addTransform(TransformType::PassThrough, ArrayRef<int64_t>{}, names, dims,
+               names, dims);
 }
 
 void TransformMapBuilder::passThrough(ArrayRef<StringRef> outNames,
@@ -383,19 +652,19 @@ void TransformMapBuilder::passThrough(ArrayRef<StringRef> outNames,
   assert(outNames.size() == outDims.size() && "One location per output");
 
   llvm::SmallVector<uint32_t> inDims;
-  llvm::SmallVector<uint32_t> inSizes;
+  llvm::SmallVector<AffineExpr> inSizes;
   inDims.reserve(inNames.size());
   inSizes.reserve(inNames.size());
   for (const auto name : inNames) {
     uint32_t dim = startIndex(name);
     inDims.push_back(dim);
-    inSizes.push_back(startSize(dim));
+    inSizes.push_back(startSizeExpr(dim));
   }
   for (uint32_t i = 0, e = outNames.size(); i < e; ++i) {
     defineDim(outNames[i], outDims[i], inSizes[i]);
   }
-  addTransform(TransformType::PassThrough, {}, inNames, inDims, outNames,
-               outDims);
+  addTransform(TransformType::PassThrough, ArrayRef<int64_t>{}, inNames, inDims,
+               outNames, outDims);
 }
 
 void TransformMapBuilder::passThrough(ArrayRef<uint32_t> endIdxs,
@@ -408,14 +677,19 @@ void TransformMapBuilder::passThrough(ArrayRef<uint32_t> endIdxs,
     uint32_t index = std::get<1>(tuple);
     StringRef name = startNames[index];
     names.push_back(name);
-    defineDim(name, std::get<0>(tuple), startSize(index));
+    defineDim(name, std::get<0>(tuple), startSizeExpr(index));
   }
-  addTransform(TransformType::PassThrough, {}, names, startIdxs, names,
-               endIdxs);
+  addTransform(TransformType::PassThrough, ArrayRef<int64_t>{}, names,
+               startIdxs, names, endIdxs);
 }
 
 void TransformMapBuilder::pad(ArrayRef<StringRef> names,
                               ArrayRef<int64_t> params) {
+  pad(names, ArrayRef<AffineExpr>(toExprs(params)));
+}
+
+void TransformMapBuilder::pad(ArrayRef<StringRef> names,
+                              ArrayRef<AffineExpr> params) {
   llvm::SmallVector<uint32_t, 8> dims;
   dims.reserve(names.size());
   std::transform(names.begin(), names.end(), std::back_inserter(dims),
@@ -425,8 +699,13 @@ void TransformMapBuilder::pad(ArrayRef<StringRef> names,
 
 void TransformMapBuilder::pad(StringRef outName, StringRef inName, int64_t left,
                               int64_t right) {
+  pad(outName, inName, cst(left), cst(right));
+}
+
+void TransformMapBuilder::pad(StringRef outName, StringRef inName,
+                              AffineExpr left, AffineExpr right) {
   uint32_t dim = startIndex(inName);
-  SmallVector<int64_t, 2> params = {left, right};
+  SmallVector<AffineExpr, 2> params = {left, right};
   pad({outName}, {dim}, {inName}, params);
 }
 
@@ -434,6 +713,13 @@ void TransformMapBuilder::pad(ArrayRef<StringRef> outNames,
                               ArrayRef<uint32_t> outDims,
                               ArrayRef<StringRef> inNames,
                               ArrayRef<int64_t> params) {
+  pad(outNames, outDims, inNames, ArrayRef<AffineExpr>(toExprs(params)));
+}
+
+void TransformMapBuilder::pad(ArrayRef<StringRef> outNames,
+                              ArrayRef<uint32_t> outDims,
+                              ArrayRef<StringRef> inNames,
+                              ArrayRef<AffineExpr> params) {
   assert(outNames.size() == outDims.size() &&
          "One name needed per dimension in padding");
   assert(outNames.size() == inNames.size() &&
@@ -446,10 +732,10 @@ void TransformMapBuilder::pad(ArrayRef<StringRef> outNames,
                  [&](StringRef s) { return startIndex(s); });
   int64_t padSign = paddingSign();
   for (uint32_t i = 0, e = outNames.size(); i < e; ++i) {
-    int64_t leftPad = params[i * 2];
-    int64_t rightPad = params[i * 2 + 1];
-    int64_t outSize =
-        startSize(inDims[i]) + (padSign * leftPad) + (padSign * rightPad);
+    AffineExpr leftPad = params[i * 2];
+    AffineExpr rightPad = params[i * 2 + 1];
+    AffineExpr outSize =
+        startSizeExpr(inDims[i]) + (leftPad * padSign) + (rightPad * padSign);
     defineDim(outNames[i], outDims[i], outSize);
   }
   addTransform(TransformType::Pad, params, inNames, inDims, outNames, outDims);
@@ -466,6 +752,7 @@ TransformMapBuilder::operator=(const TransformMapBuilder &other) {
     startShape = other.startShape;
     endNames = other.endNames;
     endShape = other.endShape;
+    symbols = other.symbols;
     frozen = other.frozen;
 
     startIndices.clear();
@@ -482,36 +769,53 @@ TransformMapBuilder::operator=(const TransformMapBuilder &other) {
 TransformMapBuilder::TransformMapBuilder(const TransformMapBuilder &other)
     : b(other.b), result(other.result), loc(other.loc), startIndices(),
       startNames(other.startNames), startShape(other.startShape), endIndices(),
-      endNames(other.endNames), endShape(other.endShape), frozen(other.frozen) {
+      endNames(other.endNames), endShape(other.endShape),
+      symbols(other.symbols), frozen(other.frozen) {
   for (uint32_t i = 0, e = startNames.size(); i < e; ++i)
     startIndices.insert({StringRef(startNames[i]), i});
   for (const auto &pair : endNames)
     endIndices.insert({StringRef(pair.second), pair.first});
 }
 
+static void reportTransformError(Location loc, TransformType type,
+                                 ArrayRef<StringRef> upperNames,
+                                 ArrayRef<uint32_t> upperDims,
+                                 ArrayRef<StringRef> lowerNames,
+                                 ArrayRef<uint32_t> lowerDims,
+                                 ArrayRef<AffineExpr> params,
+                                 InFlightDiagnostic &err) {
+  err.attachNote(loc)
+      .append("The operation type was ")
+      .append(getNameForTransformType(type))
+      .append("\n  Upper dimensions =")
+      .appendRange(upperNames)
+      .append(" at ")
+      .appendRange(upperDims)
+      .append("\n  Lower dimensions = ")
+      .appendRange(lowerNames)
+      .append(" at ")
+      .appendRange(lowerDims)
+      .append("\n  Parameters = ");
+  for (AffineExpr p : params) {
+    std::string str;
+    llvm::raw_string_ostream os(str);
+    os << p;
+    err.append(" ").append(str);
+  }
+}
+
 /// Building from a defined set of upper dimensions
-void TopDownTMBuilder::addTransform(TransformType type,
-                                    ArrayRef<int64_t> params,
-                                    ArrayRef<StringRef> startNames,
-                                    ArrayRef<uint32_t> startDims,
-                                    ArrayRef<StringRef> endNames,
-                                    ArrayRef<uint32_t> endDims) {
+void TopDownTMBuilder::addTransformImpl(TransformType type,
+                                        ArrayRef<AffineExpr> params,
+                                        ArrayRef<StringRef> startNames,
+                                        ArrayRef<uint32_t> startDims,
+                                        ArrayRef<StringRef> endNames,
+                                        ArrayRef<uint32_t> endDims) {
   auto emitError = [&]() -> InFlightDiagnostic {
     InFlightDiagnostic err =
         mlir::emitError(loc, "Error constructing coordinate transformation: ");
-    err.attachNote(loc)
-        .append("The operation type was ")
-        .append(getNameForTransformType(type))
-        .append("\n  Upper dimensions =")
-        .appendRange(startNames)
-        .append(" at ")
-        .appendRange(startDims)
-        .append("\n  Lower dimensions = ")
-        .appendRange(endNames)
-        .append(" at ")
-        .appendRange(endDims)
-        .append("\n  Parameters = ")
-        .appendRange(params);
+    reportTransformError(loc, type, startNames, startDims, endNames, endDims,
+                         params, err);
     return err;
   };
   TransformAttr attr =
@@ -525,16 +829,16 @@ void TopDownTMBuilder::addTransform(TransformType type,
   result.push_back(attr);
 }
 
-void TopDownTMBuilder::extractBounds(SmallVectorImpl<int64_t> &upperBounds,
-                                     SmallVectorImpl<int64_t> &lowerBounds) {
+void TopDownTMBuilder::extractBounds(SmallVectorImpl<AffineExpr> &upperBounds,
+                                     SmallVectorImpl<AffineExpr> &lowerBounds) {
   uint32_t nStart = nStartDims(), nEnd = nEndDims();
   upperBounds.reserve(nStart);
   lowerBounds.reserve(nEnd);
   for (uint32_t i = 0; i < nStart; ++i) {
-    upperBounds.push_back(startSize(i));
+    upperBounds.push_back(startSizeExpr(i));
   }
   for (uint32_t i = 0; i < nEnd; ++i) {
-    lowerBounds.push_back(endSize(i));
+    lowerBounds.push_back(endSizeExpr(i));
   }
 }
 
@@ -549,6 +853,15 @@ void TopDownTMBuilder::slice(ArrayRef<StringRef> lowerNames,
                              ArrayRef<StringRef> upperNames,
                              ArrayRef<int64_t> begins,
                              ArrayRef<int64_t> fullLowerSizes) {
+  slice(lowerNames, lowerDims, upperNames, ArrayRef<AffineExpr>(toExprs(begins)),
+        ArrayRef<AffineExpr>(toExprs(fullLowerSizes)));
+}
+
+void TopDownTMBuilder::slice(ArrayRef<StringRef> lowerNames,
+                             ArrayRef<uint32_t> lowerDims,
+                             ArrayRef<StringRef> upperNames,
+                             ArrayRef<AffineExpr> begins,
+                             ArrayRef<AffineExpr> fullLowerSizes) {
   assert(upperNames.size() == lowerNames.size() &&
          "Need same number of upper and lower dimensions in slice");
   assert(upperNames.size() == begins.size() &&
@@ -558,16 +871,16 @@ void TopDownTMBuilder::slice(ArrayRef<StringRef> lowerNames,
 
   uint32_t n = upperNames.size();
   SmallVector<uint32_t, 4> upperDims;
-  SmallVector<int64_t, 8> params;
+  SmallVector<AffineExpr, 8> params;
   upperDims.reserve(n);
   params.reserve(2 * n);
 
   for (uint32_t i = 0; i < n; ++i) {
     uint32_t dim = startIndex(upperNames[i]);
     upperDims.push_back(dim);
-    int64_t upperSize = startSize(dim);
-    int64_t begin = begins[i];
-    int64_t end = begin + upperSize;
+    AffineExpr upperSize = startSizeExpr(dim);
+    AffineExpr begin = begins[i];
+    AffineExpr end = begin + upperSize;
     defineDim(lowerNames[i], lowerDims[i], fullLowerSizes[i]);
     params.push_back(begin);
     params.push_back(end);
@@ -578,14 +891,20 @@ void TopDownTMBuilder::slice(ArrayRef<StringRef> lowerNames,
 
 void TopDownTMBuilder::ignore(StringRef name) {
   uint32_t dim = startIndex(name);
-  int64_t size = startSize(dim);
-  addTransform(TransformType::AddDim, {size}, {name}, {dim}, {}, {});
+  AffineExpr size = startSizeExpr(dim);
+  addTransform(TransformType::AddDim, ArrayRef<AffineExpr>{size}, {name}, {dim},
+               {}, {});
 }
 
 void TopDownTMBuilder::constDim(StringRef lowerName, uint32_t lowerDim,
                                 int64_t constantVal, int64_t lowerSize) {
+  constDim(lowerName, lowerDim, constantVal, cst(lowerSize));
+}
+
+void TopDownTMBuilder::constDim(StringRef lowerName, uint32_t lowerDim,
+                                int64_t constantVal, AffineExpr lowerSize) {
   defineDim(lowerName, lowerDim, lowerSize);
-  SmallVector<int64_t> params = {constantVal, lowerSize};
+  SmallVector<AffineExpr> params = {cst(constantVal), lowerSize};
   addTransform(TransformType::ConstDim, params, {}, {}, {lowerName},
                {lowerDim});
 }
@@ -594,13 +913,21 @@ void TopDownTMBuilder::constDim(ArrayRef<StringRef> lowerNames,
                                 ArrayRef<uint32_t> lowerDims,
                                 ArrayRef<int64_t> constantVals,
                                 ArrayRef<int64_t> lowerSizes) {
+  constDim(lowerNames, lowerDims, constantVals,
+           ArrayRef<AffineExpr>(toExprs(lowerSizes)));
+}
+
+void TopDownTMBuilder::constDim(ArrayRef<StringRef> lowerNames,
+                                ArrayRef<uint32_t> lowerDims,
+                                ArrayRef<int64_t> constantVals,
+                                ArrayRef<AffineExpr> lowerSizes) {
   assert(constantVals.size() == lowerSizes.size() &&
          "must have equal number of constant values and dimension lengths");
-  SmallVector<int64_t> params;
+  SmallVector<AffineExpr> params;
   params.reserve(2 * constantVals.size());
   for (const auto &[name, dim, val, size] :
        llvm::zip(lowerNames, lowerDims, constantVals, lowerSizes)) {
-    params.emplace_back(val);
+    params.emplace_back(cst(val));
     params.emplace_back(size);
     defineDim(name, dim, size);
   }
@@ -610,6 +937,14 @@ void TopDownTMBuilder::constDim(ArrayRef<StringRef> lowerNames,
 void TopDownTMBuilder::embed(StringRef lowerName, uint32_t lowerDim,
                              int64_t lowerSize, ArrayRef<StringRef> upperNames,
                              ArrayRef<int64_t> coefficients) {
+  embed(lowerName, lowerDim, cst(lowerSize), upperNames,
+        ArrayRef<AffineExpr>(toExprs(coefficients)));
+}
+
+void TopDownTMBuilder::embed(StringRef lowerName, uint32_t lowerDim,
+                             AffineExpr lowerSize,
+                             ArrayRef<StringRef> upperNames,
+                             ArrayRef<AffineExpr> coefficients) {
   assert(upperNames.size() == coefficients.size() &&
          "Must provide a coefficient for each dimension");
   SmallVector<uint32_t, 8> upperDims;
@@ -626,6 +961,13 @@ void TopDownTMBuilder::embed(StringRef lowerName, uint32_t lowerDim,
 void TopDownTMBuilder::unmerge(StringRef lowerName, uint32_t lowerDim,
                                ArrayRef<StringRef> upperNames,
                                ArrayRef<int64_t> lengths) {
+  unmerge(lowerName, lowerDim, upperNames,
+          ArrayRef<AffineExpr>(toExprs(lengths)));
+}
+
+void TopDownTMBuilder::unmerge(StringRef lowerName, uint32_t lowerDim,
+                               ArrayRef<StringRef> upperNames,
+                               ArrayRef<AffineExpr> lengths) {
   assert(upperNames.size() == lengths.size() &&
          "Must provide a length for each dimension");
   SmallVector<uint32_t, 8> upperDims;
@@ -633,9 +975,9 @@ void TopDownTMBuilder::unmerge(StringRef lowerName, uint32_t lowerDim,
   for (const StringRef name : upperNames) {
     upperDims.push_back(startIndex(name));
   }
-  int64_t size = 1;
-  for (auto length : lengths) {
-    size *= length;
+  AffineExpr size = cst(1);
+  for (AffineExpr length : lengths) {
+    size = simplify(size * length);
   }
   defineDim(lowerName, lowerDim, size);
   addTransform(TransformType::Unmerge, lengths, upperNames, upperDims,
@@ -645,19 +987,25 @@ void TopDownTMBuilder::unmerge(StringRef lowerName, uint32_t lowerDim,
 void TopDownTMBuilder::merge(ArrayRef<StringRef> lowerNames,
                              ArrayRef<uint32_t> lowerDims, StringRef upperName,
                              ArrayRef<int64_t> sizes) {
+  merge(lowerNames, lowerDims, upperName, ArrayRef<AffineExpr>(toExprs(sizes)));
+}
+
+void TopDownTMBuilder::merge(ArrayRef<StringRef> lowerNames,
+                             ArrayRef<uint32_t> lowerDims, StringRef upperName,
+                             ArrayRef<AffineExpr> sizes) {
   assert(lowerNames.size() == lowerDims.size() &&
          "One name per dimension required in merge");
   assert(lowerDims.size() == sizes.size() &&
          "One size per output dimension required in merge");
 
   uint32_t upperDim = startIndex(upperName);
-  [[maybe_unused]] int64_t upperSize = startSize(upperDim);
+  [[maybe_unused]] AffineExpr upperSize = startSizeExpr(upperDim);
 
-  [[maybe_unused]] int64_t totalLowerSize = 1;
-  for (const int64_t s : sizes) {
-    totalLowerSize *= s;
+  [[maybe_unused]] AffineExpr totalLowerSize = cst(1);
+  for (AffineExpr s : sizes) {
+    totalLowerSize = simplify(totalLowerSize * s);
   }
-  assert(upperSize == totalLowerSize &&
+  assert(symbolicEqual(upperSize, totalLowerSize, 0, getSymbols().size()) &&
          "Upper dimension to merge must have same size as combined lower "
          "dimensions");
   for (auto triple : llvm::zip(lowerNames, lowerDims, sizes)) {
@@ -669,13 +1017,17 @@ void TopDownTMBuilder::merge(ArrayRef<StringRef> lowerNames,
 
 void TopDownTMBuilder::takeRemainder(StringRef name, int64_t length) {
   assert(length > 0 && "Remainder can't be zero");
+  takeRemainder(name, cst(length));
+}
+
+void TopDownTMBuilder::takeRemainder(StringRef name, AffineExpr length) {
   uint32_t dim = startIndex(name);
   // WE're not recording this, but we should be.
   // int64_t size = startSize(dim);
   defineDim(name, dim, length);
   // The semantics of Broadcast are x -> x % l so we might as well use it.
-  addTransform(TransformType::Broadcast, {length}, {name}, {dim}, {name},
-               {dim});
+  addTransform(TransformType::Broadcast, ArrayRef<AffineExpr>{length}, {name},
+               {dim}, {name}, {dim});
 }
 
 llvm::SmallVector<uint32_t>
@@ -707,9 +1059,21 @@ void TopDownTMBottomDimsWrapper::pad(ArrayRef<StringRef> outNames,
   b.pad(outNames, toBottomDims(outNames), inNames, params);
 }
 
+void TopDownTMBottomDimsWrapper::pad(ArrayRef<StringRef> outNames,
+                                     ArrayRef<StringRef> inNames,
+                                     ArrayRef<AffineExpr> params) {
+  b.pad(outNames, toBottomDims(outNames), inNames, params);
+}
+
 void TopDownTMBottomDimsWrapper::constDim(StringRef lowerName,
                                           int64_t constantVal,
                                           int64_t lowerSize) {
+  b.constDim(lowerName, bottomDims[lowerName], constantVal, lowerSize);
+}
+
+void TopDownTMBottomDimsWrapper::constDim(StringRef lowerName,
+                                          int64_t constantVal,
+                                          AffineExpr lowerSize) {
   b.constDim(lowerName, bottomDims[lowerName], constantVal, lowerSize);
 }
 
@@ -726,9 +1090,23 @@ void TopDownTMBottomDimsWrapper::embed(StringRef lowerName, int64_t lowerSize,
           coefficients);
 }
 
+void TopDownTMBottomDimsWrapper::embed(StringRef lowerName,
+                                       AffineExpr lowerSize,
+                                       ArrayRef<StringRef> upperNames,
+                                       ArrayRef<AffineExpr> coefficients) {
+  b.embed(lowerName, bottomDims[lowerName], lowerSize, upperNames,
+          coefficients);
+}
+
 void TopDownTMBottomDimsWrapper::unmerge(StringRef lowerName,
                                          ArrayRef<StringRef> upperNames,
                                          ArrayRef<int64_t> lengths) {
+  b.unmerge(lowerName, bottomDims[lowerName], upperNames, lengths);
+}
+
+void TopDownTMBottomDimsWrapper::unmerge(StringRef lowerName,
+                                         ArrayRef<StringRef> upperNames,
+                                         ArrayRef<AffineExpr> lengths) {
   b.unmerge(lowerName, bottomDims[lowerName], upperNames, lengths);
 }
 
@@ -738,29 +1116,24 @@ void TopDownTMBottomDimsWrapper::merge(ArrayRef<StringRef> lowerNames,
   b.merge(lowerNames, toBottomDims(lowerNames), upperName, sizes);
 }
 
+void TopDownTMBottomDimsWrapper::merge(ArrayRef<StringRef> lowerNames,
+                                       StringRef upperName,
+                                       ArrayRef<AffineExpr> sizes) {
+  b.merge(lowerNames, toBottomDims(lowerNames), upperName, sizes);
+}
+
 /// Building from a defined set of lower dimensions
-void BottomUpTMBuilder::addTransform(TransformType type,
-                                     ArrayRef<int64_t> params,
-                                     ArrayRef<StringRef> startNames,
-                                     ArrayRef<uint32_t> startDims,
-                                     ArrayRef<StringRef> endNames,
-                                     ArrayRef<uint32_t> endDims) {
+void BottomUpTMBuilder::addTransformImpl(TransformType type,
+                                         ArrayRef<AffineExpr> params,
+                                         ArrayRef<StringRef> startNames,
+                                         ArrayRef<uint32_t> startDims,
+                                         ArrayRef<StringRef> endNames,
+                                         ArrayRef<uint32_t> endDims) {
   auto emitError = [&]() -> InFlightDiagnostic {
     InFlightDiagnostic err =
         mlir::emitError(loc, "Error constructing coordinate transformation: ");
-    err.attachNote(loc)
-        .append("The operation type was ")
-        .append(getNameForTransformType(type))
-        .append("\n  Upper dimensions =")
-        .appendRange(endNames)
-        .append(" at ")
-        .appendRange(endDims)
-        .append("\n  Lower dimensions = ")
-        .appendRange(startNames)
-        .append(" at ")
-        .appendRange(startDims)
-        .append("\n  Parameters = ")
-        .appendRange(params);
+    reportTransformError(loc, type, endNames, endDims, startNames, startDims,
+                         params, err);
     return err;
   };
   TransformAttr attr =
@@ -774,16 +1147,16 @@ void BottomUpTMBuilder::addTransform(TransformType type,
   result.push_back(attr);
 }
 
-void BottomUpTMBuilder::extractBounds(SmallVectorImpl<int64_t> &upperBounds,
-                                      SmallVectorImpl<int64_t> &lowerBounds) {
+void BottomUpTMBuilder::extractBounds(SmallVectorImpl<AffineExpr> &upperBounds,
+                                      SmallVectorImpl<AffineExpr> &lowerBounds) {
   uint32_t nStart = nStartDims(), nEnd = nEndDims();
   upperBounds.reserve(nEnd);
   lowerBounds.reserve(nStart);
   for (uint32_t i = 0; i < nEnd; ++i) {
-    upperBounds.push_back(endSize(i));
+    upperBounds.push_back(endSizeExpr(i));
   }
   for (uint32_t i = 0; i < nStart; ++i) {
-    lowerBounds.push_back(startSize(i));
+    lowerBounds.push_back(startSizeExpr(i));
   }
 }
 
@@ -794,17 +1167,24 @@ int64_t BottomUpTMBuilder::paddingSign() const {
 }
 
 void BottomUpTMBuilder::addDim(StringRef name, uint32_t dim, int64_t size) {
+  addDim(name, dim, cst(size));
+}
+
+void BottomUpTMBuilder::addDim(StringRef name, uint32_t dim, AffineExpr size) {
   defineDim(name, dim, size);
-  addTransform(TransformType::AddDim, {size}, {}, {}, {name}, {dim});
+  addTransform(TransformType::AddDim, ArrayRef<AffineExpr>{size}, {}, {},
+               {name}, {dim});
 }
 
 void BottomUpTMBuilder::dropDimAtIndex(StringRef lowerName,
                                        int64_t constantVal) {
   uint32_t dim = startIndex(lowerName);
-  int64_t size = startSize(dim);
-  assert(((constantVal >= 0) && (constantVal < size)) &&
+  AffineExpr size = startSizeExpr(dim);
+  assert(constantVal >= 0 &&
+         (!isa<AffineConstantExpr>(size) ||
+          constantVal < cast<AffineConstantExpr>(size).getValue()) &&
          "constant value must be in range [0, size)");
-  SmallVector<int64_t> params = {constantVal, size};
+  SmallVector<AffineExpr> params = {cst(constantVal), size};
   addTransform(TransformType::ConstDim, params, {lowerName}, {dim}, {}, {});
 }
 
@@ -819,14 +1199,19 @@ void BottomUpTMBuilder::dropDimsAtIndices(ArrayRef<StringRef> lowerNames,
 
 void BottomUpTMBuilder::broadcast(ArrayRef<uint32_t> endDims,
                                   ArrayRef<int64_t> endSizes) {
-  SmallVector<int64_t, 8> params;
+  broadcast(endDims, ArrayRef<AffineExpr>(toExprs(endSizes)));
+}
+
+void BottomUpTMBuilder::broadcast(ArrayRef<uint32_t> endDims,
+                                  ArrayRef<AffineExpr> endSizes) {
+  SmallVector<AffineExpr, 8> params;
   SmallVector<StringRef, 8> lowerNames;
   SmallVector<StringRef, 8> upperNames;
   for (auto tuple : llvm::zip(endDims, endSizes)) {
     uint32_t dim = std::get<0>(tuple);
-    int64_t size = std::get<1>(tuple);
+    AffineExpr size = std::get<1>(tuple);
     auto name = startName(dim);
-    params.push_back(startSize(dim));
+    params.push_back(startSizeExpr(dim));
     lowerNames.push_back(name);
     upperNames.push_back(name);
     defineDim(name, dim, size);
@@ -839,6 +1224,14 @@ void BottomUpTMBuilder::slice(ArrayRef<StringRef> upperNames,
                               ArrayRef<StringRef> lowerNames,
                               ArrayRef<int64_t> begins,
                               ArrayRef<int64_t> ends) {
+  slice(upperNames, lowerNames, ArrayRef<AffineExpr>(toExprs(begins)),
+        ArrayRef<AffineExpr>(toExprs(ends)));
+}
+
+void BottomUpTMBuilder::slice(ArrayRef<StringRef> upperNames,
+                              ArrayRef<StringRef> lowerNames,
+                              ArrayRef<AffineExpr> begins,
+                              ArrayRef<AffineExpr> ends) {
   assert(upperNames.size() == lowerNames.size() &&
          "Need same number of input and output dimensions in slice");
   assert(upperNames.size() == begins.size() &&
@@ -850,14 +1243,14 @@ void BottomUpTMBuilder::slice(ArrayRef<StringRef> upperNames,
   SmallVector<uint32_t, 4> dims;
   dims.reserve(n);
 
-  SmallVector<int64_t, 8> params;
+  SmallVector<AffineExpr, 8> params;
   params.reserve(2 * n);
 
   for (uint32_t i = 0; i < n; ++i) {
     uint32_t dim = startIndex(lowerNames[i]);
     dims.push_back(dim);
-    int64_t begin = begins[i];
-    int64_t end = ends[i];
+    AffineExpr begin = begins[i];
+    AffineExpr end = ends[i];
     defineDim(upperNames[i], dim, end - begin);
     params.push_back(begin);
     params.push_back(end);
@@ -870,6 +1263,15 @@ void BottomUpTMBuilder::embed(ArrayRef<StringRef> upperNames,
                               ArrayRef<uint32_t> upperDims,
                               ArrayRef<int64_t> upperSizes, StringRef lowerName,
                               ArrayRef<int64_t> coefficients) {
+  embed(upperNames, upperDims, ArrayRef<AffineExpr>(toExprs(upperSizes)),
+        lowerName, ArrayRef<AffineExpr>(toExprs(coefficients)));
+}
+
+void BottomUpTMBuilder::embed(ArrayRef<StringRef> upperNames,
+                              ArrayRef<uint32_t> upperDims,
+                              ArrayRef<AffineExpr> upperSizes,
+                              StringRef lowerName,
+                              ArrayRef<AffineExpr> coefficients) {
   assert(upperNames.size() == upperDims.size() &&
          "One name per upper dimension needed in merge");
   assert(upperDims.size() == coefficients.size() &&
@@ -889,6 +1291,14 @@ void BottomUpTMBuilder::unmerge(ArrayRef<StringRef> upperNames,
                                 ArrayRef<uint32_t> upperDims,
                                 StringRef lowerName,
                                 ArrayRef<int64_t> lengths) {
+  unmerge(upperNames, upperDims, lowerName,
+          ArrayRef<AffineExpr>(toExprs(lengths)));
+}
+
+void BottomUpTMBuilder::unmerge(ArrayRef<StringRef> upperNames,
+                                ArrayRef<uint32_t> upperDims,
+                                StringRef lowerName,
+                                ArrayRef<AffineExpr> lengths) {
   assert(upperNames.size() == upperDims.size() &&
          "One name needed per upper dimension in unmerge");
   assert(upperDims.size() == lengths.size() &&
@@ -896,12 +1306,12 @@ void BottomUpTMBuilder::unmerge(ArrayRef<StringRef> upperNames,
 
   uint32_t lowerDim = startIndex(lowerName);
 
-  [[maybe_unused]] int64_t totalLength = startSize(lowerDim);
-  [[maybe_unused]] int64_t lengthsProd = 1;
-  for (int64_t length : lengths) {
-    lengthsProd *= length;
+  [[maybe_unused]] AffineExpr totalLength = startSizeExpr(lowerDim);
+  [[maybe_unused]] AffineExpr lengthsProd = cst(1);
+  for (AffineExpr length : lengths) {
+    lengthsProd = simplify(lengthsProd * length);
   }
-  assert(lengthsProd == totalLength &&
+  assert(symbolicEqual(lengthsProd, totalLength, 0, getSymbols().size()) &&
          "failed to partition unmerge length among upper dimensions");
 
   for (auto triple : llvm::zip(upperNames, upperDims, lengths)) {
@@ -916,14 +1326,14 @@ void BottomUpTMBuilder::merge(StringRef upperName, uint32_t upperDim,
   uint32_t n = lowerNames.size();
   llvm::SmallVector<uint32_t, 4> lowerDims;
   lowerDims.reserve(n);
-  llvm::SmallVector<int64_t, 4> lowerSizes;
+  llvm::SmallVector<AffineExpr, 4> lowerSizes;
   lowerSizes.reserve(n);
 
-  int64_t upperSize = 1;
+  AffineExpr upperSize = cst(1);
   for (const StringRef name : lowerNames) {
     uint32_t dim = startIndex(name);
-    int64_t size = startSize(dim);
-    upperSize *= size;
+    AffineExpr size = startSizeExpr(dim);
+    upperSize = simplify(upperSize * size);
     lowerDims.push_back(dim);
     lowerSizes.push_back(size);
   }
@@ -951,7 +1361,17 @@ void BottomUpTMTopDimsWrapper::pad(ArrayRef<StringRef> outNames,
   b.pad(outNames, toTopDims(outNames), inNames, params);
 }
 
+void BottomUpTMTopDimsWrapper::pad(ArrayRef<StringRef> outNames,
+                                   ArrayRef<StringRef> inNames,
+                                   ArrayRef<AffineExpr> params) {
+  b.pad(outNames, toTopDims(outNames), inNames, params);
+}
+
 void BottomUpTMTopDimsWrapper::addDim(StringRef name, int64_t size) {
+  b.addDim(name, topDims[name], size);
+}
+
+void BottomUpTMTopDimsWrapper::addDim(StringRef name, AffineExpr size) {
   b.addDim(name, topDims[name], size);
 }
 
@@ -973,9 +1393,23 @@ void BottomUpTMTopDimsWrapper::embed(ArrayRef<StringRef> upperNames,
           coefficients);
 }
 
+void BottomUpTMTopDimsWrapper::embed(ArrayRef<StringRef> upperNames,
+                                     ArrayRef<AffineExpr> upperSizes,
+                                     StringRef lowerName,
+                                     ArrayRef<AffineExpr> coefficients) {
+  b.embed(upperNames, toTopDims(upperNames), upperSizes, lowerName,
+          coefficients);
+}
+
 void BottomUpTMTopDimsWrapper::unmerge(ArrayRef<StringRef> upperNames,
                                        StringRef lowerName,
                                        ArrayRef<int64_t> lengths) {
+  b.unmerge(upperNames, toTopDims(upperNames), lowerName, lengths);
+}
+
+void BottomUpTMTopDimsWrapper::unmerge(ArrayRef<StringRef> upperNames,
+                                       StringRef lowerName,
+                                       ArrayRef<AffineExpr> lengths) {
   b.unmerge(upperNames, toTopDims(upperNames), lowerName, lengths);
 }
 

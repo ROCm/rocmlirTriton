@@ -27,10 +27,12 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
@@ -164,7 +166,7 @@ static LLVM::GlobalOp getOrCreateConstantGlobal(OpBuilder &builder,
 /// replaceExtractPtrWithPointer, which requires every user to be tt.splat.
 static LogicalResult validateExtractPtr(rock::ExtractPtrOp extractPtrOp) {
   auto tensorType = cast<RankedTensorType>(extractPtrOp.getSource().getType());
-  if (tensorType.getNumElements() == 0)
+  if (tensorType.hasStaticShape() && tensorType.getNumElements() == 0)
     return extractPtrOp.emitOpError(
         "zero-sized tensors cannot provide a storage pointer");
 
@@ -193,6 +195,55 @@ static void replaceExtractPtrWithPointer(IRRewriter &rewriter,
                                                  pointer);
   }
   rewriter.eraseOp(extractPtrOp);
+}
+
+/// Appends an i32 argument to `funcOp` for each dynamic dimension of its
+/// tensor arguments, in (argument, dimension) order, recording them in
+/// `dimArgs`, and replaces the kernel's reads of those dimensions
+/// (`arith.index_cast(tensor.dim)` to i32) with the new arguments.
+static LogicalResult appendDimArgs(func::FuncOp funcOp,
+                                   SmallVectorImpl<Attribute> &dimArgs) {
+  MLIRContext *ctx = funcOp.getContext();
+  Type i32 = IntegerType::get(ctx, 32);
+  DenseMap<ArgDimAttr, BlockArgument> dimValues;
+  for (unsigned arg = 0, e = funcOp.getNumArguments(); arg < e; ++arg) {
+    auto type = dyn_cast<RankedTensorType>(funcOp.getArgument(arg).getType());
+    if (!type)
+      continue;
+    for (unsigned dim = 0, rank = type.getRank(); dim < rank; ++dim) {
+      if (!type.isDynamicDim(dim))
+        continue;
+      auto argDim = ArgDimAttr::get(ctx, arg, dim);
+      if (failed(funcOp.insertArgument(funcOp.getNumArguments(), i32,
+                                       DictionaryAttr::get(ctx),
+                                       funcOp.getLoc())))
+        return funcOp.emitOpError("cannot append a dimension argument");
+      dimValues[argDim] = funcOp.getArguments().back();
+      dimArgs.push_back(argDim);
+    }
+  }
+  if (dimArgs.empty())
+    return success();
+
+  SmallVector<tensor::DimOp> dimOps;
+  funcOp.walk([&](tensor::DimOp dimOp) { dimOps.push_back(dimOp); });
+  for (tensor::DimOp dimOp : dimOps) {
+    std::optional<ArgDimAttr> argDim = matchArgDim(dimOp.getResult());
+    BlockArgument value = argDim ? dimValues.lookup(*argDim) : BlockArgument();
+    if (!value)
+      return dimOp.emitOpError(
+          "expected a dynamic dimension of a kernel argument");
+    for (Operation *user : llvm::make_early_inc_range(dimOp->getUsers())) {
+      auto cast = dyn_cast<arith::IndexCastOp>(user);
+      if (!cast || cast.getType() != i32)
+        return user->emitOpError("expected kernel dimensions to be read as "
+                                 "i32 through arith.index_cast");
+      cast.replaceAllUsesWith(value);
+      cast.erase();
+    }
+    dimOp.erase();
+  }
+  return success();
 }
 
 /// Keeps the argument attributes that mean something past this pass: Triton
@@ -266,6 +317,16 @@ LogicalResult RockTensorToTritonPtrPass::processFunction(
   for (const ConstantConversionInfo &info : constantsToConvert)
     if (failed(validateExtractPtr(info.extractPtrOp)))
       return failure();
+
+  // Dynamic dimensions become trailing i32 arguments, which the launch fills
+  // in the order recorded in rock.dim_args.<kernel>.
+  SmallVector<Attribute> dimArgs;
+  if (failed(appendDimArgs(funcOp, dimArgs)))
+    return failure();
+  if (!dimArgs.empty())
+    funcOp->getParentOfType<ModuleOp>()->setAttr(
+        rock::DimArgsAttr::getModuleAttrName(funcOp.getName()),
+        builder.getArrayAttr(dimArgs));
 
   // Step 2: Build new function type with tt.ptr arguments
   FunctionType funcType = funcOp.getFunctionType();
@@ -430,8 +491,8 @@ void RockTensorToTritonPtrPass::runOnOperation() {
   OpBuilder builder(&getContext());
   for (func::FuncOp funcOp : funcsToProcess) {
     std::string kernelName = funcOp.getName().str();
-    if (auto gridAttr = funcOp->getAttrOfType<IntegerAttr>(
-            rock::GridSizeAttr::getMnemonic())) {
+    Attribute gridAttr = funcOp->getAttr(rock::GridSizeAttr::getMnemonic());
+    if (isa_and_present<IntegerAttr, ArgExprAttr>(gridAttr)) {
       moduleOp->setAttr(rock::GridSizeAttr::getModuleAttrName(kernelName),
                         gridAttr);
     }

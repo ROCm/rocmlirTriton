@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -682,6 +683,8 @@ void RockSortDimensionsMemoryLayoutPass::runOnOperation() {
   if (!func->hasAttr(rock::KernelAttr::getMnemonic())) {
     return;
   }
+  if (rock::isDynamicKernel(func))
+    return;
   auto &ctx = getContext();
   GreedyRewriteConfig config;
   config.setStrictness(GreedyRewriteStrictness::ExistingOps);

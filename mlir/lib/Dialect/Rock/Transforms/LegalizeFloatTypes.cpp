@@ -236,7 +236,7 @@ halveDimInMap(MLIRContext *ctx, TransformMapAttr mapAttr, int64_t upperDimIdx,
     return failure();
   };
 
-  if (targetLowerDim < 0)
+  if (targetLowerDim < 0 || !mapAttr.isStatic())
     return failure();
   SmallVector<int64_t> newUpperBounds(mapAttr.getUpperBounds().asArrayRef());
   SmallVector<int64_t> newLowerBounds(mapAttr.getLowerBounds().asArrayRef());
@@ -570,6 +570,9 @@ static LogicalResult rewriteTransformChain(MLIRContext *ctx, OperandInput input,
   size_t pathIdx = 0;
   while (auto trOp = currValue.getDefiningOp<TransformOp>()) {
     TransformMapAttr oldMap = trOp.getTransform();
+    if (!oldMap.isStatic())
+      return trOp.emitError(
+          "4-bit types are not supported with dynamic shapes");
 
     if (pathIdx >= path.size())
       return trOp.emitError("halving path too short for transform chain");

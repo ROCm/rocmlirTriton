@@ -21,6 +21,8 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -29,6 +31,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
@@ -196,19 +199,44 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
     bShape = cast<ShapedType>(b.getType()).getShape();
   }
 
+  auto func = op->getParentOfType<func::FuncOp>();
+  if (isDynamicKernel(func)) {
+    if (scaleA || scaleB)
+      return op.emitOpError("scaled GEMMs are not supported with dynamic "
+                            "shapes");
+    // The maps built below mix the sizes of A, B and C, so the verifier needs
+    // to know which argument dimensions are equal.
+    SmallVector<std::pair<DimRef, DimRef>> equalities = {{{a, 0}, {b, 0}},
+                                                         {{a, 2}, {b, 1}}};
+    auto addOutputEqualities = [&](Value view) {
+      equalities.push_back({{a, 0}, {view, 0}});
+      equalities.push_back({{a, 1}, {view, 1}});
+      equalities.push_back({{b, 2}, {view, 2}});
+    };
+    for (Value view : outputViews)
+      addOutputEqualities(view);
+    for (auto &[orig, view] : fusionInputMap)
+      addOutputEqualities(view);
+    emitDimEqualities(rw, func, equalities);
+  }
+
   // Note, matrix dimension correctness is handled in the verifier
   GemmSize size(/*g=*/aShape[0], /*m=*/aShape[1], /*k=*/aShape[2],
                 /*n=*/bShape[2]);
 
-  GemmSize extraPad =
-      requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
-
-  a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
-  b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
+  auto gemmParams = cast<GemmParamsAttr>(params);
+  int64_t mPerBlock = gemmParams.getMPerBlock();
+  int64_t nPerBlock = gemmParams.getNPerBlock();
+  int64_t kPerBlock = gemmParams.getKPerBlock();
+  a = padMatrixToMultiple(a, rw, loc, "gemmM", mPerBlock, "gemmK", kPerBlock);
+  b = padMatrixToMultiple(b, rw, loc, "gemmK", kPerBlock, "gemmN", nPerBlock);
   transformViews([&](Value v) {
-    return padMatrix(v, rw, loc, "gemmM", extraPad.m, "gemmN", extraPad.n);
+    return padMatrixToMultiple(v, rw, loc, "gemmM", mPerBlock, "gemmN",
+                               nPerBlock);
   });
   if (scaleA && scaleB) {
+    GemmSize extraPad =
+        requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
     int64_t quantBlockSize = op.getQuantBlockSize().value();
     int64_t newK = size.k + extraPad.k;
     // this should never happen as long as both quantBlockSize <= kPerBlock
@@ -469,23 +497,23 @@ LogicalResult GemmRewritePattern::computeGridSize(ConversionPatternRewriter &rw,
                                                   Value b) const {
   Attribute params = op.getParams().value();
 
-  const auto aShape = cast<RankedTensorType>(a.getType()).getShape();
-  const auto bShape = cast<RankedTensorType>(b.getType()).getShape();
-
-  const int64_t G = aShape[0];
-  const int64_t M = aShape[1];
-  const int64_t N = bShape[2];
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<AffineExpr> g = getDimExpr(a, 0, symbols);
+  FailureOr<AffineExpr> m = getDimExpr(a, 1, symbols);
+  FailureOr<AffineExpr> n = getDimExpr(b, 2, symbols);
+  if (failed(g) || failed(m) || failed(n))
+    return failure();
 
   auto tuningParams = cast<GemmParamsAttr>(params);
   auto mPerBlock = tuningParams.getMPerBlock();
   auto nPerBlock = tuningParams.getNPerBlock();
 
-  const auto gridSize = (M / mPerBlock) * (N / nPerBlock) * G;
-  assert(gridSize > 0);
+  AffineExpr gridSize = simplifyAffineExpr(
+      m->floorDiv(mPerBlock) * n->floorDiv(nPerBlock) * *g, 0, symbols.size());
 
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
   funcOp->setAttr(rock::GridSizeAttr::getMnemonic(),
-                  rw.getI32IntegerAttr(gridSize));
+                  makeGridSizeAttr(rw, gridSize, symbols));
   return success();
 }
 
@@ -499,6 +527,7 @@ void RockGemmToGridwisePass::runOnOperation() {
                     arith::TruncFOp>();
 
   target.addLegalDialect<arith::ArithDialect>();
+  target.addLegalOp<tensor::DimOp, memref::DimOp, LLVM::AssumeOp>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GemmRewritePattern>(ctx);

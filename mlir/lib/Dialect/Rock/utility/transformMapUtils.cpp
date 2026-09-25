@@ -11,9 +11,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Rock/IR/GemmSize.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IRMapping.h"
@@ -798,10 +800,31 @@ propagateVectorizationInfo(TransformMapAttr map, const VectorizationData &input,
   return result;
 }
 
+static bool areStaticTransforms(ArrayAttr transformAttrs) {
+  return llvm::all_of(transformAttrs, [](Attribute attr) {
+    return cast<TransformMapAttr>(attr).isStatic();
+  });
+}
+
+/// Whether the rock.transform chain above `transformed`, or its root, has
+/// dynamic sizes.
+static bool isDynamicTransformChain(Value transformed) {
+  Value current = transformed;
+  while (auto trOp = current.getDefiningOp<TransformOp>()) {
+    if (!trOp.getTransform().isStatic())
+      return true;
+    current = trOp.getInput();
+  }
+  auto type = dyn_cast<ShapedType>(current.getType());
+  return type && !type.hasStaticShape();
+}
+
 VectorizationResult
 mlir::rock::getMaxVectorization(Value transformed, uint32_t dim,
                                 std::optional<int64_t> inputDimLen,
                                 bool ignoreDataType) {
+  if (isDynamicTransformChain(transformed))
+    return VectorizationResult{/*max=*/1, /*bufferVectorSize=*/1};
   auto upperType = cast<ShapedType>(transformed.getType());
   int64_t numInitialDims = upperType.getRank();
   int64_t initialVecLen = inputDimLen.value_or(upperType.getShape()[dim]);
@@ -911,6 +934,8 @@ static TraceStep traceDownOneDim(TransformOp op, uint32_t upperDim) {
 }
 
 void mlir::rock::collapseContiguousMerges(Value transformed) {
+  if (isDynamicTransformChain(transformed))
+    return;
   ContiguousMergesMap contiguousMerges = findContiguousGroups(transformed);
   SmallVector<TransformOp> transformOps;
   Value root;
@@ -1068,11 +1093,16 @@ bool mlir::rock::embedCanBeInvalid(TransformMapAttr map, TransformAttr op) {
   assert(op.getType() == TransformType::Embed);
   int64_t lowerBound = map.getLowerBounds()[op.getLowerDims()[0]];
   ArrayRef<int64_t> dimSizes = map.getUpperBounds();
+  // Symbolic sizes or coefficients can't be bounded, so they may be invalid.
+  if (ShapedType::isDynamic(lowerBound))
+    return true;
   return llvm::any_of(llvm::zip(op.getParams(), op.getUpperDims()),
                       [&](const auto &pair) -> bool {
                         int64_t coefficient = std::get<0>(pair);
                         uint32_t dim = std::get<1>(pair);
-                        return (coefficient < 0) ||
+                        return ShapedType::isDynamic(coefficient) ||
+                               ShapedType::isDynamic(dimSizes[dim]) ||
+                               (coefficient < 0) ||
                                ((dimSizes[dim] * coefficient) > lowerBound);
                       });
 }
@@ -1111,6 +1141,43 @@ AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms) {
       result = map;
   }
   return result;
+}
+
+AffineMap mlir::rock::composeTransforms(ArrayRef<TransformMapAttr> transforms,
+                                        SmallVectorImpl<ArgDimAttr> &symbols,
+                                        const ArgDimEqualities *equalities) {
+  if (transforms.empty())
+    return {};
+  // Each map numbers its symbols locally: its s<k> stands for
+  // `attr.getSymbols()[k]`. AffineMap::compose would keep every map's symbols
+  // as separate ones, so a dimension used by two maps would become two
+  // symbols. Instead, first rewrite every map's results over the shared
+  // `symbols` list, then compose them by substituting dims only.
+  SmallVector<SmallVector<AffineExpr>> results;
+  for (TransformMapAttr attr : transforms) {
+    // `syms[k]` is the shared symbol for the local s<k>. Local symbols that are
+    // assumed equal map to the same shared one, so `syms` may repeat entries.
+    SmallVector<AffineExpr> syms;
+    for (ArgDimAttr sym : attr.getSymbols())
+      syms.push_back(bindArgDim(equalities ? equalities->canonical(sym) : sym,
+                                symbols));
+    // Kept as bare expressions: later maps may still append to `symbols`, so
+    // the final symbol count is only known once all maps are processed.
+    results.push_back(llvm::map_to_vector(
+        attr.getMap().getAffineMap().getResults(),
+        [&](AffineExpr e) { return e.replaceSymbols(syms); }));
+  }
+  // `transforms` goes from the upper view down to the buffer, so the lowest
+  // map is applied last. Start from its results and, walking up, replace each
+  // d<i> with the i-th result of the map above, which computes that
+  // coordinate. The result is then over the dims of the uppermost map.
+  SmallVector<AffineExpr> composed = results.back();
+  for (ArrayRef<AffineExpr> upper : llvm::reverse(ArrayRef(results).drop_back()))
+    for (AffineExpr &e : composed)
+      e = e.replaceDims(upper);
+  unsigned numDims = transforms.front().getMap().getAffineMap().getNumDims();
+  return AffineMap::get(numDims, symbols.size(), composed,
+                        transforms.front().getContext());
 }
 
 bool mlir::rock::validityDependsOnAnyDim(ArrayRef<TransformMapAttr> transforms,
@@ -1168,7 +1235,10 @@ bool mlir::rock::isIdentityOnShape(AffineMap map, ArrayRef<int64_t> shape) {
 
 TransformMapAttr mlir::rock::invertTransformMap(
     OpBuilder &b, mlir::rock::TransformMapAttr transformMap, Location loc) {
-  ArrayRef<int64_t> lowShape = transformMap.getLowerBounds();
+  // Sizes and parameters are expressions over the map's symbols, so dynamic
+  // maps invert the same way as static ones.
+  ArrayRef<ArgDimAttr> symbols = transformMap.getSymbols();
+  SmallVector<AffineExpr> lowShape = transformMap.getLowerBoundExprs();
   llvm::IndexedMap<StringRef> lowNamesMap;
   if (!lowShape.empty())
     lowNamesMap.grow(lowShape.size() - 1); // grow takes largest index;
@@ -1184,8 +1254,12 @@ TransformMapAttr mlir::rock::invertTransformMap(
     lowNames.push_back(lowNamesMap[i]);
   }
 
-  rock::TopDownTMBuilder transform(b, lowNames, lowShape, loc);
+  rock::TopDownTMBuilder transform(b, lowNames, lowShape, symbols, loc);
+  // The builder numbers its symbols independently of the map.
+  auto rebind = [&](AffineExpr expr) { return transform.rebind(expr, symbols); };
   for (auto tattr : transformMap.getOps()) {
+    SmallVector<AffineExpr> params =
+        llvm::map_to_vector(tattr.getParamExprs(), rebind);
     switch (tattr.getType()) {
     case rock::TransformType::PassThrough:
       transform.passThrough(tattr.getUpperNames(), tattr.getUpperDims(),
@@ -1194,12 +1268,12 @@ TransformMapAttr mlir::rock::invertTransformMap(
     case rock::TransformType::Pad: {
       // Pad: lower[L] -> upper[L+left+right]. Inverse is Slice selecting
       // [left, left+L) from the full dimension.
-      SmallVector<int64_t> begins;
-      SmallVector<int64_t> fullLowerSizes;
+      SmallVector<AffineExpr> begins;
+      SmallVector<AffineExpr> fullLowerSizes;
       for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
-        int64_t leftPad = tattr.getParams()[i * 2];
-        int64_t rightPad = tattr.getParams()[i * 2 + 1];
-        int64_t lowerSize = lowShape[tattr.getLowerDims()[i]];
+        AffineExpr leftPad = params[i * 2];
+        AffineExpr rightPad = params[i * 2 + 1];
+        AffineExpr lowerSize = rebind(lowShape[tattr.getLowerDims()[i]]);
         begins.push_back(leftPad);
         fullLowerSizes.push_back(lowerSize + leftPad + rightPad);
       }
@@ -1212,11 +1286,11 @@ TransformMapAttr mlir::rock::invertTransformMap(
     case rock::TransformType::Slice: {
       // Slice: lower[D] -> upper[end-begin]. Inverse is Pad with
       // left=begin, right=D-end.
-      SmallVector<int64_t> padParams;
+      SmallVector<AffineExpr> padParams;
       for (unsigned i = 0, e = tattr.getLowerDims().size(); i < e; ++i) {
-        int64_t begin = tattr.getParams()[i * 2];
-        int64_t end = tattr.getParams()[i * 2 + 1];
-        int64_t fullLowerSize = lowShape[tattr.getLowerDims()[i]];
+        AffineExpr begin = params[i * 2];
+        AffineExpr end = params[i * 2 + 1];
+        AffineExpr fullLowerSize = rebind(lowShape[tattr.getLowerDims()[i]]);
         padParams.push_back(begin);
         padParams.push_back(fullLowerSize - end);
       }
@@ -1245,11 +1319,11 @@ TransformMapAttr mlir::rock::invertTransformMap(
       break;
     case rock::TransformType::Unmerge:
       transform.merge(tattr.getUpperNames(), tattr.getUpperDims(),
-                      tattr.getLowerNames()[0], tattr.getParams());
+                      tattr.getLowerNames()[0], params);
       break;
     case rock::TransformType::Merge:
       transform.unmerge(tattr.getUpperNames()[0], tattr.getUpperDims()[0],
-                        tattr.getLowerNames(), tattr.getParams());
+                        tattr.getLowerNames(), params);
       break;
     }
   }
@@ -1264,6 +1338,11 @@ TransformMapAttr mlir::rock::transformCollapseShape(
   // (tensor<1x12x12x32xf32>) -> tensor<12x12x32xf32>
   //    - inpShape = [1, 12, 12, 32]
   //    - outShape = [12, 12, 32]
+
+  // TODO(dyn_shapes): support dynamic shapes
+  if (ShapedType::isDynamicShape(inpShape) ||
+      ShapedType::isDynamicShape(outShape))
+    return TransformMapAttr();
 
   // This shouldn't happen, but we're checking anyway
   if (outShape.size() != reassocs.size()) {
@@ -1330,6 +1409,11 @@ TransformMapAttr mlir::rock::transformExpandShape(
   // (tensor<1x12x384xf32>) -> tensor<1x12x12x32xf32>
   //    - inpShape = [1, 12, 384]
   //    - outShape = [1, 12, 12, 32]
+
+  // TODO(dyn_shapes): support dynamic shapes
+  if (ShapedType::isDynamicShape(inpShape) ||
+      ShapedType::isDynamicShape(outShape))
+    return TransformMapAttr();
 
   // Shouldn't happen, but let's check anyway
   if (inpShape.size() != reassocs.size()) {
@@ -1414,7 +1498,11 @@ TransformMapAttr mlir::rock::transformExtractSlice(OpBuilder &b, Location loc,
                                                    ArrayRef<int64_t> inpShape,
                                                    ArrayRef<int64_t> outShape,
                                                    ArrayRef<int64_t> offsets,
-                                                   ArrayRef<int64_t> sizes) {
+                                                   ArrayRef<int64_t> sizes) {       
+  // TODO(dyn_shapes): support dynamic shapes
+  if (ShapedType::isDynamicShape(inpShape) ||
+      ShapedType::isDynamicShape(outShape))
+    return TransformMapAttr();
   rock::BottomUpTMBuilder transform(b, inpShape, loc);
   SmallVector<StringRef, 4> lowerNameRefs;
   transform.getStartNames(lowerNameRefs);
@@ -1494,6 +1582,55 @@ mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
     dimNames.push_back(nameStorage.back());
   }
   return buildRowMajorFlatteningTransformMap(b, loc, dimNames, shape);
+}
+
+TransformMapAttr
+mlir::rock::buildRowMajorFlatteningTransformMap(OpBuilder &b, Location loc,
+                                                BlockArgument arg) {
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<SmallVector<AffineExpr>> maybeShape = getShapeExprs(arg, symbols);
+  assert(succeeded(maybeShape) && "argument shapes are always traceable");
+  ArrayRef<AffineExpr> shape = *maybeShape;
+  assert(!shape.empty() && "expected a ranked argument");
+
+  SmallVector<SmallString<16>> nameStorage(shape.size());
+  SmallVector<StringRef> dimNames;
+  for (size_t dim = 0; dim < shape.size(); ++dim) {
+    (Twine("dim") + Twine(dim)).toVector(nameStorage[dim]);
+    dimNames.push_back(nameStorage[dim]);
+  }
+
+  auto isUnit = [](AffineExpr e) {
+    auto cst = dyn_cast<AffineConstantExpr>(e);
+    return cst && cst.getValue() == 1;
+  };
+  SmallVector<uint32_t> nonUnitDims;
+  SmallVector<StringRef> nonUnitNames;
+  SmallVector<AffineExpr> nonUnitSizes;
+  AffineExpr numElements = b.getAffineConstantExpr(1);
+  for (auto [dim, size] : llvm::enumerate(shape)) {
+    numElements = numElements * size;
+    if (isUnit(size))
+      continue;
+    nonUnitDims.push_back(dim);
+    nonUnitNames.push_back(dimNames[dim]);
+    nonUnitSizes.push_back(size);
+  }
+  // There has to be at least one dimension that is unmerged.
+  if (nonUnitDims.empty()) {
+    nonUnitDims.push_back(shape.size() - 1);
+    nonUnitNames.push_back(dimNames.back());
+    nonUnitSizes.push_back(shape.back());
+  }
+
+  BottomUpTMBuilder flattener(b, {"raw"}, {numElements}, symbols, loc);
+  SmallVector<AffineExpr> sizes = llvm::map_to_vector(
+      nonUnitSizes, [&](AffineExpr e) { return flattener.rebind(e, symbols); });
+  flattener.unmerge(nonUnitNames, nonUnitDims, "raw", sizes);
+  for (auto [dim, size] : llvm::enumerate(shape))
+    if (!llvm::is_contained(nonUnitDims, dim))
+      flattener.addDim(dimNames[dim], dim, flattener.rebind(size, symbols));
+  return flattener.get();
 }
 
 FailureOr<TransformMapAttr>
@@ -1577,6 +1714,8 @@ FailureOr<Value> mlir::rock::addPassThroughIndices(OpBuilder &b,
   // No dimensions to add, return
   if (numberOfIndices == 0)
     return transformed;
+  if (isDynamicTransformChain(transformed))
+    return failure();
   SmallVector<TransformOp> opsToWiden;
   Value ret;
   std::tie(ret, std::ignore) = untransform(transformed, opsToWiden);
@@ -2212,6 +2351,8 @@ FailureOr<ArrayAttr>
 mlir::rock::removeUpperDims(OpBuilder &b, ArrayAttr transformAttrs,
                             SetVector<int64_t> removeIndicesSet) {
   SmallVector<Attribute> results;
+  if (!areStaticTransforms(transformAttrs))
+    return failure();
 
   llvm::SmallVector<int64_t> upperBounds = {};
   llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>> removedSubDims;
@@ -2286,6 +2427,10 @@ mlir::rock::getLowerSubDimensions(OpBuilder &b, ArrayAttr transformAttrs,
   llvm::SmallDenseMap<int64_t, SmallVector<SubDimInfo>> subDimInfo;
   if (transformAttrs.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "transformAttrs is empty.\n");
+    return failure();
+  }
+  if (!areStaticTransforms(transformAttrs)) {
+    LLVM_DEBUG(llvm::dbgs() << "transformAttrs has dynamic maps.\n");
     return failure();
   }
   TransformMapAttr topMap = cast<TransformMapAttr>(transformAttrs[0]);
@@ -2498,11 +2643,18 @@ getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
   // The FusionRoot input/output can come from N tensors, choose the biggest as
   // a proxy of the dominant load/store element type. This is used for groupSize
   // heuristic in GridLayoutEmitter.cpp
+  // Dynamic sizes count as kDynamicDimHint, as in the tuning heuristics.
+  auto numElementsHint = [](ShapedType type) {
+    int64_t n = 1;
+    for (int64_t size : type.getShape())
+      n *= ShapedType::isDynamic(size) ? kDynamicDimHint : size;
+    return n;
+  };
   Value biggestTensor = kernelArgs[0];
   for (auto tensor : kernelArgs) {
     if (auto shapedType = dyn_cast<ShapedType>(tensor.getType())) {
-      if (shapedType.getNumElements() >
-          cast<ShapedType>(biggestTensor.getType()).getNumElements())
+      if (numElementsHint(shapedType) >
+          numElementsHint(cast<ShapedType>(biggestTensor.getType())))
         biggestTensor = tensor;
     } else {
       LLVM_DEBUG(llvm::dbgs() << funcName
@@ -2697,6 +2849,8 @@ Value mlir::rock::sliceBlockedDims(OpBuilder &b, Location loc, Value view,
     return view;
 
   auto type = cast<RankedTensorType>(view.getType());
+  assert(type.hasStaticShape() && !isDynamicTransformChain(view) &&
+         "non-power-of-two tiles are rejected for dynamic shapes");
   ArrayRef<int64_t> shape = type.getShape();
   unsigned rank = shape.size();
 

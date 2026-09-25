@@ -18,6 +18,11 @@ def Rock_Dialect : Dialect {
 
   let useDefaultAttributePrinterParser = 1;
 
+  // Dynamic kernels read their sizes with tensor/memref.dim and record
+  // equalities between them with llvm.intr.assume.
+  let dependentDialects = ["arith::ArithDialect", "tensor::TensorDialect",
+                           "memref::MemRefDialect", "LLVM::LLVMDialect"];
+
   let extraClassDeclaration = [{
     /// Global name for Rock Kernel Module
     constexpr const static ::llvm::StringLiteral

@@ -73,7 +73,9 @@ MlirType rocmlirMIXRShapedTypeAsTensor(MlirType type) {
       llvm::cast<mlir::migraphx::MIXRShapedType>(unwrap(type)).asTensor());
 }
 
-// Returns block_size, grid_size and cluster_size as uint32_t[3]
+// Returns block_size, grid_size and cluster_size as uint32_t[3]. A kernel
+// whose grid depends on dynamic sizes has no fixed grid: it is reported as an
+// error and as grid size 0.
 MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
   auto mod = unwrap(module);
   size_t count = 0;
@@ -81,6 +83,15 @@ MLIR_CAPI_EXPORTED void mlirGetKernelAttrs(MlirModule module, uint32_t *attrs) {
     mlir::gpu::KernelTableAttr metadata =
         mlir::cast<mlir::gpu::ObjectAttr>(binary.getObjects()[0]).getKernels();
     for (auto kernel : metadata) {
+      if (kernel.getAttr<mlir::StringAttr>(
+              mlir::rock::GridSizeAttr::getMnemonic())) {
+        binary.emitError("kernel ")
+            << kernel.getName()
+            << " has a dynamic grid size, which MIGraphX does not support";
+        attrs[0] = attrs[1] = attrs[2] = 0;
+        ++count;
+        continue;
+      }
       auto block = kernel.getAttr<mlir::IntegerAttr>(
           mlir::rock::BlockSizeAttr::getMnemonic());
       auto grid = kernel.getAttr<mlir::IntegerAttr>(

@@ -10,8 +10,10 @@
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/IR/SymbolicExprUtils.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -285,10 +287,38 @@ mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
   return kernelIds;
 }
 
+mlir::rock::SymbolicLengths::SymbolicLengths(MLIRContext *ctx,
+                                             ArrayRef<int64_t> values) {
+  for (int64_t value : values)
+    exprs.push_back(getAffineConstantExpr(value, ctx));
+}
+
+std::optional<int64_t>
+mlir::rock::SymbolicLengths::getConstant(size_t i) const {
+  if (auto cst = dyn_cast<AffineConstantExpr>(exprs[i]))
+    return cst.getValue();
+  return std::nullopt;
+}
+
+bool mlir::rock::SymbolicLengths::isStatic() const {
+  return llvm::all_of(exprs, [](AffineExpr e) {
+    return isa<AffineConstantExpr>(e);
+  });
+}
+
+OpFoldResult mlir::rock::materializeLength(OpBuilder &b, Location loc,
+                                           Operation *op, AffineExpr length,
+                                           ArrayRef<ArgDimAttr> symbols) {
+  if (auto cst = dyn_cast<AffineConstantExpr>(length))
+    return b.getI64IntegerAttr(cst.getValue());
+  auto func = cast<func::FuncOp>(getParentFuncOp(op));
+  return materializeArgExpr(b, loc, func, length, symbols);
+}
+
 FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
     OpBuilder &b, Location loc, Value globalBuffer, StringRef dName,
-    ArrayRef<int64_t> bidGridLengths, int64_t kPerBlock, int64_t dPerBlock,
-    bool isKFirst) {
+    const SymbolicLengths &bidGridLengths, int64_t kPerBlock,
+    int64_t dPerBlock, bool isKFirst) {
   SmallVector<StringRef, 3> bidGridOrder = {"g_block", "m_block", "n_block"};
   if (dName != "m" && dName != "n") {
     return emitError(loc, "expected dName to be m or n but got " + dName);
@@ -296,32 +326,41 @@ FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
   StringRef thisBlockDim = dName == "m" ? "m_block" : "n_block";
   StringRef otherBlockDim = dName == "m" ? "n_block" : "m_block";
 
-  ShapedType matrixType = cast<ShapedType>(globalBuffer.getType());
-  ArrayRef<int64_t> matrixShape = matrixType.getShape();
   // For matrix B (isKFirst=true): k at index 1, d at index 2
   // For matrix A (isKFirst=false): k at index 2, d at index 1
-  int64_t kGlobal = isKFirst ? matrixShape[1] : matrixShape[2];
-  int64_t dGlobal = isKFirst ? matrixShape[2] : matrixShape[1];
+  SmallVector<ArgDimAttr> symbols(bidGridLengths.symbols);
+  FailureOr<AffineExpr> kGlobal =
+      getDimExpr(globalBuffer, isKFirst ? 1 : 2, symbols);
+  FailureOr<AffineExpr> dGlobal =
+      getDimExpr(globalBuffer, isKFirst ? 2 : 1, symbols);
+  if (failed(kGlobal) || failed(dGlobal))
+    return emitError(loc, "cannot express the tile sizes of a dynamic matrix");
 
-  int64_t kIters = kGlobal / kPerBlock;
+  unsigned numSymbols = symbols.size();
+  AffineExpr kIters =
+      simplifyAffineExpr(kGlobal->floorDiv(kPerBlock), 0, numSymbols);
+  AffineExpr dBlocks =
+      simplifyAffineExpr(dGlobal->floorDiv(dPerBlock), 0, numSymbols);
 
   std::string dIterName = llvm::formatv("{0}_iter", dName);
 
   std::string firstDim = dIterName;
-  int firstDimLen = dPerBlock;
+  int64_t firstDimLen = dPerBlock;
   std::string secondDim = "k_iter";
-  int secondDimLen = kPerBlock;
+  int64_t secondDimLen = kPerBlock;
   if (isKFirst) {
     std::swap(firstDim, secondDim);
     std::swap(firstDimLen, secondDimLen);
   }
 
-  TopDownTMBuilder toGlobalIdx(b,
-                               {"k_loop", bidGridOrder[0], bidGridOrder[1],
-                                bidGridOrder[2], firstDim, secondDim},
-                               {kIters, bidGridLengths[0], bidGridLengths[1],
-                                bidGridLengths[2], firstDimLen, secondDimLen},
-                               loc);
+  TopDownTMBuilder toGlobalIdx(
+      b,
+      {"k_loop", bidGridOrder[0], bidGridOrder[1], bidGridOrder[2], firstDim,
+       secondDim},
+      {kIters, bidGridLengths[0], bidGridLengths[1], bidGridLengths[2],
+       b.getAffineConstantExpr(firstDimLen),
+       b.getAffineConstantExpr(secondDimLen)},
+      symbols, loc);
 
   toGlobalIdx.passThrough({"g"}, {0}, {"g_block"});
   // For matrix B (isKFirst): source is [g, k, n], k at index 1, n at index 2
@@ -329,9 +368,11 @@ FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
   int kLowerIdx = isKFirst ? 1 : 2;
   int dLowerIdx = isKFirst ? 2 : 1;
   toGlobalIdx.unmerge("k", kLowerIdx, {"k_loop", "k_iter"},
-                      {kIters, kPerBlock});
+                      {toGlobalIdx.rebind(kIters, symbols),
+                       toGlobalIdx.cst(kPerBlock)});
   toGlobalIdx.unmerge(dName, dLowerIdx, {thisBlockDim, dIterName},
-                      {dGlobal / dPerBlock, dPerBlock});
+                      {toGlobalIdx.rebind(dBlocks, symbols),
+                       toGlobalIdx.cst(dPerBlock)});
 
   toGlobalIdx.ignore(otherBlockDim);
   TransformMapAttr toGlobalIdxAttr = toGlobalIdx.get();
@@ -355,7 +396,7 @@ Value mlir::rock::normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
     bottomNames.append({secondDim, firstDim});
   else
     bottomNames.append({firstDim, secondDim});
-  BottomUpTMBuilder normalizer(b, bottomNames, matrixType.getShape(), loc);
+  BottomUpTMBuilder normalizer(b, bottomNames, matrix, loc);
 
   if (addGroup)
     normalizer.addDim("gemmG", 0, 1);
@@ -374,13 +415,37 @@ Value mlir::rock::padVector(Value vector, OpBuilder &b, Location loc,
   OpBuilder::InsertionGuard guard(b);
   if (auto *defOp = vector.getDefiningOp())
     b.setInsertionPointAfter(defOp);
-  ArrayRef<int64_t> shape = cast<ShapedType>(vector.getType()).getShape();
-  assert(shape.size() == 2);
-  BottomUpTMBuilder padder(b, {"gemmG", firstDim}, shape, loc);
+  assert(cast<ShapedType>(vector.getType()).getRank() == 2);
+  BottomUpTMBuilder padder(b, {"gemmG", firstDim}, vector, loc);
   padder.passThrough("gemmG");
   SmallString<8> paddedName;
   (firstDim + Twine("Pad")).toVector(paddedName);
   padder.pad(paddedName, firstDim, 0, firstDimPad);
+  TransformMapAttr padAttr = padder.get();
+  return TransformOp::create(b, loc, vector, padAttr);
+}
+
+/// The padding that takes `size` to a multiple of `multiple`.
+static AffineExpr paddingToMultiple(TransformMapBuilder &builder,
+                                    AffineExpr size, int64_t multiple) {
+  return builder.simplify(size.ceilDiv(multiple) * multiple - size);
+}
+
+Value mlir::rock::padVectorToMultiple(Value vector, OpBuilder &b, Location loc,
+                                      StringRef firstDim, int64_t multiple) {
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = vector.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
+  assert(cast<ShapedType>(vector.getType()).getRank() == 2);
+  BottomUpTMBuilder padder(b, {"gemmG", firstDim}, vector, loc);
+  AffineExpr pad =
+      paddingToMultiple(padder, padder.startSizeExpr(firstDim), multiple);
+  if (isZeroExpr(pad))
+    return vector;
+  padder.passThrough("gemmG");
+  SmallString<8> paddedName;
+  (firstDim + Twine("Pad")).toVector(paddedName);
+  padder.pad(paddedName, firstDim, padder.cst(0), pad);
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, vector, padAttr);
 }
@@ -393,8 +458,7 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
   OpBuilder::InsertionGuard guard(b);
   if (auto *defOp = matrix.getDefiningOp())
     b.setInsertionPointAfter(defOp);
-  ArrayRef<int64_t> shape = cast<ShapedType>(matrix.getType()).getShape();
-  BottomUpTMBuilder padder(b, {"gemmG", firstDim, secondDim}, shape, loc);
+  BottomUpTMBuilder padder(b, {"gemmG", firstDim, secondDim}, matrix, loc);
   padder.passThrough("gemmG");
   if (firstDimPad == 0) {
     padder.passThrough(firstDim);
@@ -409,6 +473,35 @@ Value mlir::rock::padMatrix(Value matrix, OpBuilder &b, Location loc,
     SmallString<8> paddedName;
     (secondDim + Twine("Pad")).toVector(paddedName);
     padder.pad(paddedName, secondDim, 0, secondDimPad);
+  }
+  TransformMapAttr padAttr = padder.get();
+  return TransformOp::create(b, loc, matrix, padAttr);
+}
+
+Value mlir::rock::padMatrixToMultiple(Value matrix, OpBuilder &b, Location loc,
+                                      StringRef firstDim, int64_t firstMultiple,
+                                      StringRef secondDim,
+                                      int64_t secondMultiple) {
+  OpBuilder::InsertionGuard guard(b);
+  if (auto *defOp = matrix.getDefiningOp())
+    b.setInsertionPointAfter(defOp);
+  BottomUpTMBuilder padder(b, {"gemmG", firstDim, secondDim}, matrix, loc);
+  AffineExpr firstPad = paddingToMultiple(
+      padder, padder.startSizeExpr(firstDim), firstMultiple);
+  AffineExpr secondPad = paddingToMultiple(
+      padder, padder.startSizeExpr(secondDim), secondMultiple);
+  if (isZeroExpr(firstPad) && isZeroExpr(secondPad))
+    return matrix;
+  padder.passThrough("gemmG");
+  for (auto [dim, pad] : {std::make_pair(firstDim, firstPad),
+                          std::make_pair(secondDim, secondPad)}) {
+    if (isZeroExpr(pad)) {
+      padder.passThrough(dim);
+      continue;
+    }
+    SmallString<8> paddedName;
+    (dim + Twine("Pad")).toVector(paddedName);
+    padder.pad(paddedName, dim, padder.cst(0), pad);
   }
   TransformMapAttr padAttr = padder.get();
   return TransformOp::create(b, loc, matrix, padAttr);
@@ -475,6 +568,32 @@ static FailureOr<RetAttrType> getAttrFromOpOrParents(
 FailureOr<IntegerAttr> mlir::rock::getGridSize(Operation *op) {
   return getAttrFromOpOrParents<IntegerAttr>(op,
                                              rock::GridSizeAttr::getMnemonic());
+}
+
+Attribute mlir::rock::makeGridSizeAttr(Builder &b, AffineExpr gridSize,
+                                       ArrayRef<ArgDimAttr> symbols) {
+  if (auto cst = dyn_cast<AffineConstantExpr>(gridSize)) {
+    assert(cst.getValue() > 0 && "empty grid");
+    return b.getI32IntegerAttr(cst.getValue());
+  }
+  return ArgExprAttr::get(b.getContext(), gridSize, symbols);
+}
+
+FailureOr<Value> mlir::rock::getGridSizeValue(OpBuilder &b, Location loc,
+                                              Operation *op) {
+  if (FailureOr<IntegerAttr> gridSize = getGridSize(op); succeeded(gridSize))
+    return arith::ConstantIntOp::create(b, loc, b.getI32Type(),
+                                        gridSize->getInt())
+        .getResult();
+  FailureOr<ArgExprAttr> gridExpr = getAttrFromOpOrParents<ArgExprAttr>(
+      op, rock::GridSizeAttr::getMnemonic());
+  if (failed(gridExpr))
+    return failure();
+  auto func = dyn_cast<func::FuncOp>(getParentFuncOp(op));
+  if (!func)
+    return failure();
+  return materializeArgExpr(b, loc, func, gridExpr->getExpr(),
+                            gridExpr->getSymbols());
 }
 
 FailureOr<IntegerAttr> mlir::rock::getBlockSize(Operation *op) {
@@ -553,14 +672,26 @@ ArrayAttr
 mlir::rock::computeOutputLseTransforms(OpBuilder &b, Location loc,
                                        int64_t mPerBlock,
                                        ArrayRef<int64_t> bidGridLengths) {
+  return computeOutputLseTransforms(
+      b, loc, mPerBlock, SymbolicLengths(b.getContext(), bidGridLengths));
+}
+
+ArrayAttr
+mlir::rock::computeOutputLseTransforms(OpBuilder &b, Location loc,
+                                       int64_t mPerBlock,
+                                       const SymbolicLengths &bidGridLengths) {
   // Create views as gridwise sub-tile of LSE
   TopDownTMBuilder toMatrixLSE(
       b, {"g_block", "m_block", "m_iter"},
-      {bidGridLengths[0], bidGridLengths[1], mPerBlock}, loc);
+      {bidGridLengths[0], bidGridLengths[1],
+       b.getAffineConstantExpr(mPerBlock)},
+      bidGridLengths.symbols, loc);
 
   toMatrixLSE.passThrough({"gemmG"}, {0}, {"g_block"});
-  toMatrixLSE.unmerge("gemmM", 1, {"m_block", "m_iter"},
-                      {bidGridLengths[1], mPerBlock});
+  toMatrixLSE.unmerge(
+      "gemmM", 1, {"m_block", "m_iter"},
+      {toMatrixLSE.rebind(bidGridLengths[1], bidGridLengths.symbols),
+       toMatrixLSE.cst(mPerBlock)});
 
   TransformMapAttr toMatrixLSEAttr = toMatrixLSE.get();
 
@@ -575,18 +706,30 @@ llvm::FailureOr<ArrayAttr>
 mlir::rock::computeOutputTransforms(OpBuilder &b, Location loc,
                                     int64_t mPerBlock, int64_t nPerBlock,
                                     ArrayRef<int64_t> bidGridLengths) {
+  return computeOutputTransforms(
+      b, loc, mPerBlock, nPerBlock,
+      SymbolicLengths(b.getContext(), bidGridLengths));
+}
+
+llvm::FailureOr<ArrayAttr>
+mlir::rock::computeOutputTransforms(OpBuilder &b, Location loc,
+                                    int64_t mPerBlock, int64_t nPerBlock,
+                                    const SymbolicLengths &bidGridLengths) {
+  ArrayRef<ArgDimAttr> symbols = bidGridLengths.symbols;
   // Create views as gridwise sub-tile of C
   TopDownTMBuilder toMatrixC(
       b, {"g_block", "m_block", "n_block", "m_iter", "n_iter"},
-      {bidGridLengths[0], bidGridLengths[1], bidGridLengths[2], mPerBlock,
-       nPerBlock},
-      loc);
+      {bidGridLengths[0], bidGridLengths[1], bidGridLengths[2],
+       b.getAffineConstantExpr(mPerBlock), b.getAffineConstantExpr(nPerBlock)},
+      symbols, loc);
 
   toMatrixC.passThrough({"gemmG"}, {0}, {"g_block"});
-  toMatrixC.unmerge("gemmM", 1, {"m_block", "m_iter"},
-                    {bidGridLengths[1], mPerBlock});
-  toMatrixC.unmerge("gemmN", 2, {"n_block", "n_iter"},
-                    {bidGridLengths[2], nPerBlock});
+  toMatrixC.unmerge(
+      "gemmM", 1, {"m_block", "m_iter"},
+      {toMatrixC.rebind(bidGridLengths[1], symbols), toMatrixC.cst(mPerBlock)});
+  toMatrixC.unmerge(
+      "gemmN", 2, {"n_block", "n_iter"},
+      {toMatrixC.rebind(bidGridLengths[2], symbols), toMatrixC.cst(nPerBlock)});
 
   TransformMapAttr toMatrixCAttr = toMatrixC.get();
 
@@ -617,7 +760,18 @@ Value mlir::rock::loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
                            StringRef dName,
                            rock::layout::GridCoordinates gridCoords,
                            int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
-                           SmallVector<int64_t, 3> &bidGridLengths,
+                           ArrayRef<int64_t> bidGridLengths,
+                           rock::CacheModifier cache) {
+  return loadTile(b, loc, in, kIter, dName, gridCoords, kPerBlock, dPerBlock,
+                  isKFirst, SymbolicLengths(b.getContext(), bidGridLengths),
+                  cache);
+}
+
+Value mlir::rock::loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
+                           StringRef dName,
+                           rock::layout::GridCoordinates gridCoords,
+                           int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
+                           const SymbolicLengths &bidGridLengths,
                            rock::CacheModifier cache) {
   FailureOr<ArrayAttr> maybeBufferViews = getLoadRegsAsTileViews(
       b, loc, in, dName, bidGridLengths, kPerBlock, dPerBlock, isKFirst);

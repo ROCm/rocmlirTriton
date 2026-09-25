@@ -48,12 +48,28 @@ struct AttnGridCoordinates : GridCoordinates {
 };
 } // namespace layout
 
+/// Lengths that may depend on dynamic function-argument dimensions: one affine
+/// expression per length, whose symbol k stands for `symbols[k]`.
+struct SymbolicLengths {
+  SmallVector<AffineExpr, 4> exprs;
+  SmallVector<ArgDimAttr> symbols;
+
+  SymbolicLengths() = default;
+  SymbolicLengths(MLIRContext *ctx, ArrayRef<int64_t> values);
+
+  AffineExpr operator[](size_t i) const { return exprs[i]; }
+  size_t size() const { return exprs.size(); }
+  /// The constant value of length `i`, if it has one.
+  std::optional<int64_t> getConstant(size_t i) const;
+  bool isStatic() const;
+};
+
 // This function will create views of the register buffer of the loaded tile
 // of a matrix in global memory. Those views will provide sub-tiles of the
 // respective hierarchy within the GPU.
 FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
                                             Value globalBuffer, StringRef dName,
-                                            ArrayRef<int64_t> bidGridLengths,
+                                            const SymbolicLengths &bidGridLengths,
                                             int64_t kPerBlock,
                                             int64_t dPerBlock, bool isKFirst);
 
@@ -96,9 +112,20 @@ SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
 Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad, StringRef secondDim, int64_t secondDimPad);
 
+/// Pad `firstDim` and `secondDim` of `matrix`, whose sizes may be dynamic, up
+/// to multiples of `firstMultiple` and `secondMultiple`.
+Value padMatrixToMultiple(Value matrix, OpBuilder &b, Location loc,
+                          StringRef firstDim, int64_t firstMultiple,
+                          StringRef secondDim, int64_t secondMultiple);
+
 // Apply padding to a vector in its `firstDim` if applicable.
 Value padVector(Value vector, OpBuilder &b, Location loc, StringRef firstDim,
                 int64_t firstDimPad);
+
+/// Pad `firstDim` of `vector`, whose size may be dynamic, up to a multiple of
+/// `multiple`.
+Value padVectorToMultiple(Value vector, OpBuilder &b, Location loc,
+                          StringRef firstDim, int64_t multiple);
 
 /// Normalize the argument into the form requested.
 /// If a group dimension is not present, add one.
@@ -110,8 +137,17 @@ Value normalizeMatrix(Value matrix, OpBuilder &b, Location loc,
                       bool doTranspose, StringRef firstDim,
                       StringRef secondDim);
 
-// Get gridSize
+// Get gridSize. Fails if the grid size is dynamic.
 FailureOr<IntegerAttr> getGridSize(Operation *op);
+
+/// The `rock.grid_size` attribute for `gridSize`: an i32 when it is constant,
+/// otherwise a #rock.arg_expr over `symbols`.
+Attribute makeGridSizeAttr(Builder &b, AffineExpr gridSize,
+                           ArrayRef<ArgDimAttr> symbols);
+
+/// The grid size as an i32 value, materialized from the argument dimensions
+/// when it is dynamic.
+FailureOr<Value> getGridSizeValue(OpBuilder &b, Location loc, Operation *op);
 
 // Get blockSize
 FailureOr<IntegerAttr> getBlockSize(Operation *op);
@@ -137,18 +173,36 @@ FailureOr<BlockArgument> findBlockArgument(Value value);
 llvm::FailureOr<ArrayAttr>
 computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
                         int64_t nPerBlock, ArrayRef<int64_t> bidGridLengths);
+llvm::FailureOr<ArrayAttr>
+computeOutputTransforms(OpBuilder &b, Location loc, int64_t mPerBlock,
+                        int64_t nPerBlock,
+                        const SymbolicLengths &bidGridLengths);
 
 ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
                                      int64_t mPerBlock,
                                      ArrayRef<int64_t> bidGridLengths);
+ArrayAttr computeOutputLseTransforms(OpBuilder &b, Location loc,
+                                     int64_t mPerBlock,
+                                     const SymbolicLengths &bidGridLengths);
 
 Type getAccType(Type elemA, Type elemB);
 
 Value loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
                StringRef dName, rock::layout::GridCoordinates gridCoords,
                int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
-               SmallVector<int64_t, 3> &bidGridLengths,
+               ArrayRef<int64_t> bidGridLengths,
                mlir::rock::CacheModifier cache);
+Value loadTile(OpBuilder &b, Location loc, Value in, Value kIter,
+               StringRef dName, rock::layout::GridCoordinates gridCoords,
+               int64_t kPerBlock, int64_t dPerBlock, bool isKFirst,
+               const SymbolicLengths &bidGridLengths,
+               mlir::rock::CacheModifier cache);
+
+/// `length` as an OpFoldResult: an i64 attribute when it is constant, otherwise
+/// an i32 value computed from the argument dimensions of the enclosing
+/// function at the insertion point of `b`.
+OpFoldResult materializeLength(OpBuilder &b, Location loc, Operation *op,
+                               AffineExpr length, ArrayRef<ArgDimAttr> symbols);
 
 Value createZeroAccBuffer(PatternRewriter &rewriter, Location loc,
                           ArrayRef<int64_t> shape, Type accType);

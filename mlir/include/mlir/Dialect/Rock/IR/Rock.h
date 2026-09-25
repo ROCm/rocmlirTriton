@@ -100,10 +100,20 @@ TransformAttr getTransformAttrChecked(
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
     ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims);
 
+/// As above, with parameters that may be symbolic expressions. The attribute
+/// is stored in its static form if all of them are constants.
+TransformAttr getTransformAttrChecked(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    MLIRContext *context, TransformType type, ArrayRef<AffineExpr> paramExprs,
+    ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
+    ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims);
+
 TransformMapAttr getTransformMapAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     MLIRContext *context, ArrayRef<TransformAttr> ops, AffineMapAttr map,
-    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds);
+    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds,
+    ArrayRef<ArgDimAttr> symbols = {}, ArrayRef<AffineExpr> symUpperBounds = {},
+    ArrayRef<AffineExpr> symLowerBounds = {});
 } // namespace rock
 } // namespace mlir
 #endif // MLIR_ROCKOPS_OPS_H_

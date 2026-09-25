@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
@@ -312,6 +313,8 @@ void RockFoldBroadcastPass::runOnOperation() {
     // disable for non-kernels
     return;
   }
+  if (rock::isDynamicKernel(func))
+    return;
 
   {
     RewritePatternSet patterns(ctx);

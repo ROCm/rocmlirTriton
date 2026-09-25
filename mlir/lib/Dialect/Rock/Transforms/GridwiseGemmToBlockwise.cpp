@@ -21,7 +21,10 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/SymbolicExprUtils.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
@@ -183,28 +186,41 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value matA = op.getA();
     Value matB = op.getB();
 
-    // Obtain critical matrix dimensions.
-    ArrayRef<int64_t> aShape, bShape;
-    aShape = op.getA().getType().getShape();
-    bShape = op.getB().getType().getShape();
-    // Obtain critical matrix dimensions.
-    int64_t G = aShape[0];
-    int64_t M = aShape[1];
-    int64_t K = aShape[2];
-    int64_t N = bShape[2];
+    // Obtain critical matrix dimensions. These are affine expressions over
+    // the argument dimensions of the kernel, and constants when static.
+    SmallVector<ArgDimAttr> symbols;
+    FailureOr<AffineExpr> gExpr = getDimExpr(matA, 0, symbols);
+    FailureOr<AffineExpr> mExpr = getDimExpr(matA, 1, symbols);
+    FailureOr<AffineExpr> kExpr = getDimExpr(matA, 2, symbols);
+    FailureOr<AffineExpr> nExpr = getDimExpr(matB, 2, symbols);
+    if (failed(gExpr) || failed(mExpr) || failed(kExpr) || failed(nExpr))
+      return op->emitOpError("cannot express the dynamic GEMM sizes in terms "
+                             "of kernel arguments");
+    int64_t G = getStaticOrDynamic(*gExpr);
+    int64_t M = getStaticOrDynamic(*mExpr);
+    int64_t K = getStaticOrDynamic(*kExpr);
+    int64_t N = getStaticOrDynamic(*nExpr);
 
     // Obtain critical tuning parameters.
     StringRef arch = rock::getArchValue(op);
     [[maybe_unused]] uint32_t blockSize =
         rock::getBlockSize(op).value().getInt();
-    [[maybe_unused]] uint32_t gridSize = rock::getGridSize(op).value().getInt();
     GemmParamsAttr tuningParams = op.getParams();
     [[maybe_unused]] int64_t kpack = tuningParams.getKpack();
     int64_t kPerBlock = tuningParams.getKPerBlock();
     int64_t mPerBlock = tuningParams.getMPerBlock();
     int64_t nPerBlock = tuningParams.getNPerBlock();
-    int64_t mBlocks = M / mPerBlock;
-    int64_t nBlocks = N / nPerBlock;
+    unsigned numSymbols = symbols.size();
+    AffineExpr mBlocksExpr =
+        simplifyAffineExpr(mExpr->floorDiv(mPerBlock), 0, numSymbols);
+    AffineExpr nBlocksExpr =
+        simplifyAffineExpr(nExpr->floorDiv(nPerBlock), 0, numSymbols);
+    AffineExpr kIterationsExpr =
+        simplifyAffineExpr(kExpr->floorDiv(kPerBlock), 0, numSymbols);
+    int64_t mBlocks = getStaticOrDynamic(mBlocksExpr);
+    int64_t nBlocks = getStaticOrDynamic(nBlocksExpr);
+    bool isDynamic = ShapedType::isDynamic(G) || ShapedType::isDynamic(M) ||
+                     ShapedType::isDynamic(K) || ShapedType::isDynamic(N);
     std::optional<int64_t> quantBlockSize = op.getQuantBlockSize();
     int64_t quantKPerBlock = 0;
     if (quantBlockSize.has_value() && kPerBlock % quantBlockSize.value() != 0) {
@@ -215,15 +231,16 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     if (quantBlockSize.has_value())
       quantKPerBlock = kPerBlock / quantBlockSize.value();
 
-    LLVM_DEBUG(llvm::dbgs() << "gridSize: " << gridSize << "\n"
-                            << "blockSize: " << blockSize << "\n"
+    LLVM_DEBUG(llvm::dbgs() << "blockSize: " << blockSize << "\n"
                             << "elementTypeALoad: " << elementTypeALoad << "\n"
                             << "elementTypeBLoad: " << elementTypeBLoad << "\n"
                             << "\n"
                             << "kPerBlock: " << kPerBlock << "\n"
                             << "mPerBlock: " << mPerBlock << "\n"
                             << "nPerBlock: " << nPerBlock << "\n");
-    SmallVector<int64_t, 3> bidGridLengths = {G, mBlocks, nBlocks};
+    SymbolicLengths bidGridLengths;
+    bidGridLengths.exprs = {*gExpr, mBlocksExpr, nBlocksExpr};
+    bidGridLengths.symbols = symbols;
 
     // Get current workgroup ID.
     Value bid =
@@ -231,11 +248,14 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
 
     // Compute grid coordinates
     int64_t gridGroupSize = tuningParams.getGridGroupSize();
+    auto length = [&](AffineExpr expr) {
+      return materializeLength(b, loc, op, expr, symbols);
+    };
     auto gridCoords = layout::makeGroupedGridLayout(
         b, loc, bid,
-        {G, mBlocks, nBlocks, rock::getNumCUValue(op),
-         rock::getNumChipletsValue(op), elementTypeALoad, elemTypeOutStore,
-         gridGroupSize},
+        {length(*gExpr), length(mBlocksExpr), length(nBlocksExpr),
+         rock::getNumCUValue(op), rock::getNumChipletsValue(op),
+         elementTypeALoad, elemTypeOutStore, gridGroupSize},
         arch);
 
     [[maybe_unused]] int64_t numWaves = tuningParams.getNumWaves();
@@ -273,9 +293,12 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
         rock::createZeroAccBuffer(b, loc, {mPerBlock, nPerBlock}, accType);
 
     // Emit loop with iter_args for the accumulator
-    int64_t kIterations = K / kPerBlock;
-    Value nIterations =
-        ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
+    Value nIterations;
+    if (auto kIterations = dyn_cast<AffineConstantExpr>(kIterationsExpr))
+      nIterations = ConstantIntOp::create(b, loc, b.getI32Type(),
+                                          kIterations.getValue());
+    else
+      nIterations = cast<Value>(length(kIterationsExpr));
 
     scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
     Value loopResult;
@@ -288,9 +311,13 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
       // Choose cache modifiers for the operands based on data reuse: a skinny
       // GEMM streams the large (low-reuse) operand to avoid evicting the one
       // that is actually reused across workgroups.
-      auto [cacheA, cacheB] = chooseGemmLoadCacheModifiers(
-          arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
-          nBlocks, aReloads, bReloads);
+      // Dynamic sizes are unknown here, so they keep the default modifiers.
+      auto [cacheA, cacheB] =
+          isDynamic ? std::make_pair(rock::CacheModifier::NONE,
+                                     rock::CacheModifier::NONE)
+                    : chooseGemmLoadCacheModifiers(
+                          arch, elementTypeALoad, elementTypeBLoad, G, M, N, K,
+                          mBlocks, nBlocks, aReloads, bReloads);
 
       // Load from global memory to registers
       Value loadedB =
@@ -368,6 +395,7 @@ void RockGridwiseGemmToBlockwisePass::runOnOperation() {
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
                          affine::AffineDialect, scf::SCFDialect,
                          triton::TritonDialect>();
+  target.addLegalOp<tensor::DimOp, memref::DimOp, LLVM::AssumeOp>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GridwiseGemmRewritePattern>(ctx);

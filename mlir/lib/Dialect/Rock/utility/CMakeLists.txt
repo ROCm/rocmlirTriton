@@ -1,5 +1,6 @@
 add_rocmlir_dialect_library(MLIRRockUtility
   builderUtils.cpp
+  dynamicDimUtils.cpp
   loweringUtils.cpp
   transformMapUtils.cpp
   fusionUtils.cpp
@@ -20,6 +21,7 @@ add_rocmlir_dialect_library(MLIRRockUtility
   MLIRRockOps
   MLIRIR
   MLIRMemRefDialect
+  MLIRTensorDialect
   MLIRSupport
   MLIRLLVMDialect
   MLIRGPUDialect

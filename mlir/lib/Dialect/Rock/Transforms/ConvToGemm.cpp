@@ -21,9 +21,13 @@
 // into rock.gemm_elementwise_gemm.
 //
 //===-----------------------------------------------------===//
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Rock/IR/RockConvInterface.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -1338,6 +1342,8 @@ void RockConvToGemmPass::runOnOperation() {
                       rock::ConvElementwiseGemmOp>();
   target.addLegalOp<rock::TransformOp, rock::GemmOp,
                     rock::GemmElementwiseGemmOp, rock::StoreOp>();
+  target.addLegalDialect<arith::ArithDialect>();
+  target.addLegalOp<tensor::DimOp, memref::DimOp, LLVM::AssumeOp>();
   RewritePatternSet patterns(ctx);
   patterns.add<ConvRewritePattern<ConvOp>, ConvRewritePattern<ConvBwdDataOp>,
                ConvGemmRewritePattern>(ctx);

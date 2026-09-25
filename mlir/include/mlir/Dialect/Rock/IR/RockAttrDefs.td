@@ -158,6 +158,38 @@ def CacheModifier
 
 def CacheModifierAttr : EnumAttr<Rock_Dialect, CacheModifier, "CacheModifier">;
 
+/// ArgDimAttr
+def Rock_ArgDimAttr : Rock_Attr<"ArgDim"> {
+  let mnemonic = "arg_dim";
+  let summary = "A dimension of a function argument";
+  let description = [{
+    Names dimension `dim` of argument `arg` of the enclosing function.
+    Transform maps and `#rock.arg_expr` bind their affine symbols to such
+    dimensions, so that a dynamic size or stride stays self-contained
+    wherever the attribute is copied. Inside a `#rock.transform_map` it is
+    printed as `arg(j, i)`.
+  }];
+  let parameters = (ins "uint32_t":$arg, "uint32_t":$dim);
+  let assemblyFormat = "`<` $arg `,` $dim `>`";
+}
+
+/// ArgExprAttr
+def Rock_ArgExprAttr : Rock_Attr<"ArgExpr"> {
+  let mnemonic = "arg_expr";
+  let summary = "An affine expression over function-argument dimensions";
+  let description = [{
+    An affine expression whose symbol `s<k>` stands for the function-argument
+    dimension `symbols[k]`, for example
+    `#rock.arg_expr<(s0 ceildiv 16) * (s1 ceildiv 64), [arg(0, 1), arg(1, 2)]>`.
+    Used for values that depend on dynamic sizes but are not part of a
+    transform map, such as a dynamic grid size.
+  }];
+  let parameters = (ins "::mlir::AffineExpr":$expr,
+                    OptionalArrayRefParameter<"::mlir::rock::ArgDimAttr">:$symbols);
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+}
+
 /// TransformAttr
 def Rock_TransformAttr : Rock_Attr<"Transform"> {
     let mnemonic = "transform";
@@ -205,6 +237,12 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
         - ConstDim{c1, l1, c2, l2, .. cN, lN} an operator that sets the lower
           dimensions of length l1, ... lN to the values c1, ..., cN. It takes no
           input arguments.
+
+        Parameters may be affine expressions over the symbols of the enclosing
+        transform_map (for example `Pad{0, (s0 ceildiv 16) * 16 - s0}`) to
+        describe dynamic shapes. Such entries are stored as
+        `ShapedType::kDynamic` in `params`, with the full list of expressions
+        in `symParams`; `symParams` is empty for static transforms.
     }];
 
     let parameters =
@@ -224,7 +262,30 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
                 "transformation">:$lowerNames,
             ArrayRefParameter<"uint32_t",
                               "The indices of the lower dimensions (outputs) "
-                              "of this transformation">:$lowerDims);
+                              "of this transformation">:$lowerDims,
+            OptionalArrayRefParameter<
+                "::mlir::AffineExpr",
+                "Every parameter as an affine expression over the symbols "
+                "of the enclosing map, or empty if all are static">:$symParams);
+
+    let builders = [
+      AttrBuilder<(ins "::mlir::rock::TransformType":$type,
+                       "::llvm::ArrayRef<int64_t>":$params,
+                       "::llvm::ArrayRef<::llvm::StringRef>":$upperNames,
+                       "::llvm::ArrayRef<uint32_t>":$upperDims,
+                       "::llvm::ArrayRef<::llvm::StringRef>":$lowerNames,
+                       "::llvm::ArrayRef<uint32_t>":$lowerDims), [{
+        return $_get($_ctxt, type, params, upperNames, upperDims, lowerNames,
+                     lowerDims, ::llvm::ArrayRef<::mlir::AffineExpr>{});
+      }]>
+    ];
+
+    let extraClassDeclaration = [{
+      /// True if no parameter is a symbolic expression.
+      bool isStatic() const { return getSymParams().empty(); }
+      /// The parameters as affine expressions (constants when static).
+      ::llvm::SmallVector<::mlir::AffineExpr> getParamExprs() const;
+    }];
 
     let genVerifyDecl = 1;
     let hasCustomAssemblyFormat = 1;
@@ -239,6 +300,20 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
         to some other lower dimensions Q.
 
         Comes packaged with an affine map describing the transformation and upper and lowr bounds;
+
+        Dynamic shapes are described with affine symbols. Symbol `s<k>` of the
+        map, of its transforms' parameters and of its bounds stands for the
+        function-argument dimension `symbols[k]`, printed as `arg(j, i)`:
+        ```
+        #rock.transform_map<affine_map<(d0)[s0] -> (d0)>
+          by [<Pad{0, (s0 ceildiv 16) * 16 - s0} ["m"] at [0] -> ["m"] at [0]>]
+          symbols = [arg(0, 1)]
+          bounds = [(s0 ceildiv 16) * 16] -> [s0]>
+        ```
+        Symbolic bounds are stored as `ShapedType::kDynamic` in `upperBounds`
+        and `lowerBounds`, with the full list of bound expressions in
+        `symUpperBounds` and `symLowerBounds`. All three symbolic fields are
+        empty for static maps.
     }];
 
     let parameters = (ins
@@ -248,7 +323,13 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
     // Thes aren't strictly needed and can probably be removed if we're willing to
     // pay an ergonomics penalty.
     DefaultValuedParameter<"DenseI64ArrayAttr", "$_builder.getDenseI64ArrayAttr({})">:$upperBounds,
-    DefaultValuedParameter<"DenseI64ArrayAttr", "$_builder.getDenseI64ArrayAttr({})">:$lowerBounds
+    DefaultValuedParameter<"DenseI64ArrayAttr", "$_builder.getDenseI64ArrayAttr({})">:$lowerBounds,
+    OptionalArrayRefParameter<"::mlir::rock::ArgDimAttr",
+        "The function-argument dimension bound to each symbol">:$symbols,
+    OptionalArrayRefParameter<"::mlir::AffineExpr",
+        "Every upper bound as an expression, or empty if static">:$symUpperBounds,
+    OptionalArrayRefParameter<"::mlir::AffineExpr",
+        "Every lower bound as an expression, or empty if static">:$symLowerBounds
     );
 
     let builders = [
@@ -256,11 +337,32 @@ def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
         (ins "ArrayRef<::mlir::rock::TransformAttr>":$transforms,
             "ArrayRef<int64_t>":$upperBounds,
             "ArrayRef<int64_t>":$lowerBounds)>,
+      AttrBuilderWithInferredContext<
+        (ins "ArrayRef<::mlir::rock::TransformAttr>":$transforms,
+            "ArrayRef<::mlir::AffineExpr>":$upperBounds,
+            "ArrayRef<::mlir::AffineExpr>":$lowerBounds,
+            "ArrayRef<::mlir::rock::ArgDimAttr>":$symbols)>,
+      AttrBuilder<(ins "ArrayRef<::mlir::rock::TransformAttr>":$ops,
+                       "AffineMapAttr":$map,
+                       "DenseI64ArrayAttr":$upperBounds,
+                       "DenseI64ArrayAttr":$lowerBounds), [{
+        return $_get($_ctxt, ops, map, upperBounds, lowerBounds,
+                     ::llvm::ArrayRef<::mlir::rock::ArgDimAttr>{},
+                     ::llvm::ArrayRef<::mlir::AffineExpr>{},
+                     ::llvm::ArrayRef<::mlir::AffineExpr>{});
+      }]>
     ];
 
-    let assemblyFormat = [{
-        `<` $map `by` ` ` `[` $ops `]` `bounds` `=` ($upperBounds^) : (`[` `]`)? `->` ($lowerBounds^) : (`[` `]`)? `>`
+    let extraClassDeclaration = [{
+      /// True if the map has no symbols, i.e. every param and bound is static.
+      bool isStatic() const { return getSymbols().empty(); }
+      unsigned getNumSymbols() const { return getSymbols().size(); }
+      /// The bounds as affine expressions (constants when static).
+      ::llvm::SmallVector<::mlir::AffineExpr> getUpperBoundExprs() const;
+      ::llvm::SmallVector<::mlir::AffineExpr> getLowerBoundExprs() const;
     }];
+
+    let hasCustomAssemblyFormat = 1;
     let genVerifyDecl = 1;
 }
 
@@ -705,6 +807,27 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
 
 def Rock_GridSize : Rock_Attr<"GridSize"> {
   let mnemonic = "rock.grid_size";
+  let description = [{
+    Name of the kernel attribute holding the launch grid size: an i32
+    `IntegerAttr` for static kernels, or a `#rock.arg_expr` over the kernel's
+    argument dimensions for dynamic kernels, evaluated by the host at launch.
+  }];
+
+  let extraClassDeclaration = [{
+    static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {
+      return (::llvm::Twine(getMnemonic()) + "." + kernelName).str();
+    }
+  }];
+}
+
+def Rock_DimArgs : Rock_Attr<"DimArgs"> {
+  let mnemonic = "rock.dim_args";
+  let description = [{
+    Name of the module attribute recording, per kernel, which dynamic
+    argument dimensions were appended to the kernel signature as i32 scalar
+    arguments (an `ArrayAttr` of `#rock.arg_dim`, in argument order).
+    The launch passes the corresponding runtime sizes in the same order.
+  }];
 
   let extraClassDeclaration = [{
     static ::std::string getModuleAttrName(::llvm::StringRef kernelName) {

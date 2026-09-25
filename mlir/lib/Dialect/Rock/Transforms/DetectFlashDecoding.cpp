@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
@@ -446,6 +447,8 @@ struct RockDetectFlashDecodingPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
+      return;
+    if (rock::isDynamicKernel(func))
       return;
 
     MLIRContext *ctx = &getContext();

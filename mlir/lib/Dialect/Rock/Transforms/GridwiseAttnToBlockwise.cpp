@@ -21,6 +21,8 @@
 //
 //===-----------------------------------------------------===//
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -1187,7 +1189,7 @@ struct GridwiseAttentionRewritePattern
     if (failed(maybeGridSize))
       return op->emitError("Failed to get grid_size");
 
-    int64_t gridSize = maybeGridSize->getInt();
+    OpFoldResult gridSize = rewriter.getI64IntegerAttr(maybeGridSize->getInt());
         
     auto arch = rock::getArchValue(op);
 
@@ -1199,7 +1201,7 @@ struct GridwiseAttentionRewritePattern
         inV.getType().getNumElements(), vReloads, gemm0MBlocks);
 
     auto gridCoordsGemm0mIter0 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, gemm0MBlocks,
+        rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks),
         rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
                                                     0),
         gridSize, arch, rock::getNumChipletsValue(op), splitKVConst);
@@ -1266,7 +1268,7 @@ struct GridwiseAttentionRewritePattern
       // it is fine m iteration to be zero as it irrelevant to Q tensor
       // as the first gemm is Kt x Qt.
       auto gridCoordsGemm0LoadQ = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm0MBlocks, zero, gridSize, arch,
+          rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks), zero, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
 
       loadedQ = rock::loadTile(
@@ -1312,7 +1314,7 @@ struct GridwiseAttentionRewritePattern
       sumRow = nLoopOp.getRegionIterArg(gemm1NChunks + 1);
 
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
-          rewriter, loc, bid, gemm0MBlocks, nLoopIV, gridSize, arch,
+          rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks), nLoopIV, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
@@ -1538,7 +1540,7 @@ struct GridwiseAttentionRewritePattern
         Value chunkIdx = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), chunk);
         auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-            rewriter, loc, bid, gemm1MBlocks, chunkIdx, gridSize, arch,
+            rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm1MBlocks), chunkIdx, gridSize, arch,
             rock::getNumChipletsValue(op), splitKVConst);
 
         Value loadedV =
@@ -1619,7 +1621,7 @@ struct GridwiseAttentionRewritePattern
     // Note that we don't use splitKV here because that dimension belongs to the
     // batch size already for output tensors
     auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, gemm1MBlocks, zero, gridSize, arch,
+        rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm1MBlocks), zero, gridSize, arch,
         rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output
@@ -1670,6 +1672,7 @@ void RockGridwiseAttnToBlockwisePass::runOnOperation() {
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
                          affine::AffineDialect, scf::SCFDialect,
                          math::MathDialect, triton::TritonDialect>();
+  target.addLegalOp<tensor::DimOp, memref::DimOp, LLVM::AssumeOp>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GridwiseAttentionRewritePattern>(ctx);

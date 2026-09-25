@@ -25,7 +25,9 @@
 #ifndef ROCK_TRANSFORMS_POINTERARITHEXPAND_H
 #define ROCK_TRANSFORMS_POINTERARITHEXPAND_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
@@ -60,10 +62,26 @@ Value broadcastToShape(OpBuilder &b, Location loc, Value v,
 /// AffineApplyOp lowering but tolerates tensor operands via broadcasting.
 /// `indexType` (i32 or i64) is the integer width used for any constants
 /// introduced while expanding, and must match the width of `operands`.
+/// `symbolValues` hold exactly one scalar of `indexType` per symbol of
+/// `affineMap`.
 FailureOr<SmallVector<Value>> expandAffineMap(OpBuilder &b, Location loc,
                                               AffineMap affineMap,
                                               ValueRange operands,
-                                              Type indexType);
+                                              Type indexType,
+                                              ValueRange symbolValues = {});
+
+/// The values of the argument dimensions that dynamic transform maps refer
+/// to: the i32 dimension read at function entry, shared by every argument
+/// dimension assumed equal to it.
+struct KernelArgDims {
+  explicit KernelArgDims(func::FuncOp func);
+  Value operator()(OpBuilder &b, ArgDimAttr argDim) const;
+  const ArgDimEqualities &getEqualities() const { return equalities; }
+
+private:
+  func::FuncOp func;
+  ArgDimEqualities equalities;
+};
 
 /// The linearized buffer offset and validity mask produced by a transform
 /// chain. `mask` is an i1 value; `offset` is an integer value (i32 or i64,
@@ -87,11 +105,15 @@ struct OffsetAndMask {
 ///
 /// `indexType` (i32 or i64) is the integer width of the coordinate arithmetic
 /// and of the resulting offset; it must match the width of `startCoords`.
+///
+/// Dynamic maps require `argDims`, which provides their symbol values and the
+/// equalities used to share one symbol between equal argument dimensions.
 FailureOr<OffsetAndMask>
 expandCoordsToOffsetAndMask(OpBuilder &b, Location loc,
                             ArrayRef<TransformMapAttr> transforms,
                             ValueRange startCoords, ArrayRef<int64_t> outShape,
-                            Type indexType, bool computeOffset = true);
+                            Type indexType, bool computeOffset = true,
+                            const KernelArgDims *argDims = nullptr);
 
 } // namespace rock
 } // namespace mlir

@@ -90,8 +90,24 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
 
     // Get grid_size from module attribute (set by RockTensorToTritonPtr)
     std::string gridAttrName = GridSizeAttr::getModuleAttrName(info.name);
-    if (auto gridAttr = moduleOp->getAttrOfType<IntegerAttr>(gridAttrName))
-      info.gridSize = gridAttr.getInt();
+    Attribute gridAttr = moduleOp->getAttr(gridAttrName);
+    if (auto staticGrid = dyn_cast_or_null<IntegerAttr>(gridAttr))
+      info.gridSize = staticGrid.getInt();
+    else if (auto dynamicGrid = dyn_cast_or_null<ArgExprAttr>(gridAttr))
+      info.dynamicGridSize = dynamicGrid;
+
+    std::string dimArgsName = DimArgsAttr::getModuleAttrName(info.name);
+    if (auto dimArgs = moduleOp->getAttrOfType<ArrayAttr>(dimArgsName)) {
+      for (Attribute entry : dimArgs) {
+        auto argDim = dyn_cast<ArgDimAttr>(entry);
+        if (!argDim) {
+          funcOp.emitOpError("malformed ")
+              << dimArgsName << ": entry is not a #rock.arg_dim";
+          return WalkResult::interrupt();
+        }
+        info.dimArgs.push_back(argDim);
+      }
+    }
 
     // Get prefill arg info from module attribute (set by RockTensorToTritonPtr)
     std::string prefillAttrName = "rock.prefill_args." + info.name;
@@ -144,10 +160,14 @@ LogicalResult collectKernelInfo(ModuleOp moduleOp,
     return failure();
 
   for (KernelInfo &k : kernels) {
-    if (k.gridSize <= 0) {
+    if (k.gridSize <= 0 && !k.dynamicGridSize) {
       return k.llvmFunc.emitOpError("missing rock.grid_size." + k.name +
                                     " module attribute");
     }
+    if (k.dynamicGridSize && k.dimArgs.empty())
+      return k.llvmFunc.emitOpError("dynamic grid size without "
+                                    "rock.dim_args." +
+                                    k.name);
   }
 
   return success();

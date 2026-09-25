@@ -219,10 +219,14 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
       llvm::none_of(destNames, [](StringRef name) { return name.empty(); }) &&
       "expected a name for every destination dimension");
 
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<SmallVector<AffineExpr>> destSizes = getShapeExprs(dest, symbols);
+  assert(succeeded(destSizes) && "expected a traceable destination shape");
+
   SmallVector<StringRef> keptNames;
   SmallVector<uint32_t> keptDims;
-  SmallVector<int64_t> keptShape;
-  for (auto [i, size] : llvm::enumerate(destShape)) {
+  SmallVector<AffineExpr> keptShape;
+  for (auto [i, size] : llvm::enumerate(*destSizes)) {
     if (static_cast<int64_t>(i) == destDim)
       continue;
     keptNames.push_back(destNames[i]);
@@ -230,11 +234,12 @@ static Value pinDimToZero(OpBuilder &b, Location loc, Value dest,
     keptShape.push_back(size);
   }
 
-  TopDownTMBuilder view(b, keptNames, keptShape, loc);
+  TopDownTMBuilder view(b, keptNames, keptShape, symbols, loc);
   if (!keptNames.empty())
     view.passThrough(keptNames, keptDims, keptNames);
   view.constDim(destNames[destDim], static_cast<uint32_t>(destDim),
-                /*constantVal=*/0, /*lowerSize=*/destShape[destDim]);
+                /*constantVal=*/0,
+                /*lowerSize=*/view.rebind((*destSizes)[destDim], symbols));
   return TransformOp::create(b, loc, dest, view.get());
 }
 

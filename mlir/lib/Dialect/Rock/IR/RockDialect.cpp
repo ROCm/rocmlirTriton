@@ -12,13 +12,19 @@
 #include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
+#include "mlir/Dialect/Rock/IR/SymbolicExprUtils.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -206,16 +212,21 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
     return {};
   }
 
-  llvm::SmallVector<int64_t> params;
+  llvm::SmallVector<AffineExpr> paramExprs;
   if (parser.parseOptionalLBrace().succeeded()) {
-    if (parseAndGather<int64_t>(parser, AsmParser::Delimiter::None, params,
-                                [&](int64_t &out) -> ParseResult {
-                                  return parser.parseInteger(out);
-                                }) ||
+    if (parseAndGather<AffineExpr>(parser, AsmParser::Delimiter::None,
+                                   paramExprs,
+                                   [&](AffineExpr &out) -> ParseResult {
+                                     return parseSymbolicExpr(parser, out);
+                                   }) ||
         parser.parseRBrace()) {
       return {};
     }
   }
+  llvm::SmallVector<int64_t> params =
+      llvm::map_to_vector(paramExprs, getStaticOrDynamic);
+  if (llvm::none_of(params, ShapedType::isDynamic))
+    paramExprs.clear();
 
   llvm::SmallVector<std::string> upperNamesStorage;
   llvm::SmallVector<unsigned> upperDims;
@@ -266,7 +277,11 @@ mlir::Attribute TransformAttr::parse(mlir::AsmParser &parser, mlir::Type type) {
 
   return parser.getChecked<TransformAttr>(
       startLoc, parser.getContext(), transformType.value(), params, upperNames,
-      upperDims, lowerNames, lowerDims);
+      upperDims, lowerNames, lowerDims, paramExprs);
+}
+
+SmallVector<AffineExpr> TransformAttr::getParamExprs() const {
+  return getExprsOrConstants(getContext(), getParams(), getSymParams());
 }
 
 void TransformAttr::print(mlir::AsmPrinter &printer) const {
@@ -276,7 +291,11 @@ void TransformAttr::print(mlir::AsmPrinter &printer) const {
   ArrayRef<int64_t> params = getParams();
   if (params.size() > 0) {
     printer << "{";
-    llvm::interleaveComma(params, printer);
+    if (isStatic())
+      llvm::interleaveComma(params, printer);
+    else
+      llvm::interleaveComma(getSymParams(), printer,
+                            [&](AffineExpr e) { printer << e; });
     printer << "}";
   }
   printer << " [";
@@ -298,7 +317,24 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                       llvm::ArrayRef<llvm::StringRef> upperNames,
                       llvm::ArrayRef<unsigned> upperDims,
                       llvm::ArrayRef<llvm::StringRef> lowerNames,
-                      llvm::ArrayRef<unsigned> lowerDims) {
+                      llvm::ArrayRef<unsigned> lowerDims,
+                      llvm::ArrayRef<AffineExpr> symParams) {
+  if (!symParams.empty()) {
+    if (symParams.size() != params.size())
+      return emitError() << "Have " << symParams.size()
+                         << " symbolic parameters for " << params.size()
+                         << " parameters";
+    for (auto [p, e] : llvm::zip(params, symParams)) {
+      if (!e.isSymbolicOrConstant())
+        return emitError() << "Parameter " << e
+                           << " must only use symbols and constants";
+      if (p != getStaticOrDynamic(e))
+        return emitError() << "Parameter " << p
+                           << " does not match its expression " << e;
+    }
+  }
+  // Value checks below only apply to static entries.
+  auto isStatic = [](int64_t v) { return !ShapedType::isDynamic(v); };
   if (upperNames.size() != upperDims.size()) {
     return emitError() << "Have " << upperNames.size() << " names for "
                        << upperDims.size() << " dimensions";
@@ -335,10 +371,10 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Pad must have two parameters (left, right) per dimension";
     }
     for (size_t i = 0, e = params.size(); i < e; i += 2) {
-      if (params[i] < 0)
+      if (isStatic(params[i]) && params[i] < 0)
         return emitError() << "Pad: left padding (" << params[i]
                            << ") must be non-negative";
-      if (params[i + 1] < 0)
+      if (isStatic(params[i + 1]) && params[i + 1] < 0)
         return emitError() << "Pad: right padding (" << params[i + 1]
                            << ") must be non-negative";
     }
@@ -354,10 +390,11 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Slice must have two parameters (begin, end) per dimension";
     }
     for (size_t i = 0, e = params.size(); i < e; i += 2) {
-      if (params[i] < 0)
+      if (isStatic(params[i]) && params[i] < 0)
         return emitError() << "Slice: begin (" << params[i]
                            << ") must be non-negative";
-      if (params[i + 1] <= params[i])
+      if (isStatic(params[i]) && isStatic(params[i + 1]) &&
+          params[i + 1] <= params[i])
         return emitError() << "Slice: end (" << params[i + 1]
                            << ") must be greater than begin (" << params[i]
                            << ")";
@@ -383,7 +420,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Unmerge must specify one length per input dimension";
     }
     for (int64_t p : params) {
-      if (p <= 0)
+      if (isStatic(p) && p <= 0)
         return emitError() << "Unmerge dimension length " << p
                            << " must be positive";
     }
@@ -398,7 +435,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
              << "Merge must have one parameter per output dimension (its size)";
     }
     for (int64_t p : params) {
-      if (p <= 0)
+      if (isStatic(p) && p <= 0)
         return emitError() << "Merge dimension size " << p
                            << " must be positive";
     }
@@ -411,7 +448,7 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     if (params.size() != upperDims.size()) {
       return emitError() << "Must supply a size parameter for each dimension";
     }
-    if (params[0] <= 0) {
+    if (isStatic(params[0]) && params[0] <= 0) {
       return emitError() << "AddDim size " << params[0] << " must be positive";
     }
     if (!lowerDims.empty()) {
@@ -434,11 +471,12 @@ TransformAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
       return emitError()
              << "ConstDim is parameterized by [value, length] pairs";
     for (size_t i = 0, e = params.size(); i < e; i += 2) {
-      if (params[i] < 0)
+      if (isStatic(params[i]) && params[i] < 0)
         return emitError() << "For constant dimension " << lowerDims[i / 2]
                            << " constant value " << params[i]
                            << " must be non-negative";
-      if (params[i] >= params[i + 1])
+      if (isStatic(params[i]) && isStatic(params[i + 1]) &&
+          params[i] >= params[i + 1])
         return emitError() << "For constant dimension " << lowerDims[i / 2]
                            << " constant value " << params[i]
                            << " must be less than dimension "
@@ -456,7 +494,62 @@ TransformAttr getTransformAttrChecked(
     ArrayRef<StringRef> upperNames, ArrayRef<uint32_t> upperDims,
     ArrayRef<StringRef> lowerNames, ArrayRef<uint32_t> lowerDims) {
   return TransformAttr::getChecked(emitError, context, type, params, upperNames,
-                                   upperDims, lowerNames, lowerDims);
+                                   upperDims, lowerNames, lowerDims,
+                                   ArrayRef<AffineExpr>{});
+}
+
+TransformAttr getTransformAttrChecked(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::MLIRContext *context, TransformType type,
+    ArrayRef<AffineExpr> paramExprs, ArrayRef<StringRef> upperNames,
+    ArrayRef<uint32_t> upperDims, ArrayRef<StringRef> lowerNames,
+    ArrayRef<uint32_t> lowerDims) {
+  SmallVector<int64_t> params =
+      llvm::map_to_vector(paramExprs, getStaticOrDynamic);
+  SmallVector<AffineExpr> symParams;
+  if (llvm::any_of(params, ShapedType::isDynamic))
+    symParams.assign(paramExprs.begin(), paramExprs.end());
+  return TransformAttr::getChecked(emitError, context, type, params, upperNames,
+                                   upperDims, lowerNames, lowerDims, symParams);
+}
+
+//===---------------------------------------------------------
+// ArgExprAttr
+//===---------------------------------------------------------
+
+Attribute ArgExprAttr::parse(AsmParser &parser, Type) {
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  AffineExpr expr;
+  SmallVector<ArgDimAttr> symbols;
+  if (parser.parseLess() || parseSymbolicExpr(parser, expr) ||
+      parser.parseComma() ||
+      parseAndGather<ArgDimAttr>(parser, AsmParser::Delimiter::Square, symbols,
+                                 [&](ArgDimAttr &out) -> ParseResult {
+                                   return parseArgDim(parser, out);
+                                 }) ||
+      parser.parseGreater())
+    return {};
+  return parser.getChecked<ArgExprAttr>(loc, parser.getContext(), expr,
+                                        symbols);
+}
+
+void ArgExprAttr::print(AsmPrinter &printer) const {
+  printer << "<" << getExpr() << ", [";
+  llvm::interleaveComma(getSymbols(), printer,
+                        [&](ArgDimAttr a) { printArgDim(printer, a); });
+  printer << "]>";
+}
+
+LogicalResult
+ArgExprAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                    AffineExpr expr, ArrayRef<ArgDimAttr> symbols) {
+  if (!expr.isSymbolicOrConstant())
+    return emitError() << "expression " << expr
+                       << " must only use symbols and constants";
+  if (getNumUsedSymbols(expr) > symbols.size())
+    return emitError() << "expression " << expr << " uses more than the "
+                       << symbols.size() << " bound symbols";
+  return success();
 }
 
 //===---------------------------------------------------------
@@ -466,22 +559,126 @@ TransformAttr getTransformAttrChecked(
 TransformMapAttr getTransformMapAttrChecked(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     mlir::MLIRContext *context, ArrayRef<TransformAttr> ops, AffineMapAttr map,
-    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds) {
+    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds,
+    ArrayRef<ArgDimAttr> symbols, ArrayRef<AffineExpr> symUpperBounds,
+    ArrayRef<AffineExpr> symLowerBounds) {
   return TransformMapAttr::getChecked(emitError, context, ops, map, upperBounds,
-                                      lowerBounds);
+                                      lowerBounds, symbols, symUpperBounds,
+                                      symLowerBounds);
+}
+
+SmallVector<AffineExpr> TransformMapAttr::getUpperBoundExprs() const {
+  return getExprsOrConstants(getContext(), getUpperBounds().asArrayRef(),
+                             getSymUpperBounds());
+}
+
+SmallVector<AffineExpr> TransformMapAttr::getLowerBoundExprs() const {
+  return getExprsOrConstants(getContext(), getLowerBounds().asArrayRef(),
+                             getSymLowerBounds());
+}
+
+static ParseResult parseBoundList(AsmParser &parser,
+                                  SmallVectorImpl<AffineExpr> &exprs) {
+  return parseAndGather<AffineExpr>(parser, AsmParser::Delimiter::Square, exprs,
+                                    [&](AffineExpr &out) -> ParseResult {
+                                      return parseSymbolicExpr(parser, out);
+                                    });
+}
+
+Attribute TransformMapAttr::parse(AsmParser &parser, Type) {
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  AffineMapAttr map;
+  if (parser.parseLess() || parser.parseAttribute(map) ||
+      parser.parseKeyword("by") || parser.parseLSquare())
+    return {};
+  FailureOr<SmallVector<TransformAttr>> ops =
+      FieldParser<SmallVector<TransformAttr>>::parse(parser);
+  if (failed(ops)) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "failed to parse Rock_TransformMapAttr parameter 'ops'");
+    return {};
+  }
+  if (parser.parseRSquare())
+    return {};
+
+  SmallVector<ArgDimAttr> symbols;
+  if (succeeded(parser.parseOptionalKeyword("symbols"))) {
+    if (parser.parseEqual() ||
+        parseAndGather<ArgDimAttr>(parser, AsmParser::Delimiter::Square,
+                                   symbols,
+                                   [&](ArgDimAttr &out) -> ParseResult {
+                                     return parseArgDim(parser, out);
+                                   }))
+      return {};
+  }
+
+  SmallVector<AffineExpr> upperExprs, lowerExprs;
+  if (parser.parseKeyword("bounds") || parser.parseEqual() ||
+      parseBoundList(parser, upperExprs) || parser.parseArrow() ||
+      parseBoundList(parser, lowerExprs) || parser.parseGreater())
+    return {};
+
+  SmallVector<int64_t> upperBounds =
+      llvm::map_to_vector(upperExprs, getStaticOrDynamic);
+  SmallVector<int64_t> lowerBounds =
+      llvm::map_to_vector(lowerExprs, getStaticOrDynamic);
+  if (symbols.empty()) {
+    upperExprs.clear();
+    lowerExprs.clear();
+  }
+  Builder b(parser.getContext());
+  return parser.getChecked<TransformMapAttr>(
+      loc, parser.getContext(), *ops, map, b.getDenseI64ArrayAttr(upperBounds),
+      b.getDenseI64ArrayAttr(lowerBounds), symbols, upperExprs, lowerExprs);
+}
+
+void TransformMapAttr::print(AsmPrinter &printer) const {
+  printer << "<";
+  printer.printStrippedAttrOrType(getMap());
+  printer << " by [";
+  printer.printStrippedAttrOrType(getOps());
+  printer << "]";
+  if (!isStatic()) {
+    printer << " symbols = [";
+    llvm::interleaveComma(getSymbols(), printer,
+                          [&](ArgDimAttr a) { printArgDim(printer, a); });
+    printer << "]";
+  }
+  auto printBounds = [&](ArrayRef<int64_t> values, ArrayRef<AffineExpr> exprs) {
+    printer << "[";
+    if (exprs.empty())
+      llvm::interleaveComma(values, printer);
+    else
+      llvm::interleaveComma(exprs, printer, [&](AffineExpr e) { printer << e; });
+    printer << "]";
+  };
+  printer << " bounds = ";
+  printBounds(getUpperBounds().asArrayRef(), getSymUpperBounds());
+  printer << " -> ";
+  printBounds(getLowerBounds().asArrayRef(), getSymLowerBounds());
+  printer << ">";
 }
 
 LogicalResult TransformMapAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     ::llvm::ArrayRef<::mlir::rock::TransformAttr> ops, AffineMapAttr map,
-    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds) {
+    DenseI64ArrayAttr upperBounds, DenseI64ArrayAttr lowerBounds,
+    ArrayRef<ArgDimAttr> symbols, ArrayRef<AffineExpr> symUpperBounds,
+    ArrayRef<AffineExpr> symLowerBounds) {
   AffineMap rawMap = map.getAffineMap();
-  if (rawMap.getNumSymbols() != 0) {
-    return emitError() << "Affine map must not have symbol inputs, but has "
-                       << rawMap.getNumSymbols();
+  unsigned numSymbols = symbols.size();
+  if (rawMap.getNumSymbols() != numSymbols) {
+    if (numSymbols == 0)
+      return emitError() << "Affine map must not have symbol inputs, but has "
+                         << rawMap.getNumSymbols();
+    return emitError() << "Affine map has " << rawMap.getNumSymbols()
+                       << " symbols but " << numSymbols << " are bound";
   }
-  if (rawMap.getNumInputs() != upperBounds.size()) {
-    return emitError() << "Affine map has " << rawMap.getNumInputs()
+  if (numSymbols > kMaxRockSymbols)
+    return emitError() << "At most " << kMaxRockSymbols
+                       << " symbols are supported, got " << numSymbols;
+  if (rawMap.getNumDims() != upperBounds.size()) {
+    return emitError() << "Affine map has " << rawMap.getNumDims()
                        << " inputs but there are " << upperBounds.size()
                        << " input dimensions";
   }
@@ -491,25 +688,78 @@ LogicalResult TransformMapAttr::verify(
                        << " output dimensions";
   }
 
+  // Symbol bindings and symbolic bounds.
+  if (numSymbols == 0) {
+    if (!symUpperBounds.empty() || !symLowerBounds.empty())
+      return emitError() << "Symbolic bounds require bound symbols";
+  } else {
+    if (symUpperBounds.size() != upperBounds.asArrayRef().size() ||
+        symLowerBounds.size() != lowerBounds.asArrayRef().size())
+      return emitError() << "A map with symbols must give every bound as an "
+                            "expression";
+    llvm::SmallDenseSet<std::pair<uint32_t, uint32_t>> seenSymbols;
+    for (ArgDimAttr s : symbols)
+      if (!seenSymbols.insert({s.getArg(), s.getDim()}).second)
+        return emitError() << "Duplicate symbol binding arg(" << s.getArg()
+                           << ", " << s.getDim() << ")";
+    auto checkBounds = [&](ArrayRef<int64_t> values, ArrayRef<AffineExpr> exprs,
+                           StringRef kind) -> LogicalResult {
+      for (auto [v, e] : llvm::zip(values, exprs)) {
+        if (!e.isSymbolicOrConstant())
+          return emitError() << kind << " bound " << e
+                             << " must only use symbols and constants";
+        if (v != getStaticOrDynamic(e))
+          return emitError() << kind << " bound " << v
+                             << " does not match its expression " << e;
+      }
+      if (getNumUsedSymbols(exprs) > numSymbols)
+        return emitError() << kind << " bounds use unbound symbols";
+      return success();
+    };
+    if (failed(checkBounds(upperBounds.asArrayRef(), symUpperBounds,
+                           "Upper")) ||
+        failed(checkBounds(lowerBounds.asArrayRef(), symLowerBounds, "Lower")))
+      return failure();
+  }
+  for (TransformAttr t : ops) {
+    if (t.isStatic())
+      continue;
+    if (numSymbols == 0)
+      return emitError() << "Transform " << t
+                         << " has symbolic parameters but the map binds no "
+                            "symbols";
+    if (getNumUsedSymbols(t.getSymParams()) > numSymbols)
+      return emitError() << "Transform " << t << " uses unbound symbols";
+  }
+
   for (int64_t v : upperBounds.asArrayRef()) {
-    if (v <= 0) {
+    if (!ShapedType::isDynamic(v) && v <= 0) {
       return emitError() << "Upper bound/shape component must be positive, got "
                          << v;
     }
   }
   for (int64_t v : lowerBounds.asArrayRef()) {
-    if (v <= 0) {
+    if (!ShapedType::isDynamic(v) && v <= 0) {
       return emitError() << "Lower bound/shape component must be positive, got "
                          << v;
     }
   }
 
-  ArrayRef<int64_t> ub = upperBounds.asArrayRef();
-  ArrayRef<int64_t> lb = lowerBounds.asArrayRef();
+  MLIRContext *ctx = map.getContext();
+  SmallVector<AffineExpr> ub =
+      getExprsOrConstants(ctx, upperBounds.asArrayRef(), symUpperBounds);
+  SmallVector<AffineExpr> lb =
+      getExprsOrConstants(ctx, lowerBounds.asArrayRef(), symLowerBounds);
+  auto equal = [&](AffineExpr a, AffineExpr b) {
+    return symbolicEqual(a, b, /*numDims=*/0, numSymbols);
+  };
+  auto simplify = [&](AffineExpr e) {
+    return simplifyAffineExpr(e, /*numDims=*/0, numSymbols);
+  };
   for (TransformAttr t : ops) {
     ArrayRef<uint32_t> uDims = t.getUpperDims();
     ArrayRef<uint32_t> lDims = t.getLowerDims();
-    ArrayRef<int64_t> params = t.getParams();
+    SmallVector<AffineExpr> params = t.getParamExprs();
 
     for (uint32_t d : uDims) {
       if (d >= ub.size())
@@ -527,16 +777,16 @@ LogicalResult TransformMapAttr::verify(
     // between the transform parameters and the map's upper/lower bounds.
     switch (t.getType()) {
     case TransformType::Unmerge: {
-      int64_t product = 1;
+      AffineExpr product = getAffineConstantExpr(1, ctx);
       for (auto [dim, param] : llvm::zip(uDims, params)) {
-        if (ub[dim] != param) {
+        if (!equal(ub[dim], param)) {
           return emitError()
                  << "Unmerge: upper bound " << ub[dim] << " at dimension "
                  << dim << " does not match parameter " << param;
         }
-        product *= param;
+        product = simplify(product * param);
       }
-      if (product != lb[lDims[0]]) {
+      if (!equal(product, lb[lDims[0]])) {
         return emitError() << "Unmerge: product of parameters (" << product
                            << ") does not match lower bound (" << lb[lDims[0]]
                            << ")";
@@ -544,16 +794,16 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::Merge: {
-      int64_t product = 1;
+      AffineExpr product = getAffineConstantExpr(1, ctx);
       for (auto [dim, param] : llvm::zip(lDims, params)) {
-        if (lb[dim] != param) {
+        if (!equal(lb[dim], param)) {
           return emitError()
                  << "Merge: lower bound " << lb[dim] << " at dimension " << dim
                  << " does not match parameter " << param;
         }
-        product *= param;
+        product = simplify(product * param);
       }
-      if (product != ub[uDims[0]]) {
+      if (!equal(product, ub[uDims[0]])) {
         return emitError() << "Merge: product of parameters (" << product
                            << ") does not match upper bound (" << ub[uDims[0]]
                            << ")";
@@ -562,7 +812,7 @@ LogicalResult TransformMapAttr::verify(
     }
     case TransformType::PassThrough: {
       for (auto [uDim, lDim] : llvm::zip(uDims, lDims)) {
-        if (ub[uDim] != lb[lDim]) {
+        if (!equal(ub[uDim], lb[lDim])) {
           return emitError() << "PassThrough: upper bound " << ub[uDim]
                              << " does not match lower bound " << lb[lDim];
         }
@@ -571,10 +821,10 @@ LogicalResult TransformMapAttr::verify(
     }
     case TransformType::Pad: {
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
-        int64_t leftPad = params[i * 2];
-        int64_t rightPad = params[i * 2 + 1];
-        int64_t expected = lb[lDims[i]] + leftPad + rightPad;
-        if (ub[uDims[i]] != expected) {
+        AffineExpr leftPad = params[i * 2];
+        AffineExpr rightPad = params[i * 2 + 1];
+        AffineExpr expected = simplify(lb[lDims[i]] + leftPad + rightPad);
+        if (!equal(ub[uDims[i]], expected)) {
           return emitError() << "Pad: upper bound " << ub[uDims[i]]
                              << " does not match lower bound " << lb[lDims[i]]
                              << " + leftPad(" << leftPad << ") + rightPad("
@@ -584,7 +834,7 @@ LogicalResult TransformMapAttr::verify(
       break;
     }
     case TransformType::AddDim: {
-      if (params[0] != ub[uDims[0]]) {
+      if (!equal(params[0], ub[uDims[0]])) {
         return emitError() << "AddDim: parameter " << params[0]
                            << " does not match upper bound " << ub[uDims[0]];
       }
@@ -594,23 +844,25 @@ LogicalResult TransformMapAttr::verify(
       break;
     case TransformType::Slice: {
       for (unsigned i = 0, e = uDims.size(); i < e; ++i) {
-        int64_t begin = params[i * 2];
-        int64_t end = params[i * 2 + 1];
-        if (end > lb[lDims[i]])
+        AffineExpr begin = params[i * 2];
+        AffineExpr end = params[i * 2 + 1];
+        auto excess = dyn_cast<AffineConstantExpr>(simplify(end - lb[lDims[i]]));
+        if (excess && excess.getValue() > 0)
           return emitError()
                  << "Slice: end (" << end << ") exceeds lower bound ("
                  << lb[lDims[i]] << ")";
-        if (ub[uDims[i]] != end - begin) {
+        AffineExpr size = simplify(end - begin);
+        if (!equal(ub[uDims[i]], size)) {
           return emitError() << "Slice: upper bound " << ub[uDims[i]]
                              << " does not match end(" << end << ") - begin("
-                             << begin << ") = " << (end - begin);
+                             << begin << ") = " << size;
         }
       }
       break;
     }
     case TransformType::Broadcast: {
       for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
-        if (params[i] != lb[lDims[i]]) {
+        if (!equal(params[i], lb[lDims[i]])) {
           return emitError() << "Broadcast: parameter " << params[i]
                              << " does not match lower bound " << lb[lDims[i]];
         }
@@ -619,8 +871,8 @@ LogicalResult TransformMapAttr::verify(
     }
     case TransformType::ConstDim: {
       for (unsigned i = 0, e = lDims.size(); i < e; ++i) {
-        int64_t size = params[i * 2 + 1];
-        if (size != lb[lDims[i]]) {
+        AffineExpr size = params[i * 2 + 1];
+        if (!equal(size, lb[lDims[i]])) {
           return emitError() << "ConstDim: size parameter " << size
                              << " does not match lower bound " << lb[lDims[i]];
         }
@@ -657,13 +909,24 @@ LogicalResult TransformMapAttr::verify(
                          << " is not covered by any transform";
   }
 
-  MLIRContext *ctx = map.getContext();
   Builder b(ctx);
-  AffineMapAttr expectedMap = assembleMapFor(b, ops, ub, lb);
+  AffineMapAttr expectedMap =
+      assembleMapFor(b, ops, upperBounds.asArrayRef(),
+                     lowerBounds.asArrayRef(), numSymbols);
   if (expectedMap != map) {
-    return emitError() << "Affine map " << map
-                       << " does not match map reconstructed from transforms: "
-                       << expectedMap;
+    // Symbolic expressions may round-trip through the parser in a different
+    // but equivalent form.
+    AffineMap expected = expectedMap.getAffineMap();
+    bool equivalent = numSymbols != 0 && llvm::all_of(
+        llvm::zip(expected.getResults(), rawMap.getResults()), [&](auto p) {
+          return symbolicEqual(std::get<0>(p), std::get<1>(p),
+                               rawMap.getNumDims(), numSymbols);
+        });
+    if (!equivalent)
+      return emitError() << "Affine map " << map
+                         << " does not match map reconstructed from "
+                            "transforms: "
+                         << expectedMap;
   }
 
   return success();
@@ -963,6 +1226,23 @@ GemmSize ConvBwdDataOp::getGemmSize() {
   return biggest;
 }
 
+/// Whether two dimension sizes can be equal: a dynamic size matches anything.
+static bool dimsCompatible(int64_t a, int64_t b) {
+  return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
+}
+
+static bool shapesCompatible(ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
+  return a.size() == b.size() &&
+         llvm::all_of(llvm::zip(a, b), [](auto pair) {
+           return dimsCompatible(std::get<0>(pair), std::get<1>(pair));
+         });
+}
+
+/// `size * factor`, keeping dynamic sizes dynamic.
+static int64_t scaleDim(int64_t size, int64_t factor) {
+  return ShapedType::isDynamic(size) ? size : size * factor;
+}
+
 //===-----------------------------------------------------===//
 // Conv Op Verification
 //===-----------------------------------------------------===//
@@ -1100,7 +1380,7 @@ LogicalResult StoreOp::verify() {
   auto sourceType = cast<ShapedType>(getSource().getType());
   auto destType = cast<ShapedType>(getDest().getType());
 
-  if (sourceType.getShape() != destType.getShape())
+  if (!shapesCompatible(sourceType.getShape(), destType.getShape()))
     return emitOpError("source and dest shapes must match")
            << " (source: " << sourceType << ", dest: " << destType << ")";
 
@@ -1174,6 +1454,53 @@ LogicalResult TransformOp::verify() {
       return emitOpError("output shape must match transform upper bounds");
   }
 
+  if (tmap.isStatic())
+    return success();
+
+  auto func = (*this)->getParentOfType<func::FuncOp>();
+  if (!func)
+    return emitOpError("symbolic transform maps must be inside a function");
+  for (ArgDimAttr s : tmap.getSymbols()) {
+    auto argType =
+        s.getArg() < func.getNumArguments()
+            ? dyn_cast<ShapedType>(func.getArgument(s.getArg()).getType())
+            : ShapedType();
+    if (!argType || !argType.hasRank() || s.getDim() >= argType.getRank() ||
+        !argType.isDynamicDim(s.getDim()))
+      return emitOpError() << "symbol arg(" << s.getArg() << ", " << s.getDim()
+                           << ") does not name a dynamic dimension of a "
+                              "function argument";
+  }
+
+  // The lower bounds must be the sizes of the input, which are expressions
+  // over the dimensions of the function arguments it is a view of.
+  std::optional<ArgDimEqualities> equalities;
+  SmallVector<AffineExpr> lowerExprs = tmap.getLowerBoundExprs();
+  for (auto [i, bound] : llvm::enumerate(lowerBounds)) {
+    if (!ShapedType::isDynamic(bound))
+      continue;
+    SmallVector<ArgDimAttr> shared;
+    FailureOr<AffineExpr> inputSize = getDimExpr(getInput(), i, shared);
+    if (failed(inputSize))
+      continue;
+    AffineExpr expected =
+        rebindSymbols(lowerExprs[i], tmap.getSymbols(), shared);
+    if (symbolicEqual(*inputSize, expected, 0, shared.size()))
+      continue;
+    if (!equalities)
+      equalities.emplace(func);
+    SmallVector<ArgDimAttr> canonicalSymbols;
+    AffineExpr canonicalInput =
+        equalities->canonicalize(*inputSize, shared, canonicalSymbols);
+    AffineExpr canonicalExpected =
+        equalities->canonicalize(expected, shared, canonicalSymbols);
+    if (!symbolicEqual(canonicalInput, canonicalExpected, 0,
+                       canonicalSymbols.size()))
+      return emitOpError() << "lower bound " << i << " (" << lowerExprs[i]
+                           << ") does not match the size of the input ("
+                           << *inputSize << ")";
+  }
+
   return success();
 }
 
@@ -1237,7 +1564,8 @@ static LogicalResult verifyMarkerOp(Operation *op, ArrayAttr views,
   // = [2, 1, 2, 2, 64, 64] -> [1, 128, 128]>][%arg5, %12, %19, %21] :
   // tensor<1x128x128xf16> -> tensor<64x64xf16> So, [X, X, X, X, 64, 64] and
   // tensor<64x64xf16> must match.
-  if (upperBounds.take_back(resultTensorRank) != resultTensorShape) {
+  if (!shapesCompatible(upperBounds.take_back(resultTensorRank),
+                        resultTensorShape)) {
     return op->emitOpError(
                "Upper bounds last dimensions must match with result shape ")
            << " (" << upperBounds.take_back(resultTensorRank)
@@ -1249,7 +1577,7 @@ static LogicalResult verifyMarkerOp(Operation *op, ArrayAttr views,
                     : cast<TransformMapAttr>(views[views.size() - 1])
                           .getLowerBounds()
                           .asArrayRef();
-  if (lowerBounds != inputTensorShape) {
+  if (!shapesCompatible(lowerBounds, inputTensorShape)) {
     return op->emitOpError("Lower bounds must match with input shape ")
            << " (" << lowerBounds << " != " << inputTensorShape << ")";
   }
@@ -1338,16 +1666,17 @@ LogicalResult GemmOp::verify() {
           nB = dimsB[offsetB + (getBTransposed() ? 0 : 1)],
           mResult = dimsResult[offsetResult + (getOTransposed() ? 1 : 0)],
           nResult = dimsResult[offsetResult + (getOTransposed() ? 0 : 1)];
-  if (gA != gB || gA != gResult)
+  if (!dimsCompatible(gA, gB) || !dimsCompatible(gA, gResult) ||
+      !dimsCompatible(gB, gResult))
     return emitOpError("group dimensions don't match")
            << " g_a = " << gA << " g_b = " << gB << " g_result = " << gResult;
-  if (mA != mResult)
+  if (!dimsCompatible(mA, mResult))
     return emitOpError("M dimensions don't match")
            << " m_a = " << mA << " m_result = " << mResult;
-  if (nB != nResult)
+  if (!dimsCompatible(nB, nResult))
     return emitOpError("N dimensions don't match")
            << " n_b = " << nB << " n_result = " << nResult;
-  if (kA != kB)
+  if (!dimsCompatible(kA, kB))
     return emitOpError("K dimensions don't match")
            << " k_a = " << kA << " k_b = " << kB;
   bool hasScaleA = getScaleA() != nullptr;
@@ -1378,13 +1707,16 @@ LogicalResult GemmOp::verify() {
 
     int64_t expectedG = isA ? gA : gB;
     int64_t expectedFirst = isA ? mA : nB; // scaleA: M; scaleB: N
+    int64_t expectedK = isA ? kA : kB;
     int64_t expectedSecond =
-        llvm::divideCeil(isA ? kA : kB, quantBlockSize); // scaleA: K; scaleB: K
+        ShapedType::isDynamic(expectedK)
+            ? expectedK
+            : llvm::divideCeil(expectedK, quantBlockSize); // scaleA/B: K
 
     StringRef dDim = isA ? "M" : "N";
     StringRef dDimLower = isA ? "m" : "n";
 
-    if (second != expectedSecond)
+    if (!dimsCompatible(second, expectedSecond))
       return emitOpError() << scaleName << "'s "
                            << "K dimension must match matrix "
                            << (isA ? "A" : "B") << "'s "
@@ -1392,14 +1724,14 @@ LogicalResult GemmOp::verify() {
                            << " " << scaleName << "_"
                            << "k = " << second << " " << (isA ? "k_a" : "k_b")
                            << " = " << expectedSecond;
-    if (first != expectedFirst)
+    if (!dimsCompatible(first, expectedFirst))
       return emitOpError() << scaleName << "'s " << dDim
                            << " dimension must match matrix "
                            << (isA ? "A" : "B") << "'s " << dDim << " dimension"
                            << " " << scaleName << "_" << dDimLower << " = "
                            << first << " " << (isA ? "m_a" : "n_b") << " = "
                            << expectedFirst;
-    if (g != expectedG)
+    if (!dimsCompatible(g, expectedG))
       return emitOpError() << scaleName << "'s G dimension must match matrix "
                            << (isA ? "A" : "B") << "'s G dimension"
                            << " " << scaleName << "_g = " << g << " "
@@ -1453,18 +1785,19 @@ static LogicalResult verifyGridwiseGemm(GridOp op) {
   ArrayRef<int64_t> aShape = aType.getShape(), bShape = bType.getShape(),
                     resultShape = resultType.getShape();
   int64_t g = aShape[0], k = aShape[2], m = aShape[1], n = bShape[2];
-  if (bShape[0] != g || resultShape[0] != g) {
+  if (!dimsCompatible(bShape[0], g) || !dimsCompatible(resultShape[0], g) ||
+      !dimsCompatible(bShape[0], resultShape[0])) {
     return op.emitOpError("Mismatched G dimensions in matrix multiply;")
            << " A[0] = " << g << " b[0] = " << bShape[0]
            << " result[0] = " << resultShape[0];
   }
-  if (resultShape[1] != m)
+  if (!dimsCompatible(resultShape[1], m))
     return op.emitOpError("Mismatched M dimensions in matrix multiply:")
            << " A[2] = " << m << " result[1] = " << resultShape[1];
-  if (bShape[1] != k)
+  if (!dimsCompatible(bShape[1], k))
     return op.emitOpError("Mismatched K dimensions in matrix multiply:")
            << " A[1] = " << k << " B[1] = " << bShape[1];
-  if (resultShape[2] != n)
+  if (!dimsCompatible(resultShape[2], n))
     return op.emitOpError("Mismatched N dimensions in matrix multiply:")
            << " B[2] = " << n << " result[2] = " << resultShape[2];
 
@@ -1518,8 +1851,8 @@ LogicalResult BlockwiseLoadOp::verify() {
            << " (" << idxCount << " + " << resultType.getRank()
            << " != " << sourceType.getRank() << ")";
 
-  if (sourceType.getShape().take_back(resultType.getRank()) !=
-      resultType.getShape()) {
+  if (!shapesCompatible(sourceType.getShape().take_back(resultType.getRank()),
+                        resultType.getShape())) {
     return emitOpError("Input last dimensions must match with result shape ")
            << " (" << sourceType.getShape().take_back(resultType.getRank())
            << " != " << resultType.getShape() << ")";
@@ -1570,8 +1903,8 @@ LogicalResult BlockwiseStoreOp::verify() {
            << " (" << extraIdxCount << " + " << sourceType.getRank()
            << " != " << destType.getRank() << ")";
 
-  if (destType.getShape().take_back(sourceType.getRank()) !=
-      sourceType.getShape()) {
+  if (!shapesCompatible(destType.getShape().take_back(sourceType.getRank()),
+                        sourceType.getShape())) {
     return emitOpError("Dest last dimensions must match with input shape ")
            << " (" << destType.getShape().take_back(sourceType.getRank())
            << " != " << sourceType.getShape() << ")";
@@ -1700,7 +2033,7 @@ verifySlidingWindowLookBack(Operation *op,
     return op->emitError(
         "slidingWindowLookBack requires lastValidKVIndex to be set");
 
-  if (lookBack >= maxSeqLen)
+  if (!ShapedType::isDynamic(maxSeqLen) && lookBack >= maxSeqLen)
     return op->emitError(
         "slidingWindowLookBack must be less than max sequence length");
 
@@ -1781,7 +2114,7 @@ LogicalResult GridwiseAttentionOp::verify() {
          llvm::enumerate(getPreSoftmaxElemWiseInputs())) {
       ArrayRef<int64_t> shape =
           cast<ShapedType>(elemwiseInput.getType()).getShape();
-      if (shape != ArrayRef<int64_t>(gemm0OutShape))
+      if (!shapesCompatible(shape, gemm0OutShape))
         return emitOpError("pre-softmax elementwise input ")
                << idx << " has shape " << shape
                << " but must match the first GEMM's output space "
@@ -1809,8 +2142,8 @@ LogicalResult TransformsToPtrOp::verify() {
            << " (" << idxCount << " + " << ptrType.getRank()
            << " != " << sourceType.getRank() << ")";
 
-  if (sourceType.getShape().take_back(ptrType.getRank()) !=
-      ptrType.getShape()) {
+  if (!shapesCompatible(sourceType.getShape().take_back(ptrType.getRank()),
+                        ptrType.getShape())) {
     return emitOpError("Source last dimensions must match with pointers shape ")
            << " (" << sourceType.getShape().take_back(ptrType.getRank())
            << " != " << ptrType.getShape() << ")";
@@ -1886,7 +2219,7 @@ LogicalResult ReduceOp::verify() {
       if (dimSize != 1)
         return emitError("The size of the reduction dimension should be 1.");
     } else {
-      if (dimSize != inpShape[dim])
+      if (!dimsCompatible(dimSize, inpShape[dim]))
         return emitError("The size of the non-reduction dimension should "
                          "match the input.");
     }
@@ -2030,7 +2363,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 
   ShapedType kType = cast<ShapedType>(op.getBType());
   int64_t kBatchDim = kType.getShape().size() == 3 ? kType.getShape()[0] : 1;
-  kBatchDim *= factorGQA;
+  kBatchDim = scaleDim(kBatchDim, factorGQA);
   ArrayRef<int64_t> kLastDims = kType.getShape().slice(kType.getRank() - 2);
   auto [keyK, keyN] = op.getTransposedB()
                           ? std::tuple{kLastDims[1], kLastDims[0]}
@@ -2038,19 +2371,21 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
 
   ShapedType vType = cast<ShapedType>(op.getCType());
   int64_t vBatchDim = vType.getShape().size() == 3 ? vType.getShape()[0] : 1;
-  vBatchDim *= factorGQA;
+  vBatchDim = scaleDim(vBatchDim, factorGQA);
   ArrayRef<int64_t> vLastDims = vType.getShape().slice(vType.getRank() - 2);
   auto [valueK, valueN] = op.getTransposedC()
                               ? std::tuple{vLastDims[1], vLastDims[0]}
                               : std::tuple{vLastDims[0], vLastDims[1]};
 
-  if (qBatchDim != kBatchDim || kBatchDim != vBatchDim) {
+  if (!dimsCompatible(qBatchDim, kBatchDim) ||
+      !dimsCompatible(kBatchDim, vBatchDim) ||
+      !dimsCompatible(qBatchDim, vBatchDim)) {
     return op.emitError("Batch dimensions do not match");
   }
-  if (queryK != keyK) {
+  if (!dimsCompatible(queryK, keyK)) {
     return op.emitError("reduction dimensions of first gemm do not match");
   }
-  if (keyN != valueK) {
+  if (!dimsCompatible(keyN, valueK)) {
     return op.emitError("reduction dimensions of second gemm do not match");
   }
 
@@ -2060,10 +2395,14 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
   int64_t oBatchDimOrig = oBatchDim;
   if (isa<AttentionOp>(op)) {
     int64_t splitKV = cast<AttentionOp>(op).getSplitKV();
-    if (oBatchDim % splitKV != 0)
-      return op.emitError("Batch size must be divisible by splitKV");
-
-    oBatchDim = oBatchDim / splitKV;
+    if (ShapedType::isDynamic(oBatchDim)) {
+      if (splitKV != 1)
+        return op.emitError("splitKV requires a static batch size");
+    } else {
+      if (oBatchDim % splitKV != 0)
+        return op.emitError("Batch size must be divisible by splitKV");
+      oBatchDim = oBatchDim / splitKV;
+    }
   }
 
   ArrayRef<int64_t> oLastDims = oType.getShape().slice(oType.getRank() - 2);
@@ -2074,13 +2413,13 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
   if (qType.getShape().size() != oType.getShape().size()) {
     return op.emitError("Number of dimensions do not match (Q and Output)");
   }
-  if (qBatchDim != oBatchDim) {
+  if (!dimsCompatible(qBatchDim, oBatchDim)) {
     return op.emitError("Batch dimensions do not match (Q and Output)");
   }
-  if (queryM != outputSeqLen) {
+  if (!dimsCompatible(queryM, outputSeqLen)) {
     return op.emitError("Sequence length does not match (Q and Output)");
   }
-  if (valueN != outputHeadDim) {
+  if (!dimsCompatible(valueN, outputHeadDim)) {
     return op.emitError("Head dimensions do not match (V and Output)");
   }
 
@@ -2090,7 +2429,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     if (indexType.getShape().size() != 1) {
       return op.emitError("Number of dimensions is not one (lastValidKVIndex)");
     }
-    if (indexType.getShape()[0] != oBatchDim) {
+    if (!dimsCompatible(indexType.getShape()[0], oBatchDim)) {
       return op.emitError(
           "Batch dimensions do not match (lastValidKVIndex and Output)");
     }
@@ -2102,10 +2441,10 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     if (lseType.getShape().size() != 2) {
       return op.emitError("Number of dimensions is not two (LSE)");
     }
-    if (lseType.getShape()[0] != oBatchDimOrig) {
+    if (!dimsCompatible(lseType.getShape()[0], oBatchDimOrig)) {
       return op.emitError("Batch dimensions do not match (LSE and Output)");
     }
-    if (lseType.getShape()[1] != queryM) {
+    if (!dimsCompatible(lseType.getShape()[1], queryM)) {
       return op.emitError("SeqLenQ dimensions do not match (LSE and Q)");
     }
   }

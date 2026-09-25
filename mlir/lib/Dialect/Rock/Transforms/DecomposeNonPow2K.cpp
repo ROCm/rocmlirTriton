@@ -40,6 +40,7 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
@@ -300,6 +301,11 @@ void RockDecomposeNonPow2KPass::runOnOperation() {
       targets.push_back(gemm);
   });
 
+  if (!targets.empty() && isDynamicKernel(func)) {
+    targets.front().emitError(
+        "non-power-of-two tiles are not supported with dynamic shapes");
+    return signalPassFailure();
+  }
   for (BlockwiseGemmOp gemm : targets) {
     SmallVector<Pow2Segment> kSegs = decomposePow2(gemm.getKDim());
     if (failed(decomposeBlockwiseGemm(gemm, kSegs)))

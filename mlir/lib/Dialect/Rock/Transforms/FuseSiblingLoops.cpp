@@ -43,6 +43,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -53,6 +54,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+
+#include <functional>
 
 namespace mlir {
 namespace rock {
@@ -84,16 +87,29 @@ struct RockFuseSiblingLoopsPass
 /// Constant comparison goes through getConstantIntValue, which ignores the
 /// value's type, so we additionally require the bound types to match -- two
 /// loops whose induction variables differ in type (e.g. index vs i32) cannot be
-/// fused into one, since scf.for ties the IV type to the bound types.
+/// fused into one, since scf.for ties the IV type to the bound types. Dynamic
+/// bounds also match when both are the same side-effect-free computation on
+/// matching operands.
 static bool haveIdenticalBounds(scf::ForOp a, scf::ForOp b) {
-  auto sameBound = [](Value x, Value y) -> bool {
+  std::function<bool(Value, Value)> sameBound = [&](Value x,
+                                                    Value y) -> bool {
     if (x == y)
       return true;
     if (x.getType() != y.getType())
       return false;
     std::optional<int64_t> cx = getConstantIntValue(x);
     std::optional<int64_t> cy = getConstantIntValue(y);
-    return cx && cy && *cx == *cy;
+    if (cx || cy)
+      return cx && cy && *cx == *cy;
+    Operation *xOp = x.getDefiningOp();
+    Operation *yOp = y.getDefiningOp();
+    if (!xOp || !yOp || !isMemoryEffectFree(xOp) || xOp->getNumRegions() ||
+        yOp->getNumRegions())
+      return false;
+    return OperationEquivalence::isEquivalentTo(
+        xOp, yOp,
+        [&](Value l, Value r) { return success(sameBound(l, r)); },
+        /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
   };
   return sameBound(a.getLowerBound(), b.getLowerBound()) &&
          sameBound(a.getUpperBound(), b.getUpperBound()) &&
@@ -214,7 +230,9 @@ void RockFuseSiblingLoopsPass::runOnOperation() {
   if (func.walk([&](Operation *op) {
             // Skip the func itself (FuncOp is not memory-effect-free) and check
             // only the ops it contains.
-            if (op == funcOp || isMemoryEffectFree(op))
+            // Assumptions about the dynamic sizes touch no data.
+            if (op == funcOp || isMemoryEffectFree(op) ||
+                isa<LLVM::AssumeOp>(op))
               return WalkResult::advance();
             op->emitError("rock-fuse-sibling-loops requires value-semantic IR "
                           "but found an op with memory effects");

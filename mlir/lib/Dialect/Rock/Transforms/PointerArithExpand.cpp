@@ -357,26 +357,31 @@ static Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 }
 } // namespace
 
-FailureOr<SmallVector<Value>> mlir::rock::expandAffineMap(OpBuilder &builder,
-                                                          Location loc,
-                                                          AffineMap affineMap,
-                                                          ValueRange operands,
-                                                          Type indexType) {
+FailureOr<SmallVector<Value>>
+mlir::rock::expandAffineMap(OpBuilder &builder, Location loc,
+                            AffineMap affineMap, ValueRange operands,
+                            Type indexType, ValueRange symbolValues) {
   auto numDims = affineMap.getNumDims();
-  // rocMLIR currently uses static strides/shapes, so symbols are always 0.
-  assert(affineMap.getNumSymbols() == 0 &&
-         "dynamic shapes (affine symbols) not yet supported");
-  if (operands.size() != numDims)
+  if (operands.size() != numDims ||
+      symbolValues.size() != affineMap.getNumSymbols())
     return failure();
 
-  auto expanded = llvm::to_vector(
-      llvm::map_range(affineMap.getResults(), [&builder, loc, operands,
-                                               indexType](AffineExpr expr) {
-        return expandAffineExpr(builder, loc, expr, operands, {}, indexType);
+  auto expanded = llvm::to_vector(llvm::map_range(
+      affineMap.getResults(), [&](AffineExpr expr) {
+        return expandAffineExpr(builder, loc, expr, operands, symbolValues,
+                                indexType);
       }));
   if (llvm::all_of(expanded, [](Value v) { return v; }))
     return expanded;
   return failure();
+}
+
+mlir::rock::KernelArgDims::KernelArgDims(func::FuncOp func)
+    : func(func), equalities(func) {}
+
+Value mlir::rock::KernelArgDims::operator()(OpBuilder &b,
+                                            ArgDimAttr argDim) const {
+  return getArgDimI32(b, func, equalities.canonical(argDim));
 }
 
 //===----------------------------------------------------------------------===//
@@ -388,7 +393,8 @@ FailureOr<SmallVector<Value>> mlir::rock::expandAffineMap(OpBuilder &builder,
 // value (scalar or tensor) that is true where every check passes.
 static Value updateValidityAfter(OpBuilder &b, Location loc,
                                  TransformMapAttr map, ValueRange outputs,
-                                 Type indexType) {
+                                 Type indexType,
+                                 const KernelArgDims *argDims) {
   Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
   ArrayRef<int64_t> lowerBounds = map.getLowerBounds();
 
@@ -396,8 +402,17 @@ static Value updateValidityAfter(OpBuilder &b, Location loc,
   // and being too large on the right.
   auto addLowerDimUltClamp = [&](uint32_t lowerDim) {
     int64_t bound = lowerBounds[lowerDim];
-    Value boundConst =
-        arith::ConstantOp::create(b, loc, b.getIntegerAttr(indexType, bound));
+    Value boundConst;
+    if (ShapedType::isDynamic(bound)) {
+      assert(argDims && "dynamic bounds need the argument dimensions");
+      boundConst = materializeArgExpr(
+          b, loc, map.getLowerBoundExprs()[lowerDim], map.getSymbols(),
+          [&](ArgDimAttr argDim) { return (*argDims)(b, argDim); },
+          indexType);
+    } else {
+      boundConst = arith::ConstantOp::create(
+          b, loc, b.getIntegerAttr(indexType, bound));
+    }
     Value output = outputs[lowerDim];
     auto [o, bc] = ensureCompatible(b, loc, output, boundConst);
     Value inBounds =
@@ -436,8 +451,22 @@ static Value updateValidityAfter(OpBuilder &b, Location loc,
 FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
     OpBuilder &b, Location loc, ArrayRef<TransformMapAttr> transforms,
     ValueRange startCoords, ArrayRef<int64_t> outShape, Type indexType,
-    bool computeOffset) {
+    bool computeOffset, const KernelArgDims *argDims) {
   using AffineResults = SmallVector<Value>;
+
+  bool isDynamic = llvm::any_of(
+      transforms, [](TransformMapAttr t) { return !t.isStatic(); });
+  if (isDynamic && !argDims)
+    return emitError(loc, "dynamic transform maps need the kernel's argument "
+                          "dimensions");
+  // Dynamic maps are composed over one list of argument dimensions, so that
+  // equal dimensions are read once.
+  SmallVector<ArgDimAttr> symbols;
+  auto compose = [&](ArrayRef<TransformMapAttr> maps) {
+    if (!isDynamic)
+      return composeTransforms(maps);
+    return composeTransforms(maps, symbols, &argDims->getEqualities());
+  };
 
   // Break the chain into segments that each end at a validity-impacting map,
   // composing the intervening maps into a single affine map. The trailing
@@ -448,26 +477,40 @@ FailureOr<OffsetAndMask> mlir::rock::expandCoordsToOffsetAndMask(
   for (TransformMapAttr t : transforms) {
     toCompose.push_back(t);
     if (mapImpactsValidity(t)) {
-      composedMaps.emplace_back(composeTransforms(toCompose), t);
+      composedMaps.emplace_back(compose(toCompose), t);
       toCompose.clear();
     }
   }
   if (computeOffset)
-    composedMaps.emplace_back(composeTransforms(toCompose), nullptr);
+    composedMaps.emplace_back(compose(toCompose), nullptr);
+  // Each segment's map declares as many symbols as `symbols` held when it was
+  // composed, and later segments append to `symbols`, so earlier maps declare
+  // fewer. Only the declared symbol count changes here: every map is rebuilt
+  // with the same dims and results over the full list, so they all take
+  // `symbolValues`.
+  for (AffineMap &map : llvm::make_first_range(composedMaps))
+    if (map)
+      map = AffineMap::get(map.getNumDims(), symbols.size(), map.getResults(),
+                           map.getContext());
+
+  SmallVector<Value> symbolValues = llvm::map_to_vector(
+      symbols, [&](ArgDimAttr argDim) {
+        return castIndexScalar(b, loc, (*argDims)(b, argDim), indexType);
+      });
 
   AffineResults computed(startCoords);
   Value isValid = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
   for (const auto &[composedMap, transform] : composedMaps) {
     if (!composedMap) // empty trailing segment
       continue;
-    FailureOr<AffineResults> transformed =
-        expandAffineMap(b, loc, composedMap, computed, indexType);
+    FailureOr<AffineResults> transformed = expandAffineMap(
+        b, loc, composedMap, computed, indexType, symbolValues);
     if (failed(transformed))
       return failure();
     computed.assign(*transformed);
     if (transform) {
-      Value validityUpdate =
-          updateValidityAfter(b, loc, transform, computed, indexType);
+      Value validityUpdate = updateValidityAfter(b, loc, transform, computed,
+                                                 indexType, argDims);
       auto [vu, iv] = ensureCompatible(b, loc, validityUpdate, isValid);
       isValid = arith::AndIOp::create(b, loc, vu, iv);
     }

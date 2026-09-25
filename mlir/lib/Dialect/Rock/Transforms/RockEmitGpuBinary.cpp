@@ -34,6 +34,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
@@ -78,7 +79,11 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     // (matching the LLVM function signature from the HSACO).
     // The number of arguments varies by operation type and fusions.
     // Triton adds 2 workspace pointers (global scratch, profile scratch).
-    SmallVector<Type> argTypes(kernel.argTypes.size(), ptrType);
+    // Dynamic kernels also take their dimensions as i32 scalars.
+    SmallVector<Type> argTypes =
+        llvm::map_to_vector(kernel.argTypes, [&](Type t) -> Type {
+          return isa<LLVM::LLVMPointerType>(t) ? ptrType : t;
+        });
     auto kernelFuncType = FunctionType::get(ctx, argTypes, {});
 
     // Build metadata dictionary with block/grid sizes and prefill info so
@@ -87,9 +92,31 @@ createGpuBinary(OpBuilder builder, ModuleOp moduleOp,
     metadataEntries.push_back(
         builder.getNamedAttr(rock::BlockSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.blockSize)));
+    // The metadata only holds builtin attributes, so that the binary can be
+    // read without the rock dialect: a dynamic grid is recorded as the text
+    // of its #rock.arg_expr, and each dimension argument as [arg, dim].
+    Attribute gridAttr;
+    if (kernel.dynamicGridSize) {
+      std::string gridExpr;
+      llvm::raw_string_ostream os(gridExpr);
+      Attribute(*kernel.dynamicGridSize).print(os);
+      gridAttr = builder.getStringAttr(gridExpr);
+    } else {
+      gridAttr = builder.getI64IntegerAttr(kernel.gridSize);
+    }
     metadataEntries.push_back(
-        builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(),
-                             builder.getI64IntegerAttr(kernel.gridSize)));
+        builder.getNamedAttr(rock::GridSizeAttr::getMnemonic(), gridAttr));
+    if (!kernel.dimArgs.empty()) {
+      SmallVector<Attribute> dimArgs =
+          llvm::map_to_vector(kernel.dimArgs, [&](ArgDimAttr argDim) {
+            return Attribute(builder.getDenseI32ArrayAttr(
+                {static_cast<int32_t>(argDim.getArg()),
+                 static_cast<int32_t>(argDim.getDim())}));
+          });
+      metadataEntries.push_back(
+          builder.getNamedAttr(rock::DimArgsAttr::getMnemonic(),
+                               builder.getArrayAttr(dimArgs)));
+    }
     metadataEntries.push_back(
         builder.getNamedAttr(rock::ClusterSizeAttr::getMnemonic(),
                              builder.getI64IntegerAttr(kernel.clusterSize)));
@@ -253,15 +280,9 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
     builder.setInsertionPoint(callOp);
     Location callLoc = callOp.getLoc();
 
-    // Create grid and block dimensions
-    Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
-    Value gridX = arith::ConstantIndexOp::create(
-        builder, callLoc, kernel.gridSize * kernel.clusterSize);
-    Value blockX =
-        arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
-
     // Convert memref arguments to LLVM pointers for the kernel
     SmallVector<Value> launchArgs;
+    SmallVector<Value> memrefOperands;
     auto ptrType = LLVM::LLVMPointerType::get(ctx);
 
     for (Value operand : callOp.getOperands()) {
@@ -274,6 +295,7 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         memrefVal = bufferization::ToBufferOp::create(builder, callLoc,
                                                       memrefType, operand);
       }
+      memrefOperands.push_back(memrefVal);
 
       if (isa<MemRefType>(memrefVal.getType())) {
         // Extract aligned pointer from memref and convert to LLVM pointer
@@ -289,6 +311,44 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         launchArgs.push_back(operand);
       }
     }
+
+    // The runtime sizes of the operands, for the dimension arguments and the
+    // grid of a dynamic kernel.
+    bool badDim = false;
+    auto operandDim = [&](ArgDimAttr argDim) -> Value {
+      if (argDim.getArg() >= memrefOperands.size() ||
+          !isa<MemRefType>(memrefOperands[argDim.getArg()].getType())) {
+        badDim = true;
+        return arith::ConstantIndexOp::create(builder, callLoc, 0);
+      }
+      return memref::DimOp::create(builder, callLoc,
+                                   memrefOperands[argDim.getArg()],
+                                   argDim.getDim());
+    };
+    for (ArgDimAttr argDim : kernel.dimArgs)
+      launchArgs.push_back(arith::IndexCastOp::create(
+          builder, callLoc, builder.getI32Type(), operandDim(argDim)));
+
+    // Create grid and block dimensions
+    Value one = arith::ConstantIndexOp::create(builder, callLoc, 1);
+    Value gridX;
+    if (kernel.dynamicGridSize) {
+      Value grid = materializeArgExpr(
+          builder, callLoc, kernel.dynamicGridSize->getExpr(),
+          kernel.dynamicGridSize->getSymbols(), operandDim,
+          builder.getIndexType());
+      gridX = arith::MulIOp::create(
+          builder, callLoc, grid,
+          arith::ConstantIndexOp::create(builder, callLoc, kernel.clusterSize));
+    } else {
+      gridX = arith::ConstantIndexOp::create(
+          builder, callLoc, kernel.gridSize * kernel.clusterSize);
+    }
+    Value blockX =
+        arith::ConstantIndexOp::create(builder, callLoc, kernel.blockSize);
+    if (badDim)
+      return callOp.emitError("kernel dimension argument does not refer to a "
+                              "shaped launch operand");
 
     // ResolveKernelLaunchParams has already stripped unused workspace args and
     // baked LDS into the binary, so no padding or dynamic shared memory needed.
@@ -408,6 +468,15 @@ void RockEmitGpuBinaryPass::runOnOperation() {
   if (!kernels.empty()) {
     if (failed(createGpuBinaryAndLaunchFuncs(moduleOp, options, kernels)))
       return signalPassFailure();
+    // The dynamic launch parameters now live in the binary's metadata (and
+    // in the launches), in builtin form.
+    for (const KernelInfo &kernel : kernels) {
+      if (kernel.dimArgs.empty())
+        continue;
+      moduleOp->removeAttr(DimArgsAttr::getModuleAttrName(kernel.name));
+      if (kernel.dynamicGridSize)
+        moduleOp->removeAttr(GridSizeAttr::getModuleAttrName(kernel.name));
+    }
     // Only remove LLVM kernel functions when host functions were restored
     // (gpu.launch_func now references the kernel via gpu.binary).
     if (hasHostFuncs)

@@ -91,8 +91,13 @@ static LogicalResult lowerToPointer(PatternRewriter &b, Operation *op,
         "constant transform chain root must contain dense elements");
   }
 
+  std::optional<KernelArgDims> argDims;
+  if (llvm::any_of(transformVec,
+                   [](TransformMapAttr t) { return !t.isStatic(); }))
+    argDims.emplace(op->getParentOfType<func::FuncOp>());
   FailureOr<OffsetAndMask> expanded = expandCoordsToOffsetAndMask(
-      b, loc, transformVec, initValues, shape, indexType);
+      b, loc, transformVec, initValues, shape, indexType,
+      /*computeOffset=*/true, argDims ? &*argDims : nullptr);
   if (failed(expanded))
     return op->emitOpError("Transforms are not well formed");
 
@@ -172,6 +177,17 @@ struct TransformsToPtrRewritePattern
       transformVec.push_back(*flattening);
       isBig |= needs64BitIndices(*flattening);
     }
+    // Dynamic arguments keep their rank until the kernel ABI is lowered, so
+    // their row-major strides come from the dimension values.
+    if (auto arg = dyn_cast<BlockArgument>(buffer)) {
+      auto argType = cast<ShapedType>(arg.getType());
+      if (!argType.hasStaticShape() && argType.getRank() > 1) {
+        TransformMapAttr flattening =
+            buildRowMajorFlatteningTransformMap(b, loc, arg);
+        transformVec.push_back(flattening);
+        isBig |= needs64BitIndices(flattening);
+      }
+    }
 
     // Defensive check: the op verifier already rejects a result type that
     // disagrees with inferReturnTypes, but guard against that and this pass
@@ -216,6 +232,7 @@ void RockTransformsToPointerArithPass::runOnOperation() {
   // Canonicalizer.
   target.addLegalDialect<rock::RockDialect, arith::ArithDialect,
                          triton::TritonDialect>();
+  target.addLegalOp<tensor::DimOp>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<TransformsToPtrRewritePattern>(ctx);

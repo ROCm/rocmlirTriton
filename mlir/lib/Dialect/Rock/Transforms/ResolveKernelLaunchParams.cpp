@@ -72,10 +72,13 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
   // The dispatch packet counts work-items, not workgroups, so it is the whole
   // grid * block * cluster product that has to fit in a uint32.
   for (rock::KernelInfo &kernel : kernels) {
-    assert(kernel.gridSize > 0 && "expected a positive kernel grid size");
+    // A dynamic grid is only known at launch.
+    bool staticGrid = !kernel.dynamicGridSize;
+    assert((!staticGrid || kernel.gridSize > 0) &&
+           "expected a positive kernel grid size");
     assert(kernel.blockSize > 0 && "expected a positive kernel block size");
     assert(kernel.clusterSize > 0 && "expected a positive kernel cluster size");
-    if (kernel.gridSize > rock::maxHardwareGridSize) {
+    if (staticGrid && kernel.gridSize > rock::maxHardwareGridSize) {
       rock::markAsNotApplicable(moduleOp);
       return kernel.llvmFunc.emitOpError()
              << "grid size " << kernel.gridSize
@@ -90,6 +93,8 @@ static LogicalResult validateKernelLaunchDimensions(ModuleOp moduleOp) {
              << " exceeds the AMDGPU workgroup size limit of "
              << rock::maxHardwareWorkgroupSize;
     }
+    if (!staticGrid)
+      continue;
 
     std::optional<int64_t> workItems =
         llvm::checkedMul(kernel.gridSize, kernel.blockSize);
@@ -249,6 +254,24 @@ struct ResolveKernelLaunchParamsPass
                               << funcOp.getName() << "\n");
 
       unsigned newNumArgs = numArgs - kWorkspaceArgs;
+
+      // The dimension arguments sit just before the workspace arguments and
+      // name dimensions of the tensor arguments before them, so stripping the
+      // workspace arguments leaves every arg(j, i) valid.
+      if (auto dimArgs = moduleOp->getAttrOfType<ArrayAttr>(
+              rock::DimArgsAttr::getModuleAttrName(funcOp.getName()))) {
+        bool valid = dimArgs.size() <= newNumArgs;
+        for (Attribute entry : dimArgs) {
+          auto argDim = dyn_cast<rock::ArgDimAttr>(entry);
+          valid &= argDim && argDim.getArg() < newNumArgs - dimArgs.size();
+        }
+        if (!valid) {
+          funcOp.emitError("rock.dim_args.")
+              << funcOp.getName()
+              << " refers to an argument that is not a kernel buffer";
+          return signalPassFailure();
+        }
+      }
 
       // Build the new function type without the trailing args.
       auto oldFnTy = funcOp.getFunctionType();

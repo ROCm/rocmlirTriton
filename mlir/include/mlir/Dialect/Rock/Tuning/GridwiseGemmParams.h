@@ -70,12 +70,14 @@ FailureOr<ParamsAttr> materializeTuningParams(OpBuilder &b,
 
 /// Store information useful for populating perf configurations
 struct PopulateParamsInfo {
+  /// Dynamic dimensions are replaced by kDynamicDimHint.
   GemmSize gemmSize;
   SmallString<32> arch;
   Type gemmAType;
   Type gemmBType;
   KernelType kernelType;
   bool hasFusedReduction;
+  bool hasDynamicDims = false;
   // Block-scaled (MXFP-style) GEMM metadata. `quantBlockSize` is unset for
   // non-scaled ops; the scale element types come from
   // `RockGemmWrapperInterface::getScale{A,B}Type()` and are null for ops that

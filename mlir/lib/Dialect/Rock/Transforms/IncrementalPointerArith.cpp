@@ -517,6 +517,9 @@ static FailureOr<LoopPtrInfo> analyzeLoopPointer(TransformsToPtrOp op,
   std::tie(root, std::ignore) = untransform(op.getSource(), info.transforms);
   if (!isa<BlockArgument>(root))
     return bail("transform chain root is not a block argument");
+  if (llvm::any_of(info.transforms,
+                   [](TransformMapAttr t) { return !t.isStatic(); }))
+    return bail("the transform chain has dynamic sizes");
 
   return info;
 }

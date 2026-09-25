@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
@@ -47,6 +48,12 @@ struct KernelInfo {
   int64_t clusterSize = -1;
   SmallVector<Type> argTypes;
   SmallVector<PrefillInfo> prefillArgs;
+  /// The argument dimensions passed, in order, as the trailing i32 kernel
+  /// arguments of a dynamic kernel.
+  SmallVector<ArgDimAttr, 0> dimArgs;
+  /// The grid size of a dynamic kernel, over the argument dimensions, in
+  /// place of `gridSize`.
+  std::optional<ArgExprAttr> dynamicGridSize;
 };
 
 /// Collect kernel information from a compiled module.
@@ -54,6 +61,7 @@ struct KernelInfo {
 /// - Block size from ttg.num-warps (or ttg.total-num-warps) *
 /// ttg.threads-per-warp
 /// - Grid size from rock.grid_size.{kernelName} module attribute
+/// - Dimension arguments from rock.dim_args.{kernelName} module attribute
 /// - Argument types and count from LLVM function signature
 /// Returns failure if required attributes are missing.
 LogicalResult collectKernelInfo(ModuleOp moduleOp,

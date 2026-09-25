@@ -4,6 +4,7 @@ add_rocmlir_dialect_library(MLIRRockOps
   GetRockInfo.cpp
   TransformMapBuilder.cpp
   RockDialect.cpp
+  SymbolicExprUtils.cpp
   RockGemmWrapperInterface.cpp
   RockGemmGemmWrapperInterface.cpp
   RockConvInterface.cpp
@@ -30,9 +31,13 @@ target_link_libraries(MLIRRockOps
   PUBLIC
   MLIRAffineDialect
   MLIRAMDGPUDialect
+  MLIRArithDialect
   MLIRFuncDialect
   MLIRGPUDialect
   MLIRIR
+  MLIRLLVMDialect
+  MLIRMemRefDialect
+  MLIRTensorDialect
   MLIRInferIntRangeInterface
   MLIRDialect
   MLIRAnalysis

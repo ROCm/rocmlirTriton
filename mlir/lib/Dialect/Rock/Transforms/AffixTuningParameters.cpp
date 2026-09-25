@@ -163,11 +163,18 @@ void AffixTuningParameters::affixTuningParametersImpl(
   // non-pow2. Arches where the peeled K loop miscompiles keep the power-of-two
   // K requirement as well (see rock::supportsNonPow2KPerBlock).
   bool isScaledGemm = op.getScaleA() || op.getScaleB();
-  bool requirePow2K =
-      isScaledGemm || !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
-  if (failed(validatePerfConfig(op, gemmParams, /*requirePow2MN=*/isScaledGemm,
+  // Dynamic kernels have no non-power-of-two tile or split-K lowering.
+  bool isDynamic = op.getGemmSize().isDynamic();
+  bool requirePow2K = isScaledGemm || isDynamic ||
+                      !rock::supportsNonPow2KPerBlock(rock::getArchValue(op));
+  if (failed(validatePerfConfig(op, gemmParams,
+                                /*requirePow2MN=*/isScaledGemm || isDynamic,
                                 /*requirePow2K=*/requirePow2K)))
     return signalPassFailure();
+  if (isDynamic && gemmParams.getSplitKFactor() != 1) {
+    op->emitError() << "split-K is not supported with dynamic shapes";
+    return signalPassFailure();
+  }
 
   int64_t waveSize = rock::getWaveSize(rock::getArchValue(op));
   int64_t blockSize = obtainBlockSize(waveSize, gemmParams);
@@ -223,6 +230,12 @@ void AffixTuningParameters::affixTuningParametersImpl(
   if (failed(validatePerfConfig(op, attnPerfConfig, /*requirePow2MN=*/true,
                                 /*requirePow2K=*/true)))
     return signalPassFailure();
+
+  if (op.getGemmGemmSize().isDynamic() &&
+      attnPerfConfig.getSplitKFactor() != 1) {
+    op.emitError() << "split-K is not supported with dynamic shapes";
+    return signalPassFailure();
+  }
 
   auto params =
       PopulateParamsGemmGemm::getGemmParams(builder, op, attnPerfConfig);

@@ -46,8 +46,10 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 // clang-format on
 
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
-  PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
+  GemmSize gemmSize = op.getGemmSize();
+  PopulateParamsInfo info{gemmSize.withDynamicHint(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
+  info.hasDynamicDims = gemmSize.isDynamic();
   func::FuncOp func = op->getParentOfType<func::FuncOp>();
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
@@ -205,7 +207,7 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   return materializeTuningParams<GemmParamsAttr>(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
-                          info.arch, /*supportsSplitK=*/true,
+                          info.arch, /*supportsSplitK=*/!info.hasDynamicDims,
                           info.quantBlockSize, info.aScaleType,
                           info.bScaleType));
 }

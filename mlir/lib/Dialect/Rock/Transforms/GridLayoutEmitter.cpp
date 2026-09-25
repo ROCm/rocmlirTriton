@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #include "llvm/Support/Debug.h"
 
@@ -37,23 +38,65 @@ using namespace mlir::rock;
 using namespace mlir::arith;
 using namespace mlir::rock::layout;
 
+static Value getI32(PatternRewriter &b, Location loc, OpFoldResult value) {
+  if (std::optional<int64_t> cst = getConstantIntValue(value))
+    return b.createOrFold<ConstantIntOp>(loc, b.getI32Type(), *cst);
+  return cast<Value>(value);
+}
+
+/// `fn(lhs, rhs)` folded to a constant when both are constant, otherwise an
+/// `OpTy` on their i32 values.
+template <typename OpTy, typename Fn>
+static OpFoldResult foldOrCreate(PatternRewriter &b, Location loc,
+                                 OpFoldResult lhs, OpFoldResult rhs, Fn fn) {
+  std::optional<int64_t> l = getConstantIntValue(lhs);
+  std::optional<int64_t> r = getConstantIntValue(rhs);
+  if (l && r)
+    return b.getI64IntegerAttr(fn(*l, *r));
+  return OpTy::create(b, loc, getI32(b, loc, lhs), getI32(b, loc, rhs))
+      .getResult();
+}
+
+static OpFoldResult mul(PatternRewriter &b, Location loc, OpFoldResult lhs,
+                        OpFoldResult rhs) {
+  return foldOrCreate<MulIOp>(b, loc, lhs, rhs,
+                              [](int64_t l, int64_t r) { return l * r; });
+}
+static OpFoldResult div(PatternRewriter &b, Location loc, OpFoldResult lhs,
+                        OpFoldResult rhs) {
+  return foldOrCreate<DivUIOp>(b, loc, lhs, rhs,
+                               [](int64_t l, int64_t r) { return l / r; });
+}
+static OpFoldResult minUI(PatternRewriter &b, Location loc, OpFoldResult lhs,
+                        OpFoldResult rhs) {
+  return foldOrCreate<MinUIOp>(
+      b, loc, lhs, rhs, [](int64_t l, int64_t r) { return std::min(l, r); });
+}
+static OpFoldResult maxUI(PatternRewriter &b, Location loc, OpFoldResult lhs,
+                        OpFoldResult rhs) {
+  return foldOrCreate<MaxUIOp>(
+      b, loc, lhs, rhs, [](int64_t l, int64_t r) { return std::max(l, r); });
+}
+
 // based on
 // https://github.com/HazyResearch/HipKittens/blob/7f6986b502396aa865c0c80625121daf7caa756d/include/common/util.cuh#L78
 static Value rearrangeWorkgroupsForXCC(Location loc, PatternRewriter &b,
-                                       Value bid, int64_t gridSize,
-                                       int64_t numChiplets, int64_t chunkSize) {
+                                       Value bid, OpFoldResult gridSize,
+                                       int64_t numChiplets,
+                                       OpFoldResult chunkSize) {
   Type i32 = b.getIntegerType(32);
   Value numChipletsVal = b.createOrFold<ConstantIntOp>(loc, i32, numChiplets);
-  Value chunkSizeVal = b.createOrFold<ConstantIntOp>(loc, i32, chunkSize);
+  Value chunkSizeVal = getI32(b, loc, chunkSize);
 
   // Current XCD
   Value xcd = RemUIOp::create(b, loc, bid, numChipletsVal);
 
   // Largest full (numChiplets*chunkSize)-aligned block
-  int64_t block = numChiplets * chunkSize;
-  int64_t limit = (gridSize / block) * block;
-  Value blockVal = b.createOrFold<ConstantIntOp>(loc, i32, block);
-  Value limitVal = b.createOrFold<ConstantIntOp>(loc, i32, limit);
+  OpFoldResult block =
+      mul(b, loc, b.getI64IntegerAttr(numChiplets), chunkSize);
+  OpFoldResult limit = mul(b, loc, div(b, loc, gridSize, block), block);
+  Value blockVal = getI32(b, loc, block);
+  Value limitVal = getI32(b, loc, limit);
 
   // Local BID (within round-robin assignment)
   Value localBid = DivUIOp::create(b, loc, bid, numChipletsVal);
@@ -107,22 +150,23 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   // Therefore, adjust bid to make every consecutive #groups of chiplets
   // be slowest changing in the grid.
   if (info.numChiplets > 1) {
-    int64_t gridSize = info.gBlocks * info.mBlocks * info.nBlocks;
-    int64_t chunkSize =
-        std::min(groupSize * groupSize,
-                 std::max(int64_t{1}, gridSize / info.numChiplets));
+    OpFoldResult gridSize =
+        mul(b, loc, mul(b, loc, info.gBlocks, info.mBlocks), info.nBlocks);
+    OpFoldResult chunkSize = minUI(
+        b, loc, b.getI64IntegerAttr(groupSize * groupSize),
+        maxUI(b, loc, b.getI64IntegerAttr(1),
+            div(b, loc, gridSize, b.getI64IntegerAttr(info.numChiplets))));
     bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, info.numChiplets,
                                     chunkSize);
   }
 
   Value mBlocksPerGroup = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSize);
-  Value blocksPerGroup =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), groupSize * info.nBlocks);
-  Value mBlocksValue = b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), info.mBlocks);
+  Value blocksPerGroup = getI32(
+      b, loc, mul(b, loc, b.getI64IntegerAttr(groupSize), info.nBlocks));
+  Value mBlocksValue = getI32(b, loc, info.mBlocks);
 
   // Compute g_block first and the bid in the actual group g_block
-  Value mnBlocks =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), info.mBlocks * info.nBlocks);
+  Value mnBlocks = getI32(b, loc, mul(b, loc, info.mBlocks, info.nBlocks));
   Value g_block = DivUIOp::create(b, loc, bid, mnBlocks);
   bid = RemUIOp::create(b, loc, bid, mnBlocks);
 
@@ -141,8 +185,9 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
 }
 
 AttnGridCoordinates rock::layout::makeGxNGridLayout(
-    PatternRewriter &b, Location loc, Value bid, int64_t mBlocks, Value nIter,
-    int64_t gridSize, StringRef arch, int64_t numChiplets, Value splitKV) {
+    PatternRewriter &b, Location loc, Value bid, OpFoldResult mBlocks,
+    Value nIter, OpFoldResult gridSize, StringRef arch, int64_t numChiplets,
+    Value splitKV) {
   // Currently the firmware will launch workgroups
   // in a round-robin fashion to each chiplet. However
   // we would want a group (>=1) of chiplets to perform
@@ -150,12 +195,13 @@ AttnGridCoordinates rock::layout::makeGxNGridLayout(
   // Therefore, adjust bid to make every consecutive #groups of chiplets
   // be slowest changing in the grid.
   if (numChiplets > 1) {
-    int64_t chunkSize = std::max(int64_t{1}, gridSize / numChiplets);
+    OpFoldResult chunkSize =
+        maxUI(b, loc, b.getI64IntegerAttr(1),
+            div(b, loc, gridSize, b.getI64IntegerAttr(numChiplets)));
     bid = rearrangeWorkgroupsForXCC(loc, b, bid, gridSize, numChiplets,
                                     chunkSize);
   }
-  Value g1MBlockCountVal =
-      b.createOrFold<ConstantIntOp>(loc, b.getIntegerType(32), mBlocks);
+  Value g1MBlockCountVal = getI32(b, loc, mBlocks);
 
   Value gBlockIdx, mBlockIdx, splitKVIdx;
   if (splitKV) {

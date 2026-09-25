@@ -112,6 +112,10 @@ static FailureOr<Value> getGemmSpaceEquiv(Value v, RegularizeContext &ctx) {
         return ctx.rootOp->emitError(
             "cannot regularize: non-splat constant extra "
             "operand is not supported");
+      if (!ctx.rootType.hasStaticShape())
+        return ctx.rootOp->emitError(
+            "cannot regularize: splat constant extra operands need a static "
+            "root shape");
       auto newType = RankedTensorType::get(ctx.rootType.getShape(),
                                            splatAttr.getElementType());
       auto newSplat =
