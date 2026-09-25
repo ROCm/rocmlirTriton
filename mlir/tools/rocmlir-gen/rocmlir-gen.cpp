@@ -6073,6 +6073,17 @@ static LogicalResult populateHostHarnessLogic(
       !lastValidKVIndex.empty() ? (root0.params.size() - offsetFromEnd - 1)
                                 : -1;
 
+  auto isSmallFloatType = [](Type type) {
+    return isa<FloatType>(type) && type.getIntOrFloatBitWidth() < 32;
+  };
+  // outIndices indexes localVars and valVars alike, so validation buffers are
+  // allocated for every parameter or for none.
+  bool hasValVars =
+      hasValidation ||
+      (isCPUKernel && llvm::any_of(root0.params, [&](Type paramType) {
+         return isSmallFloatType(getElementTypeOrSelf(paramType));
+       }));
+
   // Timer for memory initialization
   func::FuncOp initTimerStopFunc;
   if (cpuTimers) {
@@ -6087,8 +6098,7 @@ static LogicalResult populateHostHarnessLogic(
            "currently only supports shaped types (memref or tensor)");
     Type elemType = paramShapedType.getElementType();
     auto paramMRType = MemRefType::get(paramShapedType.getShape(), elemType);
-    bool isSmallFloat =
-        isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() < 32;
+    bool isSmallFloat = isSmallFloatType(elemType);
     if (isCPUKernel) { // -prc
       if (genParams.operation.has_value()) {
         if (idx < genParams.types.size())
@@ -6140,10 +6150,14 @@ static LogicalResult populateHostHarnessLogic(
         return failure();
     }
 
-    if (hasValidation || (isCPUKernel && isSmallFloat)) {
-      // Emit validation var
+    if (hasValVars) {
+      // Emit validation var. Without a validator, the root function runs on
+      // these buffers directly, so they must keep the parameter's type.
       Type valElemType = floatType;
-      if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
+      if (!hasValidation) {
+        valElemType = elemType;
+      } else if (genParams.operation.has_value() &&
+                 isa<IntegerType>(elemType)) {
         valElemType = elemType;
         if (llvm::is_contained(outIndices, idx))
           valElemType = b.getIntegerType(32);
@@ -6210,15 +6224,20 @@ static LogicalResult populateHostHarnessLogic(
                                     SmallVectorImpl<Value> &memrefArgs,
                                     ArrayRef<int32_t> outputIndices,
                                     bool willBeWrapped = false) {
-    // Check if the function expects tensor arguments by looking at first arg
-    bool expectsTensors = !willBeWrapped &&
-                          !callee.getArgumentTypes().empty() &&
-                          isa<TensorType>(callee.getArgumentTypes().front());
+    // Check if the function uses the tensor interface by looking at its first
+    // argument, or at its first result when it takes no arguments.
+    TypeRange signatureTypes = callee.getNumArguments() > 0
+                                   ? callee.getArgumentTypes()
+                                   : callee.getResultTypes();
+    bool expectsTensors = !willBeWrapped && !signatureTypes.empty() &&
+                          isa<TensorType>(signatureTypes.front());
 
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
       SmallVector<Value, 8> tensorArgs;
-      for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+      for (auto [idx, memrefArg] :
+           llvm::enumerate(ArrayRef<Value>(memrefArgs)
+                               .take_front(callee.getNumArguments()))) {
         bool isWritable = llvm::is_contained(outputIndices, idx);
         tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
       }
@@ -6231,7 +6250,9 @@ static LogicalResult populateHostHarnessLogic(
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
           // Convert result tensor to memref
-          auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
+          auto resultType = cast<RankedTensorType>(result.getType());
+          auto outMemrefType = MemRefType::get(resultType.getShape(),
+                                               resultType.getElementType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
           memrefArgs[outIdx] = resultMemref;
@@ -6260,6 +6281,7 @@ static LogicalResult populateHostHarnessLogic(
   for (auto &root : roots) {
     // Is the root also a kernel?
     bool rootKernel =
+        root.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
         std::find_if(kernels.begin(), kernels.end(), [&](const KernelIF &k) {
           return k.func == root.func;
         }) != kernels.end();
@@ -6278,7 +6300,9 @@ static LogicalResult populateHostHarnessLogic(
       if (cpuTimers) {
         func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
       }
-    } else if (!valVars.empty()) {
+    } else if (!valVars.empty() && !hasCloneValidation) {
+      // Clone validation fills valVars from the _cpu_host reference, so there
+      // the root under test takes the localVars path below.
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
         printValidationResults = true;

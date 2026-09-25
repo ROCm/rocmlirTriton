@@ -2623,6 +2623,16 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
     if (auto blockArg = dyn_cast<BlockArgument>(path.leaf))
       kernelArgs.push_back(blockArg);
 
+  // A constant-only input fusion has no underlying memory load whose element
+  // type can be recovered from a kernel argument. In that case the effective
+  // type consumed by the kernel is the only relevant input type.
+  if (kernelArgs.empty()) {
+    auto shapedType = dyn_cast<ShapedType>(value.getType());
+    if (!shapedType)
+      return failure();
+    return shapedType.getElementType();
+  }
+
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);
   if (failed(maybeElemType))

@@ -58,7 +58,8 @@ def MIGraphX_LiteralOp : MIGraphX_Op<"literal",
 class MIGraphX_ElementwiseBinaryOp<string name, list<Trait> traits = []>
     : MIGraphX_Op<
           name, !listconcat(
-                    traits, [AllElementTypesMatch<["inA", "inB", "output"]>])>,
+                    traits, [Elementwise,
+                             AllElementTypesMatch<["inA", "inB", "output"]>])>,
       Arguments<(ins AnyMIXRShaped:$inA, AnyMIXRShaped:$inB)>,
       Results<(outs AnyMIXRShaped:$output)> {
   let summary = "Elementwise " # name # " of two shaped values with broadcast";
@@ -78,9 +79,9 @@ def MIGraphX_DivOp :
     MIGraphX_ElementwiseBinaryOp<"div">;
 def MIGraphX_PowOp :
     MIGraphX_ElementwiseBinaryOp<"pow">;
-def MIGraphX_MaxOp : MIGraphX_ElementwiseBinaryOp<
-                         "max", [Commutative, Elementwise,
-                                 AllShapesMatch<["inA", "inB", "output"]>]> {
+def MIGraphX_MaxOp
+    : MIGraphX_ElementwiseBinaryOp<
+          "max", [Commutative, AllShapesMatch<["inA", "inB", "output"]>]> {
   let summary = "Elementwise maximum of two shaped values";
 
   let description = [{
@@ -112,12 +113,14 @@ def MIGraphX_Equal : MIGraphX_ElementwiseBinaryOp<"equal"> {
   }];
 }
 
-def MIGraphX_ClipOp :
-    MIGraphX_Op<"clip">,
-    Arguments<(ins AnyMIXRShaped:$x,
-      AnyMIXRShaped:$minVals,
-      AnyMIXRShaped:$maxVals)>,
-    Results<(outs AnyMIXRShaped:$output)> {
+def MIGraphX_ClipOp
+    : MIGraphX_Op<
+          "clip", [Elementwise,
+                   AllElementTypesMatch<["x", "minVals", "maxVals", "output"]>,
+                   AllShapesMatch<["x", "minVals", "maxVals", "output"]>]>,
+      Arguments<(ins AnyMIXRShaped:$x, AnyMIXRShaped:$minVals,
+          AnyMIXRShaped:$maxVals)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "Elementwise clip";
   let description = [{
     Elementwise clip: output = min(max(x, minVals), maxVals)
@@ -130,12 +133,13 @@ def MIGraphX_ClipOp :
 
 // Note: when lowering to kernel calls, MIGraphX represents booleans as i8.
 // Keep that logic here.
-def MIGraphX_WhereOp :
-    MIGraphX_Op<"where">,
-    Arguments<(ins MIXRShapedOf<[I8, SI8, UI8]>:$cond,
-      AnyMIXRShaped:$inA,
-      AnyMIXRShaped:$inB)>,
-    Results<(outs AnyMIXRShaped:$output)> {
+def MIGraphX_WhereOp
+    : MIGraphX_Op<"where", [Elementwise,
+                            AllElementTypesMatch<["inA", "inB", "output"]>,
+                            AllShapesMatch<["inA", "inB", "output", "cond"]>]>,
+      Arguments<(ins MIXRShapedOf<[I8, SI8, UI8]>:$cond, AnyMIXRShaped:$inA,
+          AnyMIXRShaped:$inB)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "Elementwise select";
   let description = [{
     output[x] = cond[x] ? inA[x] : inB[x]
@@ -148,10 +152,10 @@ def MIGraphX_WhereOp :
 
 // Elementwise unary operations
 
-def MIGraphX_ConvertOp :
-    MIGraphX_Op<"convert">,
-    Arguments<(ins AnyMIXRShaped:$inA)>,
-	  Results<(outs AnyMIXRShaped:$output)> {
+def MIGraphX_ConvertOp
+    : MIGraphX_Op<"convert", [Elementwise, AllShapesMatch<["inA", "output"]>]>,
+      Arguments<(ins AnyMIXRShaped:$inA)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "Elementwise type conversion";
   let description = [{
     Type conversion. Due to impedance mismatches between MIGraphX and Tosa,
@@ -160,10 +164,12 @@ def MIGraphX_ConvertOp :
   let assemblyFormat = "$inA attr-dict `:` type($inA) `to` type($output)";
 }
 
-class MIGraphX_ElementwiseUnaryOp<string name, list<Trait> traits=[]> :
-    MIGraphX_Op<name, traits>,
-    Arguments<(ins AnyMIXRShaped:$inA)>,
-    Results<(outs AnyMIXRShaped:$output)> {
+class MIGraphX_ElementwiseUnaryOp<string name, list<Trait> traits = []>
+    : MIGraphX_Op<name,
+                  !listconcat(traits, [Elementwise,
+                                       AllShapesMatch<["inA", "output"]>])>,
+      Arguments<(ins AnyMIXRShaped:$inA)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "Elementwise " # name;
   let assemblyFormat = [{
     $inA attr-dict `:` type($inA) `->` type($output)
@@ -202,6 +208,7 @@ def MIGraphX_SigmoidOp :
   let description = [{
     Sigmoid function, aka 1 / (1 + exp(-x)).
   }];
+  let hasVerifier = 1;
 }
 def MIGraphX_SqrtOp :
     MIGraphX_ElementwiseUnaryOp<"sqrt">;
@@ -422,14 +429,11 @@ def MIGraphX_ReshapeOp :
   let hasVerifier = 1;
 }
 
-def MIGraphX_SliceOp :
-    MIGraphX_Op<"slice">,
-    Arguments<(ins AnyMIXRShaped:$input,
-                   I64ArrayAttr:$axes,
-                   I64ArrayAttr:$ends,
-                   I64ArrayAttr:$starts
-                   )>,
-	Results<(outs AnyMIXRShaped:$output)> {
+def MIGraphX_SliceOp
+    : MIGraphX_Op<"slice", [AllElementTypesMatch<["input", "output"]>]>,
+      Arguments<(ins AnyMIXRShaped:$input, I64ArrayAttr:$axes,
+          I64ArrayAttr:$ends, I64ArrayAttr:$starts)>,
+      Results<(outs AnyMIXRShaped:$output)> {
   let summary = "slice a tensor";
   let description = [{
     The `migraphx.slice` op.
@@ -437,6 +441,8 @@ def MIGraphX_SliceOp :
   let assemblyFormat = [{
     $input attr-dict `:` type($input) `->` type($output)
   }];
+
+  let hasVerifier = 1;
 }
 
 def MIGraphX_BroadcastOp :
@@ -511,6 +517,7 @@ def MIGraphX_DotOp : MIGraphX_Op<"dot">,
   let assemblyFormat = [{
     $in_a `,` $in_b attr-dict `:` type($in_a) `,` type($in_b) `->` type($output)
   }];
+  let hasVerifier = 1;
 }
 
 def MIGraphX_SoftmaxOp :
