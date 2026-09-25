@@ -724,7 +724,8 @@ TEST(LookupTest, UntunableProblemFieldsUseSetCoverQuietly) {
   auto setCover =
       lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
   QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
-                                   kGemmKeyVersionHash, /*unsupportedFields=*/"",
+                                   kGemmKeyVersionHash,
+                                   /*unsupportedFields=*/"",
                                    /*untunableFields=*/"asymmetric_padding"};
 
   testing::internal::CaptureStderr();

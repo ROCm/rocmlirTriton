@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -162,9 +162,9 @@ TEST(QuickTuningProblemKeyTest, ConvGroupsWarnButAsymmetricPaddingIsSilent) {
   EXPECT_EQ(grouped->unsupportedFields, "convolution_groups");
   EXPECT_EQ(grouped->untunableFields, "");
 
-  auto trimmed =
-      keyFor(ctx, conv("f16", "f16", "1 : index, 0 : index, 1 : index, "
-                                     "0 : index"));
+  auto trimmed = keyFor(ctx, conv("f16", "f16",
+                                  "1 : index, 0 : index, 1 : index, "
+                                  "0 : index"));
   ASSERT_TRUE(trimmed);
   EXPECT_EQ(trimmed->unsupportedFields, "");
   EXPECT_EQ(trimmed->untunableFields, "asymmetric_padding");
