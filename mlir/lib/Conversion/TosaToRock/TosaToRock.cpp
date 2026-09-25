@@ -996,6 +996,9 @@ public:
     // Get K from B data shape
     auto bDataType = cast<RankedTensorType>(bData.getType());
     ArrayRef<int64_t> bShape = bDataType.getShape();
+    assert(bShape.size() == 3 && aScaleShape.size() == 3 &&
+           bScaleShape.size() == 3 &&
+           "ODS guarantees 3D B data and scale operands");
     // B shape depends on transpose:
     // By default B is transposed in tosa.matmul_t_block_scaled with shape
     // [batch, N, K]. If transpose_b is toggled, shape is [batch, K, N].

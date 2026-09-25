@@ -513,41 +513,14 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
                           1));
   }
 
-  // i2tilda = kernelid % filtilda[2]
-  // i1tilda = (kernelid % (filtilda[2] * filtilda[1])) / filtilda[2]
-  // i0tilda = kernelid / (filtilda[2] * filtilda[1])
-  //  get-backward-kernel-count or similar
-
-  SmallVector<int64_t, 3> iTilda;
-  SmallVector<int64_t, 3> iDotSlice;
-  int64_t product = 1;
-  for (size_t i = 1; i < convDims.fil.size(); i++)
-    product *= filTilda[i];
-  int64_t divisor = 1;
-  iTilda.resize(convDims.fil.size());
-  switch (convDims.fil.size()) {
-  default:
-    llvm_unreachable("Only 2-D and 3-D have been implemented.");
-    break;
-  case 3:
-    divisor = filTilda[2];
-    iTilda[2] = kernelId % divisor;
-    [[fallthrough]];
-  case 2:
-    iTilda[1] = (kernelId % product) / divisor;
-    iTilda[0] = kernelId / product;
-  }
-
+  SmallVector<int64_t> iTilda =
+      rock::backwardDataTildaIndices(strides, dilations, kernelId);
   // `kernelId` must come from `backwardDataKernelIds`, which filters out
-  // phases where `iTilda[i] >= convDims.fil[i]`. Without that filter,
-  // `divideCeil`'s unsigned-converting overload would wrap a negative
-  // numerator into a huge value here.
-  for (size_t i = 0; i < convDims.fil.size(); i++) {
-    assert(iTilda[i] < convDims.fil[i] &&
-           "kernelId not pre-filtered by backwardDataKernelIds");
-    iDotSlice.push_back(
-        llvm::divideCeil(convDims.fil[i] - iTilda[i], filTilda[i]));
-  }
+  // phases that cover no filter taps in some dimension.
+  SmallVector<int64_t> iDotSlice =
+      rock::backwardDataDotSlices(strides, dilations, convDims.fil, kernelId);
+  assert(!llvm::is_contained(iDotSlice, 0) &&
+         "kernelId not pre-filtered by backwardDataKernelIds");
 
   // backward data only, compute iTilda indices for multi-gemm decomposition
   // c is input channels , k is output channels
@@ -757,7 +730,9 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
         TransformOp::create(b, loc, op.getGradient(), embedTransformAttr);
 
     // Take the same slices in ydot, xdot, 0tilda, and 1tilda as were taken in
-    // the filter and input
+    // the filter and input. The gradient view must depend on the kernel ID
+    // only through `iDotSlice`: tuning assumes that kernel IDs with equal dot
+    // slices share one gradient tile in LDS (see `SiblingGemm`).
     auto sliceTransform =
         BottomUpTMBuilder::above(embedTransform, embedTransformAttr);
     sliceTransform.passThrough({"go", "no", "ko"});
