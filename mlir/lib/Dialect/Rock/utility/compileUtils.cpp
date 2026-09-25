@@ -25,14 +25,20 @@
 
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include <algorithm>
 #include <optional>
+#include <vector>
 using namespace mlir;
 using namespace mlir::rock;
 
@@ -40,6 +46,51 @@ using namespace mlir::rock;
 
 namespace mlir {
 namespace rock {
+
+unsigned estimatePeakLiveValues(const llvm::BasicBlock &block) {
+  const unsigned numInstructions = block.size();
+  if (numInstructions == 0)
+    return 0;
+
+  llvm::DenseMap<const llvm::Value *, unsigned> definitionIndex;
+  llvm::DenseMap<const llvm::Value *, unsigned> lastUseIndex;
+  unsigned index = 0;
+  for (const llvm::Instruction &instruction : block) {
+    definitionIndex[&instruction] = index;
+    const auto *phi = llvm::dyn_cast<llvm::PHINode>(&instruction);
+    for (const llvm::Use &use : instruction.operands()) {
+      const llvm::Value *value = use.get();
+      if (!llvm::isa<llvm::Instruction, llvm::Argument>(value))
+        continue;
+
+      // A self-PHI consumes its backedge value at the end of the block, not
+      // at the PHI's textual position at the beginning.
+      unsigned useIndex = phi && phi->getIncomingBlock(use) == &block
+                              ? numInstructions - 1
+                              : index;
+      unsigned &lastUse = lastUseIndex[value];
+      lastUse = std::max(lastUse, useIndex);
+    }
+    ++index;
+  }
+
+  std::vector<int> liveCountDelta(numInstructions + 1, 0);
+  for (const auto &[value, lastUse] : lastUseIndex) {
+    auto definition = definitionIndex.find(value);
+    unsigned firstLive =
+        definition == definitionIndex.end() ? 0 : definition->second;
+    ++liveCountDelta[firstLive];
+    --liveCountDelta[lastUse + 1];
+  }
+
+  int liveCount = 0;
+  int peakLiveCount = 0;
+  for (int delta : liveCountDelta) {
+    liveCount += delta;
+    peakLiveCount = std::max(peakLiveCount, liveCount);
+  }
+  return peakLiveCount;
+}
 
 LogicalResult collectKernelInfo(ModuleOp moduleOp,
                                 SmallVectorImpl<KernelInfo> &kernels) {

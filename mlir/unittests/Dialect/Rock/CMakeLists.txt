@@ -1,6 +1,7 @@
 set(ROCK_UNITTEST_SOURCES
   AmdArchDbTests.cpp
   BuilderUtilsTests.cpp
+  CompileUtilsTests.cpp
   GetRockInfoTests.cpp
   LoweringUtilsTests.cpp
   PerfConfigOrderingGemmTests.cpp

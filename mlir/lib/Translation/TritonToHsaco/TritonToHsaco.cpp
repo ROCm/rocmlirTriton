@@ -20,6 +20,8 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/compileUtils.h"
+#include "mlir/Dialect/Rock/utility/loweringUtils.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -141,6 +143,13 @@ constexpr bool kVerifyLLVMIR = true;
 #else
 constexpr bool kVerifyLLVMIR = false;
 #endif
+
+// In the benchmark sweep, every observed backend compile over 10 seconds had
+// a post-O3 peak of at least 1,636 live SSA values, while every compile under
+// 5 seconds had a peak of at most 1,167. Keep the rejection boundary inside
+// that empirical gap. This counts SSA values, not value width: wide
+// accumulator values have not shown the same register-allocator blowup.
+constexpr unsigned kMaxLiveValuesPerBlock = 1500;
 
 //===----------------------------------------------------------------------===//
 // Helper functions
@@ -1085,6 +1094,28 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
 
   // optimize_module in llvm.cc
   optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(), enableAsan);
+
+  // LLVM's greedy register allocator can spend minutes evicting values when a
+  // single block exposes thousands of simultaneously-live SSA values. Check
+  // only the post-O3 form for which the threshold above was calibrated.
+  if (optLevel.value() == llvm::OptimizationLevel::O3) {
+    for (const llvm::Function &function : *llvmModule) {
+      for (const llvm::BasicBlock &block : function) {
+        unsigned peakLiveValues = estimatePeakLiveValues(block);
+        if (peakLiveValues <= kMaxLiveValuesPerBlock)
+          continue;
+
+        rock::markAsNotApplicable(module);
+        module.emitError()
+            << "configuration is not applicable: optimized LLVM IR function @"
+            << function.getName() << " has an estimated peak of "
+            << peakLiveValues
+            << " simultaneously-live SSA values in one basic block (limit "
+            << kMaxLiveValuesPerBlock << ")";
+        return failure();
+      }
+    }
+  }
 
   // Handle architected SGPRs (compiler.py lines 427-434)
   if (hasArchitectedSGPRs(triple, arch)) {

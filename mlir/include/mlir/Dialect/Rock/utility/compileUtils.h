@@ -15,6 +15,10 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 
+namespace llvm {
+class BasicBlock;
+} // namespace llvm
+
 namespace mlir {
 namespace rock {
 
@@ -84,6 +88,15 @@ LogicalResult fillCompilationConfigs(Attribute perfConfig,
 LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);
+
+/// Estimate the peak number of LLVM SSA values simultaneously live in `block`
+/// in program order. Each value counts once regardless of type width. Values
+/// defined outside the block start live at entry, and loop-carried values fed
+/// into a self-PHI stay live through the block terminator.
+///
+/// Definitions used only outside `block` are intentionally omitted, making
+/// this a conservative lower-bound signal for compile-time pathology checks.
+unsigned estimatePeakLiveValues(const llvm::BasicBlock &block);
 
 } // namespace rock
 } // namespace mlir
