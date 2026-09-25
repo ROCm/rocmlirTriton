@@ -64,3 +64,12 @@
 // RUN:   | count 0
 // RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
+
+// A compiler-recognized mode that was not represented during exhaustive
+// tuning is different from an unseen problem under the same schema: diagnose
+// it and use the set cover until that mode is tuned and the maps regenerated.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick > %t.unsupported.quick 2> %t.unsupported.err
+// RUN: FileCheck %s --check-prefix=SCHEMA-GUARD < %t.unsupported.err
+// RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick | diff - %t.unsupported.quick
+// SCHEMA-GUARD: warning: per-problem quick tuning does not represent the current problem's output_data_type
+// SCHEMA-GUARD-SAME: falling back to the set cover

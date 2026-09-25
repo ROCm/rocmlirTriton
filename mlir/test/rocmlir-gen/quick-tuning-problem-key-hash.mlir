@@ -12,13 +12,22 @@
 // CONV_FWD: 17009370425126842901
 // CONV_FWD-NEXT: 12815695606661592525
 
-// Forward and backward-data are separate problems.
-// RUN: rocmlir-gen --arch gfx942 --operation conv_bwd_data -p --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=CONV_BWD_DATA
+// Forward and backward-data are separate problems under the same schema.
+// RUN: rocmlir-gen --arch gfx942 --operation conv_bwd_data -p --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=CONV_BWD_DATA
 // CONV_BWD_DATA: 9497099527036308506
+// CONV_BWD_DATA-NEXT: 12815695606661592525
 
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=ATTN_VERSION
 // ATTN_VERSION: 10457287879272258229
 // ATTN_VERSION-NEXT: 2158629286767709275
+
+// RUN: rocmlir-gen --arch gfx942 --operation gemm_gemm -t f32 -p --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=GEMM_GEMM_VERSION
+// GEMM_GEMM_VERSION: 6461224018699686721
+// GEMM_GEMM_VERSION-NEXT: 12034527386330093365
+
+// RUN: rocmlir-gen --arch gfx942 --operation conv_gemm -t f32 -p --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=CONV_GEMM_VERSION
+// CONV_GEMM_VERSION: 916381620957689987
+// CONV_GEMM_VERSION-NEXT: 10231796635899358662
 
 // Fusion-shaped fields are part of attention's identity.
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 -causal --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=ATTN_CAUSAL
@@ -55,10 +64,11 @@
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -p --num_cu 64 --emit-quick-tuning-problem-key-hash | diff - %t.gemm
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -p --num_chiplets 2 --emit-quick-tuning-problem-key-hash | diff - %t.gemm
 
-// Dropped: both the input and the output element type, the first because the
-// lookup key carries it and the second because it never reached the key at
-// all.
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -p -t f16 -out_datatype f32 --emit-quick-tuning-problem-key-hash | diff - %t.gemm
+// The input element type lives in the outer table key. A different output type
+// was not represented in the exhaustive results used by the shipped maps, so
+// it must not alias the base problem.
+// RUN: not rocmlir-gen --arch gfx942 --operation gemm -p -t f16 -out_datatype f32 --emit-quick-tuning-problem-key-hash 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-OUTPUT-TYPE
+// UNSUPPORTED-OUTPUT-TYPE: fields not represented by the shipped maps: output_data_type
 
 // Kept: every transpose. -transA is pinned above; these are its siblings,
 // which a truncated field list would silently collapse onto the base problem.
@@ -87,9 +97,32 @@
 // RUN: %{attn} -num_heads_q 2 -num_heads_kv 1 --emit-quick-tuning-problem-key-hash | not diff - %t.attn
 // RUN: %{attn} -with-attn-scale --emit-quick-tuning-problem-key-hash | not diff - %t.attn
 // RUN: %{attn} -with-attn-bias --emit-quick-tuning-problem-key-hash | not diff - %t.attn
+// RUN: not %{attn} -softmax_dtype f16 --emit-quick-tuning-problem-key-hash 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-SOFTMAX-TYPE
+// UNSUPPORTED-SOFTMAX-TYPE: fields not represented by the shipped maps: softmax_data_type
+// RUN: not %{attn} -last_valid_kv_index 511 --emit-quick-tuning-problem-key-hash 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-KV-CACHE
+// UNSUPPORTED-KV-CACHE: fields not represented by the shipped maps: last_valid_kv_index
 
-// The conv key holds the products ci*gi and k*g, so it cannot tell a grouped
-// problem from an ungrouped one with the same totals: both get the same entry.
+// Existing maps were measured as ungrouped problems. The key still holds the
+// total channel products, but a grouped runtime problem must fall back instead
+// of aliasing an ungrouped ranking.
 // RUN: rocmlir-gen --arch gfx942 --operation conv -t f16 --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 256 --in_h 20 --in_w 20 --out_channels 256 --fil_h 7 --fil_w 7 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 3 --padding_w 3 --groupsize 1 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=CONV_GROUPED
-// RUN: rocmlir-gen --arch gfx942 --operation conv -t f16 --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 256 --in_h 20 --in_w 20 --out_channels 256 --fil_h 7 --fil_w 7 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 3 --padding_w 3 --groupsize 128 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=CONV_GROUPED
+// RUN: not rocmlir-gen --arch gfx942 --operation conv -t f16 --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 --batchsize 64 --in_channels 256 --in_h 20 --in_w 20 --out_channels 256 --fil_h 7 --fil_w 7 --dilation_h 1 --dilation_w 1 --conv_stride_h 1 --conv_stride_w 1 --padding_h 3 --padding_w 3 --groupsize 128 --emit-quick-tuning-problem-key-hash 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-CONV-GROUPS
 // CONV_GROUPED: 18267882488113781532
+// UNSUPPORTED-CONV-GROUPS: fields not represented by the shipped maps: convolution_groups
+
+// A newly attached compiler field is fail-closed until it is deliberately
+// added to the problem key or classified as irrelevant.
+// RUN: not rocmlir-gen --emit-quick-tuning-problem-key-hash %s 2>&1 | FileCheck %s --check-prefix=UNCLASSIFIED-FIELD
+// UNCLASSIFIED-FIELD: fields not represented by the shipped maps: attribute:futureTuningFlag
+
+module {
+  func.func @unclassified_field(%a: tensor<1x16x16xf32>,
+                                %b: tensor<1x16x16xf32>)
+      -> tensor<1x16x16xf32>
+      attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel} {
+    %result = rock.gemm %a * %b {futureTuningFlag = true}
+      : tensor<1x16x16xf32> * tensor<1x16x16xf32>
+        -> tensor<1x16x16xf32>
+    return %result : tensor<1x16x16xf32>
+  }
+}

@@ -21,6 +21,8 @@
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <utility>
 
 namespace mlir {
 namespace rock {
@@ -32,8 +34,18 @@ using QuickTuningTableLookUpKeyVersionHash = uint64_t;
 /// to build it. The latter changes automatically when the lookup-key schema
 /// changes, without depending on the problem's field values.
 struct QuickTuningProblemKey {
+  QuickTuningProblemKey(QuickTuningProblemKeyHash hash,
+                        QuickTuningTableLookUpKeyVersionHash versionHash,
+                        std::string unsupportedFields = {})
+      : hash(hash), versionHash(versionHash),
+        unsupportedFields(std::move(unsupportedFields)) {}
+
   QuickTuningProblemKeyHash hash;
   QuickTuningTableLookUpKeyVersionHash versionHash;
+  /// Fields or modes understood by the compiler but not represented by the
+  /// shipped per-problem maps. Such a key must fall back to the set cover
+  /// rather than reusing a ranking measured for a different problem schema.
+  std::string unsupportedFields;
 };
 
 inline QuickTuningProblemKeyHash hashQuickTuningProblemKey(StringRef key) {

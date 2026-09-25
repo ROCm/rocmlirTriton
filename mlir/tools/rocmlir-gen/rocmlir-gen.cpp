@@ -6835,6 +6835,13 @@ int main(int argc, char **argv) {
       llvm::errs() << "Failed to key module: " << *module << "\n";
       return EXIT_FAILURE;
     }
+    if (!key->unsupportedFields.empty()) {
+      llvm::errs()
+          << "Cannot generate a per-problem quick-tuning key: the current "
+             "problem uses fields not represented by the shipped maps: "
+          << key->unsupportedFields << "\n";
+      return EXIT_FAILURE;
+    }
     if (emitQuickTuningProblemKeyHash)
       llvm::outs() << key->hash << "\n";
     if (emitQuickTuningTableLookUpKeyVersionHash)

@@ -698,6 +698,25 @@ TEST(LookupTest, LookupKeyVersionMismatchWarnsAndUsesSetCover) {
   EXPECT_NE(warnings.find("Regenerate the map"), std::string::npos);
 }
 
+TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, "prefix_offset"};
+
+  testing::internal::CaptureStderr();
+  auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(unsupported == setCover);
+  EXPECT_NE(warnings.find("does not represent"), std::string::npos);
+  EXPECT_NE(warnings.find("prefix_offset"), std::string::npos);
+  EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
+}
+
 TEST(LookupTest, PerProblemDoesNotDependOnSplitKLegality) {
   // `supportsSplitK` chooses between the two set covers and has no say over
   // the per-problem rankings, which come back whole either way. Dropping the
