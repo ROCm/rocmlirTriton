@@ -18,6 +18,8 @@ FailureOr<ttg::BlockedEncodingAttr>
 mlir::rock::computeLayoutWarpsOnK(ttg::BlockedEncodingAttr enc,
                                   ArrayRef<int64_t> shape, unsigned kDim) {
   SmallVector<unsigned> warpsPerCTA(enc.getWarpsPerCTA());
+  assert(kDim < warpsPerCTA.size() && shape.size() == warpsPerCTA.size() &&
+         "kDim and shape must match the encoding's rank");
   unsigned numWarps = 1;
   for (unsigned warps : warpsPerCTA)
     numWarps *= warps;

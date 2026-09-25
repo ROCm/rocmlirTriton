@@ -160,6 +160,11 @@ void relayoutTranspose(amdg::InThreadTransposeOp transpose,
 } // end anonymous namespace
 
 void RockSetITTReductionLayoutPass::runOnOperation() {
+  // The knob is shared with rock-set-reduction-layout, and 0 must turn off
+  // every warps-on-K rewrite.
+  if (useReductionLayout == 0)
+    return;
+
   // Every InThreadTransposeOp referring to the same buffer moves together.
   // This way we make sure that the prologue copy follows its in-loop copy.
   llvm::MapVector<Value, SmallVector<amdg::InThreadTransposeOp>> groups;

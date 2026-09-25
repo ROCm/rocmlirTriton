@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -fut mlir_upsample_conv --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -print-results -rand 1 -rand_type float -fut mlir_upsample_conv --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 
 // A 2x nearest upsample feeding a padded 3x3 convolution, compiled with a

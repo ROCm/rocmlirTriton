@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rocmlirTriton pass rock-set-itt-reduction-layout.
 //
 // The inputs look like the IR tritonamdgpu-in-thread-transpose leaves behind
