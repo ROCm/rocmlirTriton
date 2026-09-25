@@ -118,13 +118,20 @@ static std::pair<int64_t, int64_t> detectSplitKVFromQ(Value qTensor) {
   return {1, 0};
 }
 
-// Detect splitKV from K or V tensor by finding the Merge operation that
-// creates the batch dimension. The Merge combines either:
-// - [batch, heads, splitKV] (3 params) for multi-head attention
-// - [batch, splitKV] (2 params) for single-head or no-head cases
-// In both cases, splitKV is the last parameter.
+// Detect splitKV from a K or V operand by finding the Merge that creates its
+// batch dimension. Attention operands are [batch, seq, dim], or [seq, dim]
+// with an implicit batch of 1. The Merge that folds splitKV into the batch is
+// either:
+// - Merge{batch, heads, splitKV} for multi-head attention
+// - Merge{batch, splitKV} for single-head or no-head cases
+// In both cases splitKV is the last Merge parameter. The Merge has to produce
+// the batch dimension that reaches the attention op; any other Merge is an
+// unrelated reshape (e.g. a flatten) whose last parameter is not splitKV.
 // Returns splitKV, or 1 if not found.
 static int64_t detectSplitKVFromKV(Value tensor, StringRef tensorName) {
+  ArrayRef<int64_t> shape = cast<ShapedType>(tensor.getType()).getShape();
+  int64_t batchSize = shape.size() == 3 ? shape[0] : 1;
+
   SmallVector<TransformMapAttr> transforms;
   rock::untransform(tensor, transforms);
 
@@ -147,6 +154,16 @@ static int64_t detectSplitKVFromKV(Value tensor, StringRef tensorName) {
       // Check for Merge at position 0 with 2 or 3 params
       if (upperDims.size() == 1 && upperDims[0] == 0 &&
           (params.size() == 2 || params.size() == 3)) {
+        int64_t mergedSize = transformMap.getUpperBounds()[0];
+        if (mergedSize != batchSize) {
+          LLVM_DEBUG(llvm::dbgs() << "\t" << tensorName << ": Skipping Merge{";
+                     llvm::interleaveComma(params, llvm::dbgs());
+                     llvm::dbgs()
+                     << "}, merged size " << mergedSize
+                     << " is not the batch size " << batchSize << "\n");
+          continue;
+        }
+
         // The last parameter is always splitKV
         int64_t possibleSplitKV = params.back();
 
