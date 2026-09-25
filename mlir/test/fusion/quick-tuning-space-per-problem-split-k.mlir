@@ -1,42 +1,37 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// A per-problem ranking is measured with split-K allowed, so a kernel whose
-// fusion forbids split-K can only run part of it. What makes that safe is a
-// generator invariant: select_perfconfigs trades a row's last slot for the
-// best measured splitKFactor=1 config, so every shipped row has at least one
-// legal member. This test pins the two halves meeting -- the row is still
-// consulted, the illegal members are dropped, and what survives is that
-// reserved slot rather than an empty search space.
+// A per-problem ranking is only reusable for the problem mode that was
+// exhaustively tuned. The output fusion below was not represented when the
+// shipped maps were generated, so quick tuning must diagnose it and use the
+// no-split-K set cover. Dropping the fusion recovers the bare GEMM's
+// per-problem row, including its split-K configs.
 //
 // The problem is gfx942 f32 GEMM 128x512x512, the same one
 // rocmlir-gen/quick-tuning-per-problem.mlir uses, so its row is known to be
-// reachable -- otherwise the checks below would pass for the wrong reason.
+// reachable when the fusion is removed.
 // Four of its five perfconfigs use splitKFactor=4.
 
 // Relu cannot be applied to each split and then summed, so split-K is illegal.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefix=KEY-NO-SPLIT-K
 // KEY-NO-SPLIT-K: -supportsSplitK false
 
-// The fusion is not part of a problem's identity, so both spellings key the
-// same row.
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-quick-tuning-problem-key-hash - | FileCheck %s --check-prefix=HASH
+// The fused mode has no compatible per-problem key until it is exhaustively
+// tuned and the maps are regenerated. The bare GEMM retains its known hash.
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | not rocmlir-gen --emit-quick-tuning-problem-key-hash - 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-FUSION
 // RUN: sed -e '/migraphx.relu/d' -e 's/return %1 :/return %0 :/' %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel | rocmlir-gen --emit-quick-tuning-problem-key-hash - | FileCheck %s --check-prefix=HASH
+// UNSUPPORTED-FUSION: fields not represented by the shipped maps: output_fusions
 // HASH: 8175943205932196350
 
-// What is left is the row's reserved splitKFactor=1 slot. The negative on
-// mPerBlock=256,nPerBlock=128,kPerBlock=16 -- a config only gfx942's
-// no-split-K set cover has -- is what distinguishes a filtered row from a
-// fallback to that set cover.
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-space=quick - \
-// RUN:   | FileCheck %s --check-prefix=SPACE-NO-SPLIT-K \
-// RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}' \
-// RUN:       --implicit-check-not='mPerBlock=256,nPerBlock=128,kPerBlock=16,'
-// SPACE-NO-SPLIT-K: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,
+// The fused mode warns and uses the no-split-K set cover.
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-space=quick - 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=SPACE-FUSED-FALLBACK \
+// RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
+// SPACE-FUSED-FALLBACK: warning: per-problem quick tuning does not represent the current problem's output_fusions
+// SPACE-FUSED-FALLBACK: gemm:mPerBlock=256,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,
 
-// Disabling the per-problem layer for the same fused kernel falls back to the
-// no-split-K set cover, which is where that config does appear -- so the run
-// above really did come from the row.
+// Disabling the per-problem layer selects the same no-split-K set cover without
+// trying to classify a per-problem key.
 // RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --emit-tuning-space=quick - \
 // RUN:   | FileCheck %s --check-prefix=SPACE-SET-COVER \
 // RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
