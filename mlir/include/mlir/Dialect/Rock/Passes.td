@@ -921,8 +921,9 @@ def RockSetReductionLayoutPass
 
 def RockSetITTReductionLayoutPass
     : Pass<"rock-set-itt-reduction-layout", "::mlir::ModuleOp"> {
-  let summary = "Rewrites `warpsPerCTA` by putting all warps on K dimension when "
-                "certain conditions (profitability) are met";
+  let summary =
+      "Rewrites `warpsPerCTA` by putting all warps on K dimension when "
+      "certain conditions (profitability) are met";
   let description = [{
     Rewrites the global load's layout (in particular, the `warpsPerCTA`) to
     put every warp on K. For example, assume a load on B matrix (K,N) with
@@ -953,8 +954,8 @@ def RockSetITTReductionLayoutPass
   }];
   let dependentDialects = ["triton::gpu::TritonGPUDialect",
                            "triton::amdgpu::TritonAMDGPUDialect"];
-  let options = [Option<"useReductionLayout", "use-reduction-layout",
-                        "int64_t", /*default=*/"-1",
+  let options = [Option<"useReductionLayout", "use-reduction-layout", "int64_t",
+                        /*default=*/"-1",
                         "The perfConfig knob shared with "
                         "`rock-set-reduction-layout`: 0 disables the rewrite; "
                         "-1 and 1 leave it to the loads' "
