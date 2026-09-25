@@ -6176,34 +6176,6 @@ static LogicalResult populateHostHarnessLogic(
     }
   }
 
-  // Tensor functions return their outputs instead of receiving output
-  // buffers as arguments. Materialize one buffer per result, shaped like the
-  // result rather than like any input, so the harness can copy and print
-  // those results. outIndices indexes both localVars and valVars, so each
-  // result also gets a matching validation buffer when validation buffers
-  // exist.
-  if (isCPUKernel && outIndices.empty() && !root0.resultTypes.empty()) {
-    for (Type resultType : root0.resultTypes) {
-      auto tensorType = dyn_cast<RankedTensorType>(resultType);
-      if (!tensorType) {
-        root0.func.emitError()
-            << "host harness only supports ranked tensor function results";
-        return failure();
-      }
-      auto resultMemrefType =
-          MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-      outIndices.push_back(localVars.size());
-      localVars.push_back(
-          memref::AllocOp::create(b, loc, resultMemrefType).getResult());
-      if (hasValVars) {
-        assert(valVars.size() + 1 == localVars.size() &&
-               "validation buffers must mirror localVars");
-        valVars.push_back(
-            memref::AllocOp::create(b, loc, resultMemrefType).getResult());
-      }
-    }
-  }
-
   // Stop memory initialization timer
   if (cpuTimers) {
     func::CallOp::create(b, loc, initTimerStopFunc, ValueRange{});
@@ -6278,7 +6250,9 @@ static LogicalResult populateHostHarnessLogic(
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
           // Convert result tensor to memref
-          auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
+          auto resultType = cast<RankedTensorType>(result.getType());
+          auto outMemrefType = MemRefType::get(resultType.getShape(),
+                                               resultType.getElementType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
           memrefArgs[outIdx] = resultMemref;
