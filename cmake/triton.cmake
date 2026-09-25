@@ -43,8 +43,14 @@ set(LLVM_ENABLE_PROJECTS "mlir;lld" CACHE STRING "List of LLVM sub-projects")
 set(LLVM_ENABLE_ZSTD OFF CACHE STRING "")
 set(LLVM_ENABLE_ZLIB OFF CACHE STRING "")
 set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "")
-set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "")
+set(LLVM_ENABLE_ASSERTIONS OFF CACHE BOOL "")
 set(LLVM_INSTALL_UTILS ON CACHE BOOL "")
+
+# assert-only and LLVM_DEBUG-only locals become unused when NDEBUG is set.
+if(NOT LLVM_ENABLE_ASSERTIONS)
+  add_compile_options(
+    "$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-unused-function>")
+endif()
 
 # In-tree dev builds do not install MLIR; consumers (us, Triton) use the
 # build tree directly. Skipping install(EXPORT MLIRTargets) also avoids
@@ -152,6 +158,7 @@ endif()
 set(TRITON_BUILD_PYTHON_MODULE OFF CACHE BOOL "Don't build Python bindings")
 set(TRITON_BUILD_PROTON OFF CACHE BOOL "Don't build Proton profiler")
 set(TRITON_BUILD_UT OFF CACHE BOOL "Don't build Triton unit tests")
+set(TRITON_BUILD_BINARY OFF CACHE BOOL "Don't build Triton developer binaries")
 set(TRITON_CODEGEN_BACKENDS "amd" "nvidia"
     CACHE STRING "Triton codegen backends to enable")
 
