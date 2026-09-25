@@ -11,6 +11,9 @@
 // The remove-layout-conversions run that follows in the pipeline carries the
 // new layout back into the address computation and leaves no conversion.
 // RUN: rocmlir-opt -rock-set-itt-reduction-layout -tritongpu-remove-layout-conversions --mlir-print-local-scope --split-input-file %s | FileCheck %s --check-prefix=PROP
+//
+// The useReductionLayout knob at 0 turns the pass off, marker or not.
+// RUN: rocmlir-opt -rock-set-itt-reduction-layout="use-reduction-layout=0" --mlir-print-local-scope --split-input-file %s | FileCheck %s --check-prefix=OFF
 
 // The gather's loads are marked, so both loads staged into the buffer move to
 // warpsPerCTA = [4, 1], between convert_layout ops, and their
@@ -42,6 +45,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // PROP:           tt.load {{.*}} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
   // PROP-NOT:     ttg.convert_layout {{.*}} : tensor<32x
   // PROP:         tt.return
+  // OFF-LABEL: tt.func @marked_gather
+  // OFF-NOT:     warpsPerCTA = [4, 1]
+  // OFF:         tt.load {{.*}} {rock.loop_variant_index_math} : tensor<32x64x!tt.ptr<f16>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  // OFF-NOT:     warpsPerCTA = [4, 1]
+  // OFF:         tt.return
   tt.func @marked_gather(%argA: !tt.ptr<f16>, %argB: !tt.ptr<f16>) -> tensor<128x64xf32, #mma> {
     %c0_i32 = arith.constant 0 : i32
     %c1_i32 = arith.constant 1 : i32
