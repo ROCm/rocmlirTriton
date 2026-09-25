@@ -94,6 +94,7 @@ struct PopulateParamsInfo {
   // The GEMMs a backward-data convolution lowers to, one per kernel ID. Empty
   // for ops that lower to a single GEMM.
   SmallVector<SiblingGemm> siblingGemms;
+  std::optional<QuickTuningProblemKey> problemKey;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
@@ -314,12 +315,13 @@ public:
   // block-scaled (MXFP-style) GEMMs so the applicability check accounts for
   // scale-tile LDS use and the `kPerBlock % quantBlockSize == 0` constraint.
   // Pass `siblingGemms` for ops that lower to several GEMMs in one kernel.
-  std::vector<GemmParamsAttr>
-  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch, bool supportsSplitK,
-                      std::optional<int64_t> quantBlockSize = std::nullopt,
-                      Type aScaleType = nullptr, Type bScaleType = nullptr,
-                      ArrayRef<SiblingGemm> siblingGemms = {}) const;
+  std::vector<GemmParamsAttr> getTuningParameters(
+      OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
+      StringRef arch, bool supportsSplitK,
+      std::optional<int64_t> quantBlockSize = std::nullopt,
+      Type aScaleType = nullptr, Type bScaleType = nullptr,
+      ArrayRef<SiblingGemm> siblingGemms = {},
+      std::optional<QuickTuningProblemKey> problemKey = std::nullopt) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;

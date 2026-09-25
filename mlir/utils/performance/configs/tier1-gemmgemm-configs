@@ -1,3 +1,9 @@
+# Per-problem quick tuning uses a separate lookup key derived from each problem
+# listed here; it does not hash the full tuning problem key. When changing the
+# tuning problem key, check whether getQuickTuningProblemKey needs the same
+# update. Its ordered field names are hashed as the map version automatically;
+# regenerate with mlir/utils/performance/analysis/quickTuningGen.py whenever
+# that schema or the problems listed here change.
 -t f32 -transA false -transB false -transC false -transO false -g 1 -m 384 -n 3072 -k 768 -gemmO 768
 -t f16 -transA false -transB false -transC false -transO false -g 1 -m 384 -n 3072 -k 768 -gemmO 768
 -t f16 -transA false -transB false -transC false -transO false -g 1 -m 384 -n 4096 -k 1024 -gemmO 1024

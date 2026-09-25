@@ -9,8 +9,10 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/WithColor.h"
 
 #include <cassert>
+#include <cstdlib>
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
@@ -18,27 +20,68 @@ using namespace mlir;
 using namespace mlir::rock;
 
 template <typename ParamsType>
-ArrayRef<StringRef>
-ParamLookupTable<ParamsType>::lookup(StringRef arch, KernelType op,
-                                     Type dataType, bool supportsSplitK) {
+SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
+    StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
+    std::optional<QuickTuningProblemKey> problemKey) {
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
                           << "\n");
 
+  // Set ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING to any value, including "0",
+  // to fall back to the set cover everywhere. Presence-based like
+  // ROCMLIR_DISABLE_LDS_BLACKLIST, and read once so getenv cannot race a
+  // concurrent setenv.
+  static const bool perProblemDisabled =
+      std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING") != nullptr;
+
+  // Deliberately no key fallback: a ranking only holds for the problem it was
+  // measured on.
+  if (problemKey && !perProblemDisabled) {
+    if (!problemKey->unsupportedFields.empty()) {
+      llvm::WithColor::warning(llvm::errs())
+          << "per-problem quick tuning does not represent the current "
+             "problem's "
+          << problemKey->unsupportedFields
+          << "; falling back to the set cover. Exhaustively tune this problem "
+             "mode and regenerate the map before reusing per-problem "
+             "results.\n";
+    } else {
+      const auto &problemMap = getProblemMap();
+      if (auto it = problemMap.find(key); it != problemMap.end()) {
+        if (it->second.getKeyVersionHash() != problemKey->versionHash) {
+          llvm::WithColor::warning(llvm::errs())
+              << "ignoring per-problem quick-tuning map " << key
+              << " keyed with table lookup key version hash "
+              << it->second.getKeyVersionHash()
+              << "; the current lookup key version hash is "
+              << problemKey->versionHash
+              << ". Regenerate the map with quickTuningGen.py.\n";
+        } else {
+          SmallVector<StringRef> perfConfigs =
+              it->second.lookup(problemKey->hash);
+          LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
+                                  << perfConfigs.size() << " perfconfigs\n");
+          if (!perfConfigs.empty())
+            return perfConfigs;
+        }
+      }
+    }
+  }
+
   const auto &table = supportsSplitK ? getTable() : getNoSplitKTable();
   const auto &pairedTable = supportsSplitK ? getNoSplitKTable() : getTable();
   auto it = table.find(key);
   if (it != table.end())
-    return it->second;
+    return SmallVector<StringRef>(it->second);
 
   auto fallbackKey = findFallback(key);
   if (!fallbackKey.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "Falling back to tuning parameters with key "
                             << fallbackKey << "\n");
     if (auto fallback = table.find(fallbackKey); fallback != table.end())
-      return fallback->second;
-    return pairedTable.at(fallbackKey);
+      return SmallVector<StringRef>(fallback->second);
+    return SmallVector<StringRef>(pairedTable.at(fallbackKey));
   }
 
   llvm::report_fatal_error(Twine("Tuning parameters not found for key ") + key);
@@ -292,6 +335,34 @@ ParamLookupTable<GemmGemmParamsAttr>::buildNoSplitKTable() {
 #define GemmGemm_NOSPLITK_LOOKUP_TABLE_GEN
 #include "mlir/Dialect/Rock/Tuning/QuickTuningPerfconfigs.inc"
 #undef GemmGemm_NOSPLITK_LOOKUP_TABLE_GEN
+  };
+}
+
+#define Gemm_PER_PROBLEM_DEFINITIONS_GEN
+#include "QuickTuningProblemMap.inc"
+#undef Gemm_PER_PROBLEM_DEFINITIONS_GEN
+
+template <>
+llvm::StringMap<QuickTuningProblemMap>
+ParamLookupTable<GemmParamsAttr>::buildProblemMap() {
+  return {
+#define Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+#include "QuickTuningProblemMap.inc"
+#undef Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+  };
+}
+
+#define GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
+#include "QuickTuningProblemMap.inc"
+#undef GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
+
+template <>
+llvm::StringMap<QuickTuningProblemMap>
+ParamLookupTable<GemmGemmParamsAttr>::buildProblemMap() {
+  return {
+#define GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
+#include "QuickTuningProblemMap.inc"
+#undef GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
   };
 }
 

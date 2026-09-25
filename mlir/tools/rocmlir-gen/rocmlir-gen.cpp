@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -489,6 +490,18 @@ static llvm::cl::opt<bool> emitTuningKey(
         "Prints out the struct of the problem to be tuned for inspection."),
     llvm::cl::value_desc(
         "String formatted fields of the problem which is going to be tuned."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitQuickTuningProblemKeyHash(
+    "emit-quick-tuning-problem-key-hash",
+    llvm::cl::desc("Prints the hash identifying this problem in the "
+                   "per-problem quick-tuning maps."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitQuickTuningTableLookUpKeyVersionHash(
+    "emit-quick-tuning-table-lookup-key-version-hash",
+    llvm::cl::desc("Prints the hash of the ordered fields in the per-problem "
+                   "quick-tuning table lookup key."),
     llvm::cl::init(false));
 
 // Attention related args
@@ -6835,6 +6848,28 @@ int main(int argc, char **argv) {
       return EXIT_FAILURE;
     }
     llvm::outs() << tuningKey << "\n";
+    return 0;
+  }
+
+  if (emitQuickTuningProblemKeyHash ||
+      emitQuickTuningTableLookUpKeyVersionHash) {
+    std::optional<rock::QuickTuningProblemKey> key =
+        rock::getQuickTuningProblemKey(*module);
+    if (!key) {
+      llvm::errs() << "Failed to key module: " << *module << "\n";
+      return EXIT_FAILURE;
+    }
+    if (!key->unsupportedFields.empty()) {
+      llvm::errs()
+          << "Cannot generate a per-problem quick-tuning key: the current "
+             "problem uses fields not represented by the shipped maps: "
+          << key->unsupportedFields << "\n";
+      return EXIT_FAILURE;
+    }
+    if (emitQuickTuningProblemKeyHash)
+      llvm::outs() << key->hash << "\n";
+    if (emitQuickTuningTableLookUpKeyVersionHash)
+      llvm::outs() << key->versionHash << "\n";
     return 0;
   }
 
