@@ -599,7 +599,7 @@ static void addZeroInitPrefillAttribute(tosa::CustomOp op,
 }
 
 // TOSA conv2d is NHWK, so a 1-D bias of length K broadcasts as [1,1,1,K].
-// Transpose folding rewrites that to another layout (NHWC→NCHW becomes NKHW)
+// Transpose folding rewrites that to another layout (NHWC to NCHW becomes NKHW)
 // and updates the conv result type, but the bias is still rank-1. Expand it
 // onto the 'k' axis of `outputLayout` so the add matches the folded result.
 static int64_t channelDimFromOutputLayout(StringRef outputLayout,
