@@ -234,14 +234,6 @@ void ArgDimEqualities::unite(ArgDimAttr a, ArgDimAttr b) {
   parent[rb] = ra;
 }
 
-AffineExpr ArgDimEqualities::canonicalize(
-    AffineExpr expr, ArrayRef<ArgDimAttr> from,
-    SmallVectorImpl<ArgDimAttr> &to) const {
-  SmallVector<ArgDimAttr> canonicalFrom =
-      llvm::map_to_vector(from, [&](ArgDimAttr a) { return canonical(a); });
-  return rebindSymbols(expr, canonicalFrom, to);
-}
-
 //===----------------------------------------------------------------------===//
 // emitDimEqualities
 //===----------------------------------------------------------------------===//

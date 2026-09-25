@@ -86,11 +86,6 @@ public:
   }
   void unite(ArgDimAttr a, ArgDimAttr b);
 
-  /// Re-expresses `expr`, whose symbol k is bound to `from[k]`, over the
-  /// canonical representatives, appending bindings to `to`.
-  AffineExpr canonicalize(AffineExpr expr, ArrayRef<ArgDimAttr> from,
-                          SmallVectorImpl<ArgDimAttr> &to) const;
-
 private:
   mutable llvm::DenseMap<ArgDimAttr, ArgDimAttr> parent;
 };

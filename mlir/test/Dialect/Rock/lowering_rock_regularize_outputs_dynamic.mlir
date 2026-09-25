@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-regularize-output -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -rock-regularize-output -mlir-print-local-scope --split-input-file %s | FileCheck %s
 
 // Output fusions behind dynamic transforms are moved into GEMM space by
 // applying the inverse transforms, whose sizes are expressions over the same

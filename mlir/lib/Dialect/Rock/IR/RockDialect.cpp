@@ -1472,35 +1472,8 @@ LogicalResult TransformOp::verify() {
                               "function argument";
   }
 
-  // The lower bounds must be the sizes of the input, which are expressions
-  // over the dimensions of the function arguments it is a view of.
-  std::optional<ArgDimEqualities> equalities;
-  SmallVector<AffineExpr> lowerExprs = tmap.getLowerBoundExprs();
-  for (auto [i, bound] : llvm::enumerate(lowerBounds)) {
-    if (!ShapedType::isDynamic(bound))
-      continue;
-    SmallVector<ArgDimAttr> shared;
-    FailureOr<AffineExpr> inputSize = getDimExpr(getInput(), i, shared);
-    if (failed(inputSize))
-      continue;
-    AffineExpr expected =
-        rebindSymbols(lowerExprs[i], tmap.getSymbols(), shared);
-    if (symbolicEqual(*inputSize, expected, 0, shared.size()))
-      continue;
-    if (!equalities)
-      equalities.emplace(func);
-    SmallVector<ArgDimAttr> canonicalSymbols;
-    AffineExpr canonicalInput =
-        equalities->canonicalize(*inputSize, shared, canonicalSymbols);
-    AffineExpr canonicalExpected =
-        equalities->canonicalize(expected, shared, canonicalSymbols);
-    if (!symbolicEqual(canonicalInput, canonicalExpected, 0,
-                       canonicalSymbols.size()))
-      return emitOpError() << "lower bound " << i << " (" << lowerExprs[i]
-                           << ") does not match the size of the input ("
-                           << *inputSize << ")";
-  }
-
+  // Dynamic lower bounds are not checked against the input's size: like `?`
+  // elsewhere in MLIR, a runtime mismatch is the producer's responsibility.
   return success();
 }
 

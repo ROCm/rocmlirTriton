@@ -43,7 +43,8 @@ TEST(BuildRowMajorFlatteningTransformMapTest, RankZero) {
   TestEnv env;
   OpBuilder &b = env.builder;
   Location loc = b.getUnknownLoc();
-  TransformMapAttr transform = buildRowMajorFlatteningTransformMap(b, loc, {});
+  TransformMapAttr transform =
+      buildRowMajorFlatteningTransformMap(b, loc, ArrayRef<int64_t>{});
 
   EXPECT_TRUE(transform.getUpperBounds().empty());
   EXPECT_EQ(transform.getLowerBounds().asArrayRef(), ArrayRef<int64_t>({1}));
