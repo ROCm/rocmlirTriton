@@ -15,6 +15,7 @@
 //
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=1 -last_valid_kv_index=5 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --check-prefix=PREFIX
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=62 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 --perf_config "attn:mPerBlockG0=128,nPerBlockG0=32,kPerBlock=64,numWaves=4,matrixInstrNonkdim=32" -pv | rocmlir-opt | FileCheck %s --check-prefix=STRADDLE
 
 // CHECK-LABEL: func.func @rock_attention_gpu
 
@@ -27,7 +28,7 @@
 
 // Per-row validity counts: laid out along the query-row axis ([batch, 1, seqQ, 1]),
 // i.e. tensor<1x1x4x1xi32>, NOT the per-batch-head tensor<Nx1x1x1xi32> layout.
-// CHECK: "tosa.const"() <{values = {{.+}} : tensor<1x1x4x1xi32>}>
+// CHECK: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
 // CHECK: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
 
 // LSE re-normalization across the splitKV axis (axis = 1) in f32.
@@ -37,6 +38,12 @@
 // CHECK: tosa.cast %{{.+}} : (tensor<1x1x4x32xf32>) -> tensor<1x1x4x32xf16>
 
 // PREFIX-LABEL: func.func @rock_attention_gpu
-// PREFIX: "tosa.const"() <{values = {{.+}} : tensor<1x1x4x1xi32>}>
+// PREFIX: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
 // PREFIX: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
 // PREFIX: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
+
+// With 32-key tiles, each split covers one tile. Prefix offset 62 puts the
+// rows' last visible keys (62..65) on both sides of the split boundary at key
+// 64, so the counts differ per row.
+// STRADDLE-LABEL: func.func @rock_attention_gpu
+// STRADDLE: "tosa.const"() <{values = dense<{{\[\[\[\[}}2], [2], [3], [3]]]]> : tensor<1x1x4x1xi32>}>

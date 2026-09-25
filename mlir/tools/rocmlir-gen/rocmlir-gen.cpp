@@ -1446,6 +1446,11 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
 // the key-sequence dimension, hence we use gemm0NPerBlock here.
 static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
   assert(nPerBlock > 0 && "tile size must be positive");
+  auto numValidSplits = [&](int32_t lastValid) -> int32_t {
+    int32_t numPerBlock = (lastValid + nPerBlock) / nPerBlock;
+    int32_t itersPerBlock = nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
+    return llvm::divideCeil(lastValid + 1, itersPerBlock);
+  };
   SmallVector<int32_t> validSplitKV;
   bool usePerRowMask = causalMasking || !prefixOffset.empty();
   for (int64_t i = 0; i < groupSize; ++i) {
@@ -1459,19 +1464,11 @@ static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
             rowLastValidIndex += static_cast<int32_t>(prefixOffset[i]);
           rowLastValidIndex = std::min(rowLastValidIndex, lastValidIndex);
           rowLastValidIndex = std::max(rowLastValidIndex, 0);
-          int32_t numPerBlock = (rowLastValidIndex + nPerBlock) / nPerBlock;
-          int32_t itersPerBlock =
-              nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
-          int32_t numValidKV =
-              llvm::divideCeil(rowLastValidIndex + 1, itersPerBlock);
-          validSplitKV.push_back(numValidKV);
+          validSplitKV.push_back(numValidSplits(rowLastValidIndex));
         }
       }
     } else {
-      int32_t numPerBlock = (lastValidIndex + nPerBlock) / nPerBlock;
-      int32_t itersPerBlock =
-          nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
-      int32_t numValidKV = llvm::divideCeil(lastValidIndex + 1, itersPerBlock);
+      int32_t numValidKV = numValidSplits(lastValidIndex);
       for (int64_t j = 0; j < numHeadsQ; ++j)
         validSplitKV.push_back(numValidKV);
     }
