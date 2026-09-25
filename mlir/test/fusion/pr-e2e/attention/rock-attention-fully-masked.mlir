@@ -6,6 +6,10 @@
 // GPU kernel and the CPU reference define that row's contribution as zero.
 // The direct path also returns the fully masked row's -inf LSE; the split-KV
 // path exercises host recombination of fully masked partial results.
+//
+// rocmlir-gen verifies the LSE only without split-KV; with split-KV the LSE is
+// an intermediate of the host recombination. So the direct runs check two
+// verification results (output and LSE) and the split-KV runs check one.
 
 // Fully masked f32 row (seq_len_q = 1): output is zero and LSE is -inf.
 // RUN: rocmlir-gen --arch %arch --operation attention -last_valid_kv_index=2 -sliding_window_look_back=1 --causal -return_lse -seq_len_q 1 -seq_len_k 64 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv -pr -pvr | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix=DIRECT

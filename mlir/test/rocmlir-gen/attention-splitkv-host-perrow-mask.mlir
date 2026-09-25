@@ -10,8 +10,15 @@
 // build a per-row mask whose validity counts are laid out along the query-row
 // axis ([batch, 1, seqQ, 1]) rather than the batch axis ([batch, 1, 1, 1]).
 //
-// This test exercises that per-row layout (causal, seqLenQ = 4, splitKV = 4)
-// and also confirms the combine still runs in f32 for f16 storage.
+// The RUN lines check the exact per-row counts for four configurations, one
+// per FileCheck prefix:
+//   CHECK      causal, seqLenQ = 4, splitKV = 4. Also checks that the combine
+//              runs in f32 for f16 storage.
+//   PREFIX     prefix-causal with a KV cache.
+//   STRADDLE   prefix-causal where the rows' last visible keys straddle a
+//              split boundary, so the counts differ per row.
+//   MULTITILE  causal with seqLenQ (96) above the key tile (32), where some
+//              rows' splits span two key tiles.
 //
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=1 -last_valid_kv_index=5 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --check-prefix=PREFIX
