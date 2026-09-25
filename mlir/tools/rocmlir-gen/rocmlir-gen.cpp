@@ -3501,6 +3501,8 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
       static_cast<size_t>(shape[0] * shape[2]) == validSplitKV.size();
   assert((perBatchMask || perRowMask) &&
          "validSplitKV must be per-batch-head or per-(batch-head,row)");
+  assert((perBatchMask || index == 1) &&
+         "per-row split-KV mask assumes the split axis is dim 1");
   // generate mask for valid resultTensor
   auto rangeTensor = createRange(builder, loc, index, shape);
 

@@ -16,6 +16,7 @@
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=1 -last_valid_kv_index=5 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --check-prefix=PREFIX
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=62 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 --perf_config "attn:mPerBlockG0=128,nPerBlockG0=32,kPerBlock=64,numWaves=4,matrixInstrNonkdim=32" -pv | rocmlir-opt | FileCheck %s --check-prefix=STRADDLE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 2 -seq_len_q 96 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 --perf_config "attn:mPerBlockG0=128,nPerBlockG0=32,kPerBlock=64,numWaves=4,matrixInstrNonkdim=32" -pv | rocmlir-opt | FileCheck %s --check-prefix=MULTITILE
 
 // CHECK-LABEL: func.func @rock_attention_gpu
 
@@ -47,3 +48,11 @@
 // 64, so the counts differ per row.
 // STRADDLE-LABEL: func.func @rock_attention_gpu
 // STRADDLE: "tosa.const"() <{values = dense<{{\[\[\[\[}}2], [2], [3], [3]]]]> : tensor<1x1x4x1xi32>}>
+
+// Causal with seq_len_q (96) above the 32-key tile, which rocmlir-gen used to
+// reject. Rows 64..95 span 3 key tiles over 2 splits, so their splits hold 64
+// keys each and their count is 2, not 3. Expected counts: 1 for rows 0..31,
+// 2 for rows 32..95.
+// MULTITILE-LABEL: func.func @rock_attention_gpu
+// MULTITILE: "tosa.const"() <{values = dense<{{\[\[\[\[1\](, \[1\]){31}(, \[2\]){64}\]\]\]}}> : tensor<1x1x96x1xi32>}>
+// MULTITILE: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x2x96x1xi32>, tensor<1x2x96x1xi32>) -> tensor<1x2x96x1xi1>
