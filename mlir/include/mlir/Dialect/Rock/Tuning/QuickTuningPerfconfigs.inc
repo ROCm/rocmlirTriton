@@ -4614,7 +4614,7 @@ static const StringRef initParametersI8GemmGfx950NoSplitK[nInitParametersI8GemmG
 // END_GEMM_Gemm_i8_gfx950_NOSPLITK_DECS
 
 // BEGIN_CONV_Gemm_f16_gfx950_NOSPLITK_DECS
-static constexpr size_t nInitParametersF16ConvGfx950NoSplitK = 40;
+static constexpr size_t nInitParametersF16ConvGfx950NoSplitK = 39;
 static const StringRef initParametersF16ConvGfx950NoSplitK[nInitParametersF16ConvGfx950NoSplitK];
 // END_CONV_Gemm_f16_gfx950_NOSPLITK_DECS
 
