@@ -1,0 +1,65 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
+// Host split-KV validity mask: per-(batch-head, query-row) layout.
+//
+// computeValidSplitKV() emits one validity count per batch-head for the plain
+// split-KV case, but under causal / prefix-causal masking with seqLenQ > 1 the
+// number of valid splits differs per query row. createMaskSplitKV() then has to
+// build a per-row mask whose validity counts are laid out along the query-row
+// axis ([batch, 1, seqQ, 1]) rather than the batch axis ([batch, 1, 1, 1]).
+//
+// The RUN lines check the exact per-row counts for four configurations, one
+// per FileCheck prefix:
+//   CHECK      causal, seqLenQ = 4, splitKV = 4. Also checks that the combine
+//              runs in f32 for f16 storage.
+//   PREFIX     prefix-causal with a KV cache.
+//   STRADDLE   prefix-causal where the rows' last visible keys straddle a
+//              split boundary, so the counts differ per row.
+//   MULTITILE  causal with seqLenQ (96) above the key tile (32), where some
+//              rows' splits span two key tiles.
+//
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=1 -last_valid_kv_index=5 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 -pv | rocmlir-opt | FileCheck %s --check-prefix=PREFIX
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -prefix_offset=62 -return_lse -split_kv 4 -seq_len_q 4 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 --perf_config "attn:mPerBlockG0=128,nPerBlockG0=32,kPerBlock=64,numWaves=4,matrixInstrNonkdim=32" -pv | rocmlir-opt | FileCheck %s --check-prefix=STRADDLE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal=true -return_lse -split_kv 2 -seq_len_q 96 -seq_len_k 256 -head_dim_qk 32 -head_dim_v 32 -t f16 --perf_config "attn:mPerBlockG0=128,nPerBlockG0=32,kPerBlock=64,numWaves=4,matrixInstrNonkdim=32" -pv | rocmlir-opt | FileCheck %s --check-prefix=MULTITILE
+
+// CHECK-LABEL: func.func @rock_attention_gpu
+
+// Split-KV partial outputs reshaped to [batchHeads, splitKV, seqQ, headDimV],
+// keeping the query-row axis (seqQ = 4) distinct from the split axis.
+// CHECK: tosa.reshape %{{.+}} : (tensor<512xf16>, !tosa.shape<4>) -> tensor<1x4x4x32xf16>
+
+// f16 storage upcast to f32 for the combine.
+// CHECK: tosa.cast %{{.+}} : (tensor<1x4x4x32xf16>) -> tensor<1x4x4x32xf32>
+
+// Per-row validity counts: laid out along the query-row axis ([batch, 1, seqQ, 1]),
+// i.e. tensor<1x1x4x1xi32>, NOT the per-batch-head tensor<Nx1x1x1xi32> layout.
+// CHECK: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
+// CHECK: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
+
+// LSE re-normalization across the splitKV axis (axis = 1) in f32.
+// CHECK: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
+
+// Final combined result cast back to f16 storage.
+// CHECK: tosa.cast %{{.+}} : (tensor<1x1x4x32xf32>) -> tensor<1x1x4x32xf16>
+
+// PREFIX-LABEL: func.func @rock_attention_gpu
+// PREFIX: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
+// PREFIX: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
+// PREFIX: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
+
+// With 32-key tiles, each split covers one tile. Prefix offset 62 puts the
+// rows' last visible keys (62..65) on both sides of the split boundary at key
+// 64, so the counts differ per row.
+// STRADDLE-LABEL: func.func @rock_attention_gpu
+// STRADDLE: "tosa.const"() <{values = dense<{{\[\[\[\[}}2], [2], [3], [3]]]]> : tensor<1x1x4x1xi32>}>
+
+// Causal with seq_len_q (96) above the 32-key tile, which rocmlir-gen used to
+// reject. Rows 64..95 span 3 key tiles over 2 splits, so their splits hold 64
+// keys each and their count is 2, not 3. Expected counts: 1 for rows 0..31,
+// 2 for rows 32..95.
+// MULTITILE-LABEL: func.func @rock_attention_gpu
+// MULTITILE: "tosa.const"() <{values = dense<{{\[\[\[\[1\](, \[1\]){31}(, \[2\]){64}\]\]\]}}> : tensor<1x1x96x1xi32>}>
+// MULTITILE: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x2x96x1xi32>, tensor<1x2x96x1xi32>) -> tensor<1x2x96x1xi1>
