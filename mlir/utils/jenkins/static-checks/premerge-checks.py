@@ -150,6 +150,11 @@ def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
     include_dirs.append(
         os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm', 'tools', 'mlir',
                      'include'))
+    # HIP lives outside the repo, so it has no source/build pair. Headers that
+    # reach <hip/...> (e.g. mlir/include/mlir/Support/MsvcHipCompat.h) are
+    # otherwise unparseable in a header-only diff, since the interpolated
+    # compile line comes from a .cpp that does not carry HIP's include path.
+    include_dirs.append(os.path.join(os.environ.get('ROCM_PATH', '/opt/rocm'), 'include'))
 
     extra_args = ['-extra-arg=-std=c++17']
     for inc in include_dirs:
