@@ -717,6 +717,27 @@ TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
   EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
 }
 
+TEST(LookupTest, UnsupportedProblemFieldsWithoutAMapAreQuiet) {
+  // gfx942_gemm_bf16 ships no per-problem map, so there is no ranking for an
+  // unsupported mode to miss and nothing worth diagnosing.
+  MLIRContext ctx;
+  Type bf16 = BFloat16Type::get(&ctx);
+  auto setCover = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
+      /*supportsSplitK=*/true);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, "prefix_offset"};
+
+  testing::internal::CaptureStderr();
+  auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(unsupported == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
 TEST(LookupTest, PerProblemDoesNotDependOnSplitKLegality) {
   // `supportsSplitK` chooses between the two set covers and has no say over
   // the per-problem rankings, which come back whole either way. Dropping the

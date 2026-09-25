@@ -36,35 +36,34 @@ SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
       std::getenv("ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING") != nullptr;
 
   // Deliberately no key fallback: a ranking only holds for the problem it was
-  // measured on.
+  // measured on. Without a map for this key there is no ranking to miss, so
+  // an unsupported problem mode is only worth diagnosing when one exists.
   if (problemKey && !perProblemDisabled) {
-    if (!problemKey->unsupportedFields.empty()) {
-      llvm::WithColor::warning(llvm::errs())
-          << "per-problem quick tuning does not represent the current "
-             "problem's "
-          << problemKey->unsupportedFields
-          << "; falling back to the set cover. Exhaustively tune this problem "
-             "mode and regenerate the map before reusing per-problem "
-             "results.\n";
-    } else {
-      const auto &problemMap = getProblemMap();
-      if (auto it = problemMap.find(key); it != problemMap.end()) {
-        if (it->second.getKeyVersionHash() != problemKey->versionHash) {
-          llvm::WithColor::warning(llvm::errs())
-              << "ignoring per-problem quick-tuning map " << key
-              << " keyed with table lookup key version hash "
-              << it->second.getKeyVersionHash()
-              << "; the current lookup key version hash is "
-              << problemKey->versionHash
-              << ". Regenerate the map with quickTuningGen.py.\n";
-        } else {
-          SmallVector<StringRef> perfConfigs =
-              it->second.lookup(problemKey->hash);
-          LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
-                                  << perfConfigs.size() << " perfconfigs\n");
-          if (!perfConfigs.empty())
-            return perfConfigs;
-        }
+    const auto &problemMap = getProblemMap();
+    if (auto it = problemMap.find(key); it != problemMap.end()) {
+      if (!problemKey->unsupportedFields.empty()) {
+        llvm::WithColor::warning(llvm::errs())
+            << "per-problem quick tuning does not represent the current "
+               "problem's "
+            << problemKey->unsupportedFields
+            << "; falling back to the set cover. Exhaustively tune this "
+               "problem mode and regenerate the map before reusing "
+               "per-problem results.\n";
+      } else if (it->second.getKeyVersionHash() != problemKey->versionHash) {
+        llvm::WithColor::warning(llvm::errs())
+            << "ignoring per-problem quick-tuning map " << key
+            << " keyed with table lookup key version hash "
+            << it->second.getKeyVersionHash()
+            << "; the current lookup key version hash is "
+            << problemKey->versionHash
+            << ". Regenerate the map with quickTuningGen.py.\n";
+      } else {
+        SmallVector<StringRef> perfConfigs =
+            it->second.lookup(problemKey->hash);
+        LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
+                                << perfConfigs.size() << " perfconfigs\n");
+        if (!perfConfigs.empty())
+          return perfConfigs;
       }
     }
   }
