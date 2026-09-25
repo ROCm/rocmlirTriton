@@ -205,8 +205,8 @@ void RockSetITTReductionLayoutPass::runOnOperation() {
                                  "marked rock.rewrite_itt_layout; skipping\n");
       continue;
     }
-    // Hack: 16 K rows per thread is the only count measured to gain (the rxl
-    // encoder and decoder convolutions); leave the others alone.
+    // 16 K rows per thread is the only case where we measured this would be
+    // profitable. Leave the rest of the kernels untouched.
     if (ttg::getElemsPerThread(srcTy)[kDim] != 16) {
       LLVM_DEBUG(llvm::dbgs() << "rock-set-itt-reduction-layout: threads do "
                                  "not own 16 K rows; skipping\n");
