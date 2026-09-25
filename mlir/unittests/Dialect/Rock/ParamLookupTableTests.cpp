@@ -623,3 +623,116 @@ TEST(LookupTest, ArchitectureFallbackPreservesSplitKPreference) {
   EXPECT_TRUE(noSplitK == get("amdgcn-amd-amdhsa:gfx1201", false));
   EXPECT_FALSE(regular == noSplitK);
 }
+
+// Problem hash of a gfx942 f32 GEMM 128x512x512, one of the problems the
+// shipped Gfx942GemmF32 shard was generated for. rocmlir-gen is the only
+// speller of the key (--emit-quick-tuning-problem-key-hash); the value is
+// pinned in test/rocmlir-gen/quick-tuning-problem-key-hash.mlir's company and
+// exercised end to end by test/rocmlir-gen/quick-tuning-per-problem.mlir.
+static constexpr QuickTuningProblemKeyHash kGfx942GemmF32MappedProblem =
+    8175943205932196350ULL;
+static constexpr QuickTuningTableLookUpKeyVersionHash kGemmKeyVersionHash =
+    6791176183107838810ULL;
+
+static SmallVector<StringRef> lookupGfx942GemmF32(
+    bool supportsSplitK,
+    std::optional<QuickTuningProblemKeyHash> problemKeyHash, MLIRContext &ctx,
+    QuickTuningTableLookUpKeyVersionHash keyVersionHash = kGemmKeyVersionHash) {
+  std::optional<QuickTuningProblemKey> problemKey;
+  if (problemKeyHash)
+    problemKey = QuickTuningProblemKey{*problemKeyHash, keyVersionHash};
+  return ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      supportsSplitK, problemKey);
+}
+
+TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
+  // A mapped problem is served its own ranking instead of the key's set cover.
+  // The two lists are disjoint for this problem, which is the point of the
+  // layer: the per-problem winner is usually a config the set cover never
+  // offered. Regenerating the shards can change the row; keep the assertions
+  // by picking another mapped problem rather than dropping them.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  auto perProblem = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem, ctx);
+
+  EXPECT_FALSE(perProblem.empty());
+  EXPECT_LT(perProblem.size(), setCover.size());
+  for (StringRef config : perProblem)
+    EXPECT_FALSE(llvm::is_contained(setCover, config)) << "for " << config;
+}
+
+TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {
+  // Per-problem lookup has no key fallback of its own: a ranking only holds
+  // for the problem it was measured on, so a hash with no row must come back
+  // with exactly what the hashless lookup returns rather than a neighbour's
+  // ranking.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  testing::internal::CaptureStderr();
+  auto unmapped = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem + 1, ctx);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_FALSE(setCover.empty());
+  EXPECT_TRUE(unmapped == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
+TEST(LookupTest, LookupKeyVersionMismatchWarnsAndUsesSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+
+  testing::internal::CaptureStderr();
+  auto stale = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem, ctx,
+      kGemmKeyVersionHash + 1);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(stale == setCover);
+  EXPECT_NE(warnings.find("table lookup key version hash"), std::string::npos);
+  EXPECT_NE(warnings.find("Regenerate the map"), std::string::npos);
+}
+
+TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, "prefix_offset"};
+
+  testing::internal::CaptureStderr();
+  auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(unsupported == setCover);
+  EXPECT_NE(warnings.find("does not represent"), std::string::npos);
+  EXPECT_NE(warnings.find("prefix_offset"), std::string::npos);
+  EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
+}
+
+TEST(LookupTest, PerProblemDoesNotDependOnSplitKLegality) {
+  // `supportsSplitK` chooses between the two set covers and has no say over
+  // the per-problem rankings, which come back whole either way. Dropping the
+  // members a split-K-illegal caller cannot run is that caller's job, and it
+  // always has something left because select_perfconfigs reserves a
+  // splitKFactor=1 slot in every row. Gating the rankings here instead would
+  // strand every attention shard, attention never being split-K legal.
+  MLIRContext ctx;
+  auto splitK = lookupGfx942GemmF32(/*supportsSplitK=*/true,
+                                    kGfx942GemmF32MappedProblem, ctx);
+  auto noSplitK = lookupGfx942GemmF32(/*supportsSplitK=*/false,
+                                      kGfx942GemmF32MappedProblem, ctx);
+
+  EXPECT_FALSE(splitK.empty());
+  EXPECT_TRUE(splitK == noSplitK);
+  EXPECT_TRUE(llvm::any_of(splitK, [](StringRef config) {
+    return config.contains("splitKFactor=1,");
+  })) << "every shipped row must keep a split-K-free config";
+}

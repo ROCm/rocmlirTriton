@@ -1009,7 +1009,7 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            supportsSplitK, info.quantBlockSize, info.aScaleType,
-           info.bScaleType, info.siblingGemms)) {
+           info.bScaleType, info.siblingGemms, info.problemKey)) {
     // A regular-list fallback is still possible when no no-split-K list exists
     // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && param.getSplitKFactor() > 1)
@@ -1738,6 +1738,482 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
   }
 
   return success();
+}
+
+namespace {
+/// Joins the values identifying a problem into one string while separately
+/// recording the ordered field names. Hashing those names gives generated
+/// maps an automatic schema version that is independent of problem values.
+struct ProblemKeyBuilder {
+  std::string key;
+  llvm::raw_string_ostream os{key};
+  std::string fields;
+  llvm::raw_string_ostream fieldsOS{fields};
+  SmallVector<std::string> unsupportedFields;
+
+  template <typename T>
+  ProblemKeyBuilder &add(StringRef name, const T &value) {
+    if (!key.empty())
+      os << '_';
+    os << value;
+    if (!fields.empty())
+      fieldsOS << '_';
+    fieldsOS << name;
+    return *this;
+  }
+
+  ProblemKeyBuilder &unsupported(StringRef name) {
+    unsupportedFields.push_back(name.str());
+    return *this;
+  }
+
+  QuickTuningProblemKey build() {
+    llvm::sort(unsupportedFields);
+    unsupportedFields.erase(
+        std::unique(unsupportedFields.begin(), unsupportedFields.end()),
+        unsupportedFields.end());
+
+    // Unsupported fields are part of the schema fingerprint, but not the
+    // problem hash: there is deliberately no per-problem ranking to look up
+    // for them. ParamLookupTable diagnoses them and uses the set cover.
+    for (StringRef name : unsupportedFields) {
+      if (!fields.empty())
+        fieldsOS << '_';
+      fieldsOS << "unsupported:" << name;
+    }
+    return {hashQuickTuningProblemKey(os.str()),
+            hashQuickTuningTableLookUpKeyVersion(fieldsOS.str()),
+            llvm::join(unsupportedFields, ", ")};
+  }
+};
+
+static bool isCommonQuickTuningAttribute(StringRef name) {
+  // perf_config is the result of tuning, while the target and machine fields
+  // are already handled by the outer table key or the set-cover policy.
+  return name == "perf_config" || name == "rock.arch" ||
+         name == "rock.num_cu" || name == "rock.num_chiplets";
+}
+
+/// Keep the quick-tuning schema fail-closed. Every inherent attribute must be
+/// explicitly classified, even when absent on this particular operation, so a
+/// newly added ODS field cannot silently reuse an older per-problem ranking.
+/// Likewise, a newly attached discardable attribute is unsupported until it is
+/// either added to the key or explicitly classified here.
+template <typename OpTy>
+static void classifyQuickTuningAttributes(
+    OpTy op, ProblemKeyBuilder &out,
+    std::initializer_list<StringRef> classifiedAttributes) {
+  auto isClassified = [&](StringRef name) {
+    return isCommonQuickTuningAttribute(name) ||
+           llvm::is_contained(classifiedAttributes, name);
+  };
+
+  for (StringRef name : OpTy::getAttributeNames())
+    if (!isClassified(name))
+      out.unsupported((Twine("attribute:") + name).str());
+
+  for (NamedAttribute attr : op->getDiscardableAttrs()) {
+    StringRef name = attr.getName().getValue();
+    if (!isClassified(name))
+      out.unsupported((Twine("attribute:") + name).str());
+  }
+}
+
+static bool isKnownQuickTuningFunctionAttribute(StringRef name) {
+  return name == "rock.kernel" || name == "rock.arch" ||
+         name == "rock.num_cu" || name == "rock.num_chiplets" ||
+         name == "rock.enable_splitk_for_tuning" ||
+         name == "rock.input_fusions" || name == "rock.output_fusions" ||
+         name == "rock.conv_kernel" || name == "rock.block_size" ||
+         name == "rock.grid_size" || name == "rock.cluster_size" ||
+         name == "rock.use_optimize_epilogue" ||
+         name == "rock.use_bf16x3_for_f32" ||
+         name == "rock.prefer_lds_epilogue" || name == "rock.cpu_verifier" ||
+         name == "rock.host_functions" || name == "rock.cpu_fused_conv" ||
+         name == "rock.not_applicable";
+}
+
+static void classifyQuickTuningFunction(Operation *op, ProblemKeyBuilder &out) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  if (!func)
+    return;
+
+  auto rejectNonemptyFusion = [&](StringRef attrName, StringRef fieldName) {
+    auto fusions = func->getAttrOfType<ArrayAttr>(attrName);
+    if (fusions && !fusions.empty())
+      out.unsupported(fieldName);
+  };
+  rejectNonemptyFusion(InputFusionsAttr::getMnemonic(), "input_fusions");
+  rejectNonemptyFusion(OutputFusionsAttr::getMnemonic(), "output_fusions");
+
+  for (NamedAttribute attr : func->getDiscardableAttrs()) {
+    StringRef name = attr.getName().getValue();
+    if (name.starts_with("rock.") && !isKnownQuickTuningFunctionAttribute(name))
+      out.unsupported((Twine("function_attribute:") + name).str());
+  }
+}
+
+static void classifyFusedReduction(Operation *op, ProblemKeyBuilder &out) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  if (func && func.walk([](ReduceOp) { return WalkResult::interrupt(); })
+                  .wasInterrupted())
+    out.unsupported("fused_reduction");
+}
+} // namespace
+
+static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
+                                              ProblemKeyBuilder &out) {
+  KernelType opType = gemmIF.getKernelType();
+  Operation *gemmOp = gemmIF.getOperation();
+
+  if (opType == KernelType::Conv || opType == KernelType::ConvBwdData) {
+    auto convIF = cast<RockConvInterface>(gemmOp);
+    if (auto convOp = dyn_cast<ConvOp>(gemmOp))
+      classifyQuickTuningAttributes(convOp, out,
+                                    {"dilations", "padding", "params",
+                                     "strides", "filter_layout", "input_layout",
+                                     "output_layout"});
+    else if (auto convBwdDataOp = dyn_cast<ConvBwdDataOp>(gemmOp))
+      classifyQuickTuningAttributes(convBwdDataOp, out,
+                                    {"dilations", "padding", "params",
+                                     "strides", "filter_layout", "input_layout",
+                                     "output_layout"});
+    else {
+      out.unsupported(
+          (Twine("operation:") + gemmOp->getName().getStringRef()).str());
+      return success();
+    }
+    classifyQuickTuningFunction(gemmOp, out);
+    classifyFusedReduction(gemmOp, out);
+
+    if (gemmOp->getNumOperands() != 2)
+      out.unsupported("operand_schema");
+    if (gemmOp->getNumResults() != 1)
+      out.unsupported("result_schema");
+    if (gemmOp->getNumRegions() != 0)
+      out.unsupported("region_schema");
+
+    llvm::StringMap<unsigned> fLayoutMap, iLayoutMap, oLayoutMap;
+    SmallString<6> fLayout, iLayout, oLayout;
+    if (failed(extractLayouts(gemmOp, fLayoutMap, iLayoutMap, oLayoutMap,
+                              fLayout, iLayout, oLayout)))
+      return failure();
+
+    ArrayRef<int64_t> inShape = convIF.getConvInput().getType().getShape();
+    ArrayRef<int64_t> filShape = convIF.getConvFilter().getType().getShape();
+    auto padding = extractFromIntegerArrayAttr<int64_t>(convIF.getPadding());
+    auto stride = extractFromIntegerArrayAttr<int64_t>(convIF.getStrides());
+    auto dilation = extractFromIntegerArrayAttr<int64_t>(convIF.getDilations());
+
+    if (gemmIF.getAType() != gemmIF.getBType())
+      out.unsupported("mixed_input_data_types");
+    if (gemmIF.getAType() != gemmIF.getCType())
+      out.unsupported("output_data_type");
+
+    // Existing maps were measured for 2-D, ungrouped convolutions with
+    // symmetric padding. Other forms remain valid compiler inputs, but their
+    // rankings have not been measured and must not alias those maps.
+    if (padding.size() != 4 || stride.size() != 2 || dilation.size() != 2) {
+      out.unsupported("convolution_spatial_rank");
+      return success();
+    }
+    if (inShape[iLayoutMap["gi"]] != 1)
+      out.unsupported("convolution_groups");
+    if (padding[0] != padding[1] || padding[2] != padding[3])
+      out.unsupported("asymmetric_padding");
+
+    out.add("F", opType == KernelType::Conv ? "fwd" : "bwd")
+        .add("f", fLayout)
+        .add("I", iLayout)
+        .add("O", oLayout)
+        .add("n", inShape[iLayoutMap["ni"]])
+        .add("c", inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]])
+        .add("H", inShape[iLayoutMap["0i"]])
+        .add("W", inShape[iLayoutMap["1i"]])
+        .add("k", filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]])
+        .add("y", filShape[fLayoutMap["0"]])
+        .add("x", filShape[fLayoutMap["1"]])
+        .add("l", dilation[0])
+        .add("j", dilation[1])
+        .add("u", stride[0])
+        .add("v", stride[1])
+        .add("p", padding[0])
+        .add("q", padding[2]);
+    return success();
+  }
+
+  if (opType == KernelType::Gemm) {
+    auto rGemmOp = dyn_cast<rock::GemmOp>(gemmOp);
+    if (!rGemmOp) {
+      out.unsupported(
+          (Twine("operation:") + gemmOp->getName().getStringRef()).str());
+      return success();
+    }
+    classifyQuickTuningAttributes(
+        rGemmOp, out,
+        {"aScaleTransposed", "aTransposed", "bScaleTransposed", "bTransposed",
+         "oTransposed", "params", "quantBlockSize", "operandSegmentSizes"});
+    classifyQuickTuningFunction(gemmOp, out);
+    classifyFusedReduction(gemmOp, out);
+
+    if (rGemmOp.getProperties().getOperandSegmentSizes().size() != 4)
+      out.unsupported("operand_schema");
+    if (gemmOp->getNumResults() != 1)
+      out.unsupported("result_schema");
+    if (gemmOp->getNumRegions() != 0)
+      out.unsupported("region_schema");
+
+    if (gemmIF.getAType() != gemmIF.getBType())
+      out.unsupported("mixed_input_data_types");
+    if (gemmIF.getAType() != gemmIF.getCType())
+      out.unsupported("output_data_type");
+    if (rGemmOp.getScaleA() || rGemmOp.getScaleB() ||
+        rGemmOp.getQuantBlockSize() || rGemmOp.getAScaleTransposed() ||
+        rGemmOp.getBScaleTransposed())
+      out.unsupported("block_scaled_gemm");
+
+    GemmSize size = gemmIF.getGemmSize();
+    out.add("transA", rGemmOp.getATransposed())
+        .add("transB", rGemmOp.getBTransposed())
+        .add("transO", rGemmOp.getOTransposed())
+        .add("g", size.g)
+        .add("m", size.m)
+        .add("k", size.k)
+        .add("n", size.n);
+    return success();
+  }
+
+  out.unsupported(
+      (Twine("operation:") + gemmOp->getName().getStringRef()).str());
+  return success();
+}
+
+static LogicalResult
+getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
+                         ProblemKeyBuilder &out) {
+  Operation *op = gemmGemmOp.getOperation();
+  classifyQuickTuningFunction(op, out);
+
+  ArrayRef<int64_t> qShape = cast<ShapedType>(gemmGemmOp.getAType()).getShape();
+  ArrayRef<int64_t> kShape = cast<ShapedType>(gemmGemmOp.getBType()).getShape();
+  ArrayRef<int64_t> vShape = cast<ShapedType>(gemmGemmOp.getCType()).getShape();
+  bool transposedA = gemmGemmOp.getTransposedA();
+  bool transposedB = gemmGemmOp.getTransposedB();
+  bool transposedC = gemmGemmOp.getTransposedC();
+  int64_t seqLenQ = qShape[transposedA ? 2 : 1];
+  int64_t headDimQK = qShape[transposedA ? 1 : 2];
+  int64_t seqLenK = kShape[transposedB ? 1 : 2];
+  int64_t headDimV = vShape[transposedC ? 1 : 2];
+
+  if (auto attnOp = dyn_cast<AttentionOp>(gemmGemmOp.getOperation())) {
+    classifyQuickTuningAttributes(
+        attnOp, out,
+        {"causal", "kTransposed", "numHeadsKV", "numHeadsQ", "oTransposed",
+         "params0", "params1", "preSoftmaxHasSplitKVTransforms", "qTransposed",
+         "slidingWindowLookBack", "softmaxType", "splitKV", "vTransposed",
+         "operandSegmentSizes"});
+
+    if (attnOp.getProperties().getOperandSegmentSizes().size() != 6)
+      out.unsupported("operand_schema");
+    if (op->getNumResults() != 1 + static_cast<unsigned>(!!attnOp.getLse()))
+      out.unsupported("result_schema");
+    if (op->getNumRegions() != 1)
+      out.unsupported("region_schema");
+
+    Type elemTypeQ = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+    Type elemTypeK = cast<ShapedType>(gemmGemmOp.getBType()).getElementType();
+    Type elemTypeV = cast<ShapedType>(gemmGemmOp.getCType()).getElementType();
+    Type elemTypeO = cast<ShapedType>(gemmGemmOp.getOutType()).getElementType();
+    bool hasAttnScale, hasAttnBias, hasTransposedAttnBias;
+    getAttentionScaleBias(attnOp, elemTypeQ.isInteger(8), hasAttnScale,
+                          hasAttnBias, hasTransposedAttnBias);
+
+    if (elemTypeQ != elemTypeK)
+      out.unsupported("mixed_qk_data_types");
+    if (!elemTypeQ.isInteger(8) &&
+        (elemTypeQ != elemTypeV || elemTypeQ != elemTypeO))
+      out.unsupported("value_or_output_data_type");
+    Type effectiveSoftmaxType = attnOp.getSoftmaxType().value_or(elemTypeV);
+    if (!effectiveSoftmaxType.isF32())
+      out.unsupported("softmax_data_type");
+    if (attnOp.getLastValidKVIndex())
+      out.unsupported("last_valid_kv_index");
+    if (attnOp.getPrefixOffset())
+      out.unsupported("prefix_offset");
+
+    unsigned numQuantInputs = elemTypeQ.isInteger(8) ? 2u : 0u;
+    unsigned representedInputs = numQuantInputs +
+                                 static_cast<unsigned>(hasAttnScale) +
+                                 static_cast<unsigned>(hasAttnBias);
+    if (attnOp.getPreSoftmaxElemWiseInputs().size() != representedInputs)
+      out.unsupported("pre_softmax_fusion");
+
+    auto lookBack = attnOp.getSlidingWindowLookBack();
+    out.add("transQ", transposedA)
+        .add("transK", transposedB)
+        .add("transV", transposedC)
+        .add("transO", gemmGemmOp.getTransposedOut())
+        .add("causal", attnOp.getCausal())
+        .add("return_lse", attnOp.getLse())
+        .add("split_kv", attnOp.getSplitKV())
+        .add("sliding_window_look_back",
+             lookBack && *lookBack > 0 ? *lookBack : -1)
+        .add("with-attn-scale", hasAttnScale)
+        .add("with-attn-bias", hasAttnBias)
+        .add("transBias", hasTransposedAttnBias)
+        .add("g", qShape[0] / attnOp.getNumHeadsQ())
+        .add("seq_len_q", seqLenQ)
+        .add("seq_len_k", seqLenK)
+        .add("num_heads_q", attnOp.getNumHeadsQ())
+        .add("num_heads_kv", attnOp.getNumHeadsKV())
+        .add("head_dim_qk", headDimQK)
+        .add("head_dim_v", headDimV);
+    return success();
+  }
+
+  if (auto convGemmOp =
+          dyn_cast<ConvElementwiseGemmOp>(gemmGemmOp.getOperation())) {
+    classifyQuickTuningAttributes(convGemmOp, out,
+                                  {"cTransposed", "dilations", "oTransposed",
+                                   "padding", "params0", "params1", "strides",
+                                   "filter_layout", "input_layout"});
+
+    if (op->getNumOperands() !=
+        3 + static_cast<unsigned>(convGemmOp.getElemwiseInputs().size()))
+      out.unsupported("operand_schema");
+    if (op->getNumResults() != 1)
+      out.unsupported("result_schema");
+    if (op->getNumRegions() != 1)
+      out.unsupported("region_schema");
+
+    llvm::StringMap<unsigned> fLayoutMap, iLayoutMap, oLayoutMap;
+    SmallString<6> fLayout, iLayout, oLayout;
+    if (failed(extractLayouts(gemmGemmOp, fLayoutMap, iLayoutMap, oLayoutMap,
+                              fLayout, iLayout, oLayout, false)))
+      return failure();
+
+    ArrayRef<int64_t> inShape = convGemmOp.getInput().getType().getShape();
+    ArrayRef<int64_t> filShape = convGemmOp.getFilter().getType().getShape();
+    auto padding =
+        extractFromIntegerArrayAttr<int64_t>(convGemmOp.getPadding());
+    auto stride = extractFromIntegerArrayAttr<int64_t>(convGemmOp.getStrides());
+    auto dilation =
+        extractFromIntegerArrayAttr<int64_t>(convGemmOp.getDilations());
+
+    Type elemTypeA = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+    Type elemTypeB = cast<ShapedType>(gemmGemmOp.getBType()).getElementType();
+    Type elemTypeC = cast<ShapedType>(gemmGemmOp.getCType()).getElementType();
+    Type elemTypeO = cast<ShapedType>(gemmGemmOp.getOutType()).getElementType();
+    if (elemTypeA != elemTypeB)
+      out.unsupported("mixed_input_data_types");
+    if (elemTypeA != elemTypeC || elemTypeA != elemTypeO)
+      out.unsupported("value_or_output_data_type");
+    if (!convGemmOp.getElemwiseInputs().empty() ||
+        (!convGemmOp.getPreSecondGemmBody().empty() &&
+         !llvm::hasSingleElement(
+             convGemmOp.getPreSecondGemmBody().front().getOperations())))
+      out.unsupported("inter_gemm_fusion");
+    if (padding.size() != 4 || stride.size() != 2 || dilation.size() != 2) {
+      out.unsupported("convolution_spatial_rank");
+      return success();
+    }
+    if (inShape[iLayoutMap["gi"]] != 1)
+      out.unsupported("convolution_groups");
+    if (padding[0] != padding[1] || padding[2] != padding[3])
+      out.unsupported("asymmetric_padding");
+
+    out.add("f", fLayout)
+        .add("I", iLayout)
+        .add("transC", transposedC)
+        .add("transO", gemmGemmOp.getTransposedOut())
+        .add("n", inShape[iLayoutMap["ni"]])
+        .add("c", inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]])
+        .add("H", inShape[iLayoutMap["0i"]])
+        .add("W", inShape[iLayoutMap["1i"]])
+        .add("k", filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]])
+        .add("y", filShape[fLayoutMap["0"]])
+        .add("x", filShape[fLayoutMap["1"]])
+        .add("l", dilation[0])
+        .add("j", dilation[1])
+        .add("u", stride[0])
+        .add("v", stride[1])
+        .add("p", padding[0])
+        .add("q", padding[2])
+        .add("gemmO", headDimV);
+    return success();
+  }
+
+  auto gemmGemm = dyn_cast<GemmElementwiseGemmOp>(gemmGemmOp.getOperation());
+  if (!gemmGemm) {
+    out.unsupported((Twine("operation:") + op->getName().getStringRef()).str());
+    return success();
+  }
+  classifyQuickTuningAttributes(gemmGemm, out,
+                                {"aTransposed", "bTransposed", "cTransposed",
+                                 "oTransposed", "params0", "params1"});
+  if (op->getNumOperands() !=
+      3 + static_cast<unsigned>(gemmGemm.getElemwiseInputs().size()))
+    out.unsupported("operand_schema");
+  if (op->getNumResults() != 1)
+    out.unsupported("result_schema");
+  if (op->getNumRegions() != 1)
+    out.unsupported("region_schema");
+
+  Type elemTypeA = cast<ShapedType>(gemmGemmOp.getAType()).getElementType();
+  Type elemTypeB = cast<ShapedType>(gemmGemmOp.getBType()).getElementType();
+  Type elemTypeC = cast<ShapedType>(gemmGemmOp.getCType()).getElementType();
+  Type elemTypeO = cast<ShapedType>(gemmGemmOp.getOutType()).getElementType();
+  if (elemTypeA != elemTypeB)
+    out.unsupported("mixed_input_data_types");
+  if (elemTypeA != elemTypeC || elemTypeA != elemTypeO)
+    out.unsupported("value_or_output_data_type");
+  if (!gemmGemm.getElemwiseInputs().empty() ||
+      (!gemmGemm.getPreSecondGemmBody().empty() &&
+       !llvm::hasSingleElement(
+           gemmGemm.getPreSecondGemmBody().front().getOperations())))
+    out.unsupported("inter_gemm_fusion");
+
+  out.add("transA", transposedA)
+      .add("transB", transposedB)
+      .add("transC", transposedC)
+      .add("transO", gemmGemmOp.getTransposedOut())
+      .add("g", qShape[0])
+      .add("m", seqLenQ)
+      .add("k", headDimQK)
+      .add("n", seqLenK)
+      .add("gemmO", headDimV);
+  return success();
+}
+
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmWrapperInterface op) {
+  ProblemKeyBuilder builder;
+  if (failed(getQuickTuningProblemKey(op, builder)))
+    return std::nullopt;
+  return builder.build();
+}
+
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmGemmWrapperInterface op) {
+  ProblemKeyBuilder builder;
+  if (failed(getQuickTuningProblemKey(op, builder)))
+    return std::nullopt;
+  return builder.build();
+}
+
+std::optional<QuickTuningProblemKey> getQuickTuningProblemKey(ModuleOp mod) {
+  std::optional<QuickTuningProblemKey> key;
+  mod->walk([&](RockGemmWrapperInterface op) {
+    key = getQuickTuningProblemKey(op);
+    return WalkResult::interrupt();
+  });
+  if (key)
+    return key;
+  mod->walk([&](RockGemmGemmWrapperInterface op) {
+    key = getQuickTuningProblemKey(op);
+    return WalkResult::interrupt();
+  });
+  return key;
 }
 
 // Suppose to return the structure of the given problem to tune, currently

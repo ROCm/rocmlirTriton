@@ -643,26 +643,28 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0OutShape[2] % splitKV == 0 &&
            "SeqK must be divisible by splitKV");
 
-    int64_t seqK = gemm0OutShape[2];
-    int64_t seqKChunk = seqK / splitKV;
+    int64_t batch = gemm0OutShape[0];
+    int64_t seqKChunk = gemm0OutShape[2] / splitKV;
 
-    // Step 1: Unmerge seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
-    // SeqK/splitKV]
-    rock::BottomUpTMBuilder unmergeSeqK(builder, {"batch", "seqQ", "seqK"},
-                                        gemm0OutShape, loc);
-    unmergeSeqK.unmerge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
-                        {splitKV, seqKChunk});
-    unmergeSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
-    auto unmergeSeqKAttr = unmergeSeqK.get();
+    // Step 1: split seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
+    // SeqK/splitKV]. splitKV is the slow axis of seqK, matching the way
+    // detect-flash-decoding folds the splits into the key sequence.
+    rock::TopDownTMBuilder splitSeqK(builder, {"batch", "seqQ", "seqK"},
+                                     gemm0OutShape, loc);
+    splitSeqK.merge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
+                    {splitKV, seqKChunk});
+    splitSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
+    TransformMapAttr splitSeqKAttr = splitSeqK.get();
 
-    // Step 2: Merge batch+splitKV: [B*H, SeqQ, splitKV, SeqK/splitKV] ->
-    // [B*H*splitKV, SeqQ, SeqK/splitKV]
-    auto merge = rock::BottomUpTMBuilder::above(unmergeSeqK, unmergeSeqKAttr);
-    merge.merge("batch", 0, {"batch", "splitKV"});
-    merge.passThrough({"seqQ", "seqK_chunk"}, {1, 2}, {"seqQ", "seqK_chunk"});
-    auto mergeAttr = merge.get();
+    // Step 2: fold splitKV into the batch: [B*H, SeqQ, splitKV, SeqK/splitKV]
+    // -> [B*H*splitKV, SeqQ, SeqK/splitKV], with splitKV as the fast axis.
+    auto mergeBatch = rock::TopDownTMBuilder::below(splitSeqK, splitSeqKAttr);
+    mergeBatch.unmerge("batch", 0, {"batch", "splitKV"}, {batch, splitKV});
+    mergeBatch.passThrough({"seqQ", "seqK_chunk"}, {1, 2},
+                           {"seqQ", "seqK_chunk"});
+    TransformMapAttr mergeBatchAttr = mergeBatch.get();
 
-    return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
+    return builder.getArrayAttr({splitSeqKAttr, mergeBatchAttr});
   }
 
   std::tuple<Value, Value, Value, Value, Value, Value>
@@ -1495,10 +1497,11 @@ struct GridwiseAttentionRewritePattern
       // Apply splitKV transforms if needed
       // This transforms the GEMM0 output from [B*H, SeqQ, SeqK] to
       // [B*H*splitKV, SeqQ, SeqK/splitKV] to match the preSoftmax inputs.
+      ArrayAttr gemm0OutFusionView = gemm0OutTileViewUnPadded;
       if (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms()) {
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
-        gemm0OutTileViewUnPadded = prependUpperViews(
+        gemm0OutFusionView = prependUpperViews(
             rewriter, gemm0OutTileViewUnPadded, splitKVTransforms);
       }
 
@@ -1506,7 +1509,7 @@ struct GridwiseAttentionRewritePattern
       // be performed on the output of the first gemm.
       auto maybeFirstGemmResult =
           postProcessFirstGemm(rewriter, loc, op, gridCoordsGemm0,
-                               firstGemmResult, gemm0OutTileViewUnPadded);
+                               firstGemmResult, gemm0OutFusionView);
       if (failed(maybeFirstGemmResult))
         return op->emitError("Failed to post process first GEMM output");
       firstGemmResult = maybeFirstGemmResult.value();

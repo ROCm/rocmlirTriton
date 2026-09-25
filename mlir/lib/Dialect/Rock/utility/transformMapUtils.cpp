@@ -292,6 +292,24 @@ using ContiguousMergesMap =
     llvm::DenseMap<std::pair<TransformMapAttr, TransformAttr>,
                    llvm::EquivalenceClasses<uint32_t>>;
 
+// A group may only fuse merge positions that are neighbours in the merge's
+// linearization. The stride of a position is the product of the params below
+// it, so skipping a non-unit position would fuse dimensions that are not
+// actually adjacent and permute the addresses in between. Unit-length
+// positions contribute nothing to that product and may be skipped, which is
+// what makes patterns like Merge{8,1,3} -> Unmerge{8,3} collapsible.
+// `dimPosition` must be sorted; an out-of-order pair would leave the gap scan
+// empty and be reported as adjacent.
+static bool adjacentInMerge(ArrayRef<int64_t> mergeParams,
+                            ArrayRef<size_t> dimPosition) {
+  assert(llvm::is_sorted(dimPosition) && "positions must be sorted");
+  for (size_t k = 1; k < dimPosition.size(); ++k)
+    for (size_t p = dimPosition[k - 1] + 1; p < dimPosition[k]; ++p)
+      if (mergeParams[p] != 1)
+        return false;
+  return true;
+}
+
 static void findCountiguousGroupsUnmerge(
     const ArrayRef<uint32_t> upperDims, const ArrayRef<int64_t> params,
     DimToMergeMap &dimToMerge, ContiguousMergesMap &contiguousGroups) {
@@ -350,7 +368,8 @@ static void findCountiguousGroupsUnmerge(
 
     // Update the result with the current group for the mergePair key
     if (groupCandidate.size() > 1 &&
-        std::is_sorted(dimPosition.begin(), dimPosition.end())) {
+        std::is_sorted(dimPosition.begin(), dimPosition.end()) &&
+        adjacentInMerge(keyI.transform.getParams(), dimPosition)) {
 
       uint32_t fastestDim = groupCandidate.back();
       size_t fastestDimPosInMerge = dimPosition.back();

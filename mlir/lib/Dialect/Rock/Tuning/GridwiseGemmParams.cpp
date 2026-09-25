@@ -52,6 +52,7 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
   info.hasFusedReduction = wRes.wasInterrupted();
+  info.problemKey = getQuickTuningProblemKey(op);
 
   // Block-scaled GEMM metadata: `quantBlockSize` lives on `GemmOp`, scale
   // element types come from the interface. `getScale{A,B}Type` returns the
@@ -228,7 +229,7 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, /*supportsSplitK=*/true,
                           info.quantBlockSize, info.aScaleType, info.bScaleType,
-                          info.siblingGemms));
+                          info.siblingGemms, info.problemKey));
 }
 
 FailureOr<GemmParamsAttr>
@@ -247,10 +248,10 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
     StringRef arch, bool supportsSplitK, std::optional<int64_t> quantBlockSize,
-    Type aScaleType, Type bScaleType,
-    ArrayRef<SiblingGemm> siblingGemms) const {
+    Type aScaleType, Type bScaleType, ArrayRef<SiblingGemm> siblingGemms,
+    std::optional<QuickTuningProblemKey> problemKey) const {
   auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
-      arch, opType, dataTypeA, supportsSplitK);
+      arch, opType, dataTypeA, supportsSplitK, problemKey);
 
   LLVM_DEBUG(
       llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "

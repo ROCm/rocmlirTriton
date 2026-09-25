@@ -341,6 +341,88 @@ func.func @test_nonzero_pad_excludes_member(%arg0: tensor<120xf32>) {
   return
 }
 
+// CHECK-LABEL: "pre-split-mark-test_permuted_merge_not_adjacent"
+"pre-split-mark-test_permuted_merge_not_adjacent"() : () -> ()
+// -----
+
+// A permuting PassThrough moves c past q, so the memory order is b, d, q, c, a
+// and b and d end up adjacent there. They are still not neighbours inside the
+// Merge: c sits between them with length 2, and a merge position's stride is
+// the product of the params below it, so b weighs 4 and d weighs 1 while c
+// weighs 2 in between. Collapsing the pair would renumber every address in
+// between, so nothing may collapse and the marker keeps Merge{2, 2, 2}.
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{2, 2, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [8, 2, 2] -> [2, 2, 2, 2, 2]>
+// CHECK: func @test_permuted_merge_not_adjacent
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<32xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by #{{.+}} : tensor<32xf32> to tensor<2x2x2x2x2xf32>
+// CHECK: [[T:%.+]] = rock.transform [[U]] by #{{.+}} : tensor<2x2x2x2x2xf32> to tensor<2x2x2x2x2xf32>
+// CHECK: [[M:%.+]] = rock.transform [[T]] by [[MERGE]] : tensor<2x2x2x2x2xf32> to tensor<8x2x2xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 2 + d1) * 2 + d2) * 2 + d3) * 2 + d4)>
+  by [<Unmerge{2, 2, 2, 2, 2} ["b", "d", "q", "c", "a"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>]
+  bounds = [2, 2, 2, 2, 2] -> [32]>
+#transpose = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d3, d1, d4)>
+  by [<PassThrough ["b", "c", "d", "q", "a"] at [0, 1, 2, 3, 4]
+        -> ["b", "c", "d", "q", "a"] at [0, 3, 1, 2, 4]>]
+  bounds = [2, 2, 2, 2, 2] -> [2, 2, 2, 2, 2]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1, d2) -> (d0 floordiv 4, (d0 mod 4) floordiv 2, d0 mod 2, d1, d2)>
+  by [<Merge{2, 2, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>,
+    <PassThrough ["q"] at [1] -> ["q"] at [3]>,
+    <PassThrough ["a"] at [2] -> ["a"] at [4]>]
+  bounds = [8, 2, 2] -> [2, 2, 2, 2, 2]>
+
+func.func @test_permuted_merge_not_adjacent(%arg0: tensor<32xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<32xf32> to tensor<2x2x2x2x2xf32>
+  %1 = rock.transform %0 by #transpose : tensor<2x2x2x2x2xf32> to tensor<2x2x2x2x2xf32>
+  %2 = rock.transform %1 by #merge : tensor<2x2x2x2x2xf32> to tensor<8x2x2xf32>
+  "collapse_merges"(%2) : (tensor<8x2x2xf32>) -> ()
+  return
+}
+
+// CHECK-LABEL: "pre-split-mark-test_permuted_merge_unit_gap_collapses"
+"pre-split-mark-test_permuted_merge_unit_gap_collapses"() : () -> ()
+// -----
+
+// Same permutation as above, except the member left between b and d is
+// unit-length. A size-1 position contributes nothing to the stride product, so
+// b and d really are neighbours and the run collapses to Merge{1, 1, 4}, with
+// the unit c folded in and the Unmerge widened to match.
+// CHECK: [[FLAT:#.+]] = #rock.transform_map<{{.*}}Unmerge{1, 4, 2, 1, 2} ["b", "d", "q", "c", "a"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]{{.*}}bounds = [1, 4, 2, 1, 2] -> [16]>
+// CHECK: [[TRANS:#.+]] = #rock.transform_map<{{.*}}PassThrough ["b", "c", "d", "q", "a"] at [0, 1, 2, 3, 4] -> ["b", "c", "d", "q", "a"] at [0, 3, 1, 2, 4]{{.*}}bounds = [1, 1, 4, 2, 2] -> [1, 4, 2, 1, 2]>
+// CHECK: [[MERGE:#.+]] = #rock.transform_map<{{.*}}Merge{1, 1, 4} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]{{.*}}bounds = [4, 2, 2] -> [1, 1, 4, 2, 2]>
+// CHECK: func @test_permuted_merge_unit_gap_collapses
+// CHECK-SAME: ([[ARG0:%.+]]: tensor<16xf32>)
+// CHECK: [[U:%.+]] = rock.transform [[ARG0]] by [[FLAT]] : tensor<16xf32> to tensor<1x4x2x1x2xf32>
+// CHECK: [[T:%.+]] = rock.transform [[U]] by [[TRANS]] : tensor<1x4x2x1x2xf32> to tensor<1x1x4x2x2xf32>
+// CHECK: [[M:%.+]] = rock.transform [[T]] by [[MERGE]] : tensor<1x1x4x2x2xf32> to tensor<4x2x2xf32>
+// CHECK: "collapse_merges"([[M]])
+#flatten = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3, d4) -> ((((d0 * 2 + d1) * 2 + d2) * 1 + d3) * 2 + d4)>
+  by [<Unmerge{2, 2, 2, 1, 2} ["b", "d", "q", "c", "a"] at [0, 1, 2, 3, 4] -> ["raw"] at [0]>]
+  bounds = [2, 2, 2, 1, 2] -> [16]>
+#transpose = #rock.transform_map<
+  affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d3, d1, d4)>
+  by [<PassThrough ["b", "c", "d", "q", "a"] at [0, 1, 2, 3, 4]
+        -> ["b", "c", "d", "q", "a"] at [0, 3, 1, 2, 4]>]
+  bounds = [2, 1, 2, 2, 2] -> [2, 2, 2, 1, 2]>
+#merge = #rock.transform_map<
+  affine_map<(d0, d1, d2) -> (d0 floordiv 2, 0, d0 mod 2, d1, d2)>
+  by [<Merge{2, 1, 2} ["1"] at [0] -> ["b", "c", "d"] at [0, 1, 2]>,
+    <PassThrough ["q"] at [1] -> ["q"] at [3]>,
+    <PassThrough ["a"] at [2] -> ["a"] at [4]>]
+  bounds = [4, 2, 2] -> [2, 1, 2, 2, 2]>
+
+func.func @test_permuted_merge_unit_gap_collapses(%arg0: tensor<16xf32>) {
+  %0 = rock.transform %arg0 by #flatten : tensor<16xf32> to tensor<2x2x2x1x2xf32>
+  %1 = rock.transform %0 by #transpose : tensor<2x2x2x1x2xf32> to tensor<2x1x2x2x2xf32>
+  %2 = rock.transform %1 by #merge : tensor<2x1x2x2x2xf32> to tensor<4x2x2xf32>
+  "collapse_merges"(%2) : (tensor<4x2x2xf32>) -> ()
+  return
+}
+
 // CHECK-LABEL: "pre-split-mark-no_test_yet"
 "pre-split-mark-no_test_yet"() : () -> ()
 // -----

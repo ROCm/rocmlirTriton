@@ -172,6 +172,13 @@ static Value collapseGroupDim(PatternRewriter &rw, Location loc,
                                          reassociation);
 }
 
+// TOSA conv2d is NHWK; conv3d is N012K. Folded transposes set output_layout.
+static StringRef convOutputLayoutOrDefault(Operation *op, int64_t rank) {
+  if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
+    return attr.getValue();
+  return rank > 4 ? StringRef("n012k") : StringRef("nhwk");
+}
+
 static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
                              Value filter, RankedTensorType outputType,
                              DenseI64ArrayAttr pad, DenseI64ArrayAttr stride,
@@ -191,12 +198,7 @@ static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
     res.inputLayout = "n012c";
 
   if (outputType) {
-    res.outputLayout = "nhwk";
-    if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
-      res.outputLayout = attr.getValue();
-    else if (outputType.getRank() > 4)
-      res.outputLayout = "n012k";
-
+    res.outputLayout = convOutputLayoutOrDefault(op, outputType.getRank());
     // Insert 'g' dimension into the layout and compute the expanded shape,
     // mirroring what expandTensor does but without creating IR ops.
     auto shape = outputType.getShape();
@@ -598,25 +600,45 @@ static void addZeroInitPrefillAttribute(tosa::CustomOp op,
   }
 }
 
+// TOSA conv2d is NHWK, so a 1-D bias of length K broadcasts as [1,1,1,K].
+// Transpose folding may set StringAttr output_layout (NHWC to NCHW becomes
+// NKHW) and update the conv result type, but the bias is still rank-1. Report
+// that 'k' axis so the add matches the folded result. A layout written by
+// folding is a permutation of nhwk, so a missing or out-of-range 'k' is a
+// malformed attribute rather than a case to fall back on. Without the
+// attribute the op is still plain TOSA, where K is last (nhwk / n012k).
+static FailureOr<int64_t> channelDimFromOutputLayout(Operation *op,
+                                                     int64_t rank) {
+  auto attr = op->getAttrOfType<StringAttr>("output_layout");
+  if (!attr)
+    return rank - 1;
+  size_t k = attr.getValue().find('k');
+  if (k == StringRef::npos || static_cast<int64_t>(k) >= rank)
+    return failure();
+  return static_cast<int64_t>(k);
+}
+
 static FailureOr<tosa::AddOp>
 replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
-                            Location loc, Type resTy, Value bias, Value input,
+                            Location loc, Operation *op, Type resTy, Value bias,
                             Value result) {
-  // non-zero bias, replace with tosa.add w/ broadcast
   auto biasType = cast<ShapedType>(bias.getType());
-  if (!biasType.hasStaticShape())
+  auto resultType = dyn_cast<RankedTensorType>(resTy);
+  if (!biasType.hasStaticShape() || biasType.getRank() != 1 || !resultType ||
+      resultType.getRank() < 1)
     return failure();
 
-  int64_t nDims = cast<ShapedType>(input.getType()).getRank();
-  SmallVector<int64_t> biasShape;
-  for (int i = 0; i < nDims - 1; i++)
-    biasShape.push_back(1);
-  biasShape.push_back(biasType.getShape()[0]);
+  int64_t nDims = resultType.getRank();
+  FailureOr<int64_t> kDim = channelDimFromOutputLayout(op, nDims);
+  if (failed(kDim))
+    return failure();
+
+  SmallVector<int64_t> biasShape(nDims, 1);
+  biasShape[*kDim] = biasType.getShape()[0];
   auto newType = RankedTensorType::get(biasShape, biasType.getElementType());
 
-  // [[0, 1, 2, 3]]
   ReassociationExprs exprs;
-  for (int i = 0; i < nDims; i++)
+  for (int64_t i = 0; i < nDims; ++i)
     exprs.push_back(getAffineDimExpr(i, context));
   SmallVector<ReassociationExprs, 1> reassociations;
   reassociations.push_back(exprs);
@@ -675,7 +697,7 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(), bias, input, result);
+          context, rw, loc, op.getOperation(), op.getType(), bias, result);
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -745,7 +767,7 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(0), bias, input, result);
+          context, rw, loc, op.getOperation(), op.getType(0), bias, result);
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -1663,9 +1685,24 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     auto shape = shapedType.getShape();
     assert(nonOneDimFromEnd < shape.size());
-    size_t couldBeDiffOne = shape.size() - nonOneDimFromEnd - 1;
+    size_t rangeDim = shape.size() - nonOneDimFromEnd - 1;
+
+    // For flash decoding with splitKV, the constant range tensor may have
+    // an additional non-1 dimension at index 1 or 2 (where heads or splitKV
+    // typically appear in attention layouts). We allow at most one such
+    // additional dimension.
+    bool foundExtraNonOneDim = false;
     for (auto [i, dim] : llvm::enumerate(shape)) {
-      if (i != couldBeDiffOne && dim != 1) {
+      if (dim != 1) {
+        // The range dimension is always allowed to be non-1
+        if (i == rangeDim)
+          continue;
+        // Allow one additional non-1 dimension at index 1 or 2
+        if (!foundExtraNonOneDim && (i == 1 || i == 2)) {
+          foundExtraNonOneDim = true;
+          continue;
+        }
+        // Any other non-1 dimension is not allowed
         return failure();
       }
     }
@@ -2824,38 +2861,57 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     auto collapse = cast<tensor::CollapseShapeOp>(matrixQ.getDefiningOp());
     auto reassocIndices = collapse.getReassociationIndices();
 
-    // Check if the first reassociation merges two dimensions [0, 1]
-    if (reassocIndices.empty() || reassocIndices[0].size() != 2)
+    // Check if the first reassociation merges two or three dimensions
+    // 2D case: [batch, numHeads] for the 4D attention layout
+    // 3D case: [batch, numHeads, splitKV] for the 5D flash-decoding layout
+    if (reassocIndices.empty() ||
+        (reassocIndices[0].size() != 2 && reassocIndices[0].size() != 3))
       return failure();
 
     // Get the original shape before collapse
     auto srcShape = collapse.getSrcType().getShape();
+    size_t numCollapsedDims = reassocIndices[0].size();
 
-    if (srcShape.size() < 2)
+    if (srcShape.size() < numCollapsedDims)
       return failure();
 
     int64_t batch = srcShape[0];
-    int64_t numHeads = srcShape[1];
     if (blockArgShape[0] != 1 && blockArgShape[0] != batch)
       return failure();
 
     auto loc = blockArg.getLoc();
     Type elemTy = blockArgType.getElementType();
+
+    // Pad the block argument with unit dimensions up to the collapsed rank so
+    // it broadcasts against the heads, and against splitKV when present. The
+    // trailing new dimensions all hang off the last existing one.
     Value expanded = blockArg;
-    if (blockArgShape.size() == 1) {
-      auto expandedType = RankedTensorType::get({blockArgShape[0], 1}, elemTy);
-      SmallVector<ReassociationIndices, 1> reassoc{{0, 1}};
+    size_t blockArgRank = blockArgShape.size();
+    if (blockArgRank < numCollapsedDims) {
+      SmallVector<int64_t> expandedShape(blockArgShape);
+      expandedShape.append(numCollapsedDims - blockArgRank, 1);
+
+      SmallVector<ReassociationIndices, 2> reassoc;
+      for (size_t i = 0; i + 1 < blockArgRank; ++i)
+        reassoc.push_back({static_cast<int64_t>(i)});
+      ReassociationIndices lastGroup;
+      for (size_t i = blockArgRank - 1; i < numCollapsedDims; ++i)
+        lastGroup.push_back(static_cast<int64_t>(i));
+      reassoc.push_back(lastGroup);
+
+      auto expandedType = RankedTensorType::get(expandedShape, elemTy);
       expanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
                                                blockArg, reassoc);
     }
 
-    // Create a tosa.const that is all ones in our desired shape of
-    // batch x numHeads
-    auto broadcastTy = RankedTensorType::get({batch, numHeads}, elemTy);
+    // Create a tosa.const that is all ones in our desired broadcast shape of
+    // batch x numHeads (x splitKV)
+    auto broadcastTy =
+        RankedTensorType::get(srcShape.take_front(numCollapsedDims), elemTy);
     auto oneElems = cast<ElementsAttr>(rewriter.getOneAttr(broadcastTy));
     auto constOp = tosa::ConstOp::create(rewriter, loc, broadcastTy, oneElems);
 
-    // Create a tosa.mul (broadcast) to our desired batch and numHeads values.
+    // Create a tosa.mul (broadcast) to our desired shape.
     auto mul =
         rock::tosa::getMulOp(rewriter, loc, expanded, constOp, broadcastTy);
     return mul.getOutput();
@@ -2873,8 +2929,18 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // expected to reshape to three dimensions (input to tosa.matmul)
     if (reassociationIdx.size() != 3)
       return failure();
-    size_t expectedGroupSize = isQ ? 2 : 3;
-    if (reassociationIdx[0].size() != expectedGroupSize ||
+
+    // For Q:
+    //   - 4D case (no splitKV): batch x num_heads x D x K -> 2-dim collapse
+    //   - 5D case (with splitKV): batch x num_heads x splitKV x D x K -> 3-dim
+    // For K/V:
+    //   - 5D case (no splitKV): batch x num_heads x repeat x D x K -> 3-dim
+    //   - 6D case (with splitKV): batch x num_heads x repeat x splitKV x D x K
+    //     -> 4-dim
+    size_t minGroupSize = isQ ? 2 : 3;
+    size_t maxGroupSize = isQ ? 3 : 4; // Allow extra dim for splitKV
+    size_t groupSize = reassociationIdx[0].size();
+    if (groupSize < minGroupSize || groupSize > maxGroupSize ||
         reassociationIdx[1].size() != 1 || reassociationIdx[2].size() != 1)
       return failure();
 
@@ -2890,9 +2956,15 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
     auto reshapeInputShape =
         cast<ShapedType>(collapse.getSrc().getType()).getShape();
-    // we expect the input to be batch x num_heads x D x K (or K x D)
-    size_t expectedSize = isQ ? 4 : 5;
-    if (reshapeInputShape.size() != expectedSize)
+    // we expect the input to be:
+    //   Q:   batch x num_heads x D x K (4D), or
+    //        batch x num_heads x splitKV x D x K (5D)
+    //   K/V: batch x num_heads x repeat x D x K (5D), or
+    //        batch x num_heads x repeat x splitKV x D x K (6D)
+    size_t minSize = isQ ? 4 : 5;
+    size_t maxSize = isQ ? 5 : 6; // Allow extra dim for splitKV
+    if (reshapeInputShape.size() < minSize ||
+        reshapeInputShape.size() > maxSize)
       return failure();
 
     int64_t batch = reshapeInputShape[0];
@@ -2911,7 +2983,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       return failure();
 
     // we should be doing batch x num_heads x 1 x D x K -> batch x num_heads x
-    // REPEAT x D x K
+    // REPEAT x D x K (5D case without splitKV)
+    // OR batch x num_heads x 1 x splitKV x D x K -> batch x num_heads x
+    // REPEAT x splitKV x D x K (6D case with splitKV)
     Value nonOne = maybeNonOne.value();
     auto shapeBeforeBroadcast = cast<ShapedType>(nonOne.getType()).getShape();
     auto shapeAfterBroadcast =
@@ -2921,11 +2995,11 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     if (shapeBeforeBroadcast.size() != shapeAfterBroadcast.size())
       return failure();
 
-    // we expect five dimensions
-    if (shapeBeforeBroadcast.size() != 5)
+    // we expect five or six dimensions (with splitKV)
+    if (shapeBeforeBroadcast.size() != 5 && shapeBeforeBroadcast.size() != 6)
       return failure();
 
-    // dimension we are broadcasting
+    // dimension we are broadcasting (always at index 2 for repeat)
     if (shapeBeforeBroadcast[2] != 1 ||
         shapeAfterBroadcast[2] != expectedRepeat)
       return failure();
@@ -3285,8 +3359,14 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
           val = maybeNew.value();
       }
       // Reshape {batch, numHeads} -> {batch * numHeads}
-      if (cast<ShapedType>(val.getType()).getRank() == 2) {
+      int64_t rank = cast<ShapedType>(val.getType()).getRank();
+      if (rank == 2) {
         SmallVector<ReassociationIndices> reassocIndices = {{0, 1}};
+        val = tensor::CollapseShapeOp::create(rewriter, op.getLoc(), val,
+                                              reassocIndices);
+      } else if (rank == 3) {
+        // We will only have rank == 3 when we have flash decoding.
+        SmallVector<ReassociationIndices> reassocIndices = {{0, 1, 2}};
         val = tensor::CollapseShapeOp::create(rewriter, op.getLoc(), val,
                                               reassocIndices);
       }
