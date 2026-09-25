@@ -616,7 +616,7 @@ replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
                             StringRef outputLayout) {
   auto biasType = cast<ShapedType>(bias.getType());
   auto resultType = dyn_cast<RankedTensorType>(resTy);
-  if (!biasType.hasStaticShape() || !resultType || !resultType.hasStaticShape())
+  if (!biasType.hasStaticShape() || !resultType)
     return failure();
 
   int64_t nDims = resultType.getRank();
