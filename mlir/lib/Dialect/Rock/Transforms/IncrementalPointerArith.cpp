@@ -531,6 +531,8 @@ static bool hasIvTraversedNonPow2Merge(const LoopPtrInfo &info) {
     diff[p] = 1;
   for (TransformMapAttr map : info.transforms) {
     for (TransformAttr t : map.getOps()) {
+      // diff is 0 on every coordinate that the IV does not affect, so this
+      // check skips the Merges of other dims (e.g. gemmN's).
       if (t.getType() != TransformType::Merge ||
           diff.lookup(t.getUpperDims()[0]) == 0)
         continue;
