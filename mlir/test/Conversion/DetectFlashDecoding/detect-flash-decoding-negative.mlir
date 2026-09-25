@@ -83,5 +83,28 @@ module {
     %flat_lse = rock.transform %lseOut by <affine_map<(d0) -> (d0 floordiv 256, d0 mod 256)> by [<Merge{12, 256} ["flat"] at [0] -> ["b", "m"] at [0, 1]>] bounds = [3072] -> [12, 256]> : tensor<12x256xf32> to tensor<3072xf32>
     return %flat_result, %flat_lse : tensor<786432xf16>, tensor<3072xf32>
   }
+
+  // Test 5: Q and V agree on splitKV = 2 but K's batch Merge reports
+  // splitKV = 4, so the detections conflict
+  // CHECK-LABEL: @conflicting_splitkv
+  func.func @conflicting_splitkv(%arg0: tensor<8192xf16>, %arg1: tensor<16384xf16>, %arg2: tensor<16384xf16>) -> (tensor<8x64x32xf16>, tensor<8x64xf32>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942", rock.kernel = "mixr"} {
+    %q0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> ((d0 * 64 + d2) * 32 + d3)> by [<Unmerge{4, 64, 32} ["exp0", "exp2", "exp3"] at [0, 2, 3] -> ["dim0"] at [0]>, <AddDim{1} ["unit1"] at [1] -> [] at []>] bounds = [4, 1, 64, 32] -> [8192]> : tensor<8192xf16> to tensor<4x1x64x32xf16>
+    %q1 = rock.transform %q0 by <affine_map<(d0, d1, d2, d3) -> (d0, 0, d2, d3)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [2]>, <PassThrough ["dim3"] at [3] -> ["dim3"] at [3]>] bounds = [4, 2, 64, 32] -> [4, 1, 64, 32]> : tensor<4x1x64x32xf16> to tensor<4x2x64x32xf16>
+    %q = rock.transform %q1 by <affine_map<(d0, d1, d2) -> (d0 floordiv 2, d0 mod 2, d1, d2)> by [<Merge{4, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [8, 64, 32] -> [4, 2, 64, 32]> : tensor<4x2x64x32xf16> to tensor<8x64x32xf16>
+    %k0 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 4 + d1) * 32 + d2) * 64 + d3)> by [<Unmerge{2, 4, 32, 64} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [2, 4, 32, 64] -> [16384]> : tensor<16384xf16> to tensor<2x4x32x64xf16>
+    %k = rock.transform %k0 by <affine_map<(d0, d1, d2) -> (d0 floordiv 4, d0 mod 4, d1, d2)> by [<Merge{2, 4} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [8, 32, 64] -> [2, 4, 32, 64]> : tensor<2x4x32x64xf16> to tensor<8x32x64xf16>
+    %v0 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 2 + d1) * 64 + d2) * 32 + d3)> by [<Unmerge{4, 2, 64, 32} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [4, 2, 64, 32] -> [16384]> : tensor<16384xf16> to tensor<4x2x64x32xf16>
+    %v = rock.transform %v0 by <affine_map<(d0, d1, d2) -> (d0 floordiv 2, d0 mod 2, d1, d2)> by [<Merge{4, 2} ["dim0"] at [0] -> ["col0", "col1"] at [0, 1]>, <PassThrough ["dim1"] at [1] -> ["dim1"] at [2]>, <PassThrough ["dim2"] at [2] -> ["dim2"] at [3]>] bounds = [8, 64, 32] -> [4, 2, 64, 32]> : tensor<4x2x64x32xf16> to tensor<8x64x32xf16>
+
+    // CHECK: rock.attention
+    // CHECK-NEXT: qk = %{{.*}} * %{{.*}} : tensor<8x64x32xf16>, tensor<8x32x64xf16>
+    // CHECK: splitKV = 1
+
+    %result, %lseOut = rock.attention{
+     qk = %q * %k : tensor<8x64x32xf16>, tensor<8x32x64xf16>
+     softmax(qk) * %v : tensor<8x64x32xf16>
+    } {numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, softmaxType = f32, splitKV = 1 : i32} -> tensor<8x64x32xf16>, tensor<8x64xf32>
+    return %result, %lseOut : tensor<8x64x32xf16>, tensor<8x64xf32>
+  }
 }
 

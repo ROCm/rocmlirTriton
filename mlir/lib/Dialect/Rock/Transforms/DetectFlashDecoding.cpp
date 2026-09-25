@@ -376,10 +376,20 @@ struct DetectFlashDecodingPattern : public OpRewritePattern<AttentionOp> {
       return failure();
     }
 
-    // Require one other tensor to agree on the splitKV value from Q for
-    // reliable detection. K and V are occasionally optimized away by upstream
-    // canonicalization passes which is why we don't require all three.
-    if (splitKVFromK != splitKVFromQ && splitKVFromV != splitKVFromQ) {
+    // K and V report splitKV = 1 when upstream canonicalization has folded
+    // away their splitKV transforms, so a 1 carries no information. Any other
+    // value is a positive detection and has to agree with Q.
+    for (int64_t splitKV : {splitKVFromK, splitKVFromV}) {
+      if (splitKV != 1 && splitKV != splitKVFromQ) {
+        LLVM_DEBUG(llvm::dbgs() << "K or V disagrees with Q on splitKV, no "
+                                   "flash decoding detected\n");
+        return failure();
+      }
+    }
+
+    // Require at least one of K and V to confirm Q's value for reliable
+    // detection.
+    if (splitKVFromK == 1 && splitKVFromV == 1) {
       LLVM_DEBUG(
           llvm::dbgs()
           << "Insufficient agreement on splitKV, no flash decoding detected\n");
