@@ -29,6 +29,10 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
   if (auto mayBePerfConfig =
           dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
     perfConfig = mayBePerfConfig.getValue();
+  // Skip the list when it would go unused; see
+  // PopulateParams::obtainTuningParameters.
+  if (!perfConfig.empty())
+    return materializeTuningParams<GemmGemmParamsAttr>(b, perfConfig, {});
   return materializeTuningParams<GemmGemmParamsAttr>(
       b, perfConfig, getTuningParameters(b, op, /*supportsSplitK=*/true));
 }
