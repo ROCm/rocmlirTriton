@@ -33,12 +33,16 @@ extern "C" {
 // Version 6: Adds mlirMIGraphXLDSUsageFitsArch() to check whether the
 // estimated LDS usage of a GEMM+GEMM/attention problem fits within the target
 // arch's shared-memory capacity.
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 6
+// Version 7: Adds maxLiveValuesPerBlock to MlirMIGraphXBackendOptions. Tuning
+// callers can opt into an LLVM compile-time guard while production compiles
+// leave it disabled.
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 7
 
 typedef struct MlirMIGraphXBackendOptions {
   const char *arch;
   const char *perfConfig;
   int optLevel; // optimization level for LLVM backend (0, 1, 2 or 3)
+  unsigned maxLiveValuesPerBlock; // tuning-only limit; 0 disables the guard
 } MlirMIGraphXBackendOptions;
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(MIGraphX, migraphx);

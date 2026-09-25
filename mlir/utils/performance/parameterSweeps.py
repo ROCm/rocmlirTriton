@@ -34,6 +34,10 @@ from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
 import amd_arch_db
 
+# Keep this tuning-only policy in sync with the default of
+# rocmlir-tuning-driver's --max-live-values-per-block option.
+MAX_LIVE_VALUES_PER_BLOCK = 1500
+
 
 @dataclass(frozen=True)
 class Options:
@@ -272,11 +276,10 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
 
     # rocmlir-driver classifies its failures via the `rock.not_applicable`
     # marker on the module: exit code 2 means the lowering pipeline cleanly
-    # rejected the (kernel x perf-config x hw) combination as structurally
-    # inapplicable (e.g. LDS-too-big in ResolveKernelLaunchParams) and exit
-    # code 1 (or any other non-zero) means a real lowering bug. We mirror
-    # that classification below: 2 -> NOT_APPLICABLE, anything else
-    # non-zero -> FAIL.
+    # rejected the (kernel x perf-config x hw) combination under a structural
+    # check or enabled tuning safety policy, and exit code 1 (or any other
+    # non-zero) means a real lowering bug. We mirror that classification below:
+    # 2 -> NOT_APPLICABLE, anything else non-zero -> FAIL.
     timeout = options.test_timeout_sec
     active: List[asyncio.subprocess.Process] = []
 
@@ -346,12 +349,14 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
         # Pipe is created here (right before its only use) so early-return paths
         # above don't have to remember to close it.
         runner_from_lowering, lowering_to_runner = os.pipe()
-        lowering = await asyncio.create_subprocess_exec(paths.mlir_paths.rocmlir_driver_path,
-                                                        '-c',
-                                                        '-',
-                                                        stdin=asyncio.subprocess.PIPE,
-                                                        stdout=lowering_to_runner,
-                                                        stderr=asyncio.subprocess.PIPE)
+        lowering = await asyncio.create_subprocess_exec(
+            paths.mlir_paths.rocmlir_driver_path,
+            '-c',
+            f'--max-live-values-per-block={MAX_LIVE_VALUES_PER_BLOCK}',
+            '-',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=lowering_to_runner,
+            stderr=asyncio.subprocess.PIPE)
         os.close(lowering_to_runner)
         active.append(lowering)
 

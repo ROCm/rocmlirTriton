@@ -786,6 +786,7 @@ void rock::buildBackendPipeline(OpPassManager &pm,
     hsacoOpts.allowFlushDenorm = options.allowFlushDenorm;
     hsacoOpts.llvmFnAttrs = options.llvmFnAttrs;
     hsacoOpts.useExpertScheduling = options.useExpertScheduling;
+    hsacoOpts.maxLiveValuesPerBlock = options.maxLiveValuesPerBlock;
     pm.addPass(rock::createTritonToHsacoPass(hsacoOpts));
   }
 

@@ -393,6 +393,7 @@ static bool parseBackendOptions(MlirPassManager pm,
   }
 
   applyDeviceNameToOptions(devName, opts.optLevel, tritonOpts, backendOpts);
+  backendOpts.maxLiveValuesPerBlock = opts.maxLiveValuesPerBlock;
 
   llvm::StringRef configStr(opts.perfConfig);
   if (configStr.empty()) {

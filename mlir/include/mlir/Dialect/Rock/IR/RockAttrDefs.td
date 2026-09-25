@@ -749,12 +749,13 @@ def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{
     Marker attribute set on a module by a rock pass when it determines that
-    the current (kernel x perf-config x hardware) combination cannot be
-    compiled for a structural reason (e.g. required LDS exceeds the arch
-    limit, an unsupported hardware feature is needed). The pass should also
-    call `signalPassFailure()` so the pipeline halts; consumers (tuning
-    driver) inspect this attribute on PM failure to distinguish a
-    "not-applicable" config from a real compilation bug.
+    the current (kernel x perf-config x hardware) combination should be
+    deliberately refused. This includes structural reasons (e.g. required LDS
+    exceeds the arch limit or an unsupported hardware feature is needed) and
+    explicitly enabled tuning safety policies. The pass should also call
+    `signalPassFailure()` so the pipeline halts; consumers inspect this
+    attribute on PM failure to distinguish a "not-applicable" config from a
+    real compilation bug.
   }];
 }
 

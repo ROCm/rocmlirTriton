@@ -372,7 +372,7 @@ static bool constructAndTraverseIr(MlirContext ctx,
   }
 
   MlirMIGraphXBackendOptions backendOpts = {options.targetArch.c_str(),
-                                            streamStr.c_str(), 3};
+                                            streamStr.c_str(), 3, 0};
 
   if (isFusible) {
     auto pm2 = CRAIIWrapper<MlirPassManager>(mlirPassManagerCreate(ctx));

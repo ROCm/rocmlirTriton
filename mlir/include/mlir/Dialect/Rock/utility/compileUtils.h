@@ -23,11 +23,12 @@ namespace mlir {
 namespace rock {
 
 /// Process exit code signalling that a (kernel x perf-config x hardware)
-/// combination is structurally inapplicable rather than a real lowering bug.
-/// rocmlir-driver exits with this code (and sets the `rock.not_applicable`
-/// marker); callers such as rocmlir-tuning-driver and parameterSweeps.py key on
-/// it to distinguish "config refused" from "compilation failed". Must be
-/// non-zero and distinct from EXIT_FAILURE.
+/// combination was deliberately refused rather than hitting a real lowering
+/// bug. This covers structural incompatibility and opt-in tuning safety
+/// policies. rocmlir-driver exits with this code when `rock.not_applicable` is
+/// set; callers such as rocmlir-tuning-driver and parameterSweeps.py key on it
+/// to distinguish "config refused" from "compilation failed". Must be non-zero
+/// and distinct from EXIT_FAILURE.
 constexpr int kExitNotApplicable = 2;
 
 /// Process exit code signalling that a perf-config's GPU run exceeded the
@@ -89,14 +90,16 @@ LogicalResult fillCompilationConfigs(MLIRContext *ctx, StringRef perfConfig,
                                      rock::TritonOptions &tritonOpts,
                                      rock::BackendOptions &backendOpts);
 
-/// Estimate the peak number of LLVM SSA values simultaneously live in `block`
-/// in program order. Each value counts once regardless of type width. Values
-/// defined outside the block start live at entry, and loop-carried values fed
-/// into a self-PHI stay live through the block terminator.
+/// Estimate the peak number of LLVM SSA values locally live in `block` in
+/// program order. Each value counts once regardless of type width. Non-PHI
+/// values defined outside the block start live at entry. PHI operands are edge
+/// uses: operands on a self-edge stay live through the terminator, while
+/// operands from other predecessors are omitted from this block.
 ///
-/// Definitions used only outside `block` are intentionally omitted, making
-/// this a conservative lower-bound signal for compile-time pathology checks.
-unsigned estimatePeakLiveValues(const llvm::BasicBlock &block);
+/// Definitions used only outside `block` are also intentionally omitted. These
+/// choices avoid combining mutually exclusive predecessor values and bias
+/// cross-block pressure downward for conservative compile-time rejection.
+unsigned estimatePeakLocalLiveValues(const llvm::BasicBlock &block);
 
 } // namespace rock
 } // namespace mlir

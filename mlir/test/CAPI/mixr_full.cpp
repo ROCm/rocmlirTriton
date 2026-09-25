@@ -200,8 +200,10 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   MlirRockTuningParam tuningParam = mlirRockTuningParamCreate();
   MlirRockTuningTable tuningTable = mlirRockTuningTableCreate();
 
+  MlirMIGraphXBackendOptions tuningOpts = {
+      "gfx908:sramecc+:xnack-", "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3, 1500};
   MlirMIGraphXBackendOptions opts = {"gfx908:sramecc+:xnack-",
-                                     "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
+                                     "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3, 0};
   unsigned numSuccesses = 0;
   char problemKey[ROCMLIR_TUNING_KEY_BUFSZ];
   size_t problemBytes =
@@ -231,7 +233,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
     mlirRockTuningSetFromStr(tuningClone,
                              mlirStringRefCreateFromCString(paramStr));
     MlirPassManager checkPm = mlirPassManagerCreate(ctx);
-    if (!mlirMIGraphXAddBackendPipeline(checkPm, &opts)) {
+    if (!mlirMIGraphXAddBackendPipeline(checkPm, &tuningOpts)) {
       mlirPassManagerDestroy(checkPm);
       mlirModuleDestroy(tuningClone);
       continue;

@@ -156,6 +156,11 @@ struct BackendOptions : public PassPipelineOptions<BackendOptions> {
       *this, "features", desc("AMDGPU target features"), init("")};
   PassOptions::Option<int32_t> optLevel{
       *this, "opt-level", desc("GPU compiler optimization level"), init(3)};
+  PassOptions::Option<unsigned> maxLiveValuesPerBlock{
+      *this, "max-live-values-per-block",
+      desc("Reject post-O3 LLVM IR blocks above this live-value limit "
+           "(0 disables the tuning-time guard)"),
+      init(0)};
   PassOptions::Option<bool> compile{
       *this, "compile", desc("should the serailization pass be run"),
       init(true)};

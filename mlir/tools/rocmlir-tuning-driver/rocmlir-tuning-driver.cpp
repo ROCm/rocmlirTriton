@@ -263,6 +263,17 @@ static llvm::cl::opt<bool> verifyPasses(
                    "same one rocmlir-driver verifies in its own tests."),
     llvm::cl::init(false));
 
+// The default comes from a September 2026 gfx950 sweep of 16,661
+// (model-kernel x perf-config) compiles across 11 models. Post-O3 peak live
+// values were at least 1,636 for every compile over 10 seconds and at most
+// 1,167 for every compile under 5 seconds.
+static llvm::cl::opt<unsigned> maxLiveValuesPerBlock(
+    "max-live-values-per-block",
+    llvm::cl::desc(
+        "Reject tuning candidates whose post-O3 LLVM IR exceeds this peak "
+        "live-value count per basic block (0 disables the guard)"),
+    llvm::cl::value_desc("live SSA values"), llvm::cl::init(1500));
+
 static llvm::cl::opt<bool> flushLastLevelCache(
     "flush-last-level-cache",
     llvm::cl::desc(
@@ -585,6 +596,7 @@ struct BenchmarkParams {
   std::string benchmarkConfig;
   bool verifyPasses;
   bool flushLastLevelCache;
+  unsigned maxLiveValuesPerBlock;
   unsigned perfConfigTimeoutSec;
   unsigned gpuRunTimeoutSec;
   std::string compileOnlyDir;
@@ -685,7 +697,8 @@ static std::string getRocmlirDriverPath() {
 // other workers and against the compile-phase progress bar.
 static CompilationResult compileConfigViaSubprocess(
     StringRef perfConfig, StringRef driverPath, StringRef inputPath,
-    StringRef archName, unsigned timeoutSec, bool shouldVerifyPasses,
+    StringRef archName, unsigned timeoutSec, unsigned liveValueLimit,
+    bool shouldVerifyPasses,
     llvm::function_ref<void(const llvm::Twine &)> emitDiagnostic,
     std::atomic<bool> &compilationFailed) {
   CompilationResult result;
@@ -719,10 +732,12 @@ static CompilationResult compileConfigViaSubprocess(
 
   std::string archArg = ("--arch=" + archName).str();
   std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
-  SmallVector<StringRef, 8> args = {
+  std::string maxLiveValuesArg =
+      ("--max-live-values-per-block=" + llvm::Twine(liveValueLimit)).str();
+  SmallVector<StringRef, 9> args = {
       driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
-      archArg,    perfConfigArg, "-o",
-      outputPath};
+      archArg,    perfConfigArg, maxLiveValuesArg,
+      "-o",       outputPath};
   // Keep the child's verification in step with the in-process path, so
   // --verify-passes means the same thing in either compile mode.
   if (!shouldVerifyPasses)
@@ -1481,6 +1496,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            benchmarkConfig,
                                            verifyPasses,
                                            flushLastLevelCache,
+                                           maxLiveValuesPerBlock,
                                            perfConfigTimeout,
                                            gpuRunTimeout,
                                            compileOnlyDir,
@@ -1694,6 +1710,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
       std::string backendFeatures = deviceName.getFeaturesForBackend();
       backendOpts.features = backendFeatures;
       backendOpts.optLevel = 3;
+      backendOpts.maxLiveValuesPerBlock = benchmarkParams.maxLiveValuesPerBlock;
 
       rock::TritonOptions tritonOpts;
       tritonOpts.arch = backendOpts.chip;
@@ -1784,6 +1801,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                          ? compileConfigViaSubprocess(
                                configs[idx], driverPath, sharedInputPath,
                                archName, benchmarkParams.perfConfigTimeoutSec,
+                               benchmarkParams.maxLiveValuesPerBlock,
                                benchmarkParams.verifyPasses, emitDiagnostic,
                                compilationFailed)
                          : compileConfig(idx);
@@ -1956,6 +1974,7 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   benchmarkParams.benchmarkConfig = benchmarkConfig;
   benchmarkParams.verifyPasses = verifyPasses;
   benchmarkParams.flushLastLevelCache = flushLastLevelCache;
+  benchmarkParams.maxLiveValuesPerBlock = maxLiveValuesPerBlock;
   benchmarkParams.perfConfigTimeoutSec = 0;
   benchmarkParams.gpuRunTimeoutSec = gpuRunTimeout;
   benchmarkParams.compileOnlyDir = "";

@@ -144,13 +144,6 @@ constexpr bool kVerifyLLVMIR = true;
 constexpr bool kVerifyLLVMIR = false;
 #endif
 
-// In the benchmark sweep, every observed backend compile over 10 seconds had
-// a post-O3 peak of at least 1,636 live SSA values, while every compile under
-// 5 seconds had a peak of at most 1,167. Keep the rejection boundary inside
-// that empirical gap. This counts SSA values, not value width: wide
-// accumulator values have not shown the same register-allocator blowup.
-constexpr unsigned kMaxLiveValuesPerBlock = 1500;
-
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
@@ -1096,13 +1089,15 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(), enableAsan);
 
   // LLVM's greedy register allocator can spend minutes evicting values when a
-  // single block exposes thousands of simultaneously-live SSA values. Check
-  // only the post-O3 form for which the threshold above was calibrated.
-  if (optLevel.value() == llvm::OptimizationLevel::O3) {
+  // single block exposes thousands of simultaneously-live SSA values. This is
+  // an opt-in tuning policy: production compiles and non-O3 IR are outside the
+  // scope of the empirical threshold chosen by the caller.
+  if (options.maxLiveValuesPerBlock != 0 &&
+      optLevel.value() == llvm::OptimizationLevel::O3) {
     for (const llvm::Function &function : *llvmModule) {
       for (const llvm::BasicBlock &block : function) {
-        unsigned peakLiveValues = estimatePeakLiveValues(block);
-        if (peakLiveValues <= kMaxLiveValuesPerBlock)
+        unsigned peakLiveValues = estimatePeakLocalLiveValues(block);
+        if (peakLiveValues <= options.maxLiveValuesPerBlock)
           continue;
 
         rock::markAsNotApplicable(module);
@@ -1111,7 +1106,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
             << function.getName() << " has an estimated peak of "
             << peakLiveValues
             << " simultaneously-live SSA values in one basic block (limit "
-            << kMaxLiveValuesPerBlock << ")";
+            << options.maxLiveValuesPerBlock << ")";
         return failure();
       }
     }
@@ -1292,6 +1287,7 @@ public:
     options.scalarizePackedFops = scalarizePackedFops.getValue();
     options.llvmFnAttrs = llvmFnAttrs.getValue();
     options.useExpertScheduling = useExpertScheduling.getValue();
+    options.maxLiveValuesPerBlock = maxLiveValuesPerBlock.getValue();
 
     // Call the translation
     auto hsacoOrErr = translateTritonToHsaco(module, options);

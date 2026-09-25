@@ -617,7 +617,11 @@ def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
               "compiler.py.">,
        Option<"useExpertScheduling", "use-expert-scheduling", "int", "-1",
               "Tri-state override of the AMDGPU expert-scheduling codegen flag "
-              "(-1=arch default (on for gfx1250), 0=off, 1=on).">];
+              "(-1=arch default (on for gfx1250), 0=off, 1=on).">,
+       Option<"maxLiveValuesPerBlock", "max-live-values-per-block", "unsigned",
+              "0",
+              "Reject post-O3 LLVM IR blocks above this live-value "
+              "limit (0 disables the tuning-time guard).">];
 }
 
 def RockEmitGpuBinaryPass : Pass<"rock-emit-gpu-binary", "::mlir::ModuleOp"> {

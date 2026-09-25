@@ -48,12 +48,12 @@ using namespace llvm;
 using namespace mlir;
 
 // Exit codes: 0 = success, EXIT_FAILURE (from <cstdlib>) = real failure,
-// rock::kExitNotApplicable = rock.not_applicable marker set (config refused,
-// not a bug). parameterSweeps.py keys on this contract: it treats 0 as PASS, 2
-// as NOT_APPLICABLE, and anything else as FAIL — so EXIT_FAILURE just needs to
-// be non-zero and distinct from rock::kExitNotApplicable. The shared value
-// lives in compileUtils.h so consumers (e.g. rocmlir-tuning-driver) agree on
-// it.
+// rock::kExitNotApplicable = rock.not_applicable marker set (config
+// deliberately refused, not a bug). parameterSweeps.py keys on this contract:
+// it treats 0 as PASS, 2 as NOT_APPLICABLE, and anything else as FAIL — so
+// EXIT_FAILURE just needs to be non-zero and distinct from
+// rock::kExitNotApplicable. The shared value lives in compileUtils.h so
+// consumers (e.g. rocmlir-tuning-driver) agree on it.
 static_assert(EXIT_FAILURE != 0 && EXIT_FAILURE != rock::kExitNotApplicable,
               "rocmlir-driver exit-code contract: EXIT_FAILURE must be "
               "non-zero and distinct from rock::kExitNotApplicable "
@@ -132,6 +132,12 @@ static cl::opt<std::string> perfConfig(
              "(overrides any perf_config already present). Used by "
              "rocmlir-tuning-driver to compile one specific configuration."),
     cl::value_desc("perf config string"), cl::init(""));
+
+static cl::opt<unsigned> maxLiveValuesPerBlock(
+    "max-live-values-per-block",
+    cl::desc("Reject post-O3 LLVM IR blocks above this live-value limit "
+             "(0 disables the tuning-time guard)"),
+    cl::value_desc("live SSA values"), cl::init(0));
 
 static cl::opt<bool> disableFastMath(
     "disable-fast-math", cl::init(false),
@@ -251,6 +257,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   backendOpts.chip = devName.getChip().str();
   backendOpts.features = devName.getFeaturesForBackend();
   backendOpts.allowFlushDenorm = allowFlushDenorm;
+  backendOpts.maxLiveValuesPerBlock = maxLiveValuesPerBlock;
   // Set up the lowering pipeline which goes down to ELF Binary
   int optLevel = gpuOpt.getValue();
   if (optLevel < 0 || optLevel > 3) {
@@ -535,13 +542,11 @@ int main(int argc, char **argv) {
   }
 
   // Run MLIR passes with passed in tuning parameters. If a rock pass
-  // determined the (kernel x perf-config x hw) combination is structurally
-  // inapplicable it will have signalled pass failure AND set the
-  // `rock.not_applicable` marker on the module (see RockAttrDefs.td and
-  // ResolveKernelLaunchParamsPass for the canonical example). Distinguish
-  // that from a real lowering bug via a dedicated exit code so callers
-  // (parameterSweeps.py, tuning frontends, ...) can classify the failure
-  // without having to scrape stderr.
+  // deliberately refused the (kernel x perf-config x hw) combination, it will
+  // have signalled pass failure AND set the `rock.not_applicable` marker on
+  // the module (see RockAttrDefs.td). Distinguish that from a real lowering bug
+  // via a dedicated exit code so callers (parameterSweeps.py, tuning
+  // frontends, ...) can classify the failure without scraping stderr.
   if (failed(runMLIRPasses(module, passPipeline, clOpts))) {
     if (module->hasAttr(rock::NotApplicableAttr::getMnemonic())) {
       llvm::errs() << "Lowering not applicable.\n";

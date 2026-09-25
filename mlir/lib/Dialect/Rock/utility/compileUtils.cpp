@@ -47,7 +47,7 @@ using namespace mlir::rock;
 namespace mlir {
 namespace rock {
 
-unsigned estimatePeakLiveValues(const llvm::BasicBlock &block) {
+unsigned estimatePeakLocalLiveValues(const llvm::BasicBlock &block) {
   const unsigned numInstructions = block.size();
   if (numInstructions == 0)
     return 0;
@@ -63,11 +63,15 @@ unsigned estimatePeakLiveValues(const llvm::BasicBlock &block) {
       if (!llvm::isa<llvm::Instruction, llvm::Argument>(value))
         continue;
 
-      // A self-PHI consumes its backedge value at the end of the block, not
-      // at the PHI's textual position at the beginning.
-      unsigned useIndex = phi && phi->getIncomingBlock(use) == &block
-                              ? numInstructions - 1
-                              : index;
+      unsigned useIndex = index;
+      if (phi) {
+        // PHI operands are consumed on their incoming edges. An operand from
+        // another predecessor is not live inside this block; a self-edge use
+        // occurs at the end rather than at the PHI's textual position.
+        if (phi->getIncomingBlock(use) != &block)
+          continue;
+        useIndex = numInstructions - 1;
+      }
       unsigned &lastUse = lastUseIndex[value];
       lastUse = std::max(lastUse, useIndex);
     }
