@@ -683,6 +683,9 @@ struct GridwiseAttentionRewritePattern
 
     // Lambda to load a 1D tensor value (used for lastValidKVIndex and
     // prefixOffset)
+    // TODO: Emit llvm.intr.assume(value >= 0) on the loaded value. Both indices
+    // are expected to be non-negative (see RockOps.td), and Triton's AMD
+    // integer range analysis uses such assumptions.
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
 
@@ -876,6 +879,13 @@ struct GridwiseAttentionRewritePattern
   // Helper function to determine if early exit optimization is possible.
   // Early exit requires splitKV > 1 and at least one of: padding in gemm0M,
   // causal masking, or KV cache.
+  // TODO: Cover more workgroups that have no work:
+  // - Causal + sliding window where the M block's last query ends before the
+  //   window start, so every row is fully masked. This also applies with
+  //   splitKV == 1, which never exits early today.
+  // - Padding-only split-KV with prePadG0N < gemm0NPerBlock. It is excluded
+  //   below although the runtime check would handle it, so the trailing splits
+  //   run over padding only.
   static bool isEarlyExitPossible(int64_t splitKV, int64_t gemm0NPerBlock,
                                   std::optional<APInt> prePadG0N, bool isCausal,
                                   bool isKVCache) {
@@ -1164,6 +1174,11 @@ struct GridwiseAttentionRewritePattern
     // through padded output/LSE views, so a NaN there is not observable and is
     // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
     // unless its result is proven not to overflow finite QK scores.
+    // TODO: The splitKV clause is conservative: split-KV alone never fully
+    // masks a row. It needs causal/prefix-causal masking, or padding-only
+    // split-KV with prePadG0N < gemm0NPerBlock (see isEarlyExitPossible).
+    // Alternatively, emit the guard unconditionally and drop this predicate;
+    // it only adds one arith.maxnumf per row, but that needs perf data.
     bool mayHaveFullyMaskedRows =
         op.getEnableSoftmax() &&
         (preSoftmaxMayFullyMask(op) ||
@@ -1508,6 +1523,10 @@ struct GridwiseAttentionRewritePattern
 
         // Scale gemm0 output by (1/ln2)
         // So that we can use exp2 instead of exp.
+        // TODO: Apply this scale after subtracting the row max instead, so
+        // scores with |x| >= FLT_MAX / log2(e) (f32) can't overflow to inf
+        // here (see isFiniteConstantScaleOf). That changes the inner loop, so
+        // it needs perf data.
         Value ln2Recip = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(), elemTypeSoftmax, 1.44269504f,
             elemTypeSoftmax.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
@@ -1681,6 +1700,12 @@ struct GridwiseAttentionRewritePattern
 
     if (op.getEnableSoftmax()) {
       Value normalizationSum = sumRow;
+      // A fully masked row ends with sumRow == 0: with the finite max sentinel,
+      // every exp2 term is 0. Clamp the denominator to 1 so that row is written
+      // as zeros instead of 0/0. A row with any valid score has sumRow >= 1
+      // (its max term is exp2(0) = 1), so the clamp leaves it unchanged. The
+      // LSE below keeps the unclamped sumRow, so a fully masked row still
+      // reports -inf.
       if (mayHaveFullyMaskedRows) {
         Value oneFloat =
             createConstantFloatOp(rewriter, loc, blockMTensorType,
