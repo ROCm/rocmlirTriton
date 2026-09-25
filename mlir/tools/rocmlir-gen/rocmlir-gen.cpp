@@ -6273,7 +6273,7 @@ static LogicalResult populateHostHarnessLogic(
       // Call the function with tensor arguments
       auto callOp = func::CallOp::create(b, loc, callee, tensorArgs);
 
-      // Copy each returned result into its harness buffer.
+      // If the function returns results, use them directly instead of copying
       for (auto [resultIdx, result] : llvm::enumerate(callOp.getResults())) {
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
@@ -6281,7 +6281,7 @@ static LogicalResult populateHostHarnessLogic(
           auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
-          memref::CopyOp::create(b, loc, resultMemref, memrefArgs[outIdx]);
+          memrefArgs[outIdx] = resultMemref;
         }
       }
     } else if (willBeWrapped) {

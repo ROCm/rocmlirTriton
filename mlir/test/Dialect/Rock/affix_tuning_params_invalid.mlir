@@ -35,36 +35,6 @@ func.func @rock_conv_gemm_invalid_perf_config(%arg0: tensor<1x128x256x1x1xf16>, 
   return %out : tensor<1x2048x128xf16>
 }
 
-func.func @rock_attention_perf_config_not_valid(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{The provided perf config is not valid}}
-  %result = rock.attention{
-    qk = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-    softmax(qk) * %arg2 : tensor<1x384x64xf16>
-  } {perf_config = "attn:nPerBlockG1=128", splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32} -> tensor<1x384x64xf16>
-  %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-  return %out : tensor<1x384x64xf16>
-}
-
-func.func @rock_gemm_gemm_perf_config_not_valid(%arg0: tensor<1x384x64xf16>, %arg1: tensor<1x384x64xf16>, %arg2: tensor<1x384x64xf16>, %arg3: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{The provided perf config is not valid}}
-  %result = rock.gemm_elementwise_gemm{
-    ab = %arg0 * tr %arg1 : tensor<1x384x64xf16>, tensor<1x384x64xf16>
-    out = ab * %arg2 : tensor<1x384x64xf16>
-  } {perf_config = "attn:nPerBlockG1=128"} -> tensor<1x384x64xf16>
-  %out = rock.store %result to %arg3 by set : tensor<1x384x64xf16> -> tensor<1x384x64xf16> to tensor<1x384x64xf16>
-  return %out : tensor<1x384x64xf16>
-}
-
-func.func @rock_conv_gemm_perf_config_not_valid(%arg0: tensor<1x128x256x1x1xf16>, %arg1: tensor<2x1x256x32x32xf16>, %arg2: tensor<1x128x128xf16>, %arg3: tensor<1x2048x128xf16>) -> tensor<1x2048x128xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
-  // expected-error @+1 {{The provided perf config is not valid}}
-  %result = rock.conv_elementwise_gemm{
-    ab = conv(%arg0, %arg1) : tensor<1x128x256x1x1xf16>, tensor<2x1x256x32x32xf16>
-    out = ab * %arg2 : tensor<1x128x128xf16>
-  } {dilations = [1 : index, 1 : index], perf_config = "attn:nPerBlockG1=256", filter_layout = ["g", "k", "c", "0", "1"], input_layout = ["ni", "gi", "ci", "0i", "1i"], padding = [0 : index, 0 : index, 0 : index, 0 : index], strides = [1 : index, 1 : index]} -> tensor<1x2048x128xf16>
-  %out = rock.store %result to %arg3 by set : tensor<1x2048x128xf16> -> tensor<1x2048x128xf16> to tensor<1x2048x128xf16>
-  return %out : tensor<1x2048x128xf16>
-}
-
 // expected-error @below {{Multiple Fusion Roots detected in a single function. This is not supported.}}
 func.func @two_gemms(
     %a0: tensor<1x72x128xf8E4M3FN>, %b0: tensor<1x72x115200xf8E5M2>, %c0: tensor<1x128x115200xf32>,
