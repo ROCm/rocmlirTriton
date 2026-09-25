@@ -298,6 +298,10 @@ bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
   case ISAFamily::Unknown:
     return false;
   }
+  // The switch covers every ISAFamily, which Clang proves but MSVC does not
+  // (warning C4715, fatal under /WX). Placing this after the switch rather than
+  // in a default: keeps -Wcovered-switch-default happy too.
+  llvm_unreachable("unhandled ISAFamily");
 }
 
 bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
