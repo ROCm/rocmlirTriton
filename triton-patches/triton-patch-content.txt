@@ -20,6 +20,7 @@ patch-gfx1170-fp8-cvt.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
+patch-targetfeatures-msvc-c4715.patch
 patch-elementwise-fastmath-flags.patch
 patch-gfx1310-isa-family.patch
 patch11295.patch
@@ -56,6 +57,27 @@ patch-partitionloops-clang-cl.patch
   explicitly unsigned literal selects the intended getPartition(unsigned)
   overload. No-op for GCC/Clang on Linux, which resolve the overload fine.
   Keep until the vendored Triton revision contains the upstream fix.
+
+patch-targetfeatures-msvc-c4715.patch
+  Adds an llvm_unreachable after the fully covered ISAFamily switch in
+  TargetFeatures::supportsBufferAtomicFadd, so the function has a return on
+  every path as far as cl.exe is concerned. Clang proves the switch
+  exhaustive and stays quiet; MSVC does not and emits C4715 ("not all control
+  paths return a value"), which is fatal under /WX. Placing the statement
+  after the switch rather than in a `default:` keeps -Wcovered-switch-default
+  satisfied on the Clang side and preserves the -Wswitch coverage that a
+  `default:` would defeat, so a Triton bump adding a new ISAFamily still
+  fails the build rather than falling through silently.
+
+  No behavioural change on any toolchain: the statement is unreachable.
+
+  Stacks on patch-buffer-atomics.patch and must be applied after it: that
+  patch is what rewrites supportsBufferAtomicFadd into a switch in the first
+  place. Upstream main-windows has no switch here at all -- it is an if-chain
+  ending in an unconditional `return true;` -- so there is nothing to upstream
+  and no bump will ever make this redundant on its own. Drop it together with
+  patch-buffer-atomics.patch, whose own upstreaming was already rejected in
+  https://github.com/triton-lang/triton/pull/10408.
 
 patch-buffer-atomics.patch
   Enables buffer atomic RMW across all AMD GPU families in
