@@ -172,6 +172,13 @@ static Value collapseGroupDim(PatternRewriter &rw, Location loc,
                                          reassociation);
 }
 
+// TOSA conv2d is NHWK; conv3d is N012K. Folded transposes set output_layout.
+static StringRef convOutputLayoutOrDefault(Operation *op, int64_t rank) {
+  if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
+    return attr.getValue();
+  return rank > 4 ? StringRef("n012k") : StringRef("nhwk");
+}
+
 static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
                              Value filter, RankedTensorType outputType,
                              DenseI64ArrayAttr pad, DenseI64ArrayAttr stride,
@@ -191,12 +198,7 @@ static ConvFields commonConv(PatternRewriter &rw, Operation *op, Value input,
     res.inputLayout = "n012c";
 
   if (outputType) {
-    res.outputLayout = "nhwk";
-    if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
-      res.outputLayout = attr.getValue();
-    else if (outputType.getRank() > 4)
-      res.outputLayout = "n012k";
-
+    res.outputLayout = convOutputLayoutOrDefault(op, outputType.getRank());
     // Insert 'g' dimension into the layout and compute the expanded shape,
     // mirroring what expandTensor does but without creating IR ops.
     auto shape = outputType.getShape();
@@ -599,30 +601,40 @@ static void addZeroInitPrefillAttribute(tosa::CustomOp op,
 }
 
 // TOSA conv2d is NHWK, so a 1-D bias of length K broadcasts as [1,1,1,K].
-// Transpose folding rewrites that to another layout (NHWC to NCHW becomes NKHW)
-// and updates the conv result type, but the bias is still rank-1. Expand it
-// onto the 'k' axis of `outputLayout` so the add matches the folded result.
-static int64_t channelDimFromOutputLayout(StringRef outputLayout,
-                                          int64_t rank) {
-  size_t k = outputLayout.find('k');
-  if (k == StringRef::npos || static_cast<int64_t>(k) >= rank)
+// Transpose folding may set StringAttr output_layout (NHWC to NCHW becomes
+// NKHW) and update the conv result type, but the bias is still rank-1. Report
+// that 'k' axis so the add matches the folded result. A layout written by
+// folding is a permutation of nhwk, so a missing or out-of-range 'k' is a
+// malformed attribute rather than a case to fall back on. Without the
+// attribute the op is still plain TOSA, where K is last (nhwk / n012k).
+static FailureOr<int64_t> channelDimFromOutputLayout(Operation *op,
+                                                     int64_t rank) {
+  auto attr = op->getAttrOfType<StringAttr>("output_layout");
+  if (!attr)
     return rank - 1;
+  size_t k = attr.getValue().find('k');
+  if (k == StringRef::npos || static_cast<int64_t>(k) >= rank)
+    return failure();
   return static_cast<int64_t>(k);
 }
 
 static FailureOr<tosa::AddOp>
 replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
-                            Location loc, Type resTy, Value bias, Value result,
-                            StringRef outputLayout) {
+                            Location loc, Operation *op, Type resTy, Value bias,
+                            Value result) {
   auto biasType = cast<ShapedType>(bias.getType());
   auto resultType = dyn_cast<RankedTensorType>(resTy);
-  if (!biasType.hasStaticShape() || !resultType)
+  if (!biasType.hasStaticShape() || biasType.getRank() != 1 || !resultType ||
+      resultType.getRank() < 1)
     return failure();
 
   int64_t nDims = resultType.getRank();
-  int64_t kDim = channelDimFromOutputLayout(outputLayout, nDims);
+  FailureOr<int64_t> kDim = channelDimFromOutputLayout(op, nDims);
+  if (failed(kDim))
+    return failure();
+
   SmallVector<int64_t> biasShape(nDims, 1);
-  biasShape[kDim] = biasType.getShape()[0];
+  biasShape[*kDim] = biasType.getShape()[0];
   auto newType = RankedTensorType::get(biasShape, biasType.getElementType());
 
   ReassociationExprs exprs;
@@ -635,13 +647,6 @@ replaceCstZeroWithAddNBcast(MLIRContext *context, ConversionPatternRewriter &rw,
       tensor::ExpandShapeOp::create(rw, loc, newType, bias, reassociations);
 
   return tosa::AddOp::create(rw, loc, resTy, ValueRange{result, biasExpand});
-}
-
-static StringRef convOutputLayoutOrDefault(Operation *op, int64_t rank) {
-  if (auto attr = op->getAttrOfType<StringAttr>("output_layout"))
-    return attr.getValue();
-  // Match commonConv: rank-4 TOSA conv is NHWK; rank-5 conv3d is N012K.
-  return rank > 4 ? StringRef("n012k") : StringRef("nhwk");
 }
 
 template <typename OpT>
@@ -692,8 +697,7 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(), bias, result,
-          convOutputLayoutOrDefault(op, outputType.getRank()));
+          context, rw, loc, op.getOperation(), op.getType(), bias, result);
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
@@ -763,8 +767,7 @@ public:
     if (!mlir::rock::isConstantZero(op.getOperand(2))) {
       // non-zero bias, replace with tosa.add w/ broadcast
       FailureOr<tosa::AddOp> maybeResult = replaceCstZeroWithAddNBcast(
-          context, rw, loc, op.getType(0), bias, result,
-          convOutputLayoutOrDefault(op, outputType.getRank()));
+          context, rw, loc, op.getOperation(), op.getType(0), bias, result);
 
       if (succeeded(maybeResult))
         result = maybeResult.value();
