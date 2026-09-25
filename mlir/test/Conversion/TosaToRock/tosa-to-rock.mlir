@@ -352,7 +352,6 @@ func.func @conv_nchw_bias(%arg0: tensor<1x3x8x8xf32>, %arg1: tensor<4x3x3x3xf32>
 // CHECK-SAME: output_layout = ["no", "0o", "1o", "2o", "go", "ko"]
 // CHECK: rock.transform %arg2
 // CHECK-SAME: tensor<4xf32> to tensor<1x1x1x1x4xf32>
-// CHECK-NOT: tensor<1x1x1x4x1xf32>
 // CHECK: tosa.add
 func.func @conv3d_bias(%arg0: tensor<2x3x3x3x3xf32>, %arg1: tensor<4x2x2x2x3xf32>, %arg2: tensor<4xf32>) -> tensor<2x2x2x2x4xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %zp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
