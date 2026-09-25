@@ -34,6 +34,29 @@ func.func @migraphx_max(%arg0: !migraphx.shaped<4x8xf32, 8x1>, %arg1: !migraphx.
   return %0 : !migraphx.shaped<4x8xf32, 8x1>
 }
 
+// ---- migraphx.slice ----
+
+// CHECK-LABEL: func.func @migraphx_slice_single_axis
+// CHECK-NEXT: migraphx.slice
+func.func @migraphx_slice_single_axis(%arg0: !migraphx.shaped<10x10xf32, 10x1>) -> !migraphx.shaped<4x10xf32, 10x1> {
+  %0 = migraphx.slice %arg0 {axes = [0], starts = [2], ends = [6]} : <10x10xf32, 10x1> -> <4x10xf32, 10x1>
+  return %0 : !migraphx.shaped<4x10xf32, 10x1>
+}
+
+// CHECK-LABEL: func.func @migraphx_slice_multi_axis
+// CHECK-NEXT: migraphx.slice
+func.func @migraphx_slice_multi_axis(%arg0: !migraphx.shaped<2x10x10xf32, 100x10x1>) -> !migraphx.shaped<2x3x6xf32, 100x10x1> {
+  %0 = migraphx.slice %arg0 {axes = [2, 1], starts = [4, 1], ends = [10, 4]} : <2x10x10xf32, 100x10x1> -> <2x3x6xf32, 100x10x1>
+  return %0 : !migraphx.shaped<2x3x6xf32, 100x10x1>
+}
+
+// CHECK-LABEL: func.func @migraphx_slice_full_extent
+// CHECK-NEXT: migraphx.slice
+func.func @migraphx_slice_full_extent(%arg0: !migraphx.shaped<10x10xf32, 10x1>) -> !migraphx.shaped<10x10xf32, 10x1> {
+  %0 = migraphx.slice %arg0 {axes = [1], starts = [0], ends = [10]} : <10x10xf32, 10x1> -> <10x10xf32, 10x1>
+  return %0 : !migraphx.shaped<10x10xf32, 10x1>
+}
+
 // CHECK-LABEL: func.func @migraphx_max_unit_zero_stride
 // CHECK-NEXT: migraphx.max
 func.func @migraphx_max_unit_zero_stride(%arg0: !migraphx.shaped<1xf32, 0>, %arg1: !migraphx.shaped<1xf32, 0>) -> !migraphx.shaped<1xf32, 0> {

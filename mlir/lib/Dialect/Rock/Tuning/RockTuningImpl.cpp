@@ -1009,7 +1009,7 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            supportsSplitK, info.quantBlockSize, info.aScaleType,
-           info.bScaleType, info.problemKey)) {
+           info.bScaleType, info.siblingGemms, info.problemKey)) {
     // A regular-list fallback is still possible when no no-split-K list exists
     // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && param.getSplitKFactor() > 1)

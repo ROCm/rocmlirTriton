@@ -68,6 +68,14 @@ FailureOr<ParamsAttr> materializeTuningParams(OpBuilder &b,
                                               StringRef perfConfig,
                                               ArrayRef<ParamsAttr> defaults);
 
+/// One of several GEMMs that an op lowers to inside a single kernel, such as
+/// one kernel ID of a backward-data convolution. Siblings share M and N but
+/// each has its own A. Siblings with equal `bViewId` read the same view of B.
+struct SiblingGemm {
+  int64_t k;
+  int64_t bViewId;
+};
+
 /// Store information useful for populating perf configurations
 struct PopulateParamsInfo {
   GemmSize gemmSize;
@@ -83,6 +91,9 @@ struct PopulateParamsInfo {
   std::optional<int64_t> quantBlockSize;
   Type aScaleType;
   Type bScaleType;
+  // The GEMMs a backward-data convolution lowers to, one per kernel ID. Empty
+  // for ops that lower to a single GEMM.
+  SmallVector<SiblingGemm> siblingGemms;
   std::optional<QuickTuningProblemKey> problemKey;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
@@ -109,6 +120,34 @@ inline bool isFp4ElementType(Type type) {
   return isa<FloatType>(elem) && elem.getIntOrFloatBitWidth() == 4;
 }
 
+/// Size of the largest set of tiles that `siblingGemms` keep in LDS at once,
+/// given the size of one A tile and one B tile for this `kPerBlock`.
+/// `rock-fuse-sibling-loops` merges the K-loops of siblings with the same trip
+/// count, which puts all their tiles in one loop. Each GEMM keeps its own A
+/// tile there, and CSE leaves one B tile per distinct B view.
+inline int64_t fusedSiblingTileBits(ArrayRef<SiblingGemm> siblingGemms,
+                                    int64_t kPerBlock, int64_t aTileBits,
+                                    int64_t bTileBits) {
+  auto tripCount = [&](const SiblingGemm &gemm) -> int64_t {
+    return llvm::divideCeil(gemm.k, kPerBlock);
+  };
+  int64_t maxBits = 0;
+  for (const SiblingGemm &gemm : siblingGemms) {
+    int64_t numATiles = 0;
+    SmallVector<int64_t> bViewIds;
+    for (const SiblingGemm &other : siblingGemms) {
+      if (tripCount(other) != tripCount(gemm))
+        continue;
+      ++numATiles;
+      if (!llvm::is_contained(bViewIds, other.bViewId))
+        bViewIds.push_back(other.bViewId);
+    }
+    int64_t numBTiles = bViewIds.size();
+    maxBits = std::max(maxBits, numATiles * aTileBits + numBTiles * bTileBits);
+  }
+  return maxBits;
+}
+
 /// Conservative GEMM applicability: covers the perfconfig-driven
 /// `markAsNotApplicable` sites (kpack/splitK/numCTAs constraints + LDS
 /// budget over A+B tiles, `numStages`-buffered).
@@ -123,10 +162,15 @@ inline bool isFp4ElementType(Type type) {
 ///   - charges per-tile scale storage to the LDS budget.
 /// Non-scaled callers leave these arguments at their defaults and behave
 /// exactly as before.
+///
+/// For ops that lower to several GEMMs in one kernel, pass them as
+/// `siblingGemms` so the budget covers every tile they keep live at once (see
+/// `fusedSiblingTileBits`).
 inline bool isGemmParamsConservativelyApplicable(
     GemmParamsAttr p, Type aElemType, Type bElemType, StringRef arch,
     std::optional<int64_t> quantBlockSize = std::nullopt,
-    Type aScaleType = nullptr, Type bScaleType = nullptr) {
+    Type aScaleType = nullptr, Type bScaleType = nullptr,
+    ArrayRef<SiblingGemm> siblingGemms = {}) {
   if (p.getKpack() != 1 || p.getSplitKFactor() != 1 || p.getNumCTAs() != 1)
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
@@ -148,22 +192,29 @@ inline bool isGemmParamsConservativelyApplicable(
   if ((isFp4ElementType(aElem) || isFp4ElementType(bElem)) &&
       p.getKPerBlock() % kFp4KPerBlockMultiple != 0)
     return false;
-  int64_t totalBits =
-      (p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth()) +
-      (p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth());
+  int64_t aTileBits =
+      p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth();
+  int64_t bTileBits =
+      p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth();
   if (quantBlockSize.has_value() && (aScaleType || bScaleType)) {
     int64_t scaleK = llvm::divideCeil(p.getKPerBlock(), *quantBlockSize);
     if (aScaleType) {
       Type aScaleElem = getElementTypeOrSelf(aScaleType);
-      totalBits +=
+      aTileBits +=
           p.getMPerBlock() * scaleK * aScaleElem.getIntOrFloatBitWidth();
     }
     if (bScaleType) {
       Type bScaleElem = getElementTypeOrSelf(bScaleType);
-      totalBits +=
+      bTileBits +=
           p.getNPerBlock() * scaleK * bScaleElem.getIntOrFloatBitWidth();
     }
   }
+  int64_t totalBits =
+      std::max(aTileBits + bTileBits,
+               fusedSiblingTileBits(siblingGemms, p.getKPerBlock(), aTileBits,
+                                    bTileBits));
+  // Triton multi-buffers merged sibling loops like any pipelined loop, so the
+  // sibling tiles are charged per stage too.
   int64_t bytes =
       llvm::divideCeil(totalBits, static_cast<int64_t>(8)) * p.getNumStages();
   return bytes <= getLDSSize(arch);
@@ -171,6 +222,11 @@ inline bool isGemmParamsConservativelyApplicable(
 
 /// Default config used as a guaranteed-applicable fallback when no entry in
 /// the quick-tuning table satisfies isGemmParamsConservativelyApplicable.
+///
+/// `numStages` must stay 1: Triton does not pipeline one-stage loops, so a
+/// fused backward-data loop holds one tile in LDS at a time. The default then
+/// fits even when `siblingGemms` make isGemmParamsConservativelyApplicable
+/// reject it.
 ///
 /// When `quantBlockSize` is provided, `kPerBlock` is rounded up to a multiple
 /// of it so the default also satisfies the divisibility constraint enforced
@@ -258,11 +314,13 @@ public:
   // tuning list. Pass `quantBlockSize` / `aScaleType` / `bScaleType` for
   // block-scaled (MXFP-style) GEMMs so the applicability check accounts for
   // scale-tile LDS use and the `kPerBlock % quantBlockSize == 0` constraint.
+  // Pass `siblingGemms` for ops that lower to several GEMMs in one kernel.
   std::vector<GemmParamsAttr> getTuningParameters(
       OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
       StringRef arch, bool supportsSplitK,
       std::optional<int64_t> quantBlockSize = std::nullopt,
       Type aScaleType = nullptr, Type bScaleType = nullptr,
+      ArrayRef<SiblingGemm> siblingGemms = {},
       std::optional<QuickTuningProblemKey> problemKey = std::nullopt) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
