@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/WithColor.h"
 
 #include <cassert>
 #include <cstdlib>
@@ -21,7 +22,7 @@ using namespace mlir::rock;
 template <typename ParamsType>
 SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
     StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
-    std::optional<QuickTuningProblemKeyHash> problemKeyHash) {
+    std::optional<QuickTuningProblemKey> problemKey) {
   arch = normalizeArch(arch);
   auto key = makeKey(arch, op, dataType);
   LLVM_DEBUG(llvm::dbgs() << "Lookup for tuning parameters with key " << key
@@ -36,14 +37,25 @@ SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
 
   // Deliberately no key fallback: a ranking only holds for the problem it was
   // measured on.
-  if (problemKeyHash && !perProblemDisabled) {
+  if (problemKey && !perProblemDisabled) {
     const auto &problemMap = getProblemMap();
     if (auto it = problemMap.find(key); it != problemMap.end()) {
-      SmallVector<StringRef> perfConfigs = it->second.lookup(*problemKeyHash);
-      LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
-                              << perfConfigs.size() << " perfconfigs\n");
-      if (!perfConfigs.empty())
-        return perfConfigs;
+      if (it->second.getKeyVersionHash() != problemKey->versionHash) {
+        llvm::WithColor::warning(llvm::errs())
+            << "ignoring per-problem quick-tuning map " << key
+            << " keyed with table lookup key version hash "
+            << it->second.getKeyVersionHash()
+            << "; the current lookup key version hash is "
+            << problemKey->versionHash
+            << ". Regenerate the map with quickTuningGen.py.\n";
+      } else {
+        SmallVector<StringRef> perfConfigs =
+            it->second.lookup(problemKey->hash);
+        LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup returned "
+                                << perfConfigs.size() << " perfconfigs\n");
+        if (!perfConfigs.empty())
+          return perfConfigs;
+      }
     }
   }
 

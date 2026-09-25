@@ -163,5 +163,5 @@ static const StringRef perfConfigsGfx1100AttentionF16[] = {
 #endif // GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
 
 #ifdef GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
-{"gfx1100_attention_f16", QuickTuningProblemMap(problemsGfx1100AttentionF16, perfConfigIndicesGfx1100AttentionF16, perfConfigsGfx1100AttentionF16)},
+{"gfx1100_attention_f16", QuickTuningProblemMap(2158629286767709275ULL, problemsGfx1100AttentionF16, perfConfigIndicesGfx1100AttentionF16, perfConfigsGfx1100AttentionF16)},
 #endif // GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN

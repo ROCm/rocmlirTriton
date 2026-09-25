@@ -83,7 +83,7 @@ struct PopulateParamsInfo {
   std::optional<int64_t> quantBlockSize;
   Type aScaleType;
   Type bScaleType;
-  std::optional<QuickTuningProblemKeyHash> problemKeyHash;
+  std::optional<QuickTuningProblemKey> problemKey;
 
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
@@ -258,13 +258,12 @@ public:
   // tuning list. Pass `quantBlockSize` / `aScaleType` / `bScaleType` for
   // block-scaled (MXFP-style) GEMMs so the applicability check accounts for
   // scale-tile LDS use and the `kPerBlock % quantBlockSize == 0` constraint.
-  std::vector<GemmParamsAttr>
-  getTuningParameters(OpBuilder &b, KernelType opType, Type dataTypeA,
-                      Type dataTypeB, StringRef arch, bool supportsSplitK,
-                      std::optional<int64_t> quantBlockSize = std::nullopt,
-                      Type aScaleType = nullptr, Type bScaleType = nullptr,
-                      std::optional<QuickTuningProblemKeyHash> problemKeyHash =
-                          std::nullopt) const;
+  std::vector<GemmParamsAttr> getTuningParameters(
+      OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
+      StringRef arch, bool supportsSplitK,
+      std::optional<int64_t> quantBlockSize = std::nullopt,
+      Type aScaleType = nullptr, Type bScaleType = nullptr,
+      std::optional<QuickTuningProblemKey> problemKey = std::nullopt) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;

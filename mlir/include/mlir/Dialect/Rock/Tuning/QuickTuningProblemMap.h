@@ -26,20 +26,33 @@ namespace mlir {
 namespace rock {
 
 using QuickTuningProblemKeyHash = uint64_t;
+using QuickTuningTableLookUpKeyVersionHash = uint64_t;
+
+/// The hash identifying one problem and a hash of the ordered field names used
+/// to build it. The latter changes automatically when the lookup-key schema
+/// changes, without depending on the problem's field values.
+struct QuickTuningProblemKey {
+  QuickTuningProblemKeyHash hash;
+  QuickTuningTableLookUpKeyVersionHash versionHash;
+};
 
 inline QuickTuningProblemKeyHash hashQuickTuningProblemKey(StringRef key) {
   return llvm::xxh3_64bits(key);
 }
 
-/// Hash identifying `op`'s problem, or nullopt when it has none. Only the
-/// operation's own fields take part, so the lookup key must still carry the
-/// architecture and data type.
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(RockGemmWrapperInterface op);
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(RockGemmGemmWrapperInterface op);
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(ModuleOp mod);
+inline QuickTuningTableLookUpKeyVersionHash
+hashQuickTuningTableLookUpKeyVersion(StringRef fields) {
+  return llvm::xxh3_64bits(fields);
+}
+
+/// Key identifying `op`'s problem, or nullopt when it has none. Only the
+/// operation's own fields take part, so the table lookup key must still carry
+/// the architecture and data type.
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmWrapperInterface op);
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmGemmWrapperInterface op);
+std::optional<QuickTuningProblemKey> getQuickTuningProblemKey(ModuleOp mod);
 
 /// A problem's key hash and the slice of `perfConfigIndices` holding its
 /// perfconfigs.
@@ -50,14 +63,16 @@ struct QuickTuningProblemRef {
 };
 
 /// Generated per-problem perfconfigs for one architecture/kernel/data-type
-/// key. `problems` must be sorted by hash.
+/// key. `problems` must be sorted by hash, and `keyVersionHash` is the hash of
+/// the ordered field names used to compute their problem hashes.
 class QuickTuningProblemMap {
 public:
-  QuickTuningProblemMap(ArrayRef<QuickTuningProblemRef> problems,
+  QuickTuningProblemMap(QuickTuningTableLookUpKeyVersionHash keyVersionHash,
+                        ArrayRef<QuickTuningProblemRef> problems,
                         ArrayRef<uint16_t> perfConfigIndices,
                         ArrayRef<StringRef> perfConfigs)
-      : problems(problems), perfConfigIndices(perfConfigIndices),
-        perfConfigs(perfConfigs) {
+      : keyVersionHash(keyVersionHash), problems(problems),
+        perfConfigIndices(perfConfigIndices), perfConfigs(perfConfigs) {
     assert(llvm::is_sorted(problems,
                            [](const QuickTuningProblemRef &lhs,
                               const QuickTuningProblemRef &rhs) {
@@ -82,7 +97,12 @@ public:
     return result;
   }
 
+  QuickTuningTableLookUpKeyVersionHash getKeyVersionHash() const {
+    return keyVersionHash;
+  }
+
 private:
+  QuickTuningTableLookUpKeyVersionHash keyVersionHash;
   ArrayRef<QuickTuningProblemRef> problems;
   ArrayRef<uint16_t> perfConfigIndices;
   ArrayRef<StringRef> perfConfigs;

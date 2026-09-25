@@ -189,5 +189,5 @@ static const StringRef perfConfigsGfx950AttentionF16[] = {
 #endif // GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
 
 #ifdef GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
-{"gfx950_attention_f16", QuickTuningProblemMap(problemsGfx950AttentionF16, perfConfigIndicesGfx950AttentionF16, perfConfigsGfx950AttentionF16)},
+{"gfx950_attention_f16", QuickTuningProblemMap(2158629286767709275ULL, problemsGfx950AttentionF16, perfConfigIndicesGfx950AttentionF16, perfConfigsGfx950AttentionF16)},
 #endif // GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN

@@ -498,6 +498,12 @@ static llvm::cl::opt<bool> emitQuickTuningProblemKeyHash(
                    "per-problem quick-tuning maps."),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> emitQuickTuningTableLookUpKeyVersionHash(
+    "emit-quick-tuning-table-lookup-key-version-hash",
+    llvm::cl::desc("Prints the hash of the ordered fields in the per-problem "
+                   "quick-tuning table lookup key."),
+    llvm::cl::init(false));
+
 // Attention related args
 // ----------------------
 
@@ -6821,14 +6827,18 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (emitQuickTuningProblemKeyHash) {
-    std::optional<rock::QuickTuningProblemKeyHash> hash =
-        rock::getQuickTuningProblemKeyHash(*module);
-    if (!hash) {
+  if (emitQuickTuningProblemKeyHash ||
+      emitQuickTuningTableLookUpKeyVersionHash) {
+    std::optional<rock::QuickTuningProblemKey> key =
+        rock::getQuickTuningProblemKey(*module);
+    if (!key) {
       llvm::errs() << "Failed to key module: " << *module << "\n";
       return EXIT_FAILURE;
     }
-    llvm::outs() << *hash << "\n";
+    if (emitQuickTuningProblemKeyHash)
+      llvm::outs() << key->hash << "\n";
+    if (emitQuickTuningTableLookUpKeyVersionHash)
+      llvm::outs() << key->versionHash << "\n";
     return 0;
   }
 

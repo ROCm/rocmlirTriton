@@ -944,5 +944,5 @@ static const StringRef perfConfigsGfx1151ConvF16[] = {
 #endif // Gemm_PER_PROBLEM_DEFINITIONS_GEN
 
 #ifdef Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
-{"gfx1151_conv_f16", QuickTuningProblemMap(problemsGfx1151ConvF16, perfConfigIndicesGfx1151ConvF16, perfConfigsGfx1151ConvF16)},
+{"gfx1151_conv_f16", QuickTuningProblemMap(12815695606661592525ULL, problemsGfx1151ConvF16, perfConfigIndicesGfx1151ConvF16, perfConfigsGfx1151ConvF16)},
 #endif // Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN

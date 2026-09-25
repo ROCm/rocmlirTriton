@@ -631,14 +631,19 @@ TEST(LookupTest, ArchitectureFallbackPreservesSplitKPreference) {
 // exercised end to end by test/rocmlir-gen/quick-tuning-per-problem.mlir.
 static constexpr QuickTuningProblemKeyHash kGfx942GemmF32MappedProblem =
     8175943205932196350ULL;
+static constexpr QuickTuningTableLookUpKeyVersionHash kGemmKeyVersionHash =
+    6791176183107838810ULL;
 
-static SmallVector<StringRef>
-lookupGfx942GemmF32(bool supportsSplitK,
-                    std::optional<QuickTuningProblemKeyHash> problemKeyHash,
-                    MLIRContext &ctx) {
+static SmallVector<StringRef> lookupGfx942GemmF32(
+    bool supportsSplitK,
+    std::optional<QuickTuningProblemKeyHash> problemKeyHash, MLIRContext &ctx,
+    QuickTuningTableLookUpKeyVersionHash keyVersionHash = kGemmKeyVersionHash) {
+  std::optional<QuickTuningProblemKey> problemKey;
+  if (problemKeyHash)
+    problemKey = QuickTuningProblemKey{*problemKeyHash, keyVersionHash};
   return ParamLookupTable<GemmParamsAttr>::lookup(
       "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
-      supportsSplitK, problemKeyHash);
+      supportsSplitK, problemKey);
 }
 
 TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
@@ -667,11 +672,30 @@ TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {
   MLIRContext ctx;
   auto setCover =
       lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  testing::internal::CaptureStderr();
   auto unmapped = lookupGfx942GemmF32(
       /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem + 1, ctx);
+  std::string warnings = testing::internal::GetCapturedStderr();
 
   EXPECT_FALSE(setCover.empty());
   EXPECT_TRUE(unmapped == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
+TEST(LookupTest, LookupKeyVersionMismatchWarnsAndUsesSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+
+  testing::internal::CaptureStderr();
+  auto stale = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem, ctx,
+      kGemmKeyVersionHash + 1);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(stale == setCover);
+  EXPECT_NE(warnings.find("table lookup key version hash"), std::string::npos);
+  EXPECT_NE(warnings.find("Regenerate the map"), std::string::npos);
 }
 
 TEST(LookupTest, PerProblemDoesNotDependOnSplitKLegality) {

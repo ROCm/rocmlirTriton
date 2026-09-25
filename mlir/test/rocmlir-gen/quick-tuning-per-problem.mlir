@@ -49,6 +49,18 @@
 // layer deliberately has no key fallback, since a ranking only holds for the
 // problem it was measured on. Shrinking M by one leaves the same lookup key
 // (gfx942_gemm_f32) but a different problem hash, so both runs must agree.
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 > %t.unmapped.quick
-// RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 \
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>/dev/null > %t.unmapped.quick
+// RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick \
 // RUN:   | diff - %t.unmapped.quick
+
+// An unseen problem and a missing architecture/kernel/data-type map are normal
+// for new models, so both silently use the set cover. Hits and a disabled
+// per-problem layer are quiet too.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
+// RUN:   | count 0
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
+// RUN:   | count 0
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
+// RUN:   | count 0
+// RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
+// RUN:   | count 0

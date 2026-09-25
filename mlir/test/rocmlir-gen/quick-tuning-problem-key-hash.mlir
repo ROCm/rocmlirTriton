@@ -1,21 +1,24 @@
-// The per-problem quick-tuning maps are keyed on this hash, and this flag is
-// the only place it is spelled. Changing the fields that make up the key
-// silently invalidates every shipped shard, so the values below are pinned:
-// if one of them changes, regenerate the maps under
-// mlir/include/mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.
+// Each pair below pins a problem hash followed by the hash of the ordered field
+// names used to build it. The latter is the generated map's automatic version:
+// adding, removing, renaming, or reordering a lookup-key field changes it
+// without a manual version bump. Regenerate the maps under
+// mlir/include/mlir/Dialect/Rock/Tuning/QuickTuningProblemMap when it changes.
 
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -p --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=GEMM
-// GEMM: 10439942300753512616
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -p --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=GEMM_VERSION
+// GEMM_VERSION: 10439942300753512616
+// GEMM_VERSION-NEXT: 6791176183107838810
 
-// RUN: rocmlir-gen --arch gfx942 --operation conv -p --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=CONV_FWD
+// RUN: rocmlir-gen --arch gfx942 --operation conv -p --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=CONV_FWD
 // CONV_FWD: 17009370425126842901
+// CONV_FWD-NEXT: 12815695606661592525
 
 // Forward and backward-data are separate problems.
 // RUN: rocmlir-gen --arch gfx942 --operation conv_bwd_data -p --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=CONV_BWD_DATA
 // CONV_BWD_DATA: 9497099527036308506
 
-// RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=ATTN
-// ATTN: 10457287879272258229
+// RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 --emit-quick-tuning-problem-key-hash --emit-quick-tuning-table-lookup-key-version-hash | FileCheck %s --check-prefix=ATTN_VERSION
+// ATTN_VERSION: 10457287879272258229
+// ATTN_VERSION-NEXT: 2158629286767709275
 
 // Fusion-shaped fields are part of attention's identity.
 // RUN: rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1 -causal --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=ATTN_CAUSAL
@@ -27,23 +30,22 @@
 
 // The architecture and the data type are carried by the lookup key that selects
 // the shard, so they must not appear in the hash as well.
-// RUN: rocmlir-gen --arch gfx1101 --operation gemm -p -t f16 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=GEMM
+// RUN: rocmlir-gen --arch gfx1101 --operation gemm -p -t f16 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=GEMM_ARCH
+// GEMM_ARCH: 10439942300753512616
 
 //===----------------------------------------------------------------------===//
 // Field significance
 //===----------------------------------------------------------------------===//
-// The values pinned above catch a change to the key. These catch a change to
-// *which fields* it is built from, which is the other way the shipped shards
-// go wrong, and the one a new pinned value would hide: dropping a field the
-// key needs makes two problems share a row, so one is served a ranking
+// The problem and version hashes pinned above catch changes to key values and
+// field names. These checks document field significance too: dropping a field
+// the key needs makes two problems share a row, so one is served a ranking
 // measured on the other, while keeping a field it does not need splits one
 // problem into several that the shards have no entry for.
 //
-// The reference is getTuningProblemStr, the tuning DB key MIGraphX reads back
-// through mlirRockTuningGetKey. The problem key is that key minus what the
-// <arch, kernel, data type> lookup key already carries, and minus the machine
-// the measurement ran on. Comparing against a recomputed base rather than a
-// literal keeps these checks meaningful after the key legitimately changes.
+// The reference is getQuickTuningProblemKey. It is separate from the tuning DB
+// key MIGraphX reads through mlirRockTuningGetKey, and omits what the
+// <arch, kernel, data type> map key already carries and the machine the
+// measurement ran on.
 
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -p --emit-quick-tuning-problem-key-hash > %t.gemm
 
@@ -80,6 +82,7 @@
 // attention problem's identity does depend on what was fused into it.
 // DEFINE: %{attn} = rocmlir-gen --arch gfx942 --operation attention -seq_len_q 256 -seq_len_k 512 -head_dim_qk 64 -head_dim_v 32 -t f16 -g 1
 // RUN: %{attn} --num_cu=64 --emit-quick-tuning-problem-key-hash | FileCheck %s --check-prefix=ATTN
+// ATTN: 10457287879272258229
 // RUN: %{attn} --emit-quick-tuning-problem-key-hash > %t.attn
 // RUN: %{attn} -num_heads_q 2 -num_heads_kv 1 --emit-quick-tuning-problem-key-hash | not diff - %t.attn
 // RUN: %{attn} -with-attn-scale --emit-quick-tuning-problem-key-hash | not diff - %t.attn

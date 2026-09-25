@@ -39,7 +39,7 @@ public:
   static std::vector<GemmGemmParamsAttr> getTuningParameters(
       OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
       bool supportsSplitK,
-      std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
+      std::optional<QuickTuningProblemKey> problemKey = std::nullopt);
 
   static FailureOr<std::pair<GemmParamsAttr, GemmParamsAttr>>
   getGemmParams(OpBuilder &b, RockGemmGemmWrapperInterface op,

@@ -5,11 +5,12 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 """Pure-Python coverage for per-problem quick-tuning map generation.
 
-The shards are generated data: nothing downstream can tell a wrong hash from a
-problem that was never measured, because both are a miss that falls back to the
-set cover. So the properties the generator has to hold -- keying every problem
-exactly once, reproducing byte-identical output, and inverting ``table_entry``
-faithfully -- are pinned here rather than left to manual inspection.
+Within one lookup-key field schema, nothing downstream can tell a wrong problem
+hash from a problem that was never measured, because both are a miss that falls
+back to the set cover. So the properties the generator has to hold -- keying
+every problem exactly once, reproducing byte-identical output, and inverting
+``table_entry`` faithfully -- are pinned here rather than left to manual
+inspection.
 
 The compiler-side half (a shipped hash still reaching its row) is covered by
 test/rocmlir-gen/quick-tuning-per-problem.mlir.
@@ -74,7 +75,7 @@ def make_df(op, rows, problem_id=0):
         [dict(problem, PerfConfig=config, TFlops=tflops) for config, tflops in rows])
 
 
-def rank(op, rows, hashes, top_n=TOP_N):
+def rank(op, rows, hashes, top_n=TOP_N, version_hashes=None):
     """Run per_problem_perfconfigs over ``rows``, keying problems with ``hashes``.
 
     The compiler is the only speller of the key, so keying it here would mean
@@ -83,8 +84,11 @@ def rank(op, rows, hashes, top_n=TOP_N):
     """
     df = pd.concat([make_df(op, measurements, problem_id=i) for i, measurements in enumerate(rows)],
                    ignore_index=True)
-    keys = iter(hashes)
-    with mock.patch.object(quickTuningGen, "problem_key_hash", lambda *_: next(keys)), \
+    if version_hashes is None:
+        version_hashes = [99] * len(hashes)
+    keys = iter(zip(hashes, version_hashes))
+    with mock.patch.object(quickTuningGen, "problem_key_and_version_hash",
+                           lambda *_: next(keys)), \
             contextlib.redirect_stdout(io.StringIO()):
         return per_problem_perfconfigs(df, op, top_n, "rocmlir-gen")
 
@@ -141,11 +145,19 @@ class PerProblemRankingTest(unittest.TestCase):
 
         self.assertIn("two problems share key 7", str(raised.exception))
 
+    def test_mixed_lookup_key_versions_are_rejected(self):
+        with self.assertRaises(ValueError) as raised:
+            rank("gemm", [[(gemm_perfconfig(16), 100.0)], [(gemm_perfconfig(32), 100.0)]],
+                 hashes=[7, 8],
+                 version_hashes=[1, 2])
+
+        self.assertIn("one shard cannot record multiple", str(raised.exception))
+
     def test_measurements_of_one_problem_are_kept_together(self):
-        problems, _, short = rank("gemm",
-                                  [[(gemm_perfconfig(16), 100.0),
-                                    (gemm_perfconfig(32), 50.0)], [(gemm_perfconfig(64), 100.0)]],
-                                  hashes=[11, 22])
+        problems, _, _, short = rank(
+            "gemm", [[(gemm_perfconfig(16), 100.0),
+                      (gemm_perfconfig(32), 50.0)], [(gemm_perfconfig(64), 100.0)]],
+            hashes=[11, 22])
 
         self.assertEqual(problems[11], [gemm_perfconfig(16), gemm_perfconfig(32)])
         self.assertEqual(problems[22], [gemm_perfconfig(64)])
@@ -153,9 +165,9 @@ class PerProblemRankingTest(unittest.TestCase):
         self.assertEqual(short, 2)
 
     def test_repeated_measurements_collapse_to_the_best(self):
-        problems, _, _ = rank("gemm", [[(gemm_perfconfig(16), 10.0), (gemm_perfconfig(16), 90.0),
-                                        (gemm_perfconfig(32), 50.0)]],
-                              hashes=[11])
+        problems, _, _, _ = rank("gemm", [[(gemm_perfconfig(16), 10.0), (gemm_perfconfig(16), 90.0),
+                                           (gemm_perfconfig(32), 50.0)]],
+                                 hashes=[11])
 
         self.assertEqual(problems[11], [gemm_perfconfig(16), gemm_perfconfig(32)])
 
@@ -163,7 +175,7 @@ class PerProblemRankingTest(unittest.TestCase):
 class ShardFormatTest(unittest.TestCase):
 
     def shard(self, problems):
-        return format_shard("gfx942_gemm_f32", "gemm", problems)
+        return format_shard("gfx942_gemm_f32", "gemm", problems, key_version_hash=1)
 
     def test_output_does_not_depend_on_insertion_order(self):
         # Regenerating has to be a no-op when the data has not changed,
@@ -201,12 +213,24 @@ class ShardFormatTest(unittest.TestCase):
 
         self.assertIn("#ifdef Gemm_PER_PROBLEM_DEFINITIONS_GEN", shard)
         self.assertIn(
-            '{"gfx942_gemm_f32", QuickTuningProblemMap(problemsGfx942GemmF32, '
+            '{"gfx942_gemm_f32", QuickTuningProblemMap(1ULL, problemsGfx942GemmF32, '
             "perfConfigIndicesGfx942GemmF32, perfConfigsGfx942GemmF32)},", shard)
 
+    def test_shard_records_the_table_lookup_key_version_hash(self):
+        # A shard's hashes are only meaningful under the key they were computed
+        # with, so the compiler needs the version to recognise a stale shard.
+        shard = format_shard("gfx942_gemm_f32",
+                             "gemm", {11: [gemm_perfconfig(16)]},
+                             key_version_hash=7)
+
+        self.assertIn('{"gfx942_gemm_f32", QuickTuningProblemMap(7ULL, problemsGfx942GemmF32, ',
+                      shard)
+
     def test_attention_shards_land_in_the_gemm_gemm_section(self):
-        shard = format_shard("gfx942_attention_f16", "attention",
-                             {11: ["attn:mPerBlockG0=32,nPerBlockG0=256,splitKFactor=1"]})
+        shard = format_shard("gfx942_attention_f16",
+                             "attention",
+                             {11: ["attn:mPerBlockG0=32,nPerBlockG0=256,splitKFactor=1"]},
+                             key_version_hash=1)
 
         self.assertIn("#ifdef GemmGemm_PER_PROBLEM_DEFINITIONS_GEN", shard)
 

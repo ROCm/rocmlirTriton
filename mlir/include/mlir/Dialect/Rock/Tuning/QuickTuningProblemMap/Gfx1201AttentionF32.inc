@@ -45,5 +45,5 @@ static const StringRef perfConfigsGfx1201AttentionF32[] = {
 #endif // GemmGemm_PER_PROBLEM_DEFINITIONS_GEN
 
 #ifdef GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN
-{"gfx1201_attention_f32", QuickTuningProblemMap(problemsGfx1201AttentionF32, perfConfigIndicesGfx1201AttentionF32, perfConfigsGfx1201AttentionF32)},
+{"gfx1201_attention_f32", QuickTuningProblemMap(2158629286767709275ULL, problemsGfx1201AttentionF32, perfConfigIndicesGfx1201AttentionF32, perfConfigsGfx1201AttentionF32)},
 #endif // GemmGemm_PER_PROBLEM_LOOKUP_TABLE_GEN

@@ -36,16 +36,16 @@ std::string getDataTypeString(Type dataType);
 template <typename ParamsType>
 class ParamLookupTable {
 public:
-  /// Perfconfigs to try, narrowed to `problemKeyHash` when this key has an
-  /// entry for it.
+  /// Perfconfigs to try, narrowed to `problemKey` when this key has a
+  /// compatible generated map and an entry for its problem hash.
   ///
   /// `supportsSplitK` selects between the set-cover tables: the regular one
   /// when true and the no-split-K one otherwise, with fallback between the
   /// pair always enabled. It does not gate the per-problem rankings, whose
   /// split-K-illegal members are dropped by the caller.
-  static SmallVector<StringRef> lookup(
-      StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
-      std::optional<QuickTuningProblemKeyHash> problemKeyHash = std::nullopt);
+  static SmallVector<StringRef>
+  lookup(StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
+         std::optional<QuickTuningProblemKey> problemKey = std::nullopt);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.

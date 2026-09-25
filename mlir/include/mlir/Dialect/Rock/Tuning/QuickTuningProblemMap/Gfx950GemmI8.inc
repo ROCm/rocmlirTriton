@@ -202,5 +202,5 @@ static const StringRef perfConfigsGfx950GemmI8[] = {
 #endif // Gemm_PER_PROBLEM_DEFINITIONS_GEN
 
 #ifdef Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN
-{"gfx950_gemm_i8", QuickTuningProblemMap(problemsGfx950GemmI8, perfConfigIndicesGfx950GemmI8, perfConfigsGfx950GemmI8)},
+{"gfx950_gemm_i8", QuickTuningProblemMap(6791176183107838810ULL, problemsGfx950GemmI8, perfConfigIndicesGfx950GemmI8, perfConfigsGfx950GemmI8)},
 #endif // Gemm_PER_PROBLEM_LOOKUP_TABLE_GEN

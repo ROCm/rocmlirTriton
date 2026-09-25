@@ -629,8 +629,8 @@ CONFIG_CLASSES = {
 }
 
 
-def problem_key_hash(row, op, rocmlir_gen):
-    """Ask the compiler for this problem's key hash.
+def problem_key_and_version_hash(row, op, rocmlir_gen):
+    """Ask the compiler for this problem's key and field-list hashes.
 
     The key has one implementation, in C++. Rebuild the problem the way
     perfRunner would and let rocmlir-gen answer, rather than reproducing it.
@@ -644,13 +644,19 @@ def problem_key_hash(row, op, rocmlir_gen):
     # rocmlir-gen rejects --kernel-repeats without a host harness, and we are
     # not running anything.
     args = config.generate_problem_commandline(kernel_repeats=None).split()
-    result = subprocess.run([str(rocmlir_gen), *args, '--emit-quick-tuning-problem-key-hash'],
+    result = subprocess.run([
+        str(rocmlir_gen), *args, '--emit-quick-tuning-problem-key-hash',
+        '--emit-quick-tuning-table-lookup-key-version-hash'
+    ],
                             capture_output=True,
                             check=False,
                             text=True)
     if result.returncode:
         raise RuntimeError(f'could not key {config.to_command_line()!r}: {result.stderr.strip()}')
-    return int(result.stdout)
+    values = result.stdout.splitlines()
+    if len(values) != 2:
+        raise RuntimeError(f'expected problem and field-list hashes, got: {result.stdout.strip()}')
+    return int(values[0]), int(values[1])
 
 
 def positive_int(value):
@@ -675,39 +681,48 @@ def select_perfconfigs(group, op, top_n):
 
 
 def per_problem_perfconfigs(typed, op, top_n, rocmlir_gen):
-    """Rank one data type's measurements into {problem key hash: perfconfigs}."""
+    """Rank measurements and return their rows and lookup-key version hash."""
     problem_cols = get_target_columns(op)
     groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
     print(f"keying {len(groups)} problems ... ", end='', flush=True)
     with ThreadPoolExecutor() as pool:
-        keys = pool.map(lambda rows: problem_key_hash(rows.iloc[0], op, rocmlir_gen), groups)
+        keys = pool.map(lambda rows: problem_key_and_version_hash(rows.iloc[0], op, rocmlir_gen),
+                        groups)
 
     problems = {}
+    key_version_hashes = set()
     missing_non_split = 0
     short = 0
-    for rows, key in zip(groups, keys):
+    for rows, (key, key_version_hash) in zip(groups, keys):
         if key in problems:
             raise ValueError(
                 f'{op}: two problems share key {key}, so one would be dropped. Either the '
                 f'compiler keys on fewer fields than {problem_cols}, or these two hash '
                 f'to the same value.')
+        key_version_hashes.add(key_version_hash)
         best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
         perfconfigs, missing = select_perfconfigs(best, op, top_n)
         problems[key] = perfconfigs
         missing_non_split += missing
         short += len(perfconfigs) < top_n
-    return problems, missing_non_split, short
+    if len(key_version_hashes) > 1:
+        raise ValueError(f'{op}: one shard cannot record multiple lookup-key field-list hashes: '
+                         f'{sorted(key_version_hashes)}')
+    key_version_hash = next(iter(key_version_hashes), None)
+    return problems, key_version_hash, missing_non_split, short
 
 
 def to_camel_case(key):
     return ''.join(part.capitalize() for part in key.split('_'))
 
 
-def format_shard(key, op, problems):
+def format_shard(key, op, problems, key_version_hash):
     """Render one per-problem map shard.
 
     Perfconfigs are interned and each problem indexes a variable-length run of
-    them, so lists need no padding.
+    them, so lists need no padding. The shard records the table lookup key
+    version hash its problem hashes were computed with, so the compiler can
+    ignore it with a warning once that key schema changes.
     """
     suffix = to_camel_case(key)
     hashes = sorted(problems)
@@ -737,7 +752,7 @@ def format_shard(key, op, problems):
     lines += [
         '};', f'#endif // {section}_PER_PROBLEM_DEFINITIONS_GEN', '',
         f'#ifdef {section}_PER_PROBLEM_LOOKUP_TABLE_GEN',
-        f'{{"{key}", QuickTuningProblemMap(problems{suffix}, '
+        f'{{"{key}", QuickTuningProblemMap({key_version_hash}ULL, problems{suffix}, '
         f'perfConfigIndices{suffix}, perfConfigs{suffix})}},',
         f'#endif // {section}_PER_PROBLEM_LOOKUP_TABLE_GEN', ''
     ]
@@ -750,18 +765,18 @@ def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
     shard_dir = get_output_path().with_name(PROBLEM_MAP_DIR)
     shard_dir.mkdir(parents=True, exist_ok=True)
     kernel_type = OP_TO_KERNEL_TYPE[op].lower()
-
     for dtype in sorted(df_arch['DataType'].unique()):
         print(f"{dtype}: ", end='')
         typed = df_arch[df_arch['DataType'] == dtype]
-        problems, missing_non_split, short = per_problem_perfconfigs(typed, op, top_n, rocmlir_gen)
+        problems, key_version_hash, missing_non_split, short = per_problem_perfconfigs(
+            typed, op, top_n, rocmlir_gen)
         if not problems:
             print("no problems")
             continue
 
         key = f'{arch}_{kernel_type}_{dtype}'
         name = f'{to_camel_case(key)}.inc'
-        shard = format_shard(key, op, problems)
+        shard = format_shard(key, op, problems, key_version_hash)
         (shard_dir / name).write_text(shard)
         perfconfigs = {p for row in problems.values() for p in row}
         print(f"{len(perfconfigs)} perfconfigs -> {PROBLEM_MAP_DIR}/{name}")

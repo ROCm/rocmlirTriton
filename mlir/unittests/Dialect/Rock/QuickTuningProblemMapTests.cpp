@@ -21,9 +21,11 @@ const StringRef perfConfigs[] = {"A", "B", "C"};
 constexpr uint16_t perfConfigIndices[] = {0, 1, 2, 2, 0};
 constexpr QuickTuningProblemRef problems[] = {
     {10, 0, 3}, {20, 3, 1}, {30, 4, 1}};
+constexpr QuickTuningTableLookUpKeyVersionHash keyVersionHash = 42;
 
 QuickTuningProblemMap makeMap() {
-  return QuickTuningProblemMap(problems, perfConfigIndices, perfConfigs);
+  return QuickTuningProblemMap(keyVersionHash, problems, perfConfigIndices,
+                               perfConfigs);
 }
 } // namespace
 
@@ -47,15 +49,20 @@ TEST(QuickTuningProblemMapTest, MissReturnsEmpty) {
 }
 
 TEST(QuickTuningProblemMapTest, EmptyMapMisses) {
-  QuickTuningProblemMap map({}, {}, {});
+  QuickTuningProblemMap map(keyVersionHash, {}, {}, {});
   EXPECT_TRUE(map.lookup(10).empty());
+}
+
+TEST(QuickTuningProblemMapTest, RecordsLookupKeyVersionHash) {
+  EXPECT_EQ(makeMap().getKeyVersionHash(), keyVersionHash);
 }
 
 TEST(QuickTuningProblemMapDeathTest, UnsortedProblemsTripTheAssert) {
   constexpr QuickTuningProblemRef unsorted[] = {{20, 0, 1}, {10, 1, 1}};
   EXPECT_DEBUG_DEATH(
       {
-        QuickTuningProblemMap map(unsorted, perfConfigIndices, perfConfigs);
+        QuickTuningProblemMap map(keyVersionHash, unsorted, perfConfigIndices,
+                                  perfConfigs);
         (void)map;
       },
       "sorted by hash");

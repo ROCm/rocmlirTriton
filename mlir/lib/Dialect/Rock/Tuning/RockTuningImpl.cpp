@@ -1009,7 +1009,7 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
   for (GemmParamsAttr param : tuningInfo.getTuningParameters(
            b, info.kernelType, info.gemmAType, info.gemmBType, info.arch,
            supportsSplitK, info.quantBlockSize, info.aScaleType,
-           info.bScaleType, info.problemKeyHash)) {
+           info.bScaleType, info.problemKey)) {
     // A regular-list fallback is still possible when no no-split-K list exists
     // for this architecture, so retain this as a legality safety net.
     if (!supportsSplitK && param.getSplitKFactor() > 1)
@@ -1741,17 +1741,29 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
 }
 
 namespace {
-/// Joins the fields identifying a problem into one string.
+/// Joins the values identifying a problem into one string while separately
+/// recording the ordered field names. Hashing those names gives generated
+/// maps an automatic schema version that is independent of problem values.
 struct ProblemKeyBuilder {
   std::string key;
   llvm::raw_string_ostream os{key};
+  std::string fields;
+  llvm::raw_string_ostream fieldsOS{fields};
 
   template <typename T>
-  ProblemKeyBuilder &operator<<(const T &field) {
+  ProblemKeyBuilder &add(StringRef name, const T &value) {
     if (!key.empty())
       os << '_';
-    os << field;
+    os << value;
+    if (!fields.empty())
+      fieldsOS << '_';
+    fieldsOS << name;
     return *this;
+  }
+
+  QuickTuningProblemKey build() {
+    return {hashQuickTuningProblemKey(os.str()),
+            hashQuickTuningTableLookUpKeyVersion(fieldsOS.str())};
   }
 };
 } // namespace
@@ -1775,21 +1787,36 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
     auto stride = extractFromIntegerArrayAttr<int64_t>(convIF.getStrides());
     auto dilation = extractFromIntegerArrayAttr<int64_t>(convIF.getDilations());
 
-    out << (opType == KernelType::Conv ? "fwd" : "bwd") << fLayout << iLayout
-        << oLayout << inShape[iLayoutMap["ni"]]
-        << inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]]
-        << inShape[iLayoutMap["0i"]] << inShape[iLayoutMap["1i"]]
-        << filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]]
-        << filShape[fLayoutMap["0"]] << filShape[fLayoutMap["1"]] << dilation[0]
-        << dilation[1] << stride[0] << stride[1] << padding[0] << padding[2];
+    out.add("F", opType == KernelType::Conv ? "fwd" : "bwd")
+        .add("f", fLayout)
+        .add("I", iLayout)
+        .add("O", oLayout)
+        .add("n", inShape[iLayoutMap["ni"]])
+        .add("c", inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]])
+        .add("H", inShape[iLayoutMap["0i"]])
+        .add("W", inShape[iLayoutMap["1i"]])
+        .add("k", filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]])
+        .add("y", filShape[fLayoutMap["0"]])
+        .add("x", filShape[fLayoutMap["1"]])
+        .add("l", dilation[0])
+        .add("j", dilation[1])
+        .add("u", stride[0])
+        .add("v", stride[1])
+        .add("p", padding[0])
+        .add("q", padding[2]);
     return success();
   }
 
   if (opType == KernelType::Gemm) {
     auto rGemmOp = cast<rock::GemmOp>(gemmOp);
     GemmSize size = gemmIF.getGemmSize();
-    out << rGemmOp.getATransposed() << rGemmOp.getBTransposed()
-        << rGemmOp.getOTransposed() << size.g << size.m << size.k << size.n;
+    out.add("transA", rGemmOp.getATransposed())
+        .add("transB", rGemmOp.getBTransposed())
+        .add("transO", rGemmOp.getOTransposed())
+        .add("g", size.g)
+        .add("m", size.m)
+        .add("k", size.k)
+        .add("n", size.n);
     return success();
   }
 
@@ -1816,14 +1843,25 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
     getAttentionScaleBias(attnOp, elemTypeQ.isInteger(8), hasAttnScale,
                           hasAttnBias, hasTransposedAttnBias);
     auto lookBack = attnOp.getSlidingWindowLookBack();
-    out << transposedA << transposedB << transposedC
-        << gemmGemmOp.getTransposedOut() << attnOp.getCausal()
-        << attnOp.getLse() << attnOp.getSplitKV()
-        << (lookBack && *lookBack > 0 ? *lookBack : -1) << hasAttnScale
-        << hasAttnBias << hasTransposedAttnBias
-        << qShape[0] / attnOp.getNumHeadsQ() << seqLenQ << seqLenK
-        << attnOp.getNumHeadsQ() << attnOp.getNumHeadsKV() << headDimQK
-        << headDimV;
+    out.add("transQ", transposedA)
+        .add("transK", transposedB)
+        .add("transV", transposedC)
+        .add("transO", gemmGemmOp.getTransposedOut())
+        .add("causal", attnOp.getCausal())
+        .add("return_lse", attnOp.getLse())
+        .add("split_kv", attnOp.getSplitKV())
+        .add("sliding_window_look_back",
+             lookBack && *lookBack > 0 ? *lookBack : -1)
+        .add("with-attn-scale", hasAttnScale)
+        .add("with-attn-bias", hasAttnBias)
+        .add("transBias", hasTransposedAttnBias)
+        .add("g", qShape[0] / attnOp.getNumHeadsQ())
+        .add("seq_len_q", seqLenQ)
+        .add("seq_len_k", seqLenK)
+        .add("num_heads_q", attnOp.getNumHeadsQ())
+        .add("num_heads_kv", attnOp.getNumHeadsKV())
+        .add("head_dim_qk", headDimQK)
+        .add("head_dim_v", headDimV);
     return success();
   }
 
@@ -1843,53 +1881,68 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
     auto dilation =
         extractFromIntegerArrayAttr<int64_t>(convGemmOp.getDilations());
 
-    out << fLayout << iLayout << transposedC << gemmGemmOp.getTransposedOut()
-        << inShape[iLayoutMap["ni"]]
-        << inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]]
-        << inShape[iLayoutMap["0i"]] << inShape[iLayoutMap["1i"]]
-        << filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]]
-        << filShape[fLayoutMap["0"]] << filShape[fLayoutMap["1"]] << dilation[0]
-        << dilation[1] << stride[0] << stride[1] << padding[0] << padding[2]
-        << headDimV;
+    out.add("f", fLayout)
+        .add("I", iLayout)
+        .add("transC", transposedC)
+        .add("transO", gemmGemmOp.getTransposedOut())
+        .add("n", inShape[iLayoutMap["ni"]])
+        .add("c", inShape[iLayoutMap["ci"]] * inShape[iLayoutMap["gi"]])
+        .add("H", inShape[iLayoutMap["0i"]])
+        .add("W", inShape[iLayoutMap["1i"]])
+        .add("k", filShape[fLayoutMap["k"]] * filShape[fLayoutMap["g"]])
+        .add("y", filShape[fLayoutMap["0"]])
+        .add("x", filShape[fLayoutMap["1"]])
+        .add("l", dilation[0])
+        .add("j", dilation[1])
+        .add("u", stride[0])
+        .add("v", stride[1])
+        .add("p", padding[0])
+        .add("q", padding[2])
+        .add("gemmO", headDimV);
     return success();
   }
 
-  out << transposedA << transposedB << transposedC
-      << gemmGemmOp.getTransposedOut() << qShape[0] << seqLenQ << headDimQK
-      << seqLenK << headDimV;
+  out.add("transA", transposedA)
+      .add("transB", transposedB)
+      .add("transC", transposedC)
+      .add("transO", gemmGemmOp.getTransposedOut())
+      .add("g", qShape[0])
+      .add("m", seqLenQ)
+      .add("k", headDimQK)
+      .add("n", seqLenK)
+      .add("gemmO", headDimV);
   return success();
 }
 
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(RockGemmWrapperInterface op) {
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmWrapperInterface op) {
   ProblemKeyBuilder builder;
   if (failed(getQuickTuningProblemKey(op, builder)))
     return std::nullopt;
-  return hashQuickTuningProblemKey(builder.key);
+  return builder.build();
 }
 
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(RockGemmGemmWrapperInterface op) {
+std::optional<QuickTuningProblemKey>
+getQuickTuningProblemKey(RockGemmGemmWrapperInterface op) {
   ProblemKeyBuilder builder;
   if (failed(getQuickTuningProblemKey(op, builder)))
     return std::nullopt;
-  return hashQuickTuningProblemKey(builder.key);
+  return builder.build();
 }
 
-std::optional<QuickTuningProblemKeyHash>
-getQuickTuningProblemKeyHash(ModuleOp mod) {
-  std::optional<QuickTuningProblemKeyHash> hash;
+std::optional<QuickTuningProblemKey> getQuickTuningProblemKey(ModuleOp mod) {
+  std::optional<QuickTuningProblemKey> key;
   mod->walk([&](RockGemmWrapperInterface op) {
-    hash = getQuickTuningProblemKeyHash(op);
+    key = getQuickTuningProblemKey(op);
     return WalkResult::interrupt();
   });
-  if (hash)
-    return hash;
+  if (key)
+    return key;
   mod->walk([&](RockGemmGemmWrapperInterface op) {
-    hash = getQuickTuningProblemKeyHash(op);
+    key = getQuickTuningProblemKey(op);
     return WalkResult::interrupt();
   });
-  return hash;
+  return key;
 }
 
 // Suppose to return the structure of the given problem to tune, currently
