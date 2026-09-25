@@ -30,7 +30,7 @@
 #include <system_error>
 #include <vector>
 
-#include <hip/hip_runtime.h>
+#include "mlir/Support/MsvcHipCompat.h"
 
 using namespace mlir;
 using namespace rocmlir::tuningdriver;

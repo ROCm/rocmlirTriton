@@ -28,18 +28,22 @@ include(HandleLLVMOptions)
 check_c_compiler_flag("-Werror=implicit-function-declaration" C_SUPPORTS_WERROR_IMPLICIT_FUNCTION_DECLARATION)
 append_if(C_SUPPORTS_WERROR_IMPLICIT_FUNCTION_DECLARATION "-Werror=implicit-function-declaration" CMAKE_C_FLAGS)
 
-# Match Triton: -Wcovered-switch-default (on by default in Clang/LLVM) is
-# noisy on MLIR-style enums where a default: is intentionally present.
-add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-covered-switch-default>)
+# These are all GCC/Clang warning spellings; cl.exe rejects them outright with
+# "D8021: invalid numeric argument". MSVC's equivalents come from HandleLLVMOptions.
+if(NOT MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # Match Triton: -Wcovered-switch-default (on by default in Clang/LLVM) is
+  # noisy on MLIR-style enums where a default: is intentionally present.
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-covered-switch-default>)
 
-# Extras on top of -Wall/-Wextra and the LLVM warning set.
-add_compile_options(
-  $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
-  $<$<COMPILE_LANGUAGE:CXX>:-Wnull-dereference>
-  $<$<COMPILE_LANGUAGE:CXX>:-Wformat=2>
-  $<$<COMPILE_LANGUAGE:CXX>:-Wundef>
-  $<$<COMPILE_LANGUAGE:CXX>:-Wmissing-declarations>
-)
+  # Extras on top of -Wall/-Wextra and the LLVM warning set.
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wnull-dereference>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wformat=2>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wundef>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wmissing-declarations>
+  )
+endif()
 
 # Refer to https://reviews.llvm.org/D122088
 set(CMAKE_INCLUDE_CURRENT_DIR ON)

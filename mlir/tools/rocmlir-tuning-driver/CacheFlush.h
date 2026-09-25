@@ -11,7 +11,8 @@
 
 #include "mlir/Support/LogicalResult.h"
 
-#include <hip/hip_runtime.h>
+// Pulls in <hip/hip_runtime.h> with the workarounds MSVC needs applied first.
+#include "mlir/Support/MsvcHipCompat.h"
 
 namespace rocmlir::tuningdriver {
 
