@@ -703,7 +703,7 @@ TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
   auto setCover =
       lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
   QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
-                                   kGemmKeyVersionHash, "prefix_offset"};
+                                   kGemmKeyVersionHash, "convolution_groups"};
 
   testing::internal::CaptureStderr();
   auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
@@ -713,8 +713,28 @@ TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
 
   EXPECT_TRUE(unsupported == setCover);
   EXPECT_NE(warnings.find("does not represent"), std::string::npos);
-  EXPECT_NE(warnings.find("prefix_offset"), std::string::npos);
+  EXPECT_NE(warnings.find("convolution_groups"), std::string::npos);
   EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
+}
+
+TEST(LookupTest, UntunableProblemFieldsUseSetCoverQuietly) {
+  // Retuning cannot add a mode the tuning pipeline cannot express, so such a
+  // mode still avoids the mapped ranking but is not worth a warning.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, /*unsupportedFields=*/"",
+                                   /*untunableFields=*/"asymmetric_padding"};
+
+  testing::internal::CaptureStderr();
+  auto untunable = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(untunable == setCover);
+  EXPECT_TRUE(warnings.empty());
 }
 
 TEST(LookupTest, UnsupportedProblemFieldsWithoutAMapAreQuiet) {
@@ -726,7 +746,7 @@ TEST(LookupTest, UnsupportedProblemFieldsWithoutAMapAreQuiet) {
       "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
       /*supportsSplitK=*/true);
   QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
-                                   kGemmKeyVersionHash, "prefix_offset"};
+                                   kGemmKeyVersionHash, "convolution_groups"};
 
   testing::internal::CaptureStderr();
   auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(

@@ -49,6 +49,10 @@ SmallVector<StringRef> ParamLookupTable<ParamsType>::lookup(
             << "; falling back to the set cover. Exhaustively tune this "
                "problem mode and regenerate the map before reusing "
                "per-problem results.\n";
+      } else if (!problemKey->untunableFields.empty()) {
+        LLVM_DEBUG(llvm::dbgs() << "Per-problem lookup skipped for untunable "
+                                   "fields: "
+                                << problemKey->untunableFields << "\n");
       } else if (it->second.getKeyVersionHash() != problemKey->versionHash) {
         llvm::WithColor::warning(llvm::errs())
             << "ignoring per-problem quick-tuning map " << key

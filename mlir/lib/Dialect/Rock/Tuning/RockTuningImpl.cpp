@@ -1750,6 +1750,7 @@ struct ProblemKeyBuilder {
   std::string fields;
   llvm::raw_string_ostream fieldsOS{fields};
   SmallVector<std::string> unsupportedFields;
+  SmallVector<std::string> untunableFields;
 
   template <typename T>
   ProblemKeyBuilder &add(StringRef name, const T &value) {
@@ -1767,23 +1768,37 @@ struct ProblemKeyBuilder {
     return *this;
   }
 
+  /// An unsupported mode that the tuning pipeline cannot carry end to end (the
+  /// tuning problem string MIGraphX dumps and perfRunner replays does not
+  /// record it), so retuning would never add it to the maps.
+  ProblemKeyBuilder &untunable(StringRef name) {
+    untunableFields.push_back(name.str());
+    return *this;
+  }
+
   QuickTuningProblemKey build() {
-    llvm::sort(unsupportedFields);
-    unsupportedFields.erase(
-        std::unique(unsupportedFields.begin(), unsupportedFields.end()),
-        unsupportedFields.end());
+    auto sortUnique = [](SmallVector<std::string> &names) {
+      llvm::sort(names);
+      names.erase(std::unique(names.begin(), names.end()), names.end());
+    };
+    sortUnique(unsupportedFields);
+    sortUnique(untunableFields);
 
     // Unsupported fields are part of the schema fingerprint, but not the
     // problem hash: there is deliberately no per-problem ranking to look up
-    // for them. ParamLookupTable diagnoses them and uses the set cover.
-    for (StringRef name : unsupportedFields) {
+    // for them. ParamLookupTable uses the set cover for them.
+    SmallVector<std::string> allUnsupported(unsupportedFields);
+    llvm::append_range(allUnsupported, untunableFields);
+    sortUnique(allUnsupported);
+    for (StringRef name : allUnsupported) {
       if (!fields.empty())
         fieldsOS << '_';
       fieldsOS << "unsupported:" << name;
     }
     return {hashQuickTuningProblemKey(os.str()),
             hashQuickTuningTableLookUpKeyVersion(fieldsOS.str()),
-            llvm::join(unsupportedFields, ", ")};
+            llvm::join(unsupportedFields, ", "),
+            llvm::join(untunableFields, ", ")};
   }
 };
 
@@ -1838,13 +1853,16 @@ static void classifyQuickTuningFunction(Operation *op, ProblemKeyBuilder &out) {
   if (!func)
     return;
 
-  auto rejectNonemptyFusion = [&](StringRef attrName, StringRef fieldName) {
-    auto fusions = func->getAttrOfType<ArrayAttr>(attrName);
-    if (fusions && !fusions.empty())
-      out.unsupported(fieldName);
-  };
-  rejectNonemptyFusion(InputFusionsAttr::getMnemonic(), "input_fusions");
-  rejectNonemptyFusion(OutputFusionsAttr::getMnemonic(), "output_fusions");
+  // Output fusions are deliberately not part of the key: MIGraphX fuses an
+  // epilogue into nearly every kernel, so rejecting them would leave the maps
+  // unreachable in practice. Fused problems reuse the bare problem's ranking;
+  // as for any split-K-illegal caller, the tuning space drops its split-K
+  // members, leaving at least the splitKFactor=1 slot every row reserves.
+  auto inputFusions =
+      func->getAttrOfType<ArrayAttr>(InputFusionsAttr::getMnemonic());
+  // perfRunner strips -inputFusions= and tunes only the standalone problem.
+  if (inputFusions && !inputFusions.empty())
+    out.untunable("input_fusions");
 
   for (NamedAttribute attr : func->getDiscardableAttrs()) {
     StringRef name = attr.getName().getValue();
@@ -1857,7 +1875,33 @@ static void classifyFusedReduction(Operation *op, ProblemKeyBuilder &out) {
   auto func = op->getParentOfType<func::FuncOp>();
   if (func && func.walk([](ReduceOp) { return WalkResult::interrupt(); })
                   .wasInterrupted())
-    out.unsupported("fused_reduction");
+    out.untunable("fused_reduction");
+}
+
+static bool isQuickTuningF8Type(Type type) {
+  return isa<Float8E4M3FNUZType, Float8E4M3FNType, Float8E5M2FNUZType,
+             Float8E5M2Type>(type);
+}
+
+/// The output type `-t` implies for these inputs: rocmlir-gen, and so the
+/// tuning pipeline, extends i8 to i32 and fp8/bf8 to f32.
+static Type getImpliedQuickTuningOutputType(Type in) {
+  if (in.isInteger(8))
+    return IntegerType::get(in.getContext(), 32);
+  if (isQuickTuningF8Type(in))
+    return Float32Type::get(in.getContext());
+  return in;
+}
+
+/// Mixed inputs survive the tuning problem string only as an fp8/bf8 pair
+/// (convfp8_bf8, -t fp8_bf8); any other mix is lost or fails to serialize.
+static void classifyMixedInputTypes(Type a, Type b, ProblemKeyBuilder &out) {
+  if (a == b)
+    return;
+  if (isQuickTuningF8Type(a) && isQuickTuningF8Type(b))
+    out.unsupported("mixed_input_data_types");
+  else
+    out.untunable("mixed_input_data_types");
 }
 } // namespace
 
@@ -1905,22 +1949,22 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
     auto stride = extractFromIntegerArrayAttr<int64_t>(convIF.getStrides());
     auto dilation = extractFromIntegerArrayAttr<int64_t>(convIF.getDilations());
 
-    if (gemmIF.getAType() != gemmIF.getBType())
-      out.unsupported("mixed_input_data_types");
-    if (gemmIF.getAType() != gemmIF.getCType())
-      out.unsupported("output_data_type");
+    classifyMixedInputTypes(gemmIF.getAType(), gemmIF.getBType(), out);
+    // The conv problem string has no output type, only the one `-t` implies.
+    if (gemmIF.getCType() != getImpliedQuickTuningOutputType(gemmIF.getAType()))
+      out.untunable("output_data_type");
 
     // Existing maps were measured for 2-D, ungrouped convolutions with
     // symmetric padding. Other forms remain valid compiler inputs, but their
     // rankings have not been measured and must not alias those maps.
     if (padding.size() != 4 || stride.size() != 2 || dilation.size() != 2) {
-      out.unsupported("convolution_spatial_rank");
+      out.untunable("convolution_spatial_rank");
       return success();
     }
     if (inShape[iLayoutMap["gi"]] != 1)
       out.unsupported("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
-      out.unsupported("asymmetric_padding");
+      out.untunable("asymmetric_padding");
 
     out.add("F", opType == KernelType::Conv ? "fwd" : "bwd")
         .add("f", fLayout)
@@ -1963,9 +2007,8 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
     if (gemmOp->getNumRegions() != 0)
       out.unsupported("region_schema");
 
-    if (gemmIF.getAType() != gemmIF.getBType())
-      out.unsupported("mixed_input_data_types");
-    if (gemmIF.getAType() != gemmIF.getCType())
+    classifyMixedInputTypes(gemmIF.getAType(), gemmIF.getBType(), out);
+    if (gemmIF.getCType() != getImpliedQuickTuningOutputType(gemmIF.getAType()))
       out.unsupported("output_data_type");
     if (rGemmOp.getScaleA() || rGemmOp.getScaleB() ||
         rGemmOp.getQuantBlockSize() || rGemmOp.getAScaleTransposed() ||
@@ -2028,25 +2071,27 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
     getAttentionScaleBias(attnOp, elemTypeQ.isInteger(8), hasAttnScale,
                           hasAttnBias, hasTransposedAttnBias);
 
+    // The attention problem string records neither these types, the softmax
+    // type, nor the KV-cache/prefix masks, so none of them can be retuned.
     if (elemTypeQ != elemTypeK)
-      out.unsupported("mixed_qk_data_types");
+      out.untunable("mixed_qk_data_types");
     if (!elemTypeQ.isInteger(8) &&
         (elemTypeQ != elemTypeV || elemTypeQ != elemTypeO))
-      out.unsupported("value_or_output_data_type");
+      out.untunable("value_or_output_data_type");
     Type effectiveSoftmaxType = attnOp.getSoftmaxType().value_or(elemTypeV);
     if (!effectiveSoftmaxType.isF32())
-      out.unsupported("softmax_data_type");
+      out.untunable("softmax_data_type");
     if (attnOp.getLastValidKVIndex())
-      out.unsupported("last_valid_kv_index");
+      out.untunable("last_valid_kv_index");
     if (attnOp.getPrefixOffset())
-      out.unsupported("prefix_offset");
+      out.untunable("prefix_offset");
 
     unsigned numQuantInputs = elemTypeQ.isInteger(8) ? 2u : 0u;
     unsigned representedInputs = numQuantInputs +
                                  static_cast<unsigned>(hasAttnScale) +
                                  static_cast<unsigned>(hasAttnBias);
     if (attnOp.getPreSoftmaxElemWiseInputs().size() != representedInputs)
-      out.unsupported("pre_softmax_fusion");
+      out.untunable("pre_softmax_fusion");
 
     auto lookBack = attnOp.getSlidingWindowLookBack();
     out.add("transQ", transposedA)
@@ -2104,23 +2149,25 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
     Type elemTypeB = cast<ShapedType>(gemmGemmOp.getBType()).getElementType();
     Type elemTypeC = cast<ShapedType>(gemmGemmOp.getCType()).getElementType();
     Type elemTypeO = cast<ShapedType>(gemmGemmOp.getOutType()).getElementType();
+    // The conv+gemm problem string records only the first input type and
+    // nothing of the inter-gemm body.
     if (elemTypeA != elemTypeB)
-      out.unsupported("mixed_input_data_types");
+      out.untunable("mixed_input_data_types");
     if (elemTypeA != elemTypeC || elemTypeA != elemTypeO)
-      out.unsupported("value_or_output_data_type");
+      out.untunable("value_or_output_data_type");
     if (!convGemmOp.getElemwiseInputs().empty() ||
         (!convGemmOp.getPreSecondGemmBody().empty() &&
          !llvm::hasSingleElement(
              convGemmOp.getPreSecondGemmBody().front().getOperations())))
-      out.unsupported("inter_gemm_fusion");
+      out.untunable("inter_gemm_fusion");
     if (padding.size() != 4 || stride.size() != 2 || dilation.size() != 2) {
-      out.unsupported("convolution_spatial_rank");
+      out.untunable("convolution_spatial_rank");
       return success();
     }
     if (inShape[iLayoutMap["gi"]] != 1)
       out.unsupported("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
-      out.unsupported("asymmetric_padding");
+      out.untunable("asymmetric_padding");
 
     out.add("f", fLayout)
         .add("I", iLayout)
@@ -2163,15 +2210,16 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
   Type elemTypeB = cast<ShapedType>(gemmGemmOp.getBType()).getElementType();
   Type elemTypeC = cast<ShapedType>(gemmGemmOp.getCType()).getElementType();
   Type elemTypeO = cast<ShapedType>(gemmGemmOp.getOutType()).getElementType();
+  // As for conv+gemm, the problem string cannot carry these.
   if (elemTypeA != elemTypeB)
-    out.unsupported("mixed_input_data_types");
+    out.untunable("mixed_input_data_types");
   if (elemTypeA != elemTypeC || elemTypeA != elemTypeO)
-    out.unsupported("value_or_output_data_type");
+    out.untunable("value_or_output_data_type");
   if (!gemmGemm.getElemwiseInputs().empty() ||
       (!gemmGemm.getPreSecondGemmBody().empty() &&
        !llvm::hasSingleElement(
            gemmGemm.getPreSecondGemmBody().front().getOperations())))
-    out.unsupported("inter_gemm_fusion");
+    out.untunable("inter_gemm_fusion");
 
   out.add("transA", transposedA)
       .add("transB", transposedB)
