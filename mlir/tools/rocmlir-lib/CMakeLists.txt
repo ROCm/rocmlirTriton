@@ -46,7 +46,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     # registered targets through the fat-library interface and package.
     get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
 
-    add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets})
+    add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets} ${__mlir_targets})
 
     foreach(__library ${__mlir_libs})
       list(APPEND __mlir_libraries ${LLVM_LIBRARY_DIR}/${__library}.lib)

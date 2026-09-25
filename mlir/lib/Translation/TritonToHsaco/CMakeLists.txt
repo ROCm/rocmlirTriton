@@ -67,11 +67,6 @@ add_mlir_translation_library(TritonToHsacoTranslation
   AMDGPUInfo
   TransformUtils
   Instrumentation
-  # X86 targets needed for InitializeAllTargets()
-  X86CodeGen
-  X86AsmParser
-  X86Desc
-  X86Info
 
   LINK_LIBS PUBLIC
   MLIRDLTIDialect

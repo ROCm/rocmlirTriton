@@ -69,7 +69,7 @@ endif()
 # clang-cl with Ninja defaults an unset build type to Debug during project().
 # Select the Windows default before that initialization occurs.
 if(CMAKE_HOST_WIN32 AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
 project(rocMLIR VERSION 2.0.0 LANGUAGES CXX C)
@@ -167,8 +167,8 @@ set(ROCMLIR_GEN_FLAGS "" CACHE BOOL "Set feature flag for rocmlir-gen")
 # Disable E2E tests by default since they require JIT runner
 set(ROCK_E2E_TEST_ENABLED OFF CACHE BOOL "Enable build rock E2E tests")
 set(ROCMLIR_ENABLE_BENCHMARKS "" CACHE STRING "List of enabled benchmarks")
-# Enable ROCM runner to build rocmlir-tuning-driver and related tools
-set(MLIR_ENABLE_ROCM_RUNNER ON CACHE BOOL "Enable building the ROCm runner")
+# ROCm runner pulls in X86 LLVM targets for host-side JIT; off for consumer builds.
+set(MLIR_ENABLE_ROCM_RUNNER OFF CACHE BOOL "Enable building the ROCm runner")
 
 set(ROCMLIR_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin" CACHE PATH "")
 set(ROCMLIR_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/lib" CACHE PATH "")

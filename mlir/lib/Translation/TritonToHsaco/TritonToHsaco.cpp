@@ -156,11 +156,13 @@ public:
 void initializeLLVMTargets() {
   static std::once_flag initFlag;
   std::call_once(initFlag, []() {
-    llvm::InitializeAllTargetInfos();
-    llvm::InitializeAllTargets();
-    llvm::InitializeAllTargetMCs();
-    llvm::InitializeAllAsmParsers();
-    llvm::InitializeAllAsmPrinters();
+#if LLVM_HAS_AMDGPU_TARGET
+    LLVMInitializeAMDGPUTargetInfo();
+    LLVMInitializeAMDGPUTarget();
+    LLVMInitializeAMDGPUTargetMC();
+    LLVMInitializeAMDGPUAsmParser();
+    LLVMInitializeAMDGPUAsmPrinter();
+#endif
   });
   // Disable LLVM's internal parallelism. Triton kernels produce small LLVM
   // modules where pass-level parallelism is not beneficial, and LLVM's
