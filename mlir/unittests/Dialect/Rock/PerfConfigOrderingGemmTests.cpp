@@ -14,6 +14,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -185,6 +187,85 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableLDSAtBoundary) {
   // `<=` so this just fits.
   auto p = e.gemm(64, 64, 64, 1, 1, 4, 0, 1, 2, 0, 0);
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
+}
+
+// --- sibling GEMMs (backward-data kernel IDs) ---
+
+// The kernel IDs of a stride-2 4x4 backward-data conv (the shape in
+// mixr-bwd-data-conv-dilation1-stride2.mlir) all have K = 4 * 512 and read the
+// same gradient view, so their fused K-loop holds four A tiles and one B tile.
+TEST(PerfConfigOrderingGemmTest, IsApplicableChargesFusedSiblingATiles) {
+  GemmOrderingTestEnv e;
+  SmallVector<SiblingGemm> siblings(4, {/*k=*/2048, /*bViewId=*/0});
+
+  // For 64x16x64 fp32 numStages=2 the estimate is (A + B) * 2 = 40960 B for a
+  // single GEMM, which fits in 64 KiB, but (4 A + B) * 2 = 139264 B for the
+  // siblings, which does not. Triton allocates 69632 B for that kernel, which
+  // does not fit either.
+  auto overflowing = e.gemm(64, 16, 64, 1, 1, 4, 16, 1, 2, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(overflowing, e.f32, e.f32,
+                                                   "gfx942"));
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      overflowing, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr,
+      siblings));
+
+  // For 16x64x64 the estimate is (4 A + B) * 2 = 65536 B, which just fits.
+  auto boundary = e.gemm(16, 64, 64, 1, 1, 4, 16, 1, 2, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(boundary, e.f32, e.f32,
+                                                   "gfx942", std::nullopt,
+                                                   nullptr, nullptr, siblings));
+}
+
+// Siblings that read different views of B keep one B tile each.
+TEST(PerfConfigOrderingGemmTest, IsApplicableChargesDistinctSiblingBTiles) {
+  GemmOrderingTestEnv e;
+  // 16x64x64 fp32 numStages=2: A is 4096 B and B is 16384 B per stage.
+  auto p = e.gemm(16, 64, 64, 1, 1, 4, 16, 1, 2, 0, 0);
+  // Shared B: (2 A + B) * 2 = 49152 B.
+  SmallVector<SiblingGemm> sharedB = {{1024, 0}, {1024, 0}};
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr, sharedB));
+  // Distinct B: (2 A + 2 B) * 2 = 81920 B.
+  SmallVector<SiblingGemm> distinctB = {{1024, 0}, {1024, 1}};
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr, distinctB));
+}
+
+// Only siblings whose K-loops have the same trip count, ceil(K / kPerBlock),
+// are fused, so the budget covers the largest group rather than every sibling.
+TEST(PerfConfigOrderingGemmTest, IsApplicableGroupsSiblingsByTripCount) {
+  GemmOrderingTestEnv e;
+  // The kernel IDs of a stride-2 3x3 backward-data conv with 512 gradient
+  // channels have K = 2048, 1024, 1024 and 512, each with its own gradient
+  // view. With kPerBlock = 64 only the two with K = 1024 share a loop. For
+  // 32x32x64 fp32 numStages=2 that loop needs (2 A + 2 B) * 2 = 65536 B, which
+  // just fits. If all four shared one loop it would need twice that.
+  auto p = e.gemm(32, 32, 64, 1, 1, 4, 16, 1, 2, 0, 0);
+  SmallVector<SiblingGemm> fil3x3 = {{2048, 0}, {1024, 1}, {1024, 2}, {512, 3}};
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr, fil3x3));
+  SmallVector<SiblingGemm> oneLoop = {
+      {1024, 0}, {1024, 1}, {1024, 2}, {1024, 3}};
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr, oneLoop));
+}
+
+// K is padded up to a multiple of kPerBlock before the K-loop is built, so
+// siblings with different K can still have the same trip count.
+TEST(PerfConfigOrderingGemmTest, IsApplicableRoundsSiblingTripCountsUp) {
+  GemmOrderingTestEnv e;
+  // With kPerBlock = 64, K = 96 and K = 128 both take two iterations, while
+  // K = 160 takes three. For 16x64x64 fp32 numStages=2 a shared loop needs
+  // (2 A + 2 B) * 2 = 81920 B and separate loops need (A + B) * 2 = 40960 B.
+  auto p = e.gemm(16, 64, 64, 1, 1, 4, 16, 1, 2, 0, 0);
+  SmallVector<SiblingGemm> sameTripCount = {{96, 0}, {128, 1}};
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942",
+                                                    std::nullopt, nullptr,
+                                                    nullptr, sameTripCount));
+  SmallVector<SiblingGemm> otherTripCount = {{96, 0}, {160, 1}};
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942",
+                                                   std::nullopt, nullptr,
+                                                   nullptr, otherTripCount));
 }
 
 // --- orderParams ---
@@ -422,6 +503,78 @@ TEST(PerfConfigOrderingGemmTest, FromOpExtractsScaleElementTypeOnRealGemmOp) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(
       p, info.gemmAType, info.gemmBType, info.arch, info.quantBlockSize,
       info.aScaleType, info.bScaleType));
+}
+
+// Production wiring: `fromOp` on a real stride-2 `rock.conv_bwd_data` lists one
+// sibling GEMM per kernel ID, with the K and gradient view it lowers to.
+TEST(PerfConfigOrderingGemmTest, FromOpListsBwdDataKernelIdsAsSiblingGemms) {
+  MLIRContext ctx;
+  DialectRegistry reg;
+  reg.insert<rock::RockDialect>();
+  reg.insert<func::FuncDialect>();
+  ctx.appendDialectRegistry(reg);
+  ctx.loadAllAvailableDialects();
+
+  // 512 gradient channels, with a 3x3 filter in @fil3 and a 4x4 one in @fil4.
+  const char *ir = R"mlir(
+    module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+      func.func @fil3(%filter: tensor<1x512x3x3x384xf32>,
+                      %grad: tensor<1x32x32x1x512xf32>)
+          -> tensor<1x64x64x1x384xf32> {
+        %0 = rock.conv_bwd_data(%filter, %grad) {
+          dilations = [1 : index, 1 : index],
+          filter_layout = ["g", "k", "y", "x", "c"],
+          input_layout = ["ni", "hi", "wi", "gi", "ci"],
+          output_layout = ["no", "ho", "wo", "go", "ko"],
+          padding = [1 : index, 1 : index, 1 : index, 1 : index],
+          strides = [2 : index, 2 : index]
+        } : tensor<1x512x3x3x384xf32>, tensor<1x32x32x1x512xf32>
+          -> tensor<1x64x64x1x384xf32>
+        return %0 : tensor<1x64x64x1x384xf32>
+      }
+      func.func @fil4(%filter: tensor<1x512x4x4x384xf32>,
+                      %grad: tensor<1x32x32x1x512xf32>)
+          -> tensor<1x64x64x1x384xf32> {
+        %0 = rock.conv_bwd_data(%filter, %grad) {
+          dilations = [1 : index, 1 : index],
+          filter_layout = ["g", "k", "y", "x", "c"],
+          input_layout = ["ni", "hi", "wi", "gi", "ci"],
+          output_layout = ["no", "ho", "wo", "go", "ko"],
+          padding = [1 : index, 1 : index, 1 : index, 1 : index],
+          strides = [2 : index, 2 : index]
+        } : tensor<1x512x4x4x384xf32>, tensor<1x32x32x1x512xf32>
+          -> tensor<1x64x64x1x384xf32>
+        return %0 : tensor<1x64x64x1x384xf32>
+      }
+    }
+  )mlir";
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(ir, &ctx);
+  ASSERT_TRUE(module);
+
+  auto siblingsOf = [&](StringRef funcName) {
+    auto func = module->lookupSymbol<func::FuncOp>(funcName);
+    ConvBwdDataOp conv = *func.getBody().getOps<ConvBwdDataOp>().begin();
+    return PopulateParamsInfo::fromOp(
+               cast<RockGemmWrapperInterface>(conv.getOperation()))
+        .siblingGemms;
+  };
+  auto ks = [](ArrayRef<SiblingGemm> gemms) {
+    return llvm::map_to_vector(gemms, [](const SiblingGemm &g) { return g.k; });
+  };
+  auto bViewIds = [](ArrayRef<SiblingGemm> gemms) {
+    return llvm::map_to_vector(gemms,
+                               [](const SiblingGemm &g) { return g.bViewId; });
+  };
+
+  // The 3x3 kernel IDs cover 2x2, 2x1, 1x2 and 1x1 filter taps, so each reads
+  // its own gradient view.
+  SmallVector<SiblingGemm> fil3 = siblingsOf("fil3");
+  EXPECT_EQ(ks(fil3), (SmallVector<int64_t>{2048, 1024, 1024, 512}));
+  EXPECT_EQ(bViewIds(fil3), (SmallVector<int64_t>{0, 1, 2, 3}));
+  // The 4x4 kernel IDs each cover 2x2 taps and share one gradient view.
+  SmallVector<SiblingGemm> fil4 = siblingsOf("fil4");
+  EXPECT_EQ(ks(fil4), (SmallVector<int64_t>(4, 2048)));
+  EXPECT_EQ(bViewIds(fil4), (SmallVector<int64_t>(4, 0)));
 }
 
 // --- non-power-of-two kPerBlock candidate generation ---

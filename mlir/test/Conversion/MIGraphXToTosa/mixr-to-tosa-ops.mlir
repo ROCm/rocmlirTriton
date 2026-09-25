@@ -7,7 +7,7 @@ module  {
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xf16>, !tosa.shape<1>) -> tensor<9408xf16>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xf16>
   func.func @literal_zero() -> !migraphx.shaped<64x3x7x7xf16, 147x49x7x1> {
-    %0 = migraphx.literal (dense<0.0> : tensor<64x1xf16>) : <64x3x7x7xf16, 147x49x7x1>
+    %0 = migraphx.literal (dense<0.0> : tensor<64x3x7x7xf16>) : <64x3x7x7xf16, 147x49x7x1>
     return %0 : !migraphx.shaped<64x3x7x7xf16, 147x49x7x1>
   }
 
