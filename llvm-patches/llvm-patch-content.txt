@@ -754,3 +754,89 @@ rocmlir-driver test named above provides the equivalent coverage.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 8a9c0755eb6c4f00a12bc128b7d4c9d8d0d08667.
+
+----------------------------------------------------------------------
+patch201186.patch
+----------------------------------------------------------------------
+- Upstream commit : 4fdb108b8e203e7fc7ff3ea73b7fc5d009a36954
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/201186
+- Upstream title  : [AMDGPU] Be more careful about using expandDivRem24
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPUCodeGenPrepare.cpp
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/udiv.i32.ll
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/udiv.i64.ll
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/urem.i32.ll
+                    llvm/test/CodeGen/AMDGPU/GlobalISel/urem.i64.ll
+                    llvm/test/CodeGen/AMDGPU/amdgpu-codegenprepare-idiv.ll
+                    llvm/test/CodeGen/AMDGPU/udiv.ll
+                    llvm/test/CodeGen/AMDGPU/udiv64.ll
+                    llvm/test/CodeGen/AMDGPU/udivrem24.ll
+                    llvm/test/CodeGen/AMDGPU/urem64.ll
+- Contents        : Restricts the float-based expansion of 32-bit integer
+                    div/rem to 23 bits for unsigned operands, keeping 24 for
+                    signed where the magnitude cannot reach 0x800000, and
+                    updates the affected LIT expectations.
+
+Symptom without the patch
+-------------------------
+GEMM kernels silently return wrong results, and intermittently die with a memory
+access fault, once the grid grows past roughly 8.3 million workgroups. The
+weekly hit this on gfx90a for a 9216x1536 f16 GEMM with a 1x1 tile: 238592 of
+the 14155776 output elements were wrong on every run, and roughly one run in
+twelve died with a memory access fault. 55 of the 6466 problem/tile pairs in the
+tier1 gemm quick tuning space were exposed.
+
+Root cause
+----------
+makeGroupedGridLayout derives m_block from the grid-wide block id as bid %
+thisMBlocksPerGroup. That divisor is a runtime value, so AMDGPUCodeGenPrepare
+replaced the remainder with expandDivRem24Impl once it proved both operands fit
+in 24 bits. That algorithm computes trunc(float(Num) * rcp(float(Den))) and
+corrects only for an underestimated quotient, so the 1 ulp error of v_rcp_f32
+leaves the quotient one too large once the dividend exceeds 0x800000. The
+remainder then goes negative, is masked back to 24 bits, and m_block lands far
+outside the tensor. Buffer descriptors set num_records to 0x7ffffffe so that the
+0x80000000 disabled-lane sentinel still falls out of range, which also means the
+hardware does not clamp the access.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+4fdb108b8e203e7fc7ff3ea73b7fc5d009a36954.
+
+----------------------------------------------------------------------
+patch202753.patch
+----------------------------------------------------------------------
+- Upstream commit : 077ec06128e27e3dce2b97563dab703f89024ddf
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/202753
+- Upstream title  : [AMDGPU] Avoid errors with 23-bit division and remainder.
+- File Fixed      : llvm/lib/Target/AMDGPU/AMDGPUCodeGenPrepare.cpp
+                    llvm/test/CodeGen/AMDGPU/amdgpu-codegenprepare-idiv.ll
+                    llvm/test/CodeGen/AMDGPU/sdiv.ll
+                    llvm/test/CodeGen/AMDGPU/sdiv64.ll
+                    llvm/test/CodeGen/AMDGPU/sdivrem24.ll
+                    llvm/test/CodeGen/AMDGPU/srem64.ll
+                    llvm/test/CodeGen/AMDGPU/udiv.ll
+                    llvm/test/CodeGen/AMDGPU/udiv64.ll
+                    llvm/test/CodeGen/AMDGPU/udivrem24.ll
+                    llvm/test/CodeGen/AMDGPU/urem64.ll
+- Contents        : Tightens the bound from patch201186 further, to 22 bits
+                    for unsigned and 23 for signed, renames expandDivRem24 to
+                    expandDivRemToFloat since the bound is no longer 24 bits,
+                    and asserts the supported range in the implementation.
+
+Symptom without the patch
+-------------------------
+The same wrong quotients as patch201186, for dividends that still fit in 23
+bits. Sweeping every divisor below 2^24, the earliest dividend where the float
+expansion is inexact is 8290592, which is below 0x800000 and therefore still
+allowed by patch201186 on its own.
+
+Root cause
+----------
+The 1 ulp error of v_rcp_f32 pushes trunc(float(Num) * rcp(float(Den))) over an
+integer boundary well before the dividend reaches 0x800000, so a 23-bit bound is
+still too generous. Upstream settled on 22 bits for unsigned operands, which
+leaves enough headroom for the reciprocal error at every divisor.
+
+Applies on top of patch201186.patch and does not apply to a tree without it.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+077ec06128e27e3dce2b97563dab703f89024ddf.
