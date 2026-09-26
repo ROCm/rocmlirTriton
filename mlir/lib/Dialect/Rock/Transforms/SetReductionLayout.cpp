@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "WarpsOnK.h"
+
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 
@@ -163,39 +165,17 @@ bool rewriteGatherLoad(
   if (order.empty() || order.back() != kDim)
     return false;
 
-  SmallVector<unsigned> sizePerThread(oldBlocked.getSizePerThread());
-  SmallVector<unsigned> threadsPerWarp(oldBlocked.getThreadsPerWarp());
-  SmallVector<unsigned> warpsPerCTA(oldBlocked.getWarpsPerCTA());
-
   // Put every warp on the reduction dim, leaving the contiguous dim to lanes.
-  // sizePerThread and threadsPerWarp are unchanged, so the total lane/warp
-  // counts are preserved.
-  unsigned totalWarps = 1;
-  for (unsigned w : warpsPerCTA)
-    totalWarps *= w;
-  for (unsigned i = 0; i < warpsPerCTA.size(); ++i)
-    warpsPerCTA[i] = (i == kDim) ? totalWarps : 1u;
-
-  // Bail if the redistributed layout no longer tiles the load shape (e.g. the
-  // reduction dim is too small to hold every warp), leaving it unchanged.
-  bool tiles = true;
-  for (unsigned d = 0; d < shape.size(); ++d) {
-    unsigned cover = sizePerThread[d] * threadsPerWarp[d] * warpsPerCTA[d];
-    assert(cover != 0 && "blocked encoding tile factors must be >= 1");
-    if (shape[d] % cover != 0) {
-      tiles = false;
-      break;
-    }
-  }
-  if (!tiles) {
+  // Bail if that layout no longer tiles the load shape (e.g. the reduction dim
+  // is too small to hold every warp), leaving it unchanged.
+  FailureOr<triton::gpu::BlockedEncodingAttr> warpsOnK =
+      computeLayoutWarpsOnK(oldBlocked, shape, kDim);
+  if (failed(warpsOnK)) {
     anchorOp->emitWarning("rock-set-reduction-layout: warps do not tile the "
                           "reduction dim; skipping");
     return false;
   }
-
-  auto newBlocked = triton::gpu::BlockedEncodingAttr::get(
-      ctx, sizePerThread, threadsPerWarp, warpsPerCTA, order,
-      oldBlocked.getCGALayout());
+  triton::gpu::BlockedEncodingAttr newBlocked = *warpsOnK;
   if (newBlocked == oldBlocked) {
     LLVM_DEBUG(llvm::dbgs() << "rock-set-reduction-layout: load already in the "
                                "desired layout; skipping\n");

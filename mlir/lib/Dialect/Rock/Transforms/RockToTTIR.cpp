@@ -82,6 +82,19 @@ static triton::CacheModifier toTritonCacheModifier(rock::CacheModifier cache) {
   llvm_unreachable("unknown rock::CacheModifier");
 }
 
+// Carry rock metadata (e.g. rock.o_transposed) from `from` onto the op it
+// lowers to, so it survives into the Triton pipeline. Only forward
+// rock.*-prefixed discardable attrs: copying unrelated attrs that rock does not
+// own could trip another dialect's verifier downstream.
+static void forwardRockAttrs(Operation *from, Operation *to) {
+  std::string rockPrefix =
+      (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
+  for (NamedAttribute attr : from->getDiscardableAttrs()) {
+    if (attr.getName().getValue().starts_with(rockPrefix))
+      to->setDiscardableAttr(attr.getName(), attr.getValue());
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // RockBlockwiseReduceOpRewritePattern - Convert rock.blockwise_reduce to tt.reduce
 //===----------------------------------------------------------------------===//
@@ -208,9 +221,11 @@ struct RockLoadPtrOpRewritePattern
     Value otherTensor =
         arith::ConstantOp::create(rewriter, loc, resultTensorType, zeroAttr);
 
-    Value result = triton::LoadOp::create(
+    auto loadOp = triton::LoadOp::create(
         rewriter, loc, resultTensorType, ptrTensorOfPtrs, maskTensor,
         /*other=*/otherTensor, cacheAttr, evictAttr, isVolatileAttr);
+    Value result = loadOp.getResult();
+    forwardRockAttrs(op, loadOp);
 
     // Replace the op with the loaded tensor result
     rewriter.replaceOp(op, result);
@@ -286,18 +301,8 @@ struct RockBlockwiseGemmOpRewritePattern
                                      /*maxNumImpreciseAcc=*/0);
     }
 
-    // Carry rock metadata (e.g. rock.o_transposed) onto the lowered dot so it
-    // survives into the Triton pipeline. Only forward rock.*-prefixed
-    // discardable attrs: copying unrelated attrs that rock does not own could
-    // trip another dialect's verifier downstream.
-    if (Operation *dotOp = result.getDefiningOp()) {
-      std::string rockPrefix =
-          (Twine(rock::RockDialect::getDialectNamespace()) + ".").str();
-      for (NamedAttribute attr : op->getDiscardableAttrs()) {
-        if (attr.getName().getValue().starts_with(rockPrefix))
-          dotOp->setDiscardableAttr(attr.getName(), attr.getValue());
-      }
-    }
+    if (Operation *dotOp = result.getDefiningOp())
+      forwardRockAttrs(op, dotOp);
 
     rewriter.replaceOp(op, result);
     return success();

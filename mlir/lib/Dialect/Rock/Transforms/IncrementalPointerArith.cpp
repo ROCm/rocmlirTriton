@@ -38,6 +38,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace rock {
@@ -519,6 +520,57 @@ static FailureOr<LoopPtrInfo> analyzeLoopPointer(TransformsToPtrOp op,
     return bail("transform chain root is not a block argument");
 
   return info;
+}
+
+/// True if the iv reaches a Merge that splits it by a non-power-of-two length.
+/// Unless the op is incrementalized, the loop body keeps a division by a
+/// non-power-of-two constant for that merge.
+static bool hasIvTraversedNonPow2Merge(const LoopPtrInfo &info) {
+  DenseMap<unsigned, int64_t> diff;
+  for (unsigned p : info.ivPositions)
+    diff[p] = 1;
+  for (TransformMapAttr map : info.transforms) {
+    for (TransformAttr t : map.getOps()) {
+      // diff is 0 on every coordinate that the IV does not affect, so this
+      // check skips the Merges of other dims (e.g. gemmN's).
+      if (t.getType() != TransformType::Merge ||
+          diff.lookup(t.getUpperDims()[0]) == 0)
+        continue;
+      // Lower coordinate j is (merged / prod(e[j+1..])) mod e[j], with no
+      // modulo on the first one, so every divisor comes from the lengths after
+      // the first.
+      if (llvm::any_of(t.getParams().drop_front(),
+                       [](int64_t len) { return !llvm::isPowerOf2_64(len); }))
+        return true;
+    }
+    FailureOr<DenseMap<unsigned, int64_t>> lower = applyDiffOneMap(map, diff);
+    if (failed(lower))
+      return false;
+    diff = std::move(*lower);
+  }
+  return false;
+}
+
+/// Mark the loads reading `tp`'s pointers rock.rewrite_itt_layout.
+static void markRewriteITTLayoutLoads(TransformsToPtrOp tp) {
+  for (Operation *user : tp.getPointers().getUsers())
+    if (isa<BlockwiseLoadPtrOp>(user))
+      user->setDiscardableAttr(RewriteITTLayoutAttr::getMnemonic(),
+                               UnitAttr::get(tp.getContext()));
+}
+
+/// Mark the loads of `loop` whose pointer is still recomputed from scratch
+/// every iteration and splits the iv by a non-power-of-two Merge.
+static void markRewriteITTLayout(scf::ForOp loop) {
+  for (Operation &o : loop.getBody()->without_terminator()) {
+    auto tp = dyn_cast<TransformsToPtrOp>(&o);
+    if (!tp)
+      continue;
+    FailureOr<LoopPtrInfo> info = analyzeLoopPointer(tp, loop);
+    if (failed(info) || !hasIvTraversedNonPow2Merge(*info))
+      continue;
+    markRewriteITTLayoutLoads(tp);
+  }
 }
 
 /// Clone, just before `loop`, the in-loop ops that define `v`, so that `v`
@@ -1073,6 +1125,9 @@ static bool simplifyCarryCandidates(scf::ForOp loop,
   appendToForOpYield(newLoop, carried);
 
   for (auto [plan, ptrAndMask] : llvm::zip_equal(plans, ptrsAndMasks)) {
+    // The carried coordinates still advance every iteration, once for each
+    // coordinate the load's threads own.
+    markRewriteITTLayoutLoads(plan.cand.op);
     plan.cand.op.getPointers().replaceAllUsesWith(ptrAndMask.first);
     plan.cand.op.getMask().replaceAllUsesWith(ptrAndMask.second);
     plan.cand.op.erase();
@@ -1108,4 +1163,8 @@ void RockIncrementalPointerArithPass::runOnOperation() {
       }
     }
   }
+
+  // Every op the rewrites handled is pinned to iv == lb or gone, so what still
+  // depends on the iv is what both paths gave up on.
+  func.walk([](scf::ForOp loop) { markRewriteITTLayout(loop); });
 }

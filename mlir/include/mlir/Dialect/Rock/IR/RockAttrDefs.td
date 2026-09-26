@@ -703,6 +703,15 @@ def Rock_PreferLdsEpilogue : Rock_Attr<"PreferLdsEpilogue"> {
   }];
 }
 
+def Rock_RewriteITTLayout : Rock_Attr<"RewriteITTLayout"> {
+  let mnemonic = "rock.rewrite_itt_layout";
+  let description = [{
+    Marker set on a `rock.blockwise_load_ptr` by
+    `rock-incremental-pointer-arith`. It is used by `rock-set-itt-reduction-layout`
+    as one of the pre-conditions to trigger the rewrite.
+  }];
+}
+
 def Rock_GridSize : Rock_Attr<"GridSize"> {
   let mnemonic = "rock.grid_size";
 

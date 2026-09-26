@@ -361,9 +361,10 @@ func.func @affine_conv_1x1_unit_merge(%filter: tensor<4096xi8>, %init: tensor<64
 //   CHECK-NOT:     arith.divsi
 //   CHECK-NOT:     arith.remui
 //   CHECK-NOT:     arith.remsi
-// Pointer = base + carried offset accumulator:
+// Pointer = base + carried offset accumulator. The loop still advances the
+// carried coordinates every iteration, so the load is marked:
 //       CHECK:     %[[PTR:.*]] = arith.addi %[[PTRS]], %{{.*}} : tensor<2x4xi32>
-//       CHECK:     rock.blockwise_load_ptr %[[PTR]][
+//       CHECK:     rock.blockwise_load_ptr %[[PTR]][{{.*}}rock.rewrite_itt_layout
 // Mixed-radix carry update (compare + select) advances the coordinate:
 //       CHECK:     arith.cmpi uge
 //       CHECK:     arith.select
@@ -782,12 +783,14 @@ func.func @carry_multi_prefix_not_simplified(%arg0: tensor<16xi8>, %arg1: tensor
 // Carry bail: a validity-impacting map sits AT/ABOVE the iv-traversed merge.
 // The mask is reconstructed only from the sub-chain below the merge, so a Pad
 // on gemmK (above the merge, where the iv flows) cannot be handled: the pass
-// bails.
+// bails. The Merge{2, 1} the iv flows through only splits it by a power of
+// two, so the load is not marked either.
 //
 // CHECK-LABEL: func @carry_pad_above_merge
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (tensor<2x4xi8>)
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
 //   CHECK-NOT:     arith.cmpi uge
+//   CHECK-NOT:     rock.rewrite_itt_layout
 //       CHECK:     scf.yield
 func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.conv_kernel, rock.arch = "gfx1201"} {
   %c0_i32 = arith.constant 0 : i32
@@ -817,13 +820,14 @@ func.func @carry_pad_above_merge(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> 
 // A nested Merge sits below the iv-traversed merge. gemmK is
 // Merge{4, 3} of (ci, tap) and the iv advances gemmK by 2, which delinearizes
 // to ci += 0 / tap += 2, so the nested Merge{2, 2} that splits ci into
-// (c_hi, c_lo). We bail on such a case.
+// (c_hi, c_lo). We bail on such a case. The iv-traversed Merge{4, 3} splits
+// the iv by 3, so the load is marked: that division stays in the loop.
 //
 // CHECK-LABEL: func @carry_nested_merge_below_iv_merge
 //  CHECK-SAME: (%[[ARG0:.*]]: tensor<16xi8>, %[[INIT:.*]]: tensor<2x4xi8>)
 //       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %[[INIT]]) -> (tensor<2x4xi8>)
 //       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
-//       CHECK:     rock.blockwise_load_ptr
+//       CHECK:     rock.blockwise_load_ptr {{.*}}rock.rewrite_itt_layout
 //   CHECK-NOT:     arith.cmpi uge
 //   CHECK-NOT:     arith.select
 //       CHECK:     scf.yield
@@ -841,6 +845,35 @@ func.func @carry_nested_merge_below_iv_merge(%arg0: tensor<16xi8>, %arg1: tensor
     %4 = rock.transform %3 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 3, d1 mod 3, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{4, 3} ["gemmK"] at [1] -> ["ci", "1"] at [2, 3]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 4]>] bounds = [1, 12, 4] -> [1, 1, 4, 3, 4]> : tensor<1x1x4x3x4xi8> to tensor<1x12x4xi8>
     %5 = rock.transform %4 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{6, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [6, 1, 1, 1, 2, 4] -> [1, 12, 4]> : tensor<1x12x4xi8> to tensor<6x1x1x1x2x4xi8>
     %ptr, %mask = rock.transforms_to_ptr %5[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<6x1x1x1x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
+    %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
+    scf.yield %load : tensor<2x4xi8>
+  }
+  return %res : tensor<2x4xi8>
+}
+
+// -----
+
+// The @carry_conv_input load on a kernel that is not a convolution. The pass
+// does not try to incrementalize such kernels, so it neither rewrites nor
+// marks the load.
+//
+// CHECK-LABEL: func @skip_non_conv_kernel
+//       CHECK:   scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (tensor<2x4xi8>)
+//       CHECK:     rock.transforms_to_ptr %{{.*}}[%[[IV]], %c0_i32, %c0_i32, %c0_i32]
+//   CHECK-NOT:     arith.cmpi uge
+//   CHECK-NOT:     rock.rewrite_itt_layout
+//       CHECK:     scf.yield
+func.func @skip_non_conv_kernel(%arg0: tensor<8xi8>, %arg1: tensor<2x4xi8>) -> tensor<2x4xi8> attributes {rock.kernel, rock.arch = "gfx1201"} {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c3_i32 = arith.constant 3 : i32
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2, d3) -> (d2 * 4 + d3)> by [<Unmerge{2, 4} ["ci", "1i"] at [2, 3] -> ["raw"] at [0]>, <AddDim{1} ["ni"] at [0] -> [] at []>, <AddDim{1} ["gi"] at [1] -> [] at []>] bounds = [1, 1, 2, 4] -> [8]> : tensor<8xi8> to tensor<1x1x2x4xi8>
+  %1 = rock.transform %0 by <affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3 - 1)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Pad{1, 1} ["1ipad"] at [3] -> ["1i"] at [3]>] bounds = [1, 1, 2, 6] -> [1, 1, 2, 4]> : tensor<1x1x2x4xi8> to tensor<1x1x2x6xi8>
+  %2 = rock.transform %1 by <affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3 + d4)> by [<PassThrough ["ni", "gi", "ci"] at [0, 1, 2] -> ["ni", "gi", "ci"] at [0, 1, 2]>, <Embed{1, 1} ["1", "1o"] at [3, 4] -> ["1ipad"] at [3]>] bounds = [1, 1, 2, 3, 4] -> [1, 1, 2, 6]> : tensor<1x1x2x6xi8> to tensor<1x1x2x3x4xi8>
+  %res = scf.for %k = %c0_i32 to %c3_i32 step %c1_i32 iter_args(%acc = %arg1) -> (tensor<2x4xi8>) : i32 {
+    %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (0, d0, d1 floordiv 3, d1 mod 3, d2)> by [<PassThrough ["gemmG"] at [0] -> ["gi"] at [1]>, <Merge{2, 3} ["gemmK"] at [1] -> ["ci", "1"] at [2, 3]>, <Merge{1, 4} ["gemmN"] at [2] -> ["ni", "1o"] at [0, 4]>] bounds = [1, 6, 4] -> [1, 1, 2, 3, 4]> : tensor<1x1x2x3x4xi8> to tensor<1x6x4xi8>
+    %4 = rock.transform %3 by <affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d0 * 2 + d4, d3 * 4 + d5)> by [<PassThrough ["g_block"] at [1] -> ["gemmG"] at [0]>, <Unmerge{3, 2} ["k_loop", "k_iter"] at [0, 4] -> ["gemmK"] at [1]>, <Unmerge{1, 4} ["n_block", "n_iter"] at [3, 5] -> ["gemmN"] at [2]>, <AddDim{1} ["m_block"] at [2] -> [] at []>] bounds = [3, 1, 1, 1, 2, 4] -> [1, 6, 4]> : tensor<1x6x4xi8> to tensor<3x1x1x1x2x4xi8>
+    %ptr, %mask = rock.transforms_to_ptr %4[%k, %c0_i32, %c0_i32, %c0_i32] : tensor<3x1x1x1x2x4xi8> -> tensor<2x4xi32>, tensor<2x4xi1>
     %load = rock.blockwise_load_ptr %ptr[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<2x4xi32>, tensor<2x4xi1> -> tensor<2x4xi8>
     scf.yield %load : tensor<2x4xi8>
   }
