@@ -3743,7 +3743,6 @@ const StringRef PopulateParamsGemm::initParametersF16ConvGfx950NoSplitK[] = {
     "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=512,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=128,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=16,nPerBlock=32,kPerBlock=128,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
-    "gemm:mPerBlock=3,nPerBlock=64,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=72,nPerBlock=128,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=160,nPerBlock=32,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1"
 };
@@ -4615,7 +4614,7 @@ static const StringRef initParametersI8GemmGfx950NoSplitK[nInitParametersI8GemmG
 // END_GEMM_Gemm_i8_gfx950_NOSPLITK_DECS
 
 // BEGIN_CONV_Gemm_f16_gfx950_NOSPLITK_DECS
-static constexpr size_t nInitParametersF16ConvGfx950NoSplitK = 40;
+static constexpr size_t nInitParametersF16ConvGfx950NoSplitK = 39;
 static const StringRef initParametersF16ConvGfx950NoSplitK[nInitParametersF16ConvGfx950NoSplitK];
 // END_CONV_Gemm_f16_gfx950_NOSPLITK_DECS
 
