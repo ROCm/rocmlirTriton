@@ -89,8 +89,6 @@
 #include "ArtifactIO.h"
 #include "CacheFlush.h"
 
-#include <hip/hip_runtime.h>
-
 #if !defined(_HIP_CLANG_ONLY__)
 // GCC complains if we don't do this
 template <std::size_t n, typename... Ts,

@@ -25,7 +25,11 @@ file(TO_CMAKE_PATH "${ROCM_PATH}" ROCM_PATH)
 # NOTE: This MUST happen before project() so CMake doesn't detect MSVC first.
 #===----------------------------------------------------------------------===//
 
-if(CMAKE_HOST_WIN32)
+# Opts out of the clang-cl/lld-link requirement so the tree can be built with
+# plain cl.exe + link.exe. Upstream supports clang-cl only; this is experimental.
+option(ROCMLIR_ALLOW_MSVC "Permit building with MSVC cl.exe instead of clang-cl" OFF)
+
+if(CMAKE_HOST_WIN32 AND NOT ROCMLIR_ALLOW_MSVC)
   if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     # clang-cl lives under lib/llvm/bin in TheRock and under bin in the HIP SDK.
     # Search ROCM_PATH alone first so it keeps the precedence documented above:
@@ -84,12 +88,18 @@ endif()
 
 project(rocMLIR VERSION 2.0.0 LANGUAGES CXX C)
 
-if(WIN32 AND
+if(WIN32 AND NOT ROCMLIR_ALLOW_MSVC AND
    (NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
     NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
   message(FATAL_ERROR
     "Windows builds require clang-cl; configured compiler is "
-    "${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}).")
+    "${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}). "
+    "Pass -DROCMLIR_ALLOW_MSVC=ON to build with cl.exe instead.")
+endif()
+if(WIN32 AND ROCMLIR_ALLOW_MSVC)
+  message(STATUS
+    "ROCMLIR_ALLOW_MSVC: building with ${CMAKE_CXX_COMPILER_ID} "
+    "(${CMAKE_CXX_COMPILER})")
 endif()
 
 # New in CMake 3.20. https://cmake.org/cmake/help/latest/policy/CMP0116.html
@@ -105,15 +115,32 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "")
 #===----------------------------------------------------------------------===//
 
 if(WIN32)
-  # clang-cl/MSVC default to delayed template parsing, which breaks the standard
-  # two-phase name lookup Triton/MLIR rely on (multiple `detail` namespaces
-  # found at instantiation time); disable it so clang-cl matches clang on Linux.
-  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-delayed-template-parsing>")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # clang-cl/MSVC default to delayed template parsing, which breaks the standard
+    # two-phase name lookup Triton/MLIR rely on (multiple `detail` namespaces
+    # found at instantiation time); disable it so clang-cl matches clang on Linux.
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-delayed-template-parsing>")
 
-  # Triton passes cl.exe-only /Zc flags plus /WX; clang-cl warns
-  # -Wunused-command-line-argument on them and /WX makes it fatal. Suppress it
-  # for C/C++ only (ml64 misparses a leading -W as its /W warning level).
-  add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-command-line-argument>")
+    # Triton passes cl.exe-only /Zc flags plus /WX; clang-cl warns
+    # -Wunused-command-line-argument on them and /WX makes it fatal. Suppress it
+    # for C/C++ only (ml64 misparses a leading -W as its /W warning level).
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-command-line-argument>")
+  else()
+    # cl.exe: /permissive- is the MSVC switch that turns on conformant two-phase
+    # name lookup, i.e. the equivalent of -fno-delayed-template-parsing above.
+    # Triton sets it for its own targets; set it globally so MLIR/Rock match.
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/permissive->")
+    # MSVC's default 1 MB stack overflows on MLIR's deeply recursive templates,
+    # and TableGen'd dialect files exceed the default section limit.
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/bigobj>")
+    # C4068: `#pragma clang ...` in sources shared with the Clang build.
+    # C4530: LLVM builds with exceptions off (/EHs-c-), but MSVC's <ostream>
+    #        contains EH constructs and warns. Both are fatal under /WX.
+    add_compile_options(
+      "$<$<COMPILE_LANGUAGE:C,CXX>:/wd4068>"
+      "$<$<COMPILE_LANGUAGE:C,CXX>:/wd4530>"
+    )
+  endif()
 
   # Suppress MSVC STL noise: MSVC's <complex> header deprecates std::complex<T>
   # for non-floating T; MLIR's APFloat-based code legitimately uses it.

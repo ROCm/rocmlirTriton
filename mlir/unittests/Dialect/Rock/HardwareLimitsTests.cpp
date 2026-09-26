@@ -8,7 +8,7 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 
-#include "hip/hip_runtime_api.h"
+#include "mlir/Support/MsvcHipCompat.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>

@@ -22,6 +22,9 @@ It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is
 - Python 3 (only needed for in-tree development scripts and the LIT test runner; not required for production builds or MIGraphX integration).
 - Git
 
+On Windows the toolchain differs (clang-cl from the HIP SDK, or MSVC `cl.exe`) --
+see [docs/building-on-windows.md](docs/building-on-windows.md).
+
 ## Installation
 
 Triton and LLVM/MLIR are vendored in the repo (under `external/triton` and `external/llvm-project`), imported via `git subtree`. The build is driven by `cmake.sh`, which configures and builds LLVM/MLIR, Triton, and rocmlirTriton from those vendored trees. Patch files under `llvm-patches/` and `triton-patches/` are kept for provenance and to simplify the next upstream bump; they are not applied during CMake configure.
@@ -35,6 +38,16 @@ bash cmake.sh
 `cmake.sh` wipes `build/` before configuring. Pass `--no-clean` to reconfigure an
 existing build directory instead, which avoids a full LLVM rebuild when you only
 want to change a few `-D` flags. Any extra arguments are forwarded to `cmake`.
+
+On Windows, use `scripts/build-windows.ps1` instead:
+
+```powershell
+pwsh scripts/build-windows.ps1 -GpuTargets gfx1151           # clang-cl
+pwsh scripts/build-windows.ps1 -Msvc -GpuTargets gfx1151     # MSVC cl.exe
+```
+
+See [docs/building-on-windows.md](docs/building-on-windows.md) for the full
+Windows instructions.
 
 To install `librockCompiler` so MIGraphX can find it:
 

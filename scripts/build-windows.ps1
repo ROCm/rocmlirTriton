@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Windows build entry point for rocmlirTriton (in-tree LLVM/MLIR + Triton +
-    rocMLIR, using a ROCm clang-cl / lld-link toolchain).
+    rocMLIR, using a ROCm clang-cl / lld-link toolchain, or MSVC cl.exe).
 
 .DESCRIPTION
     A single CMake configure + build; the vendored trees compile in-tree via
@@ -12,6 +12,10 @@
       * AMD HIP SDK   - clang-cl / lld-link under <root>/bin
       * TheRock ROCm  - clang-cl / lld-link under <root>/lib/llvm/bin
     The root resolves from -RocmPath, then ROCM_PATH, HIP_PATH, then C:/opt/rocm.
+
+    -Msvc builds with MSVC cl.exe instead. That is experimental and opt-in; see
+    docs/building-on-windows.md. ROCm is still required for the HIP headers and
+    libraries, so -RocmPath applies either way.
 
     Run this from an "x64 Native Tools Command Prompt for VS": it provides the
     MASM assembler (for LLVM's BLAKE3 sources) and mt.exe (the manifest tool
@@ -24,6 +28,10 @@
 .EXAMPLE
     # TheRock ROCm, into a separate build dir
     pwsh scripts/build-windows.ps1 -BuildDir build-therock -RocmPath C:/opt/therock-rocm -GpuTargets gfx1201
+
+.EXAMPLE
+    # MSVC cl.exe rather than clang-cl
+    pwsh scripts/build-windows.ps1 -Msvc -BuildDir build-msvc -GpuTargets gfx1151
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +57,10 @@ param(
 
     # Parallel build jobs. 0 -> all logical processors.
     [int]$Jobs = 0,
+
+    # Build with MSVC cl.exe instead of the ROCm clang-cl toolchain.
+    # Experimental; implies -DROCMLIR_ALLOW_MSVC=ON.
+    [switch]$Msvc,
 
     # Extra -D options passed verbatim to the configure step.
     [string[]]$CMakeArgs = @(),
@@ -106,7 +118,8 @@ function Invoke-CMake([string[]]$cmakeArgs) {
     & cmake @cmakeArgs
 }
 
-Write-Host "rocmlirTriton Windows build -> $BuildDir  (ROCm: $RocmPath, $BuildType, -j $Jobs)" -ForegroundColor Cyan
+$toolchain = if ($Msvc) { "MSVC cl.exe (experimental)" } else { "clang-cl" }
+Write-Host "rocmlirTriton Windows build -> $BuildDir  ($toolchain, ROCm: $RocmPath, $BuildType, -j $Jobs)" -ForegroundColor Cyan
 
 $configureArgs = @(
     "-S", $repoRoot,
@@ -119,7 +132,24 @@ $configureArgs = @(
     "-DBUILD_FAT_LIBROCKCOMPILER=ON",
     "-DLLD_BUILD_TOOLS=ON",
     "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
-) + $CMakeArgs
+)
+
+if ($Msvc) {
+    # The root CMakeLists rejects anything but clang-cl on Windows unless this
+    # option is set, and skips the clang-cl/lld-link search when it is, so name
+    # the compilers explicitly. /INCREMENTAL:NO because MSVC's incremental
+    # linker writes multi-GB .ilk files alongside these targets.
+    $configureArgs += @(
+        "-DROCMLIR_ALLOW_MSVC=ON",
+        "-DCMAKE_C_COMPILER=cl.exe",
+        "-DCMAKE_CXX_COMPILER=cl.exe",
+        "-DCMAKE_EXE_LINKER_FLAGS=/INCREMENTAL:NO",
+        "-DCMAKE_SHARED_LINKER_FLAGS=/INCREMENTAL:NO"
+    )
+}
+
+# Last, so an explicit -CMakeArgs entry overrides anything chosen above.
+$configureArgs += $CMakeArgs
 
 Invoke-CMake $configureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
