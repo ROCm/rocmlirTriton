@@ -224,6 +224,12 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   // `getTuningParameters` already reorders so that the first conservatively-
   // applicable config (LDS budget, kpack/splitK/numCTAs constraints, plus
   // block-scaling divisibility/LDS for scaled ops) is up front.
+  //
+  // The list is only consulted without a perfConfig. Building it anyway would
+  // repeat the lookup, and its diagnostics, for every perfconfig compiled
+  // while benchmarking.
+  if (!perfConfig.empty())
+    return materializeTuningParams<GemmParamsAttr>(b, perfConfig, {});
   return materializeTuningParams<GemmParamsAttr>(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,

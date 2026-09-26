@@ -36,16 +36,30 @@ using QuickTuningTableLookUpKeyVersionHash = uint64_t;
 struct QuickTuningProblemKey {
   QuickTuningProblemKey(QuickTuningProblemKeyHash hash,
                         QuickTuningTableLookUpKeyVersionHash versionHash,
-                        std::string unsupportedFields = {})
+                        std::string unsupportedFields = {},
+                        std::string untunableFields = {})
       : hash(hash), versionHash(versionHash),
-        unsupportedFields(std::move(unsupportedFields)) {}
+        unsupportedFields(std::move(unsupportedFields)),
+        untunableFields(std::move(untunableFields)) {}
+
+  /// True if either `unsupportedFields` or `untunableFields` is non-empty, in
+  /// which case no per-problem key can be emitted for this problem.
+  bool hasUnrepresentedFields() const {
+    return !unsupportedFields.empty() || !untunableFields.empty();
+  }
 
   QuickTuningProblemKeyHash hash;
   QuickTuningTableLookUpKeyVersionHash versionHash;
   /// Fields or modes understood by the compiler but not represented by the
   /// shipped per-problem maps. Such a key must fall back to the set cover
   /// rather than reusing a ranking measured for a different problem schema.
+  /// Exhaustively tuning the mode and regenerating the maps would add it, so
+  /// the lookup diagnoses these.
   std::string unsupportedFields;
+  /// Like `unsupportedFields`, but for modes the tuning pipeline cannot
+  /// express (e.g. asymmetric padding, which the tuning problem string does
+  /// not record). Retuning cannot help, so these fall back silently.
+  std::string untunableFields;
 };
 
 inline QuickTuningProblemKeyHash hashQuickTuningProblemKey(StringRef key) {
