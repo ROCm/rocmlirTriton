@@ -39,9 +39,9 @@
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_fusion_extf(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -76,9 +76,9 @@ func.func @gemm_input_fusion_extf(%arg0: tensor<51200xf16>, %arg1: tensor<320000
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_output_fusion_truncf(%arg0: tensor<51200xf32>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf16>) -> tensor<51200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -113,9 +113,9 @@ func.func @gemm_output_fusion_truncf(%arg0: tensor<51200xf32>, %arg1: tensor<320
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_output_fusion(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf16>) -> tensor<51200xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {
@@ -153,9 +153,9 @@ func.func @gemm_input_output_fusion(%arg0: tensor<51200xf16>, %arg1: tensor<3200
 // CHECK:       %[[FIRSTM:.*]] = arith.muli %[[GROUPID]], %[[GPSIZE]] : i32
 // CHECK:       %[[MDIFF:.*]] = arith.subi %[[MBLK]], %[[FIRSTM]] : i32
 // CHECK:       %[[THISMPG:.*]] = arith.minui %[[MDIFF]], %[[GPSIZE]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[THISMPG]] : i32
-// CHECK:       arith.remui %[[BID_IN_G]], %[[BPG]] : i32
-// CHECK:       arith.divui %{{.*}}, %[[THISMPG]] : i32
+// CHECK:       %[[GROUPBID:.*]] = arith.remui %[[BID_IN_G]], %[[BPG]] : i32
+// CHECK:       arith.remui %[[GROUPBID]], %[[THISMPG]] : i32
+// CHECK:       arith.divui %[[GROUPBID]], %[[THISMPG]] : i32
 // CHECK:       rock.blockwise_gemm
 // CHECK:       rock.store_marker
 func.func @gemm_input_fusion_biggest_tensor(%arg0: tensor<51200xf16>, %arg1: tensor<320000xf32>, %arg2: tensor<51200xf32>, %arg_bias: tensor<400xf32>) -> tensor<51200xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950:sramecc-:xnack+", rock.block_size = 128 : i32, rock.enable_splitk_for_tuning, rock.grid_size = 200 : i32, rock.kernel, rock.num_chiplets = 8 : i64, rock.num_cu = 256 : i64} {

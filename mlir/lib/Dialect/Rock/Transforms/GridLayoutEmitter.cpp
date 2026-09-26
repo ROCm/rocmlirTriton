@@ -131,11 +131,15 @@ GridCoordinates rock::layout::makeGroupedGridLayout(PatternRewriter &b,
   Value firstBidM = MulIOp::create(b, loc, groupId, mBlocksPerGroup);
   Value thisMBlocksPerGroup = MinUIOp::create(
       b, loc, SubIOp::create(b, loc, mBlocksValue, firstBidM), mBlocksPerGroup);
-  Value m_block = AddIOp::create(
-      b, loc, firstBidM, RemUIOp::create(b, loc, bid, thisMBlocksPerGroup));
-  Value n_block =
-      DivUIOp::create(b, loc, RemUIOp::create(b, loc, bid, blocksPerGroup),
-                      thisMBlocksPerGroup);
+  // Index within the group rather than the grid: the grid-wide bid can exceed
+  // the range over which the backend's float-based expansion of 32-bit
+  // div/rem stays exact, which silently yields an off-by-one quotient and
+  // therefore out-of-bounds tile coordinates.
+  Value groupBid = RemUIOp::create(b, loc, bid, blocksPerGroup);
+  Value m_block =
+      AddIOp::create(b, loc, firstBidM,
+                     RemUIOp::create(b, loc, groupBid, thisMBlocksPerGroup));
+  Value n_block = DivUIOp::create(b, loc, groupBid, thisMBlocksPerGroup);
   // no need to get splitKFactor here
   return {g_block, m_block, n_block};
 }
