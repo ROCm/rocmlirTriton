@@ -1,11 +1,10 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// A per-problem ranking is only reusable for the problem mode that was
-// exhaustively tuned. The output fusion below was not represented when the
-// shipped maps were generated, so quick tuning must diagnose it and use the
-// no-split-K set cover. Dropping the fusion recovers the bare GEMM's
-// per-problem row, including its split-K configs.
+// Output fusions are not part of the per-problem key, so the fused kernel
+// below maps to the bare GEMM's row. The relu makes split-K illegal, so the
+// tuning space keeps only the row's split-K-free members. Dropping the fusion
+// recovers the whole row, including its split-K configs.
 //
 // The problem is gfx942 f32 GEMM 128x512x512, the same one
 // rocmlir-gen/quick-tuning-per-problem.mlir uses, so its row is known to be
@@ -16,19 +15,18 @@
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefix=KEY-NO-SPLIT-K
 // KEY-NO-SPLIT-K: -supportsSplitK false
 
-// The fused mode has no compatible per-problem key until it is exhaustively
-// tuned and the maps are regenerated. The bare GEMM retains its known hash.
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | not rocmlir-gen --emit-quick-tuning-problem-key-hash - 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-FUSION
+// The fused kernel and the bare GEMM share the known hash.
+// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-quick-tuning-problem-key-hash - | FileCheck %s --check-prefix=HASH
 // RUN: sed -e '/migraphx.relu/d' -e 's/return %1 :/return %0 :/' %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel | rocmlir-gen --emit-quick-tuning-problem-key-hash - | FileCheck %s --check-prefix=HASH
-// UNSUPPORTED-FUSION: fields not represented by the shipped maps: output_fusions
 // HASH: 8175943205932196350
 
-// The fused mode warns and uses the no-split-K set cover.
+// The fused kernel quietly uses the row's split-K-free members rather than the
+// set cover.
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-space=quick - 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=SPACE-FUSED-FALLBACK \
-// RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
-// SPACE-FUSED-FALLBACK: warning: per-problem quick tuning does not represent the current problem's output_fusions
-// SPACE-FUSED-FALLBACK: gemm:mPerBlock=256,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,
+// RUN:   | FileCheck %s --check-prefix=SPACE-FUSED \
+// RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}' --implicit-check-not=warning \
+// RUN:       --implicit-check-not='mPerBlock=256,nPerBlock=128,kPerBlock=16,'
+// SPACE-FUSED: gemm:mPerBlock=16,nPerBlock=16,kPerBlock=256,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,
 
 // Disabling the per-problem layer selects the same no-split-K set cover without
 // trying to classify a per-problem key.
