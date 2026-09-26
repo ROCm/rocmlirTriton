@@ -33,6 +33,7 @@ patch11018.patch
 patch11118.patch
 
 patch-gfx1310-isa-family.patch
+patch11890.patch
   Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
   that Rock can tell gfx13 apart from GFX1250 when it queries the Triton
   target. Four changes only: the ISAFamily::GFX1310 enumerator, a
@@ -475,3 +476,28 @@ patch-fma-lds-swizzle.patch
 
   Not filed upstream yet; upstream Triton has the same performance gap.
 
+patch11890.patch
+  composePaddedLayoutForAsyncCopyCDNA4 divides warpSize by contigLanes in two
+  places. Once a tile row spans more than a warp of vectors that quotient
+  truncates to zero, so requiredRows collapses and xWayConflicts always
+  reports one, and the useBestWrap guard degenerates to nonContigDim >= 0.
+  wrap is then forced to 16 even for a tile with a single row, bases are added
+  for rows 1, 2, 4 and 8 that the tile does not have, and the resulting layout
+  broadcasts in the offset dimension, which PaddedSharedEncodingAttr::verify
+  rejects. In an assertions build that aborts the compiler instead of falling
+  back.
+
+  The weekly tuning stage hit this on gfx950 for gemm f16 m=384 k=3072 n=768
+  with mPerBlock=1, nPerBlock=16, kPerBlock=2048, where contigLanes is 256
+  against a warp size of 64. Both guards are now compared scaled by
+  contigLanes instead of dividing warpSize by it, and staggering requires at
+  least bestWrap rows.
+
+  This fixes one of at least two causes behind the same broadcasting error.
+  Across 70 shape and dtype combinations it takes process aborts from 8 down
+  to 3, leaves every other outcome unchanged, and keeps 55 of 55 already
+  compiling shapes bit identical. The 3 that remain reach the symptom through
+  a different arithmetic path.
+
+  Drop when the next Triton bump includes upstream PR
+  https://github.com/triton-lang/triton/pull/11890.
