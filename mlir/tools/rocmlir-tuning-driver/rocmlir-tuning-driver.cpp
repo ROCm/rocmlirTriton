@@ -641,7 +641,10 @@ static std::unique_ptr<MLIRContext>
 createCompilationContext(SmallVector<std::string> &bufferedDiags) {
   DialectRegistry registry;
   registerRocMLIRDialects(registry);
-  auto ctx = std::make_unique<MLIRContext>(registry);
+  // Compilation is already parallelized across perf configs. Keep each
+  // context single-threaded to avoid nested pass-manager parallelism.
+  auto ctx = std::make_unique<MLIRContext>(
+      registry, MLIRContext::Threading::DISABLED);
   // Consume *all* diagnostics so they don't pollute tuning output during the
   // parallel sweep. Errors are additionally buffered into `bufferedDiags` so
   // the caller can surface them on real failures; warnings/remarks/notes are
@@ -721,8 +724,8 @@ static CompilationResult compileConfigViaSubprocess(
   std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
   SmallVector<StringRef, 8> args = {
       driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
-      archArg,    perfConfigArg, "-o",
-      outputPath};
+      archArg,    perfConfigArg, "--mlir-disable-threading",
+      "-o",       outputPath};
   // Keep the child's verification in step with the in-process path, so
   // --verify-passes means the same thing in either compile mode.
   if (!shouldVerifyPasses)
@@ -2019,7 +2022,7 @@ int main(int argc, char **argv) {
   registerRocMLIRDialects(registry);
   registerRocMLIRPasses();
 
-  MLIRContext ctx(registry);
+  MLIRContext ctx(registry, MLIRContext::Threading::DISABLED);
 
   OwningOpRef<ModuleOp> source = parseMLIRInput(inputFilename, &ctx);
   if (!source) {
