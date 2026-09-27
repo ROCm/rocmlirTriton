@@ -904,30 +904,12 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
   for (const auto &[right, left] : zip(iTildaRight, iTildaLeft))
     tildaSlice.push_back(right - left);
 
-  // Decompose kernelId into per-spatial-dimension iTilda indices.
-  int64_t product = 1;
-  for (size_t i = 1; i < sizes.fil.size(); i++)
-    product *= filTilda[i];
-  int64_t divisor = (sizes.fil.size() == 3) ? filTilda[2] : 1;
-
-  SmallVector<int64_t, 3> iTilda(sizes.fil.size());
-  switch (sizes.fil.size()) {
-  default:
-    llvm_unreachable("Only 2-D and 3-D have been implemented.");
-    break;
-  case 3:
-    iTilda[2] = kernelId % divisor;
-    [[fallthrough]];
-  case 2:
-    iTilda[1] = (kernelId % product) / divisor;
-    iTilda[0] = kernelId / product;
-  }
-
   int64_t g = sizes.g;
   int64_t m = sizes.c;
   int64_t k = sizes.k;
-  for (size_t i = 0; i < sizes.fil.size(); i++)
-    k *= llvm::divideCeil(sizes.fil[i] - iTilda[i], filTilda[i]);
+  for (int64_t dotSlice :
+       rock::backwardDataDotSlices(strides, dilations, sizes.fil, kernelId))
+    k *= dotSlice;
   int64_t n = sizes.n;
   for (auto ts : tildaSlice)
     n *= ts;

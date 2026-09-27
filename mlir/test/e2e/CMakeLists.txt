@@ -58,12 +58,15 @@ endif()
 if (ROCK_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
   GemmVariants
+  GemmVariantsF4
   GemmScaled
   GemmScaledF8
   GemmScaledF32
   MixedConvLayouts
   GemmVariantsNonPowerOfTwoTileSize
+  GemmVariantsNonPowerOfTwoTileSizeFp8
   ConvVariantsNonPowerOfTwoTileSize
+  GemmFp8NeutralScales
   )
   list(APPEND CONFIGS
   Resnet50Config

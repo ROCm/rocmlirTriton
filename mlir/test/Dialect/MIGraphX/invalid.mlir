@@ -1,5 +1,21 @@
 // RUN: rocmlir-opt %s -split-input-file -verify-diagnostics
 
+// ---- migraphx.shaped type ----
+
+// expected-error @+1 {{migraphx.shaped type has 1 elements in its shape but 2 strides defined}}
+func.func @invalid_more_strides_than_shapes(%arg: !migraphx.shaped<1xf32, 1x1>) {
+  func.return
+}
+
+// -----
+
+// expected-error @+1 {{migraphx.shaped type has 2 elements in its shape but 1 strides defined}}
+func.func @invalid_more_shapes_than_strides(%arg: !migraphx.shaped<1x1xf32, 1>) {
+  func.return
+}
+
+// -----
+
 func.func @mlir_reshape_inconsistent_dims(%arg0: !migraphx.shaped<4096x4096xf16, 0x1>) {
   // expected-error@+1 {{'migraphx.reshape' op dimValue: 64 inconsistent with result dimension 4096}}
   %0 = migraphx.reshape %arg0 {dims = [64, 128]} : <4096x4096xf16, 0x1> -> <4096x4096xf16, 16536x2>
@@ -303,6 +319,15 @@ func.func @literal_shape_mismatch() {
 
 // -----
 
+// COM: splat literal whose value shape does not match the logical shape
+func.func @splat_literal_shape_mismatch() {
+  // expected-error @+1 {{'migraphx.literal' op splat literals must have a value that matches the literal's logical shape}}
+  %0 = migraphx.literal (dense<2> : tensor<10xsi8>) : <1xsi8, 1>
+  return
+}
+
+// -----
+
 // COM: non-splat literal whose strides are not in standard (row-major) form
 func.func @literal_non_standard_strides() {
   // expected-error @+1 {{strides of non-splat literal are not in standard shape}}
@@ -326,4 +351,254 @@ func.func @unpack_wrong_output_length(%x: !migraphx.shaped<8x2xi8, 2x1>) {
   // expected-error @+1 {{expected length along input axis to be half the length along output axis}}
   %y = migraphx.unpack %x {axis = 1 : i64} : <8x2xi8, 2x1> -> <8x8xi8, 8x1>
   return
+}
+
+// -----
+
+// ---- migraphx.clip ----
+
+func.func @clip_mismatched_element_types(%arg0: !migraphx.shaped<4x8xf32, 8x1>, %arg1: !migraphx.shaped<4x8xf16, 8x1>, %arg2: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<4x8xf32, 8x1> {
+  // expected-error @+1 {{op failed to verify that all of {x, minVals, maxVals, output} have same element type}}
+  %0 = migraphx.clip %arg0, %arg1, %arg2 : <4x8xf32, 8x1>, <4x8xf16, 8x1>, <4x8xf32, 8x1> -> <4x8xf32, 8x1>
+  return %0 : !migraphx.shaped<4x8xf32, 8x1>
+}
+
+// -----
+
+func.func @clip_mismatched_shapes(%arg0: !migraphx.shaped<4x8xf32, 8x1>, %arg1: !migraphx.shaped<4x4xf32, 4x1>, %arg2: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<4x8xf32, 8x1> {
+  // expected-error @+1 {{op failed to verify that all of {x, minVals, maxVals, output} have same shape}}
+  %0 = migraphx.clip %arg0, %arg1, %arg2 : <4x8xf32, 8x1>, <4x4xf32, 4x1>, <4x8xf32, 8x1> -> <4x8xf32, 8x1>
+  return %0 : !migraphx.shaped<4x8xf32, 8x1>
+}
+
+// -----
+
+// ---- migraphx.where ----
+
+func.func @where_cond_not_bool(%arg0: !migraphx.shaped<4x4xf32, 4x1>, %arg1: !migraphx.shaped<4x4xf32, 4x1>, %arg2: !migraphx.shaped<4x4xf32, 4x1>) -> !migraphx.shaped<4x4xf32, 4x1> {
+  // expected-error @+1 {{'migraphx.where' op operand #0 must be !migraphx.shaped of 8-bit signless integer or 8-bit signed integer or 8-bit unsigned integer values, but got '!migraphx.shaped<4x4xf32, 4x1>'}}
+  %0 = migraphx.where %arg0, %arg1, %arg2 : <4x4xf32, 4x1>, <4x4xf32, 4x1>, <4x4xf32, 4x1> -> <4x4xf32, 4x1>
+  return %0 : !migraphx.shaped<4x4xf32, 4x1>
+}
+
+// -----
+
+func.func @where_mismatched_types(%arg0: !migraphx.shaped<4x4xi8, 4x1>, %arg1: !migraphx.shaped<4x4xf32, 4x1>, %arg2: !migraphx.shaped<4x4xf16, 4x1>) -> !migraphx.shaped<4x4xf32, 4x1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, inB, output} have same element type}}
+  %0 = migraphx.where %arg0, %arg1, %arg2 : <4x4xi8, 4x1>, <4x4xf32, 4x1>, <4x4xf16, 4x1> -> <4x4xf32, 4x1>
+  return %0 : !migraphx.shaped<4x4xf32, 4x1>
+}
+
+// -----
+
+func.func @where_mismatched_shapes(%arg0: !migraphx.shaped<4x4xi8, 4x1>, %arg1: !migraphx.shaped<4x8xf32, 8x1>, %arg2: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<4x8xf32, 8x1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, inB, output, cond} have same shape}}
+  %0 = migraphx.where %arg0, %arg1, %arg2 : <4x4xi8, 4x1>, <4x8xf32, 8x1>, <4x8xf32, 8x1> -> <4x8xf32, 8x1>
+  return %0 : !migraphx.shaped<4x8xf32, 8x1>
+}
+
+// -----
+
+// ---- migraphx.convert ----
+
+func.func @convert_shape_mismatch(%arg0: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<4x4xf16, 4x1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, output} have same shape}}
+  %0 = migraphx.convert %arg0 : <4x8xf32, 8x1> to <4x4xf16, 4x1>
+  return %0 : !migraphx.shaped<4x4xf16, 4x1>
+}
+
+// -----
+
+// ---- migraphx.abs ----
+
+func.func @abs_shape_mismatch(%arg0: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<4x4xf32, 4x1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, output} have same shape}}
+  %0 = migraphx.abs %arg0 : <4x8xf32, 8x1> -> <4x4xf32, 4x1>
+  return %0 : !migraphx.shaped<4x4xf32, 4x1>
+}
+
+// -----
+
+// ---- migraphx.exp ----
+
+func.func @exp_rank_mismatch(%arg0: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<32xf32, 1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, output} have same shape}}
+  %0 = migraphx.exp %arg0 : <4x8xf32, 8x1> -> <32xf32, 1>
+  return %0 : !migraphx.shaped<32xf32, 1>
+}
+
+// -----
+
+// ---- migraphx.relu ----
+
+func.func @relu_shape_mismatch(%arg0: !migraphx.shaped<4x8xf32, 8x1>) -> !migraphx.shaped<2x8xf32, 8x1> {
+  // expected-error @+1 {{op failed to verify that all of {inA, output} have same shape}}
+  %0 = migraphx.relu %arg0 : <4x8xf32, 8x1> -> <2x8xf32, 8x1>
+  return %0 : !migraphx.shaped<2x8xf32, 8x1>
+}
+
+// -----
+
+// ---- migraphx.sigmoid ----
+
+func.func @func_sigmoid_2d_i32(%arg0: !migraphx.shaped<4x8xi32, 8x1>) -> !migraphx.shaped<4x8xi32, 8x1> {
+  // expected-error @+1 {{only support floating point}}
+  %0 = migraphx.sigmoid %arg0 : <4x8xi32, 8x1> -> <4x8xi32, 8x1>
+  return %0 : !migraphx.shaped<4x8xi32, 8x1>
+}
+
+// -----
+
+// ---- migraphx.dot ----
+
+func.func @dot_rank_less_than_2(%arg0: !migraphx.shaped<320xf16, 1>, %arg1: !migraphx.shaped<320x64xf16, 64x1>) -> !migraphx.shaped<64xf16, 1> {
+  // expected-error @+1 {{expect operand to have rank greater or equal to 2}}
+  %0 = migraphx.dot %arg0, %arg1 : <320xf16, 1>, <320x64xf16, 64x1> -> <64xf16, 1>
+  return %0 : !migraphx.shaped<64xf16, 1>
+}
+
+// -----
+
+func.func @dot_incompatible_inner_dim(%arg0: !migraphx.shaped<2x64x320xf16, 20480x320x1>, %arg1: !migraphx.shaped<2x256x64xf16, 16384x64x1>) -> !migraphx.shaped<2x64x64xf16, 4096x64x1> {
+  // expected-error @+1 {{contraction dimension mismatch: the first operand}}
+  %0 = migraphx.dot %arg0, %arg1 : <2x64x320xf16, 20480x320x1>, <2x256x64xf16, 16384x64x1> -> <2x64x64xf16, 4096x64x1>
+  return %0 : !migraphx.shaped<2x64x64xf16, 4096x64x1>
+}
+
+// -----
+
+func.func @dot_invalid_batch(%arg0: !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>, %arg1: !migraphx.shaped<6x2x2xf32, 4x2x1>) -> !migraphx.shaped<3x2x2x2xf32, 8x4x2x1> {
+  // expected-error@+1 {{batch dimension mismatch: the first operand ('!migraphx.shaped<3x2x2x2xf32, 8x4x2x1>') and the second operand ('!migraphx.shaped<6x2x2xf32, 4x2x1>') have incompatible batch dimensions}}
+  %0 = migraphx.dot %arg0, %arg1 : <3x2x2x2xf32, 8x4x2x1>, <6x2x2xf32, 4x2x1> -> <3x2x2x2xf32, 8x4x2x1>
+  func.return %0 : !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>
+}
+
+// -----
+
+func.func @dot_invalid_broadcast(%arg0: !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>, %arg1: !migraphx.shaped<2x3x2x2xf32, 12x4x2x1>) -> !migraphx.shaped<3x2x2x2xf32, 8x4x2x1> {
+  // expected-error@+1 {{batch dimension mismatch: the first operand}}
+  %0 = migraphx.dot %arg0, %arg1 : <3x2x2x2xf32, 8x4x2x1>, <2x3x2x2xf32, 12x4x2x1> -> <3x2x2x2xf32, 8x4x2x1>
+  func.return %0 : !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>
+}
+
+// -----
+
+func.func @dot_broadcast_a_unsupported(%arg0: !migraphx.shaped<2x2xf32, 2x1>, %arg1: !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>) -> !migraphx.shaped<3x2x2x2xf32, 8x4x2x1> {
+  // expected-error@+1 {{batch dimension mismatch: the first operand}}
+  %0 = migraphx.dot %arg0, %arg1 : <2x2xf32, 2x1>, <3x2x2x2xf32, 8x4x2x1> -> <3x2x2x2xf32, 8x4x2x1>
+  func.return %0 : !migraphx.shaped<3x2x2x2xf32, 8x4x2x1>
+}
+
+// -----
+
+func.func @dot_result_shape_mismatch(%arg0: !migraphx.shaped<2x3x4xf16, 12x4x1>, %arg1: !migraphx.shaped<2x4x5xf16, 20x5x1>) -> !migraphx.shaped<2x3x4xf16, 12x4x1> {
+  // expected-error @+1 {{result type is inconsistent with input shapes}}
+  %0 = migraphx.dot %arg0, %arg1 : <2x3x4xf16, 12x4x1>, <2x4x5xf16, 20x5x1> -> <2x3x4xf16, 12x4x1>
+  return %0 : !migraphx.shaped<2x3x4xf16, 12x4x1>
+}
+
+// -----
+
+// ---- migraphx.slice ----
+
+func.func @invalid_attr_size_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op axes, starts, and ends must have the same size}}
+  %result = migraphx.slice %input {axes = [0, 1], starts = [0], ends = [2, 2]} : <10x10xf32, 10x1> -> <2x2xf32, 2x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_rank_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{input and output shapes must have the same rank}}
+  %result = migraphx.slice %input {axes = [0], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <5xf32, 1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_negative_axis(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{all attributes must be non-negative}}
+  %result = migraphx.slice %input {axes = [-1], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <10x5xf32, 5x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_axis_out_of_range(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{axes must be less than the input rank}}
+  %result = migraphx.slice %input {axes = [0, 10], starts = [0, 0], ends = [2, 2]} : <10x10xf32, 10x1> -> <2x2xf32, 2x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_axis_equals_rank(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{axes must be less than the input rank}}
+  %result = migraphx.slice %input {axes = [2], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <10x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_duplicate_axes(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{axes must not contain duplicates}}
+  %result = migraphx.slice %input {axes = [0, 0], starts = [0, 2], ends = [5, 4]} : <10x10xf32, 10x1> -> <2x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_start_equals_end(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op start is greater or equal to end}}
+  %result = migraphx.slice %input {axes = [1], starts = [3], ends = [3]} : <10x10xf32, 10x1> -> <10x1xf32, 1x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_negative_start(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{all attributes must be non-negative}}
+  %result = migraphx.slice %input {axes = [0], starts = [-2], ends = [5]} : <10x10xf32, 10x1> -> <7x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_multi_axis_shape_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{input shape and attribute does not infer output shape}}
+  %result = migraphx.slice %input {axes = [0, 1], starts = [1, 2], ends = [4, 8]} : <10x10xf32, 10x1> -> <3x5xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_start_greater_than_end(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op start is greater or equal to end}}
+  %result = migraphx.slice %input {axes = [0], starts = [5], ends = [2]} : <10x10xf32, 10x1> -> <10x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_end_exceeds_input(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{end is greater than input shape}}
+  %result = migraphx.slice %input {axes = [0, 1], starts = [0, 0], ends = [11, 10]} : <10x10xf32, 10x1> -> <11x10xf32, 11x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_shape_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{input shape and attribute does not infer output shape}}
+  %result = migraphx.slice %input {axes = [0], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <3x10xf32, 10x1>
+  func.return
+}
+
+// -----
+
+func.func @invalid_element_type_mismatch(%input: !migraphx.shaped<10x10xf32, 10x1>) {
+  // expected-error @+1 {{op failed to verify that all of {input, output} have same element type}}
+  %result = migraphx.slice %input {axes = [0], starts = [0], ends = [5]} : <10x10xf32, 10x1> -> <5x10xf16, 10x1>
+  func.return
 }

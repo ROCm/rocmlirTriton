@@ -643,26 +643,28 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0OutShape[2] % splitKV == 0 &&
            "SeqK must be divisible by splitKV");
 
-    int64_t seqK = gemm0OutShape[2];
-    int64_t seqKChunk = seqK / splitKV;
+    int64_t batch = gemm0OutShape[0];
+    int64_t seqKChunk = gemm0OutShape[2] / splitKV;
 
-    // Step 1: Unmerge seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
-    // SeqK/splitKV]
-    rock::BottomUpTMBuilder unmergeSeqK(builder, {"batch", "seqQ", "seqK"},
-                                        gemm0OutShape, loc);
-    unmergeSeqK.unmerge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
-                        {splitKV, seqKChunk});
-    unmergeSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
-    auto unmergeSeqKAttr = unmergeSeqK.get();
+    // Step 1: split seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
+    // SeqK/splitKV]. splitKV is the slow axis of seqK, matching the way
+    // detect-flash-decoding folds the splits into the key sequence.
+    rock::TopDownTMBuilder splitSeqK(builder, {"batch", "seqQ", "seqK"},
+                                     gemm0OutShape, loc);
+    splitSeqK.merge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
+                    {splitKV, seqKChunk});
+    splitSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
+    TransformMapAttr splitSeqKAttr = splitSeqK.get();
 
-    // Step 2: Merge batch+splitKV: [B*H, SeqQ, splitKV, SeqK/splitKV] ->
-    // [B*H*splitKV, SeqQ, SeqK/splitKV]
-    auto merge = rock::BottomUpTMBuilder::above(unmergeSeqK, unmergeSeqKAttr);
-    merge.merge("batch", 0, {"batch", "splitKV"});
-    merge.passThrough({"seqQ", "seqK_chunk"}, {1, 2}, {"seqQ", "seqK_chunk"});
-    auto mergeAttr = merge.get();
+    // Step 2: fold splitKV into the batch: [B*H, SeqQ, splitKV, SeqK/splitKV]
+    // -> [B*H*splitKV, SeqQ, SeqK/splitKV], with splitKV as the fast axis.
+    auto mergeBatch = rock::TopDownTMBuilder::below(splitSeqK, splitSeqKAttr);
+    mergeBatch.unmerge("batch", 0, {"batch", "splitKV"}, {batch, splitKV});
+    mergeBatch.passThrough({"seqQ", "seqK_chunk"}, {1, 2},
+                           {"seqQ", "seqK_chunk"});
+    TransformMapAttr mergeBatchAttr = mergeBatch.get();
 
-    return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
+    return builder.getArrayAttr({splitSeqKAttr, mergeBatchAttr});
   }
 
   std::tuple<Value, Value, Value, Value, Value, Value>
@@ -683,6 +685,9 @@ struct GridwiseAttentionRewritePattern
 
     // Lambda to load a 1D tensor value (used for lastValidKVIndex and
     // prefixOffset)
+    // TODO: Emit llvm.intr.assume(value >= 0) on the loaded value. Both indices
+    // are expected to be non-negative (see RockOps.td), and Triton's AMD
+    // integer range analysis uses such assumptions.
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
 
@@ -876,6 +881,13 @@ struct GridwiseAttentionRewritePattern
   // Helper function to determine if early exit optimization is possible.
   // Early exit requires splitKV > 1 and at least one of: padding in gemm0M,
   // causal masking, or KV cache.
+  // TODO: Cover more workgroups that have no work:
+  // - Causal + sliding window where the M block's last query ends before the
+  //   window start, so every row is fully masked. This also applies with
+  //   splitKV == 1, which never exits early today.
+  // - Padding-only split-KV with prePadG0N < gemm0NPerBlock. It is excluded
+  //   below although the runtime check would handle it, so the trailing splits
+  //   run over padding only.
   static bool isEarlyExitPossible(int64_t splitKV, int64_t gemm0NPerBlock,
                                   std::optional<APInt> prePadG0N, bool isCausal,
                                   bool isKVCache) {
@@ -1164,6 +1176,11 @@ struct GridwiseAttentionRewritePattern
     // through padded output/LSE views, so a NaN there is not observable and is
     // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
     // unless its result is proven not to overflow finite QK scores.
+    // TODO: The splitKV clause is conservative: split-KV alone never fully
+    // masks a row. It needs causal/prefix-causal masking, or padding-only
+    // split-KV with prePadG0N < gemm0NPerBlock (see isEarlyExitPossible).
+    // Alternatively, emit the guard unconditionally and drop this predicate;
+    // it only adds one arith.maxnumf per row, but that needs perf data.
     bool mayHaveFullyMaskedRows =
         op.getEnableSoftmax() &&
         (preSoftmaxMayFullyMask(op) ||
@@ -1480,10 +1497,11 @@ struct GridwiseAttentionRewritePattern
       // Apply splitKV transforms if needed
       // This transforms the GEMM0 output from [B*H, SeqQ, SeqK] to
       // [B*H*splitKV, SeqQ, SeqK/splitKV] to match the preSoftmax inputs.
+      ArrayAttr gemm0OutFusionView = gemm0OutTileViewUnPadded;
       if (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms()) {
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
-        gemm0OutTileViewUnPadded = prependUpperViews(
+        gemm0OutFusionView = prependUpperViews(
             rewriter, gemm0OutTileViewUnPadded, splitKVTransforms);
       }
 
@@ -1491,7 +1509,7 @@ struct GridwiseAttentionRewritePattern
       // be performed on the output of the first gemm.
       auto maybeFirstGemmResult =
           postProcessFirstGemm(rewriter, loc, op, gridCoordsGemm0,
-                               firstGemmResult, gemm0OutTileViewUnPadded);
+                               firstGemmResult, gemm0OutFusionView);
       if (failed(maybeFirstGemmResult))
         return op->emitError("Failed to post process first GEMM output");
       firstGemmResult = maybeFirstGemmResult.value();
@@ -1508,6 +1526,10 @@ struct GridwiseAttentionRewritePattern
 
         // Scale gemm0 output by (1/ln2)
         // So that we can use exp2 instead of exp.
+        // TODO: Apply this scale after subtracting the row max instead, so
+        // scores with |x| >= FLT_MAX / log2(e) (f32) can't overflow to inf
+        // here (see isFiniteConstantScaleOf). That changes the inner loop, so
+        // it needs perf data.
         Value ln2Recip = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(), elemTypeSoftmax, 1.44269504f,
             elemTypeSoftmax.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
@@ -1681,6 +1703,12 @@ struct GridwiseAttentionRewritePattern
 
     if (op.getEnableSoftmax()) {
       Value normalizationSum = sumRow;
+      // A fully masked row ends with sumRow == 0: with the finite max sentinel,
+      // every exp2 term is 0. Clamp the denominator to 1 so that row is written
+      // as zeros instead of 0/0. A row with any valid score has sumRow >= 1
+      // (its max term is exp2(0) = 1), so the clamp leaves it unchanged. The
+      // LSE below keeps the unclamped sumRow, so a fully masked row still
+      // reports -inf.
       if (mayHaveFullyMaskedRows) {
         Value oneFloat =
             createConstantFloatOp(rewriter, loc, blockMTensorType,

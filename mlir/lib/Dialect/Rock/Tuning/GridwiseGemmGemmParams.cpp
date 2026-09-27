@@ -29,6 +29,10 @@ FailureOr<GemmGemmParamsAttr> PopulateParamsGemmGemm::obtainTuningParameters(
   if (auto mayBePerfConfig =
           dyn_cast_or_null<StringAttr>(op->getAttr("perf_config")))
     perfConfig = mayBePerfConfig.getValue();
+  // Skip the list when it would go unused; see
+  // PopulateParams::obtainTuningParameters.
+  if (!perfConfig.empty())
+    return materializeTuningParams<GemmGemmParamsAttr>(b, perfConfig, {});
   return materializeTuningParams<GemmGemmParamsAttr>(
       b, perfConfig, getTuningParameters(b, op, /*supportsSplitK=*/true));
 }
@@ -42,7 +46,7 @@ std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
   auto cElemType = cast<ShapedType>(op.getCType()).getElementType();
   auto arch = rock::getArchValue(op);
   auto list = getTuningParameters(b, arch, op.getKernelType(), aElemType,
-                                  supportsSplitK);
+                                  supportsSplitK, getQuickTuningProblemKey(op));
   auto ordered =
       orderParams<GemmGemmParamsAttr>(list, [&](GemmGemmParamsAttr p) {
         return isGemmGemmParamsConservativelyApplicable(
@@ -61,9 +65,9 @@ std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
 
 std::vector<GemmGemmParamsAttr> PopulateParamsGemmGemm::getTuningParameters(
     OpBuilder &b, StringRef arch, KernelType kernelType, Type elementType,
-    bool supportsSplitK) {
+    bool supportsSplitK, std::optional<QuickTuningProblemKey> problemKey) {
   auto perfConfigs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
-      arch, kernelType, elementType, supportsSplitK);
+      arch, kernelType, elementType, supportsSplitK, problemKey);
   std::vector<GemmGemmParamsAttr> ret;
   ret.reserve(perfConfigs.size());
   for (StringRef config : perfConfigs) {

@@ -1,4 +1,5 @@
-// Regression test for the strided backward-data LDS overflow on gfx908.
+// Regression tests for strided backward-data LDS overflows on gfx908 and
+// gfx942.
 //
 // With no perf_config, the compiler auto-selects the first conservatively
 // applicable quick-tuning entry for the arch/dtype/op. For a strided (>=2)
@@ -37,3 +38,18 @@
 // RUN: | rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=NO_OVERFLOW
 
 // NO_OVERFLOW-NOT: exceeds LDS
+
+// rock-fuse-sibling-loops merges the K-loops of kernel IDs that have the same
+// trip count, so the merged loop keeps one A tile per kernel ID in LDS. With a
+// 4x4 filter and stride 2, all four kernel IDs share one loop and one gradient
+// tile, and the first gfx942 f32 conv entry (64x16x64, numStages = 2) needs
+// 69632 B. Auto-selection has to skip it. This is the shape of
+// fusion/pr-e2e/mixr-bwd-data-conv-dilation1-stride2.mlir, which needs a GPU.
+// RUN: rocmlir-gen -groupsize=1 -batchsize=1 -in_channels=384 -out_channels=512 \
+// RUN:   -in_h=64 -in_w=64 -fil_h=4 -fil_w=4 -dilation_h=1 -dilation_w=1 \
+// RUN:   -conv_stride_h=2 -conv_stride_w=2 -padding_h=1 -padding_w=1 \
+// RUN:   --operation conv_bwd_data -fil_layout=gk01c -in_layout=n01gc \
+// RUN:   -out_layout=n01gk -t f32 --arch gfx942 \
+// RUN: | rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942_NO_OVERFLOW
+
+// GFX942_NO_OVERFLOW-NOT: exceeds LDS

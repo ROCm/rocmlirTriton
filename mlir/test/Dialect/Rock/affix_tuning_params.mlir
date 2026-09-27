@@ -847,3 +847,49 @@ func.func @rock_attention_named_nperblockg1_tiled(%arg0: tensor<1x16384x512xf32>
   %out = rock.store %result to %arg3 by set : tensor<1x16384x512xf32> -> tensor<1x16384x512xf32> to tensor<1x16384x512xf32>
   return %out : tensor<1x16384x512xf32>
 }
+
+// A stride-2 backward-data conv lowers to one GEMM per kernel ID, and
+// rock-fuse-sibling-loops merges the K-loops that have the same trip count.
+// With a 4x4 filter all four GEMMs share one loop and one gradient (B) tile, so
+// the loop holds 4 A + B. For the first gfx942 f32 entry (64x16x64,
+// numStages=2) Triton allocates 69632 B, which overflows 64 KiB of LDS, so
+// affix must skip it.
+// CHECK-LABEL: func.func @rock_conv_bwd_data_stride2_gfx942
+// GRID-LABEL: func.func @rock_conv_bwd_data_stride2_gfx942
+func.func @rock_conv_bwd_data_stride2_gfx942(%filter: tensor<1x512x4x4x384xf32>, %output: tensor<1x32x32x1x512xf32>, %input: tensor<1x64x64x1x384xf32>) -> tensor<1x64x64x1x384xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+  // CHECK: rock.conv_bwd_data
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 32, nPerBlock = 64, kPerBlock = 16, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm
+  %result = rock.conv_bwd_data(%filter, %output) {
+    dilations = [1 : index, 1 : index],
+    filter_layout = ["g", "k", "y", "x", "c"],
+    input_layout = ["ni", "hi", "wi", "gi", "ci"],
+    output_layout = ["no", "ho", "wo", "go", "ko"],
+    padding = [1 : index, 1 : index, 1 : index, 1 : index],
+    strides = [2 : index, 2 : index]
+  } : tensor<1x512x4x4x384xf32>, tensor<1x32x32x1x512xf32> -> tensor<1x64x64x1x384xf32>
+  %out = rock.store %result to %input by set : tensor<1x64x64x1x384xf32> -> tensor<1x64x64x1x384xf32> to tensor<1x64x64x1x384xf32>
+  return %out : tensor<1x64x64x1x384xf32>
+}
+
+// With a 3x3 filter the GEMMs have K = 2048, 1024, 1024 and 512 and read
+// different gradient views, so the largest merged loop is the one with the two
+// K = 1024 GEMMs, holding 2 A + 2 B. That leaves room for a larger tile than in
+// the 4x4 case.
+// CHECK-LABEL: func.func @rock_conv_bwd_data_stride2_fil3_gfx942
+// GRID-LABEL: func.func @rock_conv_bwd_data_stride2_fil3_gfx942
+func.func @rock_conv_bwd_data_stride2_fil3_gfx942(%filter: tensor<1x512x3x3x384xf32>, %output: tensor<1x32x32x1x512xf32>, %input: tensor<1x64x64x1x384xf32>) -> tensor<1x64x64x1x384xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+  // CHECK: rock.conv_bwd_data
+  // CHECK-SAME: params = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 64, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 16, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0>
+  // GRID: rock.gridwise_gemm
+  %result = rock.conv_bwd_data(%filter, %output) {
+    dilations = [1 : index, 1 : index],
+    filter_layout = ["g", "k", "y", "x", "c"],
+    input_layout = ["ni", "hi", "wi", "gi", "ci"],
+    output_layout = ["no", "ho", "wo", "go", "ko"],
+    padding = [1 : index, 1 : index, 1 : index, 1 : index],
+    strides = [2 : index, 2 : index]
+  } : tensor<1x512x3x3x384xf32>, tensor<1x32x32x1x512xf32> -> tensor<1x64x64x1x384xf32>
+  %out = rock.store %result to %input by set : tensor<1x64x64x1x384xf32> -> tensor<1x64x64x1x384xf32> to tensor<1x64x64x1x384xf32>
+  return %out : tensor<1x64x64x1x384xf32>
+}

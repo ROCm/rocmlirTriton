@@ -80,4 +80,48 @@ TEST_F(LoweringUtilsTest, RejectsSparseTensorConstants) {
   EXPECT_FALSE(isDenseNonSplatConstant(sparse));
 }
 
+// Kernel IDs enumerate the filter phases with the last dimension varying
+// fastest.
+TEST(BackwardDataTildaIndicesTest, LastDimensionVariesFastest) {
+  EXPECT_EQ(backwardDataTildaIndices({2, 3}, {1, 1}, 5),
+            (SmallVector<int64_t>{1, 2}));
+  EXPECT_EQ(backwardDataTildaIndices({2, 3, 4}, {1, 1, 1}, 23),
+            (SmallVector<int64_t>{1, 2, 3}));
+  // Dilation 2 leaves stride 4 with two phases.
+  EXPECT_EQ(backwardDataTildaIndices({3, 4}, {1, 2}, 5),
+            (SmallVector<int64_t>{2, 1}));
+}
+
+// Kernel ID `i` of a stride-2 backward data conv is the filter phase
+// (i / 2, i % 2). Along a 3-wide filter, phase 0 covers taps 0 and 2 and
+// phase 1 covers tap 1.
+TEST(BackwardDataDotSlicesTest, CountsFilterTapsPerKernelId) {
+  EXPECT_EQ(backwardDataDotSlices({2, 2}, {1, 1}, {3, 3}, 0),
+            (SmallVector<int64_t>{2, 2}));
+  EXPECT_EQ(backwardDataDotSlices({2, 2}, {1, 1}, {3, 3}, 1),
+            (SmallVector<int64_t>{2, 1}));
+  EXPECT_EQ(backwardDataDotSlices({2, 2}, {1, 1}, {3, 3}, 2),
+            (SmallVector<int64_t>{1, 2}));
+  EXPECT_EQ(backwardDataDotSlices({2, 2}, {1, 1}, {3, 3}, 3),
+            (SmallVector<int64_t>{1, 1}));
+  // A dilation that is a multiple of the stride leaves a single phase, which
+  // covers the whole filter.
+  EXPECT_EQ(backwardDataDotSlices({2, 2}, {2, 2}, {3, 3}, 0),
+            (SmallVector<int64_t>{3, 3}));
+}
+
+// A stride larger than the filter leaves phases that cover no taps, and those
+// phases are not kernel IDs.
+TEST(BackwardDataDotSlicesTest, PhasesWithoutTapsAreNotKernelIds) {
+  EXPECT_EQ(backwardDataDotSlices({3, 3}, {1, 1}, {2, 2}, 2),
+            (SmallVector<int64_t>{1, 0}));
+  EXPECT_EQ(backwardDataKernelIds({3, 3}, {1, 1}, {2, 2}),
+            (SmallVector<int64_t>{0, 1, 3, 4}));
+  // With a 1-wide filter, phase 2 gives a negative `fil - iTilda`.
+  EXPECT_EQ(backwardDataDotSlices({3, 3}, {1, 1}, {1, 1}, 2),
+            (SmallVector<int64_t>{1, 0}));
+  EXPECT_EQ(backwardDataKernelIds({3, 3}, {1, 1}, {1, 1}),
+            (SmallVector<int64_t>{0}));
+}
+
 } // namespace

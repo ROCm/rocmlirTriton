@@ -229,60 +229,89 @@ bool mlir::rock::isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
   return result;
 }
 
+/// Number of filter phases (`filTilda`) in each spatial dimension.
+static SmallVector<int64_t, 5>
+backwardDataFilTilda(ArrayRef<int64_t> strideDims,
+                     ArrayRef<int64_t> dilationDims) {
+  assert(strideDims.size() == dilationDims.size() &&
+         "expected one dilation per stride");
+  SmallVector<int64_t, 5> filTilda;
+  for (const auto &[stride, dilation] : zip(strideDims, dilationDims))
+    filTilda.push_back(stride / std::gcd(stride, dilation));
+  return filTilda;
+}
+
 SmallVector<int64_t>
 mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                   ArrayRef<int64_t> dilationDims,
                                   ArrayRef<int64_t> filterDims) {
-  assert(strideDims.size() == dilationDims.size());
-  SmallVector<int64_t, 5> gcdStrideDilations;
-  for (const auto &[stride, dilation] : zip(strideDims, dilationDims))
-    gcdStrideDilations.push_back(std::gcd(stride, dilation));
-
-  SmallVector<int64_t, 5> filTilda;
-  for (const auto &[stride, gcdSD] : zip(strideDims, gcdStrideDilations))
-    filTilda.push_back(stride / gcdSD);
+  int64_t product = 1;
+  for (int64_t phases : backwardDataFilTilda(strideDims, dilationDims))
+    product *= phases;
 
   // Populate the kernel IDs according to the current backward data convolution
   // algorithm implementation.
   llvm::SmallVector<int64_t> kernelIds;
-  int64_t subproduct = 1;
-  int64_t product;
-  for (size_t i = 1; i < filterDims.size(); i++)
-    subproduct *= filTilda[i];
-  product = subproduct * filTilda[0];
   for (int64_t kernelId = 0; kernelId < product; ++kernelId) {
-    // gemmK size is different for each GEMM
-    SmallVector<int64_t, 3> iTilda;
-    int64_t divisor = 1;
-    iTilda.resize(filterDims.size());
-    switch (filterDims.size()) {
-    default:
-      llvm_unreachable("Only 2-D and 3-D have been implemented.");
-      break;
-    case 3:
-      divisor = filTilda[2];
-      iTilda[2] = kernelId % divisor;
-      [[fallthrough]];
-    case 2:
-      iTilda[1] = (kernelId % subproduct) / divisor;
-      iTilda[0] = kernelId / subproduct;
-    }
-
     // gemmK must be > 0, otherwise this kernel has no filter slice to run.
-    int64_t gemmKproduct = 1;
-    for (size_t i = 0; i < filterDims.size(); i++) {
-      if (iTilda[i] >= filterDims[i]) {
-        gemmKproduct = 0;
-        break;
-      }
-      gemmKproduct *= llvm::divideCeil(filterDims[i] - iTilda[i], filTilda[i]);
-    }
-    if (gemmKproduct > 0) {
+    SmallVector<int64_t> dotSlices =
+        backwardDataDotSlices(strideDims, dilationDims, filterDims, kernelId);
+    if (!llvm::is_contained(dotSlices, 0))
       kernelIds.push_back(kernelId);
-    }
   }
 
   return kernelIds;
+}
+
+SmallVector<int64_t>
+mlir::rock::backwardDataTildaIndices(ArrayRef<int64_t> strideDims,
+                                     ArrayRef<int64_t> dilationDims,
+                                     int64_t kernelId) {
+  SmallVector<int64_t, 5> filTilda =
+      backwardDataFilTilda(strideDims, dilationDims);
+  int64_t subproduct = 1;
+  for (size_t i = 1; i < filTilda.size(); i++)
+    subproduct *= filTilda[i];
+  SmallVector<int64_t> iTilda;
+  int64_t divisor = 1;
+  iTilda.resize(filTilda.size());
+  switch (filTilda.size()) {
+  default:
+    llvm_unreachable("Only 2-D and 3-D have been implemented.");
+    break;
+  case 3:
+    divisor = filTilda[2];
+    iTilda[2] = kernelId % divisor;
+    [[fallthrough]];
+  case 2:
+    iTilda[1] = (kernelId % subproduct) / divisor;
+    iTilda[0] = kernelId / subproduct;
+  }
+  return iTilda;
+}
+
+SmallVector<int64_t> mlir::rock::backwardDataDotSlices(
+    ArrayRef<int64_t> strideDims, ArrayRef<int64_t> dilationDims,
+    ArrayRef<int64_t> filterDims, int64_t kernelId) {
+  assert(strideDims.size() == dilationDims.size() &&
+         strideDims.size() == filterDims.size() &&
+         "expected one stride and dilation per filter dimension");
+  SmallVector<int64_t, 5> filTilda =
+      backwardDataFilTilda(strideDims, dilationDims);
+  SmallVector<int64_t> iTilda =
+      backwardDataTildaIndices(strideDims, dilationDims, kernelId);
+
+  // The `iTilda >= filterDims` check has to come first: `divideCeil`'s
+  // unsigned-converting overload would wrap the negative numerator.
+  SmallVector<int64_t> dotSlices;
+  for (size_t i = 0; i < filterDims.size(); i++) {
+    if (iTilda[i] >= filterDims[i])
+      dotSlices.push_back(0);
+    else
+      dotSlices.push_back(
+          llvm::divideCeil(filterDims[i] - iTilda[i], filTilda[i]));
+  }
+  return dotSlices;
 }
 
 FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
