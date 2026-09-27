@@ -83,13 +83,13 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
 
 // pipelines
 
-/// MLIR pass threading is controlled by the MlirContext associated with `pm`.
-/// These pipeline builders do not change that context-wide policy. Callers
-/// that already compile independent modules in parallel can avoid nested pass
-/// parallelism by creating the context with threading disabled or by calling
-/// mlirContextEnableMultithreading(context, false) before constructing or
-/// running pass managers and before sharing the context across threads.
-///
+// MLIR pass threading is controlled by the MlirContext associated with `pm`.
+// These pipeline builders do not change that context-wide policy. Callers
+// that already compile independent modules in parallel can avoid nested pass
+// parallelism by creating the context with threading disabled or by calling
+// mlirContextEnableMultithreading(context, false) before constructing or
+// running pass managers and before sharing the context across threads.
+
 /// Add the high-level pipeline that creates something that can be tuned.
 /// Architecture, num_cu and num_chiplets information should be set on the
 /// kernel function being compiled.

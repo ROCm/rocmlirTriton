@@ -420,8 +420,11 @@ checkPipelineConstructionPreservesThreading(MlirDialectRegistry registry) {
   MlirPassManager backendPm = mlirPassManagerCreate(ctx);
   MlirMIGraphXBackendOptions opts = {"gfx908:sramecc+:xnack-",
                                      "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
-  preserved = mlirMIGraphXAddBackendPipeline(backendPm, &opts) && preserved &&
-              mlirContextGetNumThreads(ctx) == 1;
+  bool backendPipelineAdded = mlirMIGraphXAddBackendPipeline(backendPm, &opts);
+  // CHECK: backend pipeline construction succeeded : 1
+  printf("backend pipeline construction succeeded : %d\n",
+         backendPipelineAdded);
+  preserved = preserved && mlirContextGetNumThreads(ctx) == 1;
 
   // CHECK: pipeline construction preserves disabled threading : 1
   printf("pipeline construction preserves disabled threading : %d\n",
@@ -430,7 +433,7 @@ checkPipelineConstructionPreservesThreading(MlirDialectRegistry registry) {
   mlirPassManagerDestroy(highLevelPm);
   mlirPassManagerDestroy(backendPm);
   mlirContextDestroy(ctx);
-  return preserved;
+  return backendPipelineAdded && preserved;
 }
 
 int main(void) {

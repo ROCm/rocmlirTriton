@@ -643,8 +643,8 @@ createCompilationContext(SmallVector<std::string> &bufferedDiags) {
   registerRocMLIRDialects(registry);
   // Compilation is already parallelized across perf configs. Keep each
   // context single-threaded to avoid nested pass-manager parallelism.
-  auto ctx = std::make_unique<MLIRContext>(
-      registry, MLIRContext::Threading::DISABLED);
+  auto ctx =
+      std::make_unique<MLIRContext>(registry, MLIRContext::Threading::DISABLED);
   // Consume *all* diagnostics so they don't pollute tuning output during the
   // parallel sweep. Errors are additionally buffered into `bufferedDiags` so
   // the caller can surface them on real failures; warnings/remarks/notes are
@@ -722,7 +722,7 @@ static CompilationResult compileConfigViaSubprocess(
 
   std::string archArg = ("--arch=" + archName).str();
   std::string perfConfigArg = ("--perf-config=" + perfConfig).str();
-  SmallVector<StringRef, 8> args = {
+  SmallVector<StringRef, 16> args = {
       driverPath, inputPath,     "--kernel-pipeline=gpu,triton,binary",
       archArg,    perfConfigArg, "--mlir-disable-threading",
       "-o",       outputPath};
