@@ -3509,7 +3509,7 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
   assert(static_cast<size_t>(index) < shape.size() &&
          "Index out of bounds for shape");
   bool perBatchMask = static_cast<size_t>(shape[0]) == validSplitKV.size();
-  bool perRowMask =
+  [[maybe_unused]] bool perRowMask =
       shape.size() > 2 &&
       static_cast<size_t>(shape[0] * shape[2]) == validSplitKV.size();
   assert((perBatchMask || perRowMask) &&
