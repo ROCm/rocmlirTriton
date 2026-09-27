@@ -30,7 +30,7 @@ config = "-g 1 -m 64 -k 32 -n 64 --transA=true --transB=false --perf_config=gemm
 config = "-g 1 -m 128 -k 64 -n 32 --transA=false --transB=false --perf_config=gemm:v1:64,32,32,1,1,4,16,1,2,0,0"
 
 [[suite.test]]
-config = "-g 8 -m 32 -k 16 -n 16 --transA=true --transB=true --perf_config=gemm:v1:16,16,16,1,1,1,16,1,2,0,0"
+config = "-g 8 -m 32 -k 16 -n 16 --transA=true --transB=true --perf_config=gemm:v1:16,16,16,1,1,1,16,1,2,0,0 --quantBlockSize=16"
 
 [[suite.test]]
 config = "-g 3 -m 64 -k 64 -n 32 --transA=false --transB=true --perf_config=gemm:v1:64,32,32,1,1,4,16,1,2,0,0"

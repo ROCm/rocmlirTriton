@@ -73,3 +73,8 @@
 // RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick | diff - %t.unsupported.quick
 // SCHEMA-GUARD: warning: per-problem quick tuning does not represent the current problem's output_data_type
 // SCHEMA-GUARD-SAME: falling back to the set cover
+
+// The same mode under a key with no map (gfx942_gemm_bf16) has no ranking to
+// fall back from, so it stays quiet.
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
+// RUN:   | count 0
