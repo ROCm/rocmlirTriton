@@ -1,4 +1,4 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -rock-gridwise-attn-to-blockwise -verify-diagnostics | FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt -split-input-file -rock-gridwise-attn-to-blockwise -verify-diagnostics | FileCheck %s
 
 module {
   // CHECK-LABEL: func @mlir_attention
@@ -29,6 +29,8 @@ module {
   // CHECK: %[[COL_PLUS_OFFSET:.*]] = arith.addi %{{.*}}, %{{.*}} : tensor<32x32xi32>
   // CHECK: %[[MASK_COND:.*]] = arith.cmpi ugt, %{{.*}}, %[[COL_PLUS_OFFSET]] : tensor<32x32xi32>
   // CHECK: arith.select %[[MASK_COND]], %{{.*}}, %{{.*}} : tensor<32x32xi1>, tensor<32x32xf32>
+  // Padded query rows are not stored, so prefix-causal still needs no guard.
+  // CHECK-NOT: arith.maxnumf
 
   func.func @mlir_attention(
       %prefixOffset: tensor<1xi32>,
@@ -50,6 +52,43 @@ module {
       operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 1>,
       causal,
       prePadG0M = 16 : index,
+      prePadG0N = 4 : index,
+      softmaxType = f32,
+      splitKV = 1 : i32,
+      params0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>,
+      params1 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 1, numCTAs = 1, numWaves = 4, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 1, wavesPerEU = 0, gridGroupSize = 0>
+    } : tensor<1x64x32xf16>, tensor<1x32x64xf16>, tensor<1x64x32xf16>, tensor<1xi32> -> tensor<1x64x32xf16>
+    return %result : tensor<1x64x32xf16>
+  }
+}
+
+// -----
+
+module {
+  // Prefix-causal masking with unsigned ugt never rejects key 0 when query
+  // rows are unpadded.
+  // CHECK-LABEL: func @attn_prefix_causal_unpadded
+  // CHECK-NOT: arith.maxnumf
+  // CHECK: return
+  func.func @attn_prefix_causal_unpadded(
+      %prefixOffset: tensor<1xi32>,
+      %q: tensor<1x64x32xf16>,
+      %k: tensor<1x32x64xf16>,
+      %v: tensor<1x64x32xf16>) -> tensor<1x64x32xf16>
+      attributes {
+        rock.block_size = 256 : i32,
+        rock.grid_size = 2 : i32,
+        rock.kernel,
+        rock.arch = "##TOKEN_ARCH##"
+      } {
+    %result = rock.gridwise_attention(%q, %k, %v, %prefixOffset) preSoftmaxOps = {
+    ^bb0(%arg_qk: tensor<1x32x32xf16>):
+      %cst = arith.constant dense<1.250000e-01> : tensor<1x32x32xf16>
+      %scaled = arith.mulf %arg_qk, %cst : tensor<1x32x32xf16>
+      rock.yield %scaled : tensor<1x32x32xf16>
+    } {
+      operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 1>,
+      causal,
       prePadG0N = 4 : index,
       softmaxType = f32,
       splitKV = 1 : i32,
