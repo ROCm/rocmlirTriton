@@ -402,6 +402,37 @@ static void checkLdsUsageFits(MlirContext ctx) {
   }
 }
 
+// Pipeline construction must respect the caller's context-wide threading
+// policy. In particular, adding either MIGraphX pipeline must not re-enable
+// threading on a context used by an already-parallel caller.
+static bool
+checkPipelineConstructionPreservesThreading(MlirDialectRegistry registry) {
+  MlirContext ctx =
+      mlirContextCreateWithRegistry(registry, /*threadingEnabled=*/false);
+  mlirContextLoadAllAvailableDialects(ctx);
+
+  bool preserved = mlirContextGetNumThreads(ctx) == 1;
+
+  MlirPassManager highLevelPm = mlirPassManagerCreate(ctx);
+  mlirMIGraphXAddHighLevelPipeline(highLevelPm);
+  preserved = preserved && mlirContextGetNumThreads(ctx) == 1;
+
+  MlirPassManager backendPm = mlirPassManagerCreate(ctx);
+  MlirMIGraphXBackendOptions opts = {"gfx908:sramecc+:xnack-",
+                                     "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
+  preserved = mlirMIGraphXAddBackendPipeline(backendPm, &opts) && preserved &&
+              mlirContextGetNumThreads(ctx) == 1;
+
+  // CHECK: pipeline construction preserves disabled threading : 1
+  printf("pipeline construction preserves disabled threading : %d\n",
+         preserved);
+
+  mlirPassManagerDestroy(highLevelPm);
+  mlirPassManagerDestroy(backendPm);
+  mlirContextDestroy(ctx);
+  return preserved;
+}
+
 int main(void) {
   MlirContext ctx = mlirContextCreate();
   MlirDialectRegistry registry = mlirDialectRegistryCreate();
@@ -412,14 +443,24 @@ int main(void) {
   // TODO: this is a emulation of an old behavior, we should load only the
   // dialects we use
   mlirContextLoadAllAvailableDialects(ctx);
-  mlirDialectRegistryDestroy(registry);
 
   if (!constructAndTraverseIr(ctx)) {
     printf("FAILED!\n");
+    mlirDialectRegistryDestroy(registry);
+    mlirContextDestroy(ctx);
     return 1;
   }
 
   checkLdsUsageFits(ctx);
+
+  bool preservesThreadingPolicy =
+      checkPipelineConstructionPreservesThreading(registry);
+  mlirDialectRegistryDestroy(registry);
+  if (!preservesThreadingPolicy) {
+    printf("FAILED!\n");
+    mlirContextDestroy(ctx);
+    return 1;
+  }
 
   mlirContextDestroy(ctx);
   return 0;
