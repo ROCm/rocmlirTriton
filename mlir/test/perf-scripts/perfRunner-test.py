@@ -443,5 +443,47 @@ class GetMilisecondsTest(unittest.TestCase):
         self.assertTrue(math.isnan(perfRunner.get_miliseconds(b"no kernel time here")))
 
 
+class BenchmarkFusionKernelsTest(unittest.TestCase):
+    """The fused kernel is timed under the function the test's -fut names.
+
+    rocmlir-gen --clone-harness keeps the kernel under that name, so pointing
+    -ph at anything else trips its "does -fut point to the wrong function?"
+    assertion and every fusion result comes out NaN.
+    """
+
+    TUNING_KEY = ("-t f32 -out_datatype f32 -transA false -transB false -transO false "
+                  "-g 1 -m 12 -n 384 -k 384 -outputFusions=addf -supportsSplitK true")
+
+    def setUp(self):
+        work_dir = Path(f"{TMP_PREFIX}.{self._testMethodName}")
+        shutil.rmtree(work_dir, ignore_errors=True)
+        work_dir.mkdir(parents=True)
+        (work_dir / "bert_part_0.torch-tosa.mlir").touch()
+        self.work_dir = work_dir
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(work_dir)
+
+        for name in ('get_fusion_test_info', 'run_fusion_kernel', 'run_config_with_mlir'):
+            self.addCleanup(setattr, perfRunner, name, getattr(perfRunner, name))
+        perfRunner.get_fusion_test_info = lambda filename, paths: {
+            'filename': filename,
+            'testVector': self.TUNING_KEY,
+            'futName': 'bert_part_0'
+        }
+        self.rocmlir_gen_args = []
+        perfRunner.run_fusion_kernel = self._run_fusion_kernel
+        perfRunner.run_config_with_mlir = lambda *args, **kwargs: 1000.0
+
+    def _run_fusion_kernel(self, filename, rocmlir_gen_args, paths):
+        self.rocmlir_gen_args.append(rocmlir_gen_args)
+        return 1000.0
+
+    def test_fut_names_the_function_under_test(self):
+        perfRunner.benchmark_fusion_kernels(str(self.work_dir), None, 'gfx942:sramecc+:xnack-', 304,
+                                            8, None)
+        self.assertEqual(len(self.rocmlir_gen_args), 1)
+        self.assertIn('-fut=bert_part_0', self.rocmlir_gen_args[0])
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)
