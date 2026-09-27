@@ -192,6 +192,10 @@ static void printTensor(const void *data, int64_t m, int64_t n,
 int main(int argc, char **argv) {
   auto args =
       benchmark::parseCommandLine("hipblaslt-benchmark-driver", argc, argv);
+  if (args.transposeO) {
+    fprintf(stderr, "hipBLASLt benchmark does not support transposed output\n");
+    exit(1);
+  }
 
   const int64_t m = args.gemmM;
   const int64_t n = args.gemmN;

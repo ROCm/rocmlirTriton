@@ -91,7 +91,7 @@ void printUsage(const std::string &name) {
             << name
             << " -g numGroups -m numOutRows -n numOutCols -k numReductions -t "
                "(f32|f16|bf16|i8) \n [-transA=(True|False)] "
-               "[-transB=(True|False)] \n "
+               "[-transB=(True|False)] [-transO=(True|False)] \n "
                "[--kernel-repeats numKernelRepeats]\n"
                "[--warmup-runs numWarmupRuns]\n"
                "[--fusion=(fastgelu_add_add)]\n"
@@ -256,7 +256,7 @@ BenchmarkArgs parseCommandLine(const std::string &name, int argc, char **argv) {
   //
   // -operation gemm -t dataType --arch arch -out_datatype dataType --num_cu
   // numCU --num_chiplets numChiplets -g G -m M -k K -n N -transA={True/False}
-  // -transB={True/False}
+  // -transB={True/False} -transO={True/False}
   // --kernel-repeats=reps --fusion --perf_config=
   //
   // issued by the perfRunner.py script
@@ -282,6 +282,10 @@ BenchmarkArgs parseCommandLine(const std::string &name, int argc, char **argv) {
       const int lenTransB = std::string("-transB=").length();
       std::string value = arg.substr(lenTransB);
       res.transposeB = atob(value);
+    } else if (arg.rfind("-transO=", 0) == 0) {
+      const int lenTransO = std::string("-transO=").length();
+      std::string value = arg.substr(lenTransO);
+      res.transposeO = atob(value);
     } else if (arg.rfind("-transScaleA=", 0) == 0) {
       const int lenTransScaleA = std::string("-transScaleA=").length();
       std::string value = arg.substr(lenTransScaleA);
@@ -347,6 +351,7 @@ void printProblem(BenchmarkArgs args) {
             << "K: " << args.gemmK << "\n"
             << "transA: " << (args.transposeA ? "true" : "false") << "\n"
             << "transB: " << (args.transposeB ? "true" : "false") << "\n"
+            << "transO: " << (args.transposeO ? "true" : "false") << "\n"
             << "transScaleA: " << (args.transScaleA ? "true" : "false") << "\n"
             << "transScaleB: " << (args.transScaleB ? "true" : "false") << "\n"
             << "scaleADataType: " << dataTypeToStr(args.scaleADataType) << "\n"
