@@ -703,7 +703,7 @@ TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
   auto setCover =
       lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
   QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
-                                   kGemmKeyVersionHash, "convolution_groups"};
+                                   kGemmKeyVersionHash, "block_scaled_gemm"};
 
   testing::internal::CaptureStderr();
   auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
@@ -713,7 +713,7 @@ TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
 
   EXPECT_TRUE(unsupported == setCover);
   EXPECT_NE(warnings.find("does not represent"), std::string::npos);
-  EXPECT_NE(warnings.find("convolution_groups"), std::string::npos);
+  EXPECT_NE(warnings.find("block_scaled_gemm"), std::string::npos);
   EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
 }
 
@@ -747,7 +747,7 @@ TEST(LookupTest, UnsupportedProblemFieldsWithoutAMapAreQuiet) {
       "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
       /*supportsSplitK=*/true);
   QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
-                                   kGemmKeyVersionHash, "convolution_groups"};
+                                   kGemmKeyVersionHash, "block_scaled_gemm"};
 
   testing::internal::CaptureStderr();
   auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
