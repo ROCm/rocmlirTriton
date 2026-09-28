@@ -31,6 +31,7 @@ patch10635.patch
 patch10928.patch
 patch11018.patch
 patch11118.patch
+patch11890.patch
 
 patch-gfx1310-isa-family.patch
   Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
@@ -474,4 +475,35 @@ patch-fma-lds-swizzle.patch
   operand-major ones that patch introduces.
 
   Not filed upstream yet; upstream Triton has the same performance gap.
+
+patch11890.patch
+  composePaddedLayoutForAsyncCopyCDNA4 divides warpSize by contigLanes, the
+  number of 16-byte vectors in one row of the tile, to get the rows one warp
+  covers. Once a row spans more than a warp of vectors that quotient truncates
+  to zero, so requiredRows collapses, xWayConflicts always reports one, and the
+  useBestWrap guard degenerates to nonContigDim >= 0. wrap then exceeds the
+  rows the tile has, bases are added for rows that do not exist, and the
+  resulting layout broadcasts in the offset dimension, which
+  PaddedSharedEncodingAttr::verify rejects. In an assertions build that aborts
+  the compiler instead of falling back.
+
+  The weekly tuning stage hit this on gfx950 for gemm f16 m=384 k=3072 n=768
+  with mPerBlock=1, nPerBlock=16, kPerBlock=2048, where contigLanes is 256
+  against a warp size of 64. contigLanes is now clamped to [1, warpSize], so a
+  warp counts as covering one row when a row is wider than a warp, and a row
+  narrower than a vector can no longer make it zero.
+
+  Across 70 shape and dtype combinations this takes process aborts from 8 to 0
+  and keeps the 55 shapes that already compiled bit identical. The lit test
+  test/TritonGPU/amd/amd-pipeline-padded-layout-wide-row-gfx950.mlir uses a
+  4-row tile, fewer rows than the stagger, and
+  mlir/test/fusion/pr-e2e/rock-gemm-cdna4-padded-layout-wide-row.mlir runs the
+  weekly config end to end on gfx950. The downstream copy of the lit test
+  carries the MIT header required for files added by local [EXTERNAL]
+  commits; the upstream copy has none.
+
+  Imports https://github.com/triton-lang/triton/pull/11890.
+
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  1725224a65ebc2dc7ca2ee1d84458344d93ee797.
 
