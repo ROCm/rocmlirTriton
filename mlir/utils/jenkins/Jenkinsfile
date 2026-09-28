@@ -1,6 +1,3 @@
-// PR CI, nightly (Benchmark and Report Performance, MIGraphX), weekly (Parameter
-// sweeps, Tune MLIR kernels, Archive weekly tuning perfDB) and Code coverage
-// stages are enabled.
 import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
 import hudson.plugins.git.extensions.impl.CheckoutOption
