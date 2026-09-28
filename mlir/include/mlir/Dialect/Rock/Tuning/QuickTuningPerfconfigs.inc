@@ -3353,7 +3353,6 @@ const StringRef PopulateParamsGemm::initParametersF16ConvGfx942NoSplitK[] = {
     "gemm:mPerBlock=32,nPerBlock=16,kPerBlock=512,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=16,nPerBlock=16,kPerBlock=512,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=64,nPerBlock=64,kPerBlock=48,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
-    "gemm:mPerBlock=12,nPerBlock=64,kPerBlock=256,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=128,nPerBlock=128,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=128,nPerBlock=32,kPerBlock=72,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
     "gemm:mPerBlock=256,nPerBlock=128,kPerBlock=72,kpack=1,numCTAs=1,numWaves=8,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1",
@@ -4539,7 +4538,7 @@ static const StringRef initParametersI8ConvGfx1100NoSplitK[nInitParametersI8Conv
 // END_CONV_Gemm_i8_gfx1100_NOSPLITK_DECS
 
 // BEGIN_CONV_Gemm_f16_gfx942_NOSPLITK_DECS
-static constexpr size_t nInitParametersF16ConvGfx942NoSplitK = 40;
+static constexpr size_t nInitParametersF16ConvGfx942NoSplitK = 39;
 static const StringRef initParametersF16ConvGfx942NoSplitK[nInitParametersF16ConvGfx942NoSplitK];
 // END_CONV_Gemm_f16_gfx942_NOSPLITK_DECS
 
