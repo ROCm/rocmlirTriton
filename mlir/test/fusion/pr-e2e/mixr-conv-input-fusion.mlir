@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -fut mlir_broadcast_mul_add_relu_convolution_broadcast_add_relu --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -rand_min -1 -rand_max 1 -fut mlir_broadcast_mul_add_relu_convolution_broadcast_add_relu --verifier clone - | rocmlir-driver -c -arch %arch | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]

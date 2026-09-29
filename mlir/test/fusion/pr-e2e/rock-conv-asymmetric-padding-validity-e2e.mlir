@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Asymmetric padding makes the input tensor's `Pad` transform produce lower
 // coordinates on both sides of the valid range: `ho * stride + y * dilation -
 // leftPad` is negative for taps that fall into the left padding, and `>= inH`

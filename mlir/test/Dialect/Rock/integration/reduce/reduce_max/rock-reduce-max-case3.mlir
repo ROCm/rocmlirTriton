@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This test is checking for a reduction in highest dimension
 
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
@@ -5,7 +8,7 @@
 // RUN:   | rocmlir-driver -kernel-pipeline highlevel -host-pipeline highlevel \
 // RUN:   | rocmlir-gen -ph -print-results -fut test_reduce --verifier clone -rand none - \
 // RUN:   | rocmlir-driver -c -arch %arch \
-// RUN:   | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN:   | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 // CHECK-NEXT: Unranked Memref base
 

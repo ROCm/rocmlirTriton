@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This tests the error handling in the rock-affix-params pass
 
 // RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics

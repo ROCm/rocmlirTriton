@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that rocmlir-driver accepts standard MLIR pass manager and timing
 // command-line options. These are registered via registerMLIRCLOptions() and
 // applied in every PassManager creation path; this test guards against

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline highlevel %s | FileCheck %s
 
 // Verify that transpose is converted as transform and add is fused.

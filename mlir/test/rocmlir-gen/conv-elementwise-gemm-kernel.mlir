@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx942:sramecc+:xnack- --operation conv_gemm -groupsize=1 -batchsize=2 -in_channels=256 -out_channels=128 -in_h=32 -in_w=32 -fil_h=1 -fil_w=1 -dilation_h=1 -dilation_w=1 -conv_stride_h=1 -conv_stride_w=1 -padding_h_l=0 -padding_h_r=0 -padding_w_l=0 -padding_w_r=0 -gemmO=128 --transC=true --transO=false -fil_layout=gkcyx -in_layout=ngchw -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 
 // CHECK: module attributes {rock.arch = "[[$ARCH:.*]]"}

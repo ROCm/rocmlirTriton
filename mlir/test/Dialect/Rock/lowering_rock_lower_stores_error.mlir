@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Error tests for rock-lower-stores pass.
 
 // RUN: rocmlir-opt -rock-lower-stores -verify-diagnostics -split-input-file -mlir-print-local-scope %s

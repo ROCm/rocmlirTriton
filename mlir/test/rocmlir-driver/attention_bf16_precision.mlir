@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies the BF16 precision difference between GPU and CPU for attention
 // with scale and bias (the pre-softmax elementwise fusion: scale*QK + bias).
 //

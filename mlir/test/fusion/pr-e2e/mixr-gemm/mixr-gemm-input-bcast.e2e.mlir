@@ -1,4 +1,7 @@
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -arch %arch -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel | rocmlir-gen -ph -print-results -rand none - | rocmlir-driver -arch %arch -c | rocm-run | FileCheck %s
 module {
   // CHECK:  [4, 4, 4, 4,  4, 4, 4, 4]
   func.func @mlir_dot(%arg0: !migraphx.shaped<1x2x4xf32, 8x4x1>, %arg1: !migraphx.shaped<1x2x3xf32, 1x0x0>, %arg2: !migraphx.shaped<1x3x4xf32, 12x4x1>) -> !migraphx.shaped<1x2x4xf32, 8x4x1> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {

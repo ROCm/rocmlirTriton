@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The kernel path may assume no NaN operands; the CPU reference may not. It
 // exists to say what the kernel ought to have computed, so if it were lowered
 // under the same assumption the comparison would be circular -- both sides would

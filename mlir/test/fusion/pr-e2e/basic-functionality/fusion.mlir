@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = (A + input) * (B + input) + ofusion
 //
 // The migraphx pipeline lowers this to the same fused GEMM kernel

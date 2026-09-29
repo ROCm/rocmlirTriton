@@ -4,7 +4,7 @@
 
 // REQUIRES: rocm-runner
 // RUN: rocmlir-driver --host-pipeline=backend %s \
-// RUN: | mlir-runner -O2 --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext --entry-point-result=void \
+// RUN: | rocm-run \
 // RUN: | FileCheck %s
 
 // Identical all-zero tensors have zero absolute error and zero scale. Verify

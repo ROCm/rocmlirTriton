@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression coverage for PreserveMaskedLoadSemantics: this i8 causal
 // attention shape previously kept invalid masked lanes alive in the softmax max
 // reduction. Those lanes are loaded as zero, which is not the neutral value for

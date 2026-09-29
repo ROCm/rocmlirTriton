@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression test for a Triton bug exposed by small non-power-of-2 kPerBlock values 
 // in gfx950: kPerBlock=18 which generates 2 segments, {16,2}. Before the bugfix,
 // compilation failed with `builtin.unrealized_conversion_cast`.

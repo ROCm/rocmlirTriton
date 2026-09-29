@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Error tests for rock-fuse-sibling-loops pass.
 
 // RUN: rocmlir-opt -rock-fuse-sibling-loops -verify-diagnostics --split-input-file %s

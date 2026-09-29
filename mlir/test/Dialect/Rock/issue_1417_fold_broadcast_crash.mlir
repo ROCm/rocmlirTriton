@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-fold-broadcast %s | FileCheck %s
 
 // Regression test for a crash where the number of Merge{}'s output dimension

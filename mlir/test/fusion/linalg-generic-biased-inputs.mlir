@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-lower-blockwise-to-ptr -rock-preserve-masked-load-semantics %s | FileCheck %s
 
 #map = affine_map<(d0) -> (d0)>

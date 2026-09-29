@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This regression covers a bf16 `gemm_gemm` shape whose final Triton store
 // exposes an MFMA-like layout with a small N dimension. The optimized epilogue
 // store layout swaps N-dim basis bits to enable wide stores; when N is too

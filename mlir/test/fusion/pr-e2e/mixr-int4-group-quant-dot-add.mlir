@@ -1,10 +1,13 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A group-quantized int4 GEMM: the weights carry one f16 scale per 128-element
 // group along K, so the scale a K tile reads is the same for every K position
 // in the tile. rock-narrow-redundant-loads rewrites that read into a load of
 // one K row plus a broadcast, which is only sound if it picks the row the whole
 // tile agrees on. Run it end to end to check that it does.
 
-// RUN: rocmlir-gen -fut mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add --verifier clone - | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_unpack_int4_reshape_dequantizelinear_transpose_reshape_unsqueeze_transpose_dot_add --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 
 module {

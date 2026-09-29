@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --migraphx-to-tosa --mlir-print-op-generic -verify-diagnostics %s | FileCheck %s --check-prefix=TOSA
 // RUN: rocmlir-opt --migraphx-to-tosa="disable-fast-math=true" --mlir-print-op-generic -verify-diagnostics %s | FileCheck %s --check-prefix=IEEE
 // RUN: rocmlir-opt -pass-pipeline="builtin.module(func.func(migraphx-to-tosa),func.func(rocmlir-custom-tosa-to-linalg),func.func(tosa-to-linalg-named),func.func(tosa-to-linalg))" -verify-diagnostics %s | FileCheck %s --check-prefixes=LINALG,UNSIGNED

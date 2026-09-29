@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline highlevel %s | FileCheck %s
 
 // CHECK: rock.conv(%{{.*}}, %{{.*}}) {dilations = [1 : index, 1 : index], filter_layout = ["k", "c", "y", "g", "x"], input_layout = ["ni", "hi", "wi", "gi", "ci"], output_layout = ["no", "go", "ko", "ho", "wo"], padding = [1 : index, 1 : index, 1 : index, 1 : index], strides = [1 : index, 1 : index]} : tensor<64x128x3x1x3xf32>, tensor<256x28x28x1x128xf32> -> tensor<256x1x64x28x28xf32>

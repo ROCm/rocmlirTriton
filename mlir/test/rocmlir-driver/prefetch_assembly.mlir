@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // UNSUPPORTED: true
 // TODO(gfx1250): Triton does not generate prefetch for gfx1250. Looks like we need to ask for it at the kernel level?
 // Ticket: AIROCMLIR-723

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests for the rock-decompose-nonpow2-tiles pass.
 //
 // The pass runs at the gridwise layer (after gemm/attn-to-gridwise, before

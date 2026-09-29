@@ -116,11 +116,6 @@ tools = ['rocmlir-opt', 'rocmlir-translate']
 # The following tools are optional
 tools.extend([
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),
-    ToolSubst('%linalg_test_lib_dir', config.linalg_test_lib_dir, unresolved='ignore'),
-    ToolSubst('%mlir_runner_utils_dir', config.mlir_runner_utils_dir, unresolved='ignore'),
-    ToolSubst('%conv_validation_wrapper_library_dir',
-              config.conv_validation_wrapper_library_dir,
-              unresolved='fatal'),
 ])
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

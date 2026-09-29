@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -c --mlir-print-ir-after=rock-gemm-to-gridwise %s -o /dev/null 2>&1 | FileCheck %s
 
 #map = affine_map<(d0, d1, d2, d3, d4) -> (((d1 * 12 + d2) * 4 + d3) * 4 + d4)>

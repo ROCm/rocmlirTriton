@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx908 -p | rocmlir-driver -rock-affix-params -rock-regularize-output -rock-conv-to-gemm | FileCheck %s
 // RUN: rocmlir-gen --arch gfx908 -p --operation=conv | rocmlir-driver -rock-affix-params -rock-regularize-output -rock-conv-to-gemm | FileCheck %s
 

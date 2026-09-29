@@ -1,4 +1,7 @@
-// RUN: rocmlir-gen --clone-harness -arch %arch -fut gemmi4f16 %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -arch %arch | rocmlir-gen -ph -fut gemmi4f16 --verifier clone - | rocmlir-driver -c -arch %arch | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s --check-prefix=CLONE
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// RUN: rocmlir-gen --clone-harness -arch %arch -fut gemmi4f16 %s | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -arch %arch | rocmlir-gen -ph -fut gemmi4f16 --verifier clone - | rocmlir-driver -c -arch %arch | rocm-run | FileCheck %s --check-prefix=CLONE
 // CLONE: [1 1 1]
 // ALLOW-RETRIES: 2
 

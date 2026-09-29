@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = exp(A + 1.0) * B
 // Tests a chain of two NON-zero-preserving input fusions
 // (broadcast-add then exp) on the A operand before the GEMM.

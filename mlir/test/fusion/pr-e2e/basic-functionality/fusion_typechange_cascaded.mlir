@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C_f32 = extf(gemm(A_f16, B_f16) + bias_f16)
 //
 // Tests a cascaded output fusion: add a f16 bias to the f16 GEMM

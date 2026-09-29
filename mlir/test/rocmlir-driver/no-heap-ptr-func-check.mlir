@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that the compiled code object never carries the device-heap implicit
 // kernarg, so the HIP runtime never enqueues the one-time
 // `__amd_rocclr_initHeap` setup kernel at module load.

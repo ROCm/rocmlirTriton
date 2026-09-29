@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A padded 3x3 conv makes the input tensor's validity mask depend on the GEMM
 // K-loop IV, so rock-incremental-pointer-arith takes the carry path: it
 // decomposes the non-contiguous gemmK Merge, carries the decomposed tap

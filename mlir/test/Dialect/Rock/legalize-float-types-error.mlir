@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Negative tests for rock-legalize-float-types pass.
 
 // RUN: rocmlir-opt -rock-legalize-float-types --split-input-file -verify-diagnostics %s

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver %s -kernel-pipeline=migraphx,highlevel,gpu,triton -arch=gfx950 | FileCheck %s
 
 // Verify that a dense non-splat pre-softmax constant survives the complete

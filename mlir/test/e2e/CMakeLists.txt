@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Dependencies for the E2E test only
 set(ROCK_E2E_DEPENDS
   FileCheck count not
@@ -5,6 +8,10 @@ set(ROCK_E2E_DEPENDS
   rocmlir-gen
   rocmlir-driver
   mlir-runner
+  ci-performance-scripts
+  mlir_runner_utils
+  mlir_c_runner_utils
+  mlir_float16_utils
   conv-validation-wrappers
   e2e_tests
   rocmlir-common-python-test-utils
