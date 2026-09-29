@@ -1,0 +1,25 @@
+directory = "PrAttentionBF16Gfx950"
+prefix = "rocmlir-gen"
+# The fault does not depend on the input values. With random data this shape
+# misses the bf16 tolerance against the CPU reference for any perf config, so
+# the inputs are pinned to the fixed pattern instead of %random_data.
+suffix = "--operation attention -t bf16 --arch %arch -pv --pv-f64 -rand fixed %rocmlir_gen_flags | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+
+[[axis]]
+name = "transO"
+values = ["true", "false"]
+prefix = "--transO="
+
+[[suite]]
+name = "pr_attention_bf16_gfx950"
+
+# SGPRs spill into VGPR lanes, and inside the KV loop a buffer descriptor is
+# rebuilt from num_records/flags (sub2_sub3) copied out of another one. That
+# made InlineSpiller store the rebuilt descriptor full-width into the spill
+# slot of a descriptor reloaded at the top of every iteration, replacing its
+# base address with garbage, so the second iteration's loads fault
+# (llvm-patches/patch-inline-spiller-partial-sibling-spill.patch). Changing
+# the shape, perf config or chip counts changes register allocation and can
+# hide the bug.
+[[suite.test]]
+config = "--num_cu 256 --num_chiplets 8 -g 6 -seq_len_q 1 -seq_len_k 151 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 196 -head_dim_v 183 --with-attn-scale --with-attn-bias --transV=true -sliding_window_look_back=150 -last_valid_kv_index=120,143,78,69,87,150 -perf_config attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0"

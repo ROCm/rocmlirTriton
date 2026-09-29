@@ -39,6 +39,7 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrAttentionF32
     PrAttentionF16
     PrAttentionBF16
+    PrAttentionBF16Gfx950
     PrAttentionI8
     PrGemmSplitK
     PrGemmElementwiseGemmF32

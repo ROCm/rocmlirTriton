@@ -858,3 +858,78 @@ Applies on top of patch201186.patch and does not apply to a tree without it.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 077ec06128e27e3dce2b97563dab703f89024ddf.
+
+----------------------------------------------------------------------
+patch-inline-spiller-partial-sibling-spill.patch
+----------------------------------------------------------------------
+- Upstream status : Downstream fix; submit to LLVM before the next bump
+- Upstream title  : [InlineSpiller] Do not store undefined lanes into a
+                    shared spill slot
+- File Fixed      : llvm/lib/CodeGen/InlineSpiller.cpp
+- Contents        : Adds liveLanesAt(), which returns the lanes of a register
+                    that hold a value at a slot index, counting a lane with no
+                    subrange as dead. hoistSpillInsideBB now declines to hoist
+                    a spill onto a sibling that leaves undefined a lane the
+                    original value is live in at the sibling's def. When
+                    spillAroundUses spills a def that writes only some lanes
+                    without reading the rest, while the stack slot is live and
+                    the original value is live in other lanes across the def,
+                    it reloads the slot first and drops the undef flag, so the
+                    full-width store writes those lanes back unchanged. Lanes
+                    the original value never holds are free to carry garbage,
+                    so upstream's hoisting of partially defined values
+                    (splitkit.mir, splitkit-copy-bundle.mir) is unchanged.
+
+Symptom without the patch
+-------------------------
+A gfx950 attention kernel from the weekly parameterSweeps run (f16, g=5,
+seq_len_q=1, seq_len_k=361, 4 Q heads over 2 KV heads, attention bias,
+sliding_window_look_back=262, last_valid_kv_index=141,134,279,29,84; perf
+config mPerBlockG0=64, nPerBlockG0=128, kPerBlock=64, numWaves=1,
+numStages=3, wavesPerEU=2) dies with a GPU memory access fault on the page
+16 KiB past the bias buffer. The kernel needs all 512 VGPRs, so SGPRs are
+spilled into VGPR lanes. The K buffer descriptor is spilled before the KV
+loop and reloaded at the top of every iteration, but inside the loop the
+same four lanes are overwritten with the bias buffer's base address. From
+the second iteration on, the K loads address the bias buffer with K's
+offsets.
+
+Later rocMLIR changes altered that kernel's IR and it no longer reaches the
+hazard. A bf16 kernel from the same sweep (g=6, seq_len_q=1, seq_len_k=151,
+16 Q heads over 4 KV heads, attention scale and bias, transV,
+sliding_window_look_back=150, last_valid_kv_index=120,143,78,69,87,150; perf
+config mPerBlockG0=16, nPerBlockG0=128, nPerBlockG1=256, kPerBlock=512,
+numWaves=16, matrixInstrNonkdim=16, numStages=1) faults the same way: a
+descriptor rebuilt inside the KV loop from another's sub2_sub3 is stored
+full-width over the spill slot of a descriptor reloaded at the top of every
+iteration.
+
+Root cause
+----------
+The bias descriptor borrows num_records and flags (sub2_sub3) from the K
+descriptor. Splitting K's live range inside the loop therefore produced a
+sibling defined only by `undef %a.sub2_sub3 = COPY %b.sub2_sub3`, since the
+base (sub0_sub1) is no longer needed in a register there; its value lives
+on in the stack slot that all siblings share, for the next iteration's
+reload. When the following piece was spilled, spillAroundUses treated its
+defining subregister copy as a sibling copy and hoistSpillInsideBB stored
+the whole partial sibling into that slot, writing whatever the physical
+registers held in sub0_sub1 over K's base. Without the hoist, insertSpill
+would store the undefined lanes the same way. Upstream #177703 fixed the
+same hazard for the cross-block hoist in isSpillCandBB; upstream main still
+has the in-block path unchanged. The #177703 check only inspects subranges
+that exist, so it would accept a partial copy like the one above, which has
+no subrange for the lanes it does not define. It did not fire here and is
+left as upstream wrote it, since it is also what hoists the partially
+defined value in splitkit.mir out of its loop.
+
+CI coverage
+-----------
+mlir/test/e2e/PrAttentionBF16Gfx950.toml pins the bf16 shape, perf config
+and chip counts above and runs them on gfx950 with -pv --pv-f64 on the fixed
+input pattern, for both transO values. The kernel LLVM IR it hands the backend
+is identical to the faulting sweep's, so without this patch the run dies
+with the memory access fault and FileCheck fails on the missing verification
+line.
+
+Drop or reconcile this patch once an equivalent fix lands upstream.
