@@ -66,8 +66,6 @@ class TritonNvidiaGPURemoveTMEMTokensPass
     : public impl::TritonNvidiaGPURemoveTMEMTokensPassBase<
           TritonNvidiaGPURemoveTMEMTokensPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonNvidiaGPURemoveTMEMTokensPass)
   using TritonNvidiaGPURemoveTMEMTokensPassBase::
       TritonNvidiaGPURemoveTMEMTokensPassBase;
 

@@ -19,8 +19,6 @@ class TritonNvidiaGPUCheckMatmulTwoCTAPass
     : public impl::TritonNvidiaGPUCheckMatmulTwoCTAPassBase<
           TritonNvidiaGPUCheckMatmulTwoCTAPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonNvidiaGPUCheckMatmulTwoCTAPass)
   using impl::TritonNvidiaGPUCheckMatmulTwoCTAPassBase<
       TritonNvidiaGPUCheckMatmulTwoCTAPass>::
       TritonNvidiaGPUCheckMatmulTwoCTAPassBase;

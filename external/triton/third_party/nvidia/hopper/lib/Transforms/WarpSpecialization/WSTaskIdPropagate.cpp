@@ -70,7 +70,6 @@ class NVGPUTestWSTaskIdPropagatePass
     : public impl::NVGPUTestWSTaskIdPropagateBase<
           NVGPUTestWSTaskIdPropagatePass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NVGPUTestWSTaskIdPropagatePass)
   using impl::NVGPUTestWSTaskIdPropagateBase<
       NVGPUTestWSTaskIdPropagatePass>::NVGPUTestWSTaskIdPropagateBase;
 

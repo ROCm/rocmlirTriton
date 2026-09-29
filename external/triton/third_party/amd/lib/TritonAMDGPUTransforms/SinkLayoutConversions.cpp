@@ -47,8 +47,6 @@ static void sinkLayoutConversions(triton::FuncOp funcOp) {
 struct TritonAMDGPUSinkLayoutConversionsPass
     : public impl::TritonAMDGPUSinkLayoutConversionsBase<
           TritonAMDGPUSinkLayoutConversionsPass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonAMDGPUSinkLayoutConversionsPass)
 
   void runOnOperation() override { sinkLayoutConversions(getOperation()); }
 };

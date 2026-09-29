@@ -42,7 +42,6 @@ public:
 struct ConvertProtonNvidiaGPUToLLVM
     : public mlir::triton::proton::gpu::impl::ConvertProtonNvidiaGPUToLLVMBase<
           ConvertProtonNvidiaGPUToLLVM> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertProtonNvidiaGPUToLLVM)
   explicit ConvertProtonNvidiaGPUToLLVM(int32_t computeCapability,
                                         int32_t ptxVersion) {
     this->computeCapability = computeCapability;
@@ -71,7 +70,10 @@ struct ConvertProtonNvidiaGPUToLLVM
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
     auto convTarget = ProtonLLVMConversionTarget(*context);
-    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
+    ConversionConfig config;
+    config.allowPatternRollback = false;
+    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns),
+                                      config)))
       return signalPassFailure();
 
     OpPassManager pm;

@@ -72,7 +72,12 @@ ptxas-blackwell
 # Third-party include
 third_party/nvidia/backend/bin
 third_party/nvidia/backend/include
-third_party/nvidia/backend/lib
+third_party/nvidia/backend/lib/cupti
+third_party/nvidia/backend/lib/cupti-blackwell
+third_party/nvidia/backend/lib/gsan.ll
+third_party/amd/backend/lib/libtriton_amd_codegen.dylib
+third_party/amd/backend/lib/libtriton_amd_codegen.so
+third_party/amd/backend/lib/triton_amd_codegen.dll
 
 python/triton/runtime/tcc
 
@@ -104,8 +109,5 @@ docs/sg_execution_times.rst
 
 AGENTS.override.md
 
-.tmp
 /dist/
-/main.*
-/*.mlir
 /wheelhouse/

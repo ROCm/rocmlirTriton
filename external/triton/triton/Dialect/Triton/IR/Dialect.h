@@ -1,0 +1,190 @@
+#ifndef TRITON_DIALECT_TRITON_IR_DIALECT_H_
+#define TRITON_DIALECT_TRITON_IR_DIALECT_H_
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dialect.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "triton/Dialect/Triton/IR/Dialect.h.inc"
+#include "triton/Dialect/Triton/IR/OpInterfaces.h"
+#include "triton/Dialect/Triton/IR/OpsEnums.h.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "triton/Dialect/Triton/IR/AttrDefs.h.inc"
+
+#include "triton/Dialect/Triton/IR/Traits.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+
+#define GET_OP_CLASSES
+#include "triton/Dialect/Triton/IR/Ops.h.inc"
+
+namespace mlir {
+namespace triton {
+
+struct GlobalMemory : public SideEffects::Resource::Base<GlobalMemory> {
+  StringRef getName() const final { return "<GlobalMemory>"; }
+  SideEffects::Resource *getParent() const override { return nullptr; }
+};
+
+enum class CachePolicyOperation { Load, Store };
+
+// Allows memory operations to validate cache policy attributes without
+// depending on the dialect that defines the policy.
+class DialectCachePolicyInterface
+    : public DialectInterface::Base<DialectCachePolicyInterface> {
+public:
+  DialectCachePolicyInterface(Dialect *dialect) : Base(dialect) {}
+
+  virtual LogicalResult
+  verifyCachePolicy(Attribute cachePolicy, CachePolicyOperation operation,
+                    function_ref<InFlightDiagnostic()> emitError) const = 0;
+};
+
+LogicalResult verifyCacheModifier(CacheModifier modifier,
+                                  CachePolicyOperation operation,
+                                  function_ref<InFlightDiagnostic()> emitError);
+LogicalResult verifyCachePolicy(Operation *op, Attribute cachePolicy,
+                                CachePolicyOperation operation);
+
+// Dialects define how their types behave as inline assembly operands without
+// exposing those types to the Triton dialect.
+class DialectInlineAsmInterface
+    : public DialectInterface::Base<DialectInlineAsmInterface> {
+public:
+  DialectInlineAsmInterface(Dialect *dialect) : Base(dialect) {}
+
+  virtual void getOperandEffects(
+      OpOperand &operand,
+      SmallVectorImpl<MemoryEffects::EffectInstance> &effects) const = 0;
+  virtual LogicalResult verifyOperand(OpOperand &operand,
+                                      bool isPure) const = 0;
+};
+
+LogicalResult verifyInlineAsmOperands(Operation *op, bool isPure);
+
+class DialectInferLayoutInterface
+    : public DialectInterface::Base<DialectInferLayoutInterface> {
+public:
+  DialectInferLayoutInterface(Dialect *dialect) : Base(dialect) {}
+
+  virtual LogicalResult
+  inferTransOpEncoding(Attribute operandEncoding, ArrayRef<int64_t> shape,
+                       ArrayRef<int32_t> order, Attribute &resultEncoding,
+                       std::optional<Location> loc) const = 0;
+
+  virtual LogicalResult
+  inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
+                        Attribute &resultEncoding,
+                        std::optional<Location> loc) const = 0;
+
+  virtual LogicalResult
+  inferExpandDimsOpEncoding(Attribute operandEncoding, unsigned axis,
+                            Attribute &resultEncoding,
+                            std::optional<Location> loc) const = 0;
+
+  virtual LogicalResult
+  verifyBroadcastOpEncoding(RankedTensorType srcType,
+                            RankedTensorType dstType) const = 0;
+
+  // Note: This function only verifies the operand encoding.  It doesn't infer
+  // the result encoding.
+  virtual LogicalResult
+  inferDotOpEncoding(Attribute operandEncoding, unsigned opIdx,
+                     Attribute retEncoding,
+                     std::optional<Location> loc) const = 0;
+
+  // Tries to compute the encoding for the result of a reshape operation that
+  // makes the reshape a "nop", i.e. the same GPU threads contain the same
+  // elements as before the reshape using legacy layouts.  This is not always
+  // possible (in which case we fallback to using LinearLayouts)
+  // If allowReorder is set, an existing value in dstEnc is preferred when it
+  // still yields a non-expensive view.
+  // In the future we'll always use LinearLayouts
+  virtual LogicalResult
+  inferReshapeOpEncoding(ArrayRef<int64_t> srcShape, Attribute srcEnc,
+                         ArrayRef<int64_t> dstShape, Attribute &dstEnc,
+                         bool allowReorder,
+                         std::optional<Location> loc) const = 0;
+
+  // Check if two layouts are structurally the same, even if their names are
+  // different, optionally ignoring register broadcasting.
+  virtual LogicalResult
+  verifyLayoutsAreEqual(ArrayRef<int64_t> shape, Attribute expected,
+                        Attribute got, std::optional<Location> loc,
+                        bool ignoreRegBroadcast = false) const = 0;
+
+  virtual LogicalResult
+  inferDefaultJoinOpEncoding(Attribute srcEnc, Attribute &dstEnc,
+                             ArrayRef<int64_t> shape,
+                             std::optional<Location> loc) const = 0;
+
+  virtual LogicalResult
+  inferSplitOpEncoding(Attribute srcEnc, Attribute &dstEnc,
+                       ArrayRef<int64_t> shape,
+                       std::optional<Location> loc) const = 0;
+
+  // Verify that the encoding are compatible to be used together in a dot
+  // operation
+  virtual LogicalResult
+  verifyDotOpEncodingCompatibility(Operation *op, Attribute operandEncodingA,
+                                   Attribute operandEncodingB) const = 0;
+
+  // Verify that the operand and scale encodings are compatible to be used
+  // together in a scaled dot operation. The scale encodings may be null, as
+  // scales are optional.
+  virtual LogicalResult verifyDotScaledOpEncodingCompatibility(
+      Operation *op, Attribute operandEncodingA, Attribute operandEncodingB,
+      Attribute scaleEncodingA, Attribute scaleEncodingB) const {
+    return success();
+  }
+
+  virtual LogicalResult
+  inferFp4ToFpOpEncoding(ArrayRef<int64_t> shape, int axis, Attribute inEnc,
+                         Attribute &outEnc, bool fwdInference,
+                         std::optional<Location> loc) const = 0;
+};
+
+class DialectVerifyTensorLayoutInterface
+    : public DialectInterface::Base<DialectVerifyTensorLayoutInterface> {
+public:
+  DialectVerifyTensorLayoutInterface(Dialect *dialect) : Base(dialect) {}
+
+  virtual LogicalResult
+  verifyTensorLayout(Attribute layout, RankedTensorType type, Operation *op,
+                     function_ref<InFlightDiagnostic()> emitError) const = 0;
+
+  virtual LogicalResult
+  verifyMemDescLayout(Attribute layout, Type type, Operation *op,
+                      function_ref<InFlightDiagnostic()> emitError) const = 0;
+};
+
+// Descriptor gather and scatter have restrictions on the tile sizes.
+LogicalResult verifyGatherScatterResultType(Operation *op,
+                                            ShapedType resultType,
+                                            ShapedType indicesType);
+LogicalResult verifyGatherScatterOp(Operation *op, ShapedType blockType,
+                                    ShapedType resultType,
+                                    ShapedType indicesType);
+LogicalResult verifyDescriptorLoadStoreOp(Operation *op,
+                                          TensorDescInterface desc,
+                                          ShapedType tensor);
+
+LogicalResult deduceScaleFactor(ArrayRef<int64_t> lhsShape,
+                                std::optional<ArrayRef<int64_t>> lhsScaleShape,
+                                ScaleDotElemType lhsFormat, bool lhsKPack,
+                                ArrayRef<int64_t> rhsShape,
+                                std::optional<ArrayRef<int64_t>> rhsScaleShape,
+                                ScaleDotElemType rhsFormat, bool rhsKPack,
+                                int32_t &scaleFactor, std::string &errMsg);
+
+} // namespace triton
+} // namespace mlir
+
+#endif // TRITON_IR_DIALECT_H_

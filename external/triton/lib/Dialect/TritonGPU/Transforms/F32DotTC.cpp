@@ -203,7 +203,6 @@ public:
 } // anonymous namespace
 
 struct F32DotTCPass : public impl::TritonGPUF32DotTCBase<F32DotTCPass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(F32DotTCPass)
   using impl::TritonGPUF32DotTCBase<F32DotTCPass>::TritonGPUF32DotTCBase;
   void runOnOperation() override {
     MLIRContext *context = &getContext();

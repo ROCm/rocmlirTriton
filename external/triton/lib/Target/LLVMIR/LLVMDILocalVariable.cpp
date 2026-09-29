@@ -28,7 +28,6 @@ using namespace LLVMDIUtils;
 
 struct LLVMDILocalVariablePass
     : public impl::LLVMDILocalVariableBase<LLVMDILocalVariablePass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LLVMDILocalVariablePass)
 
   void fuseDILocalVariable(Operation *op) {
     if (op->getNumResults() == 0) {
@@ -200,7 +199,8 @@ struct LLVMDILocalVariablePass
     auto subprogramAttr = LLVM::DISubprogramAttr::get(
         context, recId, /*isRecSelf=*/true, id, compileUnitAttr, fileAttr,
         funcNameAttr, funcNameAttr, fileAttr, /*line=*/line, /*scopeline=*/line,
-        subprogramFlags, subroutineTypeAttr, /*retainNodes=*/{},
+        subprogramFlags, subroutineTypeAttr,
+        /*retainNodes=*/llvm::ArrayRef<Attribute>{},
         /*annotations=*/{});
 
     return subprogramAttr;
@@ -243,7 +243,7 @@ struct LLVMDILocalVariablePass
       LLVM::DITypeAttr typeAttr;
     };
     llvm::SmallVector<ArgInfo> argInfos;
-    llvm::SmallVector<mlir::LLVM::DINodeAttr> retainedNodes;
+    llvm::SmallVector<Attribute> retainedNodes;
 
     for (unsigned idx = resNum; idx < argTypeAttrs.size(); idx++) {
       LLVM::DITypeAttr argTypeAttr = argTypeAttrs[idx];

@@ -99,8 +99,6 @@ LogicalResult inferCoalescedLayout(ModuleOp &mod) {
 class GluonInferCoalescedEncodingsPass
     : public impl::GluonInferCoalescedEncodingsPassBase<
           GluonInferCoalescedEncodingsPass> {
-public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GluonInferCoalescedEncodingsPass)
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 

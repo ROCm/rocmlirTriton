@@ -68,8 +68,6 @@ ISAFamily TargetFeatures::getISAFamily() const {
   // See https://llvm.org/docs/AMDGPUUsage.html#processors for how to
   // categorize the following target gfx architectures. Parse the gfx number
   // directly here instead of depending on LLVM's target parser.
-  if (major == 13 && minor == 1)
-    return ISAFamily::GFX1310;
   if (major == 12 && minor == 5)
     return ISAFamily::GFX1250;
 
@@ -91,7 +89,7 @@ ISAFamily TargetFeatures::getISAFamily() const {
   if (major == 12 && minor == 0)
     return ISAFamily::RDNA4;
   if (major == 11 && minor == 7)
-    return ISAFamily::GFX1170;
+    return ISAFamily::RDNA4m;
   if (major == 11)
     return ISAFamily::RDNA3;
   if (major == 10 && minor == 3)
@@ -164,36 +162,34 @@ size_t TargetFeatures::getSharedMemoryPartitionSize() const {
 
 std::optional<TargetFeatures::LDSTransLoadParams>
 TargetFeatures::queryLDSTransLoadParams(int bitWidth) const {
-  auto isaFamily = getISAFamily();
-  // Determine LDSTrans version: V1 (CDNA4), V2 (GFX1250).
-  enum { V1, V2, NONE } version = NONE;
-  if (isaFamily == ISAFamily::CDNA4) {
-    version = V1;
-  } else if (isaFamily == ISAFamily::GFX1250) {
-    version = V2;
-  }
-
-  if (version == NONE || !llvm::is_contained({16, 8, 4, 6}, bitWidth))
-    return std::nullopt;
-
-  unsigned numLanesInShuffleGroup = getWarpSize() / 4;
-
-  auto ldsTransParams = [&](unsigned instBitWidth,
-                            TileKind kind) -> LDSTransLoadParams {
-    return {numLanesInShuffleGroup, instBitWidth, instBitWidth / bitWidth,
-            kind};
+  struct TransConfig {
+    ISAFamily isaFamily;
+    int bitWidth;
+    unsigned instBitWidth;
+    // addr basis order:
+    //   leading reg bases
+    //   leading lane bases
+    //   remaining reg bases
+    //   remaining lane bases
+    unsigned leadingRegBases;
+    unsigned leadingLaneBases;
   };
 
-  switch (version) {
-  case V1:
-    return ldsTransParams(64, TileKind::Standard);
-  case V2:
-    if (bitWidth == 8)
-      return ldsTransParams(64, TileKind::DoubleContiguity);
-    return ldsTransParams(128, TileKind::Standard);
-  default:
-    return std::nullopt;
+  static constexpr TransConfig configs[] = {
+      {ISAFamily::CDNA4, 16, 64, 0, 2},  {ISAFamily::CDNA4, 8, 64, 0, 1},
+      {ISAFamily::CDNA4, 4, 64, 0, 0},   {ISAFamily::GFX1250, 16, 128, 0, 0},
+      {ISAFamily::GFX1250, 8, 64, 2, 1}, {ISAFamily::GFX1250, 4, 64, 3, 1},
+  };
+
+  const auto isaFamily = getISAFamily();
+  for (const auto &config : configs) {
+    if (config.isaFamily == isaFamily && config.bitWidth == bitWidth) {
+      return LDSTransLoadParams{
+          config.instBitWidth, config.instBitWidth / config.bitWidth,
+          config.leadingRegBases, config.leadingLaneBases};
+    }
   }
+  return std::nullopt;
 }
 
 bool TargetFeatures::supportsDirectToLdsScatter() const { return isGFX1250(); }
@@ -243,6 +239,10 @@ bool TargetFeatures::supportsTDM() const { return isGFX1250(); }
 
 bool TargetFeatures::supportsMultiCTALaunch() const { return isGFX1250(); }
 
+unsigned TargetFeatures::getMaxMulticastMaskPopcount() const {
+  return isGFX1250() ? 5 : 1;
+}
+
 bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
   if (getISAFamily() == ISAFamily::GFX1250) {
     return llvm::is_contained({32, 64, 128}, bitWidth);
@@ -251,60 +251,30 @@ bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
 }
 
 bool TargetFeatures::supportsBufferAtomicRMW() const {
-  // On older AMD GPUs BUFFER_ATOMIC_* silently drops writes against
-  // fine-grained pinned host memory. rocmlirTriton's external memory
-  // contract (docs/kernel_assumptions.md) excludes fine-grained
-  // allocations, so that hazard does not apply and buffer atomic RMW is
-  // safe on every family that has the instructions. Per-type FP restrictions
-  // are handled separately in supportsBufferAtomicFadd; integer RMW (ADD/AND/
-  // OR/XOR/MIN/MAX/SWAP) is available universally.
-  return llvm::is_contained(
-      {ISAFamily::GCN5_1, ISAFamily::CDNA1, ISAFamily::CDNA2, ISAFamily::CDNA3,
-       ISAFamily::CDNA4, ISAFamily::RDNA1, ISAFamily::RDNA2, ISAFamily::RDNA3,
-       ISAFamily::GFX1170, ISAFamily::RDNA4, ISAFamily::GFX1250},
-      getISAFamily());
+  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4,
+                             ISAFamily::RDNA3, ISAFamily::RDNA4m,
+                             ISAFamily::RDNA4, ISAFamily::GFX1250},
+                            getISAFamily());
 }
 
 bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
-  if (!(elementType.isF16() || elementType.isBF16() || elementType.isF32() ||
-        elementType.isF64()))
+  auto isaFamily = getISAFamily();
+  if (isaFamily == ISAFamily::CDNA3 && elementType.isBF16())
     return false;
-
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA3:
-    // gfx942: no BUFFER_ATOMIC_PK_ADD_BF16.
-    return !elementType.isBF16();
-  case ISAFamily::CDNA4:
-  case ISAFamily::GFX1250:
-    return true;
-  case ISAFamily::RDNA4:
-  case ISAFamily::GFX1310:
-    // gfx12/gfx13: no BUFFER_ATOMIC_ADD_F64.
-    return !elementType.isF64();
-  case ISAFamily::CDNA2:
-    // gfx90a: BUFFER_ATOMIC_ADD_F32/F64 and PK_ADD_F16.
-    return elementType.isF32() || elementType.isF16() || elementType.isF64();
-  case ISAFamily::CDNA1:
-    // gfx908: BUFFER_ATOMIC_ADD_F32 and PK_ADD_F16; no F64.
-    return elementType.isF32() || elementType.isF16();
-  case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
-    // gfx11: only BUFFER_ATOMIC_ADD_F32 (no F64 ADD, no PK_ADD variants).
+  if (isaFamily == ISAFamily::RDNA3 && !elementType.isF32())
+    return false;
+  if (isaFamily == ISAFamily::RDNA4m)
     return elementType.isF32();
-  // gfx906 / gfx101x / gfx103x have no FP buffer-atomic-add at all.
-  case ISAFamily::GCN5_1:
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
-  case ISAFamily::Unknown:
+  if (isaFamily == ISAFamily::RDNA4 && elementType.isF64())
     return false;
-  }
+  return true;
 }
 
 bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
   auto isaFamily = getISAFamily();
   if (elementType.isF32()) {
     return llvm::is_contained({ISAFamily::RDNA1, ISAFamily::RDNA2,
-                               ISAFamily::RDNA3, ISAFamily::GFX1170,
+                               ISAFamily::RDNA3, ISAFamily::RDNA4m,
                                ISAFamily::RDNA4, ISAFamily::GFX1250},
                               isaFamily);
   }
@@ -330,7 +300,7 @@ int32_t TargetFeatures::getBufferAtomicCachePolicy(bool hasUsers) const {
 
 bool TargetFeatures::supportMaximumMinimum() const {
   return getISAFamily() == ISAFamily::CDNA4 ||
-         getISAFamily() == ISAFamily::GFX1170 ||
+         getISAFamily() == ISAFamily::RDNA4m ||
          getISAFamily() == ISAFamily::GFX1250;
 }
 
@@ -361,9 +331,9 @@ bool TargetFeatures::supportsHwScaledUpcast() const {
          getISAFamily() == ISAFamily::GFX1250;
 }
 
-bool TargetFeatures::supportsFp8Dot4Fma() const {
-  return getISAFamily() == ISAFamily::RDNA4 ||
-         getISAFamily() == ISAFamily::GFX1170;
+bool TargetFeatures::supportsHwScaledDowncast() const {
+  return getISAFamily() == ISAFamily::CDNA4 ||
+         getISAFamily() == ISAFamily::GFX1250;
 }
 
 bool TargetFeatures::supportBitwidth16Elementwise() const { return true; }
@@ -398,9 +368,8 @@ bool isRDNA(ISAFamily isaFamily) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
-  case ISAFamily::GFX1310:
     return true;
   default:
     return false;

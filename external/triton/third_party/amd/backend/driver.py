@@ -5,6 +5,7 @@ import subprocess
 import triton
 from pathlib import Path
 from triton import knobs
+from triton._C.libtriton import amd
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver, decompose_descriptor, expand_signature, wrap_handle_tensordesc_impl
 from triton.runtime import _allocation
@@ -25,7 +26,7 @@ def _is_windows():
 
 def _get_rocm_sdk_root():
     """Get ROCm SDK root path using rocm-sdk command or environment variables."""
-    # Try rocm-sdk path --root first (for Windows ROCm SDK)
+    # Try rocm-sdk path --root first
     try:
         result = subprocess.check_output(["rocm-sdk", "path", "--root"], stderr=subprocess.DEVNULL)
         root = result.decode().strip()
@@ -42,18 +43,6 @@ def _get_rocm_sdk_root():
     return None
 
 
-def _get_hip_library_from_rocm_sdk():
-    """Get the amdhip64 library path using rocm_sdk.find_libraries."""
-    try:
-        import rocm_sdk
-        paths = rocm_sdk.find_libraries("amdhip64")
-        if paths:
-            return str(paths[0])
-    except (ImportError, ModuleNotFoundError, FileNotFoundError):
-        pass
-    return None
-
-
 # Add HIP runtime headers from ROCm SDK if available
 _rocm_root = _get_rocm_sdk_root()
 if _rocm_root and os.path.isdir(os.path.join(_rocm_root, "include")):
@@ -63,48 +52,7 @@ if _rocm_root and os.path.isdir(os.path.join(_rocm_root, "include")):
 def _find_already_mmapped_dylib_on_linux(lib_name):
     if platform.system() != 'Linux':
         return None
-
-    # Use dl_iterate_phdr to walk through the list of shared libraries at runtime.
-    # See https://www.man7.org/linux/man-pages/man3/dl_iterate_phdr.3.html for details.
-
-    import ctypes
-    from ctypes import c_char, c_int, c_size_t, c_void_p, c_char_p, POINTER
-
-    class DlPhdrInfo(ctypes.Structure):
-        _fields_ = [
-            ('dlpi_addr', c_void_p),
-            ('dlpi_name', c_char_p),
-            # We don't care about the remaining fields.
-        ]
-
-    # callback_t must use POINTER(c_char) to avoid copying.
-    callback_t = ctypes.CFUNCTYPE(c_int, POINTER(DlPhdrInfo), POINTER(c_size_t), POINTER(c_char))
-
-    # Load libc and get the dl_iterate_phdr symbol.
-    try:
-        dl_iterate_phdr = ctypes.CDLL('libc.so.6').dl_iterate_phdr
-    except Exception:
-        return None
-    # argtypes must use c_char_p to accept create_string_buffer.
-    dl_iterate_phdr.argtypes = [callback_t, c_char_p]
-    dl_iterate_phdr.restype = c_int
-
-    max_path_length = 4096
-    path = ctypes.create_string_buffer(max_path_length + 1)
-
-    # Define callback to get the loaded dylib path.
-    def callback(info, size, data):
-        dlpi_name = info.contents.dlpi_name
-        p = Path(os.fsdecode(dlpi_name))
-        if lib_name in p.name:
-            # Found the dylib; get its path.
-            ctypes.memmove(data, dlpi_name, min(max_path_length, len(dlpi_name)))
-            return 1
-        return 0
-
-    if dl_iterate_phdr(callback_t(callback), path):
-        return os.fsdecode(ctypes.string_at(path))
-    return None
+    return amd.find_loaded_library(lib_name)
 
 
 @functools.lru_cache()
@@ -113,22 +61,33 @@ def _get_path_to_hip_runtime_dylib():
 
     # If we are told explicitly what HIP runtime dynamic library to use, obey that.
     if env_libhip_path := knobs.amd.libhip_path:
-        if os.path.exists(env_libhip_path) and ("amdhip64" in os.path.basename(env_libhip_path)):
+        lib_filename = Path(env_libhip_path).name
+        name_matches = "amdhip64" in lib_filename if _is_windows() else lib_filename.startswith(lib_name)
+        if name_matches and os.path.isfile(env_libhip_path):
             return env_libhip_path
         raise RuntimeError(f"TRITON_LIBHIP_PATH '{env_libhip_path}' does not point to a valid {lib_name}")
 
-    # Try rocm_sdk.find_libraries first - this is the preferred method
-    rocm_sdk_path = _get_hip_library_from_rocm_sdk()
-    if rocm_sdk_path:
-        return rocm_sdk_path
-
-    # If the shared object is already mmapped to address space, use it (Linux only).
-    if not _is_windows():
+    # A TheRock installation is a coherent SDK and must take precedence over
+    # system ROCm. Do not silently mix it with a different HIP runtime that was
+    # loaded earlier in the process.
+    try:
+        import rocm_sdk
+        therock_libhip_path = str(rocm_sdk.find_libraries("amdhip64")[0])
+    except (ImportError, ModuleNotFoundError, FileNotFoundError):
+        therock_libhip_path = None
+    if therock_libhip_path is not None:
         mmapped_path = _find_already_mmapped_dylib_on_linux(lib_name)
-        if mmapped_path:
-            if os.path.exists(mmapped_path):
-                return mmapped_path
-            raise RuntimeError(f"memory mapped '{mmapped_path}' in process does not point to a valid {lib_name}")
+        if mmapped_path and not os.path.samefile(mmapped_path, therock_libhip_path):
+            raise RuntimeError(f"TheRock provides '{therock_libhip_path}', but a different HIP runtime "
+                               f"'{mmapped_path}' is already loaded; refusing to mix ROCm installations")
+        return therock_libhip_path
+
+    # If the shared object is already mmapped to address space, use it.
+    mmapped_path = _find_already_mmapped_dylib_on_linux(lib_name)
+    if mmapped_path:
+        if os.path.exists(mmapped_path):
+            return mmapped_path
+        raise RuntimeError(f"memory mapped '{mmapped_path}' in process does not point to a valid {lib_name}")
 
     paths = []
 
@@ -199,7 +158,7 @@ def _get_path_to_hip_runtime_dylib():
             return rocm_lib_path
         paths.append(rocm_lib_path)
 
-    # Afterwards try to search the loader dynamic library resolution paths (Linux only).
+    # Afterwards try to search the loader dynamic library resolution paths.
     if not _is_windows():
         try:
             libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode(errors="ignore")
@@ -214,7 +173,7 @@ def _get_path_to_hip_runtime_dylib():
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
 
-        # As a last resort on Linux, guess if we have it in some common installation path.
+        # As a last resort, guess if we have it in some common installation path.
         common_install_path = os.path.join('/opt/rocm/lib/', lib_name)
         if os.path.exists(common_install_path):
             return common_install_path
@@ -344,7 +303,6 @@ def make_tensordesc_arg(arg, tensordesc_metadata, base_args):
     strides = arg.strides
     base = arg.base.data_ptr()
 
-    assert "elem_bits" in tensordesc_metadata and "block_size" in tensordesc_metadata
     elem_bits = tensordesc_metadata["elem_bits"]
     block_size = tensordesc_metadata["block_size"]
     pad_interval, pad_amount = 0, 0

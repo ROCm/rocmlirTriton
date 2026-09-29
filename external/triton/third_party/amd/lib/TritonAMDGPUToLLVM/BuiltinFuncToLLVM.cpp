@@ -193,7 +193,6 @@ private:
 struct ConvertBuiltinFuncToLLVM
     : public triton::impl::ConvertBuiltinFuncToLLVMBase<
           ConvertBuiltinFuncToLLVM> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertBuiltinFuncToLLVM)
   ConvertBuiltinFuncToLLVM(StringRef gfxArch, bool ftz) {
     this->gfxArch = gfxArch.str();
     this->ftz = ftz;

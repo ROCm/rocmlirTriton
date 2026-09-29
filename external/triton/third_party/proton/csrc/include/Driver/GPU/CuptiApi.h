@@ -15,7 +15,11 @@ struct ExternLibCupti : public ExternLibBase {
 #ifdef _WIN32
   // On Windows, each version of CUPTI has a specific DLL name. Remember to
   // update this with `nvidia-toolchain-version.json`.
-  static constexpr const char *name = "cupti64_2025.1.1.dll";
+#ifdef _M_ARM64
+  static constexpr const char *name = "cupti64_2026.3.0.dll";
+#else
+  static constexpr const char *name = "cupti64_2026.2.0.dll";
+#endif
 #else
   static constexpr const char *name = "libcupti.so";
 #endif
@@ -27,6 +31,8 @@ struct ExternLibCupti : public ExternLibBase {
 
 template <bool CheckSuccess> CUptiResult getVersion(uint32_t *version);
 
+template <bool CheckSuccess> CUptiResult getTimestamp(uint64_t *timestamp);
+
 template <bool CheckSuccess>
 CUptiResult getContextId(CUcontext context, uint32_t *pCtxId);
 
@@ -34,6 +40,10 @@ template <bool CheckSuccess>
 CUptiResult activityRegisterCallbacks(
     CUpti_BuffersCallbackRequestFunc funcBufferRequested,
     CUpti_BuffersCallbackCompleteFunc funcBufferCompleted);
+
+template <bool CheckSuccess>
+CUptiResult
+activityRegisterTimestampCallback(CUpti_TimestampCallbackFunc funcTimestamp);
 
 template <bool CheckSuccess>
 CUptiResult subscribe(CUpti_SubscriberHandle *subscriber,

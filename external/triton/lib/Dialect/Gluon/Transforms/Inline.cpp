@@ -15,7 +15,6 @@ namespace mlir::triton::gluon {
 
 namespace {
 struct Inline : public gluon::impl::GluonInlineBase<Inline> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(Inline)
   void runOnOperation() override;
 };
 } // namespace

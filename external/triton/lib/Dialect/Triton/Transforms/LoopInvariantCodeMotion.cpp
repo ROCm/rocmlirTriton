@@ -1,3 +1,4 @@
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -16,10 +17,22 @@ namespace mlir::triton {
 class LoopInvariantCodeMotionPass
     : public impl::TritonLoopInvariantCodeMotionBase<
           LoopInvariantCodeMotionPass> {
-public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LoopInvariantCodeMotionPass)
 
   DenseMap<LoopLikeOpInterface, bool> isLoopMemoryEffectFreeOrOnlyRead;
+
+  bool isLICMDisabled(LoopLikeOpInterface loopLike) {
+    auto loopMD = loopLike->getAttrOfType<LLVM::LoopAnnotationAttr>(
+        LLVM::LoopAnnotationAttr::name);
+    if (!loopMD)
+      return false;
+
+    auto licmMD = loopMD.getLicm();
+    if (!licmMD)
+      return false;
+
+    auto disable = licmMD.getDisable();
+    return disable && disable.getValue();
+  }
 
   bool isMemoryEffectFreeOrOnlyRead(Operation *op) {
     std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
@@ -37,6 +50,8 @@ public:
     // This way, we first LICM from the inner loop, and place the ops in the
     // outer loop, which in turn can be further LICM'ed.
     getOperation()->walk([&](LoopLikeOpInterface loopLike) {
+      if (isLICMDisabled(loopLike))
+        return;
       moveLoopInvariantCode(
           loopLike.getLoopRegions(),
           // isDefinedOutsideOfRegion

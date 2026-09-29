@@ -29,13 +29,13 @@ add_triton_library(TritonGPUToLLVM
     TritonGPUConversionPassIncGen
 
     LINK_LIBS PUBLIC
-    MLIRArithAttrToLLVMConversion
     MLIRIR
     MLIRPass
     MLIRGPUDialect
     MLIRGPUToNVVMTransforms
     MLIRGPUToROCDLTransforms
     MLIRGPUTransforms
+    NVGPUIR
     TritonAnalysis
     TritonIR
     TritonGPUIR

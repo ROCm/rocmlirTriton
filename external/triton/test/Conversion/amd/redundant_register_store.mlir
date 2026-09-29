@@ -1,6 +1,3 @@
-// Copyright Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: MIT
-//
 // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx1100 | FileCheck %s
 // RUN: triton-opt %s -split-input-file --convert-triton-amdgpu-to-llvm=gfx-arch=gfx942 | FileCheck %s
 
@@ -8,7 +5,8 @@
 // another register in the same thread already holds, which they detect via the
 // "register" free-variable mask of getFreeVariableMasks(). A layout whose
 // register basis is zero broadcasts that register, so only the canonical index
-// is stored.
+// is stored. Blocked layouts drop their zero register bases when converted to a
+// linear layout, so these cases spell the layouts out as linear ones.
 
 // Control: a non-zero register basis addresses two distinct elements, so both
 // registers are stored.
@@ -18,7 +16,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
   // CHECK-COUNT-2: rocdl.raw.ptr.buffer.store
   // CHECK-NOT: rocdl.raw.ptr.buffer.store
   tt.func @distinct_registers_are_all_stored(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<64xi32, #plain>, %val: tensor<64xf32, #plain>) {
-    amdg.buffer_store %val, %arg0[%offset] : tensor<64xf32, #plain>
+    amdg.buffer_store %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<64xf32, #plain>
     tt.return
   }
 }
@@ -33,7 +31,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
   // CHECK-COUNT-1: rocdl.raw.ptr.buffer.store
   // CHECK-NOT: rocdl.raw.ptr.buffer.store
   tt.func @broadcast_register_buffer_store(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<32xi32, #bcast>, %val: tensor<32xf32, #bcast>) {
-    amdg.buffer_store %val, %arg0[%offset] : tensor<32xf32, #bcast>
+    amdg.buffer_store %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<32xf32, #bcast>
     tt.return
   }
 }
@@ -65,5 +63,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
   tt.func @scalar_store_is_predicated(%ptr: !tt.ptr<f32>, %val: f32) {
     tt.store %ptr, %val : !tt.ptr<f32>
     tt.return
+  }
+}
+
+// -----
+
+// The atomic conversions instead unpack only the unique elements of the layout,
+// so a broadcast register never reaches the loop. Cover them here too to pin
+// down that a broadcast register still issues a single atomic.
+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @broadcast_register_buffer_atomic_rmw
+  // CHECK-COUNT-1: llvm.amdgcn.raw.ptr.buffer.atomic.fadd
+  // CHECK-NOT: llvm.amdgcn.raw.ptr.buffer.atomic.fadd
+  tt.func @broadcast_register_buffer_atomic_rmw(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %offset: tensor<32xi32, #bcast>, %val: tensor<32xf32, #bcast>) -> tensor<32xf32, #bcast> {
+    %0 = amdg.buffer_atomic_rmw fadd, acq_rel, gpu, %val, %arg0[%offset] : !tt.ptr<f32> -> tensor<32xf32, #bcast>
+    tt.return %0 : tensor<32xf32, #bcast>
+  }
+}
+
+// -----
+
+// Same for the compare-and-swap path.
+#bcast = #ttg.linear<{register = [[0]], lane = [[1], [2], [4], [8], [16]], warp = [], block = []}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @broadcast_register_atomic_cas
+  // CHECK-COUNT-1: llvm.cmpxchg
+  // CHECK-NOT: llvm.cmpxchg
+  tt.func @broadcast_register_atomic_cas(%ptr: tensor<32x!tt.ptr<i32>, #bcast>, %cmp: tensor<32xi32, #bcast>, %val: tensor<32xi32, #bcast>) -> tensor<32xi32, #bcast> {
+    %0 = tt.atomic_cas acq_rel, gpu, %ptr, %cmp, %val : (tensor<32x!tt.ptr<i32>, #bcast>, tensor<32xi32, #bcast>, tensor<32xi32, #bcast>) -> tensor<32xi32, #bcast>
+    tt.return %0 : tensor<32xi32, #bcast>
   }
 }

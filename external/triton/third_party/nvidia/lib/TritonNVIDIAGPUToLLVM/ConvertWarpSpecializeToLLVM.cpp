@@ -1,3 +1,4 @@
+#include "Dialect/NVGPU/IR/Dialect.h"
 #include "TargetInfo.h"
 #include "Utility.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -46,6 +47,10 @@ public:
 
   bool isBarrierOp(Operation *op) const override {
     return isa<NVVM::BarrierOp>(op);
+  }
+
+  bool isBarrierHandleOp(Operation *op) const override {
+    return isa<mlir::triton::nvgpu::WarpGroupBarrierIdOp>(op);
   }
 
   Type getBarrierHandleType(MLIRContext *ctx) const override {
@@ -262,7 +267,6 @@ namespace {
 struct ConvertWarpSpecializeToLLVM
     : public mlir::triton::impl::ConvertWarpSpecializeToLLVMBase<
           ConvertWarpSpecializeToLLVM> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertWarpSpecializeToLLVM)
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     // FIXME: Assume warp specialization only happens on Blackwell.
