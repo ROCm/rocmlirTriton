@@ -13,6 +13,7 @@ patch-roundeven-lowering.patch
 patch-skip-subbyte-reduce-data-duplication.patch
 patch-buffer-atomics.patch
 patch-cost-aware-dot-rematerialization.patch
+patch-negligible-anchor-layout-conflict.patch
 patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
 patch-gfx1170-fp8-cvt.patch
@@ -20,6 +21,7 @@ patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
+patch-gfx1310-isa-family.patch
 patch11295.patch
 patch10497.patch
 patch10694.patch
@@ -29,6 +31,20 @@ patch10635.patch
 patch10928.patch
 patch11018.patch
 patch11118.patch
+patch11890.patch
+
+patch-gfx1310-isa-family.patch
+  Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
+  that Rock can tell gfx13 apart from GFX1250 when it queries the Triton
+  target. Four changes only: the ISAFamily::GFX1310 enumerator, a
+  major == 13 && minor == 1 arm in getISAFamily() (gfx1310 numbering, not
+  every gfx13* chip), a GFX1310 case in isRDNA(), and GFX1310 grouped with
+  RDNA4 in supportsBufferAtomicFadd() (no BUFFER_ATOMIC_ADD_F64, matching
+  FeatureISAVersion13 in public LLVM).
+
+  This change is deliberately the identity slice and nothing more.
+
+  Drop when upstream Triton carries gfx1310 natively.
 
 patch-partitionloops-clang-cl.patch
   Upstream PR: https://github.com/triton-lang/triton/pull/11114
@@ -344,6 +360,26 @@ patch-cost-aware-dot-rematerialization.patch
   Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
   from hoistConvertDotOperand or upstreams this change.
 
+patch-negligible-anchor-layout-conflict.patch
+  Adds the tie-break that LayoutPropagation::resolveConflicts asked for in its
+  "hacky resolve" comment. Each anchor carries the traffic its layout governs,
+  the figure propagates with the layout, and a candidate whose anchor governs
+  no more than one dword per thread loses to one that governs more. The
+  type-based preference still decides first.
+
+  The 128x1 bias load left behind by rock-narrow-redundant-loads still anchors
+  by element count, and with no mma candidate yet before accelerate-matmul,
+  iteration order handed the whole epilogue of the dot that load's
+  sizePerThread = [1, 1] layout and a full-tile shared-memory round trip: up
+  to 1.6x slower on gfx1100 convolution+reduce fusions. Ranking every conflict
+  by traffic was tried too and regressed other configs, as getConvertCost
+  prices the register permutes it trades for at zero.
+
+  No upstream PR yet. Covered by
+  test/TritonGPU/amd/remove-layout-conversions-negligible-anchor.mlir and, for
+  the interaction with the Rock pass, by the rocMLIR test
+  Dialect/Rock/narrow-redundant-loads-through-triton.mlir.
+
 patch-optimize-epilogue-rock-metadata.patch
   Makes OptimizeEpilogue honor the discardable `rock.prefer_lds_epilogue`
   function marker. Marked kernels keep the paced LDS round-trip instead of
@@ -439,4 +475,35 @@ patch-fma-lds-swizzle.patch
   operand-major ones that patch introduces.
 
   Not filed upstream yet; upstream Triton has the same performance gap.
+
+patch11890.patch
+  composePaddedLayoutForAsyncCopyCDNA4 divides warpSize by contigLanes, the
+  number of 16-byte vectors in one row of the tile, to get the rows one warp
+  covers. Once a row spans more than a warp of vectors that quotient truncates
+  to zero, so requiredRows collapses, xWayConflicts always reports one, and the
+  useBestWrap guard degenerates to nonContigDim >= 0. wrap then exceeds the
+  rows the tile has, bases are added for rows that do not exist, and the
+  resulting layout broadcasts in the offset dimension, which
+  PaddedSharedEncodingAttr::verify rejects. In an assertions build that aborts
+  the compiler instead of falling back.
+
+  The weekly tuning stage hit this on gfx950 for gemm f16 m=384 k=3072 n=768
+  with mPerBlock=1, nPerBlock=16, kPerBlock=2048, where contigLanes is 256
+  against a warp size of 64. contigLanes is now clamped to [1, warpSize], so a
+  warp counts as covering one row when a row is wider than a warp, and a row
+  narrower than a vector can no longer make it zero.
+
+  Across 70 shape and dtype combinations this takes process aborts from 8 to 0
+  and keeps the 55 shapes that already compiled bit identical. The lit test
+  test/TritonGPU/amd/amd-pipeline-padded-layout-wide-row-gfx950.mlir uses a
+  4-row tile, fewer rows than the stagger, and
+  mlir/test/fusion/pr-e2e/rock-gemm-cdna4-padded-layout-wide-row.mlir runs the
+  weekly config end to end on gfx950. The downstream copy of the lit test
+  carries the MIT header required for files added by local [EXTERNAL]
+  commits; the upstream copy has none.
+
+  Imports https://github.com/triton-lang/triton/pull/11890.
+
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  1725224a65ebc2dc7ca2ee1d84458344d93ee797.
 

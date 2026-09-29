@@ -8,8 +8,11 @@ Generates QuickTuningPerfconfigs.inc from tuning data produced by tuningRunner.p
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,6 +58,8 @@ OP_TO_KERNEL_TYPE = {
 # argument, never via the perf-config's splitKFactor, so a split-K-free
 # duplicate would be the same problem twice.
 SPLIT_K_AWARE_OPS = frozenset({'gemm', 'conv', 'gemm_gemm', 'conv_gemm'})
+
+PER_PROBLEM_TOP_N = 5
 
 # Regex pattern for lookup table entries: {"arch_kernel_dtype", {Class::params, Class::count}}, // optional comment
 LOOKUP_ENTRY_PATTERN = re.compile(r'\{("(gfx\w+)_(\w+)_(\w+)"),\s*(\{[^}]+\})\},(\s*//[^\n]*)?')
@@ -119,6 +124,32 @@ def get_splitk_value(perfconfig):
     return None if value is None else str(value)
 
 
+def get_problem_priority(group):
+    """Return the tier-1 priority for a problem group, if one is available."""
+    if 'PerfPriority' not in group:
+        return None
+    priorities = pd.to_numeric(group['PerfPriority'], errors='coerce').dropna().unique()
+    if len(priorities) == 0:
+        return None
+    # All measurements of one problem should have the same priority. If mixed
+    # input is supplied, retain the stricter threshold rather than relaxing it.
+    return int(max(priorities))
+
+
+def threshold_for_priority(priority, threshold):
+    """Relax coverage for low-priority tier-1 problems.
+
+    Priorities 1, 2, and 3 lower the requested coverage threshold by fixed
+    offsets of 3, 2, and 1 percentage points respectively. Priority 4 and above
+    retain the requested threshold. With the default 93%, this permits gaps of
+    10%, 9%, 8%, and 7% respectively.
+    """
+    if priority is None:
+        return threshold
+    relaxation = min(max(4 - priority, 0) * 0.01, 0.03)
+    return max(0.0, threshold - relaxation)
+
+
 # =============================================================================
 # Data Loading & Processing
 # =============================================================================
@@ -139,7 +170,16 @@ def validate_files(files):
         sys.exit(1)
 
 
-def load_data(files, no_splitk):
+def filter_split_k(df):
+    """Drop configs with Split-K != 1."""
+    before = len(df)
+    df = df[df['PerfConfig'].apply(lambda x: get_splitk_value(x) in (None, '1'))]
+    if len(df) < before:
+        print(f"Filtered out {before - len(df)} out of {before} Split-K configs")
+    return df
+
+
+def load_data(files):
     """Load tuning data from files or stdin."""
     if files:
         validate_files(files)
@@ -182,18 +222,10 @@ def load_data(files, no_splitk):
     if len(df) < before:
         print(f"Dropped {before - len(df)} row(s) with missing/invalid TFlops")
 
-    if no_splitk and not df.empty:
-        # Filter out configs where Split-K != 1
-        before = len(df)
-        mask = df['PerfConfig'].apply(lambda x: get_splitk_value(x) in (None, '1'))
-        df = df[mask]
-        if len(df) < before:
-            print(f"Filtered out {before - len(df)} out of {before} Split-K configs")
-
     return df
 
 
-def build_coverage(df_typed, target_cols, op, threshold):
+def build_coverage(df_typed, target_cols, op, threshold, use_perf_priority=False):
     """Map each problem to the perfconfigs performing within ``threshold`` of its best.
 
     Keys are ``(problem, split_k_allowed)``. A problem whose fusion forbids
@@ -206,8 +238,11 @@ def build_coverage(df_typed, target_cols, op, threshold):
     """
     coverage = {}
     for name, group in df_typed.groupby(target_cols):
+        problem_threshold = threshold
+        if use_perf_priority:
+            problem_threshold = threshold_for_priority(get_problem_priority(group), threshold)
         max_tflops = group['TFlops'].max()
-        top = group[group['TFlops'] >= max_tflops * threshold]['PerfConfig'].tolist()
+        top = group[group['TFlops'] >= max_tflops * problem_threshold]['PerfConfig'].tolist()
         coverage[name, True] = top
 
         if op not in SPLIT_K_AWARE_OPS:
@@ -221,7 +256,7 @@ def build_coverage(df_typed, target_cols, op, threshold):
                   "cannot cover it when split-K is illegal")
             continue
 
-        cutoff = no_splitk['TFlops'].max() * threshold
+        cutoff = no_splitk['TFlops'].max() * problem_threshold
         top_no_splitk = no_splitk[no_splitk['TFlops'] >= cutoff]['PerfConfig'].tolist()
         if set(top_no_splitk) != set(top):
             coverage[name, False] = top_no_splitk
@@ -229,12 +264,72 @@ def build_coverage(df_typed, target_cols, op, threshold):
     return coverage
 
 
-def find_perfconfigs(df, op, threshold):
+def create_selection_model(name, sense, n_configs):
+    """Create an ILP model and one binary selection variable per config."""
+    model = pulp.LpProblem(name, sense)
+    selected = pulp.LpVariable.dicts("selected", range(n_configs), cat='Binary')
+    return model, selected
+
+
+def solve_selection_model(model, selected, configs, failure_message):
+    """Solve a config-selection model and return its selected configs."""
+    status = model.solve(pulp.PULP_CBC_CMD(msg=0))
+    if status != pulp.LpStatusOptimal:
+        status_name = pulp.LpStatus.get(status, "Unknown")
+        raise RuntimeError(f"{failure_message}: {status_name}. "
+                           f"This likely indicates corrupted input data or a bug.")
+
+    return [configs[j] for j in range(len(configs)) if selected[j].varValue == 1]
+
+
+def solve_full_coverage(coverage, dtype):
+    """Return the minimum config set and its coverage matrix."""
+    problems = sorted(coverage.keys())
+    configs = sorted({c for candidates in coverage.values() for c in candidates})
+    config_idx = {config: i for i, config in enumerate(configs)}
+
+    n_problems, n_configs = len(problems), len(configs)
+    matrix = np.zeros((n_problems, n_configs), dtype=int)
+    for i, problem in enumerate(problems):
+        for config in coverage[problem]:
+            matrix[i, config_idx[config]] = 1
+
+    model, selected = create_selection_model("SetCover", pulp.LpMinimize, n_configs)
+    model += pulp.lpSum(selected[j] for j in range(n_configs))
+    for i in range(n_problems):
+        model += pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs)) >= 1
+
+    chosen = solve_selection_model(model, selected, configs, f"Set cover failed for {dtype}")
+    return chosen, problems, configs, config_idx, matrix
+
+
+def solve_bounded_coverage(problems, problem_weights, configs, config_idx, matrix, max_configs):
+    """Select at most ``max_configs`` configs using a precomputed coverage matrix."""
+    n_problems, n_configs = len(problems), len(config_idx)
+
+    model, selected = create_selection_model("BoundedCoverage", pulp.LpMaximize, n_configs)
+    covered = pulp.LpVariable.dicts("covered", range(n_problems), cat='Binary')
+
+    # The small tie-breaker prefers a shorter list without changing the primary
+    # objective of maximizing weighted problem coverage.
+    model += (pulp.lpSum(problem_weights.get(p, 1) * covered[i] for i, p in enumerate(problems)) -
+              1e-6 * pulp.lpSum(selected[j] for j in range(n_configs)))
+    model += pulp.lpSum(selected[j] for j in range(n_configs)) <= max_configs
+    for i in range(n_problems):
+        model += covered[i] <= pulp.lpSum(matrix[i, j] * selected[j] for j in range(n_configs))
+
+    return solve_selection_model(model, selected, configs, "Bounded quick-tuning coverage failed")
+
+
+def find_perfconfigs(df, op, threshold, max_configs=None):
     """Find minimal covering set of perfconfigs using set cover optimization.
 
     For each problem (unique combination of problem dimensions), we identify
     configs that achieve >= threshold * best_tflops. We then solve a set cover
-    problem to find the minimum number of configs that cover all problems.
+    problem to find the minimum number of configs that cover all problems. Perf
+    priority is consulted only if that strict set exceeds ``max_configs``: low
+    priorities first receive relaxed gaps, then a bounded solve maximizes
+    priority-weighted coverage if full coverage still does not fit.
 
     The ILP formulation:
         minimize    sum(x[j] for all configs j)
@@ -250,42 +345,54 @@ def find_perfconfigs(df, op, threshold):
         df_typed = df[df['DataType'] == dtype]
 
         # Aggregate by keeping only the best TFlops per (problem, config)
-        df_typed = df_typed.groupby(target_cols + ['PerfConfig'], as_index=False)['TFlops'].max()
+        grouping = target_cols + ['PerfConfig']
+        if 'PerfPriority' in df_typed:
+            # Repeated header rows can leave this column as strings. Normalize
+            # before max(), otherwise values such as "9" sort above "10".
+            df_typed = df_typed.copy()
+            df_typed['PerfPriority'] = pd.to_numeric(df_typed['PerfPriority'], errors='coerce')
+            df_typed = df_typed.groupby(grouping,
+                                        as_index=False).agg(TFlops=('TFlops', 'max'),
+                                                            PerfPriority=('PerfPriority', 'max'))
+        else:
+            df_typed = df_typed.groupby(grouping, as_index=False)['TFlops'].max()
 
+        # First try the requested threshold uniformly. Perf priority must not
+        # affect lists that already fit under the cap at full coverage.
         coverage = build_coverage(df_typed, target_cols, op, threshold)
+        selected, problems, configs, config_idx, matrix = solve_full_coverage(coverage, dtype)
 
-        problems = sorted(coverage.keys())
-        configs = sorted({c for cs in coverage.values() for c in cs})
-        config_idx = {c: i for i, c in enumerate(configs)}
+        has_priorities = ('PerfPriority' in df_typed and df_typed['PerfPriority'].notna().any())
+        if max_configs is not None and len(selected) > max_configs and has_priorities:
+            strict_count = len(selected)
+            coverage = build_coverage(df_typed, target_cols, op, threshold, use_perf_priority=True)
+            selected, problems, configs, config_idx, matrix = solve_full_coverage(coverage, dtype)
+            print(f"{dtype}: strict {1 - threshold:.0%} gap needs {strict_count} configs; "
+                  f"priority-aware gaps reduce it to {len(selected)}")
 
-        # Build coverage matrix: matrix[i,j] = 1 if config j covers problem i
-        n_problems, n_configs = len(problems), len(configs)
-        matrix = np.zeros((n_problems, n_configs), dtype=int)
-        for i, prob in enumerate(problems):
-            for cfg in coverage[prob]:
-                matrix[i, config_idx[cfg]] = 1
+        # Extract selected configs, sorted by how many problems they cover.
+        if max_configs is not None and len(selected) > max_configs:
+            weights_by_name = {}
+            for name, group in df_typed.groupby(target_cols):
+                priority = get_problem_priority(group)
+                weights_by_name[name] = max(priority, 1) if priority is not None else 1
+            problem_weights = {problem: weights_by_name[problem[0]] for problem in coverage}
 
-        # Solve set cover with ILP
-        prob = pulp.LpProblem("SetCover", pulp.LpMinimize)
-        x = pulp.LpVariable.dicts("x", range(n_configs), cat='Binary')
+            print(f"WARNING: {dtype} needs {len(selected)} configs for full coverage; "
+                  f"limiting quick tuning to {max_configs}")
+            selected = solve_bounded_coverage(problems, problem_weights, configs, config_idx,
+                                              matrix, max_configs)
+            covered = [
+                problem for problem, candidates in coverage.items()
+                if any(config in candidates for config in selected)
+            ]
+            covered_weight = sum(problem_weights[problem] for problem in covered)
+            total_weight = sum(problem_weights[problem] for problem in coverage)
+            print(f"Capped list covers {len(covered)}/{len(coverage)} problem constraints "
+                  f"and {covered_weight}/{total_weight} priority weight "
+                  f"({covered_weight / total_weight:.1%})")
 
-        # Objective: minimize number of selected configs
-        prob += pulp.lpSum(x[j] for j in range(n_configs))
-
-        # Constraints: each problem must be covered by at least one config
-        for i in range(n_problems):
-            prob += pulp.lpSum(matrix[i, j] * x[j] for j in range(n_configs)) >= 1
-
-        status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
-
-        if status != pulp.LpStatusOptimal:
-            status_name = pulp.LpStatus.get(status, "Unknown")
-            raise RuntimeError(f"Set cover failed for {dtype}: {status_name}. "
-                               f"This likely indicates corrupted input data or a bug.")
-
-        # Extract selected configs, sorted by how many problems they cover
-        selected = [configs[j] for j in range(n_configs) if x[j].varValue == 1]
-        counts = {c: sum(matrix[i, config_idx[c]] for i in range(n_problems)) for c in selected}
+        counts = {config: int(matrix[:, config_idx[config]].sum()) for config in selected}
         results[dtype] = sorted(selected, key=lambda c: counts[c], reverse=True)
 
     return results
@@ -377,16 +484,20 @@ def add_lookup_entry(content, section_name, entry):
 
     key = match.group(1)  # e.g., "gfx942_gemm_f16"
 
-    # Check for existing entry
+    content = ensure_section(content, section_name)
+    section_start = content.find(f"#ifdef {section_name}")
+    section_end = find_endif(content, section_name)
+
+    # Both lookup sections use the same keys, so only replace entries in the
+    # requested section.
     remove_pattern = re.compile(r'\{' + re.escape(key) + r',\s*\{[^}]+\}\},?[^\n]*\n*')
-    existing = remove_pattern.search(content)
+    existing = remove_pattern.search(content, section_start, section_end)
 
     if existing:
         insert_pos = existing.start()
         content = content[:existing.start()] + content[existing.end():]
     else:
-        content = ensure_section(content, section_name)
-        insert_pos = find_endif(content, section_name)
+        insert_pos = section_end
 
     return content[:insert_pos] + f'{entry}\n\n' + content[insert_pos:]
 
@@ -398,7 +509,7 @@ def get_lookup_section(arch, op, dtype):
     return "Gemm_LOOKUP_TABLE_GEN"
 
 
-def update_inc_file(results, arch, op):
+def update_inc_file(results, arch, op, no_splitk=False):
     """Update the .inc file with results."""
     path = get_output_path()
     if not path.exists():
@@ -409,11 +520,15 @@ def update_inc_file(results, arch, op):
     # Identifiers and section markers use the PascalCase KernelType; the lookup key uses its
     # lowercase form
     kernel_type = OP_TO_KERNEL_TYPE[op]
+    marker = f"{arch}_NOSPLITK" if no_splitk else arch
 
     for dtype, configs in results.items():
         instr = get_instruction_type(arch, dtype, op)
         class_name = get_class_name(arch, dtype, op)
         param_name, count_name = get_param_names(arch, dtype, op)
+        if no_splitk:
+            param_name += "NoSplitK"
+            count_name += "NoSplitK"
 
         # Generate definition. Perf configs are `prefix:key=value,...` strings
         # containing only identifier, digit, `-`, `=`, `,` and `:` characters,
@@ -425,8 +540,8 @@ def update_inc_file(results, arch, op):
         def_lines.append("};")
 
         content = replace_section(content, f"{instr}_DEFINITIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DEFS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DEFS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DEFS",
                                   "\n".join(def_lines))
 
         # Generate declaration
@@ -436,12 +551,14 @@ def update_inc_file(results, arch, op):
         ]
 
         content = replace_section(content, f"{instr}_DECLARATIONS_GEN",
-                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
-                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{arch}_DECS",
+                                  f"// BEGIN_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DECS",
+                                  f"// END_{kernel_type.upper()}_{instr}_{dtype}_{marker}_DECS",
                                   "\n".join(dec_lines))
 
         # Add lookup entry
         section_name = get_lookup_section(arch, op, dtype)
+        if no_splitk:
+            section_name = section_name.replace("_LOOKUP", "_NOSPLITK_LOOKUP")
         key = f"{arch}_{kernel_type.lower()}_{dtype}"
         value = f"{{{class_name}::{param_name}, {class_name}::{count_name}}}"
         entry = f'{{"{key}", {value}}},'
@@ -466,19 +583,22 @@ def add_type_aliases(from_type, to_type):
         dtype = match.group(4)  # e.g., "f16"
         value = match.group(5)  # e.g., "{PopulateParamsGemm::..., ...}"
 
-        if dtype != to_type:
+        if dtype != to_type or "NoSplitK" in value:
             continue
 
         from_key = f"{arch}_{kernel}_{from_type}"
+        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
+        section_name = get_lookup_section(arch, op, from_type)
+        content = ensure_section(content, section_name)
+        section_start = content.find(f"#ifdef {section_name}")
+        section_end = find_endif(content, section_name)
 
-        # Don't overwrite existing entries - aliases are fallbacks only
-        if f'"{from_key}"' in content:
+        # Don't overwrite existing entries in the target section. The same key
+        # may legitimately exist in the no-split-K lookup table.
+        if f'"{from_key}"' in content[section_start:section_end]:
             print(f"Skipping {from_key}: already exists")
             continue
 
-        op = op_from_kernel(kernel)  # e.g., "gemmelementwisegemm" -> "gemm_gemm"
-
-        section_name = get_lookup_section(arch, op, from_type)
         entry = f'{{"{from_key}", {value}}},  // alias -> {to_type}'
 
         content = add_lookup_entry(content, section_name, entry)
@@ -492,6 +612,178 @@ def add_type_aliases(from_type, to_type):
         print("No aliases added")
 
     return True
+
+
+# =============================================================================
+# Per-Problem Maps
+# =============================================================================
+
+PROBLEM_MAP_DIR = 'QuickTuningProblemMap'
+
+CONFIG_CLASSES = {
+    'gemm': 'GemmConfiguration',
+    'conv': 'ConvConfiguration',
+    'attention': 'AttentionConfiguration',
+    'gemm_gemm': 'GemmGemmConfiguration',
+    'conv_gemm': 'ConvGemmConfiguration',
+}
+
+
+def problem_key_and_version_hash(row, op, rocmlir_gen):
+    """Ask the compiler for this problem's key and field-list hashes.
+
+    The key has one implementation, in C++. Rebuild the problem the way
+    perfRunner would and let rocmlir-gen answer, rather than reproducing it.
+    """
+    # Imported here rather than at module scope: it pulls in the built
+    # `amd_arch_db`, which only the per-problem path needs.
+    import perfRunner
+    conf_class = getattr(perfRunner, CONFIG_CLASSES[op])
+    config = conf_class.from_table_entry(row, row['Chip'], int(row['numCU']),
+                                         int(row['numChiplets']))
+    # rocmlir-gen rejects --kernel-repeats without a host harness, and we are
+    # not running anything.
+    args = config.generate_problem_commandline(kernel_repeats=None).split()
+    result = subprocess.run([
+        str(rocmlir_gen), *args, '--emit-quick-tuning-problem-key-hash',
+        '--emit-quick-tuning-table-lookup-key-version-hash'
+    ],
+                            capture_output=True,
+                            check=False,
+                            text=True)
+    if result.returncode:
+        raise RuntimeError(f'could not key {config.to_command_line()!r}: {result.stderr.strip()}')
+    values = result.stdout.splitlines()
+    if len(values) != 2:
+        raise RuntimeError(f'expected problem and field-list hashes, got: {result.stdout.strip()}')
+    return int(values[0]), int(values[1])
+
+
+def positive_int(value):
+    """An argparse type that rejects the top-N values select_perfconfigs cannot use."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f'must be at least 1, got {parsed}')
+    return parsed
+
+
+def select_perfconfigs(group, op, top_n):
+    """The best measured perfconfigs, keeping one legal non-split-K slot."""
+    ordered = group.sort_values(['TFlops', 'PerfConfig'], ascending=[False, True])
+    perfconfigs = ordered.head(top_n)['PerfConfig'].tolist()
+    if op not in SPLIT_K_AWARE_OPS or any(get_splitk_value(p) in (None, '1') for p in perfconfigs):
+        return perfconfigs, False
+    legal = [p for p in ordered['PerfConfig'] if get_splitk_value(p) in (None, '1')]
+    if not legal:
+        return perfconfigs, True
+    perfconfigs[-1] = legal[0]
+    return perfconfigs, False
+
+
+def per_problem_perfconfigs(typed, op, top_n, rocmlir_gen):
+    """Rank measurements and return their rows and lookup-key version hash."""
+    problem_cols = get_target_columns(op)
+    groups = [rows for _, rows in typed.groupby(problem_cols, sort=True, dropna=False)]
+    print(f"keying {len(groups)} problems ... ", end='', flush=True)
+    with ThreadPoolExecutor() as pool:
+        keys = pool.map(lambda rows: problem_key_and_version_hash(rows.iloc[0], op, rocmlir_gen),
+                        groups)
+
+    problems = {}
+    key_version_hashes = set()
+    missing_non_split = 0
+    short = 0
+    for rows, (key, key_version_hash) in zip(groups, keys):
+        if key in problems:
+            raise ValueError(
+                f'{op}: two problems share key {key}, so one would be dropped. Either the '
+                f'compiler keys on fewer fields than {problem_cols}, or these two hash '
+                f'to the same value.')
+        key_version_hashes.add(key_version_hash)
+        best = rows.groupby('PerfConfig', as_index=False)['TFlops'].max()
+        perfconfigs, missing = select_perfconfigs(best, op, top_n)
+        problems[key] = perfconfigs
+        missing_non_split += missing
+        short += len(perfconfigs) < top_n
+    if len(key_version_hashes) > 1:
+        raise ValueError(f'{op}: one shard cannot record multiple lookup-key field-list hashes: '
+                         f'{sorted(key_version_hashes)}')
+    key_version_hash = next(iter(key_version_hashes), None)
+    return problems, key_version_hash, missing_non_split, short
+
+
+def to_camel_case(key):
+    return ''.join(part.capitalize() for part in key.split('_'))
+
+
+def format_shard(key, op, problems, key_version_hash):
+    """Render one per-problem map shard.
+
+    Perfconfigs are interned and each problem indexes a variable-length run of
+    them, so lists need no padding. The shard records the table lookup key
+    version hash its problem hashes were computed with, so the compiler can
+    ignore it with a warning once that key schema changes.
+    """
+    suffix = to_camel_case(key)
+    hashes = sorted(problems)
+    perfconfigs = sorted({p for h in hashes for p in problems[h]})
+    if len(perfconfigs) > 65535:
+        raise ValueError(f'{key}: {len(perfconfigs)} perfconfigs do not fit in uint16_t')
+    index_of = {p: i for i, p in enumerate(perfconfigs)}
+
+    refs, indices = [], []
+    for value in hashes:
+        refs.append(f'{{{value}ULL, {len(indices)}, {len(problems[value])}}}')
+        indices += [index_of[p] for p in problems[value]]
+
+    section = 'GemmGemm' if op in GEMM_GEMM_OPS else 'Gemm'
+    lines = [
+        '// clang-format off', f'// {suffix}.inc -- generated by: {get_generator_path()}', '',
+        f'#ifdef {section}_PER_PROBLEM_DEFINITIONS_GEN',
+        f'static const QuickTuningProblemRef problems{suffix}[] = {{'
+    ]
+    lines += [f'    {ref},' for ref in refs]
+    lines += [
+        '};', f'static const uint16_t perfConfigIndices{suffix}[] = {{',
+        '    ' + ', '.join(map(str, indices)) + ',', '};',
+        f'static const StringRef perfConfigs{suffix}[] = {{'
+    ]
+    lines += [f'    {json.dumps(p)},' for p in perfconfigs]
+    lines += [
+        '};', f'#endif // {section}_PER_PROBLEM_DEFINITIONS_GEN', '',
+        f'#ifdef {section}_PER_PROBLEM_LOOKUP_TABLE_GEN',
+        f'{{"{key}", QuickTuningProblemMap({key_version_hash}ULL, problems{suffix}, '
+        f'perfConfigIndices{suffix}, perfConfigs{suffix})}},',
+        f'#endif // {section}_PER_PROBLEM_LOOKUP_TABLE_GEN', ''
+    ]
+    return '\n'.join(lines)
+
+
+def update_problem_maps(df_arch, arch, op, top_n, rocmlir_gen):
+    """Write this architecture's per-problem map shards."""
+    print(f"\n=== {arch} per-problem maps ===\n")
+    shard_dir = get_output_path().with_name(PROBLEM_MAP_DIR)
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    kernel_type = OP_TO_KERNEL_TYPE[op].lower()
+    for dtype in sorted(df_arch['DataType'].unique()):
+        print(f"{dtype}: ", end='')
+        typed = df_arch[df_arch['DataType'] == dtype]
+        problems, key_version_hash, missing_non_split, short = per_problem_perfconfigs(
+            typed, op, top_n, rocmlir_gen)
+        if not problems:
+            print("no problems")
+            continue
+
+        key = f'{arch}_{kernel_type}_{dtype}'
+        name = f'{to_camel_case(key)}.inc'
+        shard = format_shard(key, op, problems, key_version_hash)
+        (shard_dir / name).write_text(shard)
+        perfconfigs = {p for row in problems.values() for p in row}
+        print(f"{len(perfconfigs)} perfconfigs -> {PROBLEM_MAP_DIR}/{name}")
+        if short:
+            print(f"  {short} problem(s) measured fewer than {top_n} perfconfigs")
+        if missing_non_split:
+            print(f"  {missing_non_split} problem(s) have no measured splitKFactor=1 perfconfig")
 
 
 # =============================================================================
@@ -509,16 +801,21 @@ def print_results(results, arch):
     print()
 
 
-def process_arch(df, arch, op, threshold, update):
+def process_arch(df, arch, op, threshold, max_configs, update, top_n, no_splitk=False):
     """Process data for a single architecture."""
     df_arch = df[df['Chip'] == arch]
 
-    results = find_perfconfigs(df_arch, op, threshold)
+    # Split-K filtering shapes the set cover only. A per-problem list ranks
+    # what was actually measured for that problem.
+    cover_data = filter_split_k(df_arch) if no_splitk else df_arch
+    results = find_perfconfigs(cover_data, op, threshold, max_configs)
     print_results(results, arch)
 
     if update:
-        update_inc_file(results, arch, op)
+        update_inc_file(results, arch, op, no_splitk)
         print(f"Updated {get_output_path()} for {arch}")
+        update_problem_maps(df_arch, arch, op, top_n,
+                            os.environ.get('ROCMLIR_GEN_PATH', 'rocmlir-gen'))
 
 
 def main(args=None):
@@ -551,8 +848,19 @@ Examples:
                         default=0.93,
                         metavar='THRESHOLD',
                         help='Coverage threshold (default: 0.93)')
+    parser.add_argument('--max-configs',
+                        type=int,
+                        default=40,
+                        metavar='COUNT',
+                        help='Maximum configs per dtype (default: 40)')
     parser.add_argument('--update', action='store_true', help='Update QuickTuningPerfconfigs.inc')
-    parser.add_argument('--no-splitk', action='store_true', help='Exclude Split-K configurations')
+    parser.add_argument('--no-splitk',
+                        action='store_true',
+                        help='Create a separate set cover excluding Split-K configurations')
+    parser.add_argument('--per-problem-top-n',
+                        type=positive_int,
+                        default=PER_PROBLEM_TOP_N,
+                        help=f'perfconfigs kept per problem (default: {PER_PROBLEM_TOP_N})')
     parser.add_argument('--alias',
                         nargs=2,
                         metavar=('FROM', 'TO'),
@@ -560,18 +868,22 @@ Examples:
 
     pargs = parser.parse_args(args)
 
+    if pargs.max_configs < 1:
+        parser.error('--max-configs must be at least 1')
+
     if not pargs.op and not pargs.alias:
         parser.error('either --op or --alias must be specified')
         return 1
 
     # Generate quick-tune lists
     if pargs.op:
-        df = load_data(pargs.files, pargs.no_splitk)
+        df = load_data(pargs.files)
         if not df.empty:
             archs = sorted(df['Chip'].unique())
             print(f"Processing {len(archs)} architecture(s): {', '.join(archs)}")
             for arch in archs:
-                process_arch(df, arch, pargs.op, pargs.th, pargs.update)
+                process_arch(df, arch, pargs.op, pargs.th, pargs.max_configs, pargs.update,
+                             pargs.per_problem_top_n, pargs.no_splitk)
         else:
             print("No data to process.")
 

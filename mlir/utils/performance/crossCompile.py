@@ -204,6 +204,8 @@ def add_passthrough_flags(cmd: List[str], args: argparse.Namespace, *, remote: b
     else:
         if args.num_cpus is not None:
             cmd.append(f"--num-cpus={args.num_cpus}")
+        if args.verify_passes:
+            cmd.append("--verify-passes")
 
 
 def build_local_compile_command(args: argparse.Namespace) -> List[str]:

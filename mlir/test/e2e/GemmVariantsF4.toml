@@ -1,0 +1,60 @@
+directory = "GemmVariantsF4"
+prefix = "rocmlir-gen"
+suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+
+[[axis]]
+name = "transA"
+values = ["true", "false"]
+prefix = "--transA="
+
+[[axis]]
+name = "transB"
+values = ["true", "false"]
+prefix = "--transB="
+
+[[axis]]
+name = "transO"
+values = ["true", "false"]
+prefix = "--transO="
+
+[[axis]]
+name = "data type"
+values = ["f4E2M1FN"]
+prefix = "-t "
+
+# fp4 is packed to i8 along the stride-1 dimension. Packing along the non-K
+# (M/N) dimension (transB=false for B, or transA=true for A) only lowers on
+# arches with the transpose-load repack (CDNA4); gate those variants on the
+# `non_k_packed_scaled_input` lit feature. The two blocks are OR-ed together.
+[[require]]
+feature = "non_k_packed_scaled_input"
+[[require.match]]
+name = "transB"
+values = ["false"]
+
+[[require]]
+feature = "non_k_packed_scaled_input"
+[[require.match]]
+name = "transA"
+values = ["true"]
+
+## Gemm variants
+[[suite]]
+name = "gemm_variants_f4"
+
+# K is 768 (not upstream's 769) so the packed f4 axis is even.
+[[suite.test]]
+config = "-g 3 -m 1024 -k 768 -n 1024"
+
+[[suite.test]]
+config = "-g 1 -m 1024 -k 768 -n 1024"
+
+# Tiny corner case; K=32 because a unit-K f4 vector cannot pack to i8.
+[[suite.test]]
+config = "-g 1 -m 1 -k 32 -n 1"
+[[suite.test.exclude]]
+name = "transA"
+values = ["true"]
+[[suite.test.exclude]]
+name = "transB"
+values = ["false"]

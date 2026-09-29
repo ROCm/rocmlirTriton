@@ -206,6 +206,19 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::createTritonAMDGPUScheduleLoops({options.numStages}));
   pm->addPass(
       mlir::createTritonAMDGPUPipeline({useAsyncCopy, useBlockPingpong}));
+
+  // --- rocmlirTriton pass ----
+  // Must run after the pipeliner, which is what stages the dot operands in
+  // shared memory, and before block-pingpong, which slices dots itself. Only
+  // RDNA lowers a dot to the scalar FMAs this rolls; the pass checks the same
+  // thing itself, for when it is run on its own.
+  if (rock::isRDNA(options.arch)) {
+    rock::RockRollDotKPassOptions rollDotKOpts;
+    rollDotKOpts.arch = options.arch;
+    pm->addPass(rock::createRockRollDotKPass(rollDotKOpts));
+  }
+  // --- rocmlirTriton pass ----
+
   if (useAsyncCopy) {
     pm->addPass(mlir::createTritonAMDGPUCoalesceAsyncCopy({options.arch}));
   }
@@ -267,12 +280,16 @@ static void makeLLIR(mlir::OpPassManager *pm,
 
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+  // --- rocmlirTriton pass ----
   // Redistribute the layout of the reduction dimension to reduce register
-  // pressure. Always scheduled, but the `useReductionLayout`
-  // actually controls whether it runs.
+  // pressure. Always scheduled; `useReductionLayout` decides which kernels it
+  // rewrites and `numStages` holds it back on pipelined ones, for the reasons
+  // documented on the pass itself.
   rock::RockSetReductionLayoutPassOptions reductionLayoutOpts;
   reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
+  reductionLayoutOpts.numStages = options.numStages;
   pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
+  // --- rocmlirTriton pass ----
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?

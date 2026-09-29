@@ -197,6 +197,160 @@ class LayoutHelpersTest(unittest.TestCase):
                          layout)
 
 
+def make_conv_commandline(fil, inp, out, group=1, prefix="conv"):
+    """Build a minimal conv commandline (as a token list) with the given layouts.
+
+    ``prefix`` is the MIOpen-style argv[0] that selects the datatype ("conv" for
+    f32, "convfp8" for fp8, ...).
+    """
+    return ("{pfx} -F 1 -f {f} -I {i} -O {o} -n 1 -c 8 -H 16 -W 16 -k 8 "
+            "-y 3 -x 3 -p 1 -q 1 -u 1 -v 1 -l 1 -j 1 -g {g}").format(pfx=prefix,
+                                                                     f=fil,
+                                                                     i=inp,
+                                                                     o=out,
+                                                                     g=group).split()
+
+
+class RocmlirLayoutToMiopenTest(unittest.TestCase):
+    """Tests for rocmlir_layout_to_miopen (single layout string -> MIOpen name).
+
+    MIOpenDriver only accepts NCHW/NHWC, so a rocMLIR layout is only usable once the
+    group dim is dropped (MIOpen passes the group count via -g) and the spatial dims
+    are renamed 0->H, 1->W. Anything else has no faithful MIOpen equivalent.
+
+    Unless a test says otherwise these call the helper without a grouped dim, which
+    is the group == 1 case: the G dim is degenerate there, so it can sit anywhere.
+    """
+
+    def test_channel_first_maps_to_nchw(self):
+        """Dropping G and renaming 0/1 leaves the channel second, i.e. NCHW."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGC01"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GNC01"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NC0G1"), "NCHW")
+
+    def test_channel_last_maps_to_nhwc(self):
+        """A trailing channel dim maps to NHWC."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GC"), "NHWC")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GN01C"), "NHWC")
+
+    def test_already_miopen_layouts_pass_through(self):
+        """NCHW/NHWC are returned unchanged."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NCHW"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NHWC"), "NHWC")
+
+    def test_unrepresentable_orderings_return_none(self):
+        """Orderings that aren't NCHW/NHWC (channel or spatial in the wrong slot) skip."""
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("G0NC1"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("01NGC"))
+
+    def test_grouped_dim_accepts_the_miopen_split(self):
+        """G in front of the dim MIOpen splits: filter [G][K/G]..., input [N][G][C/G]..."""
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GNC01", "N"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("GN01C", "N"), "NHWC")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("NGC01", "C"), "NCHW")
+        self.assertEqual(perfRunner.rocmlir_layout_to_miopen("N01GC", "C"), "NHWC")
+
+    def test_grouped_dim_rejects_other_g_positions(self):
+        """Same letters, different memory layout: NGC01 as a filter is [K/G][G][C/G][Y][X]."""
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("NGC01", "N"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("GNC01", "C"))
+        self.assertIsNone(perfRunner.rocmlir_layout_to_miopen("NC0G1", "C"))
+
+
+class ConvCommandlineToMiopenLayoutsTest(unittest.TestCase):
+    """Tests for conv_commandline_to_miopen_layouts (whole commandline translate-or-skip)."""
+
+    def test_consistent_nchw_config_is_translated(self):
+        """A config whose filter/input/output all map to NCHW is translated."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GNC01", "NGC01", "NGC01"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NCHW")
+
+    def test_consistent_nhwc_config_is_translated(self):
+        """A config whose filter/input/output all map to NHWC is translated."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GN01C", "N01GC", "N01GC"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NHWC")
+
+    def test_group_conv_layout_is_still_translated(self):
+        """Dropping G from the layout is valid; the group count rides on -g."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("GNC01", "NGC01", "NGC01", group=2))
+        self.assertIsNotNone(result)
+        self.assertEqual(result[result.index("-g") + 1], "2")
+
+    def test_group_conv_with_misplaced_g_is_skipped(self):
+        """Once group > 1, G has to sit where MIOpen splits the tensor, or the config skips."""
+        # The filter wants G leading, so NGC01 ([K/G][G][C/G][Y][X]) is not MIOpen's.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("NGC01", "NGC01", "NGC01", group=2)))
+        # The input wants G right before the channel dim, so GNC01 is not MIOpen's.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "GNC01", "NGC01", group=2)))
+        # Same for the output tensor.
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "NGC01", "NC0G1", group=2)))
+
+    def test_misplaced_g_is_accepted_without_groups(self):
+        """With a single group the G dim is degenerate, so its position does not matter."""
+        result = perfRunner.conv_commandline_to_miopen_layouts(
+            make_conv_commandline("NGC01", "NC0G1", "NGC01"))
+        self.assertIsNotNone(result)
+        for flag in ("-f", "-I", "-O"):
+            self.assertEqual(result[result.index(flag) + 1], "NCHW")
+
+    def test_unrepresentable_layout_is_skipped(self):
+        """A layout with no NCHW/NHWC equivalent makes the whole config skip."""
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("G0NC1", "G0NC1", "NGC01", group=3)))
+
+    def test_mixed_nchw_nhwc_config_is_skipped(self):
+        """MIOpen has no solver for mixed filter/input/output layouts, so skip."""
+        self.assertIsNone(
+            perfRunner.conv_commandline_to_miopen_layouts(
+                make_conv_commandline("GNC01", "NGC01", "N01GC")))
+
+
+class MiopenSupportedDtypesTest(unittest.TestCase):
+    """MIOpenDriver has no fp8 conv support, so those configs skip the MIOpen side.
+
+    The skip returns a NaN table entry rather than dropping the config, which is
+    what lets fp8 conv still be benchmarked with MLIR on chips MIOpen can't follow.
+    Since benchmark_external now raises on a driver error instead of returning NaN,
+    reaching the driver with an fp8 config would fail the whole run.
+    """
+
+    def setUp(self):
+        self.addCleanup(setattr, perfRunner, 'run_pipeline', perfRunner.run_pipeline)
+        perfRunner.run_pipeline = self._forbidden
+
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("MIOpenDriver invoked for an unsupported datatype")
+
+    def benchmark(self, prefix):
+        return perfRunner.ConvConfiguration.benchmark_external(
+            make_conv_commandline("GNC01", "NGC01", "NGC01", prefix=prefix), None, 'gfx942', 304, 1)
+
+    def test_fp8_conv_skips_the_driver(self):
+        for prefix in ('convfp8', 'convfp8_fp8'):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(math.isnan(self.benchmark(prefix)['TFlops']))
+
+    def test_supported_dtype_reaches_the_driver(self):
+        """f32 is supported, so the guard must not swallow it."""
+        with self.assertRaises(AssertionError):
+            self.benchmark('conv')
+
+
 class GetNanosecondsTest(TempFileTestCase):
     """Tests for get_nanoseconds (reads the CSV rocprof leaves behind)."""
 
@@ -204,10 +358,55 @@ class GetNanosecondsTest(TempFileTestCase):
         self.assertTrue(math.isnan(perfRunner.get_nanoseconds("/nonexistent/path.csv")))
 
     def test_valid_csv(self):
-        path = self.write_temp(".csv", "KernelName,AverageNs,SomeOther\n"
+        path = self.write_temp(".csv", "Name,AverageNs,SomeOther\n"
                                "kern1,1000,0\n"
                                "kern2,2000,0\n")
         self.assertEqual(perfRunner.get_nanoseconds(path), 3000)
+
+    def test_rocclr_internal_kernels_excluded(self):
+        # The HIP runtime's blit shader for the harness's hipMemcpy calls lands
+        # in the same trace and must not be charged to the kernel under test.
+        path = self.write_temp(
+            ".csv", "Name,AverageNs,SomeOther\n"
+            "kern1,1000,0\n"
+            "__amd_rocclr_copyBuffer,2800,0\n"
+            "__amd_rocclr_initHeap,500,0\n")
+        self.assertEqual(perfRunner.get_nanoseconds(path), 1000)
+
+    def test_only_internal_kernels_returns_nan(self):
+        # No kernel of ours ran, so there is no time to report -- NaN rather
+        # than 0, which would otherwise read as infinite TFlops.
+        path = self.write_temp(".csv", "Name,AverageNs,SomeOther\n"
+                               "__amd_rocclr_copyBuffer,2800,0\n")
+        self.assertTrue(math.isnan(perfRunner.get_nanoseconds(path)))
+
+    def test_missing_name_column_sums_all_rows(self):
+        path = self.write_temp(".csv", "AverageNs\n"
+                               "1000\n"
+                               "2000\n")
+        self.assertEqual(perfRunner.get_nanoseconds(path), 3000)
+
+
+class GetBankConflictTest(TempFileTestCase):
+    """Tests for get_bank_conflict (reads rocprof's counter-collection CSV)."""
+
+    HEADER = "Kernel_Name,Counter_Name,Counter_Value\n"
+
+    def test_missing_file_returns_nan_string(self):
+        self.assertEqual(perfRunner.get_bank_conflict("/nonexistent/path.csv"), "NaN")
+
+    def test_averages_over_our_dispatches_only(self):
+        # The blit shader reports 0% and would otherwise dilute the average.
+        path = self.write_temp(
+            ".csv", self.HEADER + "kern1,LDSBankConflict,40.0\n"
+            "kern1,LDSBankConflict,60.0\n"
+            "__amd_rocclr_copyBuffer,LDSBankConflict,0.0\n"
+            "__amd_rocclr_copyBuffer,LDSBankConflict,0.0\n")
+        self.assertEqual(perfRunner.get_bank_conflict(path), 50.0)
+
+    def test_no_matching_rows_returns_nan(self):
+        path = self.write_temp(".csv", self.HEADER + "kern1,SomeOtherCounter,7.0\n")
+        self.assertTrue(math.isnan(perfRunner.get_bank_conflict(path)))
 
 
 class GetProfilerOutputPathTest(unittest.TestCase):

@@ -124,15 +124,16 @@ struct ReduceToStoreRewritePattern : public OpRewritePattern<rock::ReduceOp> {
     // Undo intermediate transforms on the store destination so its shape
     // matches the reduce output (e.g. Unmerge a prior Merge).
     if (!intermediateOps.empty()) {
-      ArrayAttr inverted = rock::invertTransforms(
+      FailureOr<ArrayAttr> inverted = rock::invertTransforms(
           rewriter, loc,
           rewriter.getArrayAttr(llvm::map_to_vector(
-              intermediateOps,
-              [](TransformOp tOp) -> Attribute { return tOp.getTransform(); })));
-      if (!inverted)
+              intermediateOps, [](TransformOp tOp) -> Attribute {
+                return tOp.getTransform();
+              })));
+      if (failed(inverted))
         return reduceOp.emitError(
             "Cannot invert intermediate transform between reduce and store");
-      transformedDest = rock::transform(rewriter, transformedDest, inverted);
+      transformedDest = rock::transform(rewriter, transformedDest, *inverted);
     }
 
     // Broadcast the reduced axis back to the unreduced input size.

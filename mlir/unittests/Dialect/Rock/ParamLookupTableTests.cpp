@@ -10,16 +10,15 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/STLExtras.h"
 #include <gtest/gtest.h>
 
 using namespace mlir;
 using namespace mlir::rock;
 
-// Architectures shipping a full set of attention quick-tuning lists. gfx1201 is
-// absent because it only ships bf16 and i8; the precisions it keeps and the
-// ones it drops are covered by the Gfx1201* tests below.
+// Architectures shipping a full set of attention quick-tuning lists.
 static constexpr StringLiteral kAttentionArchs[] = {
-    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151"};
+    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
 
 // Of those, the ones with no gemm+gemm lists of their own, which therefore
 // still borrow attention's at every precision.
@@ -34,8 +33,8 @@ static constexpr StringLiteral kTunedGemmGemmDataTypes[] = {"f16", "f32"};
 static constexpr StringLiteral kAttentionDataTypes[] = {"bf16", "f16", "f32",
                                                         "i8"};
 
-// Data types gfx1100 borrows from gfx1101 for gemm and conv.
-static constexpr StringLiteral kNavi3SharedDataTypes[] = {"f16", "f32", "i8"};
+// Data types with dedicated gfx1100 and gfx1101 gemm and conv lists.
+static constexpr StringLiteral kNavi3TunedDataTypes[] = {"f16", "f32", "i8"};
 
 TEST(FindFallbackTest, ExactMatch) {
   // Exact match should return itself
@@ -51,9 +50,9 @@ TEST(FindFallbackTest, OldestRelative) {
 }
 
 TEST(FindFallbackTest, YoungestRelative) {
-  // gfx1200 is the youngest available relative for gfx1900 with a conv_f16
-  // tuning list; gfx1201's overlapping conv list was removed.
-  EXPECT_EQ("gfx1200_conv_f16",
+  // gfx1201 is the youngest available relative for gfx1900 with a conv_f16
+  // tuning list.
+  EXPECT_EQ("gfx1201_conv_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1900_conv_f16"));
 }
 
@@ -88,34 +87,54 @@ TEST(FindFallbackTest, NoRelativesBySuffix) {
 }
 
 TEST(FindFallbackTest, UnavailableTuningList) {
-  // Fall back for single-config lists
-  EXPECT_EQ("gfx1200_gemm_f16",
+  // gfx1201 ships no regular gemm_f16 list but does ship a split-K-free one,
+  // which the unconditional pair fallback finds before changing architecture.
+  EXPECT_EQ("gfx1201_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1201_gemm_f16"));
   // gfx906 has no gemm_f16 entry, so it falls back to its closest relative that
   // does, gfx908
   EXPECT_EQ("gfx908_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx906_gemm_f16"));
-  // gfx1100 no longer ships gemm_f16; gfx1101 is the closest gfx11* relative.
-  EXPECT_EQ("gfx1101_gemm_f16",
+  // gfx1100 is the closest gfx11* relative with a gemm_f16 list.
+  EXPECT_EQ("gfx1100_gemm_f16",
             ParamLookupTable<GemmParamsAttr>::findFallback("gfx1000_gemm_f16"));
 }
 
-TEST(FindFallbackTest, Gfx1201UsesGfx1200ForRemovedLists) {
+TEST(FindFallbackTest, Gfx1201UsesItsOwnLists) {
+  // gfx1201 ships gemm, conv and attention lists at every precision it is
+  // tuned for, so none of them resolve to a gfx12/gfx11 relative.
   for (StringRef dataType : {"f16", "f32", "i8"}) {
     std::string convTarget = (Twine("gfx1201_conv_") + dataType).str();
-    EXPECT_EQ((Twine("gfx1200_conv_") + dataType).str(),
+    EXPECT_EQ(convTarget,
               ParamLookupTable<GemmParamsAttr>::findFallback(convTarget))
         << "for target " << convTarget;
   }
 
-  for (StringRef dataType : {"f16", "f32"}) {
+  for (StringRef dataType : {"f16", "f32", "fp8", "i8"}) {
+    std::string gemmTarget = (Twine("gfx1201_gemm_") + dataType).str();
+    EXPECT_EQ(gemmTarget,
+              ParamLookupTable<GemmParamsAttr>::findFallback(gemmTarget))
+        << "for target " << gemmTarget;
+  }
+
+  for (StringRef dataType : kAttentionDataTypes) {
     std::string attentionTarget =
         (Twine("gfx1201_attention_") + dataType).str();
     EXPECT_EQ(
-        (Twine("gfx1200_attention_") + dataType).str(),
+        attentionTarget,
         ParamLookupTable<GemmGemmParamsAttr>::findFallback(attentionTarget))
         << "for target " << attentionTarget;
   }
+}
+
+TEST(FindFallbackTest, ArchitectureFallbackUsesBothLists) {
+  // Neither table has an exact gfx1202 key. Once the exact split-K pair misses,
+  // gfx1201's split-K-free list is closer than gfx1200's regular list.
+  EXPECT_EQ("gfx1201_gemm_f32",
+            ParamLookupTable<GemmParamsAttr>::findFallback("gfx1202_gemm_f32"));
+  EXPECT_EQ("gfx1201_attention_f16",
+            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
+                "gfx1202_attention_f16"));
 }
 
 TEST(FindFallbackTest, Gfx1201KeepsItsRemainingLists) {
@@ -159,34 +178,26 @@ TEST(FindFallbackTest, AttentionStrixFallsBackToGfx1151) {
                 "gfx1152_attention_i8"));
 }
 
-TEST(FindFallbackTest, Gfx1100BorrowsGfx1101GemmAndConvLists) {
-  // gfx1100 has no gemm or conv lists, so it falls back to gfx1101.
+TEST(FindFallbackTest, Gfx1100UsesOwnGemmAndConvLists) {
+  // gfx1100 ships dedicated gemm and conv lists at each tuned precision.
   for (StringRef kernelType : {"gemm", "conv"}) {
-    for (StringRef dataType : kNavi3SharedDataTypes) {
+    for (StringRef dataType : kNavi3TunedDataTypes) {
       std::string target =
           (Twine("gfx1100") + "_" + kernelType + "_" + dataType).str();
-      EXPECT_EQ((Twine("gfx1101") + "_" + kernelType + "_" + dataType).str(),
-                ParamLookupTable<GemmParamsAttr>::findFallback(target))
+      EXPECT_EQ(target, ParamLookupTable<GemmParamsAttr>::findFallback(target))
           << "for target " << target;
     }
   }
 }
 
-TEST(FindFallbackTest, Gfx1100KeepsAttentionPrecisionsGfx1101Lacks) {
-  // gfx1100 keeps its bf16 and i8 attention lists.
-  EXPECT_EQ("gfx1100_attention_bf16",
-            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
-                "gfx1100_attention_bf16"));
-  EXPECT_EQ("gfx1100_attention_i8",
-            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
-                "gfx1100_attention_i8"));
-  // f16 and f32 fall back to gfx1101.
-  EXPECT_EQ("gfx1101_attention_f16",
-            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
-                "gfx1100_attention_f16"));
-  EXPECT_EQ("gfx1101_attention_f32",
-            ParamLookupTable<GemmGemmParamsAttr>::findFallback(
-                "gfx1100_attention_f32"));
+TEST(FindFallbackTest, Gfx1100UsesOwnAttentionLists) {
+  // gfx1100 ships dedicated attention lists at each tuned precision.
+  for (StringRef dataType : kAttentionDataTypes) {
+    std::string target = (Twine("gfx1100_attention_") + dataType).str();
+    EXPECT_EQ(target,
+              ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
+        << "for target " << target;
+  }
 }
 
 TEST(FindFallbackTest, Gfx1101BorrowsGfx1100AttentionWhereItHasNone) {
@@ -329,11 +340,7 @@ TEST(FindFallbackTest, ConvGemmBorrowsAttentionAtSamePrecision) {
     for (StringRef dataType : kAttentionDataTypes) {
       std::string target =
           (Twine(arch) + "_convelementwisegemm_" + dataType).str();
-      // gfx1100 only ships attention bf16/i8; f16/f32 borrow gfx1101's lists.
-      StringRef attentionArch = arch;
-      if (arch == "gfx1100" && (dataType == "f16" || dataType == "f32"))
-        attentionArch = "gfx1101";
-      EXPECT_EQ((Twine(attentionArch) + "_attention_" + dataType).str(),
+      EXPECT_EQ((Twine(arch) + "_attention_" + dataType).str(),
                 ParamLookupTable<GemmGemmParamsAttr>::findFallback(target))
           << "for target " << target;
     }
@@ -391,6 +398,49 @@ TEST(FindFallbackTest, MalformedKeysAreRejected) {
   EXPECT_EQ("", ParamLookupTable<GemmParamsAttr>::findFallback(""));
 }
 
+TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
+  // Legacy lists can exceed the cap. Cover every list regenerated after the
+  // generator gained --max-configs, so future refreshes cannot regress it.
+  constexpr size_t maxConfigs = 40;
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  Type f32 = Float32Type::get(&ctx);
+  Type i8 = IntegerType::get(&ctx, 8);
+
+  auto expectGemmListWithinCap = [&](StringRef arch, KernelType kernel,
+                                     Type dataType) {
+    auto configs = ParamLookupTable<GemmParamsAttr>::lookup(
+        arch, kernel, dataType, /*supportsSplitK=*/true);
+    EXPECT_LE(configs.size(), maxConfigs)
+        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << getDataTypeString(dataType);
+  };
+  auto expectGemmGemmListWithinCap = [&](StringRef arch, KernelType kernel,
+                                         Type dataType) {
+    auto configs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, dataType, /*supportsSplitK=*/true);
+    EXPECT_LE(configs.size(), maxConfigs)
+        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << getDataTypeString(dataType);
+  };
+
+  for (StringRef arch :
+       {"gfx1151", "gfx1170", "gfx1200", "gfx1150", "gfx1101", "gfx1201"}) {
+    for (Type dataType : {f16, f32})
+      expectGemmListWithinCap(arch, KernelType::Conv, dataType);
+  }
+  for (StringRef arch : {"gfx1150", "gfx1201"}) {
+    for (Type dataType : {f16, f32, i8})
+      expectGemmListWithinCap(arch, KernelType::Gemm, dataType);
+    expectGemmListWithinCap(arch, KernelType::Conv, i8);
+  }
+  expectGemmListWithinCap("gfx1101", KernelType::Gemm, f16);
+
+  expectGemmGemmListWithinCap("gfx1150", KernelType::Attention, f32);
+  for (Type dataType : {f16, f32})
+    expectGemmGemmListWithinCap("gfx1201", KernelType::Attention, dataType);
+}
+
 TEST(LookupTest, GemmGemmResolvesToItsOwnListOnTunedArch) {
   // End-to-end through the public entry point. gfx1100 has tuned gemm+gemm
   // lists, so f16 must get the f16 one -- not f32's, and above all not the i8
@@ -401,7 +451,8 @@ TEST(LookupTest, GemmGemmResolvesToItsOwnListOnTunedArch) {
   Type i8 = IntegerType::get(&ctx, 8);
   StringRef arch = "amdgcn-amd-amdhsa:gfx1100";
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, t, /*supportsSplitK=*/true);
   };
 
   auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
@@ -421,7 +472,8 @@ TEST(LookupTest, GemmGemmResolvesToAttentionListOfSamePrecision) {
   Type i8 = IntegerType::get(&ctx, 8);
   StringRef arch = "amdgcn-amd-amdhsa:gfx942";
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmGemmParamsAttr>::lookup(arch, kernel, t);
+    return ParamLookupTable<GemmGemmParamsAttr>::lookup(
+        arch, kernel, t, /*supportsSplitK=*/true);
   };
 
   auto gemmGemmF16 = get(KernelType::GemmElementwiseGemm, f16);
@@ -436,30 +488,36 @@ TEST(LookupTest, GemmGemmResolvesToAttentionListOfSamePrecision) {
   EXPECT_FALSE(gemmGemmF16 == attentionI8);
 }
 
-TEST(LookupTest, Gfx1100GemmAndConvServeGfx1101Lists) {
-  // Verify the public lookup returns gfx1101's lists for gfx1100.
+TEST(LookupTest, Gfx1100GemmAndConvUseOwnLists) {
+  // Verify the public lookup returns gfx1100's dedicated lists.
   MLIRContext ctx;
   SmallVector<Type, 3> dataTypes = {Float16Type::get(&ctx),
                                     Float32Type::get(&ctx),
                                     IntegerType::get(&ctx, 8)};
-  auto get = [&](StringRef arch, KernelType kernel, Type t) {
-    return ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, t);
+  auto get = [&](StringRef arch, KernelType kernel, Type t,
+                 bool supportsSplitK) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, kernel, t,
+                                                    supportsSplitK);
   };
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
     for (Type dataType : dataTypes) {
-      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType);
-      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType);
+      auto navi31 = get("amdgcn-amd-amdhsa:gfx1100", kernel, dataType,
+                        /*supportsSplitK=*/true);
+      auto navi32 = get("amdgcn-amd-amdhsa:gfx1101", kernel, dataType,
+                        /*supportsSplitK=*/true);
       EXPECT_FALSE(navi31.empty());
-      EXPECT_TRUE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
-                                    << " at " << getDataTypeString(dataType);
+      EXPECT_FALSE(navi31 == navi32) << "for " << stringifyEnum(kernel).lower()
+                                     << " at " << getDataTypeString(dataType);
     }
   }
 
   // Verify different types and operations use different lists.
-  auto gemmF16 = get("gfx1101", KernelType::Gemm, dataTypes[0]);
-  EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Gemm, dataTypes[1]));
-  EXPECT_FALSE(gemmF16 == get("gfx1101", KernelType::Conv, dataTypes[0]));
+  auto gemmF16 = get("gfx1100", KernelType::Gemm, dataTypes[0], false);
+  EXPECT_FALSE(gemmF16 ==
+               get("gfx1100", KernelType::Gemm, dataTypes[1], false));
+  EXPECT_FALSE(gemmF16 ==
+               get("gfx1100", KernelType::Conv, dataTypes[0], false));
 }
 
 TEST(DataTypeStringTest, Bf16IsKeyedSeparatelyFromF16) {
@@ -479,12 +537,10 @@ TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
   Type f16 = Float16Type::get(&ctx);
   auto get = [&](StringRef arch, Type t) {
     return ParamLookupTable<GemmGemmParamsAttr>::lookup(
-        arch, KernelType::Attention, t);
+        arch, KernelType::Attention, t, /*supportsSplitK=*/true);
   };
 
-  // gfx1100 and gfx1201 ship no f16 attention list at all, so their bf16
-  // kernels used to borrow a *different* chip's f16 list even though these
-  // same-chip measurements were sitting in the table.
+  // Each architecture's bf16 list must stay distinct from its f16 list.
   for (StringRef arch : {"gfx942", "gfx1100", "gfx1201"}) {
     auto attentionBf16 = get(arch, bf16);
     EXPECT_FALSE(attentionBf16.empty()) << "for " << arch;
@@ -500,7 +556,8 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
   Type bf16 = BFloat16Type::get(&ctx);
   Type f16 = Float16Type::get(&ctx);
   auto get = [&](KernelType kernel, Type t) {
-    return ParamLookupTable<GemmParamsAttr>::lookup("gfx942", kernel, t);
+    return ParamLookupTable<GemmParamsAttr>::lookup("gfx942", kernel, t,
+                                                    /*supportsSplitK=*/true);
   };
 
   for (KernelType kernel : {KernelType::Gemm, KernelType::Conv}) {
@@ -509,4 +566,215 @@ TEST(LookupTest, Bf16GemmAndConvShareTheF16Lists) {
     EXPECT_TRUE(bf16List == get(kernel, f16))
         << "for " << stringifyEnum(kernel).lower();
   }
+}
+
+TEST(LookupTest, SupportsSplitKSelectsPreferredExactList) {
+  // gfx1151's regular gemm f16 list contains split-K configs, while its
+  // no-split-K list does not.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1151";
+  auto regular = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/true);
+  auto noSplitK = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, KernelType::Gemm, f16, /*supportsSplitK=*/false);
+
+  EXPECT_FALSE(regular.empty());
+  EXPECT_FALSE(noSplitK.empty());
+  EXPECT_FALSE(regular == noSplitK);
+  auto hasSplitK = [](StringRef config) {
+    return !config.contains("splitKFactor=1,");
+  };
+  EXPECT_TRUE(llvm::any_of(regular, hasSplitK));
+  EXPECT_FALSE(llvm::any_of(noSplitK, hasSplitK));
+}
+
+TEST(LookupTest, MissingNoSplitKListUsesRegularPair) {
+  // gfx1100 ships gemm+elementwise+gemm lists in the regular table only. When
+  // split-K is unsupported, lookup must borrow that exact regular list rather
+  // than a different no-split-K gemm/conv/attention table.
+  MLIRContext ctx;
+  Type f16 = Float16Type::get(&ctx);
+  StringRef arch = "amdgcn-amd-amdhsa:gfx1100";
+  auto regular = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+      arch, KernelType::GemmElementwiseGemm, f16, /*supportsSplitK=*/true);
+  auto noSplitK = ParamLookupTable<GemmGemmParamsAttr>::lookup(
+      arch, KernelType::GemmElementwiseGemm, f16, /*supportsSplitK=*/false);
+
+  EXPECT_FALSE(noSplitK.empty());
+  EXPECT_TRUE(noSplitK == regular);
+}
+
+TEST(LookupTest, ArchitectureFallbackPreservesSplitKPreference) {
+  // gfx1202 has no exact key in either table, so both fallbacks use gfx1201
+  // while preserving the selected table.
+  MLIRContext ctx;
+  Type f32 = Float32Type::get(&ctx);
+  auto get = [&](StringRef arch, bool supportsSplitK) {
+    return ParamLookupTable<GemmParamsAttr>::lookup(arch, KernelType::Gemm, f32,
+                                                    supportsSplitK);
+  };
+
+  auto regular = get("amdgcn-amd-amdhsa:gfx1202", true);
+  auto noSplitK = get("amdgcn-amd-amdhsa:gfx1202", false);
+  EXPECT_FALSE(regular.empty());
+  EXPECT_FALSE(noSplitK.empty());
+  EXPECT_TRUE(regular == get("amdgcn-amd-amdhsa:gfx1201", true));
+  EXPECT_TRUE(noSplitK == get("amdgcn-amd-amdhsa:gfx1201", false));
+  EXPECT_FALSE(regular == noSplitK);
+}
+
+// Problem hash of a gfx942 f32 GEMM 128x512x512, one of the problems the
+// shipped Gfx942GemmF32 shard was generated for. rocmlir-gen is the only
+// speller of the key (--emit-quick-tuning-problem-key-hash); the value is
+// pinned in test/rocmlir-gen/quick-tuning-problem-key-hash.mlir's company and
+// exercised end to end by test/rocmlir-gen/quick-tuning-per-problem.mlir.
+static constexpr QuickTuningProblemKeyHash kGfx942GemmF32MappedProblem =
+    8175943205932196350ULL;
+static constexpr QuickTuningTableLookUpKeyVersionHash kGemmKeyVersionHash =
+    6791176183107838810ULL;
+
+static SmallVector<StringRef> lookupGfx942GemmF32(
+    bool supportsSplitK,
+    std::optional<QuickTuningProblemKeyHash> problemKeyHash, MLIRContext &ctx,
+    QuickTuningTableLookUpKeyVersionHash keyVersionHash = kGemmKeyVersionHash) {
+  std::optional<QuickTuningProblemKey> problemKey;
+  if (problemKeyHash)
+    problemKey = QuickTuningProblemKey{*problemKeyHash, keyVersionHash};
+  return ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      supportsSplitK, problemKey);
+}
+
+TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
+  // A mapped problem is served its own ranking instead of the key's set cover.
+  // The two lists are disjoint for this problem, which is the point of the
+  // layer: the per-problem winner is usually a config the set cover never
+  // offered. Regenerating the shards can change the row; keep the assertions
+  // by picking another mapped problem rather than dropping them.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  auto perProblem = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem, ctx);
+
+  EXPECT_FALSE(perProblem.empty());
+  EXPECT_LT(perProblem.size(), setCover.size());
+  for (StringRef config : perProblem)
+    EXPECT_FALSE(llvm::is_contained(setCover, config)) << "for " << config;
+}
+
+TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {
+  // Per-problem lookup has no key fallback of its own: a ranking only holds
+  // for the problem it was measured on, so a hash with no row must come back
+  // with exactly what the hashless lookup returns rather than a neighbour's
+  // ranking.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  testing::internal::CaptureStderr();
+  auto unmapped = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem + 1, ctx);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_FALSE(setCover.empty());
+  EXPECT_TRUE(unmapped == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
+TEST(LookupTest, LookupKeyVersionMismatchWarnsAndUsesSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+
+  testing::internal::CaptureStderr();
+  auto stale = lookupGfx942GemmF32(
+      /*supportsSplitK=*/true, kGfx942GemmF32MappedProblem, ctx,
+      kGemmKeyVersionHash + 1);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(stale == setCover);
+  EXPECT_NE(warnings.find("table lookup key version hash"), std::string::npos);
+  EXPECT_NE(warnings.find("Regenerate the map"), std::string::npos);
+}
+
+TEST(LookupTest, UnsupportedProblemFieldsWarnAndUseSetCover) {
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, "block_scaled_gemm"};
+
+  testing::internal::CaptureStderr();
+  auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(unsupported == setCover);
+  EXPECT_NE(warnings.find("does not represent"), std::string::npos);
+  EXPECT_NE(warnings.find("block_scaled_gemm"), std::string::npos);
+  EXPECT_NE(warnings.find("Exhaustively tune"), std::string::npos);
+}
+
+TEST(LookupTest, UntunableProblemFieldsUseSetCoverQuietly) {
+  // Retuning cannot add a mode the tuning pipeline cannot express, so such a
+  // mode still avoids the mapped ranking but is not worth a warning.
+  MLIRContext ctx;
+  auto setCover =
+      lookupGfx942GemmF32(/*supportsSplitK=*/true, std::nullopt, ctx);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash,
+                                   /*unsupportedFields=*/"",
+                                   /*untunableFields=*/"asymmetric_padding"};
+
+  testing::internal::CaptureStderr();
+  auto untunable = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, Float32Type::get(&ctx),
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(untunable == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
+TEST(LookupTest, UnsupportedProblemFieldsWithoutAMapAreQuiet) {
+  // gfx942_gemm_bf16 ships no per-problem map, so there is no ranking for an
+  // unsupported mode to miss and nothing worth diagnosing.
+  MLIRContext ctx;
+  Type bf16 = BFloat16Type::get(&ctx);
+  auto setCover = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
+      /*supportsSplitK=*/true);
+  QuickTuningProblemKey problemKey{kGfx942GemmF32MappedProblem,
+                                   kGemmKeyVersionHash, "block_scaled_gemm"};
+
+  testing::internal::CaptureStderr();
+  auto unsupported = ParamLookupTable<GemmParamsAttr>::lookup(
+      "amdgcn-amd-amdhsa:gfx942", KernelType::Gemm, bf16,
+      /*supportsSplitK=*/true, problemKey);
+  std::string warnings = testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(unsupported == setCover);
+  EXPECT_TRUE(warnings.empty());
+}
+
+TEST(LookupTest, PerProblemDoesNotDependOnSplitKLegality) {
+  // `supportsSplitK` chooses between the two set covers and has no say over
+  // the per-problem rankings, which come back whole either way. Dropping the
+  // members a split-K-illegal caller cannot run is that caller's job, and it
+  // always has something left because select_perfconfigs reserves a
+  // splitKFactor=1 slot in every row. Gating the rankings here instead would
+  // strand every attention shard, attention never being split-K legal.
+  MLIRContext ctx;
+  auto splitK = lookupGfx942GemmF32(/*supportsSplitK=*/true,
+                                    kGfx942GemmF32MappedProblem, ctx);
+  auto noSplitK = lookupGfx942GemmF32(/*supportsSplitK=*/false,
+                                      kGfx942GemmF32MappedProblem, ctx);
+
+  EXPECT_FALSE(splitK.empty());
+  EXPECT_TRUE(splitK == noSplitK);
+  EXPECT_TRUE(llvm::any_of(splitK, [](StringRef config) {
+    return config.contains("splitKFactor=1,");
+  })) << "every shipped row must keep a split-K-free config";
 }

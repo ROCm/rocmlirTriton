@@ -58,6 +58,14 @@ bool mlir::rock::is4GBMemoryType(ShapedType type) {
          (int64_t)std::numeric_limits<uint32_t>::max();
 }
 
+bool mlir::rock::isAtomicRMWTypeSupported(Type type) {
+  if (isa<IntegerType>(type))
+    return true;
+
+  auto floatType = dyn_cast<FloatType>(type);
+  return floatType && floatType.getWidth() >= 16;
+}
+
 // Per-field perf-config validators. A violation is treated as a hard
 // diagnostic; `markAsNotApplicable` is reserved for arch-feature mismatches.
 static bool isPositivePowerOfTwo(int64_t v) {
@@ -221,60 +229,89 @@ bool mlir::rock::isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
   return result;
 }
 
+/// Number of filter phases (`filTilda`) in each spatial dimension.
+static SmallVector<int64_t, 5>
+backwardDataFilTilda(ArrayRef<int64_t> strideDims,
+                     ArrayRef<int64_t> dilationDims) {
+  assert(strideDims.size() == dilationDims.size() &&
+         "expected one dilation per stride");
+  SmallVector<int64_t, 5> filTilda;
+  for (const auto &[stride, dilation] : zip(strideDims, dilationDims))
+    filTilda.push_back(stride / std::gcd(stride, dilation));
+  return filTilda;
+}
+
 SmallVector<int64_t>
 mlir::rock::backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                   ArrayRef<int64_t> dilationDims,
                                   ArrayRef<int64_t> filterDims) {
-  assert(strideDims.size() == dilationDims.size());
-  SmallVector<int64_t, 5> gcdStrideDilations;
-  for (const auto &[stride, dilation] : zip(strideDims, dilationDims))
-    gcdStrideDilations.push_back(std::gcd(stride, dilation));
-
-  SmallVector<int64_t, 5> filTilda;
-  for (const auto &[stride, gcdSD] : zip(strideDims, gcdStrideDilations))
-    filTilda.push_back(stride / gcdSD);
+  int64_t product = 1;
+  for (int64_t phases : backwardDataFilTilda(strideDims, dilationDims))
+    product *= phases;
 
   // Populate the kernel IDs according to the current backward data convolution
   // algorithm implementation.
   llvm::SmallVector<int64_t> kernelIds;
-  int64_t subproduct = 1;
-  int64_t product;
-  for (size_t i = 1; i < filterDims.size(); i++)
-    subproduct *= filTilda[i];
-  product = subproduct * filTilda[0];
   for (int64_t kernelId = 0; kernelId < product; ++kernelId) {
-    // gemmK size is different for each GEMM
-    SmallVector<int64_t, 3> iTilda;
-    int64_t divisor = 1;
-    iTilda.resize(filterDims.size());
-    switch (filterDims.size()) {
-    default:
-      llvm_unreachable("Only 2-D and 3-D have been implemented.");
-      break;
-    case 3:
-      divisor = filTilda[2];
-      iTilda[2] = kernelId % divisor;
-      [[fallthrough]];
-    case 2:
-      iTilda[1] = (kernelId % subproduct) / divisor;
-      iTilda[0] = kernelId / subproduct;
-    }
-
     // gemmK must be > 0, otherwise this kernel has no filter slice to run.
-    int64_t gemmKproduct = 1;
-    for (size_t i = 0; i < filterDims.size(); i++) {
-      if (iTilda[i] >= filterDims[i]) {
-        gemmKproduct = 0;
-        break;
-      }
-      gemmKproduct *= llvm::divideCeil(filterDims[i] - iTilda[i], filTilda[i]);
-    }
-    if (gemmKproduct > 0) {
+    SmallVector<int64_t> dotSlices =
+        backwardDataDotSlices(strideDims, dilationDims, filterDims, kernelId);
+    if (!llvm::is_contained(dotSlices, 0))
       kernelIds.push_back(kernelId);
-    }
   }
 
   return kernelIds;
+}
+
+SmallVector<int64_t>
+mlir::rock::backwardDataTildaIndices(ArrayRef<int64_t> strideDims,
+                                     ArrayRef<int64_t> dilationDims,
+                                     int64_t kernelId) {
+  SmallVector<int64_t, 5> filTilda =
+      backwardDataFilTilda(strideDims, dilationDims);
+  int64_t subproduct = 1;
+  for (size_t i = 1; i < filTilda.size(); i++)
+    subproduct *= filTilda[i];
+  SmallVector<int64_t> iTilda;
+  int64_t divisor = 1;
+  iTilda.resize(filTilda.size());
+  switch (filTilda.size()) {
+  default:
+    llvm_unreachable("Only 2-D and 3-D have been implemented.");
+    break;
+  case 3:
+    divisor = filTilda[2];
+    iTilda[2] = kernelId % divisor;
+    [[fallthrough]];
+  case 2:
+    iTilda[1] = (kernelId % subproduct) / divisor;
+    iTilda[0] = kernelId / subproduct;
+  }
+  return iTilda;
+}
+
+SmallVector<int64_t> mlir::rock::backwardDataDotSlices(
+    ArrayRef<int64_t> strideDims, ArrayRef<int64_t> dilationDims,
+    ArrayRef<int64_t> filterDims, int64_t kernelId) {
+  assert(strideDims.size() == dilationDims.size() &&
+         strideDims.size() == filterDims.size() &&
+         "expected one stride and dilation per filter dimension");
+  SmallVector<int64_t, 5> filTilda =
+      backwardDataFilTilda(strideDims, dilationDims);
+  SmallVector<int64_t> iTilda =
+      backwardDataTildaIndices(strideDims, dilationDims, kernelId);
+
+  // The `iTilda >= filterDims` check has to come first: `divideCeil`'s
+  // unsigned-converting overload would wrap the negative numerator.
+  SmallVector<int64_t> dotSlices;
+  for (size_t i = 0; i < filterDims.size(); i++) {
+    if (iTilda[i] >= filterDims[i])
+      dotSlices.push_back(0);
+    else
+      dotSlices.push_back(
+          llvm::divideCeil(filterDims[i] - iTilda[i], filTilda[i]));
+  }
+  return dotSlices;
 }
 
 FailureOr<ArrayAttr> mlir::rock::getLoadRegsAsTileViews(
@@ -699,17 +736,24 @@ FusionInfo mlir::rock::collectFusionInfo(Value root) {
   SmallVector<Value> worklist;
   worklist.push_back(root);
   SmallVector<Operation *> fusionOps;
+  SmallVector<Operation *> reduceOps;
   DenseSet<Operation *> visited;
 
   while (!worklist.empty()) {
     Value current = worklist.pop_back_val();
     for (OpOperand &use : current.getUses()) {
       Operation *owner = use.getOwner();
-      if (!(isFusionOp(owner) || isa<ViewLikeOpInterface>(owner)) ||
-          !visited.insert(owner).second)
+      if (!isForwardTraceOp(owner) || !visited.insert(owner).second)
         continue;
       if (isFusionOp(owner))
         fusionOps.push_back(owner);
+      if (isa<ReduceOp>(owner)) {
+        // A reduction rewrites the shape, so the chain past it no longer
+        // matches the tile the fusion machinery pads and types. Record the op
+        // for legality checks, but stop tracing here.
+        reduceOps.push_back(owner);
+        continue;
+      }
 
       for (Value result : owner->getResults()) {
         chainValues.insert(result);
@@ -727,7 +771,7 @@ FusionInfo mlir::rock::collectFusionInfo(Value root) {
     }
   }
 
-  return {extraInputs, chainValues, fusionOps};
+  return {extraInputs, chainValues, fusionOps, reduceOps};
 }
 
 DenseMap<Value, Value> mlir::rock::collectFusionExtraInputs(Value root) {
@@ -780,8 +824,6 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
   if (newStoreMethod == StoreMethod::Set)
     return success();
 
-  storeOp.setStoreMethodAttr(builder.getAttr<StoreMethodAttr>(newStoreMethod));
-
   auto func = storeOp->getParentOfType<func::FuncOp>();
   if (!func)
     return storeOp->emitError("store op not inside a function");
@@ -792,6 +834,11 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
         "can't trace store destination to function argument");
 
   auto elementType = cast<ShapedType>(destArg->getType()).getElementType();
+  if (!isAtomicRMWTypeSupported(elementType))
+    return storeOp->emitError()
+           << "source element type " << elementType << " does not support "
+           << getNameForStoreMethod(newStoreMethod);
+
   bool isMax = (newStoreMethod == StoreMethod::AtomicMax);
   Attribute prefillValue;
   if (auto floatTy = dyn_cast<FloatType>(elementType)) {
@@ -802,15 +849,19 @@ LogicalResult mlir::rock::setStoreMethodAndPrefill(OpBuilder &builder,
     else
       prefillValue = builder.getFloatAttr(floatTy, 0.0);
   } else if (auto intTy = dyn_cast<IntegerType>(elementType)) {
-    if (isMax)
-      prefillValue = builder.getIntegerAttr(
-          intTy, APInt::getSignedMinValue(intTy.getWidth()));
-    else
+    if (isMax) {
+      APInt minValue = intTy.isUnsigned()
+                           ? APInt::getMinValue(intTy.getWidth())
+                           : APInt::getSignedMinValue(intTy.getWidth());
+      prefillValue = builder.getIntegerAttr(intTy, minValue);
+    } else {
       prefillValue = builder.getIntegerAttr(intTy, 0);
+    }
   } else {
     return storeOp->emitError("expecting float or int element type");
   }
 
+  storeOp.setStoreMethodAttr(builder.getAttr<StoreMethodAttr>(newStoreMethod));
   func.setArgAttr(destArg->getArgNumber(), PrefillAttr::getMnemonic(),
                   prefillValue);
   return success();

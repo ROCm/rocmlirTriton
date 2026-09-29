@@ -52,6 +52,7 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   WalkResult wRes = func.walk(
       [&](ReduceOp rOp) -> WalkResult { return WalkResult::interrupt(); });
   info.hasFusedReduction = wRes.wasInterrupted();
+  info.problemKey = getQuickTuningProblemKey(op);
 
   // Block-scaled GEMM metadata: `quantBlockSize` lives on `GemmOp`, scale
   // element types come from the interface. `getScale{A,B}Type` returns the
@@ -63,6 +64,27 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
     info.aScaleType = getElementTypeOrSelf(aScaleTy);
   if (Type bScaleTy = op.getScaleBType())
     info.bScaleType = getElementTypeOrSelf(bScaleTy);
+  if (auto bwdDataOp = dyn_cast<ConvBwdDataOp>(op.getOperation())) {
+    ConvolutionContext ctx = populateConvContext(bwdDataOp);
+    ArrayRef<int64_t> strides = ctx.getStrideVal();
+    ArrayRef<int64_t> dilations = ctx.getDilationVal();
+    ConvolutionDims convDims = ctx.getConvDims();
+    // Kernel IDs with equal dot slices read the same view of the gradient.
+    SmallVector<SmallVector<int64_t>> bViews;
+    for (int64_t kernelId :
+         backwardDataKernelIds(strides, dilations, convDims.fil)) {
+      SmallVector<int64_t> dotSlices =
+          backwardDataDotSlices(strides, dilations, convDims.fil, kernelId);
+      int64_t k = convDims.k;
+      for (int64_t dotSlice : dotSlices)
+        k *= dotSlice;
+      int64_t bViewId =
+          std::distance(bViews.begin(), llvm::find(bViews, dotSlices));
+      if (bViewId == static_cast<int64_t>(bViews.size()))
+        bViews.push_back(dotSlices);
+      info.siblingGemms.push_back({k, bViewId});
+    }
+  }
   return info;
 }
 
@@ -202,11 +224,18 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   // `getTuningParameters` already reorders so that the first conservatively-
   // applicable config (LDS budget, kpack/splitK/numCTAs constraints, plus
   // block-scaling divisibility/LDS for scaled ops) is up front.
+  //
+  // The list is only consulted without a perfConfig. Building it anyway would
+  // repeat the lookup, and its diagnostics, for every perfconfig compiled
+  // while benchmarking.
+  if (!perfConfig.empty())
+    return materializeTuningParams<GemmParamsAttr>(b, perfConfig, {});
   return materializeTuningParams<GemmParamsAttr>(
       b, perfConfig,
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
-                          info.arch, info.quantBlockSize, info.aScaleType,
-                          info.bScaleType));
+                          info.arch, /*supportsSplitK=*/true,
+                          info.quantBlockSize, info.aScaleType, info.bScaleType,
+                          info.siblingGemms, info.problemKey));
 }
 
 FailureOr<GemmParamsAttr>
@@ -224,10 +253,11 @@ PopulateParams::obtainTuningParameters(OpBuilder &b,
 
 std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
-    StringRef arch, std::optional<int64_t> quantBlockSize, Type aScaleType,
-    Type bScaleType) const {
-  auto perfConfigs =
-      ParamLookupTable<GemmParamsAttr>::lookup(arch, opType, dataTypeA);
+    StringRef arch, bool supportsSplitK, std::optional<int64_t> quantBlockSize,
+    Type aScaleType, Type bScaleType, ArrayRef<SiblingGemm> siblingGemms,
+    std::optional<QuickTuningProblemKey> problemKey) const {
+  auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
+      arch, opType, dataTypeA, supportsSplitK, problemKey);
 
   LLVM_DEBUG(
       llvm::dbgs() << "PopulateParams::getTuningParameters: perfConfigs: "
@@ -248,16 +278,18 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     res.push_back(params);
   }
   auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
-    return isGemmParamsConservativelyApplicable(
-        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType);
+    return isGemmParamsConservativelyApplicable(p, dataTypeA, dataTypeB, arch,
+                                                quantBlockSize, aScaleType,
+                                                bScaleType, siblingGemms);
   });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
   // default (which is rounded up to a multiple of `quantBlockSize` for
   // scaled GEMMs so it also satisfies the divisibility constraint).
-  if (ordered.empty() || !isGemmParamsConservativelyApplicable(
-                             ordered.front(), dataTypeA, dataTypeB, arch,
-                             quantBlockSize, aScaleType, bScaleType))
+  if (ordered.empty() ||
+      !isGemmParamsConservativelyApplicable(
+          ordered.front(), dataTypeA, dataTypeB, arch, quantBlockSize,
+          aScaleType, bScaleType, siblingGemms))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmParams(
                        b.getContext(), quantBlockSize, dataTypeA, dataTypeB));

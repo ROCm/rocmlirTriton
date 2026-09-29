@@ -58,6 +58,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "GridLayoutEmitter.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -195,22 +196,83 @@ struct GridwiseAttentionRewritePattern
     return level.front();
   }
 
+  // A compile-time splat is a non-overflowing scale if it is finite and its
+  // magnitude is at most 1. Finite scores multiplied by such a factor stay
+  // finite (they may underflow to zero). A finite splat larger than 1, such as
+  // -FLT_MAX, can overflow a finite QK row to +/-inf and must still be treated
+  // as capable of fully masking a row.
+  static bool isNonOverflowingFloatScale(const APFloat &value) {
+    if (!value.isFinite())
+      return false;
+    APFloat mag = value;
+    if (mag.isNegative())
+      mag.changeSign();
+    APFloat one = APFloat::getOne(value.getSemantics());
+    return mag.compare(one) != APFloat::cmpGreaterThan;
+  }
+
+  static bool isNonOverflowingFloatSplat(Value value) {
+    auto constant = value.getDefiningOp<arith::ConstantOp>();
+    if (!constant)
+      return false;
+    Attribute attr = constant.getValue();
+    if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+      return isNonOverflowingFloatScale(floatAttr.getValue());
+    auto elements = dyn_cast<DenseFPElementsAttr>(attr);
+    return elements && elements.isSplat() &&
+           isNonOverflowingFloatScale(elements.getSplatValue<APFloat>());
+  }
+
+  // Identity, widening conversions, and multiplication by a compile-time splat
+  // whose magnitude is at most 1 cannot turn a row of finite QK scores into a
+  // fully masked row. Everything else is conservatively treated as capable of
+  // doing so (for example, a runtime bias can contain -inf).
+  // This assumes scores also stay in range through the conversion to the
+  // softmax type and the fixed log2(e) scaling (|x| < FLT_MAX / log2(e) for
+  // f32); larger scores overflow regardless of masking and are out of scope.
+  static bool isFiniteConstantScaleOf(Value value, BlockArgument qk) {
+    if (value == qk)
+      return true;
+    if (auto ext = value.getDefiningOp<arith::ExtFOp>())
+      return isFiniteConstantScaleOf(ext.getIn(), qk);
+    auto mul = value.getDefiningOp<arith::MulFOp>();
+    if (!mul)
+      return false;
+    return (isNonOverflowingFloatSplat(mul.getLhs()) &&
+            isFiniteConstantScaleOf(mul.getRhs(), qk)) ||
+           (isNonOverflowingFloatSplat(mul.getRhs()) &&
+            isFiniteConstantScaleOf(mul.getLhs(), qk));
+  }
+
+  static bool preSoftmaxMayFullyMask(GridwiseAttentionOp op) {
+    Region &region = op.getPreSoftmaxBody();
+    if (region.empty())
+      return false;
+    Block &block = region.front();
+    if (block.getNumArguments() == 0)
+      return true;
+    auto yield = dyn_cast<rock::YieldOp>(block.getTerminator());
+    if (!yield || yield.getNumOperands() != 1)
+      return true;
+    return !isFiniteConstantScaleOf(yield.getOperand(0), block.getArgument(0));
+  }
+
   // This function computes exp(gemm0 - rowmax_j)
   Value expSubstractMaxFromGemm0(PatternRewriter &rewriter, Location loc,
-                                Value softmaxInput,
-                                Value softmaxMax,
-                                Value maxRow) const {
+                                 Value softmaxInput, Value softmaxMax,
+                                 Value maxRow) const {
     // TODO: arith.maxnumf?
-    Value maxRowNew = arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
-    
+    Value maxRowNew =
+        arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
+
     // Broadcast maxRowNew from [M] to [M, N] to match softmaxInput shape
     auto inputShape = cast<RankedTensorType>(softmaxInput.getType()).getShape();
-    Value maxRowBroadcast = broadcastRowTo2D(rewriter, loc, maxRowNew, inputShape[1]);
-    
+    Value maxRowBroadcast =
+        broadcastRowTo2D(rewriter, loc, maxRowNew, inputShape[1]);
+
     Value gemm0SubMaxRow =
         arith::SubFOp::create(rewriter, loc, softmaxInput, maxRowBroadcast);
-    Value softmaxExp =
-        math::Exp2Op::create(rewriter, loc, gemm0SubMaxRow);
+    Value softmaxExp = math::Exp2Op::create(rewriter, loc, gemm0SubMaxRow);
 
     return softmaxExp;
   }
@@ -222,22 +284,21 @@ struct GridwiseAttentionRewritePattern
   // l is the rowsum accumulator
   // m is the rowmax accmulator
   // P is exp(gemm0 - rowmax_j)
-  std::tuple<Value, Value, Value> updateRowSum(PatternRewriter &rewriter, Location loc,
-                    Value softmaxSum, Value softmaxMax, Value sumRow, Value maxRow) const {
+  std::tuple<Value, Value, Value> updateRowSum(PatternRewriter &rewriter,
+                                               Location loc, Value softmaxSum,
+                                               Value softmaxMax, Value sumRow,
+                                               Value maxRow) const {
     // TODO: arith.maxnumf?
-    Value maxRowNew = arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
+    Value maxRowNew =
+        arith::MaximumFOp::create(rewriter, loc, maxRow, softmaxMax);
 
-    Value maxRowDiff =
-        arith::SubFOp::create(rewriter, loc, maxRow, maxRowNew);
-        
-    Value maxRowDiffExp =
-        math::Exp2Op::create(rewriter, loc, maxRowDiff);
+    Value maxRowDiff = arith::SubFOp::create(rewriter, loc, maxRow, maxRowNew);
+
+    Value maxRowDiffExp = math::Exp2Op::create(rewriter, loc, maxRowDiff);
 
     Value sumRowNew = maxRowDiffExp;
-    sumRowNew =
-        arith::MulFOp::create(rewriter, loc, sumRowNew, sumRow);
-    sumRowNew = arith::AddFOp::create(rewriter, loc, sumRowNew,
-                                            softmaxSum);
+    sumRowNew = arith::MulFOp::create(rewriter, loc, sumRowNew, sumRow);
+    sumRowNew = arith::AddFOp::create(rewriter, loc, sumRowNew, softmaxSum);
     return {maxRowDiffExp, sumRowNew, maxRowNew};
   }
 
@@ -261,12 +322,13 @@ struct GridwiseAttentionRewritePattern
 
     // convert to LSE type (need full tensor type, not just element type)
     auto sumRowType = cast<RankedTensorType>(sumRow.getType());
-    auto destTensorType = RankedTensorType::get(sumRowType.getShape(), lseElemType);
+    auto destTensorType =
+        RankedTensorType::get(sumRowType.getShape(), lseElemType);
     Value sumRowCasted =
         createTypeConversionOp(rewriter, loc, sumRow, destTensorType);
     Value maxRowCasted =
         createTypeConversionOp(rewriter, loc, maxRow, destTensorType);
-    
+
     // lse_i = (log2(l_i) + m_i)*log(2)
     // Migraphx expects LSE to be log
     Value log2Li = math::Log2Op::create(rewriter, loc, sumRowCasted);
@@ -278,14 +340,16 @@ struct GridwiseAttentionRewritePattern
   // This is the out of loop scaling of attention output
   // where its divided by the accumulated rowsum
   Value scaleFinalOutput(PatternRewriter &rewriter, Location loc,
-                        Value attentionAcc,
-                        Value sumRow) const {
+                         Value attentionAcc, Value sumRow) const {
     // Broadcast sumRow from [M] to [M, N] to match attentionAcc shape
     auto accType = cast<RankedTensorType>(attentionAcc.getType());
-    Value sumRowBroadcast = broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
+    Value sumRowBroadcast =
+        broadcastRowTo2D(rewriter, loc, sumRow, accType.getShape()[1]);
 
-    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
-    sumRowBroadcast = createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 ->
+    // f32)
+    sumRowBroadcast =
+        createTypeConversionOp(rewriter, loc, sumRowBroadcast, accType);
 
     return arith::DivFOp::create(rewriter, loc, attentionAcc, sumRowBroadcast);
   }
@@ -308,21 +372,23 @@ struct GridwiseAttentionRewritePattern
   // gemm1OutThreadwiseView [STORE] attentionOutAccBuffer =
   // attentionOutAccBufferMaxScaled
   Value createAttentionRowStateCorrections(PatternRewriter &rewriter,
-                                          Location loc,
-                                          Value gemm1Out,
-                                          Value attentionAcc,
-                                          Value expMaxDiffRow) const {
+                                           Location loc, Value gemm1Out,
+                                           Value attentionAcc,
+                                           Value expMaxDiffRow) const {
     // Broadcast expMaxDiffRow from [M] to [M, N] to match attentionAcc shape
     auto accType = cast<RankedTensorType>(attentionAcc.getType());
-    Value expMaxDiffBroadcast = broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
+    Value expMaxDiffBroadcast =
+        broadcastRowTo2D(rewriter, loc, expMaxDiffRow, accType.getShape()[1]);
 
-    // Cast broadcast to match accumulator element type if needed (e.g. f16 -> f32)
-    expMaxDiffBroadcast = createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
+    // Cast broadcast to match accumulator element type if needed (e.g. f16 ->
+    // f32)
+    expMaxDiffBroadcast =
+        createTypeConversionOp(rewriter, loc, expMaxDiffBroadcast, accType);
 
     Value scaledAttentionAcc =
         arith::MulFOp::create(rewriter, loc, attentionAcc, expMaxDiffBroadcast);
-    Value newAttentionAcc = arith::AddFOp::create(
-        rewriter, loc, scaledAttentionAcc, gemm1Out);
+    Value newAttentionAcc =
+        arith::AddFOp::create(rewriter, loc, scaledAttentionAcc, gemm1Out);
 
     return newAttentionAcc;
   }
@@ -352,7 +418,7 @@ struct GridwiseAttentionRewritePattern
     ArrayRef<int64_t> shape = getLowerShape(tileView);
     TopDownTMBuilder viewBuilder{
         rewriter, {"gemmG", "gemmN", "gemmM"}, shape, loc};
-        
+
     viewBuilder.unmerge("raw", 0, {"gemmG", "gemmN", "gemmM"}, shape);
 
     return prependUpperViews(rewriter, tileView,
@@ -406,7 +472,8 @@ struct GridwiseAttentionRewritePattern
         rewriter, loc, fakeTensor,
         ValueRange{gridCoords.g_block, gridCoords.m_block, gridCoords.n_block});
     Value maskTensor = transformsToPtrOp.getMask();
-    return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult, negInfTensor);
+    return arith::SelectOp::create(rewriter, loc, maskTensor, firstGemmResult,
+                                   negInfTensor);
   }
 
   enum class OutOfScopeType { KVCache, Causal, PrefixCausal, SlidingWindow };
@@ -460,28 +527,29 @@ struct GridwiseAttentionRewritePattern
           break;
         }
         case OutOfScopeType::Causal: {
-        // pointerTensor is nIndex
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, mIndex);
-        break;
+          // pointerTensor is nIndex
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, mIndex);
+          break;
         }
         case OutOfScopeType::PrefixCausal: {
-        // Prefix causal: mask when key_pos > (query_pos + prefix_offset).
-        // This is used for prefix attention where:
-        // - A prefix of tokens (0..prefix_offset) is always visible
-        // - Anything after the prefix, standard causal masking applies
-        assert(prefixOffset != nullptr);
-        auto splatType =
-            RankedTensorType::get(cast<ShapedType>(mIndex.getType()).getShape(),
-                                  prefixOffset.getType());
-        Value prefixOffsetSplat = triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
+          // Prefix causal: mask when key_pos > (query_pos + prefix_offset).
+          // This is used for prefix attention where:
+          // - A prefix of tokens (0..prefix_offset) is always visible
+          // - Anything after the prefix, standard causal masking applies
+          assert(prefixOffset != nullptr);
+          auto splatType = RankedTensorType::get(
+              cast<ShapedType>(mIndex.getType()).getShape(),
+              prefixOffset.getType());
+          Value prefixOffsetSplat =
+              triton::SplatOp::create(rewriter, loc, splatType, prefixOffset);
 
-        // Compute query_pos + prefix_offset
-        Value threshold =
-            arith::AddIOp::create(b, loc, mIndex, prefixOffsetSplat);
-        isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                          nIndex, threshold);
-        break;
+          // Compute query_pos + prefix_offset
+          Value threshold =
+              arith::AddIOp::create(b, loc, mIndex, prefixOffsetSplat);
+          isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                            nIndex, threshold);
+          break;
         }
         case OutOfScopeType::SlidingWindow: {
           // Sliding window: mask when key_pos < max(0, lastValidKVIndex -
@@ -499,15 +567,18 @@ struct GridwiseAttentionRewritePattern
           break;
         }
         }
-        
-        return arith::SelectOp::create(b, loc, isInvalid, negInfTensor, firstGemmResult);
+
+        return arith::SelectOp::create(b, loc, isInvalid, negInfTensor,
+                                       firstGemmResult);
       };
 
       if (needsLastIterCheck) {
         auto isLastIteration =
             arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                   nLoopIV, gemm0NBlocksLastIter);
-        return arith::SelectOp::create(rewriter, loc, isLastIteration, generateMaskingLogic(rewriter), firstGemmResult);
+        return arith::SelectOp::create(rewriter, loc, isLastIteration,
+                                       generateMaskingLogic(rewriter),
+                                       firstGemmResult);
       } else {
         // For causal masking, apply on every iteration
         return generateMaskingLogic(rewriter);
@@ -572,26 +643,28 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0OutShape[2] % splitKV == 0 &&
            "SeqK must be divisible by splitKV");
 
-    int64_t seqK = gemm0OutShape[2];
-    int64_t seqKChunk = seqK / splitKV;
+    int64_t batch = gemm0OutShape[0];
+    int64_t seqKChunk = gemm0OutShape[2] / splitKV;
 
-    // Step 1: Unmerge seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
-    // SeqK/splitKV]
-    rock::BottomUpTMBuilder unmergeSeqK(builder, {"batch", "seqQ", "seqK"},
-                                        gemm0OutShape, loc);
-    unmergeSeqK.unmerge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
-                        {splitKV, seqKChunk});
-    unmergeSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
-    auto unmergeSeqKAttr = unmergeSeqK.get();
+    // Step 1: split seqK: [B*H, SeqQ, SeqK] -> [B*H, SeqQ, splitKV,
+    // SeqK/splitKV]. splitKV is the slow axis of seqK, matching the way
+    // detect-flash-decoding folds the splits into the key sequence.
+    rock::TopDownTMBuilder splitSeqK(builder, {"batch", "seqQ", "seqK"},
+                                     gemm0OutShape, loc);
+    splitSeqK.merge({"splitKV", "seqK_chunk"}, {2, 3}, "seqK",
+                    {splitKV, seqKChunk});
+    splitSeqK.passThrough({"batch", "seqQ"}, {0, 1}, {"batch", "seqQ"});
+    TransformMapAttr splitSeqKAttr = splitSeqK.get();
 
-    // Step 2: Merge batch+splitKV: [B*H, SeqQ, splitKV, SeqK/splitKV] ->
-    // [B*H*splitKV, SeqQ, SeqK/splitKV]
-    auto merge = rock::BottomUpTMBuilder::above(unmergeSeqK, unmergeSeqKAttr);
-    merge.merge("batch", 0, {"batch", "splitKV"});
-    merge.passThrough({"seqQ", "seqK_chunk"}, {1, 2}, {"seqQ", "seqK_chunk"});
-    auto mergeAttr = merge.get();
+    // Step 2: fold splitKV into the batch: [B*H, SeqQ, splitKV, SeqK/splitKV]
+    // -> [B*H*splitKV, SeqQ, SeqK/splitKV], with splitKV as the fast axis.
+    auto mergeBatch = rock::TopDownTMBuilder::below(splitSeqK, splitSeqKAttr);
+    mergeBatch.unmerge("batch", 0, {"batch", "splitKV"}, {batch, splitKV});
+    mergeBatch.passThrough({"seqQ", "seqK_chunk"}, {1, 2},
+                           {"seqQ", "seqK_chunk"});
+    TransformMapAttr mergeBatchAttr = mergeBatch.get();
 
-    return builder.getArrayAttr({mergeAttr, unmergeSeqKAttr});
+    return builder.getArrayAttr({splitSeqKAttr, mergeBatchAttr});
   }
 
   std::tuple<Value, Value, Value, Value, Value, Value>
@@ -612,11 +685,14 @@ struct GridwiseAttentionRewritePattern
 
     // Lambda to load a 1D tensor value (used for lastValidKVIndex and
     // prefixOffset)
+    // TODO: Emit llvm.intr.assume(value >= 0) on the loaded value. Both indices
+    // are expected to be non-negative (see RockOps.td), and Triton's AMD
+    // integer range analysis uses such assumptions.
     auto loadTensorValue = [&](Value tensor) -> Value {
       assert(tensor && "tensor must be non-null");
 
-      auto resultType = RankedTensorType::get({1},
-                                          cast<ShapedType>(tensor.getType()).getElementType());
+      auto resultType = RankedTensorType::get(
+          {1}, cast<ShapedType>(tensor.getType()).getElementType());
 
       // add dim 1 for load_marker to make sense
       ArrayRef<int64_t> inpShape =
@@ -805,6 +881,13 @@ struct GridwiseAttentionRewritePattern
   // Helper function to determine if early exit optimization is possible.
   // Early exit requires splitKV > 1 and at least one of: padding in gemm0M,
   // causal masking, or KV cache.
+  // TODO: Cover more workgroups that have no work:
+  // - Causal + sliding window where the M block's last query ends before the
+  //   window start, so every row is fully masked. This also applies with
+  //   splitKV == 1, which never exits early today.
+  // - Padding-only split-KV with prePadG0N < gemm0NPerBlock. It is excluded
+  //   below although the runtime check would handle it, so the trailing splits
+  //   run over padding only.
   static bool isEarlyExitPossible(int64_t splitKV, int64_t gemm0NPerBlock,
                                   std::optional<APInt> prePadG0N, bool isCausal,
                                   bool isKVCache) {
@@ -1082,6 +1165,26 @@ struct GridwiseAttentionRewritePattern
     bool isCausal = op.getCausal();
     bool isPrefixCausal = isCausal && prefixOffsetTensor;
     int64_t splitKV = op.getSplitKV();
+    int64_t slidingWindowLookBack =
+        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
+    // A row goes NaN as soon as the first processed tile has no valid score
+    // (`exp2(-inf - -inf)` and `0 * NaN` stay NaN), even if later tiles are
+    // valid. Causal-only, KV-cache-only, and prefix-causal-only start at tile
+    // 0 and mask with unsigned `ugt`, so key 0 is never rejected. A
+    // causal+sliding window can have disjoint lower/upper bounds, and split-KV
+    // partials can execute with no valid score. Padded query rows are written
+    // through padded output/LSE views, so a NaN there is not observable and is
+    // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
+    // unless its result is proven not to overflow finite QK scores.
+    // TODO: The splitKV clause is conservative: split-KV alone never fully
+    // masks a row. It needs causal/prefix-causal masking, or padding-only
+    // split-KV with prePadG0N < gemm0NPerBlock (see isEarlyExitPossible).
+    // Alternatively, emit the guard unconditionally and drop this predicate;
+    // it only adds one arith.maxnumf per row, but that needs perf data.
+    bool mayHaveFullyMaskedRows =
+        op.getEnableSoftmax() &&
+        (preSoftmaxMayFullyMask(op) ||
+         (isCausal && slidingWindowLookBack > 0) || splitKV > 1);
 
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
@@ -1105,8 +1208,8 @@ struct GridwiseAttentionRewritePattern
     assert(gemm0N % gemm0NPerBlock == 0);
 
     // Get current workgroup ID.
-    Value bid =
-        triton::GetProgramIdOp::create(rewriter, op.getLoc(), triton::ProgramIDDim::X);
+    Value bid = triton::GetProgramIdOp::create(rewriter, op.getLoc(),
+                                               triton::ProgramIDDim::X);
 
     // Calculate different size derivations
     int64_t gemm1KPerBlock = gemm1TuningParams.getKPerBlock();
@@ -1175,20 +1278,22 @@ struct GridwiseAttentionRewritePattern
     // store transforms use gemm1BidGridLengthsForStore.
     SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks,
                                                    gemm1NChunks};
-    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
+    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV,
+                                                           gemm1MBlocks, 1};
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
-    Value splitKVConst =
-        (splitKV > 1) ? rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), splitKV)
-                      : nullptr;
+    Value splitKVConst = (splitKV > 1)
+                             ? rewriter.createOrFold<ConstantIntOp>(
+                                   loc, rewriter.getI32Type(), splitKV)
+                             : nullptr;
 
     auto maybeGridSize = rock::getGridSize(op);
     if (failed(maybeGridSize))
       return op->emitError("Failed to get grid_size");
 
     int64_t gridSize = maybeGridSize->getInt();
-        
+
     auto arch = rock::getArchValue(op);
 
     // Cache hint for the K/V loads: stream them when seqQ is skinny (decode)
@@ -1206,20 +1311,31 @@ struct GridwiseAttentionRewritePattern
 
     auto blockMTensorType =
         RankedTensorType::get({gemm0MPerBlock}, elemTypeSoftmax);
-    Value maxRow = createConstantFloatOp(
-        rewriter, loc, blockMTensorType, elemTypeSoftmax,
-        -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    Value maxRow;
+    if (mayHaveFullyMaskedRows) {
+      auto floatType = cast<FloatType>(elemTypeSoftmax);
+      APFloat lowestFinite =
+          APFloat::getLargest(floatType.getFloatSemantics(), /*Negative=*/true);
+      maxRow = arith::ConstantOp::create(
+          rewriter, loc, blockMTensorType,
+          SplatElementsAttr::get(
+              blockMTensorType,
+              rewriter.getFloatAttr(elemTypeSoftmax, lowestFinite)));
+    } else {
+      maxRow = createConstantFloatOp(
+          rewriter, loc, blockMTensorType, elemTypeSoftmax,
+          -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    }
     Value sumRow = createConstantFloatOp(rewriter, loc, blockMTensorType,
                                          elemTypeSoftmax, 0.0, APFloat::opOK);
-    Value zero = rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
+    Value zero =
+        rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), 0);
 
     Value gemm0NBlocksLastIter;
     Value lastValidKVIndex;
     Value prefixOffset;
     Value slidingWindowLowerBound;
     Value start, end;
-    int64_t slidingWindowLookBack =
-        static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
     // get nLoop
     std::tie(start, end, gemm0NBlocksLastIter, lastValidKVIndex, prefixOffset,
              slidingWindowLowerBound) =
@@ -1317,8 +1433,8 @@ struct GridwiseAttentionRewritePattern
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
 
-      Value endKLoop =
-          rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(), kIterationsGemm0);
+      Value endKLoop = rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), kIterationsGemm0);
       scf::ForOp kLoopOp = scf::ForOp::create(rewriter, loc, zero, endKLoop,
                                               one, ValueRange{initAcc});
       {
@@ -1381,10 +1497,11 @@ struct GridwiseAttentionRewritePattern
       // Apply splitKV transforms if needed
       // This transforms the GEMM0 output from [B*H, SeqQ, SeqK] to
       // [B*H*splitKV, SeqQ, SeqK/splitKV] to match the preSoftmax inputs.
+      ArrayAttr gemm0OutFusionView = gemm0OutTileViewUnPadded;
       if (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms()) {
         ArrayAttr splitKVTransforms = createSplitKVTransformsForGemm0Out(
             rewriter, loc, unpaddedShape, splitKV);
-        gemm0OutTileViewUnPadded = prependUpperViews(
+        gemm0OutFusionView = prependUpperViews(
             rewriter, gemm0OutTileViewUnPadded, splitKVTransforms);
       }
 
@@ -1392,7 +1509,7 @@ struct GridwiseAttentionRewritePattern
       // be performed on the output of the first gemm.
       auto maybeFirstGemmResult =
           postProcessFirstGemm(rewriter, loc, op, gridCoordsGemm0,
-                               firstGemmResult, gemm0OutTileViewUnPadded);
+                               firstGemmResult, gemm0OutFusionView);
       if (failed(maybeFirstGemmResult))
         return op->emitError("Failed to post process first GEMM output");
       firstGemmResult = maybeFirstGemmResult.value();
@@ -1402,16 +1519,23 @@ struct GridwiseAttentionRewritePattern
       if (op.getEnableSoftmax()) {
         // convert firstGemmResult to elemTypeSoftmax
         auto firstGemmType = cast<RankedTensorType>(firstGemmResult.getType());
-        auto softmaxInputType = RankedTensorType::get(firstGemmType.getShape(), elemTypeSoftmax);
-        Value softmaxInput = createTypeConversionOp(rewriter, loc, firstGemmResult, softmaxInputType);
+        auto softmaxInputType =
+            RankedTensorType::get(firstGemmType.getShape(), elemTypeSoftmax);
+        Value softmaxInput = createTypeConversionOp(
+            rewriter, loc, firstGemmResult, softmaxInputType);
 
         // Scale gemm0 output by (1/ln2)
         // So that we can use exp2 instead of exp.
+        // TODO: Apply this scale after subtracting the row max instead, so
+        // scores with |x| >= FLT_MAX / log2(e) (f32) can't overflow to inf
+        // here (see isFiniteConstantScaleOf). That changes the inner loop, so
+        // it needs perf data.
         Value ln2Recip = createConstantFloatOp(
             rewriter, loc, softmaxInput.getType(), elemTypeSoftmax, 1.44269504f,
             elemTypeSoftmax.getIntOrFloatBitWidth() >= 32 ? APFloat::opOK
                                                           : APFloat::opInexact);
-        softmaxInput = arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
+        softmaxInput =
+            arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
 
         // fakeTensor is needed to generate the views and indices+mask with
         // TransformsToPtrOp It represents the Q*K matrix (that is never written
@@ -1495,14 +1619,15 @@ struct GridwiseAttentionRewritePattern
             rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Max));
 
         softmaxExp = expSubstractMaxFromGemm0(rewriter, loc, softmaxInput,
-                                 softmaxMax, maxRow);
+                                              softmaxMax, maxRow);
 
         // Softmax sum reduction
         Value softmaxSum = BlockwiseReduceOp::create(
             rewriter, loc, softmaxExp, reductionAxis,
             rewriter.getAttr<rock::ReduceMethodAttr>(rock::ReduceMethod::Sum));
 
-        std::tie(maxRowDiffExp, sumRow, maxRow) = updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
+        std::tie(maxRowDiffExp, sumRow, maxRow) =
+            updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
       }
 
       // Emit blockwise GEMM 1.
@@ -1577,9 +1702,23 @@ struct GridwiseAttentionRewritePattern
     sumRow = nLoopOp.getResult(gemm1NChunks + 1);
 
     if (op.getEnableSoftmax()) {
+      Value normalizationSum = sumRow;
+      // A fully masked row ends with sumRow == 0: with the finite max sentinel,
+      // every exp2 term is 0. Clamp the denominator to 1 so that row is written
+      // as zeros instead of 0/0. A row with any valid score has sumRow >= 1
+      // (its max term is exp2(0) = 1), so the clamp leaves it unchanged. The
+      // LSE below keeps the unclamped sumRow, so a fully masked row still
+      // reports -inf.
+      if (mayHaveFullyMaskedRows) {
+        Value oneFloat =
+            createConstantFloatOp(rewriter, loc, blockMTensorType,
+                                  elemTypeSoftmax, 1.0, APFloat::opOK);
+        normalizationSum =
+            arith::MaxNumFOp::create(rewriter, loc, sumRow, oneFloat);
+      }
       for (int64_t chunk = 0; chunk < gemm1NChunks; ++chunk)
         outAccs[chunk] =
-            scaleFinalOutput(rewriter, loc, outAccs[chunk], sumRow);
+            scaleFinalOutput(rewriter, loc, outAccs[chunk], normalizationSum);
     }
 
     // Concatenate the per-chunk [gemm1MPerBlock, gemm1NPerBlock] output tiles
@@ -1588,9 +1727,10 @@ struct GridwiseAttentionRewritePattern
                                       gemm1NPerBlock);
 
     if (cast<ShapedType>(outAcc.getType()).getElementType() != elemTypeOut) {
-        auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
-        auto destType = RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
-        outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
+      auto outAccTensorType = cast<RankedTensorType>(outAcc.getType());
+      auto destType =
+          RankedTensorType::get(outAccTensorType.getShape(), elemTypeOut);
+      outAcc = createTypeConversionOp(rewriter, loc, outAcc, destType);
     }
     Value lseOut;
     if (lse) {

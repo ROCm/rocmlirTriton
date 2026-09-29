@@ -66,8 +66,10 @@ Value transform(OpBuilder &b, Value toBeTransformed, ArrayAttr transforms);
 /// If the transforms are already isolated, this function does nothing.
 Value isolateTransforms(OpBuilder &b, Value transformed);
 
-/// A helper to invert a chain of views
-ArrayAttr invertTransforms(OpBuilder &b, Location loc, ArrayAttr transforms);
+/// A helper to invert a chain of views. Fails if any view in the chain is not
+/// invertible.
+FailureOr<ArrayAttr> invertTransforms(OpBuilder &b, Location loc,
+                                      ArrayAttr transforms);
 
 //// Structure for reporting the results of the vectorization analysis.
 /// `max` is the maximum length by which loads from or stores to a buffer

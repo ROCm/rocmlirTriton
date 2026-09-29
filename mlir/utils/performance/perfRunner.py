@@ -129,9 +129,93 @@ def inverse_input_layouts(input_layout):
     return "".join(map[char] for char in input_layout)
 
 
+def table_bool(value):
+    """Read a boolean back out of a table entry, which may hold 0/1 or a str."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes')
+    return bool(value)
+
+
 def inverse_filter_layouts(filter_layout):
     map = {v: k for k, v in FILTER_LAYOUT_MAP.items()}
     return "".join(map[char] for char in filter_layout)
+
+
+# MIOpenDriver only understands the NCHW / NHWC memory layouts, whereas rocMLIR
+# configs use richer names such as GNC01 / NGC01 that additionally encode the group
+# dimension (G) and use 0/1 for the spatial dims. A config can therefore only be
+# benchmarked against MIOpen when its layouts map *exactly* onto NCHW/NHWC once the
+# group dimension is dropped (MIOpen conveys the group count separately via -g) and
+# the spatial dims are renamed 0->H, 1->W. Layouts with any other ordering have no
+# faithful MIOpen equivalent and are skipped instead of being benchmarked against a
+# different layout (which would be an unfair comparison).
+MIOPEN_CONV_LAYOUTS = {'NCHW', 'NHWC'}
+
+# A grouped convolution keeps those same NCHW/NHWC shapes in MIOpen, whichever of the
+# two it is, with the group count folded into a single dim: the filter's output-channel
+# dim holds K == G * (K/G) and the input's and output's channel dim holds
+# C == G * (C/G), so NCHW input [N][C][H][W] is really [N][G][C/G][H][W] and NHWC input
+# [N][H][W][C] is really [N][H][W][G][C/G]. The G dim of a rocMLIR layout must therefore
+# sit immediately in front of the dim it splits -- the output-channel dim for the filter
+# (spelled N on the commandline) and the channel dim for the input and output. This maps
+# each layout flag to that dim.
+MIOPEN_GROUPED_DIM = {'-f': 'N', '-I': 'C', '-O': 'C'}
+
+
+def rocmlir_layout_to_miopen(layout, grouped_dim=None):
+    """Map a rocMLIR conv layout name onto a MIOpenDriver layout, or None.
+
+    The group dimension ``G`` is dropped (MIOpen passes the group count through the
+    separate ``-g`` flag) and the spatial dims are renamed (``0`` -> ``H``, ``1`` ->
+    ``W``). Every tensor spells its channel dim ``C`` on the commandline, including the
+    output (see ``OUTPUT_LAYOUT_MAP``), so there is no ``K`` to rename here.
+
+    ``grouped_dim`` is the dim MIOpen folds the group count into (see
+    ``MIOPEN_GROUPED_DIM``) and must be passed whenever the group count is greater
+    than one: ``G`` then has to sit immediately in front of that dim, because in any
+    other slot it describes an ordering MIOpen cannot express. With a single group
+    the G dim is degenerate and its position carries no meaning, so callers leave
+    ``grouped_dim`` at ``None``.
+
+    Returns ``"NCHW"`` or ``"NHWC"`` when the layout is exactly one of those orderings,
+    otherwise ``None`` -- meaning the config is not MIOpen-representable and should be
+    skipped to keep the comparison fair.
+    """
+    normalized = layout.replace('0', 'H').replace('1', 'W')
+    if grouped_dim is not None and 'G' in normalized and f"G{grouped_dim}" not in normalized:
+        return None
+    normalized = normalized.replace('G', '')
+    if normalized in MIOPEN_CONV_LAYOUTS:
+        return normalized
+    return None
+
+
+def conv_commandline_to_miopen_layouts(commandline):
+    """Translate rocMLIR conv layout args (-f/-I/-O) into MIOpen layout names.
+
+    Returns a new commandline list with the layout values replaced by their MIOpen
+    equivalents, or ``None`` when the configuration has no faithful MIOpen
+    representation -- either because a layout uses an ordering MIOpen cannot express,
+    because a grouped config puts G somewhere MIOpen does not (see
+    ``MIOPEN_GROUPED_DIM``), or because the filter/input/output tensors do not share a
+    single NCHW/NHWC layout. Callers should skip the MIOpen benchmark in the ``None``
+    case rather than run an unfair comparison.
+    """
+    result = list(commandline)
+    group = int(result[result.index('-g') + 1]) if '-g' in result else 1
+    seen_layouts = set()
+    for i in range(len(result) - 1):
+        if result[i] in MIOPEN_GROUPED_DIM:
+            grouped_dim = MIOPEN_GROUPED_DIM[result[i]] if group > 1 else None
+            miopen_layout = rocmlir_layout_to_miopen(result[i + 1], grouped_dim)
+            if miopen_layout is None:
+                return None
+            result[i + 1] = miopen_layout
+            seen_layouts.add(miopen_layout)
+    # MIOpen expects a single, consistent layout across filter, input and output.
+    if len(seen_layouts) > 1:
+        return None
+    return result
 
 
 @dataclass
@@ -260,16 +344,41 @@ def create_paths(config_file_path, mlir_build_dir_path) -> Paths:
 
 
 # utility functions.
+
+
+def is_rocclr_internal_kernel(row) -> bool:
+    """Whether a rocprof CSV row describes a HIP-runtime-internal kernel.
+
+    The HIP runtime dispatches its own kernels onto the same queue as ours, and
+    ``rocprofv3 --kernel-trace`` records every dispatch it sees. ROCclr services
+    a small unpinned ``hipMemcpy`` with the ``__amd_rocclr_copyBuffer`` blit
+    shader rather than the SDMA engine, so the host harness's parameter copies
+    show up next to the kernel under test; ``__amd_rocclr_initHeap``,
+    ``_scheduler`` and friends can appear the same way. Their cost is a fixed
+    few microseconds, which is noise for a large kernel but can dominate a small
+    one, so exclude the whole family from timing and metric aggregation.
+    """
+    # rocprofv3 names the kernel column differently per report: the ``--stats``
+    # summary uses ``Name``, counter collection uses ``Kernel_Name``.
+    for column in ('Name', 'Kernel_Name'):
+        name = row.get(column)
+        if name is not None:
+            return name.strip('"').startswith('__amd_rocclr_')
+    return False
+
+
 def get_nanoseconds(filename):
     if not os.path.exists(filename):
         return np.nan
     with open(filename, 'r') as csv_file:
         reader = csv.DictReader(csv_file, delimiter=',')
-        result = 0
-        for row in reader:
-            result += int(float(row['AverageNs']))
+        durations = [
+            int(float(row['AverageNs'])) for row in reader if not is_rocclr_internal_kernel(row)
+        ]
         csv_file.close()
-        return result
+        if not durations:
+            return np.nan
+        return sum(durations)
 
 
 # Architectures where rocprof hardware-counter collection (``-i <metrics>``) is
@@ -317,9 +426,11 @@ def get_bank_conflict(filename):
 
         result = []
         for row in reader:
-            if row['Counter_Name'] == 'LDSBankConflict':
+            if row['Counter_Name'] == 'LDSBankConflict' and not is_rocclr_internal_kernel(row):
                 result.append(float(row['Counter_Value']))
         csv_file.close()
+        if not result:
+            return np.nan
         result_average = sum(result) / len(result)
         return result_average
 
@@ -599,6 +710,16 @@ class PerfConfiguration:
     def table_entry(self, nanoseconds):
         raise NotImplementedError()
 
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        """Rebuild a configuration from a row written by ``table_entry``.
+
+        Its inverse; keep the two in step. The table does not carry the
+        convolution group count or the right half of an asymmetric padding, so
+        those come back as defaults.
+        """
+        raise NotImplementedError()
+
     def generate_problem_commandline(self, kernel_repeats=MLIR_N_REPEATS) -> str:
         """Driver arguments describing the problem itself.
 
@@ -653,12 +774,23 @@ def drop_perf_priority(argv):
     return argv[:idx] + argv[idx + 2:]
 
 
+def get_perf_priority(argv):
+    """Extract the optional tier-1 priority from a tokenized config."""
+    if '-perf_priority' not in argv:
+        return None
+    idx = argv.index('-perf_priority')
+    if idx + 1 >= len(argv):
+        raise ValueError("-perf_priority requires a value")
+    return int(argv[idx + 1])
+
+
 # convolution configurations.
 def get_conv_configurations(filename,
                             arch,
                             num_cu,
                             num_chiplets,
-                            target_chip: Optional[str] = None):
+                            target_chip: Optional[str] = None,
+                            priority_map: Optional[Dict[str, int]] = None):
     configs = []
     chip = target_chip
     if filename:
@@ -675,7 +807,7 @@ def get_conv_configurations(filename,
 
                 # Skip unsupported datatypes
                 if datatype == 'convfp8':
-                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
+                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx1030', 'gfx1101'}
                     if chip is None:
                         chip = get_chip()
                     if chip in unsupported_chips:
@@ -713,7 +845,7 @@ def get_conv_configurations(filename,
 
                 one_config = f"{datatype}{direction}{filter_layout}{input_layout}{output_layout}{line}"
                 canonical = canonicalize_or_raise(filename, line, one_config, ConvConfiguration,
-                                                  arch, num_cu, num_chiplets)
+                                                  arch, num_cu, num_chiplets, priority_map)
                 if canonical not in configs:
                     configs.append(canonical)
     return configs
@@ -723,6 +855,11 @@ class ConvConfiguration(PerfConfiguration):
     TABLE_COLUMNS = reportUtils.CONV_TEST_PARAMETERS + ['LDSBankConflict'] + ['TFlops']
     EXTERNAL_NAME = "MIOpen"
     SWEEP_KIND = "conv"
+
+    # MIOpenDriver only supports these conv datatypes as base arguments. Configs
+    # on any other type (fp8, ...) still get benchmarked with MLIR; only the
+    # MIOpen side of the comparison is skipped.
+    MIOPEN_SUPPORTED_DTYPES = {'f32', 'f16', 'bf16', 'i8'}
 
     def compute_tflops(self, ns):
         # NaN will propagate as expected
@@ -749,6 +886,35 @@ class ConvConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        # The table holds the internal layout spelling, which __init__ maps
+        # into again, so undo that first.
+        return cls(dtype=row['DataType'],
+                   direction=row['Direction'],
+                   filter_layout=inverse_filter_layouts(row['FilterLayout']),
+                   input_layout=inverse_input_layouts(row['InputLayout']),
+                   output_layout=inverse_output_layouts(row['OutputLayout']),
+                   n=int(row['N']),
+                   c=int(row['C']),
+                   hi=int(row['H']),
+                   wi=int(row['W']),
+                   k=int(row['K']),
+                   y=int(row['Y']),
+                   x=int(row['X']),
+                   conv_stride_h=int(row['StrideH']),
+                   conv_stride_w=int(row['StrideW']),
+                   padding_hl=int(row['PaddingH']),
+                   padding_hr=int(row['PaddingH']),
+                   padding_wl=int(row['PaddingW']),
+                   padding_wr=int(row['PaddingW']),
+                   dilation_h=int(row['DilationH']),
+                   dilation_w=int(row['DilationW']),
+                   group=1,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -1009,22 +1175,40 @@ class ConvConfiguration(PerfConfiguration):
         if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME)):
             os.remove(get_profiler_output_path(arch, BENCHMARKING_METRICS_FILE_NAME))
         config = cls.from_command_line(commandline, arch, num_cu, num_chiplets)
+        if config.datatype not in cls.MIOPEN_SUPPORTED_DTYPES:
+            print(f"Skipping MIOpen benchmark for unsupported datatype: {config.datatype}")
+            return config.table_entry(np.nan)
         config_args, _ = extract_tuning_key_metadata(commandline)
         config_args = drop_perf_priority(config_args)
-        miopen_driver_cmd = [MIOPENDRIVER, *config_args, '-V', '0', '-t', '1']
-        print("Running MIOpen Benchmark: ", ' '.join(config_args))
+        # rocMLIR configs use layout names (e.g. GNC01) that MIOpenDriver rejects.
+        # Translate them to NCHW/NHWC; skip configs that have no faithful MIOpen
+        # equivalent instead of forcing an unfair comparison.
+        miopen_commandline = conv_commandline_to_miopen_layouts(config_args)
+        if miopen_commandline is None:
+            print("Skipping MIOpen benchmark: conv layout has no equivalent MIOpen "
+                  f"NCHW/NHWC representation: {' '.join(config_args)}")
+            return config.table_entry(np.nan)
+        miopen_driver_cmd = [MIOPENDRIVER, *miopen_commandline, '-V', '0', '-t', '1']
+        print("Running MIOpen Benchmark: ", ' '.join(miopen_driver_cmd))
         # invoke MIOpenDriver.
         outs, noerr = run_pipeline([miopen_driver_cmd])
-        nanoseconds = np.nan
-        if noerr:
-            # convert bytes to str
-            outs = outs.decode('utf-8')
-            # Extract Elapsed time in ms from the output of MIOpenDriver
-            # Use regular expression to match the contents between
-            # "Elasped: " (note the space at the end) and "ms"
-            elapsed_time_in_ms = ELAPSED_TIME_RE.search(outs).group(1)
-            nanoseconds = float(elapsed_time_in_ms) * 1.0e6
-
+        if not noerr:
+            # run_pipeline already prints MIOpenDriver's stderr. A genuine MIOpen failure
+            # must fail CI instead of silently yielding NaN.
+            raise RuntimeError("MIOpen benchmark failed (see the MIOpenDriver error above); "
+                               "CI must fail on MIOpen errors.\n"
+                               f"Failing command: {' '.join(miopen_driver_cmd)}")
+        # convert bytes to str
+        outs = outs.decode('utf-8')
+        # Extract Elapsed time in ms from the output of MIOpenDriver. Match the text
+        # between "Elapsed: " (note the trailing space) and "ms".
+        match = ELAPSED_TIME_RE.search(outs)
+        if not match:
+            raise RuntimeError("Failed to parse elapsed time from MIOpenDriver output.\n"
+                               f"Failing command: {' '.join(miopen_driver_cmd)}\n"
+                               f"Output:\n{outs}")
+        elapsed_time_in_ms = match.group(1)
+        nanoseconds = float(elapsed_time_in_ms) * 1.0e6
         return config.table_entry(nanoseconds)
 
 
@@ -1035,7 +1219,8 @@ def get_gemm_configurations(filename,
                             datatypes=DATA_TYPES_GEMM,
                             out_dtype_map=OUTPUT_DATA_TYPES_MAP,
                             scale_types=DATA_TYPES_GEMM_SCALES,
-                            target_chip: Optional[str] = None):
+                            target_chip: Optional[str] = None,
+                            priority_map: Optional[Dict[str, int]] = None):
     configs = []
     chip = target_chip
 
@@ -1064,7 +1249,7 @@ def get_gemm_configurations(filename,
                         continue
 
                 if datatype == 'fp8':
-                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx942', 'gfx1030', 'gfx1101'}
+                    unsupported_chips = {'gfx908', 'gfx90a', 'gfx1030', 'gfx1101'}
                     if chip is None:
                         chip = get_chip()
                     if chip in unsupported_chips:
@@ -1115,7 +1300,7 @@ def get_gemm_configurations(filename,
                         )
                         canonical = canonicalize_or_raise(filename, line, one_config,
                                                           GemmConfiguration, arch, num_cu,
-                                                          num_chiplets)
+                                                          num_chiplets, priority_map)
                         if canonical not in configs:
                             configs.append(canonical)
                 else:
@@ -1123,13 +1308,17 @@ def get_gemm_configurations(filename,
                     one_config = f"{datatype_string}{out_dtype_string}{trans_a_string}{trans_b_string}{trans_o_string}{line}".strip(
                     )
                     canonical = canonicalize_or_raise(filename, line, one_config, GemmConfiguration,
-                                                      arch, num_cu, num_chiplets)
+                                                      arch, num_cu, num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_conv_gemm_configurations(filename, arch, num_cu, num_chiplets):
+def get_conv_gemm_configurations(filename,
+                                 arch,
+                                 num_cu,
+                                 num_chiplets,
+                                 priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_CONV_GEMM,
@@ -1168,13 +1357,17 @@ def get_conv_gemm_configurations(filename, arch, num_cu, num_chiplets):
                         one_config = f"{arg} {value} {one_config}"
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       ConvGemmConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_gemm_gemm_configurations(filename, arch, num_cu, num_chiplets):
+def get_gemm_gemm_configurations(filename,
+                                 arch,
+                                 num_cu,
+                                 num_chiplets,
+                                 priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     default_test_space = {
         "-t": DATA_TYPES_GEMM_GEMM,
@@ -1213,13 +1406,17 @@ def get_gemm_gemm_configurations(filename, arch, num_cu, num_chiplets):
                         one_config = f"{arg} {value} {one_config}"
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       GemmGemmConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
     return configs
 
 
-def get_attn_configurations(filename, arch, num_cu, num_chiplets):
+def get_attn_configurations(filename,
+                            arch,
+                            num_cu,
+                            num_chiplets,
+                            priority_map: Optional[Dict[str, int]] = None):
     bool_space = ['false', 'true']
     # if not defined, set it to false
     default_to_false = ['false']
@@ -1273,7 +1470,7 @@ def get_attn_configurations(filename, arch, num_cu, num_chiplets):
 
                     canonical = canonicalize_or_raise(filename, line, one_config,
                                                       AttentionConfiguration, arch, num_cu,
-                                                      num_chiplets)
+                                                      num_chiplets, priority_map)
                     if canonical not in configs:
                         configs.append(canonical)
 
@@ -1306,6 +1503,27 @@ class GemmConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        scaled = table_bool(row['ScaledGemm'])
+        return cls(dtype=row['DataType'],
+                   out_dtype=row['OutDataType'],
+                   g=int(row['G']),
+                   m=int(row['M']),
+                   k=int(row['K']),
+                   n=int(row['N']),
+                   trans_a=table_bool(row['TransA']),
+                   trans_b=table_bool(row['TransB']),
+                   trans_o=table_bool(row['TransO']),
+                   scaled_gemm=scaled,
+                   scale_a_dtype=row['ScaleADtype'] if scaled else None,
+                   scale_b_dtype=row['ScaleBDtype'] if scaled else None,
+                   trans_scale_a=table_bool(row['TransScaleA']),
+                   trans_scale_b=table_bool(row['TransScaleB']),
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -1587,14 +1805,42 @@ class ConvGemmConfiguration(PerfConfiguration):
         values = [
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.filter_layout,
             self.input_layout, self.trans_c, self.trans_o, self.n, self.c, self.hi, self.wi, self.k,
-            self.y, self.x, self.o, self.dilation_h, self.dilation_w, self.conv_stride_h,
-            self.conv_stride_w, self.padding_h, self.padding_w, self.perfconfig,
+            self.y, self.x, self.dilation_h, self.dilation_w, self.conv_stride_h,
+            self.conv_stride_w, self.padding_h, self.padding_w, self.o, self.perfconfig,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        # The table holds the internal layout spelling, which __init__ maps
+        # into again, so undo that first.
+        return cls(dtype=row['DataType'],
+                   filter_layout=inverse_filter_layouts(row['FilterLayout']),
+                   input_layout=inverse_input_layouts(row['InputLayout']),
+                   trans_c=table_bool(row['TransC']),
+                   trans_o=table_bool(row['TransO']),
+                   n=int(row['N']),
+                   c=int(row['C']),
+                   hi=int(row['H']),
+                   wi=int(row['W']),
+                   k=int(row['K']),
+                   y=int(row['Y']),
+                   x=int(row['X']),
+                   o=int(row['O']),
+                   conv_stride_h=int(row['StrideH']),
+                   conv_stride_w=int(row['StrideW']),
+                   padding_h=int(row['PaddingH']),
+                   padding_w=int(row['PaddingW']),
+                   dilation_h=int(row['DilationH']),
+                   dilation_w=int(row['DilationW']),
+                   group=1,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -1798,6 +2044,22 @@ class GemmGemmConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        return cls(dtype=row['DataType'],
+                   g=int(row['G']),
+                   m=int(row['M']),
+                   k=int(row['K']),
+                   n=int(row['N']),
+                   o=int(row['O']),
+                   trans_a=table_bool(row['TransA']),
+                   trans_b=table_bool(row['TransB']),
+                   trans_c=table_bool(row['TransC']),
+                   trans_o=table_bool(row['TransO']),
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -2019,6 +2281,32 @@ class AttentionConfiguration(PerfConfiguration):
         for k, v in zip(self.TABLE_COLUMNS, values):
             result[k] = v
         return result
+
+    @classmethod
+    def from_table_entry(cls, row, arch, num_cu, num_chiplets):
+        look_back = int(row['SlidingWindowLookBack'])
+        return cls(dtype=row['DataType'],
+                   g=int(row['G']),
+                   seq_len_q=int(row['SeqLenQ']),
+                   seq_len_k=int(row['SeqLenK']),
+                   num_heads_q=int(row['NumHeadsQ']),
+                   num_heads_kv=int(row['NumHeadsKV']),
+                   head_dim_qk=int(row['HeadDimQK']),
+                   head_dim_v=int(row['HeadDimV']),
+                   with_attn_scale=table_bool(row['WithAttnScale']),
+                   with_attn_bias=table_bool(row['WithAttnBias']),
+                   trans_q=table_bool(row['TransQ']),
+                   trans_k=table_bool(row['TransK']),
+                   trans_v=table_bool(row['TransV']),
+                   trans_o=table_bool(row['TransO']),
+                   causal=table_bool(row['Causal']),
+                   return_lse=table_bool(row['ReturnLSE']),
+                   split_kv=int(row['SplitKV']),
+                   trans_bias=table_bool(row['TransBias']),
+                   sliding_window_look_back=None if look_back <= 0 else look_back,
+                   arch=arch,
+                   num_cu=num_cu,
+                   num_chiplets=num_chiplets)
 
     def set_perfconfig(self, perf_config):
         self.perfconfig = perf_config
@@ -2259,6 +2547,7 @@ def run_config_with_mlir(config: PerfConfiguration,
                          rocmlir_gen_flags,
                          use_rocprof=False,
                          flush_last_level_cache=False,
+                         verify_passes=False,
                          debug=True):
     # remove the result file generated by rocprof in previous benchmarking
     if os.path.exists(get_profiler_output_path(arch, BENCHMARKING_STATS_FILE_NAME)):
@@ -2289,6 +2578,8 @@ def run_config_with_mlir(config: PerfConfiguration,
         ]
         if flush_last_level_cache:
             tuning_driver_command.append("--flush-last-level-cache")
+        if verify_passes:
+            tuning_driver_command.append("--verify-passes")
         tuning_driver_command.append('-')
         outs, noerr = run_pipeline([rocmlir_gen_cmd.split(), tuning_driver_command])
         if noerr:
@@ -2305,6 +2596,9 @@ def run_config_with_mlir(config: PerfConfiguration,
         if flush_last_level_cache:
             print(
                 "Warning: --flush-last-level-cache is ignored when using rocprof for benchmarking")
+        if verify_passes:
+            print("Warning: --verify-passes is ignored when using rocprof for benchmarking; "
+                  "rocmlir-driver verifies unless passed --disable-verify-passes")
         rocmlir_driver_cmd = [paths.mlir_paths.rocmlir_driver_path, '-c']
         profiler_cmd = [ROCPROF] + get_metric_args_for_rocprof(arch) + [
             '--kernel-trace', '--stats', '--output-format=csv', '-o', BENCHMARKING_RESULT_FILE_NAME,
@@ -2354,14 +2648,25 @@ def canonicalize_config(config_str: str, conf_class: type, arch: str, num_cu: in
         raise ValueError(f"Failed to parse '{config_str}' as {resolved_class.__name__}: {e}") from e
 
 
-def canonicalize_or_raise(filename, raw_line, expanded, conf_class, arch, num_cu, num_chiplets):
+def canonicalize_or_raise(filename,
+                          raw_line,
+                          expanded,
+                          conf_class,
+                          arch,
+                          num_cu,
+                          num_chiplets,
+                          priority_map: Optional[Dict[str, int]] = None):
     """Canonicalize a config produced by op-specific expansion of ``raw_line`` under ``conf_class``.
 
     Returns the canonical command-line. Raises ValueError with both the source filename and
     the original (pre-expansion) line so users can locate the offending input quickly.
     """
     try:
-        return canonicalize_config(expanded, conf_class, arch, num_cu, num_chiplets)
+        canonical = canonicalize_config(expanded, conf_class, arch, num_cu, num_chiplets)
+        priority = get_perf_priority(expanded.split())
+        if priority_map is not None and priority is not None:
+            priority_map[canonical] = max(priority_map.get(canonical, 0), priority)
+        return canonical
     except ValueError as e:
         raise ValueError(f"Failed to canonicalize config from {filename} '{raw_line}': {e}") from e
 
@@ -2424,7 +2729,8 @@ def benchmark_mlir(commandline,
                    tuning_db: MaybeTuningDb,
                    rocmlir_gen_flags,
                    use_rocprof=False,
-                   flush_last_level_cache=False):
+                   flush_last_level_cache=False,
+                   verify_passes=False):
     config = conf_class.from_command_line(commandline, arch, num_cu, num_chiplets)
     config_str = config.to_command_line()
     if tuning_db:
@@ -2435,7 +2741,7 @@ def benchmark_mlir(commandline,
             return config.table_entry(np.nan)
 
     nanoseconds = run_config_with_mlir(config, paths, arch, rocmlir_gen_flags, use_rocprof,
-                                       flush_last_level_cache)
+                                       flush_last_level_cache, verify_passes)
     return config.table_entry(nanoseconds)
 
 
@@ -2450,25 +2756,26 @@ def generate_performance_results(configs,
                                  quick_tuning_db: MaybeTuningDb,
                                  rocmlir_gen_flags,
                                  use_rocprof=False,
-                                 flush_last_level_cache=False):
+                                 flush_last_level_cache=False,
+                                 verify_passes=False):
     # Never pass tuning DB to this run
     mlir_df = pd.DataFrame(
         benchmark_mlir(test_vector.split(sep=' '), conf_class, paths, arch, num_cu, num_chiplets,
-                       None, rocmlir_gen_flags, use_rocprof, flush_last_level_cache)
+                       None, rocmlir_gen_flags, use_rocprof, flush_last_level_cache, verify_passes)
         for test_vector in configs)
     tuned_df = None
     if tuning_db:
         tuned_df = pd.DataFrame(
             benchmark_mlir(test_vector.split(
                 sep=' '), conf_class, paths, arch, num_cu, num_chiplets, tuning_db,
-                           rocmlir_gen_flags, use_rocprof, flush_last_level_cache)
+                           rocmlir_gen_flags, use_rocprof, flush_last_level_cache, verify_passes)
             for test_vector in configs)
     quick_tuned_df = None
     if quick_tuning_db:
         quick_tuned_df = pd.DataFrame(
             benchmark_mlir(test_vector.split(
                 sep=' '), conf_class, paths, arch, num_cu, num_chiplets, quick_tuning_db,
-                           rocmlir_gen_flags, use_rocprof, flush_last_level_cache)
+                           rocmlir_gen_flags, use_rocprof, flush_last_level_cache, verify_passes)
             for test_vector in configs)
 
     external_df = pd.DataFrame(
@@ -2731,7 +3038,8 @@ def benchmark_fusion_kernels(test_dir,
                              num_chiplets,
                              tuning_db: MaybeTuningDb,
                              use_rocprof=False,
-                             flush_last_level_cache=False):
+                             flush_last_level_cache=False,
+                             verify_passes=False):
     all_tests = []  # filename, test_vector, fut_name
     perf_results = {}  # associate test_vector to config and performances
     chip = GFX_CHIP_RE.search(arch).group(0)
@@ -2807,7 +3115,7 @@ def benchmark_fusion_kernels(test_dir,
 
         # Run gemm or conv op with the same configuration
         nanoseconds = run_config_with_mlir(config, paths, arch, '', use_rocprof,
-                                           flush_last_level_cache)
+                                           flush_last_level_cache, verify_passes)
         one_entry['MLIR TFlops'] = config.compute_tflops(nanoseconds)
         one_entry['Fusion/MLIR'] = one_entry['TFlops'] / one_entry['MLIR TFlops']
         one_entry['FileName'] = filename
@@ -2833,23 +3141,33 @@ def tune_mlir_kernels(configs, arch, num_cu, num_chiplets):
         envs['MIOPEN_DEBUG_FIND_ONLY_SOLVER'] = solver_names[test_vector]
         commandline = test_vector.split(sep=' ')
         config = ConvConfiguration.from_command_line(commandline, arch, num_cu, num_chiplets)
+        if config.datatype not in ConvConfiguration.MIOPEN_SUPPORTED_DTYPES:
+            print(f"Skipping MIOpen tuning for unsupported datatype: {config.datatype}")
+            continue
         config_args, _ = extract_tuning_key_metadata(commandline)
-        if config.input_layout == 'nchw':
-            miopen_driver_cmd = [MIOPENDRIVER, *config_args, '-V', '0']
-            print(' '.join(miopen_driver_cmd))
-            p1 = subprocess.Popen(miopen_driver_cmd,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE,
-                                  env=envs)
-            # get output.
-            try:
-                _, errs = p1.communicate(timeout=300)
-                if len(errs) > 0 and p1.returncode != 0:
-                    raise OSError(errs.decode('utf-8'))
-            except subprocess.TimeoutExpired:
-                p1.kill()
-                print("MIOpen tuning timed out")
-                _, errs = p1.communicate()
+        config_args = drop_perf_priority(config_args)
+        # Same layout constraint as the benchmark path: MIOpenDriver rejects rocMLIR
+        # layout names, so translate them and skip the configs it cannot express.
+        miopen_commandline = conv_commandline_to_miopen_layouts(config_args)
+        if miopen_commandline is None:
+            print("Skipping MIOpen tuning: conv layout has no equivalent MIOpen "
+                  f"NCHW/NHWC representation: {' '.join(config_args)}")
+            continue
+        miopen_driver_cmd = [MIOPENDRIVER, *miopen_commandline, '-V', '0']
+        print(' '.join(miopen_driver_cmd))
+        p1 = subprocess.Popen(miopen_driver_cmd,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              env=envs)
+        # get output.
+        try:
+            _, errs = p1.communicate(timeout=300)
+            if len(errs) > 0 and p1.returncode != 0:
+                raise OSError(errs.decode('utf-8'))
+        except subprocess.TimeoutExpired:
+            p1.kill()
+            print("MIOpen tuning timed out")
+            _, errs = p1.communicate()
 
 
 def parse_data_types(data_types):
@@ -3040,6 +3358,14 @@ def main(args=None):
         "Size the cache-flush buffer to the architecture's last-level cache (e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size reported by the HIP runtime. Defaults to the L2 cache size."
     )
 
+    parser.add_argument(
+        "--verify-passes",
+        action='store_true',
+        default=False,
+        help=
+        "Run the MLIR verifier after each pass while compiling the kernel being benchmarked. Off by default, and only applicable to the rocmlir-tuning-driver timing path (not --use-rocprof)."
+    )
+
     parsed_args = parser.parse_args(args)
 
     rocmlir_gen_flags = ''
@@ -3113,7 +3439,8 @@ def main(args=None):
         # batch benchmark with MLIR and MIOpen.
         generate_performance_results(configs, conf_class, paths, arch, num_cu, num_chiplets,
                                      tuning_db, quick_tuning_db, rocmlir_gen_flags,
-                                     parsed_args.use_rocprof, parsed_args.flush_last_level_cache)
+                                     parsed_args.use_rocprof, parsed_args.flush_last_level_cache,
+                                     parsed_args.verify_passes)
     elif parsed_args.tuning:
         tune_mlir_kernels(configs, arch, num_cu, num_chiplets)
     elif optype == Operation.FUSION:
@@ -3122,13 +3449,14 @@ def main(args=None):
         else:
             benchmark_fusion_kernels(parsed_args.test_dir, paths, arch, num_cu, num_chiplets,
                                      tuning_db, parsed_args.use_rocprof,
-                                     parsed_args.flush_last_level_cache)
+                                     parsed_args.flush_last_level_cache, parsed_args.verify_passes)
     else:
         if parsed_args.batch_mlir:
             df = pd.DataFrame(
                 benchmark_mlir(test_vector.split(sep=' '), conf_class, paths, arch, num_cu,
                                num_chiplets, tuning_db, rocmlir_gen_flags, parsed_args.use_rocprof,
-                               parsed_args.flush_last_level_cache) for test_vector in configs)
+                               parsed_args.flush_last_level_cache, parsed_args.verify_passes)
+                for test_vector in configs)
         elif parsed_args.batch_external:
             df = pd.DataFrame(
                 conf_class.benchmark_external(test_vector.split(
@@ -3147,14 +3475,15 @@ def main(args=None):
                     df = pd.DataFrame([
                         benchmark_mlir(parsed_args.config, conf_class, paths, arch, num_cu,
                                        num_chiplets, tuning_db, rocmlir_gen_flags,
-                                       parsed_args.use_rocprof, parsed_args.flush_last_level_cache)
+                                       parsed_args.use_rocprof, parsed_args.flush_last_level_cache,
+                                       parsed_args.verify_passes)
                     ])
                 else:
                     df = pd.DataFrame([
                         benchmark_mlir(config.split(), conf_class, paths, arch, num_cu,
                                        num_chiplets, tuning_db, rocmlir_gen_flags,
-                                       parsed_args.use_rocprof, parsed_args.flush_last_level_cache)
-                        for config in configs
+                                       parsed_args.use_rocprof, parsed_args.flush_last_level_cache,
+                                       parsed_args.verify_passes) for config in configs
                     ])
         df.to_csv(parsed_args.filename)
         with pd.option_context('display.precision', reportUtils.ROUND_DIGITS):

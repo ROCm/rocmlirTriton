@@ -62,15 +62,14 @@ struct RockAddTritonMetadataPass
 // and out of scf.for / scf.if regions via their yields. A single gemm result
 // can be stored by more than one blockwise_store, so all of them are collected.
 //
-// Returns an empty list when the gemm output is not directly stored: either no
-// store is reachable at all, or the result feeds another gemm (a chained-dot /
-// gemm-gemm head, e.g. the scores gemm in attention). In the latter case the
-// tile is an intermediate consumed by the next accelerator op, so it has no
-// meaningful global-memory output layout and must keep the accelerator-native
-// layout. Note this cannot be decided by simply not chasing past the consumer
-// gemm: in flash attention the scores gemm also reaches the O store through the
-// softmax statistics (reduce -> scf.yield -> epilogue), so we detect the gemm
-// consumer explicitly and bail regardless of any store found via a side path.
+// When the gemm output is not directly stored, we return an empty list.
+// This may happen if either no store is reachable at all, or the result is
+// an A/B operand of another gemm (i.e., gemm-gemm).
+//
+// However, if the gemm output is used by another gemm's accumulator (matrixC),
+// that gemm extends the same output tile, so the walk continues through its
+// result and this gemm gets the same metadata as the last one in the chain.
+// This happens, for example, if DecomposeNonPow2KPass ran.
 static llvm::SmallSetVector<rock::BlockwiseStoreOp, 4>
 findConsumerStores(Value root) {
   llvm::SmallSetVector<rock::BlockwiseStoreOp, 4> stores;
@@ -101,12 +100,20 @@ findConsumerStores(Value root) {
         continue;
       }
 
-      // The result feeds another GEMM: this gemm is a chained-dot head whose
-      // output is an intermediate, not a stored tile. It has no output layout
-      // to optimize, so bail out entirely (even if some store is reachable
-      // through a side path such as the softmax statistics in attention).
-      if (isa<rock::BlockwiseGemmOp>(user))
+      if (auto gemmUser = dyn_cast<rock::BlockwiseGemmOp>(user)) {
+        // The result is the accumulator of another GEMM (e.g. the K segments
+        // produced by rock-decompose-nonpow2-k): keep following the chain.
+        if (&use == &gemmUser.getMatrixCMutable()) {
+          worklist.push_back(gemmUser.getResult());
+          continue;
+        }
+        // The result is an A/B operand of another GEMM: this gemm is a
+        // chained-dot head whose output is an intermediate, not a stored tile.
+        // It has no output layout to optimize, so bail out entirely (even if
+        // some store is reachable through a side path such as the softmax
+        // statistics in attention).
         return {};
+      }
 
       // Follow the value through any other (elementwise / cast / transform) op.
       worklist.append(user->result_begin(), user->result_end());

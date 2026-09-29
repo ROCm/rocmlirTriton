@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -30,7 +31,7 @@ struct TestEnv {
 
   TestEnv() : builder(&ctx) {
     DialectRegistry reg;
-    reg.insert<arith::ArithDialect, RockDialect>();
+    reg.insert<arith::ArithDialect, func::FuncDialect, RockDialect>();
     ctx.appendDialectRegistry(reg);
     ctx.loadAllAvailableDialects();
     module = ModuleOp::create(builder.getUnknownLoc());
@@ -914,6 +915,56 @@ TEST(IsInputNonInjectiveTest, UnexpectedOpFails) {
 
   FailureOr<bool> result = isInputNonInjective(cast.getResult(0));
   EXPECT_TRUE(failed(result));
+}
+
+//===----------------------------------------------------------------------===//
+// getMaxVectorization Tests
+//===----------------------------------------------------------------------===//
+
+// A held-constant Unmerge dim of non-unit size must not let slower dims extend
+// the contiguous vector length. C++ analog of
+// @unmerge_held_constant_non_unit_dim in test_vectorization_inference.mlir.
+TEST(GetMaxVectorizationTest, UnmergeHeldConstantNonUnitDim) {
+  TestEnv env;
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+
+  // getMaxVectorization walks defining ops until it reaches a value that has
+  // none, and fatals on any defining op that isn't a rock.transform, so the
+  // chain has to bottom out in a block argument.
+  auto flatType = RankedTensorType::get({128}, b.getF32Type());
+  auto fn = func::FuncOp::create(b, loc, "held_const_unmerge",
+                                 b.getFunctionType({flatType}, {}));
+  b.setInsertionPointToEnd(fn.addEntryBlock());
+  Value flat = fn.getArgument(0);
+
+  BottomUpTMBuilder t0(b, {"flat"}, {128}, loc);
+  t0.unmerge({"i", "vec_item"}, {0, 1}, "flat", {32, 4});
+  TransformMapAttr t0Attr = t0.get();
+  Value v0 = applyTransform(b, loc, flat, t0Attr);
+
+  // "ni" is the faster of the two unmerged dims, so it carries stride 4 while
+  // "m_i" carries stride 16.
+  BottomUpTMBuilder t1 = BottomUpTMBuilder::above(t0, t0Attr);
+  t1.unmerge({"m_i", "ni"}, {1, 0}, "i", {8, 4});
+  t1.passThrough({"vec_item"}, {2}, {"vec_item"});
+  TransformMapAttr t1Attr = t1.get();
+  Value v1 = applyTransform(b, loc, v0, t1Attr);
+
+  BottomUpTMBuilder t2 = BottomUpTMBuilder::above(t1, t1Attr);
+  t2.passThrough({"ni"}, {0}, {"ni"});
+  t2.merge("iter", 1, {"m_i", "vec_item"});
+  TransformMapAttr t2Attr = t2.get();
+  Value v2 = applyTransform(b, loc, v1, t2Attr);
+
+  // flat = m_i*16 + ni*4 + vec_item, and "ni" is held constant while "iter" is
+  // traversed, so only iter=0..3 are contiguous (iter=4 jumps by 16).
+  VectorizationResult result = getMaxVectorization(v2, /*dim=*/1,
+                                                   /*inputDimLen=*/8,
+                                                   /*ignoreDataType=*/true);
+  EXPECT_EQ(result.max, 4);
+
+  func::ReturnOp::create(b, loc);
 }
 
 } // end anonymous namespace

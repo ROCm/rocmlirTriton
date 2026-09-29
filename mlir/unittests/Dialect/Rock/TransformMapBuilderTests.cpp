@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -311,4 +312,25 @@ TEST_F(TMBuilderTest, GemmOut) {
                       (affD(2) % affC(196)).floorDiv(affC(14)), affD(2) % 14},
                      &context));
   EXPECT_EQ(resDown, resUp);
+}
+
+// An Embed whose coefficients alias (both upper dims share coefficient 7, and
+// the covered range exceeds the lower bound) has no inverse, so the whole
+// chain inversion has to report failure rather than hand back a null ArrayAttr.
+TEST_F(TMBuilderTest, InvertTransformsFailsOnNonInvertibleMap) {
+  auto buildUp = makeBottomUp({"dim0"}, {12});
+  buildUp.embed({"dim0", "dim1"}, {0, 1}, {7, 7}, "dim0", {7, 7});
+
+  ArrayAttr transforms = b.getArrayAttr({buildUp.get()});
+  OpBuilder opBuilder(&context);
+  EXPECT_TRUE(
+      failed(invertTransforms(opBuilder, b.getUnknownLoc(), transforms)));
+
+  // An invertible chain over the same builder still succeeds, so the failure
+  // above is the Embed and not the surrounding setup.
+  auto passThrough = makeBottomUp({"dim0"}, {12});
+  passThrough.passThrough({"dim0"}, {0}, {"dim0"});
+  ArrayAttr invertible = b.getArrayAttr({passThrough.get()});
+  EXPECT_TRUE(
+      succeeded(invertTransforms(opBuilder, b.getUnknownLoc(), invertible)));
 }

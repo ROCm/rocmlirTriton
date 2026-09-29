@@ -295,7 +295,7 @@ func.func @explicit_optimize_epilogue_keeps_bypass(%a: tensor<64x64xf16>, %b: te
 
 // -----
 
-// Chained GEMMs: the first (head) gemm feeds the second one as an operand, so
+// Chained GEMMs: the first (head) gemm feeds the second one as its A operand, so
 // it is an intermediate; the walk bails at the consuming gemm and leaves the
 // head untagged. Only the second gemm, whose result reaches the transposed
 // output store, is tagged.
@@ -355,6 +355,53 @@ func.func @chained_gemm_head_reaches_store_via_side_path(%a: tensor<64x64xf16>, 
     : tensor<4096xf32> to tensor<64x64xf32>
   %r = rock.blockwise_store %side -> %dest by set
     : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  return
+}
+
+// -----
+
+// Accumulator chain, as produced by rock-decompose-nonpow2-k: each K segment
+// feeds the next one's matrixC, so they all extend the same output tile.
+
+#acc_chain_tmapT = #rock.transform_map<affine_map<(m, n) -> (n * 64 + m)> by [<Unmerge{64, 64} ["n", "m"] at [1, 0] -> ["raw"] at [0]>] bounds = [64, 64] -> [4096]>
+
+// CHECK-LABEL: @accumulator_chain
+//      CHECK:   scf.for
+//      CHECK:     rock.blockwise_gemm
+// CHECK-SAME:       rock.o_transposed = #rock.o_transposed<true>
+//      CHECK:     rock.blockwise_gemm
+// CHECK-SAME:       rock.o_transposed = #rock.o_transposed<true>
+//      CHECK:     rock.blockwise_gemm
+// CHECK-SAME:       rock.o_transposed = #rock.o_transposed<true>
+func.func @accumulator_chain(%a0: tensor<64x32xf16>, %b0: tensor<32x64xf16>, %a1: tensor<64x16xf16>, %b1: tensor<16x64xf16>, %a2: tensor<64x4xf16>, %b2: tensor<4x64xf16>, %init: tensor<64x64xf32>, %dest_raw: tensor<4096xf32>) attributes {rock.kernel} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %loop = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %init) -> (tensor<64x64xf32>) {
+    %g0 = rock.blockwise_gemm(%a0, %b0, %acc) : tensor<64x32xf16>, tensor<32x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+    %g1 = rock.blockwise_gemm(%a1, %b1, %g0) : tensor<64x16xf16>, tensor<16x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+    %g2 = rock.blockwise_gemm(%a2, %b2, %g1) : tensor<64x4xf16>, tensor<4x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+    scf.yield %g2 : tensor<64x64xf32>
+  }
+  %dest = rock.transform %dest_raw by #acc_chain_tmapT : tensor<4096xf32> to tensor<64x64xf32>
+  %r = rock.blockwise_store %loop -> %dest by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<4096xf32>
+  return
+}
+
+// -----
+
+// Same accumulator chain with a row-major destination: every segment is tagged
+// o_transposed<false>.
+
+// CHECK-LABEL: @accumulator_chain_row_major
+//      CHECK:   rock.blockwise_gemm
+// CHECK-SAME:     rock.o_transposed = #rock.o_transposed<false>
+//      CHECK:   rock.blockwise_gemm
+// CHECK-SAME:     rock.o_transposed = #rock.o_transposed<false>
+func.func @accumulator_chain_row_major(%a0: tensor<64x32xf16>, %b0: tensor<32x64xf16>, %a1: tensor<64x4xf16>, %b1: tensor<4x64xf16>, %c: tensor<64x64xf32>, %dest: tensor<64x64xf32>) attributes {rock.kernel} {
+  %g0 = rock.blockwise_gemm(%a0, %b0, %c) : tensor<64x32xf16>, tensor<32x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %g1 = rock.blockwise_gemm(%a1, %b1, %g0) : tensor<64x4xf16>, tensor<4x64xf16>, tensor<64x64xf32> -> tensor<64x64xf32>
+  %r = rock.blockwise_store %g1 -> %dest by set : tensor<64x64xf32> -> tensor<64x64xf32> -> tensor<64x64xf32>
   return
 }
 

@@ -61,6 +61,13 @@ FailureOr<ArrayAttr> getLoadRegsAsTileViews(OpBuilder &b, Location loc,
 // in memory.
 bool is4GBMemoryType(ShapedType type);
 
+/// Return true if `type` can be lowered as an atomic RMW by the Rock-to-Triton
+/// pipeline. Integer types are lowered directly or through LLVM's cmpxchg
+/// fallback. Floating-point types must be at least 16 bits wide because
+/// narrower types are represented as integers after Triton type conversion
+/// and therefore cannot preserve floating-point atomic semantics.
+bool isAtomicRMWTypeSupported(Type type);
+
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
 /// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
 /// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
@@ -84,6 +91,22 @@ bool isEveryElementWrittenBwdData(ArrayRef<int64_t> strideDims,
 SmallVector<int64_t> backwardDataKernelIds(ArrayRef<int64_t> strideDims,
                                            ArrayRef<int64_t> dilationDims,
                                            ArrayRef<int64_t> filterDims);
+
+/// Filter phase (`iTilda`) of backward data kernel `kernelId` in each spatial
+/// dimension. Kernel IDs enumerate the phases with the last dimension varying
+/// fastest.
+SmallVector<int64_t> backwardDataTildaIndices(ArrayRef<int64_t> strideDims,
+                                              ArrayRef<int64_t> dilationDims,
+                                              int64_t kernelId);
+
+/// Number of filter taps that backward data kernel `kernelId` covers in each
+/// spatial dimension, or 0 where it covers none. The GEMM for `kernelId` has a
+/// K of the output channel count times the product of these, and kernel IDs
+/// with equal tap counts read the same view of the output gradient.
+SmallVector<int64_t> backwardDataDotSlices(ArrayRef<int64_t> strideDims,
+                                           ArrayRef<int64_t> dilationDims,
+                                           ArrayRef<int64_t> filterDims,
+                                           int64_t kernelId);
 
 /// Apply padding to a matrix in its `firstDim` and `secondDim` if applicable.
 Value padMatrix(Value matrix, OpBuilder &b, Location loc, StringRef firstDim,
@@ -111,9 +134,10 @@ FailureOr<IntegerAttr> getBlockSize(Operation *op);
 
 FailureOr<SetVector<StoreOp>> traceRootOutputToStoreOps(Value output);
 
-// Check that `newStoreMethod` is compatible with the store's current method,
-// then set a prefill attribute on the function argument that the store
-// destination traces back to.  AtomicAdd -> zero, AtomicMax -> -inf/INT_MIN.
+// Check that `newStoreMethod` is compatible with the store's current method
+// and element type, then update the store and set a prefill attribute on the
+// function argument that its destination traces back to. AtomicAdd -> zero,
+// AtomicMax -> -inf/INT_MIN.
 LogicalResult setStoreMethodAndPrefill(OpBuilder &builder, StoreOp storeOp,
                                        StoreMethod newStoreMethod);
 
@@ -177,6 +201,11 @@ struct FusionInfo {
   DenseMap<Value, Value> extraInputs;
   DenseSet<Value> chainValues;
   SmallVector<Operation *> fusionOps;
+  /// `rock.reduce` readers of the chain. Kept apart from `fusionOps` because a
+  /// reduction is not an element-wise op: it changes the output shape, so the
+  /// extra-input and output-type machinery must not treat it as one. Callers
+  /// asking "is there any output fusion?" need to check both.
+  SmallVector<Operation *> reduceOps;
 };
 
 FusionInfo collectFusionInfo(Value root);

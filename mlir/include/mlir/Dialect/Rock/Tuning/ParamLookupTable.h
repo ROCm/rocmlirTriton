@@ -14,7 +14,9 @@
 #define MLIR_DIALECT_ROCK_PARAM_LOOKUP_TABLE_H
 
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/StringMap.h"
 
 namespace mlir {
 namespace rock {
@@ -34,8 +36,16 @@ std::string getDataTypeString(Type dataType);
 template <typename ParamsType>
 class ParamLookupTable {
 public:
-  static ArrayRef<StringRef> lookup(StringRef arch, KernelType op,
-                                    Type dataType);
+  /// Perfconfigs to try, narrowed to `problemKey` when this key has a
+  /// compatible generated map and an entry for its problem hash.
+  ///
+  /// `supportsSplitK` selects between the set-cover tables: the regular one
+  /// when true and the no-split-K one otherwise, with fallback between the
+  /// pair always enabled. It does not gate the per-problem rankings, whose
+  /// split-K-illegal members are dropped by the caller.
+  static SmallVector<StringRef>
+  lookup(StringRef arch, KernelType op, Type dataType, bool supportsSplitK,
+         std::optional<QuickTuningProblemKey> problemKey = std::nullopt);
 
   // Finds the lexicographically closest architecture variant when the exact
   // target key is not found in the lookup table.
@@ -56,6 +66,10 @@ public:
   // attention list is preferred over the same fusion tuned for a relative
   // architecture, and both are preferred over any change of precision.
   // Returns an empty StringRef when nothing applies.
+  //
+  // Split-K pairing is unconditional: if the regular entry is missing, its
+  // no-split-K pair is tried before kernel type, architecture, or data type,
+  // and candidates on those later axes may also come from either table.
   static StringRef findFallback(StringRef target);
 
 private:
@@ -100,11 +114,25 @@ private:
     return table;
   }
 
+  static const std::map<StringRef, ArrayRef<StringRef>> &getNoSplitKTable() {
+    static const std::map<StringRef, ArrayRef<StringRef>> table =
+        buildNoSplitKTable();
+    return table;
+  }
+
   static std::map<StringRef, ArrayRef<StringRef>> buildTable();
+  static std::map<StringRef, ArrayRef<StringRef>> buildNoSplitKTable();
+
+  static const llvm::StringMap<QuickTuningProblemMap> &getProblemMap() {
+    static const llvm::StringMap<QuickTuningProblemMap> map = buildProblemMap();
+    return map;
+  }
+
+  static llvm::StringMap<QuickTuningProblemMap> buildProblemMap();
 
   static std::string getKernelTypeString(KernelType kernelType);
 
-  // Get all related entries sorted lexicographically
+  // Get all related entries across both tables, sorted lexicographically.
   static SmallVector<StringRef, 12> getRelatives(StringRef target);
 };
 

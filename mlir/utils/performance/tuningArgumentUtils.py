@@ -112,6 +112,13 @@ def add_common_tuning_arguments(
                         help="Size the cache-flush buffer to the architecture's last-level cache "
                         "(e.g. AMD Infinity Cache) instead of the per-XCD L2 cache size reported "
                         "by the HIP runtime. Defaults to the L2 cache size.")
+    parser.add_argument("--verify-passes",
+                        action="store_true",
+                        default=False,
+                        help="Run the MLIR verifier after each pass while compiling tuning "
+                        "candidates. Off by default: the verifier costs roughly a tenth of "
+                        "every per-config compile and the pipeline is the same one "
+                        "rocmlir-driver verifies in its own tests.")
     parser.add_argument(
         "--perf-config-timeout",
         type=int,

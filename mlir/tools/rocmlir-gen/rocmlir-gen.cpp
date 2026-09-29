@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
+#include "mlir/Dialect/Rock/Tuning/QuickTuningProblemMap.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -489,6 +490,18 @@ static llvm::cl::opt<bool> emitTuningKey(
         "Prints out the struct of the problem to be tuned for inspection."),
     llvm::cl::value_desc(
         "String formatted fields of the problem which is going to be tuned."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitQuickTuningProblemKeyHash(
+    "emit-quick-tuning-problem-key-hash",
+    llvm::cl::desc("Prints the hash identifying this problem in the "
+                   "per-problem quick-tuning maps."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitQuickTuningTableLookUpKeyVersionHash(
+    "emit-quick-tuning-table-lookup-key-version-hash",
+    llvm::cl::desc("Prints the hash of the ordered fields in the per-problem "
+                   "quick-tuning table lookup key."),
     llvm::cl::init(false));
 
 // Attention related args
@@ -1422,7 +1435,8 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
   // the same perf_config. A different perf_config could give the CPU and GPU
   // a different split count in split-KV, causing verification failures.
   std::vector<rock::GemmGemmParamsAttr> defaults =
-      rock::PopulateParamsGemmGemm::getTuningParameters(builder, op);
+      rock::PopulateParamsGemmGemm::getTuningParameters(
+          builder, op, /*supportsSplitK=*/true);
   FailureOr<rock::GemmGemmParamsAttr> attnPerfConfig =
       rock::materializeTuningParams<rock::GemmGemmParamsAttr>(
           builder, params.perfConfig, defaults);
@@ -3221,24 +3235,29 @@ static Value addTensorArgToBlock(OpBuilder &builder, Location loc,
   return funcArgTensor;
 }
 
+static Value createFloatSplatTensor(OpBuilder builder, Location loc,
+                                    RankedTensorType type,
+                                    const APFloat &value) {
+  assert(isa<FloatType>(type.getElementType()) &&
+         "expected a float element type");
+  DenseElementsAttr valueAttr = DenseFPElementsAttr::get(type, value);
+  return tosa::ConstOp::create(builder, loc, valueAttr.getType(), valueAttr);
+}
+
+static Value createFloatSplatTensor(OpBuilder builder, Location loc,
+                                    RankedTensorType type, float value) {
+  std::pair<APFloat, llvm::detail::opStatus> floatRes =
+      rock::createAPFloat(type.getElementType(), value);
+  APFloat fpVal = floatRes.first;
+  [[maybe_unused]] auto status = floatRes.second;
+  assert(status == APFloat::opOK && "failed to create floating-point constant");
+  return createFloatSplatTensor(builder, loc, type, fpVal);
+}
+
 static Value applyMask(OpBuilder builder, Location loc, Value inputTensor,
                        Value mask, float initValue) {
   auto inpType = cast<RankedTensorType>(inputTensor.getType());
-  ArrayRef<int64_t> inpShape = inpType.getShape();
-
-  // create a tensor with a single value and broadcast it
-  assert(isa<FloatType>(inpType.getElementType()));
-  std::pair<APFloat, llvm::detail::opStatus> floatRes =
-      rock::createAPFloat(inpType.getElementType(), initValue);
-  APFloat fpVal = floatRes.first;
-  [[maybe_unused]] auto status = floatRes.second;
-  assert(status == APFloat::opOK);
-
-  DenseElementsAttr initValueAttr = DenseFPElementsAttr::get(
-      RankedTensorType::get(inpShape, inpType.getElementType()), fpVal);
-
-  Value initVal = tosa::ConstOp::create(builder, loc, initValueAttr.getType(),
-                                        initValueAttr);
+  Value initVal = createFloatSplatTensor(builder, loc, inpType, initValue);
 
   // mask is 1 for values we want to set to "initVal"
   auto result = rock::tosa::createOpAndInfer<tosa::SelectOp>(
@@ -4896,8 +4915,19 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   constexpr int64_t reductionAxis = 2;
   auto qkMaxs = rock::tosa::createOpAndInfer<tosa::ReduceMaxOp>(
       builder, loc, softmaxType, qkTensor, reductionAxis);
+
+  // A fully masked row reduces to -inf. Use the lowest finite value only for
+  // normalization so -inf - (-inf) cannot poison the exponential.
+  auto qkMaxsType = cast<RankedTensorType>(qkMaxs.getType());
+  APFloat lowestFinite = APFloat::getLargest(
+      cast<FloatType>(softmaxType).getFloatSemantics(), /*Negative=*/true);
+  Value lowestFiniteTensor =
+      createFloatSplatTensor(builder, loc, qkMaxsType, lowestFinite);
+  Value qkMaxsForNormalization = rock::tosa::createOpAndInfer<tosa::MaximumOp>(
+      builder, loc, softmaxType, qkMaxs, lowestFiniteTensor);
+
   auto normalizedQkTensor = rock::tosa::createOpAndInfer<tosa::SubOp>(
-      builder, loc, softmaxType, qkTensor, qkMaxs);
+      builder, loc, softmaxType, qkTensor, qkMaxsForNormalization);
   auto expsTensor = rock::tosa::createOpAndInfer<tosa::ExpOp>(
       builder, loc, softmaxType, normalizedQkTensor);
   auto expsSums = rock::tosa::createOpAndInfer<tosa::ReduceSumOp>(
@@ -4923,8 +4953,16 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
         builder, loc, lseComputeType, lseTensor, qkMaxsForLSE);
   }
 
+  // A valid row contributes exp(max - max) = 1, while a fully masked row
+  // sums to zero. Clamp only the normalization denominator and retain the
+  // original sum above for LSE.
+  auto expsSumsType = cast<RankedTensorType>(expsSums.getType());
+  Value oneTensor = createFloatSplatTensor(builder, loc, expsSumsType, 1.0f);
+  Value expsSumsForNormalization =
+      rock::tosa::createOpAndInfer<tosa::MaximumOp>(builder, loc, softmaxType,
+                                                    expsSums, oneTensor);
   auto invExpsSums = rock::tosa::createOpAndInfer<tosa::ReciprocalOp>(
-      builder, loc, softmaxType, expsSums);
+      builder, loc, softmaxType, expsSumsForNormalization);
 
   Value softmaxTensor =
       rock::tosa::getMulOp(builder, loc, expsTensor, invExpsSums, softmaxType);
@@ -6072,6 +6110,17 @@ static LogicalResult populateHostHarnessLogic(
       !lastValidKVIndex.empty() ? (root0.params.size() - offsetFromEnd - 1)
                                 : -1;
 
+  auto isSmallFloatType = [](Type type) {
+    return isa<FloatType>(type) && type.getIntOrFloatBitWidth() < 32;
+  };
+  // outIndices indexes localVars and valVars alike, so validation buffers are
+  // allocated for every parameter or for none.
+  bool hasValVars =
+      hasValidation ||
+      (isCPUKernel && llvm::any_of(root0.params, [&](Type paramType) {
+         return isSmallFloatType(getElementTypeOrSelf(paramType));
+       }));
+
   // Timer for memory initialization
   func::FuncOp initTimerStopFunc;
   if (cpuTimers) {
@@ -6086,8 +6135,7 @@ static LogicalResult populateHostHarnessLogic(
            "currently only supports shaped types (memref or tensor)");
     Type elemType = paramShapedType.getElementType();
     auto paramMRType = MemRefType::get(paramShapedType.getShape(), elemType);
-    bool isSmallFloat =
-        isa<FloatType>(elemType) && elemType.getIntOrFloatBitWidth() < 32;
+    bool isSmallFloat = isSmallFloatType(elemType);
     if (isCPUKernel) { // -prc
       if (genParams.operation.has_value()) {
         if (idx < genParams.types.size())
@@ -6139,10 +6187,14 @@ static LogicalResult populateHostHarnessLogic(
         return failure();
     }
 
-    if (hasValidation || (isCPUKernel && isSmallFloat)) {
-      // Emit validation var
+    if (hasValVars) {
+      // Emit validation var. Without a validator, the root function runs on
+      // these buffers directly, so they must keep the parameter's type.
       Type valElemType = floatType;
-      if (genParams.operation.has_value() && isa<IntegerType>(elemType)) {
+      if (!hasValidation) {
+        valElemType = elemType;
+      } else if (genParams.operation.has_value() &&
+                 isa<IntegerType>(elemType)) {
         valElemType = elemType;
         if (llvm::is_contained(outIndices, idx))
           valElemType = b.getIntegerType(32);
@@ -6178,6 +6230,29 @@ static LogicalResult populateHostHarnessLogic(
   if (allOutIndices.empty())
     allOutIndices = outIndices;
 
+  // Page-lock the host buffers before anything is copied to the device. HIP can
+  // silently drop small asynchronous host-to-device copies out of pageable
+  // memory, leaving a kernel to read zeros from an input that never arrived,
+  // with no error reported. Registering the buffers keeps the copies off that
+  // path. Sub-byte element types are skipped because they cannot be cast to an
+  // unranked memref here, and their tensors are far larger than the sizes the
+  // defect affects anyway. A root that is not a rock kernel runs entirely on
+  // the host, so there is nothing to register there.
+  SmallVector<Value, 5> registeredBuffers;
+  if (!isCPUKernel) {
+    for (Value buffer : localVars) {
+      auto bufferType = cast<MemRefType>(buffer.getType());
+      Type elemType = bufferType.getElementType();
+      if (!elemType.isIntOrFloat() || elemType.getIntOrFloatBitWidth() < 8)
+        continue;
+      auto unrankedType =
+          UnrankedMemRefType::get(elemType, bufferType.getMemorySpace());
+      Value unranked = memref::CastOp::create(b, loc, unrankedType, buffer);
+      gpu::HostRegisterOp::create(b, loc, unranked);
+      registeredBuffers.push_back(unranked);
+    }
+  }
+
   // Helper to call a function with appropriate type conversions
   // Handles both tensor-based (new) and memref-based (legacy) kernel interfaces
   // If willBeWrapped is true, the call will be redirected to a GPU wrapper that
@@ -6186,15 +6261,20 @@ static LogicalResult populateHostHarnessLogic(
                                     SmallVectorImpl<Value> &memrefArgs,
                                     ArrayRef<int32_t> outputIndices,
                                     bool willBeWrapped = false) {
-    // Check if the function expects tensor arguments by looking at first arg
-    bool expectsTensors = !willBeWrapped &&
-                          !callee.getArgumentTypes().empty() &&
-                          isa<TensorType>(callee.getArgumentTypes().front());
+    // Check if the function uses the tensor interface by looking at its first
+    // argument, or at its first result when it takes no arguments.
+    TypeRange signatureTypes = callee.getNumArguments() > 0
+                                   ? callee.getArgumentTypes()
+                                   : callee.getResultTypes();
+    bool expectsTensors = !willBeWrapped && !signatureTypes.empty() &&
+                          isa<TensorType>(signatureTypes.front());
 
     if (expectsTensors) {
       // Convert memrefs to tensors for the call
       SmallVector<Value, 8> tensorArgs;
-      for (auto [idx, memrefArg] : llvm::enumerate(memrefArgs)) {
+      for (auto [idx, memrefArg] :
+           llvm::enumerate(ArrayRef<Value>(memrefArgs)
+                               .take_front(callee.getNumArguments()))) {
         bool isWritable = llvm::is_contained(outputIndices, idx);
         tensorArgs.push_back(rock::getAsTensor(b, loc, memrefArg, isWritable));
       }
@@ -6207,7 +6287,9 @@ static LogicalResult populateHostHarnessLogic(
         if (resultIdx < outputIndices.size()) {
           int32_t outIdx = outputIndices[resultIdx];
           // Convert result tensor to memref
-          auto outMemrefType = cast<MemRefType>(memrefArgs[outIdx].getType());
+          auto resultType = cast<RankedTensorType>(result.getType());
+          auto outMemrefType = MemRefType::get(resultType.getShape(),
+                                               resultType.getElementType());
           Value resultMemref =
               bufferization::ToBufferOp::create(b, loc, outMemrefType, result);
           memrefArgs[outIdx] = resultMemref;
@@ -6236,6 +6318,7 @@ static LogicalResult populateHostHarnessLogic(
   for (auto &root : roots) {
     // Is the root also a kernel?
     bool rootKernel =
+        root.func->hasAttr(rock::KernelAttr::getMnemonic()) &&
         std::find_if(kernels.begin(), kernels.end(), [&](const KernelIF &k) {
           return k.func == root.func;
         }) != kernels.end();
@@ -6254,7 +6337,9 @@ static LogicalResult populateHostHarnessLogic(
       if (cpuTimers) {
         func::CallOp::create(b, loc, gpuTimerStopFunc, ValueRange{});
       }
-    } else if (!valVars.empty()) {
+    } else if (!valVars.empty() && !hasCloneValidation) {
+      // Clone validation fills valVars from the _cpu_host reference, so there
+      // the root under test takes the localVars path below.
       callFuncWithConversion(root.func, valVars, outIndices);
       if (!root.func->hasAttr(rock::KernelAttr::getMnemonic())) {
         printValidationResults = true;
@@ -6299,6 +6384,12 @@ static LogicalResult populateHostHarnessLogic(
         emitPrintTensor(b, lvar);
     }
   }
+
+  // Drop the page-locked mappings taken above, now that the kernel and any
+  // validation are done with the buffers. Freeing an allocation that is still
+  // registered leaves the mapping dangling in the runtime.
+  for (Value unranked : registeredBuffers)
+    gpu::HostUnregisterOp::create(b, loc, unranked);
 
   for (auto &vvar : valVars) {
     memref::DeallocOp::create(b, loc, vvar);
@@ -6781,6 +6872,32 @@ int main(int argc, char **argv) {
       return EXIT_FAILURE;
     }
     llvm::outs() << tuningKey << "\n";
+    return 0;
+  }
+
+  if (emitQuickTuningProblemKeyHash ||
+      emitQuickTuningTableLookUpKeyVersionHash) {
+    std::optional<rock::QuickTuningProblemKey> key =
+        rock::getQuickTuningProblemKey(*module);
+    if (!key) {
+      llvm::errs() << "Failed to key module: " << *module << "\n";
+      return EXIT_FAILURE;
+    }
+    if (key->hasUnrepresentedFields()) {
+      llvm::errs()
+          << "Cannot generate a per-problem quick-tuning key: the current "
+             "problem uses fields not represented by the shipped maps: "
+          << key->unsupportedFields
+          << (key->unsupportedFields.empty() || key->untunableFields.empty()
+                  ? ""
+                  : ", ")
+          << key->untunableFields << "\n";
+      return EXIT_FAILURE;
+    }
+    if (emitQuickTuningProblemKeyHash)
+      llvm::outs() << key->hash << "\n";
+    if (emitQuickTuningTableLookUpKeyVersionHash)
+      llvm::outs() << key->versionHash << "\n";
     return 0;
   }
 

@@ -38,8 +38,7 @@ static bool validOperationGemmOut(Operation *op) {
 }
 
 LogicalResult mlir::rock::checkValidOutputFusion(
-    Value gemmResult,
-    SmallVector<std::tuple<Operation *, int>> &adds) {
+    Value gemmResult, SmallVector<std::tuple<Operation *, int>> &adds) {
   /* We can only fuse:
   - add/sub gemmResult, otherTensor (which will be converted to add gemmResult,
   otherTensor/splitKFactor)
@@ -88,6 +87,21 @@ bool mlir::rock::gemmGemmHasPreSecondGemmFusion(
   return !region.front().without_terminator().empty();
 }
 
+static LogicalResult checkValidSplitKOutputTypes(Value output,
+                                                 func::FuncOp func) {
+  FailureOr<SmallVector<BlockArgument>> outputArgs =
+      traceRootOutputToArgs(output, func);
+  if (failed(outputArgs))
+    return failure();
+
+  for (BlockArgument outputArg : *outputArgs) {
+    Type elementType = cast<ShapedType>(outputArg.getType()).getElementType();
+    if (!isAtomicRMWTypeSupported(elementType))
+      return failure();
+  }
+  return success();
+}
+
 LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
   // can't fuse reduce_max with split-k
   WalkResult reduceMaxRes = func.walk([](ReduceOp reduceOp) -> WalkResult {
@@ -102,7 +116,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // Use the result directly if there's no output argument (e.g., GemmOp)
         Value gemmResult = gemmOp->getResult(0);
 
-        if (failed(traceRootOutputToArgs(gemmResult, func)))
+        if (failed(checkValidSplitKOutputTypes(gemmResult, func)))
           return WalkResult::interrupt();
 
         SmallVector<std::tuple<Operation *, int>> adds;
@@ -121,7 +135,7 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         // Only gemm+gemm reaches here, so there is a single result.
         auto gemmGemmResult = gemmGemmOp->getResult(0);
 
-        if (failed(traceRootOutputToArgs(gemmGemmResult, func)))
+        if (failed(checkValidSplitKOutputTypes(gemmGemmResult, func)))
           return WalkResult::interrupt();
 
         // The output fusion has to survive being applied once per split and
@@ -144,6 +158,78 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(ModuleOp mod) {
          "expected ModuleOp containing a single func::FuncOp");
   func::FuncOp func = *(funcs.begin());
   return testFusionLegalitySplitK(func);
+}
+
+LogicalResult mlir::rock::testFusionLegalityReduce(func::FuncOp func) {
+  WalkResult walkResult = func.walk([](ReduceOp reduceOp) -> WalkResult {
+    Type elementType = reduceOp.getResult().getType().getElementType();
+    return isAtomicRMWTypeSupported(elementType) ? WalkResult::advance()
+                                                 : WalkResult::interrupt();
+  });
+
+  return success(!walkResult.wasInterrupted());
+}
+
+LogicalResult mlir::rock::testFusionLegalityReduce(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  assert(std::distance(funcs.begin(), funcs.end()) &&
+         "expected ModuleOp containing a single func::FuncOp");
+  func::FuncOp func = *(funcs.begin());
+  return testFusionLegalityReduce(func);
+}
+
+// Matches a pure element-wise widening of the attention result: a lone
+// `arith.extf` fed directly by the result. Widening is lossless, so it
+// commutes with the split-kv LSE combine; anything chained onto it does not.
+static bool isPureElementwiseExtF(const FusionInfo &fusionInfo) {
+  if (fusionInfo.fusionOps.size() != 1 || !fusionInfo.reduceOps.empty())
+    return false;
+  auto extFOp = dyn_cast<ExtFOp>(fusionInfo.fusionOps.front());
+  return extFOp && fusionInfo.chainValues.contains(extFOp.getIn());
+}
+
+// Whether the fusion chain hanging off `partial` survives the split-kv
+// combine. Only a missing epilogue or a lone widening does.
+static bool splitKVOutputFusionIsLegal(Value partial) {
+  FusionInfo fusionInfo = rock::collectFusionInfo(partial);
+  bool hasOutputFusion =
+      !fusionInfo.fusionOps.empty() || !fusionInfo.reduceOps.empty();
+  return !hasOutputFusion || isPureElementwiseExtF(fusionInfo);
+}
+
+LogicalResult
+mlir::rock::testFusionLegalityAttentionSplitKV(func::FuncOp func) {
+  // Input fusions and fusions between the two gemms stay legal under
+  // splitKV > 1; only output fusions are rejected, because each split produces
+  // a partial result that an LSE-based combine has yet to rescale.
+  WalkResult walkResult = func.walk([](rock::AttentionOp attnOp) -> WalkResult {
+    if (attnOp.getSplitKV() <= 1)
+      return WalkResult::advance();
+
+    if (!splitKVOutputFusionIsLegal(attnOp.getResult()))
+      return WalkResult::interrupt();
+
+    // The LSE is a per-split partial log-sum-exp that the same combine has to
+    // reconcile, so an epilogue on it is no more legal than one on the result.
+    // The verifier guarantees it is present once splitKV > 1.
+    if (Value lse = attnOp.getLse())
+      if (!splitKVOutputFusionIsLegal(lse))
+        return WalkResult::interrupt();
+
+    return WalkResult::advance();
+  });
+
+  return success(!walkResult.wasInterrupted());
+}
+
+LogicalResult mlir::rock::testFusionLegalityAttentionSplitKV(ModuleOp mod) {
+  auto funcs = mod.getOps<func::FuncOp>();
+  bool isFusible = true;
+  for (auto f : funcs) {
+    isFusible &= succeeded(testFusionLegalityAttentionSplitKV(f));
+  }
+
+  return success(isFusible);
 }
 
 LogicalResult mlir::rock::testFusionLegalityBwdDataConv(func::FuncOp func) {

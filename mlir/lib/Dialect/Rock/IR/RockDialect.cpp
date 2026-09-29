@@ -904,30 +904,12 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
   for (const auto &[right, left] : zip(iTildaRight, iTildaLeft))
     tildaSlice.push_back(right - left);
 
-  // Decompose kernelId into per-spatial-dimension iTilda indices.
-  int64_t product = 1;
-  for (size_t i = 1; i < sizes.fil.size(); i++)
-    product *= filTilda[i];
-  int64_t divisor = (sizes.fil.size() == 3) ? filTilda[2] : 1;
-
-  SmallVector<int64_t, 3> iTilda(sizes.fil.size());
-  switch (sizes.fil.size()) {
-  default:
-    llvm_unreachable("Only 2-D and 3-D have been implemented.");
-    break;
-  case 3:
-    iTilda[2] = kernelId % divisor;
-    [[fallthrough]];
-  case 2:
-    iTilda[1] = (kernelId % product) / divisor;
-    iTilda[0] = kernelId / product;
-  }
-
   int64_t g = sizes.g;
   int64_t m = sizes.c;
   int64_t k = sizes.k;
-  for (size_t i = 0; i < sizes.fil.size(); i++)
-    k *= llvm::divideCeil(sizes.fil[i] - iTilda[i], filTilda[i]);
+  for (int64_t dotSlice :
+       rock::backwardDataDotSlices(strides, dilations, sizes.fil, kernelId))
+    k *= dotSlice;
   int64_t n = sizes.n;
   for (auto ts : tildaSlice)
     n *= ts;
@@ -1080,6 +1062,22 @@ static LogicalResult verifyStoreResultAlias(StoreOpT op) {
   return success();
 }
 
+template <typename StoreOpT>
+static LogicalResult verifyStoreMethod(StoreOpT op) {
+  StoreMethod storeMethod = op.getStoreMethod();
+  if (storeMethod == StoreMethod::Set)
+    return success();
+
+  Type elementType =
+      cast<ShapedType>(op.getSource().getType()).getElementType();
+  if (!rock::isAtomicRMWTypeSupported(elementType))
+    return op.emitOpError()
+           << "source element type " << elementType << " does not support "
+           << getNameForStoreMethod(storeMethod);
+
+  return success();
+}
+
 LogicalResult StoreOp::verify() {
   auto sourceType = cast<ShapedType>(getSource().getType());
   auto destType = cast<ShapedType>(getDest().getType());
@@ -1092,6 +1090,9 @@ LogicalResult StoreOp::verify() {
     return failure();
 
   if (failed(verifyStoreDest(*this)))
+    return failure();
+
+  if (failed(verifyStoreMethod(*this)))
     return failure();
 
   return verifyStoreResultUses(*this, getResult());
@@ -1564,8 +1565,13 @@ LogicalResult BlockwiseStoreOp::verify() {
   if (failed(verifyStoreDest(*this)))
     return failure();
 
+  if (failed(verifyStoreMethod(*this)))
+    return failure();
+
   return verifyStoreResultUses(*this, getResult());
 }
+
+LogicalResult BlockwiseStorePtrOp::verify() { return verifyStoreMethod(*this); }
 
 //===----------------------------------------------------------------------===//
 // BlockwiseGemmOp
@@ -1683,6 +1689,39 @@ verifySlidingWindowLookBack(Operation *op,
   return success();
 }
 
+// The pre-second-GEMM region (the pre-softmax region of attention) is optional
+// in the assembly format, so an empty region is legal. When present, however,
+// downstream passes (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise)
+// and the tuning key builder assume a single block whose arguments are the
+// first-GEMM result followed by one argument per elementwise input, and whose
+// terminator is a `rock.yield` of exactly one value. Enforce that shape here so
+// malformed IR is rejected up front rather than crashing later in a pass.
+static LogicalResult verifyPreSecondGemmBody(Operation *op, Region &body,
+                                             size_t numElemwiseInputs,
+                                             StringRef regionName) {
+  if (body.empty())
+    return success();
+  if (!body.hasOneBlock())
+    return op->emitOpError()
+           << regionName << " region must contain a single block";
+  Block &block = body.front();
+  if (block.getNumArguments() != 1 + numElemwiseInputs)
+    return op->emitOpError()
+           << regionName << " body argument count must be "
+           << (1 + numElemwiseInputs)
+           << " (the first-GEMM result plus one per elementwise input), but is "
+           << block.getNumArguments();
+  // Op verifiers run before the blocks in their regions are checked for
+  // terminators, so the block may still be empty or end in a non-terminator.
+  if (block.empty() || !isa<rock::YieldOp>(block.back()))
+    return op->emitOpError()
+           << regionName << " body must be terminated by a rock.yield";
+  if (block.back().getNumOperands() != 1)
+    return op->emitOpError()
+           << regionName << " body must yield exactly one value";
+  return success();
+}
+
 LogicalResult GridwiseAttentionOp::verify() {
   GemmParamsAttr gemm0TuningParams = getParams0();
   int64_t gemm0kpack = gemm0TuningParams.getKpack();
@@ -1690,6 +1729,11 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (gemm0NPerBlock % gemm0kpack != 0) {
     return emitError("NPerBlock should be divisible by kpack.");
   }
+
+  if (failed(verifyPreSecondGemmBody(getOperation(), getPreSoftmaxBody(),
+                                     getPreSoftmaxElemWiseInputs().size(),
+                                     "pre-softmax")))
+    return failure();
 
   if (!getEnableSoftmax() && getLse())
     return emitError("LSE only works for attention.");
@@ -2086,39 +2130,9 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
     }
   }
 
-  // The pre-second-GEMM region is optional in the assembly format, so an
-  // empty region is legal. When present, however, downstream passes
-  // (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise) and the tuning
-  // key builder assume a single block whose arguments are the first-GEMM result
-  // followed by one argument per elementwise input, and whose terminator is a
-  // `rock.yield` of exactly one value. Enforce that shape here so malformed IR
-  // is rejected up front rather than crashing later in a pass.
-  Region &body = op.getPreSecondGemmRegion();
-  if (!body.empty()) {
-    if (!body.hasOneBlock())
-      return op.emitOpError(
-          "pre-second-GEMM region must contain a single block");
-    Block &block = body.front();
-    unsigned numElemwiseInputs =
-        op.getPreSecondGemmElemwiseInputsMutable().size();
-    // Block argument 0 is the first-GEMM result; the remaining arguments map
-    // 1:1 to the pre-second-GEMM elementwise inputs.
-    if (block.getNumArguments() != 1 + numElemwiseInputs)
-      return op.emitOpError("pre-second-GEMM body argument count must be ")
-             << (1 + numElemwiseInputs)
-             << " (the first-GEMM result plus one per elementwise input), but "
-                "is "
-             << block.getNumArguments();
-    auto yieldOp = dyn_cast<rock::YieldOp>(block.getTerminator());
-    if (!yieldOp)
-      return op.emitOpError(
-          "pre-second-GEMM body must be terminated by a rock.yield");
-    if (yieldOp.getNumOperands() != 1)
-      return op.emitOpError(
-          "pre-second-GEMM body must yield exactly one value");
-  }
-
-  return success();
+  return verifyPreSecondGemmBody(
+      op.getOperation(), op.getPreSecondGemmRegion(),
+      op.getPreSecondGemmElemwiseInputsMutable().size(), "pre-second-GEMM");
 }
 
 LogicalResult GemmElementwiseGemmOp::verify() {

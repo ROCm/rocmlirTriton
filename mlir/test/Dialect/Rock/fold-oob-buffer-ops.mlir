@@ -1377,6 +1377,30 @@ llvm.func @all_ones_num_records_declines(%ptr: !llvm.ptr<1>, %data: i32) attribu
 
 // -----
 
+// CHECK-LABEL: llvm.func @gfx1310_declines_no_modelled_descriptor
+// CHECK:         rocdl.raw.ptr.buffer.store
+llvm.func @gfx1310_declines_no_modelled_descriptor(%ptr: !llvm.ptr<1>, %data: i32) attributes {rock.arch = "gfx1310"} {
+  %stride = llvm.mlir.constant(0 : i16) : i16
+  %numRecords = llvm.mlir.constant(4294967295 : i64) : i64
+  %flags = llvm.mlir.constant(822243328 : i32) : i32
+  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1> to <8>
+
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  %four = llvm.mlir.constant(4 : i32) : i32
+  %sixteen = llvm.mlir.constant(16 : i32) : i32
+  %oob = llvm.mlir.constant(-1 : i32) : i32
+  %offset = llvm.mlir.constant(64 : i32) : i32
+
+  %tid = rocdl.workitem.id.x : i32
+  %row = llvm.urem %tid, %four : i32
+  %pred = llvm.icmp "uge" %row, %sixteen : i32
+  %voffset = llvm.select %pred, %offset, %oob : i1, i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  llvm.return
+}
+
+// -----
+
 // The three cases below write a constant whose attribute is narrower than the
 // value's own type, which llvm.mlir.constant allows. Translation to LLVM IR
 // sign-extends such an attribute unless it is unsigned or i1, so reading one as

@@ -220,7 +220,9 @@ struct VectorizationData {
 /// consideration cannot be completely traversed using vector operations,
 /// meaning that the unmerged result isn't guaranteed to be traversable with
 /// unit stride (the dimension that broke things could have jumps, padding,
-/// etc.).
+/// etc.). A held-constant dimension of length > 1 also stops the walk, since
+/// it leaves gaps in the lower coordinate. Either way, the alignment
+/// accumulated before stopping is kept.
 template <typename T>
 static std::optional<VectorizationInfo>
 propagateUnmergeVectorization(T &&dimAndLength,
@@ -256,6 +258,15 @@ propagateUnmergeVectorization(T &&dimAndLength,
         previousAlign = previousDimsStride;
       else
         previousAlign = std::gcd(*previousAlign, previousDimsStride);
+      // A held-constant upper dim with size > 1 means only one of its
+      // many values is being accessed. Within the unmerge embedding
+      // (lower = sum_i upper[i] * stride_i), this introduces stride-N
+      // gaps in the lower coordinate, so any further dim's vectorization
+      // would produce non-contiguous lower accesses. Stop extending the
+      // contiguous vectorization length here, but preserve the alignment
+      // computed so far.
+      if (dimLength > 1)
+        break;
     }
     previousDimsStride *= dimLength;
   }
@@ -280,6 +291,24 @@ using DimToMergeMap = llvm::SmallDenseMap<uint32_t, DimInfo>;
 using ContiguousMergesMap =
     llvm::DenseMap<std::pair<TransformMapAttr, TransformAttr>,
                    llvm::EquivalenceClasses<uint32_t>>;
+
+// A group may only fuse merge positions that are neighbours in the merge's
+// linearization. The stride of a position is the product of the params below
+// it, so skipping a non-unit position would fuse dimensions that are not
+// actually adjacent and permute the addresses in between. Unit-length
+// positions contribute nothing to that product and may be skipped, which is
+// what makes patterns like Merge{8,1,3} -> Unmerge{8,3} collapsible.
+// `dimPosition` must be sorted; an out-of-order pair would leave the gap scan
+// empty and be reported as adjacent.
+static bool adjacentInMerge(ArrayRef<int64_t> mergeParams,
+                            ArrayRef<size_t> dimPosition) {
+  assert(llvm::is_sorted(dimPosition) && "positions must be sorted");
+  for (size_t k = 1; k < dimPosition.size(); ++k)
+    for (size_t p = dimPosition[k - 1] + 1; p < dimPosition[k]; ++p)
+      if (mergeParams[p] != 1)
+        return false;
+  return true;
+}
 
 static void findCountiguousGroupsUnmerge(
     const ArrayRef<uint32_t> upperDims, const ArrayRef<int64_t> params,
@@ -339,7 +368,8 @@ static void findCountiguousGroupsUnmerge(
 
     // Update the result with the current group for the mergePair key
     if (groupCandidate.size() > 1 &&
-        std::is_sorted(dimPosition.begin(), dimPosition.end())) {
+        std::is_sorted(dimPosition.begin(), dimPosition.end()) &&
+        adjacentInMerge(keyI.transform.getParams(), dimPosition)) {
 
       uint32_t fastestDim = groupCandidate.back();
       size_t fastestDimPosInMerge = dimPosition.back();
@@ -1538,14 +1568,14 @@ ArrayAttr mlir::rock::prependUpperViews(OpBuilder &b, ArrayAttr viewsToPrepend,
   return b.getArrayAttr(views);
 }
 
-ArrayAttr mlir::rock::invertTransforms(OpBuilder &b, Location loc,
-                                       ArrayAttr transforms) {
+FailureOr<ArrayAttr> mlir::rock::invertTransforms(OpBuilder &b, Location loc,
+                                                  ArrayAttr transforms) {
   SmallVector<Attribute, 4> invertedTrs;
   for (Attribute tr : llvm::reverse(transforms)) {
     auto trMap = cast<TransformMapAttr>(tr);
     TransformMapAttr invertedTrMap = invertTransformMap(b, trMap, loc);
     if (!invertedTrMap)
-      return nullptr;
+      return failure();
     invertedTrs.push_back(invertedTrMap);
   }
   return b.getArrayAttr(invertedTrs);
@@ -2611,6 +2641,16 @@ FailureOr<Type> mlir::rock::getInputFusionElementType(Value value) {
   for (const InputFusionPath &path : *paths)
     if (auto blockArg = dyn_cast<BlockArgument>(path.leaf))
       kernelArgs.push_back(blockArg);
+
+  // A constant-only input fusion has no underlying memory load whose element
+  // type can be recovered from a kernel argument. In that case the effective
+  // type consumed by the kernel is the only relevant input type.
+  if (kernelArgs.empty()) {
+    auto shapedType = dyn_cast<ShapedType>(value.getType());
+    if (!shapedType)
+      return failure();
+    return shapedType.getElementType();
+  }
 
   FailureOr<Type> maybeElemType =
       getElementTypeOfBiggestTensor(kernelArgs, /*isInput=*/true);

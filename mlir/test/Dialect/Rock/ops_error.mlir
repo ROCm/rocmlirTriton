@@ -44,6 +44,117 @@ func.func @gridwise_attention_elemwise_input_shape_mismatch(
   return %r : tensor<1x384x64xf32>
 }
 
+// The first body argument must be the QK result.
+func.func @gridwise_attention_missing_qk_argument(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body argument count must be 1 (the first-GEMM result plus one per elementwise input), but is 0}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0:
+    %zero = arith.constant dense<0.0> : tensor<1x384x384xf32>
+    rock.yield %zero : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// The pre-softmax body must yield the value consumed by softmax.
+func.func @gridwise_attention_empty_yield(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body must yield exactly one value}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// The pre-softmax body must be a single block.
+func.func @gridwise_attention_multi_block_body(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax region must contain a single block}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    cf.br ^bb1(%arg_qk : tensor<1x384x384xf32>)
+  ^bb1(%arg_qk2: tensor<1x384x384xf32>):
+    rock.yield %arg_qk2 : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// The pre-softmax body must be terminated by a `rock.yield`. Use a self-branch
+// to keep the region single-block while replacing the terminator.
+func.func @gridwise_attention_wrong_terminator(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body must be terminated by a rock.yield}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    cf.br ^bb0(%arg_qk : tensor<1x384x384xf32>)
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// An empty pre-softmax body has no rock.yield terminator.
+func.func @gridwise_attention_empty_body(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body must be terminated by a rock.yield}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
+// Neither does a pre-softmax body whose last op is not a terminator.
+func.func @gridwise_attention_missing_terminator(
+    %q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>,
+    %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32>
+    attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{pre-softmax body must be terminated by a rock.yield}}
+  %r = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    %neg = arith.negf %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, kpack = 1, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %r : tensor<1x384x64xf32>
+}
+
 // -----------------------------------------------------------------------------
 // attention tests
 // -----------------------------------------------------------------------------
@@ -1376,6 +1487,24 @@ func.func @gemm_elementwise_gemm_body_wrong_terminator(
   return %r : tensor<1x4x2xf32>
 }
 
+// Missing terminator: a body whose last op is not a terminator is rejected the
+// same way.
+func.func @gemm_elementwise_gemm_body_missing_terminator(
+    %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
+    -> tensor<1x4x2xf32>
+    attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel} {
+  // expected-error @+1 {{pre-second-GEMM body must be terminated by a rock.yield}}
+  %r = rock.gemm_elementwise_gemm{
+   ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+   ab = elementwise {
+   ^bb0(%qk: tensor<1x4x4xf32>):
+     %neg = arith.negf %qk : tensor<1x4x4xf32>
+   }
+   out = ab * %c : tensor<1x4x2xf32>
+  } -> tensor<1x4x2xf32>
+  return %r : tensor<1x4x2xf32>
+}
+
 // Yield with zero operands: must yield exactly one value.
 func.func @gemm_elementwise_gemm_body_yield_zero_operands(
     %a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x2xf32>)
@@ -1591,5 +1720,45 @@ func.func @conv_elementwise_gemm_non_string_layout(
      padding = [0 : index, 0 : index, 0 : index, 0 : index],
      strides = [1 : index, 1 : index]} -> tensor<1x8x3xf32>
   return %r : tensor<1x8x3xf32>
+}
+
+// =============================================================================
+// rock.reduce tests
+// =============================================================================
+
+// The axis must be within the input rank
+func.func @reduce_axis_out_of_range(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{Axis is out of range}}
+  %0 = rock.reduce sum %arg0 {axis = 3 : index} : tensor<2x12x12xf32> -> tensor<2x12x12xf32>
+  return
+}
+
+// Input and output must have the same rank
+func.func @reduce_rank_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{Input and output rank is not the same}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12xf32>
+  return
+}
+
+// The reduction dimension must collapse to size 1
+func.func @reduce_axis_not_one(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{The size of the reduction dimension should be 1.}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12x12xf32>
+  return
+}
+
+// Non-reduction dimensions must match the input shape
+func.func @reduce_nonaxis_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{The size of the non-reduction dimension should match the input.}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x13x1xf32>
+  return
+}
+
+// Element type mismatch, caught by the ODS AllElementTypesMatch trait before
+// the custom verifier runs
+func.func @reduce_elem_type_mismatch(%arg0: tensor<2x12x12xf32>) {
+  // expected-error @+1 {{failed to verify that all of {in, result} have same element type}}
+  %0 = rock.reduce sum %arg0 {axis = 2 : index} : tensor<2x12x12xf32> -> tensor<2x12x1xf16>
+  return
 }
 
