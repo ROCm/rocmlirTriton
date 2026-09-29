@@ -4,33 +4,28 @@ triton-patches/ -- downstream Triton cherry-picks
 This directory holds downstream patch records against the vendored Triton tree
 (external/triton/).
 
-----------------------------------------------------------------------
-patch-free-var-mask-register-dim-name.patch
-patch-wmma-preserve-discardable-attrs.patch
-patch-float-atomic-minmax-lowering.patch
-patch-preserve-arith-bitcast-lowering.patch
-patch-roundeven-lowering.patch
-patch-skip-subbyte-reduce-data-duplication.patch
-patch-buffer-atomics.patch
-patch-cost-aware-dot-rematerialization.patch
-patch-negligible-anchor-layout-conflict.patch
-patch-warp-id-readfirstlane.patch
-patch-gfx1170.patch
-patch-gfx1170-fp8-cvt.patch
-patch-optimize-epilogue-rock-metadata.patch
-patch-optimize-epilogue-fma-blocked.patch
-patch-partitionloops-clang-cl.patch
-patch-elementwise-fastmath-flags.patch
-patch-gfx1310-isa-family.patch
-patch11295.patch
-patch10497.patch
-patch10694.patch
-patch-fma-lds-swizzle.patch
-patch10832.patch
-patch10635.patch
-patch10928.patch
-patch11018.patch
-patch11118.patch
+NOTE: Patches need to be applied in the order specified here.
+NOTE: While adding new patches, add to the end of this list.
+
+patch-wmma-preserve-discardable-attrs.patch - FIXED
+patch10497.patch - CLEAN
+patch-buffer-atomics.patch - FIXED
+patch-float-atomic-minmax-lowering.patch - FIXED
+patch-preserve-arith-bitcast-lowering.patch - CLEAN
+patch-skip-subbyte-reduce-data-duplication.patch - CLEAN
+patch-optimize-epilogue-rock-metadata.patch - CLEAN
+patch-gfx1170.patch - FIXED
+patch-partitionloops-clang-cl.patch - CLEAN
+patch11295.patch - CLEAN
+patch-gfx1170-fp8-cvt.patch -  FIXED
+patch-elementwise-fastmath-flags.patch - FIXED
+patch-cost-aware-dot-rematerialization.patch - CLEAN
+patch10694.patch - CLEAN
+patch-gfx1310-isa-family.patch - FIXED
+patch-optimize-epilogue-fma-blocked.patch - FIXED
+patch-roundeven-lowering.patch - CLEAN
+patch-fma-lds-swizzle.patch - CLEAN
+patch-negligible-anchor-layout-conflict.patch - FIXED
 
 patch-gfx1310-isa-family.patch
   Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
@@ -230,107 +225,6 @@ patch10694.patch
   Drop this patch on the next Triton bump that pulls PR #10694 into
   external/triton.
 
-patch10832.patch
-  Gives the ProtonIR object library the MLIR usage requirements it actually
-  needs (MLIRIR, MLIRLLVMDialect, MLIRFunctionInterfaces, MLIRTransformUtils),
-  matching the includes in Dialect.cpp / Ops.cpp and mirroring every other MLIR
-  dialect library. ProtonIR was the only dialect target declaring no LINK_LIBS
-  at all, so its compiles inherited no build ordering against the TableGen
-  generated MLIR headers (e.g. mlir/IR/BuiltinLocationAttributes.h.inc). In an
-  in-tree LLVM + Triton build at high parallelism CMake could schedule
-  Dialect.cpp before those headers were generated, producing an intermittent
-  "file not found" failure. Mirrors upstream Triton PR
-  https://github.com/triton-lang/triton/pull/10832 exactly.
-
-  Drop this patch on the next Triton bump that pulls PR #10832 (upstream main at
-  cf8bb65 or later) into external/triton.
-
-patch10635.patch
-  Fixes AMD software pipelining for undersized direct-to-LDS tiles. The
-  pipeliner's async-copy eligibility check now first applies Triton's standard
-  `triton::canBeConvertedToAsyncLoad` contiguity/alignment check, then rejects
-  scatter-less direct-to-LDS targets when the CTA tile does not contain enough
-  data for each warp lane to write at least 32 bits into LDS
-  (`hasEnoughCTABytesForDirectToLds`, `ctaTileBits >= 32 * warpSize`). This
-  keeps undersized tiles on the register path instead of creating async copies
-  that later fail direct-to-LDS lowering. Mirrors upstream Triton PR
-  https://github.com/triton-lang/triton/pull/10635 exactly.
-
-  Drop this patch on the next Triton bump that pulls PR #10635 (upstream main at
-  f12e94d or later) into external/triton.
-
-patch10928.patch
-  Supports a blocked/shared order mismatch for direct-to-LDS loads on gfx9.
-  When the blocked and shared encodings have different orders, the srcToShared
-  layout has contig=1 (smaller than the blocked encoding), so CoalesceAsyncCopy
-  either skipped rewriting the blocked encoding or rewrote it incorrectly,
-  yielding non-coalesced LDS writes. The pass now detects when the layout
-  restricts contiguity below the load contiguity and always rewrites the src
-  layout, distributing lanes/warps along the shared order while keeping the
-  original blocked order for the final encoding. The lowering
-  (canLoadDirectToLDS) also no longer bails out when the pointer contiguity
-  exceeds the srcToShared contiguity: instead it clamps the load width down to
-  the coalesced chunk size and splits the load into multiple narrower
-  direct-to-LDS ops. Mirrors upstream Triton PR
-  https://github.com/triton-lang/triton/pull/10928 exactly.
-
-  Drop this patch on the next Triton bump that pulls PR #10928 into
-  external/triton.
-
-patch11018.patch
-  Gates buffer atomic float min/max on native hardware support:
-  ConvertToBufferOps only rewrites tt.atomic_rmw max/min into
-  amdg.buffer_atomic_rmw when TargetFeatures::supportsBufferAtomicFMinMax
-  accepts the target/type pair (f32 on RDNA1/RDNA2/RDNA3/RDNA4m/RDNA4/GFX1250,
-  f64 on CDNA2/CDNA3/CDNA4/RDNA1/RDNA2/GFX1250); integer min/max always take the
-  generic path.
-  Buffer atomics never reach AtomicExpandPass, so a missing instruction (f32 on
-  CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
-  fallback always has a CAS expansion. That is what lets rocMLIR drop its
-  isFastAtomicMaxSupported() fusion gate.
-
-  Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
-  the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
-  already covers centrally in matchAtomicOp. Lit coverage lives in
-  amd-convert-buffer-ops-atomic-fminmax.mlir as upstream does, leaving
-  amd-convert-buffer-ops.mlir unchanged. Upstream names gfx1170 ISAFamily::RDNA4m;
-  this tree uses ISAFamily::GFX1170 (patch-gfx1170.patch) at the same list slot.
-
-  Drop on the next Triton bump that pulls PR #11018.
-
-patch11118.patch
-  Removes the AMD backend's second arith.minimumf/arith.maximumf conversion
-  registration, which shadowed its direct LLVM minimum/maximum lowering at the
-  same pattern benefit. LLVM now selects native IEEE min/max instructions where
-  available and legalizes the intrinsics otherwise.
-
-  Imports https://github.com/triton-lang/triton/pull/11118.
-
-  Drop this patch on the next Triton bump that includes upstream merge commit
-  9ab6453a83ac74808b3dd9ecfcd7a4335270b8d0.
-
-patch-free-var-mask-register-dim-name.patch
-  Names the register dimension "register" everywhere free-variable masks are
-  produced and consumed, so the redundant-register guards actually fire.
-
-  getFreeVariableMasks(Type) keyed that dimension "reg" for scalars but
-  "register" for tensors, since LinearLayout keys by its input dimension names.
-  Every consumer used "reg", so on tensors the lookup missed and
-  MapVector::operator[] default-inserted 0, making isCanonicalIndex() always
-  true and leaving every redundant-element guard as dead code. Fixed here for
-  the producer and for every consumer: the AMD and NVIDIA store, atomic RMW and
-  CAS conversions, AMD's isRedundantThreadPredWarpUniform, and GSan's
-  instrumentation. Scalars read the same all-redundant mask as before, so only
-  tensor layouts change behaviour.
-
-  It matters for layouts that broadcast across registers: gfx11 WMMA duplicates
-  its result rather than offsetting it, so a depthwise convolution tuned to
-  mPerBlock = 1 stored the same element from all 8 registers of a lane. On the
-  yolov10n depthwise shapes gfx1100 emitted 32 stores and 32 exp2 calls instead
-  of 4 and 4, measuring 1.12x-2.00x slower.
-
-  Not filed upstream yet; upstream Triton has the same defect.
-
 patch-cost-aware-dot-rematerialization.patch
   Gates LayoutRematerialization::hoistConvertDotOperand on the existing
   isRematBeneficial cost model instead of hoisting unconditionally. The pass
@@ -436,26 +330,6 @@ patch-elementwise-fastmath-flags.patch
 
   Not yet proposed upstream. Keep until Triton forwards these flags itself.
 
-patch-warp-id-readfirstlane.patch
-  Emits `rocdl.readfirstlane` on every target that lowers `ttg.warp_id` through
-  the thread-id arithmetic path, not just CDNA3/CDNA4. `warpId` is derived from
-  `workitem.id.x`, so LLVM's uniformity analysis treats it as divergent even
-  though every lane in a wave computes the same value; the readfirstlane moves
-  it into an SGPR and lets uniformity propagate to dependent ops, which pick
-  SALU/SGPRs instead of VALU/VGPRs.
-
-  Available on every family we support: `v_readfirstlane_b32` has existed
-  since gfx6, and neither `int_amdgcn_readfirstlane`, the `GCNPat` that
-  selects it, nor the `V_READFIRSTLANE_B32` pseudo carries a
-  `SubtargetPredicate` -- the real encodings span gfx6/gfx7, the gfx8/gfx9
-  "vi" family, and gfx10/11/12/13. Reading lane 0 is an identity rather than
-  an approximation, because `tid / warpSize` is wave-uniform by construction.
-  Only families without a hardware wave id reach this code, so RDNA4 and
-  GFX1250 are unaffected and CDNA3/CDNA4 are unchanged; GCN5_1, CDNA1, CDNA2,
-  RDNA1, RDNA2, RDNA3, and GFX1170 are what newly gain the readfirstlane.
-
-  Upstream PR: https://github.com/triton-lang/triton/pull/11570
-
 patch-fma-lds-swizzle.patch
   Swizzles the pipelined LDS tile for FMA dot operands, which
   composePaddedLayout does not cover and upstream leaves unswizzled.
@@ -474,4 +348,3 @@ patch-fma-lds-swizzle.patch
   operand-major ones that patch introduces.
 
   Not filed upstream yet; upstream Triton has the same performance gap.
-

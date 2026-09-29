@@ -130,10 +130,10 @@ index 0000000000..ca4bc1382a
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-index 5ec93813a7..1ff51b146d 100644
+index 8c4221c9cc..57e155654d 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-@@ -15,6 +15,8 @@
+@@ -16,6 +16,8 @@
  #include "triton/Tools/LayoutUtils.h"
  #include "triton/Tools/LinearLayout.h"
  #include "llvm/ADT/TypeSwitch.h"
@@ -142,7 +142,7 @@ index 5ec93813a7..1ff51b146d 100644
  
  namespace tt = mlir::triton;
  namespace ttg = mlir::triton::gpu;
-@@ -1541,6 +1543,163 @@ public:
+@@ -1575,6 +1577,163 @@ public:
    }
  };
  
@@ -306,7 +306,7 @@ index 5ec93813a7..1ff51b146d 100644
  class AccelerateBlocked : public OpRewritePattern<DotOp> {
    TargetFeatures targetFeatures;
  
-@@ -1766,6 +1925,7 @@ struct TritonAMDGPUAccelerateMatmulPass
+@@ -1803,6 +1962,7 @@ struct TritonAMDGPUAccelerateMatmulPass
        mfmaPatterns.add<::BlockedToWMMA>(context, wmmaVersion,
                                          matrixInstructionSize,
                                          /*benefit=*/2);

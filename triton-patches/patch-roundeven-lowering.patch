@@ -1,5 +1,5 @@
 diff --git a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
-index d3628cdf4..c3ffb2537 100644
+index e5c6c31a36..6394d656c7 100644
 --- a/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
 +++ b/lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp
 @@ -1,5 +1,6 @@
@@ -9,7 +9,7 @@ index d3628cdf4..c3ffb2537 100644
  #include "mlir/Support/LLVM.h"
  #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
  #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
-@@ -664,6 +665,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
+@@ -708,6 +709,7 @@ void mlir::triton::populateElementwiseOpToLLVMPatterns(
    POPULATE_UNARY_OP(arith::NegFOp, LLVM::FNegOp)
    POPULATE_UNARY_OP(math::FloorOp, math::FloorOp)
    POPULATE_UNARY_OP(math::CeilOp, math::CeilOp)
@@ -18,7 +18,7 @@ index d3628cdf4..c3ffb2537 100644
    POPULATE_UNARY_OP(math::Log2Op, math::Log2Op)
    POPULATE_UNARY_OP(math::CosOp, math::CosOp)
 diff --git a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
-index 2c7066a9d..46487d97e 100644
+index 44e60cf36d..3b959f68dd 100644
 --- a/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
 +++ b/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
 @@ -1,5 +1,6 @@
@@ -37,7 +37,7 @@ index 2c7066a9d..46487d97e 100644
                 GenericOpPattern<math::LogOp>, GenericOpPattern<math::Log2Op>,
                 GenericOpPattern<math::ErfOp>, GenericOpPattern<math::AbsFOp>,
 diff --git a/test/Conversion/triton_to_tritongpu.mlir b/test/Conversion/triton_to_tritongpu.mlir
-index 84918529d..d2dfd68de 100644
+index 84918529d5..d2dfd68de2 100644
 --- a/test/Conversion/triton_to_tritongpu.mlir
 +++ b/test/Conversion/triton_to_tritongpu.mlir
 @@ -159,6 +159,20 @@ tt.func @ub_poison() {

@@ -1,8 +1,8 @@
 diff --git a/lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp b/lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp
-index bed05a31c..1e39ccff2 100644
+index 5cbfd16de2..649b704394 100644
 --- a/lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp
 +++ b/lib/Dialect/TritonGPU/Transforms/WarpSpecialization/PartitionLoops.cpp
-@@ -396,7 +396,10 @@ LogicalResult triton::gpu::partitionLoop(scf::ForOp loop) {
+@@ -489,7 +489,10 @@ LogicalResult triton::gpu::partitionLoop(LoopLikeOpInterface loop) {
      return success();
  
    auto numPartitions = partitions.getNumPartitions();

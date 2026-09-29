@@ -103,10 +103,10 @@ index 656425d2ff..c0371daf49 100644
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index eff385c6e9..ea25e6de30 100644
+index 3ab14a31a5..c528d386da 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -376,6 +376,99 @@ bool hasEnoughCTABytesForDirectToLds(tt::LoadOp loadOp,
+@@ -377,6 +377,99 @@ bool hasEnoughCTABytesForDirectToLds(tt::LoadOp loadOp,
    return ctaTileBits >= 32 * targetInfo.getWarpSize();
  }
  
@@ -206,7 +206,7 @@ index eff385c6e9..ea25e6de30 100644
  bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
                                 ttg::SharedEncodingTrait sharedEnc,
                                 tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
-@@ -477,14 +570,34 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
+@@ -478,14 +571,34 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
      if (!loadOp && !descLoadOp && !gatherOp)
        continue;
  
@@ -245,7 +245,7 @@ index eff385c6e9..ea25e6de30 100644
      // Replace the old load with multi-buffered loads
      if (descLoadOp) {
        loadToStreamOp[op] = createTDMAsyncCopy(descLoadOp, alloc, extractIdx);
-@@ -495,9 +608,7 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
+@@ -496,9 +609,7 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
        continue;
      }
  

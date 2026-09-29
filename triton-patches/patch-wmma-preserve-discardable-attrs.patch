@@ -1,7 +1,8 @@
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
+index abc1cd73a0..8c4221c9cc 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp
-@@ -33,6 +33,18 @@
+@@ -34,6 +34,18 @@ using triton::amdgpu::TargetFeatures;
  constexpr char AttrDecomposedDotScaledSource[] =
      "amdg.decomposed_dot_scaled_source";
  
@@ -20,7 +21,7 @@ diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp 
  int getMfmaVersion(ISAFamily isaFamily) {
    switch (isaFamily) {
    case ISAFamily::CDNA1:
-@@ -773,6 +780,7 @@
+@@ -798,6 +810,7 @@ public:
                                   b, newAcc, dotOp.getInputPrecision(),
                                   dotOp.getMaxNumImpreciseAcc());
      }
@@ -28,7 +29,7 @@ diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp 
  
      Value dotOutput =
          convertAndCastTensor(rewriter, newDot, oldRetType.getEncoding(),
-@@ -1095,6 +1103,7 @@
+@@ -1118,6 +1131,7 @@ public:
      auto newDot = triton::DotScaledOp::create(
          rewriter, dotOp.getLoc(), newRetType, a, b, newAcc, newAScale,
          newBScale, aElemType, bElemType, dotOp.getFastMath());
@@ -36,15 +37,15 @@ diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp 
  
      rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
                                                        newDot);
-@@ -1292,6 +1301,7 @@
+@@ -1335,6 +1349,7 @@ public:
+     auto newDot = triton::DotScaledOp::create(
          rewriter, dotOp.getLoc(), newRetType, a, b, newAcc, newAScale,
-         newBScale, aElemType, bElemType, dotOp.getFastMath(),
-         dotOp.getLhsKPack(), dotOp.getRhsKPack());
+         newBScale, aElemType, bElemType, dotOp.getFastMath());
 +    copyDiscardableAttrs(dotOp, newDot);
  
      rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
                                                        newDot);
-@@ -1533,6 +1543,7 @@
+@@ -1551,6 +1566,7 @@ public:
      auto newDot = tt::DotOp::create(
          rewriter, dotOp.getLoc(), newRetType, castedA, castedB, newAcc,
          dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
@@ -52,7 +53,7 @@ diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp 
  
      Value dotOutput = convertAndCastTensor(rewriter, newDot, oldRetEncoding,
                                             oldRetType.getElementType());
-@@ -1642,6 +1653,7 @@
+@@ -1660,6 +1676,7 @@ public:
        auto newDot = DotOp::create(
            rewriter, dotOp.getLoc(), newC.getType(), dotOp.getA(), dotOp.getB(),
            newC, dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
@@ -60,7 +61,7 @@ diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp 
        auto newD = castToElTy(rewriter, newDot.getResult(), f16_ty);
        rewriter.replaceOp(dotOp, newD);
        return success();
-@@ -1684,6 +1696,7 @@
+@@ -1702,6 +1719,7 @@ public:
      auto newDot = DotOp::create(rewriter, dotOp.getLoc(), newC.getType(), newA,
                                  newB, newC, dotOp.getInputPrecision(),
                                  dotOp.getMaxNumImpreciseAcc());

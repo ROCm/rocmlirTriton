@@ -1,7 +1,124 @@
-diff --git a/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h b/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
-index a04108120c..62e857d412 100644
---- a/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
-+++ b/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
+diff --git a/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt b/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
+index 3e83042268..98d5c10cb4 100644
+--- a/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
++++ b/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
+@@ -29,6 +29,7 @@ add_triton_library(TritonGPUToLLVM
+     TritonGPUConversionPassIncGen
+ 
+     LINK_LIBS PUBLIC
++    MLIRArithAttrToLLVMConversion
+     MLIRIR
+     MLIRPass
+     MLIRGPUDialect
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
+index 3954b55d28..7019b2abee 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -21,6 +21,7 @@ using mlir::triton::gpu::ElementwiseOpConversion;
+ using mlir::triton::gpu::ElementwiseOpConversionBase;
+ using mlir::triton::gpu::ElementwiseToIntrinsicOpConversion;
+ using mlir::triton::gpu::getFunctionType;
++using mlir::triton::gpu::getLLVMFastmathFlags;
+ using mlir::triton::gpu::MultipleOperandsRange;
+ using triton::amdgpu::ISAFamily;
+ 
+@@ -29,10 +30,11 @@ namespace {
+ template <typename OP>
+ Value EmitDualBF16ElementwiseOp(Location loc,
+                                 ConversionPatternRewriter &rewriter,
+-                                MultipleOperandsRange operands) {
++                                MultipleOperandsRange operands,
++                                LLVM::FastmathFlagsAttr fastmathFlags) {
+   auto v0 = AMD::convertBf16ToFp32(loc, rewriter, operands[0][0]);
+   auto v1 = AMD::convertBf16ToFp32(loc, rewriter, operands[0][1]);
+-  auto result = OP::create(rewriter, loc, f32_ty, v0, v1);
++  auto result = OP::create(rewriter, loc, f32_ty, v0, v1, fastmathFlags);
+   return AMD::convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE);
+ }
+ 
+@@ -58,7 +60,8 @@ struct PackedArithOpConversion
+ 
+     Value va = packLLVector(loc, {operands[0][0], operands[1][0]}, rewriter);
+     Value vb = packLLVector(loc, {operands[0][1], operands[1][1]}, rewriter);
+-    Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb);
++    Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb,
++                              getLLVMFastmathFlags(op));
+     return unpackLLVector(loc, vr, rewriter);
+   }
+ };
+@@ -73,7 +76,7 @@ struct FDivOpConversion
+                                    Location loc) const {
+ 
+     return {LLVM::FDivOp::create(rewriter, loc, elemTy, operands[0][0],
+-                                 operands[0][1])};
++                                 operands[0][1], getLLVMFastmathFlags(op))};
+   }
+ };
+ 
+@@ -88,10 +91,11 @@ struct FMulOpConversion
+     auto lhsElemTy = getElementTypeOrSelf(op.getLhs());
+     auto rhsElemTy = getElementTypeOrSelf(op.getRhs());
+     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
+-      return {EmitDualBF16ElementwiseOp<LLVM::FMulOp>(loc, rewriter, operands)};
++      return {EmitDualBF16ElementwiseOp<LLVM::FMulOp>(
++          loc, rewriter, operands, getLLVMFastmathFlags(op))};
+     } else {
+       return {LLVM::FMulOp::create(rewriter, loc, elemTy, operands[0][0],
+-                                   operands[0][1])};
++                                   operands[0][1], getLLVMFastmathFlags(op))};
+     }
+   }
+ };
+@@ -107,10 +111,11 @@ struct FAddOpConversion
+     auto lhsElemTy = getElementTypeOrSelf(op.getLhs());
+     auto rhsElemTy = getElementTypeOrSelf(op.getRhs());
+     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
+-      return {EmitDualBF16ElementwiseOp<LLVM::FAddOp>(loc, rewriter, operands)};
++      return {EmitDualBF16ElementwiseOp<LLVM::FAddOp>(
++          loc, rewriter, operands, getLLVMFastmathFlags(op))};
+     } else {
+       return {LLVM::FAddOp::create(rewriter, loc, elemTy, operands[0][0],
+-                                   operands[0][1])};
++                                   operands[0][1], getLLVMFastmathFlags(op))};
+     }
+   }
+ };
+@@ -129,7 +134,7 @@ struct FSubOpConversion
+       return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(loc, rewriter, operands)};
+     } else {
+       return {LLVM::FSubOp::create(rewriter, loc, elemTy, operands[0][0],
+-                                   operands[0][1])};
++                                   operands[0][1], getLLVMFastmathFlags(op))};
+     }
+   }
+ };
+@@ -252,7 +257,9 @@ struct ExpOpConversionApprox
+       return {};
+ 
+     const double log2e = 1.4426950408889634;
+-    Value prod = b.fmul(f32_ty, operands[0][0], b.f32_val(log2e));
++    auto fastmathFlags = getLLVMFastmathFlags(op);
++    Value prod =
++        b.fmul(f32_ty, operands[0][0], b.f32_val(log2e), fastmathFlags);
+ 
+     // Here we use llvm.exp2.f32 instead of math::Exp2Op. The latter
+     // flushes denorms by default, but we want to preserve denorms by default
+@@ -262,7 +269,10 @@ struct ExpOpConversionApprox
+     LLVM::LLVMFuncOp funcOp =
+         appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
+ 
+-    return {LLVM::createLLVMCallOp(rewriter, loc, funcOp, prod).getResult()};
++    auto callOp = LLVM::createLLVMCallOp(rewriter, loc, funcOp, prod);
++    if (fastmathFlags)
++      callOp.setFastmathFlagsAttr(fastmathFlags);
++    return {callOp.getResult()};
+   }
+ };
+ 
+diff --git a/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h b/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
+index e70a7710f0..978ea615af 100644
+--- a/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
++++ b/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h
 @@ -1,6 +1,7 @@
  #ifndef TRITON_CONVERSION_TRITONGPU_TO_ELEMENTWISE_OP_H
  #define TRITON_CONVERSION_TRITONGPU_TO_ELEMENTWISE_OP_H
@@ -10,7 +127,7 @@ index a04108120c..62e857d412 100644
  #include "mlir/Conversion/LLVMCommon/Pattern.h"
  #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
  #include "mlir/Support/LLVM.h"
-@@ -149,6 +150,65 @@ protected:
+@@ -150,6 +151,65 @@ protected:
    ModuleAxisInfoAnalysis &axisAnalysisPass;
  };
  
@@ -76,7 +193,7 @@ index a04108120c..62e857d412 100644
  // Trivial case where we map elementwise to an existing LLVM operator
  template <typename SourceOp, typename DestOp>
  struct ElementwiseOpConversion
-@@ -165,8 +225,13 @@ struct ElementwiseOpConversion
+@@ -166,8 +226,13 @@ struct ElementwiseOpConversion
                                      ConversionPatternRewriter &rewriter,
                                      Type elemTy, MultipleOperandsRange operands,
                                      Location loc) const {
@@ -89,146 +206,6 @@ index a04108120c..62e857d412 100644
 +    // across a dialect boundary.
 +    propagateFastMathFlags(op, destOp);
 +    return {destOp};
-   }
- };
- 
-diff --git a/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt b/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
-index 9344447f4f..6fef4b4385 100644
---- a/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
-+++ b/lib/Conversion/TritonGPUToLLVM/CMakeLists.txt
-@@ -29,6 +29,7 @@ add_triton_library(TritonGPUToLLVM
-     TritonGPUConversionPassIncGen
- 
-     LINK_LIBS PUBLIC
-+    MLIRArithAttrToLLVMConversion
-     MLIRIR
-     MLIRPass
-     MLIRGPUDialect
-diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
-index 59f0527e2c..cd370e055c 100644
---- a/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
-+++ b/third_party/amd/lib/TritonAMDGPUToLLVM/ElementwiseOpToLLVM.cpp
-@@ -20,18 +20,23 @@ using mlir::triton::gpu::appendOrGetExternFuncOp;
- using mlir::triton::gpu::ElementwiseOpConversion;
- using mlir::triton::gpu::ElementwiseOpConversionBase;
- using mlir::triton::gpu::getFunctionType;
-+using mlir::triton::gpu::getLLVMFastmathFlags;
- using mlir::triton::gpu::MultipleOperandsRange;
- using triton::amdgpu::ISAFamily;
- 
- namespace {
- 
-+// `fastmathFlags` is deliberately not defaulted: the bf16 arithmetic lands on
-+// an LLVM operation able to carry fast-math flags, so a caller that forgets to
-+// forward them silently loses the source operation's numerical relaxations.
- template <typename OP>
- Value EmitDualBF16ElementwiseOp(Location loc,
-                                 ConversionPatternRewriter &rewriter,
--                                MultipleOperandsRange operands) {
-+                                MultipleOperandsRange operands,
-+                                LLVM::FastmathFlagsAttr fastmathFlags) {
-   auto v0 = AMD::convertBf16ToFp32(loc, rewriter, operands[0][0]);
-   auto v1 = AMD::convertBf16ToFp32(loc, rewriter, operands[0][1]);
--  auto result = OP::create(rewriter, loc, f32_ty, v0, v1);
-+  auto result = OP::create(rewriter, loc, f32_ty, v0, v1, fastmathFlags);
-   return AMD::convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE);
- }
- 
-@@ -57,7 +62,8 @@ struct PackedArithOpConversion
- 
-     Value va = packLLVector(loc, {operands[0][0], operands[1][0]}, rewriter);
-     Value vb = packLLVector(loc, {operands[0][1], operands[1][1]}, rewriter);
--    Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb);
-+    Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb,
-+                              getLLVMFastmathFlags(op));
-     return unpackLLVector(loc, vr, rewriter);
-   }
- };
-@@ -72,7 +78,7 @@ struct FDivOpConversion
-                                    Location loc) const {
- 
-     return {LLVM::FDivOp::create(rewriter, loc, elemTy, operands[0][0],
--                                 operands[0][1])};
-+                                 operands[0][1], getLLVMFastmathFlags(op))};
-   }
- };
- 
-@@ -95,7 +101,10 @@ struct FMulOpConversion
-     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
-       if (triton::amdgpu::isRDNA(isaFamily)) {
-         // To avoid casting to/from fp32, we compute a dot product with one
--        // element of each vector set to zero.
-+        // element of each vector set to zero. An intrinsic call cannot carry
-+        // fast-math flags, so whatever the multiply asked for is lost; `fdot2`
-+        // multiplies and accumulates in one operation, which is what a
-+        // contraction flag would have asked the backend for anyway.
-         auto b = TritonLLVMOpBuilder(loc, rewriter);
-         Value aVal = packLLVector(
-             loc, ValueRange{operands[0][0], b.bf16_val(0.0)}, rewriter);
-@@ -106,12 +115,12 @@ struct FMulOpConversion
-                     ValueRange{aVal, bVal, b.bf16_val(0.0)})
-                     ->getResult(0)};
-       } else {
--        return {
--            EmitDualBF16ElementwiseOp<LLVM::FMulOp>(loc, rewriter, operands)};
-+        return {EmitDualBF16ElementwiseOp<LLVM::FMulOp>(
-+            loc, rewriter, operands, getLLVMFastmathFlags(op))};
-       }
-     } else {
-       return {LLVM::FMulOp::create(rewriter, loc, elemTy, operands[0][0],
--                                   operands[0][1])};
-+                                   operands[0][1], getLLVMFastmathFlags(op))};
-     }
-   }
- 
-@@ -130,10 +139,11 @@ struct FAddOpConversion
-     auto lhsElemTy = getElementTypeOrSelf(op.getLhs());
-     auto rhsElemTy = getElementTypeOrSelf(op.getRhs());
-     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
--      return {EmitDualBF16ElementwiseOp<LLVM::FAddOp>(loc, rewriter, operands)};
-+      return {EmitDualBF16ElementwiseOp<LLVM::FAddOp>(
-+          loc, rewriter, operands, getLLVMFastmathFlags(op))};
-     } else {
-       return {LLVM::FAddOp::create(rewriter, loc, elemTy, operands[0][0],
--                                   operands[0][1])};
-+                                   operands[0][1], getLLVMFastmathFlags(op))};
-     }
-   }
- };
-@@ -149,10 +159,11 @@ struct FSubOpConversion
-     auto lhsElemTy = getElementTypeOrSelf(op.getLhs());
-     auto rhsElemTy = getElementTypeOrSelf(op.getRhs());
-     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
--      return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(loc, rewriter, operands)};
-+      return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(
-+          loc, rewriter, operands, getLLVMFastmathFlags(op))};
-     } else {
-       return {LLVM::FSubOp::create(rewriter, loc, elemTy, operands[0][0],
--                                   operands[0][1])};
-+                                   operands[0][1], getLLVMFastmathFlags(op))};
-     }
-   }
- };
-@@ -275,7 +286,9 @@ struct ExpOpConversionApprox
-       return {};
- 
-     const double log2e = 1.4426950408889634;
--    Value prod = b.fmul(f32_ty, operands[0][0], b.f32_val(log2e));
-+    LLVM::FastmathFlagsAttr fastmathFlags = getLLVMFastmathFlags(op);
-+    Value prod =
-+        b.fmul(f32_ty, operands[0][0], b.f32_val(log2e), fastmathFlags);
- 
-     // Here we use llvm.exp2.f32 instead of math::Exp2Op. The latter
-     // flushes denorms by default, but we want to preserve denorms by default
-@@ -285,7 +298,10 @@ struct ExpOpConversionApprox
-     LLVM::LLVMFuncOp funcOp =
-         appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
- 
--    return {LLVM::createLLVMCallOp(rewriter, loc, funcOp, prod).getResult()};
-+    auto callOp = LLVM::createLLVMCallOp(rewriter, loc, funcOp, prod);
-+    if (fastmathFlags)
-+      callOp.setFastmathFlagsAttr(fastmathFlags);
-+    return {callOp.getResult()};
    }
  };
  

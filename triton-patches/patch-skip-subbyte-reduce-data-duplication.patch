@@ -1,5 +1,5 @@
 diff --git a/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp b/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
-index 3f9b247d0..5d8df38ea 100644
+index 2bbed3e849..c8d1f7c7c2 100644
 --- a/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
 +++ b/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp
 @@ -38,6 +38,13 @@ public:
