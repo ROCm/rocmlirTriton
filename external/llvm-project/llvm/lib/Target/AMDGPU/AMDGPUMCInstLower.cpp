@@ -13,9 +13,9 @@
 //
 
 #include "AMDGPUMCInstLower.h"
-#include "AMDGPU.h"
 #include "AMDGPUAsmPrinter.h"
 #include "AMDGPUMachineFunctionInfo.h"
+#include "AMDGPUStaticSimulator.h"
 #include "MCTargetDesc/AMDGPUInstPrinter.h"
 #include "MCTargetDesc/AMDGPUMCExpr.h"
 #include "MCTargetDesc/AMDGPUMCTargetDesc.h"
@@ -31,12 +31,27 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/AMDGPUAddrSpace.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include <algorithm>
+#include <cstdlib>
 
 using namespace llvm;
+
+static cl::opt<bool> EnableSimAnnotations(
+    "amdgpu-static-sim-inline",
+    cl::desc("Enable inline assembly annotations (per-instruction sim comments)"),
+    cl::init(false), cl::Hidden);
+
+/// Check if inline annotations are enabled via cl::opt or env var.
+static bool isInlineAnnotationEnabled() {
+  if (const char *EnvVal = std::getenv("AMDGPU_STATIC_SIM_INLINE"))
+    return StringRef(EnvVal) == "1";
+  return EnableSimAnnotations;
+}
 
 #include "AMDGPUGenMCPseudoLowering.inc"
 
@@ -103,7 +118,16 @@ bool AMDGPUMCInstLower::lowerOperand(const MachineOperand &MO,
   }
   case MachineOperand::MO_ExternalSymbol: {
     MCSymbol *Sym = Ctx.getOrCreateSymbol(StringRef(MO.getSymbolName()));
-    const MCSymbolRefExpr *Expr = MCSymbolRefExpr::create(Sym, Ctx);
+    const MCExpr *Expr =
+        MCSymbolRefExpr::create(Sym, getSpecifier(MO.getTargetFlags()), Ctx);
+    MCOp = MCOperand::createExpr(Expr);
+    return true;
+  }
+  case MachineOperand::MO_BlockAddress: {
+    MCSymbol *Sym = AP.GetBlockAddressSymbol(MO.getBlockAddress());
+    const MCSymbolRefExpr *Expr =
+        MCSymbolRefExpr::create(Sym, getSpecifier(MO.getTargetFlags()), Ctx);
+    assert(MO.getOffset() == 0);
     MCOp = MCOperand::createExpr(Expr);
     return true;
   }
@@ -277,7 +301,8 @@ const MCExpr *AMDGPUAsmPrinter::lowerConstant(const Constant *CV,
   // Intercept LDS variables with known addresses
   if (const GlobalVariable *GV = dyn_cast<const GlobalVariable>(CV)) {
     if (std::optional<uint32_t> Address =
-            AMDGPUMachineFunctionInfo::getLDSAbsoluteAddress(*GV)) {
+            AMDGPUMachineFunctionInfo::get32BitAbsoluteAddress(
+                *GV, AMDGPUAS::LOCAL_ADDRESS)) {
       auto *IntTy = Type::getInt32Ty(CV->getContext());
       return AsmPrinter::lowerConstant(ConstantInt::get(IntTy, *Address),
                                        BaseCV, Offset);
@@ -331,6 +356,83 @@ void AMDGPUAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, OutInst);
     return;
   }
+
+  auto emitSimAnnotation = [&]() {
+    if (!isInlineAnnotationEnabled())
+      return;
+
+    const SIMachineFunctionInfo *MFI = MF->getInfo<SIMachineFunctionInfo>();
+    if (!MFI)
+      return;
+
+    auto Report = MFI->getStaticSimReport();
+    if (!Report)
+      return;
+
+    auto It = Report->PerInstr.find(MI);
+    if (It == Report->PerInstr.end())
+      return;
+
+    const AMDGPU::InstrSimInfo &Info = It->second;
+
+    bool HasCacheHit = Info.CachePattern.find('$') != std::string::npos;
+    bool HasBankConflict = Info.Reason == AMDGPU::StallReason::REG_BANK;
+
+    if (Info.StallCycles == 0 && !Info.InWMMAWindow && !Info.WasFused &&
+        !Info.WasExposed && !Info.WasMasked && !Info.IsWMMA && !HasCacheHit)
+      return;
+
+    std::string Comment;
+    raw_string_ostream OS(Comment);
+    bool HasContent = false;
+
+    OS << "Sim:";
+
+    if (Info.IsWMMA && !Info.WMMAPattern.empty()) {
+      OS << " " << Info.WMMAPattern;
+      HasContent = true;
+    }
+
+    if (Info.WasFused) {
+      OS << " Fused";
+      HasContent = true;
+    } else if (Info.WasExposed) {
+      if (Info.WasMasked)
+        OS << " MSB_Exposed(masked)";
+      else
+        OS << " MSB_Exposed";
+      HasContent = true;
+    }
+
+    if (Info.InWMMAWindow && !Info.IsWMMA) {
+      OS << " WMMA[" << (unsigned)Info.WMMAStage << "/"
+         << (unsigned)Info.WMMATotalWindow << "] " << Info.getStageName();
+      if (Info.CoExecuted)
+        OS << " OK";
+      else if (Info.StallCycles > 0 &&
+               Info.Reason == AMDGPU::StallReason::COEXEC_BLOCKED) {
+        OS << " BLOCKED";
+      }
+      HasContent = true;
+    }
+
+    if (Info.StallCycles > 0) {
+      if (HasContent)
+        OS << " |";
+      OS << " Stall:" << Info.StallCycles;
+      if (Info.Reason != AMDGPU::StallReason::NONE &&
+          Info.Reason != AMDGPU::StallReason::COEXEC_BLOCKED)
+        OS << " [" << Info.getReasonString() << "]";
+    }
+
+    if (!Info.CachePattern.empty() && (HasCacheHit || HasBankConflict)) {
+      OS << " Cache" << Info.CachePattern;
+      HasContent = true;
+    }
+
+    OutStreamer->emitRawComment(Comment);
+  };
+  emitSimAnnotation();
 
   const GCNSubtarget &STI = MF->getSubtarget<GCNSubtarget>();
   AMDGPUMCInstLower MCInstLowering(OutContext, STI, *this);

@@ -1,12 +1,11 @@
 ; RUN: opt %s  -strip-debug -o %t.no_debug.ll -S
-; RUN: llc -mcpu=gfx1250 < %s             -filetype=obj -o %t.with_debug.o
-; RUN: llc -mcpu=gfx1250 < %t.no_debug.ll -filetype=obj -o %t.no_debug.o
+; RUN: llc -mtriple=amdgpu12.50-amd-amdhsa < %s             -filetype=obj -o %t.with_debug.o
+; RUN: llc -mtriple=amdgpu12.50-amd-amdhsa < %t.no_debug.ll -filetype=obj -o %t.no_debug.o
 ; RUN: llvm-strip %t.with_debug.o %t.no_debug.o
 ; RUN: cmp %t.with_debug.o %t.no_debug.o
 ; Ensure that compiling with and without debug generates identical code.
 ; Test that adjustSchedDependency does not count debug instructions in bundles.
 
-target triple = "amdgcn-amd-amdhsa"
 
 define amdgpu_kernel void @_test_adjustSchedDependency(ptr addrspace(1) %AA.coerce, i64 %shiftA, i32 %lda, ptr addrspace(3) %stPtr) !dbg !4 {
 entry:
@@ -25,7 +24,7 @@ entry:
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!3}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "AMD clang version 22.0.0git (ssh://github-emu/AMD-Lightning-Internal/llvm-project  25425 c51a87b7a53a3e8f308402aaffa3ecbc2953305a)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, retainedTypes: !2, imports: !2, splitDebugInlining: false, nameTableKind: None)
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "AMD clang version 22.0.0git", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, retainedTypes: !2, imports: !2, splitDebugInlining: false, nameTableKind: None)
 !1 = !DIFile(filename: "test.cpp", directory: "/tmp", checksumkind: CSK_MD5, checksum: "cc205700bf3536fe4ff21a07daf7e01d")
 !2 = !{}
 !3 = !{i32 2, !"Debug Info Version", i32 3}

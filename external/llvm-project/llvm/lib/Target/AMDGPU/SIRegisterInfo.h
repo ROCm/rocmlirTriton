@@ -15,6 +15,10 @@
 #define LLVM_LIB_TARGET_AMDGPU_SIREGISTERINFO_H
 
 #include "llvm/ADT/BitVector.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
+#include "llvm/CodeGen/Register.h"
+#include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/MC/MCRegister.h"
 
 #define GET_REGINFO_HEADER
 #include "AMDGPUGenRegisterInfo.inc"
@@ -364,6 +368,18 @@ public:
                              const MachineFunction &MF, const VirtRegMap *VRM,
                              const LiveRegMatrix *Matrix) const override;
 
+  bool shouldApplyAntiHints(Register VirtReg, const MachineFunction &MF,
+                            SmallVector<MCPhysReg, 16> &AntiHints,
+                            const VirtRegMap *VRM,
+                            unsigned NumAllocatedVGPRs) const;
+
+  void applyRegAllocationAntiHints(
+      Register VirtReg, ArrayRef<MCPhysReg> &Order,
+      SmallVectorImpl<MCPhysReg> &OrderStorage,
+      SmallVector<MCPhysReg, 16> &AntiHints, const MachineFunction &MF,
+      const VirtRegMap *VRM = nullptr,
+      const LiveRegMatrix *Matrix = nullptr) const override;
+
   const int *getRegUnitPressureSets(MCRegUnit RegUnit) const override;
 
   MCRegister getReturnAddressReg(const MachineFunction &MF) const;
@@ -377,8 +393,8 @@ public:
   }
 
   const TargetRegisterClass *
-  getConstrainedRegClassForOperand(const MachineOperand &MO,
-                                 const MachineRegisterInfo &MRI) const override;
+  getConstrainedRegClassForReg(Register Reg,
+                               const MachineRegisterInfo &MRI) const override;
 
   const TargetRegisterClass *getBoolRC() const {
     return isWave32 ? &AMDGPU::SReg_32RegClass
@@ -507,11 +523,6 @@ public:
                 : 1.0);
   }
 };
-
-namespace AMDGPU {
-/// Get the size in bits of a register from the register class \p RC.
-unsigned getRegBitWidth(const TargetRegisterClass &RC);
-} // namespace AMDGPU
 
 } // End namespace llvm
 

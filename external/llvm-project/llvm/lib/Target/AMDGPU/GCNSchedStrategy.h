@@ -14,6 +14,7 @@
 #define LLVM_LIB_TARGET_AMDGPU_GCNSCHEDSTRATEGY_H
 
 #include "GCNRegPressure.h"
+#include "LIRP.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
@@ -27,6 +28,7 @@ class SIMachineFunctionInfo;
 class SIRegisterInfo;
 class GCNSubtarget;
 class GCNSchedStage;
+class MachineRegisterInfo;
 
 enum class GCNSchedStageID : unsigned {
   OccInitialSchedule = 0,
@@ -35,7 +37,8 @@ enum class GCNSchedStageID : unsigned {
   ClusteredLowOccupancyReschedule = 3,
   PreRARematerialize = 4,
   ILPInitialSchedule = 5,
-  MemoryClauseInitialSchedule = 6
+  MemoryClauseInitialSchedule = 6,
+  LiveIntervalRPReschedule = 7
 };
 
 #ifndef NDEBUG
@@ -57,11 +60,8 @@ protected:
   void initCandidate(SchedCandidate &Cand, SUnit *SU, bool AtTop,
                      const RegPressureTracker &RPTracker,
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
-                     unsigned VGPRPressure, bool IsBottomUp);
-
-  /// Estimate how many cycles \p SU must wait due to structural hazards at the
-  /// current boundary cycle. Returns zero when no stall is required.
-  unsigned getStructuralStallCycles(SchedBoundary &Zone, SUnit *SU) const;
+                     unsigned VGPRPressure, unsigned AGPRPressure,
+                     bool IsBottomUp);
 
   /// Evaluates instructions in the pending queue using a subset of scheduling
   /// heuristics.
@@ -71,8 +71,9 @@ protected:
   /// invisible to scheduling heuristics. However, in certain scenarios (such as
   /// avoiding register spilling), it may be beneficial to consider scheduling
   /// these not-yet-ready instructions.
-  bool tryPendingCandidate(SchedCandidate &Cand, SchedCandidate &TryCand,
-                           SchedBoundary *Zone) const;
+  virtual bool tryPendingCandidate(SchedCandidate &Cand,
+                                   SchedCandidate &TryCand,
+                                   SchedBoundary *Zone) const;
 
   void printCandidateDecision(const SchedCandidate &Current,
                               const SchedCandidate &Preferred);
@@ -83,14 +84,9 @@ protected:
                             GCNDownwardRPTracker &DownwardTracker,
                             GCNUpwardRPTracker &UpwardTracker,
                             ScheduleDAGMI *DAG, const SIRegisterInfo *SRI);
-
   std::vector<unsigned> Pressure;
 
   std::vector<unsigned> MaxPressure;
-
-  unsigned SGPRExcessLimit;
-
-  unsigned VGPRExcessLimit;
 
   unsigned TargetOccupancy;
 
@@ -107,6 +103,9 @@ protected:
 
   // GCN RP Tracker for botttom-up scheduling
   mutable GCNUpwardRPTracker UpwardTracker;
+
+  // Live interval-based RP tracker.
+  LIRPTracker LIRP;
 
   bool UseGCNTrackers = false;
 
@@ -132,13 +131,23 @@ public:
   // Bias for VGPR limits under a high register pressure.
   const unsigned HighRPVGPRBias = 7;
 
+  unsigned SGPRExcessLimit;
+
+  unsigned VGPRExcessLimit;
+
+  unsigned AGPRExcessLimit;
+
   unsigned SGPRCriticalLimit;
 
   unsigned VGPRCriticalLimit;
 
+  unsigned AGPRCriticalLimit;
+
   unsigned SGPRLimitBias = 0;
 
   unsigned VGPRLimitBias = 0;
+
+  std::optional<unsigned> VGPRExcessThresholdPercent;
 
   GCNSchedStrategy(const MachineSchedContext *C);
 
@@ -168,6 +177,16 @@ public:
   GCNDownwardRPTracker *getDownwardTracker() { return &DownwardTracker; }
 
   GCNUpwardRPTracker *getUpwardTracker() { return &UpwardTracker; }
+
+  /// \returns the LIRP tracker.
+  LIRPTracker *getLIRPTracker() { return &LIRP; }
+
+  // Index of the region currently being scheduled.
+  void setCurrentRegionIdx(unsigned Idx) { CurrentRegionIdx = Idx; }
+  unsigned getCurrentRegionIdx() const { return CurrentRegionIdx; }
+
+private:
+  unsigned CurrentRegionIdx = 0;
 };
 
 /// The goal of this scheduling strategy is to maximize kernel occupancy (i.e.
@@ -265,6 +284,7 @@ class GCNScheduleDAGMILive final : public ScheduleDAGMILive {
   friend class ClusteredLowOccStage;
   friend class PreRARematStage;
   friend class ILPInitialScheduleStage;
+  friend class LiveIntervalRPStage;
   friend class RegionPressureMap;
 
   const GCNSubtarget &ST;
@@ -443,6 +463,10 @@ private:
   const SIInstrInfo *TII;
   const SIRegisterInfo *SRI;
 
+  /// Per-candidate cache of the src2 "needs VGPR" decision, computed once
+  /// and reused on-demand.
+  DenseMap<const MachineInstr *, bool> Src2NeedsVGPRCache;
+
   /// Do a speculative rewrite and collect copy locations. The speculative
   /// rewrite allows us to calculate the RP of the code after the rewrite, and
   /// the copy locations allow us to calculate the total cost of copies required
@@ -458,16 +482,19 @@ private:
   /// in initHeuristics. Uses \p CopyForUse and \p CopyForDef to calculate copy
   /// costs, and \p RewriteCands to undo rewriting.
   int64_t getRewriteCost(
-      const std::vector<std::pair<MachineInstr *, unsigned>> &RewriteCands,
+      ArrayRef<std::pair<MachineInstr *, unsigned>> RewriteCands,
       const DenseMap<MachineBasicBlock *, std::set<Register>> &CopyForUse,
       const SmallPtrSetImpl<MachineInstr *> &CopyForDef);
 
   /// Do the final rewrite on \p RewriteCands and insert any needed copies.
-  bool
-  rewrite(const std::vector<std::pair<MachineInstr *, unsigned>> &RewriteCands);
+  bool rewrite(ArrayRef<std::pair<MachineInstr *, unsigned>> RewriteCands);
 
   /// \returns true if this MI is a rewrite candidate.
   bool isRewriteCandidate(MachineInstr *MI) const;
+
+  /// Resets all candidates in \p RewriteCands back to VGPR form.
+  void resetRewriteCandsToVGPR(
+      ArrayRef<std::pair<MachineInstr *, unsigned>> RewriteCands);
 
   /// Finds all the reaching defs of \p UseMO and stores the SlotIndexes into \p
   /// DefIdxs
@@ -476,8 +503,14 @@ private:
 
   /// Finds all the reaching uses of \p DefMI and stores the use operands in \p
   /// ReachingUses
-  void findReachingUses(MachineInstr *DefMI, LiveIntervals *LIS,
+  void findReachingUses(const MachineInstr *DefMI, LiveIntervals *LIS,
                         SmallVectorImpl<MachineOperand *> &ReachingUses);
+
+  /// Returns true if the src2 register with reaching defs \p Src2ReachingDefs
+  /// has a use other than a group MFMA (in \p RewriteSet) or a copy, which
+  /// would keep it in VGPR form rather than let it be reclassified to AGPR.
+  bool hasUseRequiringVGPR(ArrayRef<SlotIndex> Src2ReachingDefs,
+                           const SmallPtrSetImpl<MachineInstr *> &RewriteSet);
 
 public:
   bool initGCNSchedStage() override;
@@ -782,6 +815,22 @@ public:
   MemoryClauseInitialScheduleStage(GCNSchedStageID StageID,
                                    GCNScheduleDAGMILive &DAG)
       : GCNSchedStage(StageID, DAG) {}
+};
+
+class LiveIntervalRPStage : public GCNSchedStage {
+public:
+  bool initGCNSchedStage() override;
+  void finalizeGCNSchedStage() override;
+  bool initGCNRegion() override;
+  void finalizeGCNRegion() override;
+
+  LiveIntervalRPStage(GCNSchedStageID StageID, GCNScheduleDAGMILive &DAG)
+      : GCNSchedStage(StageID, DAG) {}
+
+private:
+  unsigned SavedVGPRThresholdPercent = 0;
+  unsigned SavedVGPRExcessLimit = 0;
+  unsigned SavedVGPRCriticalLimit = 0;
 };
 
 class GCNPostScheduleDAGMILive final : public ScheduleDAGMI {

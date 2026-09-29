@@ -13,6 +13,7 @@
 
 #include "GCNSubtarget.h"
 #include "AMDGPUCallLowering.h"
+#include "AMDGPUCoExecInfo.h"
 #include "AMDGPUInstructionSelector.h"
 #include "AMDGPULegalizerInfo.h"
 #include "AMDGPURegisterBankInfo.h"
@@ -22,10 +23,12 @@
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/GlobalISel/InlineAsmLowering.h"
+#include "llvm/CodeGen/MachinePipeliner.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include <algorithm>
 
 using namespace llvm;
@@ -52,7 +55,51 @@ static cl::opt<unsigned>
                  cl::desc("Number of addresses from which to enable MIMG NSA."),
                  cl::init(2), cl::Hidden);
 
+static cl::opt<bool> EnableCoExecFriendlyISel(
+    "amdgpu-coexec-friendly-isel",
+    cl::desc("Avoid selecting multi-rate (repeat-rate-32) 64-bit VALU "
+             "instructions during SelectionDAG ISel (CoExec scheduler "
+             "friendly); equivalent to -mattr=+coexec-friendly-isel"),
+    cl::init(true), cl::Hidden);
+
 GCNSubtarget::~GCNSubtarget() = default;
+
+static AMDGPUSubtarget::Generation computeDefaultGeneration(const Triple &TT) {
+  // Legacy triples without a subarch default to the first target that supports
+  // flat addressing for HSA, otherwise the first amdgcn target.
+  if (TT.getSubArch() == Triple::NoSubArch)
+    return TT.getOS() == Triple::AMDHSA ? AMDGPUSubtarget::SEA_ISLANDS
+                                        : AMDGPUSubtarget::SOUTHERN_ISLANDS;
+
+  switch (AMDGPU::getMajorSubArch(TT.getSubArch())) {
+  case Triple::AMDGPUSubArch6:
+    return AMDGPUSubtarget::SOUTHERN_ISLANDS;
+  case Triple::AMDGPUSubArch7:
+    return AMDGPUSubtarget::SEA_ISLANDS;
+  case Triple::AMDGPUSubArch8:
+  case Triple::AMDGPUSubArch810:
+    return AMDGPUSubtarget::VOLCANIC_ISLANDS;
+  case Triple::AMDGPUSubArch9:
+  case Triple::AMDGPUSubArch908:
+  case Triple::AMDGPUSubArch90A:
+  case Triple::AMDGPUSubArch9_4:
+    return AMDGPUSubtarget::GFX9;
+  case Triple::AMDGPUSubArch10_1:
+  case Triple::AMDGPUSubArch10_3:
+    return AMDGPUSubtarget::GFX10;
+  case Triple::AMDGPUSubArch11:
+  case Triple::AMDGPUSubArch11_7:
+    return AMDGPUSubtarget::GFX11;
+  case Triple::AMDGPUSubArch12:
+  case Triple::AMDGPUSubArch12_5:
+  case Triple::AMDGPUSubArch1250S:
+    return AMDGPUSubtarget::GFX12;
+  case Triple::AMDGPUSubArch13:
+    return AMDGPUSubtarget::GFX13;
+  default:
+    reportFatalUsageError("invalid subarch for amdgpu");
+  }
+}
 
 GCNSubtarget &GCNSubtarget::initializeSubtargetDependencies(const Triple &TT,
                                                             StringRef GPU,
@@ -89,13 +136,17 @@ GCNSubtarget &GCNSubtarget::initializeSubtargetDependencies(const Triple &TT,
 
   ParseSubtargetFeatures(GPU, /*TuneCPU*/ GPU, FullFS);
 
+  // Allow forcing CoExec-friendly ISel from the command line so it can be
+  // enabled without threading +coexec-friendly-isel through -mattr.
+  if (EnableCoExecFriendlyISel)
+    HasCoExecFriendlyISelMode = true;
+
   // Implement the "generic" processors, which acts as the default when no
   // generation features are enabled (e.g for -mcpu=''). HSA OS defaults to
   // the first amdgcn target that supports flat addressing. Other OSes defaults
   // to the first amdgcn target.
   if (Gen == AMDGPUSubtarget::INVALID) {
-    Gen = TT.getOS() == Triple::AMDHSA ? AMDGPUSubtarget::SEA_ISLANDS
-                                       : AMDGPUSubtarget::SOUTHERN_ISLANDS;
+    Gen = computeDefaultGeneration(TT);
     // Assume wave64 for the unknown target, if not explicitly set.
     if (getWavefrontSizeLog2() == 0)
       WavefrontSizeLog2 = 6;
@@ -137,13 +188,15 @@ GCNSubtarget &GCNSubtarget::initializeSubtargetDependencies(const Triple &TT,
   if (LDSBankCount == 0)
     LDSBankCount = 32;
 
-  if (AddressableLocalMemorySize == 0)
-    AddressableLocalMemorySize = 32768;
+  if (MaxWavesPerEU == 0)
+    MaxWavesPerEU = 10;
 
   if (FlatOffsetBitWidth == 0)
     FlatOffsetBitWidth = 13;
 
   LocalMemorySize = AMDGPU::IsaInfo::getLocalMemorySize(*this);
+  AddressableLocalMemorySize =
+      AMDGPU::IsaInfo::getAddressableLocalMemorySize(*this);
   // LDS Allocation Granularity calculated in bytes from dwords
   LDSAllocationGranularity =
       AMDGPU::getLdsDwGranularity(*this) * sizeof(uint32_t);
@@ -160,13 +213,6 @@ GCNSubtarget &GCNSubtarget::initializeSubtargetDependencies(const Triple &TT,
   assert(llvm::isPowerOf2_32(InstCacheLineSize) &&
          "InstCacheLineSize must be a power of 2");
 
-  TargetID.setTargetIDFromFeaturesString(FS);
-
-  LLVM_DEBUG(dbgs() << "xnack setting for subtarget: "
-                    << TargetID.getXnackSetting() << '\n');
-  LLVM_DEBUG(dbgs() << "sramecc setting for subtarget: "
-                    << TargetID.getSramEccSetting() << '\n');
-
   return *this;
 }
 
@@ -177,27 +223,47 @@ void GCNSubtarget::checkSubtargetFeatures(const Function &F) const {
     Ctx.diagnose(DiagnosticInfoUnsupported(
         F, "must specify exactly one of wavefrontsize32 and wavefrontsize64"));
   }
-  if (hasFeature(AMDGPU::FeatureXNACKAnyOnly) && TargetID.isXnackOnOrOff()) {
-    Ctx.diagnose(DiagnosticInfoUnsupported(
-        F, "target only supports xnack 'Any'; '+/-xnack' is not allowed"));
-  }
 }
 
+// TODO: Validate subarch for subtarget
+
 GCNSubtarget::GCNSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
-                           const GCNTargetMachine &TM)
+                           const GCNTargetMachine &TM, bool BufferOOBRelaxed,
+                           bool TBufferOOBRelaxed,
+                           AMDGPU::TargetIDSetting XnackSetting,
+                           AMDGPU::TargetIDSetting SramEccSetting)
     : // clang-format off
     AMDGPUGenSubtargetInfo(TT, GPU, /*TuneCPU*/ GPU, FS),
     AMDGPUSubtarget(TT),
-    TargetID(*this),
+    TargetID(AMDGPU::createAMDGPUTargetID(*this, "")),
     InstrItins(getInstrItineraryForCPU(GPU)),
+    BufferOOBRelaxed(BufferOOBRelaxed),
+    TBufferOOBRelaxed(TBufferOOBRelaxed),
     InstrInfo(initializeSubtargetDependencies(TT, GPU, FS)),
     TLInfo(TM, *this),
     // Frame index expansion sometimes assumes the low bit of SP is 0
     FrameLowering(TargetFrameLowering::StackGrowsUp, getStackAlignment(), 0,
                   /*TransAl=*/Align(4)) {
+
   // clang-format on
-  MaxWavesPerEU = AMDGPU::IsaInfo::getMaxWavesPerEU(*this);
-  EUsPerCU = AMDGPU::IsaInfo::getEUsPerCU(*this);
+
+  // Apply the module flag's xnack setting if the target supports on/off modes.
+  // Targets without on/off mode support have xnack always on and ignore module
+  // flags.
+  if (hasXNACKOnOffModes())
+    TargetID.setXnackSetting(XnackSetting);
+
+  // Apply the module flag's sramecc setting if the target supports it.
+  if (supportsSRAMECC())
+    TargetID.setSramEccSetting(SramEccSetting);
+
+  LLVM_DEBUG(dbgs() << "xnack setting for subtarget: "
+                    << TargetID.getXnackSetting() << '\n');
+  LLVM_DEBUG(dbgs() << "sramecc setting for subtarget: "
+                    << TargetID.getSramEccSetting() << '\n');
+
+  NumWorkGroupSIMDs =
+      AMDGPU::getNumWorkGroupSIMDs(AMDGPU::isFullSIMDMode(*this));
 
   TSInfo = std::make_unique<AMDGPUSelectionDAGInfo>();
 
@@ -207,7 +273,7 @@ GCNSubtarget::GCNSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
   Legalizer = std::make_unique<AMDGPULegalizerInfo>(*this, TM);
   RegBankInfo = std::make_unique<AMDGPURegisterBankInfo>(*this);
   InstSelector =
-      std::make_unique<AMDGPUInstructionSelector>(*this, *RegBankInfo, TM);
+      std::make_unique<AMDGPUInstructionSelector>(*this, *RegBankInfo);
 }
 
 const SelectionDAGTargetInfo *GCNSubtarget::getSelectionDAGInfo() const {
@@ -351,6 +417,7 @@ void GCNSubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
   if (AMDGPU::getSchedStrategy(F) == "coexec") {
     Policy.OnlyTopDown = true;
     Policy.OnlyBottomUp = false;
+    Policy.ShouldTrackLaneMasks = true;
     return;
   }
 
@@ -401,6 +468,11 @@ void GCNSubtarget::overridePostRASchedPolicy(MachineSchedPolicy &Policy,
   });
 }
 
+void GCNSubtarget::overridePipelinerPolicy(
+    MachinePipelinerPolicy &Policy) const {
+  Policy.ShouldLimitRegPressure = true;
+}
+
 void GCNSubtarget::mirFileLoaded(MachineFunction &MF) const {
   if (isWave32()) {
     // Fix implicit $vcc operands after MIParser has verified that they match
@@ -423,8 +495,7 @@ bool GCNSubtarget::useVGPRIndexMode() const {
 bool GCNSubtarget::useAA() const { return UseAA; }
 
 unsigned GCNSubtarget::getOccupancyWithNumSGPRs(unsigned SGPRs) const {
-  return AMDGPU::IsaInfo::getOccupancyWithNumSGPRs(SGPRs, getMaxWavesPerEU(),
-                                                   getGeneration());
+  return AMDGPU::IsaInfo::getOccupancyWithNumSGPRs(*this, SGPRs);
 }
 
 unsigned
@@ -468,17 +539,12 @@ std::pair<unsigned, unsigned>
 GCNSubtarget::computeOccupancy(const Function &F, unsigned LDSSize,
                                unsigned NumSGPRs, unsigned NumVGPRs) const {
   unsigned DynamicVGPRBlockSize = AMDGPU::getDynamicVGPRBlockSize(F);
-  // Temporarily check both the attribute and the subtarget feature until the
-  // latter is removed.
-  if (DynamicVGPRBlockSize == 0 && isDynamicVGPREnabled())
-    DynamicVGPRBlockSize = getDynamicVGPRBlockSize();
-
   auto [MinOcc, MaxOcc] = getOccupancyWithWorkGroupSizes(LDSSize, F);
   unsigned SGPROcc = getOccupancyWithNumSGPRs(NumSGPRs);
   unsigned VGPROcc = getOccupancyWithNumVGPRs(NumVGPRs, DynamicVGPRBlockSize);
 
   // Maximum occupancy may be further limited by high SGPR/VGPR usage.
-  MaxOcc = std::min(MaxOcc, std::min(SGPROcc, VGPROcc));
+  MaxOcc = std::min({MaxOcc, SGPROcc, VGPROcc});
   return {std::min(MinOcc, MaxOcc), MaxOcc};
 }
 
@@ -582,12 +648,7 @@ unsigned GCNSubtarget::getBaseMaxNumVGPRs(
 }
 
 unsigned GCNSubtarget::getMaxNumVGPRs(const Function &F) const {
-  // Temporarily check both the attribute and the subtarget feature, until the
-  // latter is removed.
   unsigned DynamicVGPRBlockSize = AMDGPU::getDynamicVGPRBlockSize(F);
-  if (DynamicVGPRBlockSize == 0 && isDynamicVGPREnabled())
-    DynamicVGPRBlockSize = getDynamicVGPRBlockSize();
-
   std::pair<unsigned, unsigned> Waves = getWavesPerEU(F);
   return getBaseMaxNumVGPRs(
       F, {getMinNumVGPRs(Waves.second, DynamicVGPRBlockSize),
@@ -639,7 +700,7 @@ GCNSubtarget::getMaxNumVectorRegs(const Function &F) const {
     // Clamp values to be inbounds of our limits, and ensure min <= max.
 
     MaxNumAGPRs = std::min(std::max(MinNumAGPRs, MaxNumAGPRs), MaxVectorRegs);
-    MinNumAGPRs = std::min(std::min(MinNumAGPRs, TotalNumAGPRs), MaxNumAGPRs);
+    MinNumAGPRs = std::min({MinNumAGPRs, TotalNumAGPRs, MaxNumAGPRs});
 
     MaxNumVGPRs = std::min(MaxVectorRegs - MinNumAGPRs, NumArchVGPRs);
     MaxNumAGPRs = std::min(MaxVectorRegs - MaxNumVGPRs, MaxNumAGPRs);
@@ -773,11 +834,57 @@ void GCNSubtarget::adjustSchedDependency(
   MachineInstr *DefI = Def->getInstr();
   MachineInstr *UseI = Use->getInstr();
 
+  // Check for false latency on $tensorcnt / $asynccnt dependencies
+  if (Dep.getReg() == AMDGPU::TENSORcnt || Dep.getReg() == AMDGPU::ASYNCcnt) {
+    unsigned UseOp = UseI->getOpcode();
+    // Do not adjust latency for load->s_wait
+    bool IsBarrierCase =
+        InstrInfo.isLDSDMA(*DefI) &&
+        (UseOp == AMDGPU::S_WAIT_TENSORCNT || UseOp == AMDGPU::S_WAIT_ASYNCCNT);
+    if (!IsBarrierCase) {
+      Dep.setLatency(1);
+      return;
+    }
+  }
+
   if (Register Reg = getRealSchedDependency(*DefI, DefOpIdx, *UseI, UseOpIdx)) {
     Dep.setReg(Reg);
   } else {
     Dep = SDep(Def, SDep::Artificial);
     return; // This is not a data dependency anymore.
+  }
+
+  // DS load/store latency is variable depending on LDS contention.
+  if (InstrInfo.isDS(*DefI) &&
+      InstrInfo.getDSLatencyMultiplier(*DefI->getMF()) != 1) {
+    // For LDS instructions, we have overrides to change default latencies.
+    unsigned Latency = InstrInfo.getInstrLatency(*DefI);
+    Dep.setLatency(Latency);
+    return;
+  }
+
+  // For GFX1250: VALU/WMMA writes VGPR that VMEM/DS reads has specific latency.
+  // Only increase the latency if the current edge has lower latency.
+  if (hasGFX1250Insts()) {
+    bool UseIsMemory =
+        InstrInfo.isDS(*UseI) || InstrInfo.isVMEM(*UseI) ||
+        InstrInfo.isFLAT(*UseI) || InstrInfo.isFLATGlobal(*UseI) ||
+        InstrInfo.isFLATScratch(*UseI) || InstrInfo.isLDSDMA(*UseI);
+    if (UseIsMemory) {
+      bool DefIsWMMA = InstrInfo.isMFMAorWMMA(*DefI);
+      bool DefIsVALU = InstrInfo.isVALU(*DefI) && !DefIsWMMA;
+
+      unsigned MinLatency = 0;
+      if (DefIsWMMA)
+        MinLatency = AMDGPU::VALUToMemLatency::WMMA;
+      else if (DefIsVALU)
+        MinLatency = AMDGPU::VALUToMemLatency::VALU;
+
+      if (MinLatency && Dep.getLatency() < MinLatency) {
+        Dep.setLatency(MinLatency);
+        return;
+      }
+    }
   }
 
   if (DefI->isBundle()) {

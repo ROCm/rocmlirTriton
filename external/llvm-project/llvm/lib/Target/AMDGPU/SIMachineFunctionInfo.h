@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/MIRYamlMapping.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/Support/raw_ostream.h"
+#include <memory>
 #include <optional>
 
 namespace llvm {
@@ -33,7 +34,12 @@ class MachineFrameInfo;
 class MachineFunction;
 class SIMachineFunctionInfo;
 class SIRegisterInfo;
-class TargetRegisterClass;
+class MCRegisterClass;
+using TargetRegisterClass = MCRegisterClass;
+
+namespace AMDGPU {
+struct KernelPerfReport;
+} // namespace AMDGPU
 
 class AMDGPUPseudoSourceValue : public PseudoSourceValue {
 public:
@@ -271,12 +277,14 @@ struct SIMachineFunctionInfo final : public yaml::MachineFunctionInfo {
   bool WaveLimiter = false;
   bool HasSpilledSGPRs = false;
   bool HasSpilledVGPRs = false;
+  bool HasNoWWMPoolSGPRSpillFallback = false;
   uint16_t NumWaveDispatchSGPRs = 0;
   uint16_t NumWaveDispatchVGPRs = 0;
   uint32_t HighBitsOf32BitAddress = 0;
 
   // TODO: 10 may be a better default since it's the maximum.
   unsigned Occupancy = 0;
+  unsigned MaxRP = 0;
 
   SmallVector<StringValue, 2> SpillPhysVGPRS;
   SmallVector<StringValue> WWMReservedRegs;
@@ -303,7 +311,7 @@ struct SIMachineFunctionInfo final : public yaml::MachineFunctionInfo {
   bool HasInitWholeWave = false;
   bool IsWholeWaveFunction = false;
 
-  unsigned DynamicVGPRBlockSize = 0;
+  std::optional<unsigned> DynamicVGPRBlockSize;
   unsigned ScratchReservedForDynamicVGPRs = 0;
 
   unsigned NumKernargPreloadSGPRs = 0;
@@ -333,6 +341,8 @@ template <> struct MappingTraits<SIMachineFunctionInfo> {
     YamlIO.mapOptional("waveLimiter", MFI.WaveLimiter, false);
     YamlIO.mapOptional("hasSpilledSGPRs", MFI.HasSpilledSGPRs, false);
     YamlIO.mapOptional("hasSpilledVGPRs", MFI.HasSpilledVGPRs, false);
+    YamlIO.mapOptional("hasNoWWMPoolSGPRSpillFallback",
+                       MFI.HasNoWWMPoolSGPRSpillFallback, false);
     YamlIO.mapOptional("numWaveDispatchSGPRs", MFI.NumWaveDispatchSGPRs, false);
     YamlIO.mapOptional("numWaveDispatchVGPRs", MFI.NumWaveDispatchVGPRs, false);
     YamlIO.mapOptional("scratchRSrcReg", MFI.ScratchRSrcReg,
@@ -362,7 +372,7 @@ template <> struct MappingTraits<SIMachineFunctionInfo> {
     YamlIO.mapOptional("longBranchReservedReg", MFI.LongBranchReservedReg,
                        StringValue());
     YamlIO.mapOptional("hasInitWholeWave", MFI.HasInitWholeWave, false);
-    YamlIO.mapOptional("dynamicVGPRBlockSize", MFI.DynamicVGPRBlockSize, false);
+    YamlIO.mapOptional("dynamicVGPRBlockSize", MFI.DynamicVGPRBlockSize);
     YamlIO.mapOptional("scratchReservedForDynamicVGPRs",
                        MFI.ScratchReservedForDynamicVGPRs, 0);
     YamlIO.mapOptional("numKernargPreloadSGPRs", MFI.NumKernargPreloadSGPRs, 0);
@@ -532,6 +542,8 @@ private:
   // Current recorded maximum possible occupancy.
   unsigned Occupancy;
 
+  unsigned MaxRP = 0;
+
   // Maximum number of dwords that can be clusterred during instruction
   // scheduler stage.
   unsigned MaxMemoryClusterDWords = DefaultMemoryClusterDWordsLimit;
@@ -576,9 +588,9 @@ private:
   WWMSpillsMap WWMSpills;
 
   // Before allocation, the VGPR registers are partitioned into two distinct
-  // sets, the first one for WWM-values and the second set for non-WWM values.
+  // sets, the first one for WWM values and the second set for per-lane values.
   // The latter set should be reserved during WWM-regalloc.
-  BitVector NonWWMRegMask;
+  BitVector PerLaneVGPRMask;
 
   using ReservedRegSet = SmallSetVector<Register, 8>;
   // To track the VGPRs reserved for WWM instructions. They get stack slots
@@ -611,6 +623,11 @@ private:
   // Emergency stack slot. Sometimes, we create this before finalizing the stack
   // frame, so save it here and add it to the RegScavenger later.
   std::optional<int> ScavengeFI;
+
+  // Ordinary SGPR spills fell back to memory because no WWM VGPR pool was
+  // available. This path may require additional nested VGPR scavenging slots
+  // during frame-index elimination.
+  bool HasNoWWMPoolSGPRSpillFallback = false;
 
   // Map each VGPR CSR to the mask needed to save and restore it using block
   // load/store instructions. Only used if the subtarget feature for VGPR block
@@ -670,9 +687,9 @@ public:
                            : WWMReservedRegs.contains(Reg);
   }
 
-  void updateNonWWMRegMask(BitVector &RegMask) { NonWWMRegMask = RegMask; }
-  BitVector getNonWWMRegMask() const { return NonWWMRegMask; }
-  void clearNonWWMRegAllocMask() { NonWWMRegMask.clear(); }
+  void updatePerLaneVGPRMask(BitVector &RegMask) { PerLaneVGPRMask = RegMask; }
+  BitVector getPerLaneVGPRMask() const { return PerLaneVGPRMask; }
+  void clearPerLaneVGPRAllocMask() { PerLaneVGPRMask.clear(); }
 
   SIModeRegisterDefaults getMode() const { return Mode; }
 
@@ -851,6 +868,11 @@ public:
 
   int getScavengeFI(MachineFrameInfo &MFI, const SIRegisterInfo &TRI);
   std::optional<int> getOptionalScavengeFI() const { return ScavengeFI; }
+
+  void setNoWWMPoolSGPRSpillFallback() { HasNoWWMPoolSGPRSpillFallback = true; }
+  bool hasNoWWMPoolSGPRSpillFallback() const {
+    return HasNoWWMPoolSGPRSpillFallback;
+  }
 
   unsigned getBytesInStackArgArea() const {
     return BytesInStackArgArea;
@@ -1193,6 +1215,13 @@ public:
     return &GWSResourcePSV;
   }
 
+  void setMaxRP(unsigned RP) {
+    if (RP > MaxRP)
+      MaxRP = RP;
+  }
+
+  unsigned getMaxRP() { return MaxRP; }
+
   unsigned getOccupancy() const {
     return Occupancy;
   }
@@ -1238,6 +1267,17 @@ public:
   unsigned getMaxNumWorkGroupsZ() const { return MaxNumWorkGroups[2]; }
 
   AMDGPU::ClusterDimsAttr getClusterDims() const { return ClusterDims; }
+
+  // Static simulator report (shared to allow MFI copy)
+  std::shared_ptr<AMDGPU::KernelPerfReport> StaticSimReport;
+
+  bool hasStaticSimReport() const { return StaticSimReport != nullptr; }
+  const AMDGPU::KernelPerfReport *getStaticSimReport() const {
+    return StaticSimReport.get();
+  }
+  void setStaticSimReport(std::shared_ptr<AMDGPU::KernelPerfReport> Report) {
+    StaticSimReport = std::move(Report);
+  }
 };
 
 } // end namespace llvm

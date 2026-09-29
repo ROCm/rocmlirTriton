@@ -7,6 +7,7 @@
 #include <level_zero/ze_api.h>
 #include <level_zero/zes_api.h>
 #include <memory>
+#include <mutex>
 
 #include "DLWrap.h"
 #include "Shared/Debug.h"
@@ -56,6 +57,7 @@ DLWRAP(zeDeviceGetMemoryProperties, 3)
 DLWRAP(zeDeviceGetCacheProperties, 3)
 DLWRAP(zeDeviceGetGlobalTimestamps, 3)
 DLWRAP(zeDriverGetApiVersion, 2)
+DLWRAP(zeDriverGetProperties, 2)
 DLWRAP(zeDriverGetExtensionFunctionAddress, 3)
 DLWRAP(zeDriverGetExtensionProperties, 3)
 DLWRAP(zeEventCreate, 3)
@@ -90,6 +92,10 @@ DLWRAP(zeModuleGetFunctionPointer, 3)
 DLWRAP(zesDeviceEnumMemoryModules, 3)
 DLWRAP(zesMemoryGetState, 2)
 DLWRAP(zeCommandListHostSynchronize, 2)
+DLWRAP(zeCommandListAppendSignalEvent, 2)
+DLWRAP(zeCommandListAppendWaitOnEvents, 3)
+DLWRAP(zeEventQueryStatus, 1)
+DLWRAP(zeDriverGetDefaultContext, 1)
 
 DLWRAP_FINALIZE()
 
@@ -106,6 +112,32 @@ DLWRAP_FINALIZE()
 #define DEBUG_PREFIX "TARGET " GETNAME(TARGET_NAME) " RTL"
 #endif
 
+static struct {
+  const char *Name;
+  void *FallbackFunc;
+  bool (*FallbackAvailable)();
+} ZeFallbacksTbl[] = {};
+constexpr size_t ZeFallbacksTblSz =
+    sizeof(ZeFallbacksTbl) / sizeof(ZeFallbacksTbl[0]);
+
+static void *findZeFallback(std::string_view Name) {
+  for (size_t i = 0; i < ZeFallbacksTblSz; i++) {
+    if (Name == ZeFallbacksTbl[i].Name) {
+      if (!ZeFallbacksTbl[i].FallbackAvailable()) {
+        ODBG(OLDT_Init)
+            << "Symbol '" << Name
+            << "' has fallback but it's not compatible with the platform!";
+        // In theory we could have multiple fallback entries for one
+        // symbol, continue the search
+        continue;
+      }
+
+      return ZeFallbacksTbl[i].FallbackFunc;
+    }
+  }
+  return nullptr;
+}
+
 static bool loadLevelZero() {
   std::string L0Library{LEVEL_ZERO_LIBRARY};
   std::string ErrMsg;
@@ -119,7 +151,7 @@ static bool loadLevelZero() {
   // use a new Level Zero API routine.
   // zeCommandListHostSynchronize was introduced in loader 1.10.0 (API 1.6.0).
   constexpr uint32_t MinVersion{ZE_MAKE_VERSION(1, 10)};
-  auto emitCheckVersion = [&]() {
+  auto EmitCheckVersion = [&]() {
     ODBG(OLDT_Init) << "Level Zero Loader compatible with version "
                     << ZE_MAJOR_VERSION(MinVersion) << "."
                     << ZE_MINOR_VERSION(MinVersion) << " is required";
@@ -142,7 +174,7 @@ static bool loadLevelZero() {
       ErrMsg = "unknown error";
     ODBG(OLDT_Init) << "Unable to load library '" << L0Library
                     << "': " << ErrMsg << "!";
-    emitCheckVersion();
+    EmitCheckVersion();
     return false;
   }
 
@@ -150,23 +182,48 @@ static bool loadLevelZero() {
     const char *Sym = dlwrap::symbol(I);
 
     void *P = DynlibHandle->getAddressOfSymbol(Sym);
-    if (P == nullptr) {
-      ODBG(OLDT_Init) << "Unable to find '" << Sym << "' in '" << L0Library
-                      << "'!";
-      emitCheckVersion();
-      return false;
-    }
-    ODBG(OLDT_Init) << "Implementing " << Sym << " with dlsym(" << Sym
-                    << ") -> " << P;
-
+    if (P)
+      ODBG(OLDT_Init) << "Implementing " << Sym << " with dlsym(" << Sym
+                      << ") -> " << P;
     *dlwrap::pointer(I) = P;
   }
 
   return true;
 }
 
+static void addLevelZeroFallbacks() {
+  std::string L0Library{LEVEL_ZERO_LIBRARY};
+
+  for (size_t I = 0; I < dlwrap::size(); I++) {
+    if (*dlwrap::pointer(I) != nullptr)
+      continue;
+
+    // Sym is missing, try to find fallback
+    const char *Sym = dlwrap::symbol(I);
+    void *Fallback = nullptr;
+
+    Fallback = findZeFallback(Sym);
+    if (Fallback == nullptr) {
+      ODBG(OLDT_Init) << "Symbol '" << Sym << "' not found in '" << L0Library
+                      << "' and no fallback is available!";
+      continue;
+    }
+
+    ODBG(OLDT_Init) << "Symbol '" << Sym << "' not found in '" << L0Library
+                    << "'. Using fallback implementation -> " << Fallback;
+    *dlwrap::pointer(I) = Fallback;
+  }
+}
+
 ze_result_t ZE_APICALL zeInit(ze_init_flags_t flags) {
   if (!loadLevelZero())
     return ZE_RESULT_ERROR_UNKNOWN;
-  return dlwrap_zeInit(flags);
+
+  auto InitResult = dlwrap_zeInit(flags);
+
+  // Add fallbacks after calling zeInit, so we can
+  // use level_zero APIs to check if they work
+  addLevelZeroFallbacks();
+
+  return InitResult;
 }

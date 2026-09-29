@@ -1,6 +1,6 @@
-; RUN:  llc -mtriple=amdgcn -mcpu=verde < %s | FileCheck -enable-var-scope -check-prefixes=GCN,SIVI,FUNC %s
-; RUN:  llc -mtriple=amdgcn -mcpu=tonga < %s | FileCheck -enable-var-scope -check-prefixes=GCN,SIVI,FUNC %s
-; RUN:  llc -mtriple=amdgcn -mcpu=gfx900 < %s | FileCheck -check-prefixes=GCN,GFX9,FUNC %s
+; RUN:  llc -mtriple=amdgpu6.01 < %s | FileCheck -enable-var-scope -check-prefixes=GCN,SIVI,FUNC %s
+; RUN:  llc -mtriple=amdgpu8.02 < %s | FileCheck -enable-var-scope -check-prefixes=GCN,SIVI,FUNC %s
+; RUN:  llc -mtriple=amdgpu9.00 < %s | FileCheck -check-prefixes=GCN,GFX9,FUNC %s
 ; RUN:  llc -mtriple=r600 -mcpu=cypress < %s | FileCheck -check-prefixes=EG,FUNC %s
 
 ; FUNC-LABEL: {{^}}s_abs_i32:
@@ -253,7 +253,7 @@ define amdgpu_kernel void @s_min_max_v4i32(ptr addrspace(1) %out0, ptr addrspace
 ; GCN: v_cmp_gt_i32_e32
 ; GCN-DAG: v_cndmask_b32_e32
 ; GCN-DAG: v_cndmask_b32_e32
-; GCN-DAG: v_cndmask_b32_e64 v{{[0-9]+}}, 0, 1, vcc
+; GCN-DAG: s_cselect_b32 s{{[0-9]+}}, 1, 0
 define amdgpu_kernel void @v_min_max_i32_user(ptr addrspace(1) %out0, ptr addrspace(1) %out1, ptr addrspace(1) %ptr0, ptr addrspace(1) %ptr1) nounwind {
   %val0 = load volatile i32, ptr addrspace(1) %ptr0
   %val1 = load volatile i32, ptr addrspace(1) %ptr1
