@@ -179,6 +179,7 @@ def Rock_AttentionOp
           I32Attr:$numHeadsKV, UnitAttr:$qTransposed, UnitAttr:$kTransposed,
           UnitAttr:$vTransposed, UnitAttr:$oTransposed, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowLookBack,
+          OptionalAttr<I32Attr>:$causalLookBack,
           OptionalAttr<TypeAttr>:$softmaxType,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1,
@@ -249,6 +250,7 @@ def Rock_AttentionOp
         (`lastValidKVIndex` `=` `(` $lastValidKVIndex^ `:` type($lastValidKVIndex) `)` `\n`)?
         (`prefixOffset` `=` `(` $prefixOffset^ `:` type($prefixOffset) `)` `\n`)?
         (`slidingWindowLookBack` `=` $slidingWindowLookBack^ `\n`)?
+        (`causalLookBack` `=` $causalLookBack^ `\n`)?
         (`causal` `\n` $causal^)?
         (`qk` `=` `elementwise` (`otherIns` `(` $preSoftmaxElemWiseInputs^ `:` type($preSoftmaxElemWiseInputs) `)`)? $preSoftmaxBody^ `\n`)?
         `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `\n`
@@ -550,6 +552,7 @@ def Rock_GridwiseAttentionOp
           Optional<TensorRankOf<[I32], [1]>>:$lastValidKVIndex,
           Optional<TensorRankOf<[I32], [1]>>:$prefixOffset, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowLookBack,
+          OptionalAttr<I32Attr>:$causalLookBack,
           UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
           OptionalAttr<IndexAttr>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,

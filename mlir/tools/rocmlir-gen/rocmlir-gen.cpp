@@ -612,6 +612,16 @@ static llvm::cl::opt<int64_t> slidingWindowLookBack(
         "Omission or -1 disables sliding."),
     llvm::cl::value_desc("positive integer or -1"), llvm::cl::init(-1));
 
+static llvm::cl::opt<int64_t> causalLookBack(
+    "causal_look_back",
+    llvm::cl::desc(
+        "Strictly positive look-back distance measured from each query "
+        "position, giving a banded causal mask: query m attends to keys "
+        "[max(0, m-L), m]. Unlike -sliding_window_look_back, which anchors the "
+        "window at last_valid_kv_index (decode), this anchors per query row "
+        "(prefill). Requires causal masking. Omission or -1 disables it."),
+    llvm::cl::value_desc("positive integer or -1"), llvm::cl::init(-1));
+
 static llvm::cl::opt<bool> returnLSE(
     "return_lse",
     llvm::cl::desc("whether the attention kernel returns LSE (log-sum-exp)"),
@@ -3805,6 +3815,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       slidingWindowLookBack > 0
           ? builder.getI32IntegerAttr(slidingWindowLookBack)
           : nullptr,
+      /*causalLookBack=*/
+      causalLookBack > 0 ? builder.getI32IntegerAttr(causalLookBack) : nullptr,
       softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr);
   {
