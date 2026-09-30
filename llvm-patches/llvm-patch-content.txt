@@ -862,7 +862,8 @@ Drop this patch on the next LLVM/Triton bump that includes upstream commit
 ----------------------------------------------------------------------
 patch-inline-spiller-partial-sibling-spill.patch
 ----------------------------------------------------------------------
-- Upstream status : Downstream fix; submit to LLVM before the next bump
+- Upstream status : Downstream fix. Reported upstream as
+                    https://github.com/llvm/llvm-project/issues/225054
 - Upstream title  : [InlineSpiller] Do not store undefined lanes into a
                     shared spill slot
 - File Fixed      : llvm/lib/CodeGen/InlineSpiller.cpp
@@ -932,4 +933,5 @@ is identical to the faulting sweep's, so without this patch the run dies
 with the memory access fault and FileCheck fails on the missing verification
 line.
 
-Drop or reconcile this patch once an equivalent fix lands upstream.
+#225054 is still open upstream. Drop or reconcile this patch once a fix for
+it lands in the pinned LLVM.
