@@ -1,4 +1,4 @@
-//===- MsvcHipCompat.h - Let MSVC consume HIP's host headers ----*- C++ -*-===//
+//===- HipRuntime.h - Include HIP's host headers portably -------*- C++ -*-===//
 //
 // Part of the rocMLIR Project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Include this instead of <hip/hip_runtime.h>. It applies the workarounds MSVC
-// needs and then pulls HIP in itself, so the ordering cannot be got wrong by a
-// caller: there is no window in which a <hip/...> header is seen first.
+// Include this instead of <hip/hip_runtime.h>. On a Clang-based compiler that
+// is all it does. Under cl.exe it applies the workarounds HIP's headers need
+// first, so a caller never has to order two includes correctly: there is no
+// window in which a <hip/...> header could be seen unprepared.
 //
 // HIP's headers are written for a Clang-based compiler. Two things break under
 // cl.exe, and neither is fundamental for host-only use:
@@ -37,8 +38,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MLIR_SUPPORT_MSVCHIPCOMPAT_H
-#define MLIR_SUPPORT_MSVCHIPCOMPAT_H
+#ifndef MLIR_SUPPORT_HIPRUNTIME_H
+#define MLIR_SUPPORT_HIPRUNTIME_H
 
 #if defined(_MSC_VER) && !defined(__clang__)
 
@@ -100,4 +101,4 @@
 // includes correctly.
 #include <hip/hip_runtime.h>
 
-#endif // MLIR_SUPPORT_MSVCHIPCOMPAT_H
+#endif // MLIR_SUPPORT_HIPRUNTIME_H

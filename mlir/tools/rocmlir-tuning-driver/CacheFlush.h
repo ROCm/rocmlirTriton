@@ -9,10 +9,8 @@
 #ifndef ROCMLIR_TUNING_DRIVER_CACHE_FLUSH_H
 #define ROCMLIR_TUNING_DRIVER_CACHE_FLUSH_H
 
+#include "mlir/Support/HipRuntime.h"
 #include "mlir/Support/LogicalResult.h"
-
-// Pulls in <hip/hip_runtime.h> with the workarounds MSVC needs applied first.
-#include "mlir/Support/MsvcHipCompat.h"
 
 namespace rocmlir::tuningdriver {
 

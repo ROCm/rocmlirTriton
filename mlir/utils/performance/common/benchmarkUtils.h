@@ -11,8 +11,7 @@
 #ifndef MLIR_UTILS_PERFORMANCE_COMMON_BENCHMARKUTILS_H
 #define MLIR_UTILS_PERFORMANCE_COMMON_BENCHMARKUTILS_H
 
-// Pulls in <hip/hip_runtime.h> with the workarounds MSVC needs applied first.
-#include "mlir/Support/MsvcHipCompat.h"
+#include "mlir/Support/HipRuntime.h"
 #include <string>
 
 // Common options to the different benchmark drivers
