@@ -246,6 +246,59 @@ func.func @attention_sliding_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf
   return %r : tensor<1x384x64xf16>
 }
 
+func.func @attention_causal_look_back_zero(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{causalLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causal, causalLookBack = 0 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// -1 is the driver sentinel for a disabled band, spelled in IR as an absent
+// attribute; it must never reach the op as a value.
+func.func @attention_causal_look_back_negative(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{causalLookBack must be positive}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causal, causalLookBack = -1 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// The band only trims the lower edge; the upper edge is causal's job.
+func.func @attention_causal_look_back_requires_causal(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{causalLookBack requires causal to be enabled}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causalLookBack = 128 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// Prefix causal moves the upper bound off the diagonal, so the two cannot be
+// combined without reworking how the band's edges are derived.
+func.func @attention_causal_look_back_with_prefix_offset(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>, %prefixOffset: tensor<1xi32>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{causalLookBack is not supported with prefixOffset}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   prefixOffset = (%prefixOffset : tensor<1xi32>)
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causal, causalLookBack = 128 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
+// A band at least as wide as the sequence keeps the whole causal triangle, so
+// it would cost the extra mask work and skip nothing.
+func.func @attention_causal_look_back_reaches_max_seq_len(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{causalLookBack must be less than max sequence length}}
+  %r = rock.attention{
+   qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+   softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causal, causalLookBack = 384 : i32} -> tensor<1x384x64xf16>
+  return %r : tensor<1x384x64xf16>
+}
+
 // slidingWindowLookBack on a gemm-gemm-like op with softmax disabled is not attention.
 func.func @gridwise_attention_sliding_look_back_only_for_attention(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{slidingWindowLookBack only works for attention}}
