@@ -897,6 +897,16 @@ struct GridwiseAttentionRewritePattern
             loc, rewriter.getI32Type(), 0);
         Value minRowOfBlock = arith::MulIOp::create(
             rewriter, loc, gridCoordsGemm0.m_block, constGemm0MPerBlock);
+        // Under GQA the M axis packs numRepeatsGQA query heads, so an M index
+        // maps to query row M / numRepeatsGQA. Convert before subtracting L,
+        // the same way maxRowOfBlock does for the causal upper bound.
+        if (numRepeatsGQA) {
+          Value constNumRepeatsGQA =
+              rewriter.createOrFold<arith::ConstantIntOp>(
+                  loc, rewriter.getI32Type(), numRepeatsGQA.getInt());
+          minRowOfBlock = rewriter.createOrFold<arith::DivUIOp>(
+              loc, minRowOfBlock, constNumRepeatsGQA);
+        }
         Value rawLowerBound =
             arith::SubIOp::create(rewriter, loc, minRowOfBlock, constLookBack);
         Value lowerBound =
