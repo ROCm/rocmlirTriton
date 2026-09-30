@@ -23,6 +23,7 @@ patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
 patch-gfx1310-isa-family.patch
 patch11295.patch
+patch-direct-to-lds-swizzle-check-vec.patch
 patch10497.patch
 patch10694.patch
 patch-fma-lds-swizzle.patch
@@ -31,6 +32,7 @@ patch10635.patch
 patch10928.patch
 patch11018.patch
 patch11118.patch
+patch11890.patch
 
 patch-gfx1310-isa-family.patch
   Adds gfx1310 as its own AMD ISA family in the vendored Triton backend, so
@@ -332,19 +334,32 @@ patch-free-var-mask-register-dim-name.patch
   Not filed upstream yet; upstream Triton has the same defect.
 
 patch-cost-aware-dot-rematerialization.patch
-  Gates LayoutRematerialization::hoistConvertDotOperand on the existing
-  isRematBeneficial cost model instead of hoisting unconditionally. The pass
-  previously moved every ttg.convert_layout next to its load once the backward
-  slice was elementwise-pure, even when rematerializing the slice in a
-  replicated dot-operand layout cost more than keeping the convert (e.g.
-  expensive math scaled by getCostFactor replication and the 8x
-  isExpensiveMathOp multiplier).
-
-  After getConvertBackwardSlice, sums getConvertCost for each load-leaf convert
-  the hoist would insert and calls isRematBeneficial(convertOp, slice, layout,
-  newCvtCost), matching hoistConvertOnTopOfExtOrBroadcast. Hoist proceeds only
-  when eliminating the use-site convert is at least as cheap as rematerializing
-  the slice plus the load-side converts.
+  Upstream PR: https://github.com/triton-lang/triton/pull/11551
+  Upstream title: [TRITONGPU] Avoid expensive math rematerialization when
+  hoisting dot operands
+  Stops LayoutRematerialization::hoistConvertDotOperand from rematerializing
+  expensive math. The pass moved every ttg.convert_layout next to its load once
+  the backward slice was elementwise-pure, even when the slice had to be
+  duplicated or ran in a dot-operand layout that replicates the operand across
+  warps, multiplying transcendental work.
+  Mirrors the upstream PR: the cost computation is split into getSliceOps,
+  getValuesUsedOutsideSlice and getRematerializationCost, which reports
+  totalCost, expensiveMathCost and splitsSlice, and the hoist is rejected only
+  when expensiveMathCost is non-zero. Cheap elementwise chains still hoist,
+  because the payoff there is pipelining the loads rather than a cheaper
+  convert. test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir is
+  byte-identical to the version in that PR.
+  Two deviations from the PR, both because the pinned Triton predates the
+  feature: isRematBeneficial keeps its four-parameter signature and the
+  disableRematSplitting rejection is omitted. The splitsSlice field is kept so
+  the next bump can drop this record without further edits.
+  An earlier revision of this record gated on total cost instead, which also
+  suppressed cheap chains and left five sections of test/TritonGPU/combine.mlir
+  and all three functions of
+  test/TritonGPU/amd/accelerate-amd-matmul-mfma-decompose-scaled-dot.mlir
+  failing; both are untouched upstream tests and now pass unmodified. That
+  revision also declared 21 new lines in a hunk with 20, so it could not be
+  reverse-applied in Step 1.2 of docs/bump_triton_version.md.
 
   Motivation: fused elementwise + conv kernels on RDNA (e.g. log/tanh/mul on
   the B operand before a WMMA dot) regressed ~15% vs rocMLIR because a
@@ -352,12 +367,10 @@ patch-cost-aware-dot-rematerialization.patch
   replicated WMMA dot-operand layout. Keeping the convert after the expensive
   chain lets each warp compute once and store to LDS.
 
-  No upstream PR yet. If the shared model is too weak or too strong for dot-
-  operand hoists, tune getCostFactor or the expensive-math multiplier in one
+  Drop this record once the upstream PR lands and the vendored Triton contains
+  it. If the expensive-math policy turns out to be too weak or too strong for
+  dot-operand hoists, tune getCostFactor or the expensive-math multiplier in one
   place rather than adding a second heuristic.
-
-  Re-evaluate on each Triton bump; drop once upstream calls isRematBeneficial
-  from hoistConvertDotOperand or upstreams this change.
 
 patch-negligible-anchor-layout-conflict.patch
   Adds the tie-break that LayoutPropagation::resolveConflicts asked for in its
@@ -411,6 +424,31 @@ patch11295.patch
 
   Tracks https://github.com/triton-lang/triton/pull/11295. Drop this patch once
   the pinned Triton revision includes that change.
+
+patch-direct-to-lds-swizzle-check-vec.patch
+  Measures the direct-to-LDS lane shuffle with the load's vector rather than
+  the shared encoding's, so the clamp patch11295.patch added fires when it
+  should.
+
+  emitSwizzledLaneOffsets turns the swizzled-vs-flat offset delta into a lane
+  offset by dividing by the vector the load uses, which canLoadDirectToLDS sets
+  to the register-to-shared run. swizzlesInsideWarp divided by enc.getVec()
+  instead, which is larger whenever the shared tile is wider than one load, so
+  the displacement looked smaller than it is and a shuffle that leaves the warp
+  passed as in-warp. The check now takes the vector createStreamOps hands to
+  createAsyncCopy, from the pointer contiguity and the mask alignment, and caps
+  it the way CoalesceAsyncCopy does, by the register-to-shared run and by the
+  widths the target can write to LDS.
+
+  The dot-operand hoist from triton#11551 reaches this with f32 tiles carrying
+  the dot-operand layout of a bf16 dot, kWidth = 8 against a load vector of a
+  single f32, since CDNA4 writes only 32 and 128 bits to LDS. With that port
+  applied, ROCK E2E PrGemm/pr_gemm_1_2.mlir (f32 gemm, k = 769) read from a lane
+  outside its warp and got half its output wrong.
+
+  Stacks on patch11295.patch and must be applied after it.
+
+  Not filed upstream yet; upstream PR 11295 carries the same mismatch.
 
 patch-elementwise-fastmath-flags.patch
   Carries fast-math flags across the dialect boundary in the elementwise
@@ -474,4 +512,35 @@ patch-fma-lds-swizzle.patch
   operand-major ones that patch introduces.
 
   Not filed upstream yet; upstream Triton has the same performance gap.
+
+patch11890.patch
+  composePaddedLayoutForAsyncCopyCDNA4 divides warpSize by contigLanes, the
+  number of 16-byte vectors in one row of the tile, to get the rows one warp
+  covers. Once a row spans more than a warp of vectors that quotient truncates
+  to zero, so requiredRows collapses, xWayConflicts always reports one, and the
+  useBestWrap guard degenerates to nonContigDim >= 0. wrap then exceeds the
+  rows the tile has, bases are added for rows that do not exist, and the
+  resulting layout broadcasts in the offset dimension, which
+  PaddedSharedEncodingAttr::verify rejects. In an assertions build that aborts
+  the compiler instead of falling back.
+
+  The weekly tuning stage hit this on gfx950 for gemm f16 m=384 k=3072 n=768
+  with mPerBlock=1, nPerBlock=16, kPerBlock=2048, where contigLanes is 256
+  against a warp size of 64. contigLanes is now clamped to [1, warpSize], so a
+  warp counts as covering one row when a row is wider than a warp, and a row
+  narrower than a vector can no longer make it zero.
+
+  Across 70 shape and dtype combinations this takes process aborts from 8 to 0
+  and keeps the 55 shapes that already compiled bit identical. The lit test
+  test/TritonGPU/amd/amd-pipeline-padded-layout-wide-row-gfx950.mlir uses a
+  4-row tile, fewer rows than the stagger, and
+  mlir/test/fusion/pr-e2e/rock-gemm-cdna4-padded-layout-wide-row.mlir runs the
+  weekly config end to end on gfx950. The downstream copy of the lit test
+  carries the MIT header required for files added by local [EXTERNAL]
+  commits; the upstream copy has none.
+
+  Imports https://github.com/triton-lang/triton/pull/11890.
+
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  1725224a65ebc2dc7ca2ee1d84458344d93ee797.
 

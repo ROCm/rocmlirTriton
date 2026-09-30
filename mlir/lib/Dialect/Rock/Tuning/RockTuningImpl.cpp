@@ -1964,8 +1964,11 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
       out.untunable("convolution_spatial_rank");
       return success();
     }
+    // Grouped convolutions are already tuned from tier1, but the key has no
+    // groups field (c and k are totals), so they would alias an ungrouped
+    // problem. Retuning cannot fix that; only adding the field can.
     if (inShape[iLayoutMap["gi"]] != 1)
-      out.unsupported("convolution_groups");
+      out.untunable("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
       out.untunable("asymmetric_padding");
 
@@ -2167,8 +2170,9 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
       out.untunable("convolution_spatial_rank");
       return success();
     }
+    // As for conv: the key has no groups field.
     if (inShape[iLayoutMap["gi"]] != 1)
-      out.unsupported("convolution_groups");
+      out.untunable("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
       out.untunable("asymmetric_padding");
 
