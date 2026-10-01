@@ -75,6 +75,10 @@ More examples live under `mlir/test/rocmlir-driver/` (notably `sanity.mlir`), wi
 cd build && ninja check-rocmlir
 ```
 
+The vendored trees keep their own suites: `check-mlir` for `external/llvm-project`
+and `check-triton-lit-tests` for `external/triton`. They are the only suites that
+exercise those trees directly, and nightly CI runs both.
+
 ## Contributing
 
 We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the issue-reporting and pull-request workflow.
