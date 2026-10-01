@@ -411,7 +411,7 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1310:
     return 1;
@@ -438,7 +438,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   case ISAFamily::RDNA2:
     return 2;
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
     return 2;
   case ISAFamily::RDNA4:
     return 12;
@@ -555,7 +555,7 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
-  case ISAFamily::GFX1170: // guess, see the TODO above
+  case ISAFamily::RDNA4m: // guess, see the TODO above
     return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
@@ -581,7 +581,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
   case ISAFamily::GFX1310:
@@ -615,7 +615,7 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
     return 1024;
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1310:
@@ -713,7 +713,7 @@ bool mlir::rock::tritonLowersTanhToNativeInst(StringRef arch) {
   case ISAFamily::RDNA1:
   case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
     return false;
   }

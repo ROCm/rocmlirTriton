@@ -131,7 +131,8 @@ struct FSubOpConversion
     auto lhsElemTy = getElementTypeOrSelf(op.getLhs());
     auto rhsElemTy = getElementTypeOrSelf(op.getRhs());
     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
-      return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(loc, rewriter, operands)};
+      return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(
+          loc, rewriter, operands, getLLVMFastmathFlags(op))};
     } else {
       return {LLVM::FSubOp::create(rewriter, loc, elemTy, operands[0][0],
                                    operands[0][1], getLLVMFastmathFlags(op))};

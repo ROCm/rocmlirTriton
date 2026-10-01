@@ -47,7 +47,7 @@ bool isCDNA4OrHigher(ISAFamily family) {
 // instructions, but v_cvt_pk_f32_fp8/bf8 is selected as its fake16 form and
 // printed without a .l/.h suffix, which the assembler rejects in the
 // real-true16 mode gfx12 defaults to.
-bool hasPlainOcpFp8HW(ISAFamily family) { return family == ISAFamily::GFX1170; }
+bool hasPlainOcpFp8HW(ISAFamily family) { return family == ISAFamily::RDNA4m; }
 
 // List of architectures that have hardware support for FNUZ fp8 formats. On
 // those architectures we will use the HW instructions to do the conversion

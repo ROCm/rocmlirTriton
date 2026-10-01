@@ -823,7 +823,7 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
   case triton::amdgpu::ISAFamily::RDNA1:
   case triton::amdgpu::ISAFamily::RDNA2:
   case triton::amdgpu::ISAFamily::RDNA3:
-  case triton::amdgpu::ISAFamily::GFX1170:
+  case triton::amdgpu::ISAFamily::RDNA4m:
   case triton::amdgpu::ISAFamily::RDNA4:
     return !(bits & tidEnable) && ((bits >> 28) & 3) == 3;
   // gfx1250 rebuilds the descriptor with a 45-bit NumRecords, shifting flags
