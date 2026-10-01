@@ -22,8 +22,11 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include <algorithm>
 #include <deque>
 #include <functional>
+#include <limits>
+#include <tuple>
 
 namespace mlir::triton::gpu {
 
@@ -35,6 +38,40 @@ namespace mlir::triton::gpu {
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace {
+
+/// The amount of data, in bytes, that \p value stands for. A tensor of
+/// pointers is measured by the data it addresses rather than by the addresses
+/// themselves, since an anchor holding one -- a function argument, or the
+/// pointer operand of a load -- governs that data. An element type with no
+/// width to measure is reported as unbounded: not knowing how much data a
+/// value covers is no reason to treat it as covering little.
+static int64_t getAnchorByteCount(Value value) {
+  auto tensorTy = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorTy)
+    return 0;
+  Type elemTy = tensorTy.getElementType();
+  if (auto ptrTy = dyn_cast<triton::PointerType>(elemTy))
+    elemTy = ptrTy.getPointeeType();
+  if (!elemTy.isIntOrFloat())
+    return std::numeric_limits<int64_t>::max();
+  return (tensorTy.getNumElements() * elemTy.getIntOrFloatBitWidth()) >> 3;
+}
+
+/// The amount of data, in bytes, whose access pattern \p anchor's layout
+/// decides: the largest tensor its op reads, writes or computes with. A layout
+/// picked to serve a small access describes little of the data it will be
+/// combined with, which makes it a poor choice for the values downstream of it.
+static int64_t getAnchorTraffic(Value anchor) {
+  // Block arguments are anchored too, and have no op to inspect.
+  int64_t traffic = getAnchorByteCount(anchor);
+  if (Operation *op = anchor.getDefiningOp()) {
+    for (Value operand : op->getOperands())
+      traffic = std::max(traffic, getAnchorByteCount(operand));
+    for (Value result : op->getResults())
+      traffic = std::max(traffic, getAnchorByteCount(result));
+  }
+  return traffic;
+}
 
 // -----------------------------------------------------------------------------
 //
@@ -62,9 +99,31 @@ class LayoutPropagation {
 public:
   // Structure to keep track of the layout associated to a value.
   struct LayoutInfo {
-    LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
+    LayoutInfo(Attribute encoding, int64_t traffic) {
+      encodings.insert(encoding);
+      addTraffic(encoding, traffic);
+    }
     LayoutInfo() {}
     llvm::SmallSetVector<Attribute, 8> encodings;
+
+    // For each candidate encoding, the traffic of the heaviest anchor asking
+    // for it, carried along as the layout propagates and read back by
+    // resolveConflicts.
+    llvm::SmallDenseMap<Attribute, int64_t, 8> traffic;
+
+    int64_t trafficOf(Attribute encoding) const {
+      auto it = traffic.find(encoding);
+      return it == traffic.end() ? 0 : it->second;
+    }
+    // Returns true if this raised the recorded traffic, which makes the value
+    // worth revisiting so that the higher figure reaches its users too.
+    bool addTraffic(Attribute encoding, int64_t bytes) {
+      int64_t &recorded = traffic[encoding];
+      if (bytes <= recorded)
+        return false;
+      recorded = bytes;
+      return true;
+    }
   };
   LayoutPropagation(FuncOp F) : funcOp(F) {}
   // Find the anchor ops and set their layout in the data structure.
@@ -240,7 +299,8 @@ bool isLayoutAnchor(Operation *op) {
 void LayoutPropagation::initAnchorLayout() {
   auto addAnchor = [&](Value v) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
-      layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
+      layouts.insert(
+          {v, LayoutInfo(tensorType.getEncoding(), getAnchorTraffic(v))});
     }
   };
 
@@ -276,8 +336,11 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       } else {
         dstEncoding = inferDstEncoding(op, encoding);
       }
-      if (dstEncoding)
-        hasChanged |= layouts[value].encodings.insert(dstEncoding);
+      if (dstEncoding) {
+        LayoutInfo &dstInfo = layouts[value];
+        hasChanged |= dstInfo.encodings.insert(dstEncoding);
+        hasChanged |= dstInfo.addTraffic(dstEncoding, info.trafficOf(encoding));
+      }
     }
     if (hasChanged)
       changed.push_back(value);
@@ -368,7 +431,8 @@ void LayoutPropagation::propagateLayout() {
       DBGS() << "propagateLayout considering " << currentValue << ", which has "
              << info.encodings.size() << " candidate encoding(s):\n";
       for (Attribute encoding : info.encodings)
-        DBGS() << "  " << encoding << "\n";
+        DBGS() << "  " << encoding << " (traffic: " << info.trafficOf(encoding)
+               << " bytes)\n";
       DBGS() << "changed: " << changed.size() << "\n";
     });
 
@@ -377,20 +441,65 @@ void LayoutPropagation::propagateLayout() {
 }
 
 void LayoutPropagation::resolveConflicts() {
+  ModuleOp moduleOp = funcOp->getParentOfType<ModuleOp>();
+  // The most traffic an anchor can govern while still saying nothing about how
+  // the larger tensors it is combined with should be laid out: one dword per
+  // thread leaves a layout no coalescing or vectorization choice to encode.
+  // Counted in bytes rather than in elements as isExpensiveLoadOrStore does,
+  // since what a layout can express of an access depends on how wide it is.
+  constexpr int64_t bytesPerDword = 4;
+  int64_t negligibleTraffic = bytesPerDword * lookupNumWarps(funcOp) *
+                              TritonGPUDialect::getThreadsPerWarp(moduleOp);
+
   for (auto &it : layouts) {
     Operation *op = it.first.getDefiningOp();
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
-    // Hacky resolve, prefer block encoding.
-    // TODO: add a proper heuristic.
-    Attribute encoding = *info.encodings.begin();
+    // Prefer a blocked encoding for a memory access, whose layout decides how
+    // it coalesces, and an mma encoding everywhere else, so that a dot result
+    // stays in the accumulator layout.
+    //
+    // That leaves ties, and before accelerate-matmul runs no candidate is an
+    // mma encoding at all, so this is where the epilogue of a dot gets settled.
+    // Break those ties by demoting a layout whose anchor governs negligible
+    // traffic: it gives every value downstream of it one element per thread,
+    // and converting the tensors it is broadcast into costs far more than
+    // laying the small access out differently would.
+    //
+    // Traffic does not rank candidates beyond that, because a heavier anchor is
+    // not reliably the better choice: converting to its layout can be paid for
+    // in register permutes rather than shared memory, and this pass cannot see
+    // those (getConvertCost, for one, prices them at zero).
     bool isLoadOrStore = op && isa<LoadOp, StoreOp, AtomicOpInterface>(op);
+    // A memory access already holds the encoding coalesce picked for it, so
+    // traffic must not be allowed to hand it one chosen for something else:
+    // the access would stop reading contiguous addresses, and there is no
+    // large tensor here whose conversion that would save. Ranking its own
+    // encoding first keeps the choice with the pass that measured the access.
+    Attribute ownEncoding;
+    if (isLoadOrStore)
+      ownEncoding = cast<RankedTensorType>(it.first.getType()).getEncoding();
+    // Compared lexicographically: the kind decides, then a memory access's own
+    // encoding, and traffic breaks what is left.
+    auto rank = [&](Attribute e) {
+      bool isPreferredKind = (isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
+                             (!isLoadOrStore && isa<MmaEncodingTrait>(e));
+      bool isOwnEncoding = e == ownEncoding;
+      bool hasSubstantialTraffic = info.trafficOf(e) > negligibleTraffic;
+      return std::make_tuple(isPreferredKind, isOwnEncoding,
+                             hasSubstantialTraffic);
+    };
+    Attribute encoding;
+    std::tuple<bool, bool, bool> best;
     for (Attribute e : info.encodings) {
-      if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
-          (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
+      // A null candidate has no kind to ask isa<> about, and leaving it out is
+      // what lets an empty `encoding` mean that nothing has been ranked yet.
+      if (!e)
+        continue;
+      if (auto candidate = rank(e); !encoding || best < candidate) {
+        best = candidate;
         encoding = e;
-        break;
       }
     }
     info.encodings.clear();
@@ -407,7 +516,8 @@ void LayoutPropagation::dump() {
     llvm::errs() << " \n encoding:\n";
     for (auto encoding : it.second.encodings) {
       encoding.print(llvm::errs());
-      llvm::errs() << "\n";
+      llvm::errs() << " (traffic: " << it.second.trafficOf(encoding)
+                   << " bytes)\n";
     }
     llvm::errs() << "--\n";
   }
@@ -1032,23 +1142,26 @@ static unsigned getCostFactor(Value result, Attribute rematEncoding) {
   return std::max(1u, newElemsPerThread / oldElemsPerThread);
 }
 
-/// Determine whether rematerializing \p slice is beneficial given that it will
-/// eliminate \p convertOp and require creating new convert ops with cost \p
-/// newCvtCost.
-bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
-                       const DenseMap<Value, Attribute> &layout,
-                       int64_t newCvtCost, bool disableRematSplitting) {
-  // Identify all operations in the slice
+/// Collect the operations defining the values of \p slice.
+static SetVector<Operation *> getSliceOps(const SetVector<Value> &slice) {
   SetVector<Operation *> sliceOps;
   for (Value v : slice) {
     if (Operation *op = v.getDefiningOp()) {
       sliceOps.insert(op);
     }
   }
+  return sliceOps;
+}
 
-  // Determine which values used by operations outside the slice. We can use
-  // this to determine whether they will actually survive and therefore need to
-  // contribute to the cost.
+/// Determine which values of \p slice are used by operations outside the slice.
+/// Rematerializing the slice leaves those values, and everything they depend
+/// on, behind in the original layout, so they get duplicated rather than
+/// rewritten. \p convertOp is the conversion being eliminated and so does not
+/// count as an outside user.
+static SetVector<Value>
+getValuesUsedOutsideSlice(ConvertLayoutOp convertOp,
+                          const SetVector<Value> &slice,
+                          const SetVector<Operation *> &sliceOps) {
   SetVector<Value> nonSliceOnlyValues;
 
   // Identify values that directly have uses outside the slice.
@@ -1105,16 +1218,33 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
         nonSliceOnlyValues.insert(operand);
   }
 
-  if (disableRematSplitting && !nonSliceOnlyValues.empty()) {
-    LDBG("  skipped rematerialization because it would split the slice");
-    return false;
-  }
+  return nonSliceOnlyValues;
+}
 
-  int64_t convertLayoutCost =
-      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
-  int64_t rematerialisationCost = newCvtCost;
+/// Estimated additional work caused by rematerializing a slice. Expensive math
+/// is tracked separately so transformations with benefits outside this cost
+/// model, such as enabling pipelining, can apply a more targeted policy.
+struct RematerializationCost {
+  int64_t totalCost = 0;
+  int64_t expensiveMathCost = 0;
+  bool splitsSlice = false;
+};
 
-  // Evaluate single-use status for every operation in slice
+/// Compute the additional cost of rematerializing \p slice in the layouts in
+/// \p layout. This includes operations duplicated because their original
+/// values survive and extra per-thread work introduced by the new layouts.
+static FailureOr<RematerializationCost>
+getRematerializationCost(ConvertLayoutOp convertOp,
+                         const SetVector<Value> &slice,
+                         const DenseMap<Value, Attribute> &layout) {
+  SetVector<Operation *> sliceOps = getSliceOps(slice);
+  SetVector<Value> nonSliceOnlyValues =
+      getValuesUsedOutsideSlice(convertOp, slice, sliceOps);
+
+  RematerializationCost rematCost;
+  rematCost.splitsSlice = !nonSliceOnlyValues.empty();
+
+  // Evaluate single-use status for every operation in slice.
   for (Operation *op : sliceOps) {
     auto dialect = op->getDialect();
     bool isOpUsedOutsideSlice = llvm::any_of(op->getResults(), [&](Value v) {
@@ -1130,7 +1260,8 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
       // as halves of a single-cycle FMA instruction) and expensive
       // operations which use the special function unit and/or involve
       // multiple instructions.
-      int64_t multiplier = isExpensiveMathOp(op) ? 8 : 1;
+      bool isExpensive = isExpensiveMathOp(op);
+      int64_t multiplier = isExpensive ? 8 : 1;
       for (Value result : op->getResults()) {
         Attribute rematEncoding = layout.lookup(result);
         int64_t cost = multiplier * getByteCount(result);
@@ -1139,7 +1270,10 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
         unsigned factor = getCostFactor(result, rematEncoding);
         if (!isOpUsedOutsideSlice)
           factor -= 1;
-        rematerialisationCost += cost * factor;
+        cost *= factor;
+        rematCost.totalCost += cost;
+        if (isExpensive)
+          rematCost.expensiveMathCost += cost;
       }
       continue;
     }
@@ -1153,7 +1287,7 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
     if (isa<LoadOp>(op) || isa<LocalLoadOp>(op)) {
       // optimistically assume L1-cached:
       for (Value result : op->getResults()) {
-        rematerialisationCost += 8 * getByteCount(result);
+        rematCost.totalCost += 8 * getByteCount(result);
       }
     } else if (isa<ReduceOp>(op)) {
       // Reduce op introduce much cost.
@@ -1164,12 +1298,35 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
         // use chain.
         LDBG("  skipped rematerialization due to non-associative reduce in the "
              "slice");
-        return false;
+        return failure();
       }
-      rematerialisationCost += helper.getIntraWarpSizeWithUniqueData();
-      rematerialisationCost += 8 * helper.getInterWarpSizeWithUniqueData();
+      rematCost.totalCost += helper.getIntraWarpSizeWithUniqueData();
+      rematCost.totalCost += 8 * helper.getInterWarpSizeWithUniqueData();
     }
   }
+
+  return rematCost;
+}
+
+/// Determine whether rematerializing \p slice is beneficial given that it will
+/// eliminate \p convertOp and require creating new convert ops with cost \p
+/// newCvtCost.
+bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
+                       const DenseMap<Value, Attribute> &layout,
+                       int64_t newCvtCost, bool disableRematSplitting) {
+  FailureOr<RematerializationCost> rematCost =
+      getRematerializationCost(convertOp, slice, layout);
+  if (failed(rematCost))
+    return false;
+
+  if (disableRematSplitting && rematCost->splitsSlice) {
+    LDBG("  skipped rematerialization because it would split the slice");
+    return false;
+  }
+
+  int64_t convertLayoutCost =
+      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
+  int64_t rematerialisationCost = newCvtCost + rematCost->totalCost;
 
   LLVM_DEBUG({
     DBGS() << "  convert layout cost: " << convertLayoutCost << "\n";
@@ -1285,6 +1442,19 @@ bool LayoutRematerialization::hoistConvertDotOperand(
       existingRemats, stop);
   if (result.failed())
     return false;
+
+  // The payoff of this hoist is pipelining the loads, so the conversions moved
+  // next to the loads should not be treated as ordinary, fully exposed costs.
+  // Still reject additional expensive math, whether it comes from preserving
+  // the original slice or from a layout that increases per-thread work.
+  FailureOr<RematerializationCost> rematCost =
+      getRematerializationCost(convertOp, slice, layout);
+  if (failed(rematCost))
+    return false;
+  if (rematCost->expensiveMathCost > 0) {
+    LDBG("  skipped dot-operand hoist: would add expensive math");
+    return false;
+  }
 
   IRMapping mapping;
   OpBuilder builder(convertOp.getContext());

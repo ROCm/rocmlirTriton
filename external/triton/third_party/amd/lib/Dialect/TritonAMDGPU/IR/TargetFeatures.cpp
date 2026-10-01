@@ -68,6 +68,8 @@ ISAFamily TargetFeatures::getISAFamily() const {
   // See https://llvm.org/docs/AMDGPUUsage.html#processors for how to
   // categorize the following target gfx architectures. Parse the gfx number
   // directly here instead of depending on LLVM's target parser.
+  if (major == 13 && minor == 1)
+    return ISAFamily::GFX1310;
   if (major == 12 && minor == 5)
     return ISAFamily::GFX1250;
 
@@ -251,23 +253,52 @@ bool TargetFeatures::supportsClusterLoadBitWidth(int bitWidth) const {
 }
 
 bool TargetFeatures::supportsBufferAtomicRMW() const {
-  return llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4,
-                             ISAFamily::RDNA3, ISAFamily::RDNA4m,
-                             ISAFamily::RDNA4, ISAFamily::GFX1250},
-                            getISAFamily());
+  // On older AMD GPUs BUFFER_ATOMIC_* silently drops writes against
+  // fine-grained pinned host memory. rocmlirTriton's external memory
+  // contract (docs/kernel_assumptions.md) excludes fine-grained
+  // allocations, so that hazard does not apply and buffer atomic RMW is
+  // safe on every family that has the instructions. Per-type FP restrictions
+  // are handled separately in supportsBufferAtomicFadd; integer RMW (ADD/AND/
+  // OR/XOR/MIN/MAX/SWAP) is available universally.
+  return llvm::is_contained(
+      {ISAFamily::GCN5_1, ISAFamily::CDNA1, ISAFamily::CDNA2, ISAFamily::CDNA3,
+       ISAFamily::CDNA4, ISAFamily::RDNA1, ISAFamily::RDNA2, ISAFamily::RDNA3,
+       ISAFamily::RDNA4m, ISAFamily::RDNA4, ISAFamily::GFX1250},
+      getISAFamily());
 }
 
 bool TargetFeatures::supportsBufferAtomicFadd(Type elementType) const {
-  auto isaFamily = getISAFamily();
-  if (isaFamily == ISAFamily::CDNA3 && elementType.isBF16())
+  if (!(elementType.isF16() || elementType.isBF16() || elementType.isF32() ||
+        elementType.isF64()))
     return false;
-  if (isaFamily == ISAFamily::RDNA3 && !elementType.isF32())
-    return false;
-  if (isaFamily == ISAFamily::RDNA4m)
+
+  switch (getISAFamily()) {
+  case ISAFamily::CDNA1:
+    // gfx908: BUFFER_ATOMIC_ADD_F32 and PK_ADD_F16; no F64.
+    return elementType.isF32() || elementType.isF16();
+  case ISAFamily::CDNA2:
+    // gfx90a: BUFFER_ATOMIC_ADD_F32/F64 and PK_ADD_F16.
+    return elementType.isF32() || elementType.isF16() || elementType.isF64();
+  case ISAFamily::CDNA3:
+    // gfx942: no BUFFER_ATOMIC_PK_ADD_BF16.
+    return !elementType.isBF16();
+  case ISAFamily::CDNA4:
+  case ISAFamily::GFX1250:
+    return true;
+  case ISAFamily::RDNA3:
+  case ISAFamily::RDNA4m:
+    // gfx11: only BUFFER_ATOMIC_ADD_F32 (no F64 ADD, no PK_ADD variants).
     return elementType.isF32();
-  if (isaFamily == ISAFamily::RDNA4 && elementType.isF64())
+  case ISAFamily::RDNA4:
+  case ISAFamily::GFX1310:
+    // gfx12/gfx13: no BUFFER_ATOMIC_ADD_F64.
+    return !elementType.isF64();
+  case ISAFamily::GCN5_1:
+  case ISAFamily::RDNA1:
+  case ISAFamily::RDNA2:
+  case ISAFamily::Unknown:
     return false;
-  return true;
+  }
 }
 
 bool TargetFeatures::supportsBufferAtomicFMinMax(Type elementType) const {
@@ -336,6 +367,11 @@ bool TargetFeatures::supportsHwScaledDowncast() const {
          getISAFamily() == ISAFamily::GFX1250;
 }
 
+bool TargetFeatures::supportsFp8Dot4Fma() const {
+  return getISAFamily() == ISAFamily::RDNA4 ||
+         getISAFamily() == ISAFamily::RDNA4m;
+}
+
 bool TargetFeatures::supportBitwidth16Elementwise() const { return true; }
 
 bool TargetFeatures::supportBitwidth32Elementwise() const {
@@ -370,6 +406,7 @@ bool isRDNA(ISAFamily isaFamily) {
   case ISAFamily::RDNA3:
   case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
+  case ISAFamily::GFX1310:
     return true;
   default:
     return false;

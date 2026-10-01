@@ -22,6 +22,7 @@ enum class ISAFamily {
   RDNA4m,
   RDNA4,
   GFX1250,
+  GFX1310,
 };
 
 class TargetFeatures {
@@ -88,6 +89,7 @@ public:
   bool supportsCvtPkScalePk8() const;
   bool supportsHwScaledUpcast() const;
   bool supportsHwScaledDowncast() const;
+  bool supportsFp8Dot4Fma() const;
 
   bool supportBitwidth16Elementwise() const;
   bool supportBitwidth32Elementwise() const;
