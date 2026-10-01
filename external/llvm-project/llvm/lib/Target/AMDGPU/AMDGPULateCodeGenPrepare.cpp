@@ -13,8 +13,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
+#include "AMDGPUMemoryUtils.h"
 #include "AMDGPUTargetMachine.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/UniformityAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
@@ -23,7 +25,6 @@
 #include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/KnownBits.h"
 #include "llvm/Transforms/Utils/Local.h"
 
 #define DEBUG_TYPE "amdgpu-late-codegenprepare"
@@ -39,6 +40,12 @@ static cl::opt<bool>
                cl::desc("Widen sub-dword constant address space loads in "
                         "AMDGPULateCodeGenPrepare"),
                cl::ReallyHidden, cl::init(true));
+
+static cl::opt<bool> CanonicalizeShufflePadToZero(
+    "amdgpu-late-codegenprepare-canon-pad-zero",
+    cl::desc("Canonicalize poison/zero shuffle operands to zeroinitializer in "
+             "AMDGPULateCodeGenPrepare"),
+    cl::ReallyHidden, cl::init(true));
 
 namespace {
 
@@ -60,14 +67,20 @@ public:
   bool run();
   bool visitInstruction(Instruction &) { return false; }
 
-  // Check if the specified value is at least DWORD aligned.
-  bool isDWORDAligned(const Value *V) const {
-    KnownBits Known = computeKnownBits(V, DL, AC);
-    return Known.countMinTrailingZeros() >= 2;
+  // Widening may read padding bytes past the original access, so require the
+  // whole AccessSize-byte range at Base to be dereferenceable, not just Base
+  // itself aligned.
+  bool isSafeToWidenLoad(const Value *Base, uint64_t AccessSize,
+                         const Instruction *CxtI) const {
+    return isDereferenceableAndAlignedPointer(
+        Base, Align(4),
+        APInt(DL.getIndexTypeSizeInBits(Base->getType()), AccessSize),
+        SimplifyQuery(DL, /*TLI=*/nullptr, /*DT=*/nullptr, AC, CxtI));
   }
 
   bool canWidenScalarExtLoad(LoadInst &LI) const;
   bool visitLoadInst(LoadInst &LI);
+  bool visitShuffleVectorInst(ShuffleVectorInst &SVI);
 };
 
 using ValueToValueMap = DenseMap<const Value *, Value *>;
@@ -114,10 +127,10 @@ public:
     const auto *TLI = ST.getTargetLowering();
 
     Type *EltTy = VTy->getElementType();
-    // If the element size is not less than the convert to scalar size, then we
-    // can't do any bit packing
+    // If the element size is not is not a multiple scalar size, then we can't
+    // do any bit packing
     if (!EltTy->isIntegerTy() ||
-        EltTy->getScalarSizeInBits() > ConvertToScalar->getScalarSizeInBits())
+        ConvertToScalar->getScalarSizeInBits() % EltTy->getScalarSizeInBits())
       return false;
 
     // Only coerce illegal types
@@ -221,11 +234,54 @@ bool AMDGPULateCodeGenPrepare::run() {
 
   for (auto &BB : reverse(F))
     for (Instruction &I : make_early_inc_range(reverse(BB))) {
+      if (CanonicalizeShufflePadToZero)
+        if (auto *SVI = dyn_cast<ShuffleVectorInst>(&I))
+          Changed |= visitShuffleVectorInst(*SVI);
       Changed |= !HasScalarSubwordLoads && visit(I);
       Changed |= LRO.optimizeLiveType(&I, DeadInsts);
     }
 
   RecursivelyDeleteTriviallyDeadInstructionsPermissive(DeadInsts);
+  return Changed;
+}
+
+static bool isVectorWithOnlyPoisonAndZero(Constant *C) {
+  auto *VTy = dyn_cast<FixedVectorType>(C->getType());
+  if (!VTy)
+    return false;
+
+  bool SawPoison = false;
+  bool SawZero = false;
+  for (unsigned I = 0, E = VTy->getNumElements(); I != E; ++I) {
+    Constant *Elt = C->getAggregateElement(I);
+    if (isa_and_nonnull<PoisonValue>(Elt)) {
+      SawPoison = true;
+      continue;
+    }
+    if (Elt && Elt->isNullValue()) {
+      SawZero = true;
+      continue;
+    }
+    return false;
+  }
+
+  return SawPoison && SawZero;
+}
+
+bool AMDGPULateCodeGenPrepare::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
+  bool Changed = false;
+  for (unsigned OpIdx = 0; OpIdx != 2; ++OpIdx) {
+    auto *C = dyn_cast<Constant>(SVI.getOperand(OpIdx));
+    if (!C || !isVectorWithOnlyPoisonAndZero(C))
+      continue;
+
+    // A poison lane may be replaced by any concrete value. Canonicalizing a
+    // mixed poison/zero vector to zeroinitializer gives instruction selection a
+    // single all-zero source instead of materializing unrelated values for the
+    // poison lanes (e.g. padded WMMA operands).
+    SVI.setOperand(OpIdx, ConstantAggregateZero::get(C->getType()));
+    Changed = true;
+  }
   return Changed;
 }
 
@@ -353,7 +409,7 @@ bool LiveRegOptimizer::optimizeLiveType(
           return false;
 
         // Collect all other incoming values for coercion.
-        if (IncInst)
+        if (IncInst && !IncInst->isTerminator())
           Defs.insert(IncInst);
       }
     }
@@ -371,7 +427,7 @@ bool LiveRegOptimizer::optimizeLiveType(
       // Collect all uses of PHINodes and any use the crosses BB boundaries.
       if (UseInst->getParent() != II->getParent() || isa<PHINode>(II)) {
         Uses.insert(UseInst);
-        if (!isa<PHINode>(II))
+        if (!isa<PHINode>(II) && !II->isTerminator())
           Defs.insert(II);
       }
     }
@@ -428,12 +484,14 @@ bool LiveRegOptimizer::optimizeLiveType(
         if (OriginalPhi != PhiNodes.end())
           ValMap.erase(*OriginalPhi);
 
-        DeadInsts.emplace_back(cast<Instruction>(NextDeadValue));
-
         for (User *U : NextDeadValue->users()) {
           if (!VisitedPhis.contains(cast<PHINode>(U)))
             PHIWorklist.push_back(U);
         }
+        NextDeadValue->replaceAllUsesWith(
+            PoisonValue::get(NextDeadValue->getType()));
+
+        DeadInsts.emplace_back(cast<Instruction>(NextDeadValue));
       }
     } else {
       DeadInsts.emplace_back(cast<Instruction>(Phi));
@@ -449,7 +507,8 @@ bool LiveRegOptimizer::optimizeLiveType(
             BBUseValMap[U->getParent()].contains(Val))
           NewVal = BBUseValMap[U->getParent()][Val];
         else {
-          BasicBlock::iterator InsertPt = U->getParent()->getFirstNonPHIIt();
+          // Not getFirstNonPHIIt, which would insert in front of a landingpad.
+          BasicBlock::iterator InsertPt = U->getParent()->getFirstInsertionPt();
           // We may pick up ops that were previously converted for users in
           // other blocks. If there is an originally typed definition of the Op
           // already in this block, simply reuse it.
@@ -511,18 +570,11 @@ bool AMDGPULateCodeGenPrepare::visitLoadInst(LoadInst &LI) {
   int64_t Offset = 0;
   auto *Base =
       GetPointerBaseWithConstantOffset(LI.getPointerOperand(), Offset, DL);
-  // If that base is not DWORD aligned, it's not safe to perform the following
-  // transforms.
-  if (!isDWORDAligned(Base))
-    return false;
 
   int64_t Adjust = Offset & 0x3;
-  if (Adjust == 0) {
-    // With a zero adjust, the original alignment could be promoted with a
-    // better one.
-    LI.setAlignment(Align(4));
-    return true;
-  }
+  int64_t AccessOffset = Offset - Adjust;
+  if (AccessOffset < 0 || !isSafeToWidenLoad(Base, AccessOffset + 4, &LI))
+    return false;
 
   IRBuilder<> IRB(&LI);
   IRB.SetCurrentDebugLocation(LI.getDebugLoc());
@@ -536,14 +588,14 @@ bool AMDGPULateCodeGenPrepare::visitLoadInst(LoadInst &LI) {
       Offset - Adjust);
 
   LoadInst *NewLd = IRB.CreateAlignedLoad(IRB.getInt32Ty(), NewPtr, Align(4));
-  NewLd->copyMetadata(LI);
-  NewLd->setMetadata(LLVMContext::MD_range, nullptr);
+  AMDGPU::copyMetadataForWidenedLoad(*NewLd, LI);
 
   unsigned ShAmt = Adjust * 8;
+  Value *Shifted = ShAmt ? IRB.CreateLShr(NewLd, ShAmt) : NewLd;
   Value *NewVal = IRB.CreateBitCast(
-      IRB.CreateTrunc(IRB.CreateLShr(NewLd, ShAmt),
-                      DL.typeSizeEqualsStoreSize(LI.getType()) ? IntNTy
-                                                               : LI.getType()),
+      IRB.CreateTrunc(Shifted, DL.typeSizeEqualsStoreSize(LI.getType())
+                                   ? IntNTy
+                                   : LI.getType()),
       LI.getType());
   LI.replaceAllUsesWith(NewVal);
   DeadInsts.emplace_back(&LI);

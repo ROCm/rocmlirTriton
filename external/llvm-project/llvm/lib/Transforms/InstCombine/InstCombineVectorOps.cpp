@@ -798,6 +798,15 @@ static bool replaceExtractElements(InsertElementInst *InsElt,
   else
     IC.InsertNewInstWith(WideVec, ExtElt->getParent()->getFirstInsertionPt());
 
+  // WideVec is an extension of ExtVecOp to produce a more useful value for
+  // ExtractElement instructions. If ExtVecOp is an instruction, adopt its
+  // DebugLoc; if it is not, then this is materializing a constant value, so set
+  // a CompilerGenerated location.
+  if (ExtVecOpInst)
+    WideVec->setDebugLoc(ExtVecOpInst->getDebugLoc());
+  else
+    WideVec->setDebugLoc(DebugLoc::getCompilerGenerated());
+
   // Replace extracts from the original narrow vector with extracts from the new
   // wide vector.
   for (User *U : ExtVecOp->users()) {
@@ -1998,14 +2007,18 @@ static Value *buildNew(Instruction *I, ArrayRef<Value*> NewOps,
       }
       return New;
     }
-    case Instruction::ICmp:
+    case Instruction::ICmp: {
       assert(NewOps.size() == 2 && "icmp with #ops != 2");
-      return Builder.CreateICmp(cast<ICmpInst>(I)->getPredicate(), NewOps[0],
-                                NewOps[1]);
+      Value *New = Builder.CreateICmp(cast<ICmpInst>(I)->getPredicate(),
+                                      NewOps[0], NewOps[1]);
+      if (auto *NewI = dyn_cast<Instruction>(New))
+        NewI->copyIRFlags(I);
+      return New;
+    }
     case Instruction::FCmp:
       assert(NewOps.size() == 2 && "fcmp with #ops != 2");
-      return Builder.CreateFCmp(cast<FCmpInst>(I)->getPredicate(), NewOps[0],
-                                NewOps[1]);
+      return Builder.CreateFCmpFMF(cast<FCmpInst>(I)->getPredicate(), NewOps[0],
+                                   NewOps[1], I);
     case Instruction::Trunc:
     case Instruction::ZExt:
     case Instruction::SExt:
@@ -2021,8 +2034,11 @@ static Value *buildNew(Instruction *I, ArrayRef<Value*> NewOps,
           I->getType()->getScalarType(),
           cast<VectorType>(NewOps[0]->getType())->getElementCount());
       assert(NewOps.size() == 1 && "cast with #ops != 1");
-      return Builder.CreateCast(cast<CastInst>(I)->getOpcode(), NewOps[0],
-                                DestTy);
+      Value *New =
+          Builder.CreateCast(cast<CastInst>(I)->getOpcode(), NewOps[0], DestTy);
+      if (auto *NewI = dyn_cast<Instruction>(New))
+        NewI->copyIRFlags(I);
+      return New;
     }
     case Instruction::GetElementPtr: {
       Value *Ptr = NewOps[0];
@@ -2290,8 +2306,9 @@ static Instruction *foldSelectShuffleWith1Binop(ShuffleVectorInst &Shuf,
   // This makes the transformation incorrect since the original program would
   // have preserved the exact NaN bit-pattern.
   // Avoid the folding if X can have NaN elements.
-  if (Shuf.getType()->getElementType()->isFloatingPointTy() &&
-      !isKnownNeverNaN(X, SQ))
+  bool IsFloatingPointTy =
+      Shuf.getType()->getElementType()->isFloatingPointTy();
+  if (IsFloatingPointTy && !isKnownNeverNaN(X, SQ))
     return nullptr;
 
   // Shuffle identity constants into the lanes that return the original value.
@@ -2310,8 +2327,14 @@ static Instruction *foldSelectShuffleWith1Binop(ShuffleVectorInst &Shuf,
 
   // shuf (bop X, C), X, M --> bop X, C'
   // shuf X, (bop X, C), M --> bop X, C'
-  Instruction *NewBO = BinaryOperator::Create(BOpcode, X, NewC);
+  BinaryOperator *NewBO = BinaryOperator::Create(BOpcode, X, NewC);
   NewBO->copyIRFlags(BO);
+
+  // Drop noinf FMF if X can be Inf. If X can have Inf elements and noinf FMF is
+  // set, the transformation may generate poison where the original program
+  // would preserve the Inf value.
+  if (IsFloatingPointTy && NewBO->hasNoInfs() && !isKnownNeverInfinity(X, SQ))
+    NewBO->setHasNoInfs(false);
 
   // An undef shuffle mask element may propagate as an undef constant element in
   // the new binop. That would produce poison where the original code might not.
@@ -3162,6 +3185,120 @@ Instruction *InstCombinerImpl::visitShuffleVectorInst(ShuffleVectorInst &SVI) {
   // newMask[i] = (mask[i] < x1.size())
   //              ? mask1[mask[i]] : mask2[mask[i]-x1.size()]+v1.size()
   //
+  // Try to fold shuffle-of-PHI-of-shuffles where all PHI inputs are shuffles
+  // with the same masks. This can eliminate redundant shuffle chains that span
+  // basic blocks.
+  //
+  // Pattern:
+  //   pred1: %inner0_1 = shufflevector %x_1, %y_1, <common_mask_0>
+  //          %inner1_1 = shufflevector %x_1, %y_1, <common_mask_1>
+  //   pred2: %inner0_2 = shufflevector %x_2, %y_2, <common_mask_0>
+  //          %inner1_2 = shufflevector %x_2, %y_2, <common_mask_1>
+  //   current: %phi0 = phi [%inner0_1, pred1], [%inner0_2, pred2]
+  //            %phi1 = phi [%inner1_1, pred1], [%inner1_2, pred2]
+  //            %result = shufflevector %phi0, %phi1, <outer_mask>
+  //
+  // If compose(<outer_mask>, <common_mask_0>, <common_mask_1>) is identity,
+  // replace with: PHI [%x_1, pred1], [%x_2, pred2] (or similarly for Y)
+  if (PHINode *Phi0 = dyn_cast<PHINode>(LHS)) {
+    if (PHINode *Phi1 = dyn_cast<PHINode>(RHS)) {
+      if (Phi0->getNumIncomingValues() == Phi1->getNumIncomingValues()) {
+        // Check that both PHIs have the same predecessor blocks
+        bool SamePreds = true;
+        for (unsigned I = 0, E = Phi0->getNumIncomingValues(); I < E; ++I) {
+          if (Phi0->getIncomingBlock(I) != Phi1->getIncomingBlock(I)) {
+            SamePreds = false;
+            break;
+          }
+        }
+
+        if (SamePreds) {
+          // Check that all incoming values are shuffles with the same masks
+          SmallVector<int> CommonMask0, CommonMask1;
+          bool AllSamePattern = true;
+
+          for (unsigned I = 0, E = Phi0->getNumIncomingValues(); I < E; ++I) {
+            auto *Shuf0 = dyn_cast<ShuffleVectorInst>(Phi0->getIncomingValue(I));
+            auto *Shuf1 = dyn_cast<ShuffleVectorInst>(Phi1->getIncomingValue(I));
+
+            if (!Shuf0 || !Shuf1) {
+              AllSamePattern = false;
+              break;
+            }
+
+            // Get masks for this predecessor
+            ArrayRef<int> Mask0 = Shuf0->getShuffleMask();
+            ArrayRef<int> Mask1 = Shuf1->getShuffleMask();
+
+            if (I == 0) {
+              // First predecessor - establish common masks
+              CommonMask0.assign(Mask0.begin(), Mask0.end());
+              CommonMask1.assign(Mask1.begin(), Mask1.end());
+            } else {
+              // Subsequent predecessors - verify masks match
+              if (!std::equal(Mask0.begin(), Mask0.end(), CommonMask0.begin()) ||
+                  !std::equal(Mask1.begin(), Mask1.end(), CommonMask1.begin())) {
+                AllSamePattern = false;
+                break;
+              }
+            }
+          }
+
+          if (AllSamePattern && !CommonMask0.empty()) {
+            // Compose the outer mask with the common inner masks
+            ArrayRef<int> OuterMask = SVI.getShuffleMask();
+            unsigned InnerVecSize = CommonMask0.size();
+            SmallVector<int> ComposedMask;
+
+            for (int OuterIdx : OuterMask) {
+              if (OuterIdx < 0) {
+                ComposedMask.push_back(-1);
+              } else if (OuterIdx < (int)InnerVecSize) {
+                // Select from Phi0 (LHS/first operand), use CommonMask0
+                ComposedMask.push_back(CommonMask0[OuterIdx]);
+              } else {
+                // Select from Phi1 (RHS/second operand), use CommonMask1
+                int InnerIdx = OuterIdx - InnerVecSize;
+                if (InnerIdx < (int)CommonMask1.size())
+                  ComposedMask.push_back(CommonMask1[InnerIdx]);
+                else
+                  ComposedMask.push_back(-1);
+              }
+            }
+
+            // Check if composed mask is identity
+            bool IsIdentityX = true, IsIdentityY = true;
+            for (unsigned I = 0; I < ComposedMask.size(); ++I) {
+              // Identity on X (src0): selects element I from first operand (indices 0..InnerVecSize-1)
+              if (ComposedMask[I] != (int)I)
+                IsIdentityX = false;
+              // Identity on Y (src1): selects element I from second operand (indices InnerVecSize..2*InnerVecSize-1)
+              if (ComposedMask[I] != (int)(I + InnerVecSize))
+                IsIdentityY = false;
+            }
+
+            if (IsIdentityX || IsIdentityY) {
+              // Create new PHI that selects the appropriate source (X or Y)
+              // from each predecessor
+              PHINode *NewPhi = PHINode::Create(SVI.getType(),
+                                                Phi0->getNumIncomingValues(),
+                                                "shuffle.phi.opt",
+                                                Phi0->getIterator());
+
+              for (unsigned I = 0, E = Phi0->getNumIncomingValues(); I < E; ++I) {
+                auto *Shuf0 = cast<ShuffleVectorInst>(Phi0->getIncomingValue(I));
+                Value *Src = IsIdentityX ? Shuf0->getOperand(0) : Shuf0->getOperand(1);
+                NewPhi->addIncoming(Src, Phi0->getIncomingBlock(I));
+              }
+
+              return replaceInstUsesWith(SVI, NewPhi);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Here we are really conservative:
   // we are absolutely afraid of producing a shuffle mask not in the input
   // program, because the code gen may not be smart enough to turn a merged
@@ -3332,11 +3469,12 @@ InstCombinerImpl::foldExtractionOfVectorDeinterleave(ZExtInst &RootZExt) {
   Value *DIV;
 
   using namespace PatternMatch;
-  Value *SVI = nullptr, *DI = nullptr;
-  if (!match(&RootZExt,
-             m_ZExt(m_CombineOr(
-                 m_ExtractValue(m_Value(DI, m_Deinterleave2(m_Value(DIV)))),
-                 m_Value(SVI, m_Shuffle(m_Value(), m_Value()))))))
+  Instruction *SVI = nullptr, *DI = nullptr;
+  if (!match(
+          &RootZExt,
+          m_ZExt(m_CombineOr(
+              m_ExtractValue(m_Instruction(DI, m_Deinterleave2(m_Value(DIV)))),
+              m_Instruction(SVI, m_Shuffle(m_Value(), m_Value()))))))
     return nullptr;
 
   auto isDeinterleaveShuffle =
@@ -3363,7 +3501,7 @@ InstCombinerImpl::foldExtractionOfVectorDeinterleave(ZExtInst &RootZExt) {
   // the value they're de-interleaving.
   if (SVI) {
     // We will find other shufflevectors later.
-    DIV = isDeinterleaveShuffle(cast<Instruction>(SVI)).first;
+    DIV = isDeinterleaveShuffle(SVI).first;
     if (!DIV)
       return nullptr;
   } else {
@@ -3396,6 +3534,11 @@ InstCombinerImpl::foldExtractionOfVectorDeinterleave(ZExtInst &RootZExt) {
       if (V != DIV)
         continue;
       assert(Index < 2);
+      // Find the earliest field extraction instruction.
+      if (FieldI->getParent() != SVI->getParent())
+        continue;
+      if (FieldI != SVI && FieldI->comesBefore(SVI))
+        SVI = FieldI;
       Fields.push_back({FieldI, Index});
     }
   } else {
@@ -3424,6 +3567,9 @@ InstCombinerImpl::foldExtractionOfVectorDeinterleave(ZExtInst &RootZExt) {
       FieldReplacements.push_back({ZExt, FieldIdx});
     }
   }
+
+  // This will insert replacement instructions before all the fields users.
+  Builder.SetInsertPoint(DI ? DI : SVI);
 
   // Double the element size but half the vector length.
   auto *BitcastedTy = VectorType::getExtendedElementVectorType(InputVecTy);

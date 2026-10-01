@@ -51,7 +51,6 @@ struct Chipset {
 
 inline bool hasOcpFp8(const Chipset &chipset) {
   return (chipset.majorVersion == 9 && chipset.minorVersion >= 5) ||
-         (chipset.majorVersion == 11 && chipset.minorVersion == 7) ||
          chipset.majorVersion >= 12;
 }
 

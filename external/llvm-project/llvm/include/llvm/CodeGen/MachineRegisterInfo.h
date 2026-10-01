@@ -42,6 +42,7 @@
 namespace llvm {
 
 class PSetIterator;
+class VirtRegMap;
 
 /// Convenient type to represent either a register class or a register bank.
 using RegClassOrRegBank =
@@ -63,6 +64,14 @@ public:
                                               Register SrcReg) {
       MRI_NoteNewVirtualRegister(NewReg);
     }
+  };
+
+  // VirtRegMap state parsed from MIR and waiting to be consumed by
+  // VirtRegMap::init().
+  struct PendingVirtRegMapEntry {
+    Register VReg;
+    Register SplitFrom;      // NoReg if absent.
+    MCRegister AssignedPhys; // NoReg if absent.
   };
 
 private:
@@ -106,6 +115,16 @@ private:
   IndexedMap<std::pair<unsigned, SmallVector<Register, 4>>,
              VirtReg2IndexFunctor>
       RegAllocHints;
+
+  /// AntiHintRegs - This vector records register anti-hints for
+  /// virtual registers. For each virtual register, it keeps a vector of virtual
+  /// registers that should NOT be allocated to the same or overlapping physical
+  /// registers.
+  IndexedMap<SmallVector<Register, 4>, VirtReg2IndexFunctor> AntiHintRegs;
+
+  /// Hold the register properties that are used to populate the VirtRegMap
+  /// pass when deserializing from .mir files.
+  SmallVector<PendingVirtRegMapEntry, 0> PendingVirtRegMapEntries;
 
   /// PhysRegUseDefLists - This is an array of the head of the use/def list for
   /// physical registers.
@@ -511,7 +530,16 @@ public:
   /// hasOneUse - Return true if there is exactly one instruction using the
   /// specified register.
   bool hasOneUse(Register RegNo) const {
-    return hasSingleElement(use_operands(RegNo));
+    MachineOperand *Head = getRegUseDefListHead(RegNo);
+    if (!Head)
+      return false;
+    // Prev links are circular, and defs always precede uses.
+    MachineOperand *Tail = Head->Contents.Reg.Prev;
+    if (!Tail->isUse())
+      return false;
+    if (Tail == Head)
+      return true;
+    return Tail->Contents.Reg.Prev->isDef();
   }
 
   /// use_nodbg_iterator/use_nodbg_begin/use_nodbg_end - Walk all uses of the
@@ -615,12 +643,19 @@ public:
   /// getVRegDef - Return the machine instr that defines the specified virtual
   /// register or null if none is found.  This assumes that the code is in SSA
   /// form, so there should only be one definition.
-  LLVM_ABI MachineInstr *getVRegDef(Register Reg) const;
+  LLVM_ABI LLVM_READONLY MachineInstr *getVRegDef(Register Reg) const;
 
   /// getUniqueVRegDef - Return the unique machine instr that defines the
   /// specified virtual register or null if none is found.  If there are
   /// multiple definitions or no definition, return null.
-  LLVM_ABI MachineInstr *getUniqueVRegDef(Register Reg) const;
+  LLVM_ABI LLVM_READONLY MachineInstr *getUniqueVRegDef(Register Reg) const;
+
+  /// Return the machine basic block in which the specified virtual register is
+  /// defined, or null if it has no definition. This assumes SSA form.
+  MachineBasicBlock *getDefBlock(Register Reg) const {
+    MachineInstr *DefMI = getVRegDef(Reg);
+    return DefMI ? DefMI->getParent() : nullptr;
+  }
 
   /// clearKillFlags - Iterate over all the uses of the given register and
   /// clear the kill flag from the MachineOperand. This function is used by
@@ -798,6 +833,25 @@ public:
   /// clearVirtRegs - Remove all virtual registers (after physreg assignment).
   LLVM_ABI void clearVirtRegs();
 
+  void addPendingVirtRegMapEntry(PendingVirtRegMapEntry Entry) {
+    assert(Entry.VReg.isVirtual());
+    assert(!Entry.SplitFrom.isValid() || Entry.SplitFrom.isVirtual());
+    assert(!Entry.AssignedPhys.isValid() || Entry.AssignedPhys.isPhysical());
+    PendingVirtRegMapEntries.push_back(Entry);
+  }
+
+  ArrayRef<PendingVirtRegMapEntry> getPendingVirtRegMapEntries() const {
+    return PendingVirtRegMapEntries;
+  }
+
+  void clearPendingVirtRegMapEntries() { PendingVirtRegMapEntries.clear(); }
+
+  void copyPendingVirtRegMapEntriesFrom(const MachineRegisterInfo &Other) {
+    assert(getNumVirtRegs() == Other.getNumVirtRegs() &&
+           "expected MachineFunction clone to preserve virtual registers");
+    PendingVirtRegMapEntries = Other.PendingVirtRegMapEntries;
+  }
+
   /// setRegAllocationHint - Specify a register allocation hint for the
   /// specified virtual register. This is typically used by target, and in case
   /// of an earlier hint it will be overwritten.
@@ -859,6 +913,56 @@ public:
     return RegAllocHints.inBounds(VReg) ? &RegAllocHints[VReg] : nullptr;
   }
 
+  /// addRegAllocAntiHint - Add a register allocation anti-hint for the
+  /// specified virtual register. This tells the allocator to avoid allocating
+  /// VReg to the same physical register as AntiHintVReg (or overlapping ones).
+  void addRegAllocAntiHint(Register VReg, Register AntiHintVReg) {
+    assert(VReg.isVirtual() && "Anti-hints are only for virtual registers");
+    assert(AntiHintVReg.isVirtual() && "Anti-hint target must be virtual");
+    AntiHintRegs.grow(VReg);
+    SmallVector<Register, 4> &AntiHints = AntiHintRegs[VReg];
+    // Avoid duplicates
+    if (llvm::find(AntiHints, AntiHintVReg) == AntiHints.end())
+      AntiHints.push_back(AntiHintVReg);
+  }
+
+  /// addRegAllocationAntiHint - Add multiple anti-hints at once.
+  void addRegAllocationAntiHints(Register VReg,
+                                 ArrayRef<Register> AntiHintVRegs) {
+    for (Register AntiHint : AntiHintVRegs)
+      addRegAllocAntiHint(VReg, AntiHint);
+  }
+
+  /// clearRegAllocationAntiHints - Clear all anti-hints for a register.
+  void clearRegAllocationAntiHints(Register VReg) {
+    assert(VReg.isVirtual());
+    if (AntiHintRegs.inBounds(VReg))
+      AntiHintRegs[VReg].clear();
+  }
+
+  /// getRegAllocationAntiHints - Return the vector of anti-hints for VReg.
+  ArrayRef<Register> getRegAllocationAntiHints(Register VReg) const {
+    assert(VReg.isVirtual());
+    if (!AntiHintRegs.inBounds(VReg))
+      return ArrayRef<Register>();
+    return AntiHintRegs[VReg];
+  }
+
+  /// hasRegAllocationAntiHint - Check if VReg has AntiHintVReg as an anti-hint.
+  bool hasRegAllocationAntiHint(Register VReg, Register AntiHintVReg) const {
+    assert(VReg.isVirtual() && AntiHintVReg.isVirtual());
+    if (!AntiHintRegs.inBounds(VReg))
+      return false;
+    const SmallVector<Register, 4> &AntiHints = AntiHintRegs[VReg];
+    return llvm::find(AntiHints, AntiHintVReg) != AntiHints.end();
+  }
+
+  /// getPhysRegAntiHints - Get the set of physical registers to avoid.
+  /// VRM is the current virtual register map showing allocations made so far.
+  void getPhysRegAntiHints(Register VReg,
+                           SmallVectorImpl<MCPhysReg> &PhysAntiHints,
+                           const VirtRegMap &VRM) const;
+
   /// markUsesInDebugValueAsUndef - Mark every DBG_VALUE referencing the
   /// specified register as undefined which causes the DBG_VALUE to be
   /// deleted during LiveDebugVariables analysis.
@@ -866,31 +970,8 @@ public:
 
   /// updateDbgUsersToReg - Update a collection of debug instructions
   /// to refer to the designated register.
-  void updateDbgUsersToReg(MCRegister OldReg, MCRegister NewReg,
-                           ArrayRef<MachineInstr *> Users) const {
-    // If this operand is a register, check whether it overlaps with OldReg.
-    // If it does, replace with NewReg.
-    auto UpdateOp = [this, &NewReg, &OldReg](MachineOperand &Op) {
-      if (Op.isReg() &&
-          getTargetRegisterInfo()->regsOverlap(Op.getReg(), OldReg))
-        Op.setReg(NewReg);
-    };
-
-    // Iterate through (possibly several) operands to DBG_VALUEs and update
-    // each. For DBG_PHIs, only one operand will be present.
-    for (MachineInstr *MI : Users) {
-      if (MI->isDebugValue()) {
-        for (auto &Op : MI->debug_operands())
-          UpdateOp(Op);
-        assert(MI->hasDebugOperandForReg(NewReg) &&
-               "Expected debug value to have some overlap with OldReg");
-      } else if (MI->isDebugPHI()) {
-        UpdateOp(MI->getOperand(0));
-      } else {
-        llvm_unreachable("Non-DBG_VALUE, Non-DBG_PHI debug instr updated");
-      }
-    }
-  }
+  LLVM_ABI void updateDbgUsersToReg(MCRegister OldReg, MCRegister NewReg,
+                                    ArrayRef<MachineInstr *> Users) const;
 
   /// Return true if the specified register is modified in this function.
   /// This checks that no defining machine operands exist for the register or
