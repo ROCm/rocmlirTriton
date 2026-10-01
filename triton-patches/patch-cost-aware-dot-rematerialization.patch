@@ -1,8 +1,8 @@
 diff --git a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-index 650a3401b..1eda77169 100644
+index 0955852cb5..320006aeb6 100644
 --- a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
 +++ b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-@@ -1156,23 +1156,26 @@
+@@ -1142,23 +1142,26 @@ static unsigned getCostFactor(Value result, Attribute rematEncoding) {
    return std::max(1u, newElemsPerThread / oldElemsPerThread);
  }
  
@@ -11,7 +11,7 @@ index 650a3401b..1eda77169 100644
 -/// newCvtCost.
 -bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
 -                       const DenseMap<Value, Attribute> &layout,
--                       int64_t newCvtCost) {
+-                       int64_t newCvtCost, bool disableRematSplitting) {
 -  // Identify all operations in the slice
 +/// Collect the operations defining the values of \p slice.
 +static SetVector<Operation *> getSliceOps(const SetVector<Value> &slice) {
@@ -39,16 +39,20 @@ index 650a3401b..1eda77169 100644
    SetVector<Value> nonSliceOnlyValues;
  
    // Identify values that directly have uses outside the slice.
-@@ -1229,11 +1232,33 @@
+@@ -1215,16 +1218,33 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
          nonSliceOnlyValues.insert(operand);
    }
+ 
+-  if (disableRematSplitting && !nonSliceOnlyValues.empty()) {
+-    LDBG("  skipped rematerialization because it would split the slice");
+-    return false;
+-  }
++  return nonSliceOnlyValues;
++}
  
 -  int64_t convertLayoutCost =
 -      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
 -  int64_t rematerialisationCost = newCvtCost;
-+  return nonSliceOnlyValues;
-+}
-+
 +/// Estimated additional work caused by rematerializing a slice. Expensive math
 +/// is tracked separately so transformations with benefits outside this cost
 +/// model, such as enabling pipelining, can apply a more targeted policy.
@@ -57,7 +61,8 @@ index 650a3401b..1eda77169 100644
 +  int64_t expensiveMathCost = 0;
 +  bool splitsSlice = false;
 +};
-+
+ 
+-  // Evaluate single-use status for every operation in slice
 +/// Compute the additional cost of rematerializing \p slice in the layouts in
 +/// \p layout. This includes operations duplicated because their original
 +/// values survive and extra per-thread work introduced by the new layouts.
@@ -71,13 +76,12 @@ index 650a3401b..1eda77169 100644
 +
 +  RematerializationCost rematCost;
 +  rematCost.splitsSlice = !nonSliceOnlyValues.empty();
- 
--  // Evaluate single-use status for every operation in slice
++
 +  // Evaluate single-use status for every operation in slice.
    for (Operation *op : sliceOps) {
      auto dialect = op->getDialect();
      bool isOpUsedOutsideSlice = llvm::any_of(op->getResults(), [&](Value v) {
-@@ -1249,7 +1274,8 @@
+@@ -1240,7 +1260,8 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
        // as halves of a single-cycle FMA instruction) and expensive
        // operations which use the special function unit and/or involve
        // multiple instructions.
@@ -87,7 +91,7 @@ index 650a3401b..1eda77169 100644
        for (Value result : op->getResults()) {
          Attribute rematEncoding = layout.lookup(result);
          int64_t cost = multiplier * getByteCount(result);
-@@ -1258,7 +1284,10 @@
+@@ -1249,7 +1270,10 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
          unsigned factor = getCostFactor(result, rematEncoding);
          if (!isOpUsedOutsideSlice)
            factor -= 1;
@@ -99,7 +103,7 @@ index 650a3401b..1eda77169 100644
        }
        continue;
      }
-@@ -1272,7 +1301,7 @@
+@@ -1263,7 +1287,7 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
      if (isa<LoadOp>(op) || isa<LocalLoadOp>(op)) {
        // optimistically assume L1-cached:
        for (Value result : op->getResults()) {
@@ -108,7 +112,7 @@ index 650a3401b..1eda77169 100644
        }
      } else if (isa<ReduceOp>(op)) {
        // Reduce op introduce much cost.
-@@ -1283,13 +1312,31 @@
+@@ -1274,13 +1298,36 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
          // use chain.
          LDBG("  skipped rematerialization due to non-associative reduce in the "
               "slice");
@@ -130,11 +134,16 @@ index 650a3401b..1eda77169 100644
 +/// newCvtCost.
 +bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
 +                       const DenseMap<Value, Attribute> &layout,
-+                       int64_t newCvtCost) {
++                       int64_t newCvtCost, bool disableRematSplitting) {
 +  FailureOr<RematerializationCost> rematCost =
 +      getRematerializationCost(convertOp, slice, layout);
 +  if (failed(rematCost))
 +    return false;
++
++  if (disableRematSplitting && rematCost->splitsSlice) {
++    LDBG("  skipped rematerialization because it would split the slice");
++    return false;
++  }
 +
 +  int64_t convertLayoutCost =
 +      getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
@@ -143,7 +152,7 @@ index 650a3401b..1eda77169 100644
    LLVM_DEBUG({
      DBGS() << "  convert layout cost: " << convertLayoutCost << "\n";
      DBGS() << "  rematerialisation cost: " << rematerialisationCost << "\n";
-@@ -1424,6 +1471,19 @@
+@@ -1396,6 +1443,19 @@ bool LayoutRematerialization::hoistConvertDotOperand(
    if (result.failed())
      return false;
  
@@ -165,7 +174,7 @@ index 650a3401b..1eda77169 100644
    SetVector<Value> innerSlice;
 diff --git a/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir b/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir
 new file mode 100644
-index 000000000..6ad30d82a
+index 0000000000..6ad30d82a6
 --- /dev/null
 +++ b/test/TritonGPU/amd/remove-layout-conversions-dot-operand-cost.mlir
 @@ -0,0 +1,137 @@

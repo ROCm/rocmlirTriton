@@ -1,6 +1,6 @@
 diff --git a/test/TritonGPU/amd/amd-pipeline-fma-shared-layout.mlir b/test/TritonGPU/amd/amd-pipeline-fma-shared-layout.mlir
 new file mode 100644
-index 0000000..01de7f1
+index 0000000000..01de7f1fbd
 --- /dev/null
 +++ b/test/TritonGPU/amd/amd-pipeline-fma-shared-layout.mlir
 @@ -0,0 +1,105 @@
@@ -110,10 +110,10 @@ index 0000000..01de7f1
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index ea25e6d..e17a7c1 100644
+index c528d386da..8290cfbcc1 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -274,6 +274,24 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -275,6 +275,24 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
  
        auto userResEnc = cast<ttg::TensorOrMemDesc>(userResType).getEncoding();
        if (auto dotOpEnc = dyn_cast<ttg::DotOperandEncodingAttr>(userResEnc)) {

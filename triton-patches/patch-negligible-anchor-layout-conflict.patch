@@ -1,19 +1,20 @@
 diff --git a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-index 34bc6b6756e4..62c7ecb84799 100644
+index 66a915eca6..0955852cb5 100644
 --- a/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
 +++ b/lib/Dialect/TritonGPU/Transforms/RemoveLayoutConversions.cpp
-@@ -22,7 +22,10 @@
+@@ -22,8 +22,11 @@
  #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
  #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
  #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 +#include <algorithm>
  #include <deque>
+ #include <functional>
 +#include <limits>
 +#include <tuple>
  
  namespace mlir::triton::gpu {
  
-@@ -35,6 +38,40 @@ namespace mlir::triton::gpu {
+@@ -36,6 +39,40 @@ namespace mlir::triton::gpu {
  
  namespace {
  
@@ -54,7 +55,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
  // -----------------------------------------------------------------------------
  //
  // -----------------------------------------------------------------------------
-@@ -61,9 +98,31 @@ class LayoutPropagation {
+@@ -62,9 +99,31 @@ class LayoutPropagation {
  public:
    // Structure to keep track of the layout associated to a value.
    struct LayoutInfo {
@@ -87,7 +88,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
    };
    LayoutPropagation(FuncOp F) : funcOp(F) {}
    // Find the anchor ops and set their layout in the data structure.
-@@ -222,7 +281,8 @@ bool isLayoutAnchor(Operation *op) {
+@@ -240,7 +299,8 @@ bool isLayoutAnchor(Operation *op) {
  void LayoutPropagation::initAnchorLayout() {
    auto addAnchor = [&](Value v) {
      if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
@@ -97,7 +98,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
      }
    };
  
-@@ -258,8 +318,11 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
+@@ -276,8 +336,11 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
        } else {
          dstEncoding = inferDstEncoding(op, encoding);
        }
@@ -111,7 +112,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
      }
      if (hasChanged)
        changed.push_back(value);
-@@ -347,7 +410,8 @@ void LayoutPropagation::propagateLayout() {
+@@ -368,7 +431,8 @@ void LayoutPropagation::propagateLayout() {
        DBGS() << "propagateLayout considering " << currentValue << ", which has "
               << info.encodings.size() << " candidate encoding(s):\n";
        for (Attribute encoding : info.encodings)
@@ -121,7 +122,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
        DBGS() << "changed: " << changed.size() << "\n";
      });
  
-@@ -356,21 +420,66 @@ void LayoutPropagation::propagateLayout() {
+@@ -377,20 +441,65 @@ void LayoutPropagation::propagateLayout() {
  }
  
  void LayoutPropagation::resolveConflicts() {
@@ -158,8 +159,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
 +    // not reliably the better choice: converting to its layout can be paid for
 +    // in register permutes rather than shared memory, and this pass cannot see
 +    // those (getConvertCost, for one, prices them at zero).
-     bool isLoadOrStore =
-         op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
+     bool isLoadOrStore = op && isa<LoadOp, StoreOp, AtomicOpInterface>(op);
 +    // A memory access already holds the encoding coalesce picked for it, so
 +    // traffic must not be allowed to hand it one chosen for something else:
 +    // the access would stop reading contiguous addresses, and there is no
@@ -194,7 +194,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
        }
      }
      info.encodings.clear();
-@@ -387,7 +496,8 @@ void LayoutPropagation::dump() {
+@@ -407,7 +516,8 @@ void LayoutPropagation::dump() {
      llvm::errs() << " \n encoding:\n";
      for (auto encoding : it.second.encodings) {
        encoding.print(llvm::errs());
@@ -206,7 +206,7 @@ index 34bc6b6756e4..62c7ecb84799 100644
    }
 diff --git a/test/TritonGPU/amd/remove-layout-conversions-negligible-anchor.mlir b/test/TritonGPU/amd/remove-layout-conversions-negligible-anchor.mlir
 new file mode 100644
-index 000000000000..ef13f38747eb
+index 0000000000..ef13f38747
 --- /dev/null
 +++ b/test/TritonGPU/amd/remove-layout-conversions-negligible-anchor.mlir
 @@ -0,0 +1,155 @@

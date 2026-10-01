@@ -1,6 +1,6 @@
 diff --git a/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
 new file mode 100644
-index 000000000..35a2a802f
+index 0000000000..35a2a802fe
 --- /dev/null
 +++ b/test/TritonGPU/amd/amd-pipeline-fma-lds-swizzle.mlir
 @@ -0,0 +1,191 @@
@@ -196,10 +196,10 @@ index 000000000..35a2a802f
 +  }
 +}
 diff --git a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-index e17a7c157..9418bc6fc 100644
+index 8290cfbcc1..ad3f311a9c 100644
 --- a/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
 +++ b/third_party/amd/lib/TritonAMDGPUTransforms/LowerLoops.cpp
-@@ -182,6 +182,68 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
+@@ -183,6 +183,68 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
    return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
  }
  
@@ -268,7 +268,7 @@ index e17a7c157..9418bc6fc 100644
  // Adapted from
  // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
  // to support AMDMfmaEncodingAttr.
-@@ -197,6 +259,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -198,6 +260,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
    assert(loadOp);
    Value loadedValue = loadOp->getResult(0);
    llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
@@ -282,7 +282,7 @@ index e17a7c157..9418bc6fc 100644
    for (Operation *user : loadedValue.getUsers()) {
      LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
      if (user->getNumResults() != 1)
-@@ -304,6 +373,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
+@@ -305,6 +374,13 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
          tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                         dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                         dotOpEnc, canUseAsyncCopy);
