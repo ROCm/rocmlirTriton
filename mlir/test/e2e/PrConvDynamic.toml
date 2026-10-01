@@ -1,0 +1,38 @@
+directory = "PrConvDynamic"
+prefix = "rocmlir-gen"
+suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# The kernel takes the dimensions named by --dynamic-dims as runtime
+# arguments; the host harness still allocates the sizes given on the command
+# line.
+[[axis]]
+name = "data type"
+values = ["f32", "f16"]
+prefix = "-t "
+
+[[suite]]
+name = "pr_conv_dynamic"
+
+# Every dynamic dimension, channels-last
+[[suite.test]]
+config = "--operation conv -fil_layout kyxc -in_layout nhwc -out_layout nhwk -batchsize 4 -in_channels 16 -out_channels 32 -in_h 14 -in_w 14 -fil_h 3 -fil_w 3 --padding_h 1 --padding_w 1 --dynamic-dims n,c,k,hi,wi"
+
+# Odd sizes with stride, dilation and asymmetric filter, channels-first
+[[suite.test]]
+config = "--operation conv -fil_layout kcyx -in_layout nchw -out_layout nkhw -batchsize 3 -in_channels 7 -out_channels 13 -in_h 17 -in_w 11 -fil_h 3 -fil_w 2 --padding_h 2 --padding_w 0 --conv_stride_h 2 --conv_stride_w 1 --dilation_h 2 --dilation_w 1 --dynamic-dims n,c,k,hi,wi"
+
+# Strided 1x1 filter, whose input view has no filter Embed
+[[suite.test]]
+config = "--operation conv -fil_layout kyxc -in_layout nhwc -out_layout nhwk -batchsize 2 -in_channels 64 -out_channels 64 -in_h 9 -in_w 9 -fil_h 1 -fil_w 1 --conv_stride_h 2 --conv_stride_w 2 --dynamic-dims n,hi,wi"
+
+# Grouped conv
+[[suite.test]]
+config = "--operation conv -fil_layout gkyxc -in_layout nhwgc -out_layout nhwgk -groupsize 2 -batchsize 3 -in_channels 32 -out_channels 64 -in_h 12 -in_w 12 -fil_h 3 -fil_w 3 --dynamic-dims n,c,k"
+
+# Backward data, a single GEMM
+[[suite.test]]
+config = "--operation conv_bwd_data -fil_layout kyxc -in_layout nhwc -out_layout nhwk -batchsize 3 -in_channels 16 -out_channels 32 -in_h 14 -in_w 14 -fil_h 3 -fil_w 3 --padding_h 1 --padding_w 1 --dynamic-dims n,c,k"
+
+# Backward data, strided, so one GEMM per kernel ID
+[[suite.test]]
+config = "--operation conv_bwd_data -fil_layout kcyx -in_layout nchw -out_layout nkhw -batchsize 3 -in_channels 7 -out_channels 13 -in_h 15 -in_w 15 -fil_h 3 -fil_w 3 --padding_h 1 --padding_w 1 --conv_stride_h 2 --conv_stride_w 2 --dynamic-dims n,c,k"

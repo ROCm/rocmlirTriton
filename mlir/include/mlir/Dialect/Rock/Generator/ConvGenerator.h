@@ -55,6 +55,10 @@ public:
     SmallVector<int64_t, 5> inputDimension;
     SmallVector<int64_t, 5> outputDimension;
     SmallVector<int64_t, 4> filterDims;
+    // Convolution dimensions (n, c, k, hi, wi) left dynamic in the kernel's
+    // argument types. A dynamic hi/wi also makes the matching output
+    // dimension dynamic.
+    SmallVector<std::string> dynamicDims;
   };
 
   ConvGenerator(
@@ -85,6 +89,12 @@ public:
   void setDataTypes(const std::string &dataTypeStr);
 
   void setPerfConfig(StringRef perfConfig);
+
+  void setDynamicDims(ArrayRef<std::string> dynamicDims);
+
+  /// The static logical (unflattened) types of the kernel arguments, in kernel
+  /// argument order.
+  SmallVector<Type, 3> getLogicalArgTypes(OpBuilder &builder) const;
 
   static ConvolutionDims getConvolutionDims(const Config *config);
 

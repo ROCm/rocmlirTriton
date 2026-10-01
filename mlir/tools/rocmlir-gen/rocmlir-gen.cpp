@@ -908,9 +908,10 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
 static llvm::cl::list<std::string> dynamicDims(
     "dynamic-dims",
     llvm::cl::desc(
-        "Comma-separated gemm dimensions (g,m,n,k) to leave dynamic (?) in "
-        "the generated kernel's argument types. The host harness still uses "
-        "the sizes given on the command line."),
+        "Comma-separated dimensions to leave dynamic (?) in the generated "
+        "kernel's argument types: g,m,n,k for gemm, n,c,k,hi,wi for conv and "
+        "n,c,k for conv_bwd_data. The host harness still uses the sizes "
+        "given on the command line."),
     llvm::cl::CommaSeparated);
 
 static bool isDynamicDim(StringRef name) {
@@ -1340,15 +1341,26 @@ static auto getRequiredArgs(std::optional<rock::KernelType> kernelType) {
 static LogicalResult validateDynamicDims() {
   if (dynamicDims.empty())
     return success();
-  if (operation != rock::KernelType::Gemm) {
-    llvm::errs() << "--dynamic-dims is only supported for gemm\n";
+  SmallVector<StringRef> valid;
+  switch (operation.getValue()) {
+  case rock::KernelType::Gemm:
+    if (scaledGemm) {
+      llvm::errs() << "--dynamic-dims is not supported for scaled gemm\n";
+      return failure();
+    }
+    valid = {"g", "m", "n", "k"};
+    break;
+  case rock::KernelType::Conv:
+    valid = {"n", "c", "k", "hi", "wi"};
+    break;
+  case rock::KernelType::ConvBwdData:
+    valid = {"n", "c", "k"};
+    break;
+  default:
+    llvm::errs() << "--dynamic-dims is only supported for gemm, conv and "
+                    "conv_bwd_data\n";
     return failure();
   }
-  if (scaledGemm) {
-    llvm::errs() << "--dynamic-dims is not supported for scaled gemm\n";
-    return failure();
-  }
-  const SmallVector<StringRef> valid = {"g", "m", "n", "k"};
   for (StringRef name : dynamicDims) {
     if (!llvm::is_contained(valid, name)) {
       llvm::errs() << "invalid --dynamic-dims entry '" << name
@@ -1673,27 +1685,35 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
 
       if (expectsTensors) {
         // A dynamic kernel sees each flat buffer expanded to its logical
-        // shape and cast to its dynamic argument type.
+        // shape, static arguments included, and cast to its dynamic argument
+        // type.
         SmallVector<Value, 4> kernelMem(gpuMem);
         func::FuncOp callee = kernel.func;
+        bool isDynamicKernel =
+            !llvm::equal(kernel.params, callee.getArgumentTypes());
         for (auto [idx, argType] : llvm::enumerate(callee.getArgumentTypes())) {
           auto tensorType = dyn_cast<RankedTensorType>(argType);
-          if (!tensorType || tensorType.hasStaticShape())
+          if (!isDynamicKernel || !tensorType)
             continue;
           auto logical =
               cast<RankedTensorType>(dynamicKernelLogicalTypes[idx]);
           auto logicalMemref =
               MemRefType::get(logical.getShape(), logical.getElementType());
-          SmallVector<ReassociationIndices> all(1);
-          for (int64_t d = 0, e = logical.getRank(); d < e; ++d)
-            all[0].push_back(d);
-          Value expanded = memref::ExpandShapeOp::create(
-              b, loc, logicalMemref, gpuMem[idx], all);
-          kernelMem[idx] = memref::CastOp::create(
-              b, loc,
-              MemRefType::get(tensorType.getShape(),
-                              tensorType.getElementType()),
-              expanded);
+          Value expanded = gpuMem[idx];
+          if (logical.getRank() > 1) {
+            SmallVector<ReassociationIndices> all(1);
+            for (int64_t d = 0, e = logical.getRank(); d < e; ++d)
+              all[0].push_back(d);
+            expanded = memref::ExpandShapeOp::create(b, loc, logicalMemref,
+                                                     gpuMem[idx], all);
+          }
+          if (!tensorType.hasStaticShape())
+            expanded = memref::CastOp::create(
+                b, loc,
+                MemRefType::get(tensorType.getShape(),
+                                tensorType.getElementType()),
+                expanded);
+          kernelMem[idx] = expanded;
         }
         SmallVector<Value, 4> tensorArgs;
         for (Value memrefArg : kernelMem) {
@@ -6755,6 +6775,10 @@ static void generateKernel(MLIRContext *context, GenParams &genParams,
     } else if (genCPUKernel.getValue()) {
       (void)createCPUConvFunc(module, genConfig);
     } else {
+      if (!dynamicDims.empty()) {
+        convGenerator.setDynamicDims(dynamicDims);
+        setDynamicKernelHostTypes(convGenerator.getLogicalArgTypes(builder));
+      }
       if (failed(convGenerator.genConvModule(module))) {
         llvm::errs() << "Module population failed.\n";
         exit(1);

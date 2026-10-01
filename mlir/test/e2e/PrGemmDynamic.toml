@@ -3,10 +3,11 @@ prefix = "rocmlir-gen"
 suffix = "--operation gemm --arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
 
 # The kernel takes the dimensions named here as runtime arguments; the host
-# harness still allocates the sizes given by -g/-m/-k/-n.
+# harness still allocates the sizes given by -g/-m/-k/-n. With only n dynamic,
+# A is a static argument of a dynamic kernel.
 [[axis]]
 name = "dynamic dims"
-values = ["m,n", "g,m,n,k"]
+values = ["n", "m,n", "g,m,n,k"]
 prefix = "--dynamic-dims "
 
 [[axis]]

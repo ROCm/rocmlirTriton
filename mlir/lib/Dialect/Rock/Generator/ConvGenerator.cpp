@@ -73,6 +73,7 @@ ConvGenerator::ConvGenerator(
              {},
              {},
              {},
+             {},
              {}} {}
 
 ConvGenerator::ConvGenerator(const ConvGenerator::Config &_config)
@@ -546,6 +547,53 @@ void ConvGenerator::setPerfConfig(StringRef perfConfig) {
   config.perfConfig = perfConfig.str();
 }
 
+void ConvGenerator::setDynamicDims(ArrayRef<std::string> dynamicDims) {
+  config.dynamicDims.assign(dynamicDims.begin(), dynamicDims.end());
+}
+
+SmallVector<Type, 3> ConvGenerator::getLogicalArgTypes(OpBuilder &builder) const {
+  auto makeType = [](ArrayRef<int64_t> shape, Type elementType) -> Type {
+    return RankedTensorType::get(shape, elementType);
+  };
+  SmallVector<Type, 3> types = {
+      makeType(config.filterDimension, getFilterDataType(builder)),
+      makeType(config.inputDimension, getInputDataType(builder)),
+      makeType(config.outputDimension, getOutputDataType(builder))};
+  reorderConvArgsForKernel(config.operation.value(), types);
+  return types;
+}
+
+/// `type`, an argument with layout `layout` (one character per dimension),
+/// with the dimensions named by `dynamicDims` made dynamic. Only the n/c/k
+/// dimensions in `channelNames` may be dynamic, and the spatial dimensions
+/// only when `hasSpatial` (the filter's never are).
+static RankedTensorType makeDynamicConvType(RankedTensorType tensorType,
+                                            StringRef layout,
+                                            ArrayRef<std::string> dynamicDims,
+                                            StringRef channelNames,
+                                            bool hasSpatial) {
+  SmallVector<int64_t> shape(tensorType.getShape());
+  auto isDynamic = [&](StringRef name) {
+    return llvm::is_contained(dynamicDims, name.str());
+  };
+  for (auto [dim, key] : llvm::zip(shape, layout)) {
+    bool dynamic = false;
+    if (key == 'n')
+      dynamic = channelNames.contains('n') && isDynamic("n");
+    else if (key == 'c')
+      dynamic = channelNames.contains('c') && isDynamic("c");
+    else if (key == 'k')
+      dynamic = channelNames.contains('k') && isDynamic("k");
+    else if (key == '0')
+      dynamic = hasSpatial && isDynamic("hi");
+    else if (key == '1')
+      dynamic = hasSpatial && isDynamic("wi");
+    if (dynamic)
+      dim = ShapedType::kDynamic;
+  }
+  return tensorType.clone(shape);
+}
+
 ConvolutionDims ConvGenerator::getConvolutionDims(const Config *config) {
   auto inDim = canonicalizeDims(config->inputDimension, config->inputLayout);
   auto filDim = canonicalizeDims(config->filterDimension, config->filterLayout);
@@ -608,6 +656,21 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
                                               config.outputDimension.end()),
                             outputDataType);
 
+  // A dynamic kernel takes its arguments in their logical shapes, with the
+  // dynamic dims as `?`, and stores the conv straight into its destination.
+  const bool isDynamic = !config.dynamicDims.empty();
+  if (isDynamic) {
+    filterArgType = makeDynamicConvType(filterArgType, config.filterLayout,
+                                        config.dynamicDims, "ck",
+                                        /*hasSpatial=*/false);
+    inputArgType =
+        makeDynamicConvType(inputArgType, config.inputLayout,
+                            config.dynamicDims, "nc", /*hasSpatial=*/true);
+    outputArgType =
+        makeDynamicConvType(outputArgType, config.outputLayout,
+                            config.dynamicDims, "nk", /*hasSpatial=*/true);
+  }
+
   // Build argument types in standard [filter, input, output] order, then
   // reorder so the store destination (the result of the conv) is always the
   // last argument. This simplifies downstream passes and host code that
@@ -617,8 +680,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
   reorderConvArgsForKernel(config.operation.value(), logicalFuncArgTypes);
   unsigned storeDestIdx = logicalFuncArgTypes.size() - 1;
 
-  SmallVector<Type, 3> physicalFuncArgTypes =
-      llvm::map_to_vector(logicalFuncArgTypes, getFlattenedType);
+  SmallVector<Type, 3> physicalFuncArgTypes(logicalFuncArgTypes);
+  if (!isDynamic)
+    llvm::transform(logicalFuncArgTypes, physicalFuncArgTypes.begin(),
+                    getFlattenedType);
   Type resultFlatType = physicalFuncArgTypes[storeDestIdx];
   auto funcType =
       builder.getFunctionType(physicalFuncArgTypes, {resultFlatType});
@@ -731,9 +796,13 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
   // Expand all function arguments from flat 1D to their logical shapes,
   // except the output arg whose transform is applied after the conv op.
   SmallVector<Value, 4> args;
-  expandFlatFunctionArguments(builder, func,
-                              ArrayRef(argDimNameRefs).drop_back(),
-                              ArrayRef(logicalFuncArgTypes).drop_back(), args);
+  if (isDynamic)
+    llvm::append_range(args, func.getArguments().drop_back());
+  else
+    expandFlatFunctionArguments(builder, func,
+                                ArrayRef(argDimNameRefs).drop_back(),
+                                ArrayRef(logicalFuncArgTypes).drop_back(),
+                                args);
 
   // After reordering, the two conv input operands are always args[0] and
   // args[1], and the store destination is args[storeDestIdx] (the last arg).
@@ -764,8 +833,10 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
 
   // Apply the output transform to flatten the conv result, then store to
   // the flat destination argument.
-  Value flatResult = flattenOutput(builder, builder.getUnknownLoc(), convResult,
-                                   argDimNameRefs[storeDestIdx]);
+  Value flatResult =
+      isDynamic ? convResult
+                : flattenOutput(builder, builder.getUnknownLoc(), convResult,
+                                argDimNameRefs[storeDestIdx]);
   Value flatStoreDest = func.getArgument(storeDestIdx);
   Value storedVal = rock::StoreOp::create(
       builder, builder.getUnknownLoc(), resultFlatType, flatResult,

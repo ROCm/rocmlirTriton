@@ -204,12 +204,24 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
   // `getTuningParameters` already reorders so that the first conservatively-
   // applicable config (LDS budget, kpack/splitK/numCTAs constraints, plus
   // block-scaling divisibility/LDS for scaled ops) is up front.
-  return materializeTuningParams<GemmParamsAttr>(
-      b, perfConfig,
+  std::vector<GemmParamsAttr> candidates =
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, /*supportsSplitK=*/!info.hasDynamicDims,
                           info.quantBlockSize, info.aScaleType,
-                          info.bScaleType));
+                          info.bScaleType);
+  // Dynamic kernels have no non-power-of-two tile lowering.
+  if (info.hasDynamicDims) {
+    llvm::erase_if(candidates, [](GemmParamsAttr params) {
+      return !llvm::isPowerOf2_64(params.getMPerBlock()) ||
+             !llvm::isPowerOf2_64(params.getNPerBlock()) ||
+             !llvm::isPowerOf2_64(params.getKPerBlock());
+    });
+    if (candidates.empty())
+      candidates.push_back(getConservativeDefaultGemmParams(
+          b.getContext(), info.quantBlockSize, info.gemmAType,
+          info.gemmBType));
+  }
+  return materializeTuningParams<GemmParamsAttr>(b, perfConfig, candidates);
 }
 
 FailureOr<GemmParamsAttr>

@@ -64,3 +64,22 @@ func.func @dynamic_store_equal_dims(%arg0: tensor<?x64xf16>, %arg1: tensor<?x64x
   rock.blockwise_store_ptr %arg2 -> %pointers(%mask) by set : tensor<64x64xf16> -> tensor<64x64xi64>(tensor<64x64xi1>)
   return
 }
+
+// -----
+
+// A static argument of a dynamic kernel keeps its logical rank too, so it is
+// flattened row-major, here under a view that broadcasts it over a dynamic
+// dimension of another argument.
+// CHECK-LABEL: func.func @static_arg_of_dynamic_kernel
+// CHECK-SAME: (%[[A:arg[0-9]+]]: tensor<64x32xf16>, %{{.*}}: tensor<?x32xf16>)
+//      CHECK:   rock.extract_ptr %[[A]] : tensor<64x32xf16>
+//      CHECK:   arith.muli %{{.*}}, %{{.*}} overflow<nsw> : tensor<64x1xi
+//      CHECK:   rock.blockwise_load_ptr
+//  CHECK-NOT:   rock.transforms_to_ptr
+func.func @static_arg_of_dynamic_kernel(%arg0: tensor<64x32xf16>, %arg1: tensor<?x32xf16>) -> tensor<64x32xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx1100"} {
+  %c0_i32 = arith.constant 0 : i32
+  %0 = rock.transform %arg0 by <affine_map<(d0, d1, d2)[s0] -> (d1, d2)> by [<AddDim{s0} ["n_block"] at [0] -> [] at []>, <PassThrough ["m", "k"] at [1, 2] -> ["m", "k"] at [0, 1]>] symbols = [arg(1, 0)] bounds = [s0, 64, 32] -> [64, 32]> : tensor<64x32xf16> to tensor<?x64x32xf16>
+  %pointers, %mask = rock.transforms_to_ptr %0[%c0_i32] : tensor<?x64x32xf16> -> tensor<64x32xi64>, tensor<64x32xi1>
+  %1 = rock.blockwise_load_ptr %pointers[%mask] {cacheModifier = #rock<CacheModifier none>} : tensor<64x32xi64>, tensor<64x32xi1> -> tensor<64x32xf16>
+  return %1 : tensor<64x32xf16>
+}

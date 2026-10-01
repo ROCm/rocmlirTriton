@@ -1069,6 +1069,17 @@ KernelType mlir::rock::kernelTypeFromConvOpType(ConvOpType convOpType) {
   llvm_unreachable("Unsupported ConvOpType");
 }
 
+/// The product of `sizes`, which is dynamic if any of them is.
+static int64_t mulSizes(ArrayRef<int64_t> sizes) {
+  int64_t product = 1;
+  for (int64_t size : sizes) {
+    if (ShapedType::isDynamic(size))
+      return ShapedType::kDynamic;
+    product *= size;
+  }
+  return product;
+}
+
 GemmSize GemmSize::fromConvolution(ConvOpType type,
                                    const ConvolutionDims &sizes) {
   assert(type != ConvOpType::BwdData &&
@@ -1080,8 +1091,8 @@ GemmSize GemmSize::fromConvolution(ConvOpType type,
     gemmGSize = sizes.g;
     gemmMSize = sizes.k;
     // +++pf: should these accumulate sizes across all dimensions?
-    gemmKSize = sizes.c * sizes.fil[0] * sizes.fil[1];
-    gemmNSize = sizes.n * sizes.out[0] * sizes.out[1];
+    gemmKSize = mulSizes({sizes.c, sizes.fil[0], sizes.fil[1]});
+    gemmNSize = mulSizes({sizes.n, sizes.out[0], sizes.out[1]});
     break;
   case ConvOpType::BwdData:
     llvm_unreachable("Should've been caught be an assert");
@@ -1188,12 +1199,13 @@ static GemmSize bwdDataGemmSizeForKernelId(const ConvolutionDims &sizes,
 
   int64_t g = sizes.g;
   int64_t m = sizes.c;
-  int64_t k = sizes.k;
+  SmallVector<int64_t> kFactors = {sizes.k};
   for (size_t i = 0; i < sizes.fil.size(); i++)
-    k *= llvm::divideCeil(sizes.fil[i] - iTilda[i], filTilda[i]);
-  int64_t n = sizes.n;
-  for (auto ts : tildaSlice)
-    n *= ts;
+    kFactors.push_back(llvm::divideCeil(sizes.fil[i] - iTilda[i], filTilda[i]));
+  int64_t k = mulSizes(kFactors);
+  SmallVector<int64_t> nFactors = {sizes.n};
+  llvm::append_range(nFactors, tildaSlice);
+  int64_t n = mulSizes(nFactors);
 
   return GemmSize(g, m, k, n);
 }

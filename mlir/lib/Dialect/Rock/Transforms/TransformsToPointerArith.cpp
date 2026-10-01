@@ -30,6 +30,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
@@ -177,11 +178,13 @@ struct TransformsToPtrRewritePattern
       transformVec.push_back(*flattening);
       isBig |= needs64BitIndices(*flattening);
     }
-    // Dynamic arguments keep their rank until the kernel ABI is lowered, so
-    // their row-major strides come from the dimension values.
+    // Arguments of dynamic kernels keep their rank until the kernel ABI is
+    // lowered, static ones included, so their row-major strides come from the
+    // (possibly dynamic) dimension sizes.
     if (auto arg = dyn_cast<BlockArgument>(buffer)) {
       auto argType = cast<ShapedType>(arg.getType());
-      if (!argType.hasStaticShape() && argType.getRank() > 1) {
+      if (argType.getRank() > 1 &&
+          isDynamicKernel(op->getParentOfType<func::FuncOp>())) {
         TransformMapAttr flattening =
             buildRowMajorFlatteningTransformMap(b, loc, arg);
         transformVec.push_back(flattening);

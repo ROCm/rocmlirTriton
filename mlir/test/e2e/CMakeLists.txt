@@ -30,6 +30,7 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
   list(APPEND CONFIGS
     PrGemm
     PrGemmDynamic
+    PrConvDynamic
     PrGemmFp8
     PrConvFp8
     PrGemmNonPowerOfTwoTileSize

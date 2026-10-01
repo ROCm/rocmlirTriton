@@ -33,6 +33,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -215,6 +216,25 @@ LogicalResult getConvDimNames(T op, SmallVectorImpl<StringRef> &filterNames,
   return success();
 }
 
+/// Records that G, C, K and N agree across the filter, input and output of a
+/// convolution, since the GEMM views built from them mix their sizes.
+static void emitConvDimEqualities(OpBuilder &b, func::FuncOp func, Value filter,
+                                  ArrayRef<StringRef> filterNames, Value input,
+                                  ArrayRef<StringRef> inputNames, Value output,
+                                  ArrayRef<StringRef> outputNames) {
+  auto dim = [](Value v, ArrayRef<StringRef> names, StringRef name) {
+    return DimRef{v,
+                  static_cast<uint32_t>(llvm::find(names, name) - names.begin())};
+  };
+  emitDimEqualities(
+      b, func,
+      {{dim(filter, filterNames, "g"), dim(input, inputNames, "gi")},
+       {dim(filter, filterNames, "g"), dim(output, outputNames, "go")},
+       {dim(filter, filterNames, "c"), dim(input, inputNames, "ci")},
+       {dim(filter, filterNames, "k"), dim(output, outputNames, "ko")},
+       {dim(input, inputNames, "ni"), dim(output, outputNames, "no")}});
+}
+
 /// Return the type of v if the underlying convolution has a result, otherwise
 /// return null, allowing the lowering here to be, in principle, generic over
 /// tensors and memrefs.
@@ -296,9 +316,7 @@ static LogicalResult makeToLayoutLikeFromLayoutAlong(
   SmallVector<StringRef> oldToLayoutRefs;
   llvm::copy(toLayout.getAsValueRange<StringAttr>(),
              std::back_inserter(oldToLayoutRefs));
-  ArrayRef<int64_t> toShape = toArg.getType().getShape();
-
-  BottomUpTMBuilder relayout(b, oldToLayoutRefs, toShape, op->getLoc());
+  BottomUpTMBuilder relayout(b, oldToLayoutRefs, toArg, op->getLoc());
   llvm::StringMap<uint32_t> newToLayoutIdxs;
   for (auto pair : llvm::enumerate(newToLayout)) {
     StringRef value = cast<StringAttr>(pair.value()).getValue();
@@ -371,9 +389,7 @@ static Value regularizeDestLayout(PatternRewriter &b, Location loc,
   SmallVector<StringRef> oldNames;
   llvm::copy(toLayout.getAsValueRange<StringAttr>(),
              std::back_inserter(oldNames));
-  ArrayRef<int64_t> shape = cast<ShapedType>(destValue.getType()).getShape();
-
-  BottomUpTMBuilder relayout(b, oldNames, shape, loc);
+  BottomUpTMBuilder relayout(b, oldNames, destValue, loc);
   llvm::StringMap<uint32_t> newIdxs;
   for (auto [idx, name] : llvm::enumerate(newNames))
     newIdxs.insert({name, idx});
@@ -455,19 +471,6 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   Location loc = op.getLoc();
 
   ConvolutionContext ctx = populateConvContext(op);
-
-  // Get shape of filter tensor.
-  ShapedType filterType = op.getFilter().getType();
-  ArrayRef<int64_t> filterShape = filterType.getShape();
-
-  // Get shape of result tensor (gradient w.r.t. input, same shape as fwd
-  // input).
-  ShapedType resultType = cast<ShapedType>(op.getResult().getType());
-  ArrayRef<int64_t> resultShape = resultType.getShape();
-
-  // Get shape of gradient tensor (from forward output).
-  ShapedType gradientType = op.getGradient().getType();
-  ArrayRef<int64_t> gradientShape = gradientType.getShape();
 
   // Obtain convolution parameters: padding / dilation / stride.
   auto pads = ctx.getPaddingVal();
@@ -571,7 +574,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
     }
     llvm::StringMap<uint32_t> embedDims =
         expandNamesInPlace(filterNames, expansions);
-    BottomUpTMBuilder embedTransform(b, filterNames, filterShape, loc);
+    BottomUpTMBuilder embedTransform(b, filterNames, op.getFilter(), loc);
     BottomUpTMTopDimsWrapper embedWrap(embedTransform, std::move(embedDims));
     // array of smallstring?
 
@@ -642,7 +645,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
   // Transform destination buffer (where gradient w.r.t. input is stored).
   // The dest buffer comes from the StoreOp and has the forward input shape.
   {
-    BottomUpTMBuilder padInputTransform(b, inputNames, resultShape, loc);
+    BottomUpTMBuilder padInputTransform(b, inputNames, destBuffer, loc);
     padInputTransform.passThrough({"gi", "ni", "ci"});
 
     llvm::SmallVector<uint32_t, 2> padDims;
@@ -745,7 +748,7 @@ backwardDataGemmForKernelId(ConvBwdDataOp op, PatternRewriter &b,
     }
     llvm::StringMap<uint32_t> embedDims =
         expandNamesInPlace(outputNames, expansions);
-    BottomUpTMBuilder embedTransform(b, outputNames, gradientShape, loc);
+    BottomUpTMBuilder embedTransform(b, outputNames, op.getGradient(), loc);
     BottomUpTMTopDimsWrapper embedWrap(embedTransform, std::move(embedDims));
     embedWrap.passThrough({"go", "no", "ko"});
     for (size_t i = 0; i < convDims.fil.size(); i++) {
@@ -859,6 +862,24 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     Value destBuffer = originalStoreOp.getDest();
     ensureInsertionAfterDef(b, bwdDataOp, destBuffer);
 
+    auto func = bwdDataOp->template getParentOfType<func::FuncOp>();
+    if (isDynamicKernel(func)) {
+      ConvolutionDims convDims = ctx.getConvDims();
+      if (llvm::any_of(convDims.fil, ShapedType::isDynamic) ||
+          llvm::any_of(convDims.in, ShapedType::isDynamic) ||
+          llvm::any_of(convDims.out, ShapedType::isDynamic))
+        return bwdDataOp.emitOpError(
+            "dynamic spatial dimensions are not supported for backward-data "
+            "convolutions");
+      SmallVector<StringRef, 5> filterNames, inputNames, outputNames;
+      if (failed(getConvDimNames(bwdDataOp, filterNames, inputNames,
+                                 outputNames)))
+        return failure();
+      emitConvDimEqualities(b, func, bwdDataOp.getFilter(), filterNames,
+                            destBuffer, inputNames, bwdDataOp.getGradient(),
+                            outputNames);
+    }
+
     // Thread only the store result alias through each per-kernel store so the
     // single returned tensor represents all disjoint bwd_data phase writes. The
     // actual destination view stays rooted at the original destination buffer.
@@ -906,16 +927,21 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     inputValue = op.getConvInput();
   }
 
-  ArrayRef<int64_t> filterShape =
-      cast<ShapedType>(filterValue.getType()).getShape();
-  ArrayRef<int64_t> inputShape =
-      cast<ShapedType>(inputValue.getType()).getShape();
-
   // Obtain convolution parameters: padding / dilation / stride.
   auto dilations = ctx.getDilationVal();
   auto strides = ctx.getStrideVal();
   ConvolutionDims convDims = ctx.getConvDims();
   const bool notConvGemm = !std::is_same_v<T, ConvElementwiseGemmOp>;
+
+  auto func = op->template getParentOfType<func::FuncOp>();
+  const bool isDynamic = isDynamicKernel(func);
+  if (isDynamic) {
+    if (!notConvGemm)
+      return op.emitOpError("conv+GEMM is not supported with dynamic shapes");
+    if (llvm::any_of(convDims.fil, ShapedType::isDynamic))
+      return op.emitOpError(
+          "dynamic filter spatial dimensions are not supported");
+  }
 
   llvm::SmallVector<StringRef, 5> filterNames, inputNames, outputNames;
   if (failed(getConvDimNames(op, filterNames, inputNames, outputNames,
@@ -967,6 +993,14 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       applyRelayout(view);
   }
 
+  // The maps below mix the sizes of the filter, input and output, so the
+  // verifier needs to know which argument dimensions are equal.
+  if constexpr (notConvGemm) {
+    if (isDynamic)
+      emitConvDimEqualities(b, func, filterValue, filterNames, inputValue,
+                            inputNames, destBuffer, outputNames);
+  }
+
   // Transform filter tensor.
 
   // set layout attribute.
@@ -981,7 +1015,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     if (name != "g" && name != "k")
       filterNonKDims.push_back(name);
 
-  BottomUpTMBuilder filterTransform(b, filterNames, filterShape, loc);
+  BottomUpTMBuilder filterTransform(b, filterNames, filterValue, loc);
   filterTransform.passThrough({"gemmG"}, {0}, {"g"});
   switch (convOpType) {
   case ConvOpType::Fwd:
@@ -1005,7 +1039,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   // - Pass through ni, gi, and ci, not renaming them
   // - Pad hi and wi as specified in padding attributes, renaming them to
   // 0ipad and 1ipad
-  BottomUpTMBuilder padInputTransform(b, inputNames, inputShape, loc);
+  BottomUpTMBuilder padInputTransform(b, inputNames, inputValue, loc);
   padInputTransform.passThrough("ni");
   padInputTransform.passThrough("gi");
   padInputTransform.passThrough("ci");
@@ -1053,12 +1087,30 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
     StringAttr val1 = b.getStringAttr(Twine(i));
     StringAttr val2 = b.getStringAttr(Twine(i) + "o");
     StringAttr val3 = b.getStringAttr(Twine(i) + "ipad");
+    // A dynamic output length comes from the output buffer, whose dimensions
+    // the caller guarantees match the input, padding, stride and dilation.
+    AffineExpr outLen;
+    if (!ShapedType::isDynamic(convDims.out[i])) {
+      outLen = embedInputTransform.cst(convDims.out[i]);
+    } else if constexpr (notConvGemm) {
+      SmallVector<ArgDimAttr> outSymbols;
+      uint32_t outDim =
+          llvm::find(outputNames, val2.getValue()) - outputNames.begin();
+      FailureOr<AffineExpr> outExpr =
+          getDimExpr(destBuffer, outDim, outSymbols);
+      if (failed(outExpr))
+        return op.emitOpError("cannot trace output dimension ") << val2;
+      outLen = embedInputTransform.rebind(*outExpr, outSymbols);
+    }
+    AffineExpr dilation = embedInputTransform.cst(dilations[i]);
+    AffineExpr stride = embedInputTransform.cst(strides[i]);
     if (filLen != 1) {
-      embedInputWrap.embed({val1, val2}, {filLen, convDims.out[i]}, val3,
-                           {dilations[i], strides[i]});
+      embedInputWrap.embed({val1, val2},
+                           {embedInputTransform.cst(filLen), outLen}, val3,
+                           {dilation, stride});
     } else if (strides[i] != 1) {
       embedInputWrap.addDim(val1, filLen);
-      embedInputWrap.embed({val2}, {convDims.out[i]}, val3, {strides[i]});
+      embedInputWrap.embed({val2}, {outLen}, val3, {stride});
     } else {
       embedInputWrap.addDim(val1, filLen);
       embedInputWrap.passThrough(val2, val3);
@@ -1107,9 +1159,6 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
   if constexpr (notConvGemm) {
     Value outputValue = destBuffer;
 
-    ArrayRef<int64_t> outputShape =
-        cast<ShapedType>(outputValue.getType()).getShape();
-
     // Transform output tensor.
     // - PassThrough G to dimension 0, name it gemmG, then
     // Output tensor transformation for ConvOp:
@@ -1121,7 +1170,7 @@ commonConvRewrite(T op, PatternRewriter &b, ConvolutionContext &ctx,
       if (name != "go" && name != "ko")
         outputNonKDims.push_back(name);
 
-    BottomUpTMBuilder outputTransform(b, outputNames, outputShape, loc);
+    BottomUpTMBuilder outputTransform(b, outputNames, outputValue, loc);
     outputTransform.passThrough({"gemmG"}, {0}, {"go"});
     switch (convOpType) {
     case ConvOpType::Fwd:
