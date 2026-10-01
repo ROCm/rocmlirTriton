@@ -18,6 +18,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Verifier.h"
 #include "gtest/gtest.h"
 
 using namespace mlir;
@@ -1095,6 +1096,72 @@ TEST(InvertDynamicTransformMapTest, NonInvertibleTransformsAreRejected) {
     ASSERT_TRUE(map);
     EXPECT_FALSE(invertTransformMap(env.builder, map, loc)) << text.str();
   }
+}
+
+//===----------------------------------------------------------------------===//
+// isInputNonInjective on symbolic maps
+//===----------------------------------------------------------------------===//
+
+// Applies `mapText` to argument 0 of a function taking `argTypes`, whose
+// dynamic dimensions the map's symbols name.
+static FailureOr<bool> isDynamicViewNonInjective(TestEnv &env,
+                                                 ArrayRef<Type> argTypes,
+                                                 StringRef mapText) {
+  OpBuilder &b = env.builder;
+  Location loc = b.getUnknownLoc();
+  auto fn = func::FuncOp::create(b, loc, "dynamic_view",
+                                 b.getFunctionType(argTypes, {}));
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPointToEnd(fn.addEntryBlock());
+  TransformMapAttr map = parseMap(env.ctx, mapText);
+  if (!map)
+    return failure();
+  Value view = applyTransform(b, loc, fn.getArgument(0), map);
+  func::ReturnOp::create(b, loc);
+  EXPECT_TRUE(succeeded(verify(fn)));
+  return isInputNonInjective(view);
+}
+
+// A dynamic AddDim may have any size, so it may re-read every element.
+TEST(IsInputNonInjectiveTest, DynamicAddDimIsNonInjective) {
+  TestEnv env;
+  Type f16 = env.builder.getF16Type();
+  FailureOr<bool> result = isDynamicViewNonInjective(
+      env,
+      {RankedTensorType::get({64}, f16),
+       RankedTensorType::get({ShapedType::kDynamic}, f16)},
+      "affine_map<(d0, d1)[s0] -> (d1)> by [<AddDim{s0} [\"g\"] at [0] -> [] "
+      "at []>, <PassThrough [\"n\"] at [1] -> [\"n\"] at [0]>] symbols = "
+      "[arg(1, 0)] bounds = [s0, 64] -> [64]");
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// Broadcasting a unit dimension to a dynamic size re-reads the element.
+TEST(IsInputNonInjectiveTest, BroadcastToDynamicSizeIsNonInjective) {
+  TestEnv env;
+  Type f16 = env.builder.getF16Type();
+  FailureOr<bool> result = isDynamicViewNonInjective(
+      env,
+      {RankedTensorType::get({1}, f16),
+       RankedTensorType::get({ShapedType::kDynamic}, f16)},
+      "affine_map<(d0)[s0] -> (0)> by [<Broadcast{1} [\"a\"] at [0] -> "
+      "[\"a\"] at [0]>] symbols = [arg(1, 0)] bounds = [s0] -> [1]");
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(result.value());
+}
+
+// A Broadcast whose modulus is the same expression as the upper size reads
+// each element once.
+TEST(IsInputNonInjectiveTest, DynamicBroadcastToItsOwnSizeIsInjective) {
+  TestEnv env;
+  Type f16 = env.builder.getF16Type();
+  FailureOr<bool> result = isDynamicViewNonInjective(
+      env, {RankedTensorType::get({ShapedType::kDynamic}, f16)},
+      "affine_map<(d0)[s0] -> (d0 mod s0)> by [<Broadcast{s0} [\"a\"] at "
+      "[0] -> [\"a\"] at [0]>] symbols = [arg(0, 0)] bounds = [s0] -> [s0]");
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_FALSE(result.value());
 }
 
 } // end anonymous namespace

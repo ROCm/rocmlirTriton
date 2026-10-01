@@ -908,11 +908,9 @@ static llvm::cl::opt<bool> disableSplitKForTuning(
 static llvm::cl::list<std::string> dynamicDims(
     "dynamic-dims",
     llvm::cl::desc(
-        "Comma-separated dimensions to leave dynamic (?) in the generated "
-        "kernel's argument types: g,m,n,k for gemm; n,c,k,hi,wi for conv "
-        "(hi,wi forward only); g,seq_len_q,seq_len_k for attention and "
-        "gemm+gemm. The host harness still uses the sizes given on the "
-        "command line."),
+        "Comma-separated gemm dimensions (g,m,n,k) to leave dynamic (?) in "
+        "the generated kernel's argument types. The host harness still uses "
+        "the sizes given on the command line."),
     llvm::cl::CommaSeparated);
 
 static bool isDynamicDim(StringRef name) {
@@ -1342,32 +1340,15 @@ static auto getRequiredArgs(std::optional<rock::KernelType> kernelType) {
 static LogicalResult validateDynamicDims() {
   if (dynamicDims.empty())
     return success();
-  SmallVector<StringRef> valid;
-  switch (operation) {
-  case rock::KernelType::Gemm:
-    valid = {"g", "m", "n", "k"};
-    if (scaledGemm) {
-      llvm::errs() << "--dynamic-dims is not supported for scaled gemm\n";
-      return failure();
-    }
-    break;
-  case rock::KernelType::Conv:
-    valid = {"n", "c", "k", "hi", "wi"};
-    break;
-  case rock::KernelType::ConvBwdData:
-    valid = {"n", "c", "k"};
-    break;
-  case rock::KernelType::Attention:
-  case rock::KernelType::GemmElementwiseGemm:
-    valid = {"g", "seq_len_q", "seq_len_k"};
-    break;
-  case rock::KernelType::ConvElementwiseGemm:
-    valid = {"n", "hi", "wi"};
-    break;
-  default:
-    llvm::errs() << "--dynamic-dims is not supported for this operation\n";
+  if (operation != rock::KernelType::Gemm) {
+    llvm::errs() << "--dynamic-dims is only supported for gemm\n";
     return failure();
   }
+  if (scaledGemm) {
+    llvm::errs() << "--dynamic-dims is not supported for scaled gemm\n";
+    return failure();
+  }
+  const SmallVector<StringRef> valid = {"g", "m", "n", "k"};
   for (StringRef name : dynamicDims) {
     if (!llvm::is_contained(valid, name)) {
       llvm::errs() << "invalid --dynamic-dims entry '" << name

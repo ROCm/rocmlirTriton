@@ -2680,8 +2680,11 @@ getElementTypeOfBiggestTensor(ArrayRef<BlockArgument> kernelArgs,
 //     size-1 AddDim is just a unit axis, e.g. <4096> -> <1x1x4096>).
 //   - Broadcast{modulus}: lower = upper % modulus, a reload only when the upper
 //     dim is larger than the modulus (size-1 lower replicated to many).
+// A dynamic size may be greater than 1 (or than the modulus), so it counts as a
+// reload unless it is the same expression as the modulus.
 static bool hasReloadTransform(TransformMapAttr map) {
   ArrayRef<int64_t> upperBounds = map.getUpperBounds();
+  SmallVector<AffineExpr> upperExprs = map.getUpperBoundExprs();
   for (TransformAttr transform : map.getOps()) {
     ArrayRef<uint32_t> upperDims = transform.getUpperDims();
     ArrayRef<int64_t> params = transform.getParams();
@@ -2691,17 +2694,23 @@ static bool hasReloadTransform(TransformMapAttr map) {
     case TransformType::AddDim:
       for (uint32_t d : upperDims) {
         assert(d < upperBounds.size() && "upper dim out of bounds");
-        if (upperBounds[d] > 1)
+        if (ShapedType::isDynamic(upperBounds[d]) || upperBounds[d] > 1)
           return true;
       }
       break;
-    case TransformType::Broadcast:
-      for (auto [d, modulus] : llvm::zip(upperDims, params)) {
+    case TransformType::Broadcast: {
+      SmallVector<AffineExpr> moduli = transform.getParamExprs();
+      for (auto [d, modulus, modulusExpr] :
+           llvm::zip(upperDims, params, moduli)) {
         assert(d < upperBounds.size() && "upper dim out of bounds");
-        if (upperBounds[d] > modulus)
+        if (upperExprs[d] == modulusExpr)
+          continue;
+        if (ShapedType::isDynamic(upperBounds[d]) ||
+            ShapedType::isDynamic(modulus) || upperBounds[d] > modulus)
           return true;
       }
       break;
+    }
     default:
       break;
     }
