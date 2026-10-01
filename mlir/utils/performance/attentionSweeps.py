@@ -209,6 +209,13 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
     sliding_window_look_back = (rng.randint(1, seqlen_k - 1) if use_kvcache and seqlen_k > 1 and
                                 rng.choice([True, False]) else None)
 
+    # The causal band restricts query m to keys [max(0, m - L), m]. It needs
+    # causal, is rejected past seqlen_k - 1 (there it degenerates to the full
+    # triangle), and is a prefill feature, so it never coincides with the
+    # KV-cache decode shapes that own sliding_window_look_back.
+    causal_look_back = (rng.randint(1, seqlen_k - 1)
+                        if causal and seqlen_k > 1 and rng.choice([True, False]) else None)
+
     num_heads_q, num_heads_kv = _sample_num_heads(rng)
 
     return (
@@ -231,6 +238,7 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         split_kv,
         last_valid_kv_index,
         sliding_window_look_back,
+        causal_look_back,
     )
 
 
@@ -324,7 +332,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
-     split_kv, last_valid_kv_index, sliding_window_look_back) = shape
+     split_kv, last_valid_kv_index, sliding_window_look_back, causal_look_back) = shape
     attn_config = perfRunner.AttentionConfiguration(
         dtype=dtype,
         g=g,
@@ -349,6 +357,7 @@ def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
         perf_config=str(PerfConfig(perf, kind='attn')),
         last_valid_kv_index=last_valid_kv_index,
         sliding_window_look_back=sliding_window_look_back,
+        causal_look_back=causal_look_back,
     )
     # Precision-aware rocmlir-gen flags (e.g. --pv-f64) picked up per-config
     # in parameterSweeps._build_rocmlir_gen_opts to combat CPU reference drift

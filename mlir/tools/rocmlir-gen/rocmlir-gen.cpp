@@ -612,6 +612,16 @@ static llvm::cl::opt<int64_t> slidingWindowLookBack(
         "Omission or -1 disables sliding."),
     llvm::cl::value_desc("positive integer or -1"), llvm::cl::init(-1));
 
+static llvm::cl::opt<int64_t> causalLookBack(
+    "causal_look_back",
+    llvm::cl::desc(
+        "Strictly positive look-back distance measured from each query "
+        "position, giving a banded causal mask: query m attends to keys "
+        "[max(0, m-L), m]. Unlike -sliding_window_look_back, which anchors the "
+        "window at last_valid_kv_index (decode), this anchors per query row "
+        "(prefill). Requires causal masking. Omission or -1 disables it."),
+    llvm::cl::value_desc("positive integer or -1"), llvm::cl::init(-1));
+
 static llvm::cl::opt<bool> returnLSE(
     "return_lse",
     llvm::cl::desc("whether the attention kernel returns LSE (log-sum-exp)"),
@@ -1326,6 +1336,37 @@ static LogicalResult detectMissingArguments() {
       if (lastValidKVIndex.empty())
         for (int64_t i = 0; i < groupSize; ++i)
           lastValidKVIndex.push_back(sequenceLengthK - 1);
+    }
+
+    if (causalLookBack == 0 || causalLookBack < -1) {
+      llvm::errs() << "causal_look_back must be -1 or a positive integer\n";
+      return failure();
+    }
+    if (causalLookBack > 0) {
+      if (causalLookBack > std::numeric_limits<int32_t>::max()) {
+        llvm::errs() << "causal_look_back must fit in a 32-bit integer\n";
+        return failure();
+      }
+      // The band is the intersection of causal's upper bound with a lower
+      // bound, so causal must be on for the attribute to mean anything.
+      if (!causalMasking) {
+        llvm::errs() << "causal_look_back requires -causal\n";
+        return failure();
+      }
+      if (!prefixOffset.empty()) {
+        llvm::errs()
+            << "causal_look_back is not supported with prefix_offset\n";
+        return failure();
+      }
+      // A band at least as wide as the key sequence reaches key 0 for every
+      // query, so it is plain causal. Drop it rather than emit bound arithmetic
+      // that can never tighten the loop.
+      if (causalLookBack > sequenceLengthK - 1) {
+        llvm::errs() << "warning: causal_look_back (" << causalLookBack
+                     << ") covers the whole key sequence (" << sequenceLengthK
+                     << "); falling back to plain causal masking\n";
+        causalLookBack = -1;
+      }
     }
   }
 
@@ -3316,6 +3357,44 @@ static Value causalMaskingTosa(OpBuilder builder, Location loc,
   return result;
 }
 
+// Banded causal masking: keep max(0, row - L) <= col <= row. The upper edge is
+// exactly causal masking, so only the lower edge is added here. Unlike
+// slidingWindowLookBackMaskingTosa, whose bound is one scalar derived from the
+// KV-cache length, the lower edge moves with the query row.
+static Value causalLookBackMaskingTosa(OpBuilder builder, Location loc,
+                                       Value inputTensor, int64_t lookBack,
+                                       float initValue) {
+  Value result = causalMaskingTosa(builder, loc, inputTensor, initValue);
+
+  auto inpType = cast<RankedTensorType>(result.getType());
+  ArrayRef<int64_t> inpShape = inpType.getShape();
+  Value rowRange = createRange(builder, loc, 1, inpShape);
+  Value colRange = createRange(builder, loc, 2, inpShape);
+
+  // Build the look-back and zero operands as rank-matched 1x...x1 scalar
+  // constants and let tosa.sub/tosa.maximum broadcast them.
+  SmallVector<int64_t, 4> scalarShape(inpShape.size(), 1);
+  auto scalarType = RankedTensorType::get(scalarShape, builder.getI32Type());
+  DenseElementsAttr lookBackAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(lookBack));
+  Value lookBackConst =
+      tosa::ConstOp::create(builder, loc, scalarType, lookBackAttr);
+  DenseElementsAttr zeroAttr =
+      DenseIntElementsAttr::get(scalarType, static_cast<int32_t>(0));
+  Value zeroConst = tosa::ConstOp::create(builder, loc, scalarType, zeroAttr);
+
+  // lowerBound = max(0, row - L)
+  Value lowerBound = rock::tosa::createOpAndInfer<tosa::SubOp>(
+      builder, loc, builder.getI32Type(), rowRange, lookBackConst);
+  lowerBound = rock::tosa::createOpAndInfer<tosa::MaximumOp>(
+      builder, loc, builder.getI32Type(), lowerBound, zeroConst);
+
+  // Mask col < lowerBound.
+  auto tooOld = rock::tosa::createOpAndInfer<tosa::GreaterOp>(
+      builder, loc, builder.getIntegerType(1), lowerBound, colRange);
+  return applyMask(builder, loc, result, tooOld, initValue);
+}
+
 static Value prefixOffsetMaskingTosa(OpBuilder builder, Location loc,
                                      Value inputTensor, Value offsetTensor,
                                      float initValue) {
@@ -3805,6 +3884,8 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       slidingWindowLookBack > 0
           ? builder.getI32IntegerAttr(slidingWindowLookBack)
           : nullptr,
+      /*causalLookBack=*/
+      causalLookBack > 0 ? builder.getI32IntegerAttr(causalLookBack) : nullptr,
       softmaxType,
       /*params0=*/nullptr, /*params1=*/nullptr);
   {
@@ -4805,6 +4886,9 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
     if (prefixOffsetTensor)
       return prefixOffsetMaskingTosa(builder, loc, tensor, prefixOffsetTensor,
                                      neutralValue);
+    if (causalLookBack > 0)
+      return causalLookBackMaskingTosa(builder, loc, tensor, causalLookBack,
+                                       neutralValue);
     if (causalMasking)
       return causalMaskingTosa(builder, loc, tensor, neutralValue);
     return tensor;
@@ -4907,8 +4991,14 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
-  // Apply standard causal masking only if prefix offset is not provided.
-  if (causalMasking && !prefixOffsetTensor)
+  // Apply standard causal masking only if prefix offset is not provided. A
+  // positive causalLookBack narrows causal to a band, so it replaces the plain
+  // causal mask rather than adding to it.
+  if (causalLookBack > 0 && !prefixOffsetTensor)
+    qkTensor =
+        causalLookBackMaskingTosa(builder, loc, qkTensor, causalLookBack,
+                                  -std::numeric_limits<float>::infinity());
+  else if (causalMasking && !prefixOffsetTensor)
     qkTensor = causalMaskingTosa(builder, loc, qkTensor,
                                  -std::numeric_limits<float>::infinity());
 

@@ -1442,6 +1442,12 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
         slidingWindowLookBack && *slidingWindowLookBack > 0)
       problemOS << "-sliding_window_look_back " << *slidingWindowLookBack
                 << sep;
+    // Likewise for the banded causal look-back: it changes how many key blocks
+    // the n-loop visits, so a banded problem must not reuse the ranking
+    // measured for the full causal triangle.
+    if (auto causalLookBack = attentionOp.getCausalLookBack();
+        causalLookBack && *causalLookBack > 0)
+      problemOS << "-causal_look_back " << *causalLookBack << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;
@@ -2059,8 +2065,8 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
         attnOp, out,
         {"causal", "kTransposed", "numHeadsKV", "numHeadsQ", "oTransposed",
          "params0", "params1", "preSoftmaxHasSplitKVTransforms", "qTransposed",
-         "slidingWindowLookBack", "softmaxType", "splitKV", "vTransposed",
-         "operandSegmentSizes"});
+         "slidingWindowLookBack", "causalLookBack", "softmaxType", "splitKV",
+         "vTransposed", "operandSegmentSizes"});
 
     if (attnOp.getProperties().getOperandSegmentSizes().size() != 6)
       out.unsupported("operand_schema");
