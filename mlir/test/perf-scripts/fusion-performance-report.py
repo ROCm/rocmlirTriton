@@ -8,7 +8,7 @@
 perfRunner records one fusion result per test file. Two files can fuse
 different operations around the same conv or GEMM problem, so their rows share
 every problem column, and the report has to render them as separate rows. The
-rows below are taken from a gfx942 run over resnet50-e2e and
+problems and file names below come from a gfx942 run over resnet50-e2e and
 bert-torch-tosa-e2e.
 
 # RUN: %python %s %t
@@ -31,16 +31,16 @@ CHIP = "gfx942"
 
 CONV_CSV = """\
 Direction,DataType,Chip,numCU,numChiplets,FilterLayout,InputLayout,OutputLayout,N,C,H,W,K,Y,X,DilationH,DilationW,StrideH,StrideW,PaddingH,PaddingW,PerfConfig,LDSBankConflict,Fusion TFlops,MLIR TFlops,Fusion/MLIR,FileName
-fwd,i8,gfx942,304,8,gkc01,ngc01,ngk01,1,128,56,56,128,3,3,1,1,2,2,1,1,,NaN,0.712234,1.522267,0.467877,mixr-resnet-fusion-case-1-quantization.mlir
-fwd,i8,gfx942,304,8,gkc01,ngc01,ngk01,1,128,56,56,128,3,3,1,1,2,2,1,1,,NaN,0.730365,1.522106,0.479839,mixr-resnet-fusion-case-1-int8.mlir
-fwd,f32,gfx942,304,8,gkc01,ngc01,ngk01,1,384,28,28,512,1,1,1,1,1,1,0,0,,NaN,21.394511,37.900337,0.564495,mixr-resnet-fusion-case-15.mlir
+fwd,i8,gfx942,304,8,gkc01,ngc01,ngk01,1,128,56,56,128,3,3,1,1,2,2,1,1,,NaN,0.712234,1.522267,0.467877,/workspace/mlir/test/fusion/resnet50-e2e/mixr-resnet-fusion-case-1-quantization.mlir
+fwd,i8,gfx942,304,8,gkc01,ngc01,ngk01,1,128,56,56,128,3,3,1,1,2,2,1,1,,NaN,0.730365,1.522106,0.479839,/workspace/mlir/test/fusion/resnet50-e2e/mixr-resnet-fusion-case-1-int8.mlir
+fwd,f32,gfx942,304,8,gkc01,ngc01,ngk01,1,384,28,28,512,1,1,1,1,1,1,0,0,,NaN,21.394511,37.900337,0.564495,/workspace/mlir/test/fusion/resnet50-e2e/mixr-resnet-fusion-case-15.mlir
 """
 
 GEMM_CSV = """\
 DataType,OutDataType,Chip,numCU,numChiplets,TransA,TransB,TransO,G,M,K,N,ScaledGemm,ScaleADtype,ScaleBDtype,TransScaleA,TransScaleB,PerfConfig,LDSBankConflict,Fusion TFlops,MLIR TFlops,Fusion/MLIR,FileName
-f32,f32,gfx942,304,8,False,False,False,1,12,384,384,False,,,False,False,,NaN,0.437015,0.695274,0.628550,bert_part_5.torch-tosa.mlir
-f32,f32,gfx942,304,8,False,False,False,1,12,384,384,False,,,False,False,,NaN,0.490362,0.664466,0.737980,bert_part_0.torch-tosa.mlir
-f32,f32,gfx942,304,8,False,False,False,1,12,1536,384,False,,,False,False,,NaN,0.912345,1.033948,0.882390,bert_part_7.torch-tosa.mlir
+f32,f32,gfx942,304,8,False,False,False,1,12,384,384,False,,,False,False,,NaN,0.437015,0.695274,0.628550,/workspace/mlir/test/xmir/bert-torch-tosa-e2e/bert_part_5.torch-tosa.mlir
+f32,f32,gfx942,304,8,False,False,False,1,12,384,384,False,,,False,False,,NaN,0.490362,0.664466,0.737980,/workspace/mlir/test/xmir/bert-torch-tosa-e2e/bert_part_0.torch-tosa.mlir
+f32,f32,gfx942,304,8,False,False,False,1,12,1536,384,False,,,False,False,,NaN,0.912345,1.033948,0.882390,/workspace/mlir/test/xmir/bert-torch-tosa-e2e/bert_part_7.torch-tosa.mlir
 """
 
 
