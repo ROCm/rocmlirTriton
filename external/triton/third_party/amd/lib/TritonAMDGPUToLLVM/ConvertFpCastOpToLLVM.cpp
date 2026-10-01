@@ -40,6 +40,15 @@ namespace {
 bool isCDNA4OrHigher(ISAFamily family) {
   return family == ISAFamily::CDNA4 || family == ISAFamily::GFX1250;
 }
+
+// List of architectures that have hardware support for OCP fp8 formats via the
+// *plain* cvt instructions.
+// TODO(LCOMPILER-2609): add RDNA4 once the LLVM bug is fixed. RDNA4 has the
+// instructions, but v_cvt_pk_f32_fp8/bf8 is selected as its fake16 form and
+// printed without a .l/.h suffix, which the assembler rejects in the
+// real-true16 mode gfx12 defaults to.
+bool hasPlainOcpFp8HW(ISAFamily family) { return family == ISAFamily::GFX1170; }
+
 // List of architectures that have hardware support for FNUZ fp8 formats. On
 // those architectures we will use the HW instructions to do the conversion
 // instead of the software fallback.
@@ -813,6 +822,81 @@ SmallVector<Value> Pk4Fp32ToF8(Location loc,
   return ret;
 }
 
+// Convert a single OCP Bf8/Fp8 value to Fp32 using the plain scalar cvt op.
+// The packed converter would work too, but its second result would come from an
+// undefined byte.
+template <typename ConvertOp>
+SmallVector<Value> ScalarF8ToFp32(Location loc,
+                                  ConversionPatternRewriter &rewriter,
+                                  const SmallVector<Value> &v) {
+  assert(v.size() == 1);
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto fp8x4VecTy = vec_ty(i8_ty, 4);
+  Value fp8x4Vec = b.undef(fp8x4VecTy);
+  fp8x4Vec = b.insert_element(fp8x4VecTy, fp8x4Vec, v[0], b.i32_val(0));
+  Value i32v = b.bitcast(fp8x4Vec, i32_ty);
+  return {ConvertOp::create(rewriter, loc, f32_ty, i32v, /*byteSel=*/0)};
+}
+
+// Convert OCP Fp8/Bf8 to Fp32/Fp16/Bf16 on gfx1170/RDNA4 using the plain cvt
+// ops. The plain ops only land in Fp32, so Fp16/Bf16 narrow afterwards; Fp8 is
+// exact in Fp32, leaving that narrowing as the only rounding site.
+template <typename DstFPType, typename PackedConvertOp,
+          typename ScalarConvertOp = void>
+SmallVector<Value> plainHWUpcastFromFp8(Location loc,
+                                        ConversionPatternRewriter &rewriter,
+                                        const SmallVector<Value> &v) {
+  static_assert(std::is_same_v<DstFPType, Float32Type> ||
+                    std::is_same_v<DstFPType, Float16Type> ||
+                    std::is_same_v<DstFPType, BFloat16Type>,
+                "plain fp8 upcast only lands in f32, f16 or bf16");
+  if constexpr (std::is_same_v<DstFPType, Float32Type>) {
+    static_assert(!std::is_void_v<ScalarConvertOp>,
+                  "an f32 destination needs the scalar cvt op");
+    // A lone value has no partner to fill the other half of a packed result.
+    if (v.size() == 1)
+      return ScalarF8ToFp32<ScalarConvertOp>(loc, rewriter, v);
+  }
+  assert(v.size() == 4);
+  SmallVector<Value> ret = PkF4ToFp32<PackedConvertOp>(loc, rewriter, v);
+  if constexpr (std::is_same_v<DstFPType, Float16Type>) {
+    // The FP32 values came from FP8 and are exactly representable in FP16,
+    // so this narrowing conversion is lossless.
+    for (Value &val : ret)
+      val = Fp32ToFp16rtneOneValue(loc, rewriter, val);
+  } else if constexpr (std::is_same_v<DstFPType, BFloat16Type>) {
+    for (Value &val : ret)
+      val = AMD::convertFp32ToBf16(loc, rewriter, val, RoundingMode::RTZ);
+  }
+  return ret;
+}
+
+// Convert Fp32/Fp16/Bf16 to OCP Fp8/Bf8 on gfx1170/RDNA4 using the plain cvt
+// ops. The plain ops only read Fp32, so Fp16/Bf16 widen first; both widenings
+// are exact, which keeps the rounding to Fp8 in the hardware instruction.
+template <typename SrcFPType, typename PackedConvertOp>
+SmallVector<Value> plainHWDowncastToFp8(Location loc,
+                                        ConversionPatternRewriter &rewriter,
+                                        const SmallVector<Value> &v) {
+  static_assert(std::is_same_v<SrcFPType, Float32Type> ||
+                    std::is_same_v<SrcFPType, Float16Type> ||
+                    std::is_same_v<SrcFPType, BFloat16Type>,
+                "plain fp8 downcast only starts from f32, f16 or bf16");
+  assert(v.size() == 4);
+  if constexpr (std::is_same_v<SrcFPType, Float32Type>) {
+    return Pk4Fp32ToF8<PackedConvertOp>(loc, rewriter, v);
+  } else {
+    SmallVector<Value> f32Vec(4);
+    for (size_t i = 0; i < 4; i++) {
+      if constexpr (std::is_same_v<SrcFPType, Float16Type>)
+        f32Vec[i] = Fp16ToFp32OneValue(loc, rewriter, v[i]);
+      else
+        f32Vec[i] = AMD::convertBf16ToFp32(loc, rewriter, v[i]);
+    }
+    return Pk4Fp32ToF8<PackedConvertOp>(loc, rewriter, f32Vec);
+  }
+}
+
 // Fp32->Fp16/Bf16 (RTNE) in GFX950
 SmallVector<Value> convertFp32ToFp16rtne(Location loc,
                                          ConversionPatternRewriter &rewriter,
@@ -891,6 +975,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF16Fp8Op>(loc,
                                                                    rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWUpcastFromFp8<Float16Type, ROCDL::CvtPkF32Fp8Op>(
+            loc, rewriter, v);
       } else
         return Fp8E4M3fnToFp16SW(loc, rewriter, v);
     }
@@ -1065,6 +1152,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF16Bf8Op>(loc,
                                                                    rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWUpcastFromFp8<Float16Type, ROCDL::CvtPkF32Bf8Op>(
+            loc, rewriter, v);
       } else
         return Fp8E5M2ToFp16SW(loc, rewriter, v);
     }
@@ -1204,6 +1294,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkBf16Fp8Op>(
             loc, rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWUpcastFromFp8<BFloat16Type, ROCDL::CvtPkF32Fp8Op>(
+            loc, rewriter, v);
       } else
         return OcpF8ToBf16SW<Float8E4M3FNType>(loc, rewriter, v);
     }
@@ -1316,6 +1409,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkBf16Bf8Op>(
             loc, rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWUpcastFromFp8<BFloat16Type, ROCDL::CvtPkF32Bf8Op>(
+            loc, rewriter, v);
       } else
         return OcpF8ToBf16SW<Float8E5M2Type>(loc, rewriter, v);
     }
@@ -1361,6 +1457,9 @@ public:
         ConverterInterface(isaFamily, maxElementsPerThread, roundingMode) {}
 
   size_t getNumElements() override {
+    if (maxElementsPerThread == 1 && hasPlainOcpFp8HW(isaFamily) &&
+        isa<Float8E4M3FNType>(srcTy))
+      return 1;
     return isa<Float8E4M3FNType>(srcTy) && isaFamily == ISAFamily::GFX1250 ? 8
                                                                            : 4;
   }
@@ -1386,6 +1485,9 @@ public:
       else if (isaFamily == ISAFamily::CDNA4)
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF32Fp8Op>(loc,
                                                                    rewriter, v);
+      else if (hasPlainOcpFp8HW(isaFamily))
+        return plainHWUpcastFromFp8<Float32Type, ROCDL::CvtPkF32Fp8Op,
+                                    ROCDL::CvtF32Fp8Op>(loc, rewriter, v);
       else
         useTwoStepConversion = true;
     }
@@ -1417,6 +1519,9 @@ public:
         ConverterInterface(isaFamily, maxElementsPerThread, roundingMode) {}
 
   size_t getNumElements() override {
+    if (maxElementsPerThread == 1 && hasPlainOcpFp8HW(isaFamily) &&
+        isa<Float8E5M2Type>(srcTy))
+      return 1;
     return isa<Float8E5M2Type>(srcTy) && isaFamily == ISAFamily::GFX1250 ? 8
                                                                          : 4;
   }
@@ -1442,6 +1547,9 @@ public:
       else if (isaFamily == ISAFamily::CDNA4)
         return scalePk4UpcastFromFp8<ROCDL::CvtScaleF32PkF32Bf8Op>(loc,
                                                                    rewriter, v);
+      else if (hasPlainOcpFp8HW(isaFamily))
+        return plainHWUpcastFromFp8<Float32Type, ROCDL::CvtPkF32Bf8Op,
+                                    ROCDL::CvtF32Bf8Op>(loc, rewriter, v);
       else
         useTwoStepConversion = true;
     }
@@ -1496,6 +1604,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkFp8F16Op>(loc,
                                                                    rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWDowncastToFp8<Float16Type, ROCDL::CvtPkFp8F32Op>(
+            loc, rewriter, v);
       } else
         return Fp16ToFp8E4M3fnRtneSW(loc, rewriter, v);
     } else if (isa<Float8E4M3FNUZType>(dstTy)) {
@@ -1586,6 +1697,9 @@ public:
               loc, rewriter, v);
         } else if (isaFamily == ISAFamily::CDNA4) {
           return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkBf8F16Op>(
+              loc, rewriter, v);
+        } else if (hasPlainOcpFp8HW(isaFamily)) {
+          return plainHWDowncastToFp8<Float16Type, ROCDL::CvtPkBf8F32Op>(
               loc, rewriter, v);
         } else
           return Fp16ToFp8E5M2rtneSW(loc, rewriter, v);
@@ -1731,6 +1845,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkFp8Bf16Op>(
             loc, rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWDowncastToFp8<BFloat16Type, ROCDL::CvtPkFp8F32Op>(
+            loc, rewriter, v);
       } else
         return Bf16ToFp8E4M3fnRtneSW(loc, rewriter, v);
     } else if (isa<Float8E4M3FNUZType>(dstTy)) {
@@ -1812,6 +1929,9 @@ public:
             loc, rewriter, v);
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkBf8Bf16Op>(
+            loc, rewriter, v);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWDowncastToFp8<BFloat16Type, ROCDL::CvtPkBf8F32Op>(
             loc, rewriter, v);
       } else
         return Bf16ToFp8E5M2SW(loc, rewriter, v);
@@ -2097,6 +2217,9 @@ public:
       } else if (isaFamily == ISAFamily::CDNA4) {
         return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkFp8F32Op>(
             loc, rewriter, inVals);
+      } else if (hasPlainOcpFp8HW(isaFamily)) {
+        return plainHWDowncastToFp8<Float32Type, ROCDL::CvtPkFp8F32Op>(
+            loc, rewriter, inVals);
       } else
         return Fp32ToFp8E4M3fnRtneSW(loc, rewriter, inVals);
     }
@@ -2178,6 +2301,9 @@ public:
               loc, rewriter, inVals);
         } else if (isaFamily == ISAFamily::CDNA4) {
           return scalePk4DowncastToFp8<ROCDL::CvtScaleF32PkBf8F32Op>(
+              loc, rewriter, inVals);
+        } else if (hasPlainOcpFp8HW(isaFamily)) {
+          return plainHWDowncastToFp8<Float32Type, ROCDL::CvtPkBf8F32Op>(
               loc, rewriter, inVals);
         } else
           return Fp32ToFp8E5M2rtneSW(loc, rewriter, inVals);
