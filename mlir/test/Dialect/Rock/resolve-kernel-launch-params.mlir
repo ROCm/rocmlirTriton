@@ -164,3 +164,30 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies that a dynamic kernel is accepted: the grid size is only known at
+// launch so it is not checked, the trailing i32 dimension arguments are kept
+// while the workspace arguments are removed, and the dynamic grid and
+// dimension-argument attributes are left for RockEmitGpuBinary.
+// CHECK-LABEL: module
+// CHECK-NOT: rock.not_applicable
+// CHECK-SAME: rock.dim_args.dyn_kernel = [#rock.arg_dim<0, 1>, #rock.arg_dim<1, 2>, #rock.arg_dim<2, 1>, #rock.arg_dim<2, 2>]
+// CHECK-SAME: rock.grid_size.dyn_kernel = #rock.arg_expr<(s0 ceildiv 128) * (s1 ceildiv 64), [arg(0, 1), arg(1, 2)]>
+// CHECK: llvm.func @dyn_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32)
+// CHECK-NOT: ptr<1>
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.dyn_kernel" = #rock.arg_expr<(s0 ceildiv 128) * (s1 ceildiv 64), [arg(0, 1), arg(1, 2)]>,
+    "rock.dim_args.dyn_kernel" = [#rock.arg_dim<0, 1>, #rock.arg_dim<1, 2>, #rock.arg_dim<2, 1>, #rock.arg_dim<2, 2>]
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  llvm.func @dyn_kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %m: i32, %n: i32, %mc: i32, %nc: i32, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}

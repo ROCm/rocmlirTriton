@@ -275,3 +275,66 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies that a dimension argument naming another dimension argument rather
+// than a kernel buffer triggers an error.
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.dim_arg_not_buffer" = #rock.arg_expr<s0, [arg(0, 0)]>,
+    "rock.dim_args.dim_arg_not_buffer" = [#rock.arg_dim<0, 0>, #rock.arg_dim<2, 0>]
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{rock.dim_args.dim_arg_not_buffer refers to an argument that is not a kernel buffer}}
+  llvm.func @dim_arg_not_buffer(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %d0: i32, %d1: i32, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>)
+      attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that the block-size check still applies when the grid is dynamic.
+// NA: module attributes {rock.dim_args.dyn_oversized_workgroup = [#rock.arg_dim<0, 0>], rock.grid_size.dyn_oversized_workgroup = #rock.arg_expr<s0, [arg(0, 0)]>, rock.not_applicable
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 17 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.dyn_oversized_workgroup" = #rock.arg_expr<s0, [arg(0, 0)]>,
+    "rock.dim_args.dyn_oversized_workgroup" = [#rock.arg_dim<0, 0>]
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{block size 1088 exceeds the AMDGPU workgroup size limit of 1024}}
+  llvm.func @dyn_oversized_workgroup(%arg0: !llvm.ptr, %d0: i32, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>)
+      attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that a dynamic grid without dimension arguments is reported as a
+// metadata collection failure.
+// expected-error @+1 {{could not validate kernel launch dimensions because kernel metadata collection failed}}
+module attributes {
+    "ttg.shared" = 0 : i32,
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "rock.grid_size.dyn_grid_no_dims" = #rock.arg_expr<s0, [arg(0, 0)]>
+} {
+  llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+  // expected-error @+1 {{'llvm.func' op dynamic grid size without rock.dim_args.dyn_grid_no_dims}}
+  llvm.func @dyn_grid_no_dims(%arg0: !llvm.ptr, %gs: !llvm.ptr<1>, %ps: !llvm.ptr<1>)
+      attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
+    llvm.return
+  }
+}

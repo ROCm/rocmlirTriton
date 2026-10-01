@@ -75,3 +75,40 @@ module attributes {
     llvm.return
   }
 }
+
+// -----
+
+// Verifies that a dynamic grid size without dimension arguments causes a diagnostic
+module attributes {
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "ttg.shared" = 0 : i32,
+    "rock.grid_size.test_dyn_grid_no_dims" = #rock.arg_expr<s0 ceildiv 64, [arg(0, 0)]>,
+    "triton.hsaco" = "DUMMY_HSACO"
+} {
+  // expected-error @below {{'llvm.func' op dynamic grid size without rock.dim_args.test_dyn_grid_no_dims}}
+  llvm.func @test_dyn_grid_no_dims(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
+      attributes {rock.kernel} {
+    llvm.return
+  }
+}
+
+// -----
+
+// Verifies that a dim_args entry that is not a #rock.arg_dim causes a diagnostic
+module attributes {
+    "ttg.num-warps" = 4 : i32,
+    "ttg.threads-per-warp" = 64 : i32,
+    "ttg.num-ctas" = 1 : i32,
+    "ttg.shared" = 0 : i32,
+    "rock.grid_size.test_bad_dim_args" = #rock.arg_expr<s0 ceildiv 64, [arg(0, 0)]>,
+    "rock.dim_args.test_bad_dim_args" = [0 : i32],
+    "triton.hsaco" = "DUMMY_HSACO"
+} {
+  // expected-error @below {{'llvm.func' op malformed rock.dim_args.test_bad_dim_args: entry is not a #rock.arg_dim}}
+  llvm.func @test_bad_dim_args(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i32)
+      attributes {rock.kernel} {
+    llvm.return
+  }
+}

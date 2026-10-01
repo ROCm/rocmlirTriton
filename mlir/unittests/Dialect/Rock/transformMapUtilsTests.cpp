@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -966,6 +967,134 @@ TEST(GetMaxVectorizationTest, UnmergeHeldConstantNonUnitDim) {
   EXPECT_EQ(result.max, 4);
 
   func::ReturnOp::create(b, loc);
+}
+
+//===----------------------------------------------------------------------===//
+// invertTransformMap on symbolic maps
+//===----------------------------------------------------------------------===//
+
+static TransformMapAttr parseMap(MLIRContext &ctx, StringRef text) {
+  auto map = dyn_cast_or_null<TransformMapAttr>(
+      parseAttribute(("#rock.transform_map<" + text + ">").str(), &ctx));
+  EXPECT_TRUE(map) << "failed to parse " << text.str();
+  return map;
+}
+
+TEST(InvertDynamicTransformMapTest, MergeInvertsToUnmerge) {
+  TestEnv env;
+  TransformMapAttr merge = parseMap(
+      env.ctx, "affine_map<(d0, d1)[s0, s1] -> (d0, d1 floordiv s1, d1 mod "
+               "s1)> by [<PassThrough [\"g\"] at [0] -> [\"g\"] at [0]>, "
+               "<Merge{s0, s1} [\"mn\"] at [1] -> [\"m\", \"n\"] at [1, 2]>] "
+               "symbols = [arg(0, 1), arg(1, 2)] bounds = [1, s0 * s1] -> "
+               "[1, s0, s1]");
+  ASSERT_TRUE(merge);
+  TransformMapAttr expected = parseMap(
+      env.ctx, "affine_map<(d0, d1, d2)[s0, s1] -> (d0, d1 * s1 + d2)> by "
+               "[<PassThrough [\"g\"] at [0] -> [\"g\"] at [0]>, "
+               "<Unmerge{s0, s1} [\"m\", \"n\"] at [1, 2] -> [\"mn\"] at "
+               "[1]>] symbols = [arg(0, 1), arg(1, 2)] bounds = [1, s0, s1] "
+               "-> [1, s0 * s1]");
+  ASSERT_TRUE(expected);
+
+  TransformMapAttr inverse =
+      invertTransformMap(env.builder, merge, env.builder.getUnknownLoc());
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse, expected);
+
+  TransformMapAttr back =
+      invertTransformMap(env.builder, inverse, env.builder.getUnknownLoc());
+  ASSERT_TRUE(back);
+  EXPECT_EQ(back, merge);
+}
+
+TEST(InvertDynamicTransformMapTest, PadInvertsToSlice) {
+  TestEnv env;
+  TransformMapAttr pad = parseMap(
+      env.ctx, "affine_map<(d0, d1)[s0, s1] -> (d0, d1)> by "
+               "[<PassThrough [\"m\"] at [0] -> [\"m\"] at [0]>, "
+               "<Pad{0, -s1 + (s1 ceildiv 64) * 64} [\"nPad\"] at [1] -> "
+               "[\"n\"] at [1]>] symbols = [arg(0, 1), arg(1, 2)] bounds = "
+               "[s0, (s1 ceildiv 64) * 64] -> [s0, s1]");
+  ASSERT_TRUE(pad);
+  TransformMapAttr expected = parseMap(
+      env.ctx, "affine_map<(d0, d1)[s0, s1] -> (d0, d1)> by "
+               "[<PassThrough [\"m\"] at [0] -> [\"m\"] at [0]>, "
+               "<Slice{0, s1} [\"n\"] at [1] -> [\"nPad\"] at [1]>] "
+               "symbols = [arg(0, 1), arg(1, 2)] bounds = [s0, s1] -> "
+               "[s0, (s1 ceildiv 64) * 64]");
+  ASSERT_TRUE(expected);
+
+  TransformMapAttr inverse =
+      invertTransformMap(env.builder, pad, env.builder.getUnknownLoc());
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse, expected);
+}
+
+TEST(InvertDynamicTransformMapTest, SliceInvertsToPad) {
+  TestEnv env;
+  TransformMapAttr slice =
+      parseMap(env.ctx, "affine_map<(d0)[s0] -> (d0 + 2)> by [<Slice{2, s0} "
+                        "[\"a\"] at [0] -> [\"a\"] at [0]>] symbols = "
+                        "[arg(0, 0)] bounds = [s0 - 2] -> [s0]");
+  ASSERT_TRUE(slice);
+
+  TransformMapAttr inverse =
+      invertTransformMap(env.builder, slice, env.builder.getUnknownLoc());
+  ASSERT_TRUE(inverse);
+  ASSERT_EQ(inverse.getOps().size(), 1u);
+  TransformAttr padAttr = inverse.getOps()[0];
+  EXPECT_EQ(padAttr.getType(), TransformType::Pad);
+  EXPECT_EQ(padAttr.getParams(), ArrayRef<int64_t>({2, 0}));
+  EXPECT_EQ(inverse.getSymbols(), slice.getSymbols());
+  EXPECT_EQ(inverse.getUpperBoundExprs(), slice.getLowerBoundExprs());
+  EXPECT_EQ(inverse.getLowerBoundExprs(), slice.getUpperBoundExprs());
+}
+
+TEST(InvertDynamicTransformMapTest, UnitAddDimAndConstDimInvert) {
+  TestEnv env;
+  TransformMapAttr addDim = parseMap(
+      env.ctx, "affine_map<(d0, d1)[s0] -> (d1)> by [<AddDim{1} [\"g\"] at "
+               "[0] -> [] at []>, <PassThrough [\"n\"] at [1] -> [\"n\"] at "
+               "[0]>] symbols = [arg(0, 0)] bounds = [1, s0] -> [s0]");
+  ASSERT_TRUE(addDim);
+
+  TransformMapAttr inverse =
+      invertTransformMap(env.builder, addDim, env.builder.getUnknownLoc());
+  ASSERT_TRUE(inverse);
+  EXPECT_EQ(inverse.getUpperBoundExprs(), addDim.getLowerBoundExprs());
+  EXPECT_EQ(inverse.getLowerBoundExprs(), addDim.getUpperBoundExprs());
+
+  TransformMapAttr back =
+      invertTransformMap(env.builder, inverse, env.builder.getUnknownLoc());
+  ASSERT_TRUE(back);
+  EXPECT_EQ(back.getUpperBoundExprs(), addDim.getUpperBoundExprs());
+  EXPECT_EQ(back.getLowerBoundExprs(), addDim.getLowerBoundExprs());
+}
+
+TEST(InvertDynamicTransformMapTest, NonInvertibleTransformsAreRejected) {
+  TestEnv env;
+  Location loc = env.builder.getUnknownLoc();
+  // Embed and Broadcast have no inverse; neither does an AddDim of length
+  // greater than one, and a symbolic length counts as greater than one.
+  StringRef nonInvertible[] = {
+      "affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + d1)> by [<Embed{s1, 1} "
+      "[\"m\", \"n\"] at [0, 1] -> [\"flat\"] at [0]>] symbols = "
+      "[arg(0, 0), arg(0, 1)] bounds = [s0, s1] -> [s0 * s1]",
+      "affine_map<(d0)[s0] -> (d0 mod s0)> by [<Broadcast{s0} [\"a\"] at [0] "
+      "-> [\"a\"] at [0]>] symbols = [arg(0, 0)] bounds = [64] -> [s0]",
+      "affine_map<(d0, d1)[s0] -> (d1)> by [<AddDim{4} [\"g\"] at [0] -> [] "
+      "at []>, <PassThrough [\"n\"] at [1] -> [\"n\"] at [0]>] symbols = "
+      "[arg(0, 0)] bounds = [4, s0] -> [s0]",
+      "affine_map<(d0, d1)[s0, s1] -> (d1)> by [<AddDim{s1} [\"g\"] at [0] "
+      "-> [] at []>, <PassThrough [\"n\"] at [1] -> [\"n\"] at [0]>] symbols "
+      "= [arg(0, 0), arg(0, 1)] bounds = [s1, s0] -> [s0]",
+  };
+  for (StringRef text : nonInvertible) {
+    TransformMapAttr map = parseMap(env.ctx, text);
+    ASSERT_TRUE(map);
+    EXPECT_FALSE(invertTransformMap(env.builder, map, loc)) << text.str();
+  }
 }
 
 } // end anonymous namespace

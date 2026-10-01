@@ -945,6 +945,52 @@ static void setDynamicKernelHostTypes(ArrayRef<Type> logicalTypes) {
       llvm::map_to_vector<8>(logicalTypes, rock::getFlattenedType);
 }
 
+static llvm::cl::list<std::string> dynamicArgShapes(
+    "dynamic-arg-shapes",
+    llvm::cl::desc(
+        "For an input module whose kernel has dynamic (?) argument "
+        "dimensions: the static shape the host harness allocates for each "
+        "kernel argument, e.g. 1x200x64,1x64x100,1x20000. Each shape must "
+        "match its argument's rank and static dimensions."),
+    llvm::cl::CommaSeparated);
+
+/// Records the host types given by --dynamic-arg-shapes for `kernel`.
+static LogicalResult setDynamicArgShapes(func::FuncOp kernel) {
+  ArrayRef<Type> argTypes = kernel.getArgumentTypes();
+  if (dynamicArgShapes.size() != argTypes.size())
+    return kernel.emitError() << "--dynamic-arg-shapes has "
+                              << dynamicArgShapes.size()
+                              << " shapes, but the kernel has "
+                              << argTypes.size() << " arguments";
+  SmallVector<Type> logicalTypes;
+  for (auto [i, spec, type] : llvm::enumerate(dynamicArgShapes, argTypes)) {
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    SmallVector<StringRef> parts;
+    StringRef(spec).split(parts, 'x');
+    SmallVector<int64_t> shape;
+    for (StringRef part : parts) {
+      int64_t size;
+      if (part.getAsInteger(10, size) || size <= 0)
+        return kernel.emitError() << "invalid --dynamic-arg-shapes entry '"
+                                  << spec << "'";
+      shape.push_back(size);
+    }
+    if (!tensorType ||
+        tensorType.getRank() != static_cast<int64_t>(shape.size()))
+      return kernel.emitError() << "--dynamic-arg-shapes entry '" << spec
+                                << "' does not match argument " << i
+                                << " of type " << type;
+    for (auto [size, argSize] : llvm::zip(shape, tensorType.getShape()))
+      if (!ShapedType::isDynamic(argSize) && argSize != size)
+        return kernel.emitError() << "--dynamic-arg-shapes entry '" << spec
+                                  << "' does not match argument " << i
+                                  << " of type " << type;
+    logicalTypes.push_back(tensorType.clone(shape));
+  }
+  setDynamicKernelHostTypes(logicalTypes);
+  return success();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 ////  Struct KernelIF
 ////  - Detected/capture kernel interface
@@ -6921,6 +6967,26 @@ int main(int argc, char **argv) {
     }
     llvm::outs() << tuningKey << "\n";
     return 0;
+  }
+
+  if (!dynamicArgShapes.empty()) {
+    SmallVector<func::FuncOp> dynamicKernels;
+    module->walk([&](func::FuncOp func) {
+      if (func->hasAttr(rock::KernelAttr::getMnemonic()) &&
+          llvm::any_of(func.getArgumentTypes(), [](Type t) {
+            auto shaped = dyn_cast<ShapedType>(t);
+            return shaped && !shaped.hasStaticShape();
+          }))
+        dynamicKernels.push_back(func);
+    });
+    if (dynamicKernels.size() != 1) {
+      llvm::errs() << "--dynamic-arg-shapes needs exactly one kernel with "
+                      "dynamic arguments, found "
+                   << dynamicKernels.size() << "\n";
+      return EXIT_FAILURE;
+    }
+    if (failed(setDynamicArgShapes(dynamicKernels.front())))
+      return EXIT_FAILURE;
   }
 
   SmallVector<KernelIF, 8> kernels;
