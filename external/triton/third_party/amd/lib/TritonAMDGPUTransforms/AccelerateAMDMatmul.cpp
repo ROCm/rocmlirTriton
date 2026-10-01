@@ -2,6 +2,7 @@
 #include "TritonAMDGPUTransforms/Passes.h"
 #include "TritonAMDGPUTransforms/WmmaGroup.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -15,8 +16,6 @@
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/MathExtras.h"
-#include <numeric>
 
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
@@ -34,18 +33,6 @@ using triton::amdgpu::TargetFeatures;
 
 constexpr char AttrDecomposedDotScaledSource[] =
     "amdg.decomposed_dot_scaled_source";
-
-// Copy discardable attributes from the original dot onto a freshly created dot
-// so downstream metadata survives the accelerate-matmul rewrite. Keeping them
-// discardable is required so downstream passes (e.g.
-// rock-set-matmul-output-transpose) can still find them via getDiscardableAttr.
-static void copyDiscardableAttrs(Operation *from, Value to) {
-  Operation *toOp = to.getDefiningOp();
-  if (!toOp)
-    return;
-  for (NamedAttribute attr : from->getDiscardableAttrs())
-    toOp->setDiscardableAttr(attr.getName(), attr.getValue());
-}
 
 int getMfmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
@@ -67,7 +54,7 @@ int getWmmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
   case ISAFamily::RDNA3:
     return 1;
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
     return 2;
   case ISAFamily::GFX1250:
@@ -367,11 +354,6 @@ OperandTypesVector getOperandTypesForWmmaOp(PatternRewriter &rewriter,
       // {bf16, bf16, bf16, bf16},
       // {i4, i4, i32, i32} - are supported configurations
       // by WMMA instruction, but not supported by triton
-      // TODO(gfx1170): enable {i4, i4, i32, i32} to expose
-      // v_wmma_i32_16x16x32_iu4 (WMMA v2) / v_wmma_i32_16x16x16_iu4 (v1).
-      // The WMMA intrinsic DB and integer operand lowering already support it;
-      // this needs i4 dot-operand support validated end-to-end plus a lit test
-      // before enabling.
       // clang-format on
   };
   if (version == 2 || version == 3) {
@@ -816,7 +798,6 @@ public:
                                  b, newAcc, dotOp.getInputPrecision(),
                                  dotOp.getMaxNumImpreciseAcc());
     }
-    copyDiscardableAttrs(dotOp, newDot);
 
     Value dotOutput =
         convertAndCastTensor(rewriter, newDot, oldRetType.getEncoding(),
@@ -898,17 +879,15 @@ public:
         scale = TransOp::create(rewriter, loc, scale, order);
       }
 
-      reshapeScale = broadcastScale(
-          rewriter, dotOp, dotOp->getParentOfType<ModuleOp>(), scale, kDim);
-
       auto newScaleType = resultType.clone(scale.getType().getElementType());
-      reshapeScale = mlir::triton::gpu::ConvertLayoutOp::create(
-          rewriter, loc, newScaleType, reshapeScale);
+      reshapeScale = broadcastScale(rewriter, dotOp, scale, kDim,
+                                    newScaleType.getEncoding());
     } else {
-      // Cast scale to bf16, broadcast it and convert the layout
+      // This is an exponent carrier; restore NaNs after the native upcast.
       FloatType bf16Type = rewriter.getBF16Type();
       reshapeScale = extendAndBroadcastScale(rewriter, dotOp, scale, bf16Type,
-                                             resultType.clone(bf16Type), opIdx);
+                                             resultType.clone(bf16Type), opIdx,
+                                             /*handleNan=*/false);
     }
 
     // Upcast with scale
@@ -928,6 +907,33 @@ public:
 private:
   const TargetFeatures &targetFeatures;
 };
+
+static triton::amdgpu::LocalLoadPackedTransposedOp
+createLocalLoadPackedTransposed(OpBuilder &builder, Location loc,
+                                TypedValue<RankedTensorType> value,
+                                DotOperandEncodingAttr dstEncoding,
+                                unsigned opIdx) {
+  auto srcType = value.getType();
+  SmallVector<int64_t> dstShape(srcType.getShape());
+  dstShape[opIdx] *= 2;
+  dstShape[1 - opIdx] /= 2;
+  auto dstType =
+      RankedTensorType::get(dstShape, srcType.getElementType(), dstEncoding);
+
+  SmallVector<unsigned> order = {opIdx, 1 - opIdx};
+  auto sharedMemorySpace =
+      triton::gpu::SharedMemorySpaceAttr::get(value.getContext());
+  auto tmpType = triton::gpu::MemDescType::get(
+      srcType.getShape(), srcType.getElementType(),
+      triton::gpu::SwizzledSharedEncodingAttr::get(
+          value.getContext(), dstEncoding, srcType.getShape(), order,
+          triton::gpu::getCGALayout(srcType.getEncoding()),
+          srcType.getElementType()),
+      sharedMemorySpace);
+  auto tmp = triton::gpu::LocalAllocOp::create(builder, loc, tmpType, value);
+  return triton::amdgpu::LocalLoadPackedTransposedOp::create(builder, loc,
+                                                             dstType, tmp);
+}
 
 class ScaledBlockedToScaledMFMAF8F6F4 final
     : public OpRewritePattern<triton::DotScaledOp> {
@@ -1045,36 +1051,9 @@ public:
 
       bool kPacked = opIdx == 0 ? dotOp.getLhsKPack() : dotOp.getRhsKPack();
       if (kPacked == false) {
-        // This is FP4 with M/N packing. Create local alloc + local load here
-        // so we have control of the shared layout
-        // A, M packed: tensor<16x64xi8> --> 32x32
-        // B, N packed: tensor<64x16xi8> --> 32x32
-        SmallVector<int64_t> newShape(vType.getShape());
-        newShape[opIdx == 0 ? 0 : 1] = newShape[opIdx == 0 ? 0 : 1] * 2;
-        newShape[opIdx == 0 ? 1 : 0] = newShape[opIdx == 0 ? 1 : 0] / 2;
-        auto newVType =
-            RankedTensorType::get(newShape, vType.getElementType(), newEnc);
         OpBuilder builder(dotOp);
-        auto srcEncoding = vType.getEncoding();
-        auto originalOrder = triton::gpu::getOrderForMemory(vType);
-        SmallVector<unsigned> newOrder = originalOrder;
-        if (opIdx == 1) {
-          newOrder = {1, 0};
-        } else {
-          newOrder = {0, 1};
-        }
-        auto sharedMemorySpace =
-            triton::gpu::SharedMemorySpaceAttr::get(vType.getContext());
-        auto tmpType = triton::gpu::MemDescType::get(
-            vType.getShape(), vType.getElementType(),
-            triton::gpu::SwizzledSharedEncodingAttr::get(
-                v.getContext(), newEnc, vType.getShape(), newOrder,
-                triton::gpu::getCGALayout(srcEncoding), vType.getElementType()),
-            sharedMemorySpace);
-        auto tmp = triton::gpu::LocalAllocOp::create(builder, dotOp.getLoc(),
-                                                     tmpType, v);
-        auto newConvert = triton::amdgpu::LocalLoadPackedTransposedOp::create(
-            builder, dotOp.getLoc(), newVType, tmp);
+        auto newConvert = createLocalLoadPackedTransposed(
+            builder, dotOp.getLoc(), v, newEnc, opIdx);
         if (opIdx == 0) {
           aShape = newConvert.getType().getShape();
           aEncLL *= newEnc.toLinearLayout(aShape);
@@ -1139,7 +1118,6 @@ public:
     auto newDot = triton::DotScaledOp::create(
         rewriter, dotOp.getLoc(), newRetType, a, b, newAcc, newAScale,
         newBScale, aElemType, bElemType, dotOp.getFastMath());
-    copyDiscardableAttrs(dotOp, newDot);
 
     rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
                                                       newDot);
@@ -1248,6 +1226,25 @@ public:
       auto parent = isFp4 ? wmmaPackedEnc : wmmaEnc;
       auto vType = v.getType();
       auto newEnc = DotOperandEncodingAttr::get(ctx, opIdx, parent, 16);
+      bool kPacked = opIdx == 0 ? dotOp.getLhsKPack() : dotOp.getRhsKPack();
+      if (isFp4 && !kPacked) {
+        auto newConvert = createLocalLoadPackedTransposed(
+            rewriter, dotOp.getLoc(), v, newEnc, opIdx);
+
+        if (opIdx == 0) {
+          aShape = newConvert.getType().getShape();
+          aShapePerCTA =
+              ttg::getShapePerCTA(aCgaLayout.getCTASplitNum(), aShape);
+          aEncLL *= newEnc.toLinearLayout(aShapePerCTA);
+        } else {
+          bShape = newConvert.getType().getShape();
+          bShapePerCTA =
+              ttg::getShapePerCTA(bCgaLayout.getCTASplitNum(), bShape);
+          bEncLL *= newEnc.toLinearLayout(bShapePerCTA);
+        }
+        return newConvert;
+      }
+
       auto newVType = RankedTensorType::get(vType.getShape(),
                                             vType.getElementType(), newEnc);
       if (opIdx == 0)
@@ -1281,10 +1278,10 @@ public:
       return {i8_ty, rewriter.getIntegerAttr(i8_ty, 0x7F)};
     };
 
-    auto convertScaleLayout = [&](TensorValue scale,
-                                  llvm::ArrayRef<int64_t> valShape,
-                                  LinearLayout dotLL, int idx,
-                                  ttg::CGAEncodingAttr cgaLayout) -> Value {
+    auto convertScaleLayout =
+        [&](TensorValue scale, llvm::ArrayRef<int64_t> valShape,
+            LinearLayout dotLL, int idx,
+            ttg::CGAEncodingAttr operandCgaLayout) -> Value {
       SmallVector<int64_t> shape;
       Type scaleType;
       // 0x7F is 1.0 in E8M0
@@ -1303,7 +1300,7 @@ public:
 
       LinearLayout newLL = ttg::chooseScaledWmmaScaleLayout(
           ctx, idx, shape, mDim, nDim, wmmaEnc.getIsTransposed(), scaleFactor,
-          ctaLayout, cgaLayout);
+          ctaLayout, operandCgaLayout);
       Attribute newScaleEncoding = ttg::LinearEncodingAttr::get(ctx, newLL);
       auto newScaleType =
           RankedTensorType::get(shape, scaleType, newScaleEncoding);
@@ -1327,47 +1324,22 @@ public:
     auto newAScale = convertScaleLayout(aScale, aShape, aEncLL,
                                         /*dotOperandIdx=*/0, aScaleCgaLayout);
 
-    auto bScaleCgaLayout = inferBScaleCgaLayout(ctx, cgaLayout);
+    auto bOperandCgaLayout =
+        ttg::inferDotOperandCGALayout(cgaLayout, /*opIdx=*/1);
     assert(!bScale || (ttg::getCGALayout(bScale.getType().getEncoding()) ==
-                       bScaleCgaLayout));
+                       ttg::inferDotScaleCGALayoutFromOperand(bOperandCgaLayout,
+                                                              /*opIdx=*/1)));
     auto newBScale = convertScaleLayout(bScale, bShape, bEncLL,
-                                        /*dotOperandIdx=*/1, bScaleCgaLayout);
+                                        /*dotOperandIdx=*/1, bOperandCgaLayout);
 
     auto newDot = triton::DotScaledOp::create(
         rewriter, dotOp.getLoc(), newRetType, a, b, newAcc, newAScale,
-        newBScale, aElemType, bElemType, dotOp.getFastMath(),
-        dotOp.getLhsKPack(), dotOp.getRhsKPack());
-    copyDiscardableAttrs(dotOp, newDot);
+        newBScale, aElemType, bElemType, dotOp.getFastMath());
 
     rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
                                                       newDot);
 
     return success();
-  }
-
-  // If Bscale were present, we could directly grab the CGA layout from it.
-  // Unfortunately, it is optional; on top of that, sometime we need to know
-  // its CGA layout even if it's not present.
-  //
-  // Note that split only take place along M and N dimension. For A and Ascale,
-  // their shapes are MxK and Mx(K/grp), respectively. Hence, A and A-scale can
-  // share the CGA layout. For B and Bscale, their shapes are KxN and Nx(K/grp),
-  // respectively. Since N shows up on different positions, we cannot "reuse"
-  // B's CGA layout for B-scale.
-  //
-  // We can grab N's split number from D's CGA layout, and construct Bscale's
-  // using that info.
-  //
-  static ttg::CGAEncodingAttr
-  inferBScaleCgaLayout(MLIRContext *ctx, ttg::CGAEncodingAttr dCgaLayout) {
-    auto resultSplit = dCgaLayout.getCTASplitNum();
-    unsigned nSplit = resultSplit[1];
-    unsigned numCtas = mlir::product(dCgaLayout.getCTAsPerCGA());
-
-    return ttg::CGAEncodingAttr::fromSplitParams(
-        ctx,
-        /*CTAsPerCGA=*/{nSplit, numCtas / nSplit},
-        /*CTASplitNum=*/{nSplit, 1}, /*CTAOrder*/ {0, 1});
   }
 };
 
@@ -1579,168 +1551,10 @@ public:
     auto newDot = tt::DotOp::create(
         rewriter, dotOp.getLoc(), newRetType, castedA, castedB, newAcc,
         dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
-    copyDiscardableAttrs(dotOp, newDot);
 
     Value dotOutput = convertAndCastTensor(rewriter, newDot, oldRetEncoding,
                                            oldRetType.getElementType());
     rewriter.replaceOp(dotOp, dotOutput);
-    return success();
-  }
-};
-
-// Non-WMMA/Non-MFMA fallback: rebalance the per-thread tile of an FMA (blocked) dot.
-//
-// This heuristic tries to find the blocked encoding such that the LDS reads
-// are minimized.
-// 
-// The idea is to compute the "perimeter" which is M_pt + N_pt (where M_pt
-// and N_pt are the number of elements per thread in the M and N dimensions
-// respectively), and find the minimum perimeter (which esentially minimizes
-// the LDS reads). Let aM/aN be the number of threads along M/N, so that
-// M_pt = M/aM and N_pt = N/aN. The search respects the constraints:
-// - aM and aN are powers of two with aM * aN == warpSize * numWarps (every
-//   thread is used)
-// - M_pt and N_pt must be divisible by the size per thread (the tile divides
-//   the output exactly)
-// - aM factors into threadsPerWarp_M * warpsPerCTA_M, and aN likewise, such
-//   that threadsPerWarp_M * threadsPerWarp_N == warpSize and
-//   warpsPerCTA_M * warpsPerCTA_N == numWarps
-class RebalanceBlockedFMA : public OpRewritePattern<tt::DotOp> {
-public:
-  using OpRewritePattern<tt::DotOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(tt::DotOp dotOp,
-                                PatternRewriter &rewriter) const override {
-    auto ctx = dotOp.getContext();
-    auto oldRetType = cast<RankedTensorType>(dotOp.getResult().getType());
-    auto blocked =
-        dyn_cast_or_null<ttg::BlockedEncodingAttr>(oldRetType.getEncoding());
-    if (!blocked)
-      return rewriter.notifyMatchFailure(
-          dotOp, "result not blocked (handled by MFMA/WMMA)");
-    if (oldRetType.getRank() != 2)
-      return rewriter.notifyMatchFailure(dotOp, "only rank-2 supported");
-
-    SmallVector<unsigned> sizePerThread =
-        llvm::to_vector(blocked.getSizePerThread());
-    SmallVector<unsigned> curTPW = llvm::to_vector(blocked.getThreadsPerWarp());
-    SmallVector<unsigned> curWPC = llvm::to_vector(blocked.getWarpsPerCTA());
-
-    int64_t M = oldRetType.getShape()[0];
-    int64_t N = oldRetType.getShape()[1];
-    unsigned warpSize = curTPW[0] * curTPW[1];
-    unsigned numWarps = curWPC[0] * curWPC[1];
-    unsigned T = warpSize * numWarps;
-
-    if (!llvm::isPowerOf2_32(warpSize) || !llvm::isPowerOf2_32(numWarps))
-      return rewriter.notifyMatchFailure(dotOp, "non-pow2 warp/lane counts");
-
-    // order[0] is the fastest-varying (contiguous) dimension; the whole layout
-    // decision is oriented around it so that lanes and per-thread runs land on
-    // the contiguous dimension for coalesced/vectorized LDS reads.
-    auto order = blocked.getOrder();
-    bool contiguousIsN = order[0] == 1;
-
-    // The actual layout decision.
-    // Pick threads-along-M (aM) and threads-along-N (aN=T/aM) that make the
-    // per-thread tile (M/aM x N/aN) as square as possible. Seed with the
-    // current split so we only switch to a strictly more balanced one.
-    // 
-    // Lambda to compute the imbalance metric; how imbalanced the per-thread tile is.
-    // The lower the imbalance, the better.
-    //
-    // The tie-break (the +1 term) only matters when |mpt - npt| is equal for
-    // two splits. We then prefer the per-thread tile to be larger along the
-    // contiguous dimension, since extending the per-thread run along the
-    // fastest-varying dim helps vectorization:
-    // - For order=[1,0] (N contiguous) we prefer mpt >= npt;
-    // - For order=[0,1] (M contiguous) we prefer npt >= mpt.
-    auto imbalance = [&](unsigned aM) -> long {
-      unsigned aN = T / aM;
-      long mpt = M / aM, npt = N / aN;
-      long tieBreak = contiguousIsN ? (npt > mpt ? 1 : 0) : (mpt > npt ? 1 : 0);
-      return std::abs(mpt - npt) * 2 + tieBreak;
-    };
-    unsigned bestAM = curTPW[0] * curWPC[0];
-    long bestImb = imbalance(bestAM);
-    for (unsigned aM = 1; aM <= T; aM <<= 1) {
-      unsigned aN = T / aM;
-      unsigned tileM = sizePerThread[0] * aM;
-      unsigned tileN = sizePerThread[1] * aN;
-      if (tileM == 0 || tileN == 0)
-        continue;
-      if (M % tileM != 0 || N % tileN != 0)
-        continue; // require exact tiling
-      long imb = imbalance(aM);
-      if (imb < bestImb) {
-        bestImb = imb;
-        bestAM = aM;
-      }
-    }
-
-    // We have found the aM/aN that minimizes the imbalance metric. Now split
-    // it into warpsPerCTA_M * threadsPerWarp_M, preferring warps on M. This
-    // maximizes the number of lanes on N which, being the contiguous (fastest)
-    // dimension per order=[1,0], improves read coalescing. Empirically this
-    // matches the best-performing layout for FMA-based dot operations.
-    unsigned aM = bestAM, aN = T / bestAM;
-
-    unsigned wpcM, wpcN, tpwM, tpwN;
-    if (contiguousIsN) {
-      // Lanes on N: maximize warps on M. The largest wpcM that divides both
-      // numWarps (so wpcN is whole) and aM (so tpwM is whole) is their gcd.
-      wpcM = std::gcd(numWarps, aM);
-      wpcN = numWarps / wpcM;
-      tpwM = aM / wpcM;
-      tpwN = warpSize / tpwM;
-    } else {
-      // Lanes on M: same idea, but maximize warps on N instead.
-      wpcN = std::gcd(numWarps, aN);
-      wpcM = numWarps / wpcN;
-      tpwN = aN / wpcN;
-      tpwM = warpSize / tpwN;
-    }
-    if (tpwM * tpwN != warpSize || wpcM * wpcN != numWarps ||
-        tpwM * wpcM != aM || tpwN * wpcN != aN)
-      return rewriter.notifyMatchFailure(dotOp, "factorization mismatch");
-
-    SmallVector<unsigned> newTPW{tpwM, tpwN};
-    SmallVector<unsigned> newWPC{wpcM, wpcN};
-    if (newTPW == curTPW && newWPC == curWPC)
-      return rewriter.notifyMatchFailure(dotOp, "already balanced");
-
-    // We have computed the threads per warp (newTPW) and warps per CTA (newWPC)
-    // that we want to use, now rewrite the dot op to use the new
-    // blocked encoding.
-    auto newBlocked = ttg::BlockedEncodingAttr::get(
-        ctx, sizePerThread, newTPW, newWPC, blocked.getOrder(),
-        blocked.getCGALayout());
-
-    Value a = dotOp.getA(), b = dotOp.getB(), c = dotOp.getC();
-    auto aTy = cast<RankedTensorType>(a.getType());
-    auto bTy = cast<RankedTensorType>(b.getType());
-    auto cTy = cast<RankedTensorType>(c.getType());
-    auto aEnc = cast<ttg::DotOperandEncodingAttr>(aTy.getEncoding());
-    auto bEnc = cast<ttg::DotOperandEncodingAttr>(bTy.getEncoding());
-    auto newAEnc = ttg::DotOperandEncodingAttr::get(ctx, aEnc.getOpIdx(),
-                                                    newBlocked, aEnc.getKWidth());
-    auto newBEnc = ttg::DotOperandEncodingAttr::get(ctx, bEnc.getOpIdx(),
-                                                    newBlocked, bEnc.getKWidth());
-
-    Value newA = convertAndCastTensor(rewriter, a, newAEnc, aTy.getElementType());
-    Value newB = convertAndCastTensor(rewriter, b, newBEnc, bTy.getElementType());
-    Value newC =
-        convertAndCastTensor(rewriter, c, newBlocked, cTy.getElementType());
-
-    auto newRetType =
-        RankedTensorType::get(oldRetType.getShape(),
-                              oldRetType.getElementType(), newBlocked);
-    auto newDot = tt::DotOp::create(
-        rewriter, dotOp.getLoc(), newRetType, newA, newB, newC,
-        dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
-    Value res = convertAndCastTensor(rewriter, newDot, oldRetType.getEncoding(),
-                                     oldRetType.getElementType());
-    rewriter.replaceOp(dotOp, res);
     return success();
   }
 };
@@ -1806,16 +1620,6 @@ public:
       return true;
     }
 
-    // Try Fp8/Bf8 x Fp8/Bf8 -> Fp32 v_dot4. Each of the four operand pairings
-    // has its own instruction, so A and B need not have the same type.
-    // if k % 4 != 0: can not use the packed 4-element V_DOT instruction
-    auto isOcpFp8 = [](Type t) { return t.isF8E4M3FN() || t.isF8E5M2(); };
-    if (targetFeatures.supportsFp8Dot4Fma() && isOcpFp8(dotTypes.a) &&
-        isOcpFp8(dotTypes.b) && dotTypes.c.isF32() && dotTypes.d.isF32() &&
-        k % 4 == 0) {
-      return true;
-    }
-
     // TODO: enable this condition, when fp32 -> fp16 cast works correctly
     // Consider this case as non legal, despite this case is covered by fp16
     // FMA. Because v_dot expected to give both better performance and
@@ -1826,9 +1630,9 @@ public:
     }
 
     // Try I8 x I8 -> I32 v_dot
-    // if k % 4 != 0: can not use integer V_DOT instruction
+    // Partial K groups are zero-padded in the FMA lowering.
     if (dotTypes.a.isInteger(8) && dotTypes.b.isInteger(8) &&
-        dotTypes.c.isInteger(32) && dotTypes.d.isInteger(32) && k % 4 == 0) {
+        dotTypes.c.isInteger(32) && dotTypes.d.isInteger(32)) {
       return true;
     }
 
@@ -1856,7 +1660,6 @@ public:
       auto newDot = DotOp::create(
           rewriter, dotOp.getLoc(), newC.getType(), dotOp.getA(), dotOp.getB(),
           newC, dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc());
-      copyDiscardableAttrs(dotOp, newDot);
       auto newD = castToElTy(rewriter, newDot.getResult(), f16_ty);
       rewriter.replaceOp(dotOp, newD);
       return success();
@@ -1899,7 +1702,6 @@ public:
     auto newDot = DotOp::create(rewriter, dotOp.getLoc(), newC.getType(), newA,
                                 newB, newC, dotOp.getInputPrecision(),
                                 dotOp.getMaxNumImpreciseAcc());
-    copyDiscardableAttrs(dotOp, newDot);
     auto newD = castToElTy(rewriter, newDot.getResult(), dotTypes.d);
 
     rewriter.replaceOp(dotOp, newD);
@@ -1976,14 +1778,13 @@ struct TritonAMDGPUAccelerateMatmulPass
                                         /*benefit=*/2);
       break;
     case ISAFamily::RDNA3:
-    case ISAFamily::GFX1170:
+    case ISAFamily::RDNA4m:
     case ISAFamily::RDNA4:
-      ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
-                                                  /*benefit=*/3);
+      mfmaPatterns.add<::DecomposeAMDScaledBlocked>(context, targetFeatures,
+                                                    /*benefit=*/3);
       mfmaPatterns.add<::BlockedToWMMA>(context, wmmaVersion,
                                         matrixInstructionSize,
                                         /*benefit=*/2);
-      mfmaPatterns.add<::RebalanceBlockedFMA>(context, /*benefit=*/1);
       break;
     default:
       break;

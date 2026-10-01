@@ -74,7 +74,6 @@ class TritonGPUReorderInstructionsPass
     : public impl::TritonGPUReorderInstructionsBase<
           TritonGPUReorderInstructionsPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TritonGPUReorderInstructionsPass)
   TritonGPUReorderInstructionsPass() = default;
 
   Operation *getFirstUse(Operation *op) {

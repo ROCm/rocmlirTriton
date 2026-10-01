@@ -1,24 +1,24 @@
-import sys
 import importlib.util
+import sys
+
+import pytest
 import torch
 import triton
 import triton.language as tl
-import pytest
-from triton.tools.tensor_descriptor import TensorDescriptor
-from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
-
-from triton.tools.triton_to_gluon_translator.translator import convert_triton_to_gluon
-from triton.tools.triton_to_gluon_translator.target import TranslatorTarget
 from triton._internal_testing import (
     is_blackwell,
-    is_hopper_or_newer,
     is_cuda,
+    is_hip_cdna3_or_newer,
     is_hip_cdna4,
     is_hip_gfx1250,
-    is_hip_cdna3_or_newer,
     is_hip_rdna,
+    is_hopper_or_newer,
 )
 from triton.language.target_info import current_target
+from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
+from triton.tools.tensor_descriptor import TensorDescriptor
+from triton.tools.triton_to_gluon_translator.target import TranslatorTarget
+from triton.tools.triton_to_gluon_translator.translator import convert_triton_to_gluon
 
 pytestmark = pytest.mark.skipif(
     is_hip_rdna(),
@@ -97,6 +97,17 @@ def matmul_tile_kernel(a_ptr, b_ptr, c_ptr, BLOCK_M: tl.constexpr, BLOCK_N: tl.c
     impl_matmul_tile_kernel(a_ptr, b_ptr, c_ptr, BLOCK_M, BLOCK_N, BLOCK_K)
 
 
+@pytest.mark.parametrize("target", [TranslatorTarget.SM120, TranslatorTarget.SM121])
+def test_sm12x_target_translation(target):
+    assert target.is_nvidia
+    assert target.helpers_module.endswith(".nvidia_helpers")
+    converted = convert_triton_to_gluon([matmul_tile_kernel], target=target)
+    assert "import triton.tools.triton_to_gluon_translator.nvidia_helpers as helpers" in converted
+    assert "helpers.tl_dot" in converted
+    converted_scaled = convert_triton_to_gluon([dot_scaled_tile_kernel], target=target)
+    assert "helpers.tl_dot_scaled" in converted_scaled
+
+
 def test_triton_to_gluon_dot_minimal(tmp_path):
     if not (is_hopper_or_newer() or is_hip_cdna3_or_newer() or is_hip_gfx1250()):
         pytest.skip("Requires Hopper, Blackwell, CDNA3+, or gfx1250")
@@ -131,11 +142,12 @@ def dot_scaled_tile_kernel(
     LHS_K_PACK: tl.constexpr,
     RHS_K_PACK: tl.constexpr,
     FAST_MATH: tl.constexpr,
+    SCALE_FACTOR: tl.constexpr = 32,
 ):
     offs_m = tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, BLOCK_K)
-    offs_scale_k = tl.arange(0, BLOCK_K // 32)
+    offs_scale_k = tl.arange(0, BLOCK_K // SCALE_FACTOR)
 
     if A_FORMAT == "e2m1":
         if LHS_K_PACK:
@@ -158,12 +170,12 @@ def dot_scaled_tile_kernel(
         b = tl.load(b_ptr + offs_k[:, None] * BLOCK_N + offs_n[None, :])
 
     if HAS_A_SCALE:
-        a_scale = tl.load(a_scale_ptr + offs_m[:, None] * (BLOCK_K // 32) + offs_scale_k[None, :])
+        a_scale = tl.load(a_scale_ptr + offs_m[:, None] * (BLOCK_K // SCALE_FACTOR) + offs_scale_k[None, :])
     else:
         a_scale = None
 
     if HAS_B_SCALE:
-        b_scale = tl.load(b_scale_ptr + offs_n[:, None] * (BLOCK_K // 32) + offs_scale_k[None, :])
+        b_scale = tl.load(b_scale_ptr + offs_n[:, None] * (BLOCK_K // SCALE_FACTOR) + offs_scale_k[None, :])
     else:
         b_scale = None
 
@@ -266,6 +278,49 @@ def test_triton_to_gluon_dot_scaled(
     kernel[grid](a, b, a_scale, b_scale, c, *kernel_args, num_warps=NUM_WARPS)
     dot_scaled_tile_kernel[grid](a, b, a_scale, b_scale, ref, *kernel_args, num_warps=NUM_WARPS)
     torch.testing.assert_close(c, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("rhs_scale", [False, True])
+@pytest.mark.parametrize("normal_type", ["bf16", "fp16"])
+@pytest.mark.parametrize("scale_factor", [32] if is_cuda() else [16, 32])
+@pytest.mark.parametrize("scale_storage", ["uint8", "int8", "float"])
+def test_triton_to_gluon_dot_scaled_minimum_scale(rhs_scale, normal_type, scale_factor, scale_storage, tmp_path):
+    if not (is_hopper_or_newer() or is_hip_cdna4() or is_hip_gfx1250()):
+        pytest.skip("Requires Hopper, Blackwell, CDNA4, or gfx1250")
+    float_scale = scale_storage == "float"
+    if float_scale and not is_cuda():
+        pytest.skip("Floating-point scale controls require CUDA")
+
+    kernel = convert_kernel(dot_scaled_tile_kernel, "dot_scaled_tile_kernel", tmp_path)
+    dtype = torch.bfloat16 if normal_type == "bf16" else torch.float16
+    x = torch.ones((128, 128), dtype=dtype, device="cuda")
+    w = torch.full((128, 128), 256.0, dtype=torch.float8_e4m3fn, device="cuda")
+    scale_dtype = dtype if float_scale else torch.uint8
+    scale_values = [0, 0, 0, 0] if float_scale else [0, 1, 127, 128]
+    scales = torch.tensor(scale_values, dtype=scale_dtype, device="cuda")
+    scales = scales.repeat_interleave(32)[:, None].expand(128, 128 // scale_factor).contiguous()
+    if scale_storage == "int8":
+        scales = scales.view(torch.int8)
+    out = torch.empty((128, 128), dtype=torch.float32, device="cuda")
+    ref = torch.empty_like(out)
+
+    a, b = (x, w) if rhs_scale else (w, x)
+    a_scale, b_scale = (None, scales) if rhs_scale else (scales, None)
+    a_format, b_format = (normal_type, "e4m3") if rhs_scale else ("e4m3", normal_type)
+    kernel_args = (128, 128, 128, not rhs_scale, rhs_scale, a_format, b_format, True, True, True)
+    kernel[(1, )](a, b, a_scale, b_scale, out, *kernel_args, SCALE_FACTOR=scale_factor, num_warps=4)
+    dot_scaled_tile_kernel[(1, )](a, b, a_scale, b_scale, ref, *kernel_args, SCALE_FACTOR=scale_factor, num_warps=4)
+
+    if float_scale:
+        expected_values = (0.0, ) * 4
+    elif normal_type == "bf16":
+        expected_values = (2.0**-112, 2.0**-111, 32768.0, 65536.0)
+    else:
+        expected_values = (0.0, 0.0, 32768.0, 65536.0)
+    expected = torch.tensor(expected_values, dtype=torch.float32, device="cuda").repeat_interleave(32)
+    expected = (expected[None, :] if rhs_scale else expected[:, None]).expand(128, 128)
+    torch.testing.assert_close(ref, expected, atol=0, rtol=0)
+    torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
 
 @triton.jit

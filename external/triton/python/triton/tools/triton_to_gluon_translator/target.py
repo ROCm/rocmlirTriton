@@ -18,6 +18,9 @@ class TranslatorTarget(str, Enum):
     SM90 = "sm90"
     SM100 = "sm100"
     SM103 = "sm103"
+    SM107 = "sm107"
+    SM120 = "sm120"
+    SM121 = "sm121"
     # AMD targets currently exercised by the translator test suite:
     GFX90A = "gfx90a"
     GFX1250 = "gfx1250"
@@ -50,11 +53,14 @@ class TranslatorTarget(str, Enum):
             TranslatorTarget.SM90,
             TranslatorTarget.SM100,
             TranslatorTarget.SM103,
+            TranslatorTarget.SM107,
+            TranslatorTarget.SM120,
+            TranslatorTarget.SM121,
         )
 
     @property
     def tensor_descriptor_import(self) -> str:
-        module = "amd.gfx1250.tdm" if self.is_amd else "nvidia.hopper.tma"
+        module = "amd.cdna5.tdm" if self.is_amd else "nvidia.hopper.tma"
         return f"from triton.experimental.gluon.language.{module} import tensor_descriptor"
 
     @property
@@ -65,11 +71,21 @@ class TranslatorTarget(str, Enum):
             return f"{base}.amd_helpers"
 
         if self.is_nvidia:
-            if self in (TranslatorTarget.SM100, TranslatorTarget.SM103):
+            if self in (
+                    TranslatorTarget.SM100,
+                    TranslatorTarget.SM103,
+                    TranslatorTarget.SM107,
+            ):
                 return f"{base}.blackwell_helpers"
             if self == TranslatorTarget.SM90:
                 return f"{base}.hopper_helpers"
-            if self in (TranslatorTarget.SM80, TranslatorTarget.SM86, TranslatorTarget.SM89):
+            if self in (
+                    TranslatorTarget.SM80,
+                    TranslatorTarget.SM86,
+                    TranslatorTarget.SM89,
+                    TranslatorTarget.SM120,
+                    TranslatorTarget.SM121,
+            ):
                 return f"{base}.nvidia_helpers"
 
         return f"{base}.common_helpers"

@@ -47,8 +47,8 @@ static Block::iterator findEarlyInsertionPoint(Block *block, tt::LoadOp load) {
     }
 
     // Break at atomic, barrier and loop ops.
-    if (isa<tt::AtomicRMWOp, tt::AtomicCASOp, gpu::BarrierOp, ttg::BarrierOp,
-            scf::ForOp, scf::WhileOp>(&op)) {
+    if (isa<tt::AtomicOpInterface, tt::AtomicPollOp, gpu::BarrierOp,
+            ttg::BarrierOp, scf::ForOp, scf::WhileOp>(&op)) {
       insertPoint = Block::iterator(&op);
     }
   }
@@ -91,8 +91,6 @@ static void moveUpLoad(tt::LoadOp load) {
 struct TritonAMDGPUMoveUpPrologueLoadsPass
     : public impl::TritonAMDGPUMoveUpPrologueLoadsBase<
           TritonAMDGPUMoveUpPrologueLoadsPass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonAMDGPUMoveUpPrologueLoadsPass)
   void runOnOperation() override {
     // Collect load ops with "amd.pipeliner_part" attribute.
     SmallVector<tt::LoadOp> prologueLoads;

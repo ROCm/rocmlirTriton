@@ -42,8 +42,6 @@ static void hoistCvtDotOpOutOfLoop(ttg::ConvertLayoutOp cvtOp) {
 struct TritonAMDGPUHoistLayoutConversionsPass
     : public impl::TritonAMDGPUHoistLayoutConversionsBase<
           TritonAMDGPUHoistLayoutConversionsPass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonAMDGPUHoistLayoutConversionsPass)
 
   void runOnOperation() override {
     tt::FuncOp funcOp = getOperation();

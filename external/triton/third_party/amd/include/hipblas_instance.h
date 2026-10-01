@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 // this gets translated to rocblastlt_compute_f32_fast_f8 internally by
 // hipblasLt
@@ -46,11 +47,7 @@ class HipblasLtInstance {
       const hipblasLtMatrixLayout_t, void *, const hipblasLtMatrixLayout_t,
       const hipblasLtMatmulAlgo_t *, void *, size_t, hipStream_t);
 
-#ifdef _WIN32
-  static constexpr const char *name = "libhipblaslt.dll";
-#else
-  static constexpr const char *name = "libhipblaslt.so";
-#endif
+  std::string libraryPath;
 
   hipblasLtCreate_t hipblasLtCreate;
   hipblasLtDestroy_t hipblasLtDestroy;
@@ -76,14 +73,15 @@ class HipblasLtInstance {
   void loadHipBlasDylib() {
     if (dylibHandle == nullptr) {
       // First reuse the existing handle
-      dylibHandle = dlopen(name, RTLD_NOLOAD);
+      dylibHandle =
+          dlopen(libraryPath.c_str(), RTLD_NOLOAD | RTLD_LOCAL | RTLD_LAZY);
     }
     if (dylibHandle == nullptr) {
       // If not found, try to load it
-      dylibHandle = dlopen(name, RTLD_LOCAL | RTLD_LAZY);
+      dylibHandle = dlopen(libraryPath.c_str(), RTLD_LOCAL | RTLD_LAZY);
     }
     if (dylibHandle == nullptr) {
-      throw std::runtime_error("Could not find `" + std::string(name) +
+      throw std::runtime_error("Could not find `" + libraryPath +
                                "`. Make sure it is in your "
 #ifdef _WIN32
                                "PATH."
@@ -121,8 +119,7 @@ class HipblasLtInstance {
 
     const char *dlsym_error = dlerror();
     if (dlsym_error) {
-      throw std::runtime_error("Could not load symbol from `" +
-                               std::string(name) +
+      throw std::runtime_error("Could not load symbol from `" + libraryPath +
                                "`: " + std::string(dlsym_error));
     }
   }
@@ -270,8 +267,10 @@ class HipblasLtInstance {
   }
 
 public:
-  HipblasLtInstance(uint64_t workspace, size_t workspaceSize)
-      : workspace((void *)workspace), workspaceSize(workspaceSize) {
+  HipblasLtInstance(uint64_t workspace, size_t workspaceSize,
+                    std::string libraryPath = "libhipblaslt.so")
+      : libraryPath(std::move(libraryPath)), workspace((void *)workspace),
+        workspaceSize(workspaceSize) {
     loadHipBlasDylib();
     successOrExit(hipblasLtCreate(&ltHandle));
     successOrExit(hipblasLtMatmulPreferenceCreate(&preference));

@@ -22,14 +22,9 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
 
   DotIntrinsic chooseIntrinsic(DotOp op) {
     auto aOpTy = cast<RankedTensorType>(op.getA().getType());
-    auto bOpTy = cast<RankedTensorType>(op.getB().getType());
     auto aElemTy = aOpTy.getElementType();
-    auto bElemTy = bOpTy.getElementType();
-    // The fp8 dot4 forms are the only ones that take differing operand types.
-    assert(((aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2()) ||
-            (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN()) ||
-            aElemTy == bElemTy) &&
-           "expected matching A and B element types");
+    auto bElemTy = aOpTy.getElementType();
+    assert(aElemTy == bElemTy);
     auto dOpTy = cast<RankedTensorType>(op.getD().getType());
     auto dElemTy = dOpTy.getElementType();
     DotIntrinsic chosenOp;
@@ -48,34 +43,6 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
       chosenOp.outElemTy = i32_ty;
       chosenOp.intrinsicName = "llvm.amdgcn.sdot4";
       chosenOp.additionalArgs = {b.false_val()};
-      return chosenOp;
-    }
-    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
-      chosenOp.vectorSize = 4;
-      chosenOp.outElemTy = f32_ty;
-      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.fp8";
-      chosenOp.additionalArgs = {};
-      return chosenOp;
-    }
-    if (aElemTy.isF8E5M2() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
-      chosenOp.vectorSize = 4;
-      chosenOp.outElemTy = f32_ty;
-      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.bf8";
-      chosenOp.additionalArgs = {};
-      return chosenOp;
-    }
-    if (aElemTy.isF8E4M3FN() && bElemTy.isF8E5M2() && dElemTy.isF32()) {
-      chosenOp.vectorSize = 4;
-      chosenOp.outElemTy = f32_ty;
-      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.fp8.bf8";
-      chosenOp.additionalArgs = {};
-      return chosenOp;
-    }
-    if (aElemTy.isF8E5M2() && bElemTy.isF8E4M3FN() && dElemTy.isF32()) {
-      chosenOp.vectorSize = 4;
-      chosenOp.outElemTy = f32_ty;
-      chosenOp.intrinsicName = "llvm.amdgcn.dot4.f32.bf8.fp8";
-      chosenOp.additionalArgs = {};
       return chosenOp;
     }
     // choose one of FMA intrinsics
@@ -103,12 +70,19 @@ class AMDFMAVectorMultiplier : public FMAVectorMultiplier {
     auto vecTy = vec_ty(elemTy, vectorSize);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value vec = b.undef(vecTy);
+    Value zero = LLVM::ConstantOp::create(rewriter, loc, elemTy,
+                                          rewriter.getZeroAttr(elemTy));
     for (int elem = 0; elem < vectorSize; ++elem) {
       int elemPos = firstElemPos + elem;
-      vec =
-          b.insert_element(vecTy, vec, scalarValues[elemPos], b.i32_val(elem));
+      Value scalar;
+      if (elemPos < static_cast<int>(scalarValues.size())) {
+        scalar = scalarValues[elemPos];
+      } else {
+        scalar = zero;
+      }
+      vec = b.insert_element(vecTy, vec, scalar, b.i32_val(elem));
     }
-    if (elemTy.isInteger(8) || elemTy.isF8E4M3FN() || elemTy.isF8E5M2()) {
+    if (elemTy.isInteger(8)) {
       assert(vectorSize == 4);
       vec = b.bitcast(vec, i32_ty);
     }

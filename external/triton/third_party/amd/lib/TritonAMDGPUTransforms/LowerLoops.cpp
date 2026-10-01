@@ -8,6 +8,7 @@
 #include "triton/Dialect/TritonGPU/IR/CGAEncodingAttr.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/Sys/GetEnv.h"
 #include "llvm/Support/Debug.h"
 #include <variant>
 
@@ -138,8 +139,8 @@ AsyncCopyChainOps createAsyncCopy(tt::LoadOp loadOp, Value alloc,
 
   auto copyOp = ttg::AsyncCopyGlobalToLocalOp::create(
       builder, loc, loadOp.getPtr(), viewLoad, loadOp.getMask(),
-      loadOp.getOther(), loadOp.getCache(), loadOp.getEvict(),
-      loadOp.getIsVolatile(), contiguity);
+      loadOp.getOther(), loadOp.getCachePolicyAttr(), loadOp.getIsVolatile(),
+      contiguity);
   auto commitOp =
       ttg::AsyncCommitGroupOp::create(builder, loc, copyOp->getResult(0));
   ttg::AsyncWaitOp waitOp =
@@ -182,68 +183,6 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
   return {newLoadOp, viewLoad, storeOp, maybeLocalLoad};
 }
 
-// Shared layout for an f32 FMA dot operand, which composePaddedLayout does not
-// cover and upstream leaves unswizzled. Transposing a K-contiguous operand into
-// an operand-major buffer can make lanes along the strided dimension revisit
-// the same LDS banks. Pick the smallest XOR swizzle that separates them.
-static ttg::SharedEncodingTrait
-composeSwizzledLayoutForFMA(ttg::TensorOrMemDesc srcTy,
-                            ArrayRef<unsigned> order, ttg::CGAEncodingAttr cga,
-                            unsigned bitWidth,
-                            const tt::AMD::TargetInfo &targetInfo) {
-  if (!srcTy.getElementType().isF32()) {
-    LDBG("No FMA LDS swizzle: only f32 operands are supported, got "
-         << srcTy.getElementType());
-    return {};
-  }
-  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
-  if (!blocked || order.size() != 2) {
-    LDBG("No FMA LDS swizzle: need a 2D blocked source layout, got "
-         << srcTy.getEncoding() << " with rank " << order.size());
-    return {};
-  }
-  unsigned contig = order[0];
-  unsigned strided = order[1];
-  // Cap the phases by the per-CTA extents: the buffer is per CTA, so phases
-  // counted against the full shape would alias once toLinearLayout wraps them
-  // modulo the local column count.
-  SmallVector<int64_t> shape =
-      ttg::getShapePerCTA(cga.getCTASplitNum(), srcTy.getShape());
-  // The swizzle displaces a column by vec * phase, so vec is both the run that
-  // stays contiguous through it and the step between phases. It has to cover
-  // the widest LDS load/store (128 bits), or a 128-bit access gets reordered
-  // internally and split, and the columns one warp spans, or a phase lands back
-  // inside the span it was meant to step over and the lanes still share banks.
-  int64_t warpSpan = static_cast<int64_t>(blocked.getThreadsPerWarp()[contig]) *
-                     blocked.getSizePerThread()[contig];
-  int64_t vec =
-      std::max<int64_t>(warpSpan, std::max<int64_t>(1, 128 / bitWidth));
-  // A row narrower than one complete bank row naturally starts at a different
-  // bank. Keep those rows in the same phase and only swizzle when the row
-  // stride wraps, while also keeping each lane's rows in the same phase.
-  constexpr int64_t bankBitWidth = 32;
-  int64_t elemsPerBankRow =
-      static_cast<int64_t>(targetInfo.getSharedMemoryBanks()) * bankBitWidth /
-      bitWidth;
-  int64_t rowsPerBankRow =
-      std::max<int64_t>(1, elemsPerBankRow / shape[contig]);
-  int64_t perPhase =
-      std::max<int64_t>(blocked.getSizePerThread()[strided], rowsPerBankRow);
-  int64_t maxPhase =
-      std::min<int64_t>({blocked.getThreadsPerWarp()[strided],
-                         shape[contig] / vec, shape[strided] / perPhase});
-  if (maxPhase <= 1) {
-    LDBG("No FMA LDS swizzle: no two lanes share a bank, or the tile is too "
-         "small to step over (vec="
-         << vec << " perPhase=" << perPhase << ")");
-    return {};
-  }
-  LDBG("FMA LDS swizzle: vec=" << vec << " perPhase=" << perPhase
-                               << " maxPhase=" << maxPhase);
-  return ttg::SwizzledSharedEncodingAttr::get(srcTy.getContext(), vec, perPhase,
-                                              maxPhase, order, cga);
-}
-
 // Adapted from
 // lib/Dialect/TritonGPU/Transforms/Utility.cpp::getSharedEncIfAllUsersAreDotEnc
 // to support AMDMfmaEncodingAttr.
@@ -259,13 +198,6 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
   assert(loadOp);
   Value loadedValue = loadOp->getResult(0);
   llvm::SmallVector<ttg::SharedEncodingTrait> sharedEncs;
-  // A user that already carries a shared encoding (e.g. a local_alloc feeding
-  // memdesc_trans) pins the layout, so the FMA swizzle below must stay off
-  bool pinnedByMemDescUser =
-      llvm::any_of(loadedValue.getUsers(), [](Operation *u) {
-        return u->getNumResults() == 1 &&
-               isa<ttg::MemDescType>(u->getResult(0).getType());
-      });
   for (Operation *user : loadedValue.getUsers()) {
     LDBG(" getSharedEncIfAllUsersAreDotEnc current user: " << *user);
     if (user->getNumResults() != 1)
@@ -343,24 +275,6 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
 
       auto userResEnc = cast<ttg::TensorOrMemDesc>(userResType).getEncoding();
       if (auto dotOpEnc = dyn_cast<ttg::DotOperandEncodingAttr>(userResEnc)) {
-        // FMA LDS layout flip (read-side coalescing).
-        // sharedOrder is otherwise inherited from the global-load contiguity.
-        // When an FMA dot operand arrives K-contiguous in global memory (e.g.
-        // A or B is transposed), the dot reads from LDS strided, serializing
-        // the loads. Re-orient the shared buffer to operand-major so those
-        // reads are coalesced.
-        if (rank == 2 && isa<ttg::BlockedEncodingAttr>(dotOpEnc.getParent())) {
-          SmallVector<unsigned> operandMajorOrder = ttg::getOrderForDotOperand(
-              dotOpEnc.getOpIdx(), /*rank=*/2, /*kContig=*/false);
-          if (sharedOrder != operandMajorOrder) {
-            LDBG("FMA LDS layout flip: sharedOrder ["
-                 << sharedOrder[0] << "," << sharedOrder[1]
-                 << "] -> operand-major [" << operandMajorOrder[0] << ","
-                 << operandMajorOrder[1]
-                 << "] for opIdx=" << dotOpEnc.getOpIdx());
-            sharedOrder = std::move(operandMajorOrder);
-          }
-        }
         // Determine if we can use padded layouts and fallback to swizzled
         // layouts if not
         bool canUseAsyncCopy = false;
@@ -373,13 +287,6 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
         tempAttr = composePaddedLayout(targetFeatures, dotOpEnc.getOpIdx(),
                                        dotOpEnc.getKWidth(), srcTy, sharedOrder,
                                        dotOpEnc, canUseAsyncCopy);
-        // SwizzledSharedEncodingAttr::get dispatches on the dot's parent and
-        // only computes AMD swizzles for MFMA and WMMA. A blocked (FMA) parent
-        // falls through unswizzled, so compute one here.
-        if (!tempAttr && !pinnedByMemDescUser &&
-            isa<ttg::BlockedEncodingAttr>(dotOpEnc.getParent()))
-          tempAttr = composeSwizzledLayoutForFMA(srcTy, sharedOrder, cgaLayout,
-                                                 bitWidth, targetInfo);
         if (!tempAttr) {
           tempAttr = ttg::SwizzledSharedEncodingAttr::get(
               loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,
@@ -468,110 +375,6 @@ bool hasEnoughCTABytesForDirectToLds(tt::LoadOp loadOp,
   int64_t ctaTileBits = mlir::product(ttg::getShapePerCTA(srcTy)) *
                         srcTy.getElementTypeBitWidth();
   return ctaTileBits >= 32 * targetInfo.getWarpSize();
-}
-
-// Return whether the shared-memory swizzle maps every register and lane of
-// srcTy to a source lane within the same warp.
-static bool swizzlesInsideWarp(RankedTensorType srcTy,
-                               ttg::SwizzledSharedEncodingAttr enc,
-                               unsigned loadVec,
-                               const triton::AMD::TargetInfo &targetInfo) {
-  // maxPhase == 1 means no swizzling, so `requiresSrcPtrSwizzling` is false in
-  // the lowering and there is no lane shuffle.
-  if (!enc || enc.getMaxPhase() == 1)
-    return true;
-
-  MLIRContext *ctx = srcTy.getContext();
-  auto shape = srcTy.getShape();
-
-  // Compare against an otherwise identical unswizzled layout to isolate the
-  // lane displacement introduced by the candidate swizzle.
-  auto flatEnc = ttg::SwizzledSharedEncodingAttr::get(
-      ctx, enc.getVec(), /*perPhase=*/1, /*maxPhase=*/1, enc.getOrder(),
-      enc.getCGALayout());
-
-  auto regLayout = triton::gpu::toLinearLayout(srcTy);
-  auto sharedSwizz = triton::gpu::toLinearLayout(shape, enc);
-  auto sharedFlat = triton::gpu::toLinearLayout(shape, flatEnc);
-
-  auto regToSharedSwizzled = regLayout.invertAndCompose(sharedSwizz);
-  auto regToSharedFlat = regLayout.invertAndCompose(sharedFlat);
-
-  auto kRegister = StringAttr::get(ctx, "register");
-  auto kLane = StringAttr::get(ctx, "lane");
-  auto kWarp = StringAttr::get(ctx, "warp");
-  auto kBlock = StringAttr::get(ctx, "block");
-
-  // Mirror emitSwizzledLaneOffsets, which divides the swizzled-vs-flat offset
-  // delta by the load's vector to turn it into a lane offset. Cap loadVec the
-  // way CoalesceAsyncCopy does, by the register-to-shared run and by the widths
-  // the target can write to LDS.
-  int64_t vec = triton::AMD::fitToValidDirectToLdsVecSize(
-      std::min<unsigned>(loadVec, regToSharedSwizzled.getNumConsecutiveInOut()),
-      srcTy.getElementTypeBitWidth(), targetInfo);
-  // No supported width means the load cannot go direct-to-LDS at all, so the
-  // shuffle this guards against is never emitted.
-  if (vec == 0)
-    return true;
-  // Enumerate lanes over the layout's own lane dimension: apply() silently
-  // ignores index bits above the in-dim size, so an out-of-range lane would
-  // alias onto a smaller one and yield a meaningless offset.
-  int64_t warpSize = regToSharedSwizzled.getInDimSize(kLane);
-  int64_t numRegs = regToSharedSwizzled.getInDimSize(kRegister);
-
-  for (int32_t regId = 0; regId < numRegs; regId += vec) {
-    for (int64_t lane = 0; lane < warpSize; ++lane) {
-      int32_t swizzledOff = regToSharedSwizzled
-                                .apply({{kRegister, regId},
-                                        {kLane, static_cast<int32_t>(lane)},
-                                        {kWarp, 0},
-                                        {kBlock, 0}})[0]
-                                .second;
-      int32_t flatOff = regToSharedFlat
-                            .apply({{kRegister, regId},
-                                    {kLane, static_cast<int32_t>(lane)},
-                                    {kWarp, 0},
-                                    {kBlock, 0}})[0]
-                            .second;
-      int64_t shuffledLane = lane + (swizzledOff - flatOff) / vec;
-      if (shuffledLane < 0 || shuffledLane >= warpSize)
-        return false;
-    }
-  }
-  return true;
-}
-
-// If a swizzled shared encoding would make the GFX9 direct-to-LDS lane shuffle
-// leave the warp, shrink its maxPhase until the shuffle is valid. Halving
-// maxPhase monotonically reduces the swizzle reach, and maxPhase == 1 always
-// passes, so the search terminates on the largest safe value.
-static ttg::SharedEncodingTrait
-clampSwizzleForDirectToLds(RankedTensorType srcTy, ttg::SharedEncodingTrait enc,
-                           unsigned loadVec,
-                           const triton::AMD::TargetInfo &targetInfo) {
-  auto swizz = dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(enc);
-  if (!swizz)
-    return enc;
-
-  for (unsigned maxPhase = swizz.getMaxPhase(); maxPhase > 1; maxPhase /= 2) {
-    auto candidate =
-        maxPhase == swizz.getMaxPhase()
-            ? swizz
-            : ttg::SwizzledSharedEncodingAttr::get(
-                  swizz.getContext(), swizz.getVec(), swizz.getPerPhase(),
-                  maxPhase, swizz.getOrder(), swizz.getCGALayout());
-    if (swizzlesInsideWarp(srcTy, candidate, loadVec, targetInfo)) {
-      if (candidate != swizz)
-        LDBG("Clamped direct-to-LDS swizzle maxPhase "
-             << swizz.getMaxPhase() << " -> " << maxPhase
-             << " to keep the lane shuffle inside the warp");
-      return candidate;
-    }
-  }
-  // Unreachable: maxPhase == 1 always stays in warp.
-  return ttg::SwizzledSharedEncodingAttr::get(
-      swizz.getContext(), swizz.getVec(), swizz.getPerPhase(), /*maxPhase=*/1,
-      swizz.getOrder(), swizz.getCGALayout());
 }
 
 bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
@@ -675,41 +478,13 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
     if (!loadOp && !descLoadOp && !gatherOp)
       continue;
 
+    // Create an allocation that can hold distance number of loadOp shapes.
     auto ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+    Value alloc = triton::createAlloc(forOp, ty, op->getLoc(),
+                                      info.sharedEncoding, numBuffers);
+    assert(alloc && "Failed to create alloc for the async load.");
     triton::AMD::TargetInfo targetInfo(
         getAMDArch(op->getParentOfType<ModuleOp>()));
-
-    ttg::SharedEncodingTrait sharedEncoding = info.sharedEncoding;
-    bool canUseAsyncCopy =
-        loadOp && useAsyncCopy &&
-        canBeConvertedToAsyncLoad(numBuffers, loadOp, sharedEncoding,
-                                  axisInfoAnalysis, targetInfo);
-    unsigned asyncCopyVec = 1;
-    if (canUseAsyncCopy) {
-      asyncCopyVec = axisInfoAnalysis.getContiguity(loadOp.getPtr());
-      if (auto mask = loadOp.getMask())
-        asyncCopyVec = std::min<unsigned>(
-            asyncCopyVec, axisInfoAnalysis.getMaskAlignment(mask));
-    }
-    // On non-scatter targets, direct-to-LDS realizes the shared-memory swizzle
-    // by shuffling source pointers between lanes, which must stay in one warp.
-    if (canUseAsyncCopy && !targetInfo.supportsDirectToLdsScatter()) {
-      auto clampedEncoding = clampSwizzleForDirectToLds(
-          ty, sharedEncoding, asyncCopyVec, targetInfo);
-      // Clamping changes the shared layout used by the final eligibility
-      // check, so verify that the load remains convertible.
-      canUseAsyncCopy = canBeConvertedToAsyncLoad(
-          numBuffers, loadOp, clampedEncoding, axisInfoAnalysis, targetInfo);
-      if (canUseAsyncCopy)
-        sharedEncoding = clampedEncoding;
-    }
-
-    // Create the allocation only after final async-copy eligibility is known.
-    // Stream copies retain the original encoding; only the direct-to-LDS path
-    // uses the clamped encoding.
-    Value alloc = triton::createAlloc(forOp, ty, op->getLoc(), sharedEncoding,
-                                      numBuffers);
-    assert(alloc && "Failed to create alloc for the async load.");
 
     // Replace the old load with multi-buffered loads
     if (descLoadOp) {
@@ -721,9 +496,13 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
       continue;
     }
 
-    if (canUseAsyncCopy) {
-      loadToStreamOp[loadOp] =
-          createAsyncCopy(loadOp, alloc, extractIdx, asyncCopyVec);
+    if (useAsyncCopy &&
+        canBeConvertedToAsyncLoad(numBuffers, loadOp, info.sharedEncoding,
+                                  axisInfoAnalysis, targetInfo)) {
+      unsigned vec = axisInfoAnalysis.getContiguity(loadOp.getPtr());
+      if (auto mask = loadOp.getMask())
+        vec = std::min<unsigned>(vec, axisInfoAnalysis.getMaskAlignment(mask));
+      loadToStreamOp[loadOp] = createAsyncCopy(loadOp, alloc, extractIdx, vec);
       continue;
     }
 
@@ -776,14 +555,30 @@ void remapClusters(tt::CoarseSchedule &schedule, ClusterMap clusterMap,
 //            can cause invalid schedules to be produced.
 LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
                            int &numBuffers, bool useAsyncCopy, bool hasTDMLoad,
-                           bool waitAtTail, Clusters &clusters,
-                           tt::CoarseSchedule &schedule) {
+                           bool hasScaledDot, bool waitAtTail,
+                           Clusters &clusters, tt::CoarseSchedule &schedule) {
   LDBG("Init SingleDotSchedule");
   int lastStage = numStages - 1;
   stages[SCHED_GLOBAL_LOAD] = 0;
   stages[SCHED_LOCAL_STORE] = 0;
   stages[SCHED_LOCAL_LOAD] = lastStage;
   stages[SCHED_COMPUTE] = lastStage;
+
+  // LDS prefetch of dot operands: schedule ttg.local_load one stage before
+  // the tt.dot that consumes it, so the LDS read of the next K-tile overlaps
+  // the current tile's matrix op. for num_stages<3 there is no room to separate
+  // them.
+  // We take a conservative route and only enable LDS prefetch when the dot is
+  // not scaled until more testing is done.
+  // waitAtTail (pingpong) requires very specific scheduling, which is
+  // incompatible with the prefetch cluster ordering below, so disable prefetch
+  // in that case.
+  bool ldsPrefetch =
+      hasTDMLoad && !hasScaledDot && numStages >= 3 && !waitAtTail;
+  if (ldsPrefetch) {
+    stages[SCHED_LOCAL_LOAD] = lastStage - 1;
+  }
+
   stages[SCHED_ASYNC_WAIT] = stages[SCHED_LOCAL_LOAD];
 
   bool pairedGlobalLoadLocalStore = stages[SCHED_LOCAL_STORE] == 0;
@@ -854,6 +649,31 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
   int computeCluster = 2;
   if (stages[SCHED_LOCAL_LOAD] == stages[SCHED_COMPUTE]) {
     computeCluster = localLoadCluster;
+  }
+
+  // ldsPrefetch ordering: lead the loop body with the tt.dot (it consumes
+  // operands pre-loaded into registers the previous iteration, so it has no
+  // intra-iteration dependency), then the async_wait, the next-tile TDM copy,
+  // and finally the ttg.local_load that feeds the next iteration.
+  if (ldsPrefetch) {
+    computeCluster = 0;
+    asyncWaitCluster = 1;
+    globalLoadCluster = 2;
+    localLoadCluster = 3;
+    localStoreCluster = 4;
+  }
+
+  // TDM copy reordering to improve latency hiding.
+  // On by default; set TRITON_HIP_DISABLE_TDM_REORDER=1 to turn it off.
+  bool tdmReorder =
+      hasTDMLoad && hasScaledDot && !waitAtTail &&
+      !::mlir::triton::tools::getBoolEnv("TRITON_HIP_DISABLE_TDM_REORDER");
+  if (tdmReorder) {
+    globalLoadCluster = 0; // all TDM copies first
+    asyncWaitCluster = 1;  // single wait after the copies
+    localLoadCluster = 2;  // local_loads after the wait
+    computeCluster = 3;    // dot_scaled last
+    localStoreCluster = 4;
   }
 
   // Create a hash map to associate cluster hash in old schedule with its
@@ -978,10 +798,13 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
     maxDist = std::max(maxDist, info.distToUse);
   }
 
+  bool hasScaledDot = false;
+  forOp.walk([&](tt::DotScaledOp) { hasScaledDot = true; });
+
   int numBuffers = 1;
   if (failed(initSchedule(maxDist, stages, schedule.getNumStages(), numBuffers,
-                          useAsyncCopy, hasTDMLoad, waitAtTail, clusters,
-                          schedule)))
+                          useAsyncCopy, hasTDMLoad, hasScaledDot, waitAtTail,
+                          clusters, schedule)))
     return;
 
   // Convert the loads into shared memory allocations and loads from them.

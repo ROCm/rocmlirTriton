@@ -11,7 +11,7 @@ import numpy as np
 import torch  # noqa: F401 # TheRock ROCm requires importing torch before triton
 import triton
 from triton.backends.compiler import GPUTarget
-from triton.runtime.build import is_clang_cl, is_msvc, is_tcc, _find_compiler
+from triton.runtime.build import is_clang, is_clang_cl, is_msvc, is_tcc, _find_compiler
 from triton._internal_testing import is_cuda, is_hip
 
 if is_cuda():
@@ -21,20 +21,45 @@ if is_cuda():
         return ["cuda"]
 
 elif is_hip():
-    from triton.backends.amd.driver import include_dirs
+    from triton.backends.amd.driver import _rocm_root, include_dirs
 
     if os.name == "nt":
+        import ctypes
         from triton.windows_utils import find_hip
+
+        _rocm_bin = os.path.join(_rocm_root, "bin")
+        _rocm_lib = os.path.join(_rocm_root, "lib")
+    else:
+        from triton.backends.amd.driver import _get_path_to_hip_runtime_dylib
 
     def library_dirs():
         if os.name == "nt":
             _, _, lib_dirs = find_hip()
-            return lib_dirs
-        from triton.backends.amd.driver import _get_path_to_hip_runtime_dylib
-        return [os.path.dirname(_get_path_to_hip_runtime_dylib())]
+            return [_rocm_lib] + lib_dirs
+        else:
+            hip_runtime_dylib = _get_path_to_hip_runtime_dylib()
+            return [os.path.dirname(hip_runtime_dylib)]
 
     def library_names():
-        return ["amdhip64"]
+        if os.name == "nt":
+            # Windows links against the version-independent import library.
+            return ["amdhip64"]
+        else:
+            return [_get_path_to_hip_runtime_dylib()]
+
+
+def _run_aot_executable(command, **kwargs):
+    if os.name == "nt" and is_hip():
+        set_dll_directory = ctypes.WinDLL("kernel32", use_last_error=True).SetDllDirectoryW
+        set_dll_directory.argtypes = [ctypes.c_wchar_p]
+        set_dll_directory.restype = ctypes.c_bool
+        if not set_dll_directory(_rocm_bin):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return subprocess.run(command, **kwargs)
+        finally:
+            set_dll_directory(None)
+    return subprocess.run(command, **kwargs)
 
 
 def _find_lib():
@@ -189,7 +214,7 @@ def gen_kernel_library(dir, libname):
         libname = libname.replace(".so", ".lib")
 
         c_files = glob.glob(os.path.join(dir, "*.c"))
-        command = [cc, *c_files, "/nologo", "/utf-8", "/c"]
+        command = [cc, *c_files, "/nologo", "/utf-8", "/c", "/std:c11"]
         command += [f"/I{x}" for x in include_dirs if x is not None]
         subprocess.run(command, check=True, cwd=dir)
 
@@ -202,7 +227,7 @@ def gen_kernel_library(dir, libname):
         libname = libname.replace(".so", ".a")
 
         c_files = glob.glob(os.path.join(dir, "*.c"))
-        command = [cc, *c_files, "-c", "-fPIC", "-D_Py_USE_GCC_BUILTIN_ATOMICS"]
+        command = [cc, *c_files, "-c", "-std=c11", "-fPIC"]
         command += [f"-I{x}" for x in include_dirs if x is not None]
         subprocess.run(command, check=True, cwd=dir)
 
@@ -212,7 +237,10 @@ def gen_kernel_library(dir, libname):
         subprocess.run(command, check=True, cwd=dir)
     else:
         c_files = glob.glob(os.path.join(dir, "*.c"))
-        command = [cc, *c_files, "-c", "-fPIC"]
+        command = [cc, *c_files, "-c", "-std=c11"]
+        if not (os.name == "nt" and is_clang(cc)):
+            # Clang does not support -fPIC on Windows
+            command += ["-fPIC"]
         command += [f"-I{x}" for x in include_dirs if x is not None]
         subprocess.run(command, check=True, cwd=dir)
 
@@ -342,19 +370,24 @@ int main(int argc, char **argv) {{
 
     cc = _find_compiler("c")
     if is_msvc(cc) or is_clang_cl(cc):
-        command = [cc, "test.c", "/nologo", "/utf-8"]
+        command = [cc, "test.c", "/nologo", "/utf-8", "/std:c11"]
         command += [f"/I{x}" for x in include_dirs if x is not None]
         command += ["/link"]
         command += [f"/LIBPATH:{x}" for x in library_dirs()]
         command += [f"{x}.lib" for x in library_names()]
         command += [f"/LIBPATH:{dir}", "kernel.lib", f"/OUT:{exe}"]
     else:
-        command = [cc, "test.c"]
-        if is_tcc(cc):
-            command += ["-D_Py_USE_GCC_BUILTIN_ATOMICS"]
+        command = [cc, "test.c", "-std=c11"]
         command += [f"-I{x}" for x in include_dirs if x is not None]
-        command += [f"-L{x}" for x in library_dirs()]
-        command += [f"-l{x}" for x in library_names()]
+        for lib_dir in library_dirs():
+            command += [f"-L{lib_dir}"]
+            if is_hip():
+                command += [f"-Wl,-rpath,{lib_dir}"]
+        for lib_name in library_names():
+            if os.path.isabs(lib_name):
+                command.append(lib_name)
+            else:
+                command += [f"-l{lib_name}"]
         command += ["-L", dir, "-l", "kernel", "-o", exe]
 
     subprocess.run(command, check=True, cwd=dir)
@@ -492,7 +525,7 @@ def test_compile_link_matmul_no_specialization():
         else:
             exe = "test"
         exe = os.path.join(tmp_dir, exe)
-        subprocess.run([exe, a_path, b_path, c_path], env=env, check=True, cwd=tmp_dir)
+        _run_aot_executable([exe, a_path, b_path, c_path], env=env, check=True, cwd=tmp_dir)
 
         # read data and compare against reference
         c = np.genfromtxt(c_path, delimiter=",", dtype=np.int32)
@@ -529,7 +562,7 @@ def test_compile_link_matmul():
         else:
             exe = "test"
         exe = os.path.join(tmp_dir, exe)
-        subprocess.run([exe, a_path, b_path, c_path], env=env, check=True, cwd=tmp_dir)
+        _run_aot_executable([exe, a_path, b_path, c_path], env=env, check=True, cwd=tmp_dir)
 
         # read data and compare against reference
         c = np.genfromtxt(c_path, delimiter=",", dtype=np.int32)
@@ -567,7 +600,7 @@ def test_launcher_has_no_available_kernel():
         else:
             exe = "test"
         exe = os.path.join(tmp_dir, exe)
-        result = subprocess.run(
+        result = _run_aot_executable(
             [exe, a_path, b_path, c_path],
             env=env,
             cwd=tmp_dir,
@@ -627,7 +660,7 @@ def test_compile_link_autotune_matmul():
             else:
                 exe = test_name
             exe = os.path.join(tmp_dir, exe)
-            subprocess.run(
+            _run_aot_executable(
                 [exe, a_path, b_path, c_path],
                 check=True,
                 cwd=tmp_dir,
@@ -660,7 +693,8 @@ module attributes {{"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = {warp_si
             assert ".address_size 64" in ptx
         elif is_hip():
             amdgcn = k.asm["amdgcn"]
-            assert '.amdgcn_target "amdgcn-amd-amdhsa--gfx942"' in amdgcn
+            assert 'target triple = "amdgpu9.42-amd-amdhsa"' in k.asm["llir"]
+            assert re.search(r'\.amdgcn_target "amdgpu9\.42-amd-amdhsa-[^-]*-gfx942"', amdgcn)
             assert '.wavefront_size: 64' in amdgcn
 
 
@@ -674,3 +708,29 @@ def test_gluon_kernel(target):
         kernel_path = write_triton_kernels(tmp_dir, gluon_kernel_src, kernel_utils_src)
         compile_aot_kernel_no_specialization(tmp_dir, kernel_path, dtype, BM, BN, BK, target=target)
         check_hasco_binary_str(tmp_dir, dtype)
+
+
+def test_aot_target_parsing_with_explicit_target():
+    """
+    Regression test for target parsing in compile.py CLI.
+
+    Previously, `GPUTarget(*args.target.split(":"))` passed arch and warp_size
+    as strings, causing TypeError in downstream integer comparisons (e.g.,
+    `arch >= 100`) and silent logic errors (e.g., `warp_size * 4` producing
+    string repetition instead of arithmetic).
+
+    This test exercises the `--target` CLI path by explicitly passing a target
+    to _compile_kernel, which formats it as a colon-separated string for the
+    CLI. The compile.py code must correctly parse the string back into proper
+    types (int for arch on CUDA, str for arch on HIP, int for warp_size).
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        dtype = "fp16"
+        BM, BN, BK = 16, 16, 16
+
+        kernel_path = write_triton_kernels(tmp_dir, kernel_src, kernel_utils_src)
+
+        # Use the current machine's target but pass it explicitly through CLI
+        # to exercise the --target string parsing path in compile.py
+        target = triton.runtime.driver.active.get_current_target()
+        compile_aot_kernel_no_specialization(tmp_dir, kernel_path, dtype, BM, BN, BK, target=target)

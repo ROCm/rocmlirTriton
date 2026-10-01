@@ -115,7 +115,6 @@ class TritonAMDGPUOptimizeDotOperands
     : public impl::TritonAMDGPUOptimizeDotOperandsBase<
           TritonAMDGPUOptimizeDotOperands> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TritonAMDGPUOptimizeDotOperands)
   using Base::Base;
 
   void runOnOperation() override {

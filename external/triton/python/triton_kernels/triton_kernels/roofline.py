@@ -98,7 +98,9 @@ def get_memset_tbps():
         dptr = ctypes.c_uint64(buf.data_ptr())
         value = ctypes.c_ubyte(0)
     elif is_hip():
-        libname = "amdhip64.dll" if os.name == "nt" else "libamdhip64.so"
+        from triton.backends.amd.driver import _get_path_to_hip_runtime_dylib
+
+        libname = _get_path_to_hip_runtime_dylib()
         init_name = "hipInit"
         memset_name = "hipMemsetAsync"
         memset_argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p]

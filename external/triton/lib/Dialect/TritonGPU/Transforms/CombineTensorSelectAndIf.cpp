@@ -80,7 +80,6 @@ class CombineTensorSelectAndIfPass
     : public impl::TritonGPUCombineTensorSelectAndIfBase<
           CombineTensorSelectAndIfPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CombineTensorSelectAndIfPass)
   void runOnOperation() override {
     ModuleOp m = getOperation();
     canonicalizeSelectUsersInSCFIf(m);

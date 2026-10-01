@@ -95,8 +95,6 @@ class TritonNvidiaGPUPromoteLHSToTMemPass
     : public impl::TritonNvidiaGPUPromoteLHSToTMemPassBase<
           TritonNvidiaGPUPromoteLHSToTMemPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonNvidiaGPUPromoteLHSToTMemPass)
   using TritonNvidiaGPUPromoteLHSToTMemPassBase<
       TritonNvidiaGPUPromoteLHSToTMemPass>::
       TritonNvidiaGPUPromoteLHSToTMemPassBase;

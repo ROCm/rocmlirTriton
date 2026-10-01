@@ -1,7 +1,6 @@
 #ifndef TRITON_CONVERSION_TRITONGPU_TO_ELEMENTWISE_OP_H
 #define TRITON_CONVERSION_TRITONGPU_TO_ELEMENTWISE_OP_H
 
-#include "mlir/Conversion/ArithCommon/AttrToLLVMConverter.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Support/LLVM.h"
@@ -84,6 +83,7 @@ public:
     // We zero out the bases that are constant
     auto kReg = StringAttr::get(ctx, "register");
     auto ll = toLinearLayout(rtType);
+    ll = ll.removeZeroBasesAlongDim(kReg);
     auto dims = to_vector(ll.getOutDimNames());
     auto llReg = ll.sublayout({kReg}, dims);
     auto inv = ll.pseudoinvert();
@@ -117,7 +117,7 @@ public:
     Type elemTy = this->getTypeConverter()->convertType(resultElementTy);
     SmallVector<SmallVector<Value>> allOperands;
     for (auto operand : adaptor.getOperands()) {
-      auto subOperands = unpackLLElements(loc, operand, rewriter);
+      auto subOperands = unpackUniqueTensorElements(loc, operand, rewriter);
       allOperands.resize(subOperands.size());
       for (auto v : llvm::enumerate(subOperands))
         allOperands[v.index()].push_back(v.value());
@@ -139,8 +139,8 @@ public:
       it += curr.size();
     }
     resultVals = maybeDeduplicate(op, resultVals);
-    Value view = packLLElements(loc, this->getTypeConverter(), resultVals,
-                                rewriter, resultTy);
+    Value view = packUniqueTensorElements(loc, this->getTypeConverter(),
+                                          resultVals, rewriter, resultTy);
     rewriter.replaceOp(op, view);
 
     return success();
@@ -149,65 +149,6 @@ public:
 protected:
   ModuleAxisInfoAnalysis &axisAnalysisPass;
 };
-
-/// Returns the fast-math flags `op` carries, or a null attribute when it has
-/// none to give. arith declares its flag attribute as default-valued, so an
-/// operation that was never given flags still answers with a valid `none`
-/// attribute; reporting that as null lets callers leave the destination
-/// operation untouched, which keeps these helpers inert for the flag-free
-/// lowerings.
-inline arith::FastMathFlagsAttr getArithFastmathFlags(Operation *op) {
-  auto arithFMF = dyn_cast<arith::ArithFastMathInterface>(op);
-  if (!arithFMF)
-    return {};
-  arith::FastMathFlagsAttr arithFlags = arithFMF.getFastMathFlagsAttr();
-  if (!arithFlags || arithFlags.getValue() == arith::FastMathFlags::none)
-    return {};
-  return arithFlags;
-}
-
-/// Translates the fast-math flags of an arith or math operation into the
-/// equivalent LLVM fast-math attribute, returning a null attribute if `op`
-/// carries no fast-math flags. The two dialects spell these flags differently
-/// -- arith and math use a `fastmath` attribute holding an
-/// arith::FastMathFlagsAttr, LLVM uses `fastmathFlags` holding an
-/// LLVM::FastmathFlagsAttr.
-inline LLVM::FastmathFlagsAttr getLLVMFastmathFlags(Operation *op) {
-  arith::FastMathFlagsAttr arithFlags = getArithFastmathFlags(op);
-  if (!arithFlags)
-    return {};
-  return arith::convertArithFastMathAttrToLLVM(arithFlags);
-}
-
-/// Carries the fast-math flags of `srcOp` over to `dstOp`, translating them
-/// when the two operations spell the flags differently. Does nothing unless
-/// `srcOp` has flags to give and `dstOp` is able to hold them.
-///
-/// Forwarding the source attribute dictionary does not achieve this on its
-/// own: arith and math declare `fastmath` as an inherent attribute, so it
-/// lives in the operation's properties rather than in the dictionary an
-/// adaptor hands out, and the destination operation is built without it.
-inline void propagateFastMathFlags(Operation *srcOp, Operation *dstOp) {
-  arith::FastMathFlagsAttr arithFlags = getArithFastmathFlags(srcOp);
-  if (!arithFlags)
-    return;
-  // A lowering that scalarizes a math operation into the same math operation
-  // stays within the arith spelling; the pattern that later converts the
-  // scalar form to LLVM translates the flags along with it.
-  if (auto dstFMF = dyn_cast<arith::ArithFastMathInterface>(dstOp)) {
-    dstOp->setAttr(dstFMF.getFastMathAttrName(), arithFlags);
-    return;
-  }
-  auto llvmFMF = dyn_cast<LLVM::FastmathFlagsInterface>(dstOp);
-  if (!llvmFMF)
-    return;
-  // A verbatim copy of the source attribute dictionary leaves the arith-spelled
-  // attribute on the LLVM operation, where it is inert and misleading.
-  if (auto srcFMF = dyn_cast<arith::ArithFastMathInterface>(srcOp))
-    dstOp->removeAttr(srcFMF.getFastMathAttrName());
-  dstOp->setAttr(llvmFMF.getFastmathAttrName(),
-                 arith::convertArithFastMathAttrToLLVM(arithFlags));
-}
 
 // Trivial case where we map elementwise to an existing LLVM operator
 template <typename SourceOp, typename DestOp>
@@ -225,13 +166,8 @@ struct ElementwiseOpConversion
                                     ConversionPatternRewriter &rewriter,
                                     Type elemTy, MultipleOperandsRange operands,
                                     Location loc) const {
-    DestOp destOp = DestOp::create(rewriter, loc, elemTy, operands[0],
-                                   adaptor.getAttributes().getValue());
-    // Forwarding the attribute dictionary above only preserves fast-math flags
-    // when SourceOp and DestOp agree on how to spell them, which they do not
-    // across a dialect boundary.
-    propagateFastMathFlags(op, destOp);
-    return {destOp};
+    return {DestOp::create(rewriter, loc, elemTy, operands[0],
+                           adaptor.getAttributes().getValue())};
   }
 };
 

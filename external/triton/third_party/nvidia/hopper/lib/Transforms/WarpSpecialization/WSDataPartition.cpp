@@ -320,8 +320,8 @@ static bool getBackwardSliceToPartition(Value v,
       partitionScheme.opPartitionDims[ifOp.elseYield()] = currentDim;
       auto thenYieldArg = ifOp.thenYield().getOperand(resultIndex);
       auto elseYieldArg = ifOp.elseYield().getOperand(resultIndex);
-      if (getBackwardSliceToPartition(thenYieldArg, partitionScheme,
-                                      currentDim))
+      if (!getBackwardSliceToPartition(thenYieldArg, partitionScheme,
+                                       currentDim))
         return false;
       if (!getBackwardSliceToPartition(elseYieldArg, partitionScheme,
                                        currentDim))
@@ -1376,7 +1376,6 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups) {
 class NVGPUTestWSDataPartitionPass
     : public impl::NVGPUTestWSDataPartitionBase<NVGPUTestWSDataPartitionPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NVGPUTestWSDataPartitionPass)
   using impl::NVGPUTestWSDataPartitionBase<
       NVGPUTestWSDataPartitionPass>::NVGPUTestWSDataPartitionBase;
 

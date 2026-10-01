@@ -150,17 +150,18 @@ std::pair<Value, AccessRange> findBufferAccess(Value a) {
     return findBufferAccessMemdescSubview(defOp);
   }
 
-  // Subslice is a subview only on the N dimension.
+  // Subslice is a subview on one tensor dimension.
   if (auto subslice = dyn_cast<TMEMSubSliceOp>(defOp)) {
     auto [alloc, parentAccess] = findBufferAccess(subslice.getSrc());
     if (!alloc)
       return {};
-    if (!parentAccess.ranges[1])
+    unsigned dim = subslice.getDim();
+    if (!parentAccess.ranges[dim])
       return {alloc, parentAccess};
-    uint64_t mStart = parentAccess.ranges[1]->start() + subslice.getN();
-    uint64_t mSize = subslice.getType().getShape()[1];
+    uint64_t start = parentAccess.ranges[dim]->start() + subslice.getOffset();
+    uint64_t size = subslice.getType().getShape()[dim];
     AccessRange childAccess = parentAccess;
-    childAccess.ranges[1] = {{mStart, mStart + mSize}};
+    childAccess.ranges[dim] = {{start, start + size}};
     return {alloc, std::move(childAccess)};
   }
 
@@ -257,8 +258,6 @@ bool trySinkOp(Operation *op, Value buffer) {
 struct TritonNvidiaGPUInterleaveTMemPass
     : public impl::TritonNvidiaGPUInterleaveTMemPassBase<
           TritonNvidiaGPUInterleaveTMemPass> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      TritonNvidiaGPUInterleaveTMemPass)
   using impl::TritonNvidiaGPUInterleaveTMemPassBase<
       TritonNvidiaGPUInterleaveTMemPass>::TritonNvidiaGPUInterleaveTMemPassBase;
 

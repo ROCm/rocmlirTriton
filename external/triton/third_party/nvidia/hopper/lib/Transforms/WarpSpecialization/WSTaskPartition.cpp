@@ -129,7 +129,6 @@ void doTaskPartition(triton::FuncOp &funcOp, unsigned numWarpGroups) {
 class NVGPUTestWSTaskPartitionPass
     : public impl::NVGPUTestWSTaskPartitionBase<NVGPUTestWSTaskPartitionPass> {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NVGPUTestWSTaskPartitionPass)
   using impl::NVGPUTestWSTaskPartitionBase<
       NVGPUTestWSTaskPartitionPass>::NVGPUTestWSTaskPartitionBase;
 
