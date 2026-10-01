@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // The pre-second-GEMM add is pointwise in (gemmM, gemmN) and split-k only
 // partitions gemmN, so each split reads its own slice of the add's inputs and

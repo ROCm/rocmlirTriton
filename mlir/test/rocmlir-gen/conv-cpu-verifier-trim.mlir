@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The CPU verifier reference convolution must trim trailing spatial slack off
 // the (possibly padded) input so the operand extent matches the linalg.generic
 // iteration footprint. Output spatial sizes use floor division, so when the

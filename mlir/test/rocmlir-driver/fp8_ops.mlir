@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=MFMA --implicit-check-not=@__rocmlir_extf_tbl_f8E4M3FN
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=MFMA --implicit-check-not=@__rocmlir_extf_tbl_f8E4M3FN
 // RUN: rocmlir-gen --arch gfx1170 --operation gemm -t fp8 -p | rocmlir-driver --kernel-pipeline=gpu,triton | FileCheck %s --check-prefix=WMMA --implicit-check-not=@__rocmlir_extf_tbl_f8E4M3FN

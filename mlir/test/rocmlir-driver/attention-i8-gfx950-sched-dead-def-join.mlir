@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for an LLVM AMDGPU backend crash in the machine scheduler on
 // gfx950: moving a dead subregister def upward retagged a following
 // live-range segment to the same value number as the previous segment

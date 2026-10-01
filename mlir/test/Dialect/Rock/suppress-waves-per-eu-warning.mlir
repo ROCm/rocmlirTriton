@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -triton-to-hsaco %s > %t.log 2>&1 && FileCheck %s < %t.log
 
 // Verify that SuppressWarningHandler in TritonToHsaco.cpp narrowly silences

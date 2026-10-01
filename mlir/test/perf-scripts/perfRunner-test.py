@@ -6,7 +6,7 @@
 """Pure-Python coverage for perfRunner.py.
 
 perfRunner consumes tuning DBs written by tuningRunner, rocprof CSV output and
-mlir-runner stdout, and it picks profiler flags per arch. All of that is
+rocm-run stdout, and it picks profiler flags per arch. All of that is
 string/file handling that runs without a GPU, so it is pinned here rather than
 left to the weekly Jenkins performance run. The runs that need a real GPU live
 in ``runtime/``.

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that when a perf config makes the kernel use more LDS than the
 // hardware supports, the tuning driver classifies the failure as
 // `NotApplicable` (printed as `N/A`) instead of a real compilation failure,

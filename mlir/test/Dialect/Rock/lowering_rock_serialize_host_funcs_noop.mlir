@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Test that rock-serialize-host-funcs is a no-op when there are no host
 // functions: no rock.host_functions attribute is added and all kernels remain.
 

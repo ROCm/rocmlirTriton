@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests for `scanModuleForReductionK` in rocmlir-gen.cpp. The scanner is the
 // fallback path for selecting the K-scaled allclose `atol` when the user does
 // not pass `-operation` (e.g. `--clone-harness` / `--verifier=clone`). The

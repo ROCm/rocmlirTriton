@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1030 -n 128 -k 8 -m 256 --perf_config "gemm:v1:128,64,64,1,1,4,16,1,2,0,0" | FileCheck %s --check-prefix=GEN
 // RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1030 -n 128 -k 8 -m 256 --perf_config "gemm:v1:128,64,64,1,1,4,16,1,2,0,0" | rocmlir-opt --rock-affix-params | FileCheck %s --check-prefix=AFFIX
 // RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1030 -n 128 -k 8 -m 256 --perf_config "gemm:v1:128,64,64,1,1,4,16,1,2,0,0" | rocmlir-driver -c --mlir-print-ir-after=rock-gemm-to-gridwise -o /dev/null 2>&1 | FileCheck %s --check-prefix=GRIDWISE

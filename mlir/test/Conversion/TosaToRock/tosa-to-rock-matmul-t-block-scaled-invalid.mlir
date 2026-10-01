@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --tosa-to-rock -verify-diagnostics --split-input-file %s
 
 // Test: K dimension not a multiple of block_size after transpose_b changes which dim is K.

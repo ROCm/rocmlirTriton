@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rocmlirTriton rock-set-reduction-layout pass.
 //
 // The pass redistributes the reduction-operand global-load #blocked layout so

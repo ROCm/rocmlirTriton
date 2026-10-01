@@ -1,4 +1,7 @@
-// RUN: rocmlir-gen -fut dot_max_nan --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -disable-fast-math | rocmlir-gen -ph -print-results -rand none -fut dot_max_nan - | rocmlir-driver -c -disable-fast-math | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// RUN: rocmlir-gen -fut dot_max_nan --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -disable-fast-math | rocmlir-gen -ph -print-results -rand none -fut dot_max_nan - | rocmlir-driver -c -disable-fast-math | rocm-run | FileCheck %s
 
 // Disable unrelated division fast-math while deriving NaN below. The focused
 // Rock lit test verifies that Max receives `nsz` without receiving `nnan`.

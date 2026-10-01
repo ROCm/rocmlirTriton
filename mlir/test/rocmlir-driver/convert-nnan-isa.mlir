@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The float-to-int side of `migraphx.convert` intentionally remains
 // round-toward-zero, unlike the round-to-nearest-even QuantizeLinear path. Its
 // saturating clamp still collapses to a single v_med3.

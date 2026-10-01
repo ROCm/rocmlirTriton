@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch -o /dev/null --mlir-print-ir-after=rock-tensor-to-triton-ptr 2>&1 | FileCheck %s
 
 // CHECK-LABEL: tt.func @mlir_transpose_reshape_unpack_int4

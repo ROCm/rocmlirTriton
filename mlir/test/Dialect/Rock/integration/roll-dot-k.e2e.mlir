@@ -1,9 +1,12 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // An f32 convolution whose dot rock-roll-dot-k rewrites into a loop over K
 // segments. The rolled loop reads the same shared-memory bytes as the
 // unrolled dot did, so it must compute the same numbers. On a target where
 // the pass does not apply this still runs, as a plain convolution.
 //
-// RUN: rocmlir-gen -fut conv_add_mul_max --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_mul_max --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut conv_add_mul_max --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_mul_max --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 
 func.func @conv_add_mul_max(%arg0: !migraphx.shaped<1x128x32x32xf32, 131072x1x4096x128>, %arg1: !migraphx.shaped<128x128x4x4xf32, 1x128x65536x16384>, %arg2: !migraphx.shaped<1x128x1x1xf32, 128x1x1x1>) -> !migraphx.shaped<1x128x16x16xf32, 32768x1x2048x128> {

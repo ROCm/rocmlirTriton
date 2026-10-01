@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_subdirectory(CAPI)
@@ -26,21 +29,11 @@ endif()
 set(MLIR_CMAKE_CONFIG_DIR
   "${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX}/cmake/mlir")
 
-# Passed to lit.site.cfg.py.in to set up the path where to find the libraries
-# for linalg integration tests.
-# Use LLVM_TOOLS_BINARY_DIR from find_package(MLIR) which points to the LLVM build
-set(MLIR_DIALECT_LINALG_INTEGRATION_TEST_LIB_DIR ${LLVM_LIBRARY_DIR})
 set(MLIR_LIB_DIR ${LLVM_LIBRARY_DIR})
-set(MLIR_RUNNER_UTILS_DIR ${LLVM_TOOLS_BINARY_DIR})
-
-# Passed to lit.site.cfg.py.in to set up the path where to find the libraries
-# for the rocm runner tests.
-set(MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR ${ROCMLIR_LIB_DIR})
 
 message(STATUS "LLVM_TOOLS_BINARY_DIR: ${LLVM_TOOLS_BINARY_DIR}")
 message(STATUS "LLVM_LIBRARY_DIR: ${LLVM_LIBRARY_DIR}")
 message(STATUS "ROCMLIR_BIN_DIR: ${ROCMLIR_BIN_DIR}")
-message(STATUS "MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR: ${MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR}")
 
 # Need to explicitly give paths to llvm tools
 set(LLVM_LIT_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
@@ -133,7 +126,7 @@ if(MLIR_ENABLE_ROCM_RUNNER)
   list(APPEND ROCMLIR_TEST_DEPENDS
     mlir_runner_utils
     mlir_c_runner_utils
-    mlir_async_runtime
+    mlir_float16_utils
 
     conv-validation-wrappers
     mlir-runner

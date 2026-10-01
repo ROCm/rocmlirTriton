@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
 // RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-3>/dense<-8>/' %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s --check-prefix=FULL-WIDTH
 // RUN: sed -e s/##TOKEN_ARCH##/%arch/g -e 's/dense<-3>/dense<-9>/' %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s --check-prefix=OUT-OF-RANGE

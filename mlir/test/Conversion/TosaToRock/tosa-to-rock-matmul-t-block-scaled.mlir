@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --tosa-to-rock %s -o -| FileCheck %s
 
 module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {

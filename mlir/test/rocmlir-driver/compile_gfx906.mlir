@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Compile-only smoke test for gfx906 (GCN5_1).
 //
 // gfx906 has no MFMA/WMMA accelerator instructions, so rocmlirTriton lowers

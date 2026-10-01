@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
 // RUN:   | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel --arch %arch - \
 // RUN:   | rocmlir-driver -c --arch %arch -o /dev/null --mlir-print-ir-after=math-extend-to-supported-types 2>&1 \

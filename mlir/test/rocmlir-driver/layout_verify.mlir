@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Check the guards of tensor layouts in RockOps
 // RUN: rocmlir-opt %s -split-input-file -verify-diagnostics
 

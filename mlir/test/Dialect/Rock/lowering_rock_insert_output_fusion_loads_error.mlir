@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Error tests for rock-insert-output-fusion-loads pass.
 
 // RUN: rocmlir-opt -rock-insert-output-fusion-loads -verify-diagnostics --split-input-file %s

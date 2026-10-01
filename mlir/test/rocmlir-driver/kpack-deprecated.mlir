@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that invalid user-provided kpack values emit clear diagnostics to
 // stderr and the pipeline fails.
 

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt %s --rock-prepare-llvm="allow-flush-denorm=true" -split-input-file | FileCheck %s
 // RUN: rocmlir-opt %s --rock-prepare-llvm="allow-flush-denorm=false" -split-input-file | FileCheck %s --check-prefix=NOFLUSH
 

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that the rock-affix-params pass hard-fails (with a clear
 // diagnostic) when a user-provided perf_config violates one of the per-field
 // validators in `validatePerfConfig`. The valid baseline for gfx90a is

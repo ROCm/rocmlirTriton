@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --rock-conv-to-gemm --mlir-print-local-scope --split-input-file | FileCheck %s
 
 // CHECK-LABEL: @nhwc_1x1

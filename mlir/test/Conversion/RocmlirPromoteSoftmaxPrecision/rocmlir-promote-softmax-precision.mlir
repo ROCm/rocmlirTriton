@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --rocmlir-promote-softmax-precision --split-input-file %s | FileCheck %s
 
 // The pass is anchored on `tosa.reduce_sum` whose input is `tosa.exp` of an

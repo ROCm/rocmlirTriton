@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 add_rocmlir_test_library(MLIRRockTestPasses
   TestCollapseContiguousMerges.cpp
   TestVectorizationInference.cpp

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // MIGraphX dot + add lowers to rock.gemm with arith.addf on the GEMM output,
 // which testFusionLegalitySplitK allows for plain GEMM. Contrast with

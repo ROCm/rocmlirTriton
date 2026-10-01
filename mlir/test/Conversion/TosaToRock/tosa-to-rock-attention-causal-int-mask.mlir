@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This test checks that we do not match an integer mask as causal when
 // pattern matching for attention in TosaToRock
 

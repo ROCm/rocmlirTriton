@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt %s -migraphx-tosa-simplify | FileCheck %s
 
 // Test 1: Eliminate redundant cast (same input and output types)

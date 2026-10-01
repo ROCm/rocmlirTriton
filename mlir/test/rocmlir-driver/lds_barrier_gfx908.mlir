@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This is E2E compilation test to ensure gfx908 specific inlineAsm hack
 // does not blow up in the backend compiler.
 

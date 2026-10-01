@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end test of the `mcpuVerifyFloatAllclose` runtime entry point's NaN
 // handling. 
 // The diagnostic output for a NaN-mismatch must 
@@ -10,8 +13,9 @@
 // on the validation side, and call `mcpuVerifyFloatAllclose` directly. 
 // No kernel is involved, so the kernel pipeline is a no-op.
 
+// REQUIRES: rocm-runner
 // RUN: rocmlir-driver -c -arch %arch %s \
-// RUN:   | mlir-runner --shared-libs=%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void \
+// RUN:   | rocm-run \
 // RUN:   | FileCheck %s
 
 // `mcpuVerifyFloatAllclose` C signature:

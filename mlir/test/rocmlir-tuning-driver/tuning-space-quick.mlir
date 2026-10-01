@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Drives a quick `gemm:` tuning sweep through rocmlir-tuning-driver and
 // only verifies that the driver returned at least one valid measurement (a
 // line beginning with the `gemm:` perf-config prefix). Catches regressions

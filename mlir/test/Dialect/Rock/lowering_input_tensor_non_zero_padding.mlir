@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This tests checks the following aspects of lowering component:
 // * Input tensor has non-zero padding.
 // * Tensors get the correct affine map attached after transforms

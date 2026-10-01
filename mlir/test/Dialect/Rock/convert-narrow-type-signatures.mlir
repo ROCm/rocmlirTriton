@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-convert-narrow-type-signatures pass.
 // Verifies that i4 memref types in function signatures are converted to packed i8.
 

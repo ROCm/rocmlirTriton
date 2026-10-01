@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that the tuning driver recognizes an i4 kernel argument and can
 // allocate its packed buffer instead of rejecting the element type.
 //

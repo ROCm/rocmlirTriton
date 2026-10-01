@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // `ninf` is the one fast-math flag the tanh approximation in
 // rock-legalize-math-for-triton cannot survive. It reaches -1 by letting the
 // exponential overflow to +inf and taking the reciprocal of that, which is

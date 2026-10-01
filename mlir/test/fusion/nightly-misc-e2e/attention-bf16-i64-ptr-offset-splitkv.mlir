@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for 32-bit pointer-offset overflow in rocMLIR-generated attention
 // kernels. This bf16 problem is large enough (and split_kv=32 pads/replicates
 // the index domain) that the linearized element offset exceeds INT32_MAX. Before

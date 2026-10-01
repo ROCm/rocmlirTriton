@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Sanity test to ensure every step of the XDLOPS lowering process gets valid MLIR
 // and LLVM IR.
 

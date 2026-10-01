@@ -1,4 +1,7 @@
 @LIT_SITE_CFG_IN_HEADER@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 
 import sys
 

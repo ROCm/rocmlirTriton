@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-legalize-math-for-triton -canonicalize -cse -mlir-print-local-scope %s | FileCheck %s
 // RUN: rocmlir-opt -rock-legalize-math-for-triton='disable-fast-math=true' -canonicalize -cse -mlir-print-local-scope %s | FileCheck %s --check-prefix=NOFAST
 

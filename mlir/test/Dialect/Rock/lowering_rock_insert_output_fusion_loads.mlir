@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-insert-output-fusion-loads pass.
 // Tests that extra fusion inputs (operands of fusion ops NOT from the GEMM chain)
 // get rock.load_marker + rock.untile inserted, while chain-only fusions and

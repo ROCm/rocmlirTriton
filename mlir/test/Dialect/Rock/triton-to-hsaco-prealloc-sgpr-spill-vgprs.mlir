@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx942' %s 2>&1 | FileCheck %s
 // RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx90a' %s 2>&1 | FileCheck %s
 // RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx950' %s 2>&1 | FileCheck %s

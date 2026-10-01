@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies the BF16 precision difference between GPU and CPU for the
 // `tosa.matmul + tosa.reduce_sum` fusion (the same pattern exercised by
 // mlir/test/fusion/pr-e2e/reductions/atomic_add_bf16/tosa-gemm-reduce-sum-case1-bf16.e2e.mlir).

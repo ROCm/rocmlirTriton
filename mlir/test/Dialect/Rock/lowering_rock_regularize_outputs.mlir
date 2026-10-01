@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-regularize-output pass.
 // Tests output fusions through various invertible transforms for gemm, conv,
 // and attention FusionRoot ops.

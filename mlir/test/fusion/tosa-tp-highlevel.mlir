@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver --host-pipeline highlevel %s | FileCheck %s
 // CHECK-COUNT-3: linalg.generic
 // CHECK-NOT: linalg.generic

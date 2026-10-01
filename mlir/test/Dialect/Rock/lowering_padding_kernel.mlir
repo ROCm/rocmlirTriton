@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This tests checks the following aspects of lowering component:
 // * The correct padding transformations are generated and added to the gemm
 // * That padding is marked as tile alignment, since the gemm lowering added it

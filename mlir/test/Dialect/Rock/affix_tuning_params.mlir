@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This tests checks the following aspects of the lowering:
 // * convolution tuning parameters are set as expected
 // If versions of these tests appear in lowering_top_level, then changes to the tuning

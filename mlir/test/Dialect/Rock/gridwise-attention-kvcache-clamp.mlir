@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify the KV-cache N-loop trip count is clamped to the static K/V block
 // count, so a runtime lastValidKVIndex larger than the K/V allocation cannot
 // drive the loop out of bounds.

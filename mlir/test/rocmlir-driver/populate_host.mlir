@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -ph | FileCheck %s
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -ph -t f16 | FileCheck %s
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- -p -ph -t i8 | FileCheck %s
