@@ -31,6 +31,8 @@ if (ROCMLIR_DRIVER_PR_E2E_TEST_ENABLED)
     PrGemm
     PrGemmDynamic
     PrConvDynamic
+    PrAttentionDynamic
+    PrAttentionDecodeDynamic
     PrGemmFp8
     PrConvFp8
     PrGemmNonPowerOfTwoTileSize

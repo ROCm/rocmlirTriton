@@ -909,9 +909,9 @@ static llvm::cl::list<std::string> dynamicDims(
     "dynamic-dims",
     llvm::cl::desc(
         "Comma-separated dimensions to leave dynamic (?) in the generated "
-        "kernel's argument types: g,m,n,k for gemm, n,c,k,hi,wi for conv and "
-        "n,c,k for conv_bwd_data. The host harness still uses the sizes "
-        "given on the command line."),
+        "kernel's argument types: g,m,n,k for gemm, n,c,k,hi,wi for conv, "
+        "n,c,k for conv_bwd_data and g,seq_q,seq_k for attention. The host "
+        "harness still uses the sizes given on the command line."),
     llvm::cl::CommaSeparated);
 
 static bool isDynamicDim(StringRef name) {
@@ -1356,9 +1356,17 @@ static LogicalResult validateDynamicDims() {
   case rock::KernelType::ConvBwdData:
     valid = {"n", "c", "k"};
     break;
+  case rock::KernelType::Attention:
+    if (slidingWindowLookBack > 0 || filterDataType == "i8") {
+      llvm::errs() << "--dynamic-dims is not supported for attention with "
+                      "a sliding window or i8 inputs\n";
+      return failure();
+    }
+    valid = {"g", "seq_q", "seq_k"};
+    break;
   default:
-    llvm::errs() << "--dynamic-dims is only supported for gemm, conv and "
-                    "conv_bwd_data\n";
+    llvm::errs() << "--dynamic-dims is only supported for gemm, conv, "
+                    "conv_bwd_data and attention\n";
     return failure();
   }
   for (StringRef name : dynamicDims) {
@@ -3805,10 +3813,12 @@ static Value broadcastGQATosa(OpBuilder builder, Location loc,
 // shape [G * numHeadsQ] by adding a numHeadsQ dimension and merging it with G.
 static Value broadcastBatchTensorRock(OpBuilder builder, Location loc,
                                       Value inputTensor) {
-  ArrayRef<int64_t> inpShape =
-      cast<ShapedType>(inputTensor.getType()).getShape();
+  auto inpType = cast<ShapedType>(inputTensor.getType());
   SmallVector<StringRef> startNames = {"gemmG"};
-  rock::BottomUpTMBuilder addDim(builder, startNames, inpShape);
+  rock::BottomUpTMBuilder addDim =
+      inpType.hasStaticShape()
+          ? rock::BottomUpTMBuilder(builder, startNames, inpType.getShape())
+          : rock::BottomUpTMBuilder(builder, startNames, inputTensor, loc);
   addDim.addDim("numHeadsQ", 1, 1);
   addDim.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
   auto addDimAttr = addDim.get();
@@ -3866,26 +3876,38 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
     funcAttrs.push_back(builder.getNamedAttr(
         rock::NumChipletsAttr::getMnemonic(), numChipletsAttr));
 
+  SmallVector<SmallVector<StringRef>> allNames;
+  getAttentionDimNames(allNames, params.types);
+
+  // A dynamic kernel takes its arguments in their logical shapes, with the
+  // dynamic dims as `?`, and stores the results straight into them.
+  bool isDynamic = !dynamicDims.empty();
+  SmallVector<Type, 5> kernelArgTypes = flatArgTypes;
+  if (isDynamic) {
+    setDynamicKernelHostTypes(argTypes);
+    for (auto [idx, argType] : llvm::enumerate(argTypes))
+      kernelArgTypes[idx] = makeDynamicType(argType, allNames[idx]);
+  }
+
   constexpr StringLiteral kernelName("rock_attention");
-  SmallVector<Type, 2> resultTypes = {flatArgTypes[flatArgTypes.size() - 1]};
+  SmallVector<Type, 2> resultTypes = {
+      kernelArgTypes[kernelArgTypes.size() - 1]};
   if (returnLSE) {
-    resultTypes.push_back(flatArgTypes[flatArgTypes.size() - 2]);
+    resultTypes.push_back(kernelArgTypes[kernelArgTypes.size() - 2]);
   }
   auto func = func::FuncOp::create(
       builder, loc, kernelName,
-      builder.getFunctionType(flatArgTypes, resultTypes), funcAttrs);
+      builder.getFunctionType(kernelArgTypes, resultTypes), funcAttrs);
 
   Block *block = func.addEntryBlock();
   builder.setInsertionPointToStart(block);
 
   SmallVector<Value> unflattenedArgs;
-  SmallVector<SmallVector<StringRef>> allNames;
-  getAttentionDimNames(allNames, params.types);
 
   // Save output dim names/types and trim from expansion (output is last)
   SmallVector<StringRef> outputDimNames = allNames.back();
-  Type outputLogicalType = argTypes.back();
-  Type outputFlatType = flatArgTypes.back();
+  Type outputLogicalType = isDynamic ? kernelArgTypes.back() : argTypes.back();
+  Type outputFlatType = kernelArgTypes.back();
   unsigned outputArgIdx = allNames.size() - 1;
   allNames.pop_back();
 
@@ -3896,16 +3918,22 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   unsigned lseArgIdx = 0;
   if (returnLSE) {
     lseDimNames = allNames.back();
-    lseLogicalType = argTypes[allNames.size() - 1];
-    lseFlatType = flatArgTypes[allNames.size() - 1];
     lseArgIdx = allNames.size() - 1;
+    lseLogicalType =
+        isDynamic ? kernelArgTypes[lseArgIdx] : argTypes[lseArgIdx];
+    lseFlatType = kernelArgTypes[lseArgIdx];
     allNames.pop_back();
   }
 
-  SmallVector<Type> expandArgTypes(argTypes.begin(),
-                                   argTypes.begin() + allNames.size());
-  rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
-                                    unflattenedArgs);
+  if (isDynamic) {
+    for (unsigned idx = 0, e = allNames.size(); idx < e; ++idx)
+      unflattenedArgs.push_back(func.getArgument(idx));
+  } else {
+    SmallVector<Type> expandArgTypes(argTypes.begin(),
+                                     argTypes.begin() + allNames.size());
+    rock::expandFlatFunctionArguments(builder, func, allNames, expandArgTypes,
+                                      unflattenedArgs);
+  }
 
   Value queries = unflattenedArgs[0];
   Value keys = unflattenedArgs[1];
@@ -3922,6 +3950,12 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
   Type qkElemType = qType.getElementType();
   ArrayRef<int64_t> qShape = qType.getShape();
   SmallVector<int64_t> qkShape = {qShape[0], sequenceLengthQ, sequenceLengthK};
+  if (isDynamic)
+    qkShape = llvm::to_vector(
+        cast<ShapedType>(
+            makeDynamicType(RankedTensorType::get(qkShape, qkElemType),
+                            {"g", "seq_q", "seq_k"}))
+            .getShape());
 
   SmallVector<Value> elemwiseInputs;
   unsigned optionalArgsCounter = 3;
@@ -3943,9 +3977,16 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
       auto biasType = cast<ShapedType>(bias.getType());
       SmallVector<uint32_t> startDims{0, 2, 1};
       SmallVector<uint32_t> endDims{0, 1, 2};
-      rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
-      transform.passThrough(endDims, startDims);
-      bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+      if (isDynamic) {
+        rock::BottomUpTMBuilder transform(builder, {"g", "seq_k", "seq_q"},
+                                          bias, loc);
+        transform.passThrough(endDims, startDims);
+        bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+      } else {
+        rock::BottomUpTMBuilder transform(builder, biasType.getShape(), loc);
+        transform.passThrough(endDims, startDims);
+        bias = rock::TransformOp::create(builder, loc, bias, transform.get());
+      }
     }
     elemwiseInputs.push_back(bias);
   }
@@ -4019,7 +4060,9 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
 
   // Apply output transform to flatten the attention result, then store
   Value flatResult =
-      rock::flattenOutput(builder, loc, attention.getResult(), outputDimNames);
+      isDynamic ? attention.getResult()
+                : rock::flattenOutput(builder, loc, attention.getResult(),
+                                      outputDimNames);
   Value outputArg = func.getArgument(outputArgIdx);
   Value storedOut =
       rock::StoreOp::create(builder, loc, outputFlatType, flatResult, outputArg,
@@ -4027,8 +4070,10 @@ static func::FuncOp createGpuAttentionKernel(ModuleOp module,
 
   SmallVector<Value> returnOperands = {storedOut};
   if (returnLSE) {
-    Value flatLSE =
-        rock::flattenOutput(builder, loc, attention.getLse(), lseDimNames);
+    Value flatLSE = isDynamic
+                        ? attention.getLse()
+                        : rock::flattenOutput(builder, loc, attention.getLse(),
+                                              lseDimNames);
     Value lseArg = func.getArgument(lseArgIdx);
     Value storedLSE =
         rock::StoreOp::create(builder, loc, lseFlatType, flatLSE, lseArg,

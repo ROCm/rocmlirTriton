@@ -548,8 +548,9 @@ def Rock_GridwiseAttentionOp
           Optional<TensorRankOf<[I32], [1]>>:$lastValidKVIndex,
           Optional<TensorRankOf<[I32], [1]>>:$prefixOffset, UnitAttr:$causal,
           I32Attr:$splitKV, OptionalAttr<I32Attr>:$slidingWindowLookBack,
-          UnitAttr:$disableQBypassLDS, OptionalAttr<IndexAttr>:$prePadG0M,
-          OptionalAttr<IndexAttr>:$prePadG0N,
+          UnitAttr:$disableQBypassLDS,
+          OptionalAttr<AnyAttrOf<[IndexAttr, Rock_ArgExprAttr]>>:$prePadG0M,
+          OptionalAttr<AnyAttrOf<[IndexAttr, Rock_ArgExprAttr]>>:$prePadG0N,
           OptionalAttr<IndexAttr>:$numRepeatsGQA,
           OptionalAttr<TypeAttr>:$softmaxType, Rock_GemmParamsAttr:$params0,
           Rock_GemmParamsAttr:$params1,
@@ -564,6 +565,10 @@ def Rock_GridwiseAttentionOp
 
     `lastValidKVIndex` and `slidingWindowLookBack` use the same inclusive
     KV-cache index and look-back distance semantics as `rock.attention`.
+
+    `prePadG0M` and `prePadG0N` are the lengths of gemm0's M and N before
+    padding, present only when that dimension was padded. A dynamic length is
+    a `#rock.arg_expr` over the dimensions of the function arguments.
   }];
   let regions = (region AnyRegion:$preSoftmaxBody);
   let assemblyFormat = [{
@@ -579,6 +584,23 @@ def Rock_GridwiseAttentionOp
       if (region.empty())
         return nullptr;
       return region.front().getArgument(0);
+    }
+
+    // The pre-padding length of gemm0's M (N): nullopt when that dimension
+    // is not padded, ShapedType::kDynamic when the length is dynamic.
+    std::optional<int64_t> getPrePadG0MLength() {
+      return getPrePadLength(getPrePadG0M());
+    }
+    std::optional<int64_t> getPrePadG0NLength() {
+      return getPrePadLength(getPrePadG0N());
+    }
+    static std::optional<int64_t>
+    getPrePadLength(std::optional<::mlir::Attribute> attr) {
+      if (!attr)
+        return std::nullopt;
+      if (auto length = ::llvm::dyn_cast<::mlir::IntegerAttr>(*attr))
+        return length.getInt();
+      return ::mlir::ShapedType::kDynamic;
     }
   }];
 }

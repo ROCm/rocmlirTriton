@@ -2071,8 +2071,7 @@ LogicalResult GridwiseAttentionOp::verify() {
   // GridwiseAttnToBlockwise), so use prePadG0N, not prePadG0M, for the
   // pre-padding value. Fall back to the current shape when it is absent.
   ShapedType kType = cast<ShapedType>(getKeys().getType());
-  int64_t maxSeqLen =
-      getPrePadG0N().value_or(APInt(64, kType.getShape()[2])).getSExtValue();
+  int64_t maxSeqLen = getPrePadG0NLength().value_or(kType.getShape()[2]);
   if (failed(verifySlidingWindowLookBack(getOperation(),
                                          getSlidingWindowLookBack(),
                                          getLastValidKVIndex(), maxSeqLen)))
@@ -2092,8 +2091,7 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax()) {
     ShapedType qType = cast<ShapedType>(getQueries().getType());
     SmallVector<int64_t, 3> gemm0OutShape = {
-        qType.getShape()[0],
-        getPrePadG0M().value_or(APInt(64, qType.getShape()[1])).getSExtValue(),
+        qType.getShape()[0], getPrePadG0MLength().value_or(qType.getShape()[1]),
         maxSeqLen};
     for (auto [idx, elemwiseInput] :
          llvm::enumerate(getPreSoftmaxElemWiseInputs())) {
@@ -2380,10 +2378,7 @@ static LogicalResult verifyGemmPlusGemmLikeOp(RockGemmGemmWrapperInterface op,
   int64_t oBatchDimOrig = oBatchDim;
   if (isa<AttentionOp>(op)) {
     int64_t splitKV = cast<AttentionOp>(op).getSplitKV();
-    if (ShapedType::isDynamic(oBatchDim)) {
-      if (splitKV != 1)
-        return op.emitError("splitKV requires a static batch size");
-    } else {
+    if (!ShapedType::isDynamic(oBatchDim)) {
       if (oBatchDim % splitKV != 0)
         return op.emitError("Batch size must be divisible by splitKV");
       oBatchDim = oBatchDim / splitKV;

@@ -1,0 +1,44 @@
+directory = "PrAttentionDynamic"
+prefix = "rocmlir-gen"
+suffix = "--operation attention --arch %arch -pv %random_data %rocmlir_gen_flags | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# The kernel takes the dimensions named here as runtime arguments; the host
+# harness still allocates the sizes given by -g/-seq_len_q/-seq_len_k. The head
+# dims stay static.
+[[axis]]
+name = "dynamic dims"
+values = ["seq_k", "seq_q,seq_k", "g,seq_q,seq_k"]
+prefix = "--dynamic-dims "
+
+[[axis]]
+name = "data type"
+values = ["f32", "f16"]
+prefix = "-t "
+
+[[suite]]
+name = "pr_attention_dynamic"
+
+# Sequence lengths that are multiples of every tile size
+[[suite.test]]
+config = "-g 2 -seq_len_q 256 -seq_len_k 256 -head_dim_qk 64 -head_dim_v 64"
+
+# No sequence length is a multiple of the tile, so the last key block is
+# masked; the scale and bias follow the dynamic sequence lengths
+[[suite.test]]
+config = "-g 3 -seq_len_q 100 -seq_len_k 70 -head_dim_qk 64 -head_dim_v 48 --with-attn-scale --with-attn-bias"
+
+# Sequence lengths smaller than one tile
+[[suite.test]]
+config = "-g 1 -seq_len_q 5 -seq_len_k 3 -head_dim_qk 32 -head_dim_v 32"
+
+# Causal with LSE: the key loop stops at the diagonal
+[[suite.test]]
+config = "-g 2 -seq_len_q 130 -seq_len_k 200 -head_dim_qk 64 -head_dim_v 64 -causal -return_lse"
+
+# Causal with more queries than keys: the key loop is bounded by seq_len_k
+[[suite.test]]
+config = "-g 2 -seq_len_q 200 -seq_len_k 64 -head_dim_qk 64 -head_dim_v 64 -causal"
+
+# Transposed operands read the dynamic dimensions with different strides
+[[suite.test]]
+config = "-g 2 -seq_len_q 77 -seq_len_k 91 -head_dim_qk 64 -head_dim_v 64 --transQ=true --transK=true --transV=true --transO=true"

@@ -27,10 +27,12 @@
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/RockTypes.h"
+#include "mlir/Dialect/Rock/IR/SymbolicExprUtils.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -131,6 +133,15 @@ chooseAttentionKVCacheModifiers(StringRef arch, Type qElemType,
   if (stream && !vReloads)
     cacheV = rock::CacheModifier::CS;
   return {cacheK, cacheV};
+}
+
+/// `length` as an i32 value: a constant when it is an attribute.
+static Value getI32Value(PatternRewriter &rewriter, Location loc,
+                         OpFoldResult length) {
+  if (std::optional<int64_t> cst = getConstantIntValue(length))
+    return rewriter.createOrFold<arith::ConstantIntOp>(
+        loc, rewriter.getI32Type(), *cst);
+  return cast<Value>(length);
 }
 
 //===----------------------------------------------------------------------===//
@@ -349,6 +360,128 @@ struct GridwiseAttentionRewritePattern
                              rewriter.getArrayAttr({padMap}));
   }
 
+  /// unpadTileView() for a tile view with dynamic lengths. The pre-padding
+  /// lengths are prePadG0M/prePadG0N attributes, absent when not padded.
+  ArrayAttr unpadSymbolicTileView(PatternRewriter &rewriter, Location loc,
+                                  ArrayAttr tileView,
+                                  std::optional<Attribute> prePadDim1,
+                                  std::optional<Attribute> prePadDim2) const {
+    auto lowestMap = cast<TransformMapAttr>(tileView[tileView.size() - 1]);
+    SmallVector<AffineExpr> paddedShape = lowestMap.getLowerBoundExprs();
+    assert(paddedShape.size() == 3);
+    TopDownTMBuilder viewBuilder{rewriter,
+                                 {"g", "paddedDim1", "paddedDim2"},
+                                 paddedShape,
+                                 lowestMap.getSymbols(),
+                                 loc};
+    viewBuilder.passThrough("g");
+    auto padding = [&](AffineExpr padded,
+                       std::optional<Attribute> prePad) -> AffineExpr {
+      if (!prePad)
+        return viewBuilder.cst(0);
+      AffineExpr unpadded;
+      if (auto length = dyn_cast<IntegerAttr>(*prePad)) {
+        unpadded = viewBuilder.cst(length.getInt());
+      } else {
+        auto lengthExpr = cast<ArgExprAttr>(*prePad);
+        unpadded =
+            viewBuilder.rebind(lengthExpr.getExpr(), lengthExpr.getSymbols());
+      }
+      return viewBuilder.simplify(padded - unpadded);
+    };
+    viewBuilder.pad({"paddedDim1", "paddedDim2"},
+                    ArrayRef<AffineExpr>{viewBuilder.cst(0),
+                                         padding(paddedShape[1], prePadDim1),
+                                         viewBuilder.cst(0),
+                                         padding(paddedShape[2], prePadDim2)});
+    TransformMapAttr padMap = viewBuilder.get();
+
+    return prependUpperViews(rewriter, tileView,
+                             rewriter.getArrayAttr({padMap}));
+  }
+
+  /// A prePadG0M/prePadG0N length as an i32 value.
+  static Value getPrePadLengthValue(PatternRewriter &rewriter, Location loc,
+                                    GridwiseAttentionOp op, Attribute prePad) {
+    if (auto length = dyn_cast<IntegerAttr>(prePad))
+      return rewriter.createOrFold<arith::ConstantIntOp>(
+          loc, rewriter.getI32Type(), length.getInt());
+    auto lengthExpr = cast<ArgExprAttr>(prePad);
+    return materializeArgExpr(rewriter, loc,
+                              op->getParentOfType<func::FuncOp>(),
+                              lengthExpr.getExpr(), lengthExpr.getSymbols());
+  }
+
+  /// The -inf masking of the gemm0 output tile of a dynamic kernel. The tile
+  /// at (m_block, n_block) holds rows m_block * mPerBlock + [0, mPerBlock) and
+  /// columns n_block * nPerBlock + [0, nPerBlock), so the masks compare those
+  /// indices directly. Columns at or past `unpaddedN` (when non-null) are
+  /// padding; rows past M are never stored and need no mask. Columns past
+  /// `lastValidKVIndex` (when non-null) are past the KV cache. Causal masking
+  /// masks columns past the query index, plus `prefixOffset` when non-null.
+  /// With GQA, row m is query m / numRepeatsGQA.
+  Value maskDynamicGemm0Output(PatternRewriter &rewriter, Location loc,
+                               layout::GridCoordinates gridCoords,
+                               Value gemm0Out, int64_t mPerBlock,
+                               int64_t nPerBlock, Value unpaddedN,
+                               Value lastValidKVIndex, bool isCausal,
+                               Value prefixOffset,
+                               IntegerAttr numRepeatsGQA) const {
+    if (!unpaddedN && !lastValidKVIndex && !isCausal)
+      return gemm0Out;
+    auto tileType = cast<RankedTensorType>(gemm0Out.getType());
+    Type i32 = rewriter.getI32Type();
+    auto indexTileType = RankedTensorType::get(tileType.getShape(), i32);
+    auto tileIndices = [&](Value block, int64_t perBlock, int64_t axis) {
+      auto rangeType = RankedTensorType::get({perBlock}, i32);
+      Value range =
+          triton::MakeRangeOp::create(rewriter, loc, rangeType, 0, perBlock);
+      Value perBlockValue =
+          rewriter.createOrFold<arith::ConstantIntOp>(loc, i32, perBlock);
+      Value start = arith::MulIOp::create(rewriter, loc, block, perBlockValue);
+      Value startSplat =
+          triton::SplatOp::create(rewriter, loc, rangeType, start);
+      Value indices = arith::AddIOp::create(rewriter, loc, startSplat, range);
+      return expandDimAndBroadcast(rewriter, loc, indices, axis, indexTileType);
+    };
+    Value nIndex = tileIndices(gridCoords.n_block, nPerBlock, /*axis=*/0);
+
+    Value isInvalid;
+    auto addMask = [&](arith::CmpIPredicate predicate, Value bound) {
+      Value mask =
+          arith::CmpIOp::create(rewriter, loc, predicate, nIndex, bound);
+      isInvalid =
+          isInvalid
+              ? arith::OrIOp::create(rewriter, loc, isInvalid, mask).getResult()
+              : mask;
+    };
+    auto splat = [&](Value scalar) {
+      return triton::SplatOp::create(rewriter, loc, indexTileType, scalar);
+    };
+    if (unpaddedN)
+      addMask(arith::CmpIPredicate::uge, splat(unpaddedN));
+    if (lastValidKVIndex)
+      addMask(arith::CmpIPredicate::ugt, splat(lastValidKVIndex));
+    if (isCausal) {
+      Value mIndex = tileIndices(gridCoords.m_block, mPerBlock, /*axis=*/1);
+      if (numRepeatsGQA) {
+        Value numRepeats = arith::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(indexTileType, rewriter.getI32IntegerAttr(
+                                                      numRepeatsGQA.getInt())));
+        mIndex = arith::DivUIOp::create(rewriter, loc, mIndex, numRepeats);
+      }
+      if (prefixOffset)
+        mIndex =
+            arith::AddIOp::create(rewriter, loc, mIndex, splat(prefixOffset));
+      addMask(arith::CmpIPredicate::ugt, mIndex);
+    }
+    Value negInf = createConstantFloatOp(
+        rewriter, loc, tileType, tileType.getElementType(),
+        -std::numeric_limits<float>::infinity(), APFloat::opOK);
+    return arith::SelectOp::create(rewriter, loc, isInvalid, negInf, gemm0Out);
+  }
+
   ArrayAttr outputViewToIndex(PatternRewriter &rewriter, Location loc,
                               ArrayAttr tileView) const {
     ArrayRef<int64_t> shape = getLowerShape(tileView);
@@ -558,6 +691,39 @@ struct GridwiseAttentionRewritePattern
     return gqaTransform;
   }
 
+  /// undoGQATransforms() for a tile view with dynamic lengths.
+  ArrayAttr undoSymbolicGQATransforms(PatternRewriter &rewriter, Location loc,
+                                      GridwiseAttentionOp op,
+                                      ArrayAttr tileView) const {
+    if (!op.getNumRepeatsGQAAttr())
+      return nullptr;
+    int64_t numRepeats = op.getNumRepeatsGQAAttr().getInt();
+    auto lowestMap = cast<TransformMapAttr>(tileView[tileView.size() - 1]);
+    SmallVector<AffineExpr> unpaddedShape = lowestMap.getLowerBoundExprs();
+    assert(unpaddedShape.size() == 3);
+
+    // (gemmG, seqLenQ*numRepeats, seqLenKV) -> (gemmG, numRepeats, seqLenQ,
+    // seqLenKV)
+    TopDownTMBuilder unmerge(rewriter, {"gemmG", "seqLenQ", "seqLenKV"},
+                             unpaddedShape, lowestMap.getSymbols(), loc);
+    AffineExpr seqLenQ =
+        unmerge.simplify(unpaddedShape[1].floorDiv(numRepeats));
+    unmerge.merge({"seqLenQ", "numRepeats"}, {2, 1}, "seqLenQ",
+                  {seqLenQ, unmerge.cst(numRepeats)});
+    unmerge.passThrough({"gemmG", "seqLenKV"}, {0, 3}, {"gemmG", "seqLenKV"});
+    TransformMapAttr unmergeAttr = unmerge.get();
+
+    // (gemmG, numRepeats, seqLenQ, seqLenKV) -> (gemmG*numRepeats, seqLenQ,
+    // seqLenKV)
+    auto merger = TopDownTMBuilder::below(unmerge, unmergeAttr);
+    merger.unmerge("gemmG", 0, {"gemmG", "numRepeats"},
+                   {unpaddedShape[0], merger.cst(numRepeats)});
+    merger.passThrough({"seqLenQ", "seqLenKV"}, {1, 2},
+                       {"seqLenQ", "seqLenKV"});
+    TransformMapAttr mergerAttr = merger.get();
+    return rewriter.getArrayAttr({unmergeAttr, mergerAttr});
+  }
+
   // Transform GEMM0 output buffer for splitKV > 1 to match preSoftmaxBody
   // expectations. The preSoftmaxBody was created with splitKV baked into the
   // shapes, but GEMM0 computes without splitKV. This transform expands the
@@ -600,11 +766,11 @@ struct GridwiseAttentionRewritePattern
   getNLoopInfo(PatternRewriter &rewriter, Location loc,
                layout::AttnGridCoordinates gridCoordsGemm0,
                Value lastValidKVIndexTensor, Value prefixOffsetTensor,
-               int64_t gemm0M, int64_t gemm0N, int64_t gemm0MPerBlock,
-               int64_t gemm0NPerBlock, int64_t splitKV, bool isCausal,
-               bool isKVCache, bool isPrefixCausal,
-               int64_t slidingWindowLookBack,
-               IntegerAttr numRepeatsGQA = nullptr) const {
+               int64_t gemm0M, int64_t gemm0N, OpFoldResult gemm0NBlocks,
+               int64_t gemm0MPerBlock, int64_t gemm0NPerBlock, int64_t splitKV,
+               bool isCausal, bool isKVCache, bool isPrefixCausal,
+               int64_t slidingWindowLookBack, IntegerAttr numRepeatsGQA,
+               bool isDynamicKernel) const {
     Value gemm0NBlocksLastIter;
     Value lastValidKVIndex;
     Value prefixOffset;
@@ -621,11 +787,14 @@ struct GridwiseAttentionRewritePattern
                                           cast<ShapedType>(tensor.getType()).getElementType());
 
       // add dim 1 for load_marker to make sense
-      ArrayRef<int64_t> inpShape =
-          cast<ShapedType>(tensor.getType()).getShape();
-      assert(inpShape.size() == 1 && "Expected rank to be one");
+      auto inpType = cast<ShapedType>(tensor.getType());
+      assert(inpType.getRank() == 1 && "Expected rank to be one");
       SmallVector<StringRef> startNames = {"gemmG"};
-      rock::BottomUpTMBuilder addDim(rewriter, startNames, inpShape);
+      rock::BottomUpTMBuilder addDim =
+          inpType.hasStaticShape()
+              ? rock::BottomUpTMBuilder(rewriter, startNames,
+                                        inpType.getShape())
+              : rock::BottomUpTMBuilder(rewriter, startNames, tensor, loc);
       addDim.addDim("dummy", 1, 1);
       addDim.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
       auto addDimAttr = addDim.get();
@@ -648,9 +817,7 @@ struct GridwiseAttentionRewritePattern
           loc, rewriter.getI32Type(), 1);
       Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), gemm0NPerBlock);
-      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
-      Value constGemm0NBlocks = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NBlocks);
+      Value constGemm0NBlocks = getI32Value(rewriter, loc, gemm0NBlocks);
 
       if (isKVCache) {
         lastValidKVIndex = loadTensorValue(lastValidKVIndexTensor);
@@ -705,7 +872,10 @@ struct GridwiseAttentionRewritePattern
         // For prefix causal, adding prefix_offset can push maxRowOfBlock beyond
         // gemm0N. Similarly, when gemm0M > gemm0N, the last query position can
         // exceed the key sequence length. In both cases, bound by gemm0N - 1.
-        if (gemm0M > gemm0N || isPrefixCausal) {
+        // With a dynamic gemm0N, the clamp of `end` to gemm0NBlocks below
+        // gives the same bound.
+        if (!ShapedType::isDynamic(gemm0M) && !ShapedType::isDynamic(gemm0N) &&
+            (gemm0M > gemm0N || isPrefixCausal)) {
           // Bound by actual K dimension (key sequence length)
           Value gemm0NMinusOne = rewriter.createOrFold<arith::ConstantIntOp>(
               loc, rewriter.getI32Type(), gemm0N - 1);
@@ -781,24 +951,41 @@ struct GridwiseAttentionRewritePattern
       // Use ceiling division so each split gets at least 1 iteration when
       // gemm0N < gemm0NPerBlock * splitKV (e.g. seq_len_k=64, block=64,
       // splitKV=2).
-      int64_t nIterPerSplit =
-          llvm::divideCeil(llvm::divideCeil(gemm0N, gemm0NPerBlock), splitKV);
-      Value gemm0NIterations = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), nIterPerSplit);
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
+      Value gemm0NIterations;
+      if (ShapedType::isDynamic(gemm0N)) {
+        Value constGemm0NBlocks = getI32Value(rewriter, loc, gemm0NBlocks);
+        Value constSplitKVM1 = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), splitKV - 1);
+        Value constSplitKV = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), splitKV);
+        Value numerator = arith::AddIOp::create(
+            rewriter, loc, constGemm0NBlocks, constSplitKVM1);
+        gemm0NIterations =
+            rewriter.createOrFold<arith::DivUIOp>(loc, numerator, constSplitKV);
+      } else {
+        int64_t nIterPerSplit =
+            llvm::divideCeil(llvm::divideCeil(gemm0N, gemm0NPerBlock), splitKV);
+        gemm0NIterations = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), nIterPerSplit);
+      }
       start = arith::MulIOp::create(rewriter, loc, gridCoordsGemm0.split_block,
                                     gemm0NIterations);
       Value splitPlusOne = arith::AddIOp::create(
           rewriter, loc, gridCoordsGemm0.split_block, one);
       end =
           arith::MulIOp::create(rewriter, loc, splitPlusOne, gemm0NIterations);
+      // A dynamic kernel pads gemm0N only to a multiple of gemm0NPerBlock, so
+      // the last splits may run past the last key block; runEarlyExit() skips
+      // the splits that end up empty.
+      if (isDynamicKernel)
+        end = arith::MinUIOp::create(rewriter, loc, end,
+                                     getI32Value(rewriter, loc, gemm0NBlocks));
     } else {
       start = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 0);
-      int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
-      end = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), gemm0NBlocks);
+      end = getI32Value(rewriter, loc, gemm0NBlocks);
     }
     return std::make_tuple(start, end, gemm0NBlocksLastIter, lastValidKVIndex,
                            prefixOffset, slidingWindowLowerBound);
@@ -808,22 +995,25 @@ struct GridwiseAttentionRewritePattern
   // Early exit requires splitKV > 1 and at least one of: padding in gemm0M,
   // causal masking, or KV cache.
   static bool isEarlyExitPossible(int64_t splitKV, int64_t gemm0NPerBlock,
-                                  std::optional<APInt> prePadG0N, bool isCausal,
-                                  bool isKVCache) {
+                                  std::optional<int64_t> prePadG0N,
+                                  bool isCausal, bool isKVCache,
+                                  bool isDynamicKernel) {
     // We have no work to do if (1) and (2 || 3) conditions are true:
     // 1. split-kv > 1
     // 2. there's padding in gemm0M && (at least) the last block in split-kv
     // dimension has nothing to do
-    // 3. (kvcache || causal) && (end <= start)
+    // 3. (kvcache || causal || dynamic kernel) && (end <= start)
     // - Note, causal could be set true here for prefix causal, or just
     //   regular causal.
+    // - A dynamic kernel bounds `end` by the last key block (getNLoopInfo()),
+    //   so end <= start also covers its padding.
     if (splitKV == 1)
       return false;
 
     bool earlyExitDueToPadding =
-        prePadG0N.has_value() &&
-        (prePadG0N.value().getSExtValue() >= gemm0NPerBlock);
-    bool earlyExitDueToCausalOrKVCache = isCausal || isKVCache;
+        prePadG0N.has_value() && (*prePadG0N >= gemm0NPerBlock);
+    bool earlyExitDueToCausalOrKVCache =
+        isCausal || isKVCache || isDynamicKernel;
 
     return earlyExitDueToPadding || earlyExitDueToCausalOrKVCache;
   }
@@ -833,18 +1023,19 @@ struct GridwiseAttentionRewritePattern
   FailureOr<Value> computeIfWorkToDo(PatternRewriter &rewriter, Location loc,
                                      Value start, Value end, int64_t splitKV,
                                      int64_t gemm0NPerBlock,
-                                     std::optional<APInt> prePadG0N,
-                                     bool isCausal, bool isKVCache) const {
+                                     std::optional<int64_t> prePadG0N,
+                                     bool isCausal, bool isKVCache,
+                                     bool isDynamicKernel) const {
     if (!isEarlyExitPossible(splitKV, gemm0NPerBlock, prePadG0N, isCausal,
-                             isKVCache))
+                             isKVCache, isDynamicKernel))
       return failure();
 
     // Determine which condition applies to generate the appropriate runtime
     // check
     bool earlyExitDueToPadding =
-        prePadG0N.has_value() &&
-        (prePadG0N.value().getSExtValue() >= gemm0NPerBlock);
-    bool earlyExitDueToCausalOrKVCache = isCausal || isKVCache;
+        prePadG0N.has_value() && (*prePadG0N >= gemm0NPerBlock);
+    bool earlyExitDueToCausalOrKVCache =
+        isCausal || isKVCache || isDynamicKernel;
 
     Value someWorkToDo;
     // For dynamic kernels, no need to check padding condition. start/end
@@ -858,7 +1049,7 @@ struct GridwiseAttentionRewritePattern
       Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), gemm0NPerBlock);
       Value prePadNValue = rewriter.createOrFold<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), prePadG0N.value().getSExtValue());
+          loc, rewriter.getI32Type(), *prePadG0N);
       Value startIteration =
           arith::MulIOp::create(rewriter, loc, start, constGemm0NPerBlock);
 
@@ -871,19 +1062,18 @@ struct GridwiseAttentionRewritePattern
     return someWorkToDo;
   }
 
-  std::optional<scf::IfOp> runEarlyExit(PatternRewriter &rewriter, Location loc,
-                                        Value start, Value end, int64_t splitKV,
-                                        int64_t gemm0NPerBlock,
-                                        std::optional<APInt> prePadG0N,
-                                        bool isCausal, bool isKVCache,
-                                        ArrayRef<Value> elseYieldValues) const {
+  std::optional<scf::IfOp>
+  runEarlyExit(PatternRewriter &rewriter, Location loc, Value start, Value end,
+               int64_t splitKV, int64_t gemm0NPerBlock,
+               std::optional<int64_t> prePadG0N, bool isCausal, bool isKVCache,
+               bool isDynamicKernel, ArrayRef<Value> elseYieldValues) const {
     assert((elseYieldValues.size() == 1 || elseYieldValues.size() == 2) &&
            "early exit if must yield outAcc (length 1) or outAcc and lseOut "
            "(length 2)");
 
-    FailureOr<Value> maybeSomeWorkToDo =
-        computeIfWorkToDo(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
-                          std::move(prePadG0N), isCausal, isKVCache);
+    FailureOr<Value> maybeSomeWorkToDo = computeIfWorkToDo(
+        rewriter, loc, start, end, splitKV, gemm0NPerBlock,
+        std::move(prePadG0N), isCausal, isKVCache, isDynamicKernel);
 
     if (failed(maybeSomeWorkToDo))
       return std::nullopt;
@@ -1055,7 +1245,6 @@ struct GridwiseAttentionRewritePattern
     Type elemTypeQLoad = maybeElemTypeQLoad.value();
 
     TypedValue<ShapedType> inK = op.getKeys();
-    ArrayRef<int64_t> kShape = cast<ShapedType>(inK.getType()).getShape();
     Type elemTypeK = cast<ShapedType>(inK.getType()).getElementType();
     FailureOr<Type> maybeElemTypeKLoad = getInputFusionElementType(inK);
     if (failed(maybeElemTypeKLoad))
@@ -1088,12 +1277,33 @@ struct GridwiseAttentionRewritePattern
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
 
-    int64_t gemm0G = qShape[0];
-    int64_t gemm0M = qShape[1];
+    // The sequence lengths and gemmG are affine expressions over the argument
+    // dimensions of the kernel, and constants when static. The head dims
+    // (gemm0K, gemm1N) are always static.
+    SmallVector<ArgDimAttr> symbols;
+    FailureOr<AffineExpr> gemm0GExpr = getDimExpr(inQ, 0, symbols);
+    FailureOr<AffineExpr> gemm0MExpr = getDimExpr(inQ, 1, symbols);
+    FailureOr<AffineExpr> gemm0NExpr = getDimExpr(inK, 2, symbols);
+    if (failed(gemm0GExpr) || failed(gemm0MExpr) || failed(gemm0NExpr))
+      return op->emitOpError("cannot express the dynamic attention sizes in "
+                             "terms of kernel arguments");
+    int64_t gemm0G = getStaticOrDynamic(*gemm0GExpr);
+    int64_t gemm0M = getStaticOrDynamic(*gemm0MExpr);
     int64_t gemm0K = qShape[2];
-    int64_t gemm0N = kShape[2];
+    int64_t gemm0N = getStaticOrDynamic(*gemm0NExpr);
+    bool isDynamic = ShapedType::isDynamic(gemm0G) ||
+                     ShapedType::isDynamic(gemm0M) ||
+                     ShapedType::isDynamic(gemm0N);
+    if (ShapedType::isDynamic(gemm0K) || ShapedType::isDynamic(outShape[2]))
+      return op->emitOpError("dynamic head dimensions are not supported");
+    if (isDynamic && (op.getSlidingWindowLookBack() ||
+                      (splitKV > 1 && op.getPreSoftmaxHasSplitKVTransforms())))
+      return op->emitOpError("sliding-window attention and split-KV "
+                             "elementwise inputs need static shapes");
 
-    int64_t gemm1M = outShape[1];
+    // The output's M equals Q's (both padded to the same multiple), so it is
+    // expressed over Q's dimensions.
+    int64_t gemm1M = isDynamic ? gemm0M : outShape[1];
     int64_t gemm1N = outShape[2];
 
     GemmParamsAttr gemm0TuningParams = op.getParams0();
@@ -1101,10 +1311,19 @@ struct GridwiseAttentionRewritePattern
     int64_t gemm0KPerBlock = gemm0TuningParams.getKPerBlock();
     int64_t gemm0MPerBlock = gemm0TuningParams.getMPerBlock();
     int64_t gemm0NPerBlock = gemm0TuningParams.getNPerBlock();
-    int64_t gemm0MBlocks = gemm0M / gemm0MPerBlock;
-    assert(gemm0M % gemm0MPerBlock == 0);
-    int64_t gemm0NBlocks = gemm0N / gemm0NPerBlock;
-    assert(gemm0N % gemm0NPerBlock == 0);
+    auto simplify = [&](AffineExpr expr) {
+      return simplifyAffineExpr(expr, 0, symbols.size());
+    };
+    AffineExpr gemm0MBlocksExpr =
+        simplify(gemm0MExpr->floorDiv(gemm0MPerBlock));
+    AffineExpr gemm0NBlocksExpr =
+        simplify(gemm0NExpr->floorDiv(gemm0NPerBlock));
+    int64_t gemm0MBlocks = getStaticOrDynamic(gemm0MBlocksExpr);
+    assert(isDynamic || gemm0M % gemm0MPerBlock == 0);
+    assert(isDynamic || gemm0N % gemm0NPerBlock == 0);
+    auto length = [&](AffineExpr expr) {
+      return materializeLength(rewriter, loc, op, expr, symbols);
+    };
 
     // Get current workgroup ID.
     Value bid =
@@ -1133,10 +1352,20 @@ struct GridwiseAttentionRewritePattern
     // params related to how we load Q
     bool prefetchQTile = gemm0K == gemm0KPerBlock;
 
-    int64_t gemm1MBlocks = gemm1M / gemm1MPerBlock;
-    assert(gemm1M % gemm1MPerBlock == 0);
-    SmallVector<int64_t, 3> gemm0BidGridLengths = {gemm0G, gemm0MBlocks,
-                                                   gemm0NBlocks};
+    AffineExpr gemm1MBlocksExpr =
+        isDynamic ? simplify(gemm0MExpr->floorDiv(gemm1MPerBlock))
+                  : rewriter.getAffineConstantExpr(gemm1M / gemm1MPerBlock);
+    assert(isDynamic || gemm1M % gemm1MPerBlock == 0);
+    OpFoldResult gemm0MBlocksLength = length(gemm0MBlocksExpr);
+    OpFoldResult gemm1MBlocksLength = length(gemm1MBlocksExpr);
+    auto makeLengths = [&](ArrayRef<AffineExpr> exprs) {
+      SymbolicLengths lengths;
+      lengths.exprs.assign(exprs.begin(), exprs.end());
+      lengths.symbols = symbols;
+      return lengths;
+    };
+    SymbolicLengths gemm0BidGridLengths =
+        makeLengths({*gemm0GExpr, gemm0MBlocksExpr, gemm0NBlocksExpr});
     // Whether the K/V loads reload data (non-injective view: conv im2col,
     // broadcast, ...). Such operands rely on caching and are never streamed.
     FailureOr<bool> maybeKReloads = rock::isInputNonInjective(inK);
@@ -1175,9 +1404,12 @@ struct GridwiseAttentionRewritePattern
     //   and the concatenated full-N tile is stored as a single N block
     // Therefore, loadTile for V uses gemm1BidGridLengths, while the output
     // store transforms use gemm1BidGridLengthsForStore.
-    SmallVector<int64_t, 3> gemm1BidGridLengths = {gemm0G, gemm1MBlocks,
-                                                   gemm1NChunks};
-    SmallVector<int64_t, 3> gemm1BidGridLengthsForStore = {gemm0G * splitKV, gemm1MBlocks, 1};
+    SymbolicLengths gemm1BidGridLengths =
+        makeLengths({*gemm0GExpr, gemm1MBlocksExpr,
+                     rewriter.getAffineConstantExpr(gemm1NChunks)});
+    SymbolicLengths gemm1BidGridLengthsForStore =
+        makeLengths({simplify(*gemm0GExpr * splitKV), gemm1MBlocksExpr,
+                     rewriter.getAffineConstantExpr(1)});
 
     // if splitKV == 1, we define nullptr, and makeGxNGridLayout() will use
     // fewer instructions
@@ -1185,23 +1417,32 @@ struct GridwiseAttentionRewritePattern
         (splitKV > 1) ? rewriter.createOrFold<ConstantIntOp>(loc, rewriter.getI32Type(), splitKV)
                       : nullptr;
 
-    auto maybeGridSize = rock::getGridSize(op);
-    if (failed(maybeGridSize))
+    OpFoldResult gridSize;
+    if (auto staticGridSize = rock::getGridSize(op); succeeded(staticGridSize))
+      gridSize = rewriter.getI64IntegerAttr(staticGridSize->getInt());
+    else if (FailureOr<Value> dynamicGridSize =
+                 rock::getGridSizeValue(rewriter, loc, op);
+             succeeded(dynamicGridSize))
+      gridSize = *dynamicGridSize;
+    else
       return op->emitError("Failed to get grid_size");
 
-    OpFoldResult gridSize = rewriter.getI64IntegerAttr(maybeGridSize->getInt());
-        
     auto arch = rock::getArchValue(op);
 
     // Cache hint for the K/V loads: stream them when seqQ is skinny (decode)
     // and the KV cache doesn't fit in the LLC. Q is always kept cached.
-    auto [cacheK, cacheV] = chooseAttentionKVCacheModifiers(
-        arch, elemTypeQLoad, inQ.getType().getNumElements(), elemTypeKLoad,
-        inK.getType().getNumElements(), kReloads, elemTypeVLoad,
-        inV.getType().getNumElements(), vReloads, gemm0MBlocks);
+    // Dynamic sizes are unknown here, so they keep the default modifiers.
+    auto [cacheK, cacheV] =
+        isDynamic ? std::make_pair(rock::CacheModifier::NONE,
+                                   rock::CacheModifier::NONE)
+                  : chooseAttentionKVCacheModifiers(
+                        arch, elemTypeQLoad, inQ.getType().getNumElements(),
+                        elemTypeKLoad, inK.getType().getNumElements(), kReloads,
+                        elemTypeVLoad, inV.getType().getNumElements(), vReloads,
+                        gemm0MBlocks);
 
     auto gridCoordsGemm0mIter0 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks),
+        rewriter, loc, bid, gemm0MBlocksLength,
         rewriter.createOrFold<arith::ConstantIntOp>(loc, rewriter.getI32Type(),
                                                     0),
         gridSize, arch, rock::getNumChipletsValue(op), splitKVConst);
@@ -1227,9 +1468,10 @@ struct GridwiseAttentionRewritePattern
              slidingWindowLowerBound) =
         getNLoopInfo(rewriter, loc, gridCoordsGemm0mIter0,
                      lastValidKVIndexTensor, prefixOffsetTensor, gemm0M, gemm0N,
-                     gemm0MPerBlock, gemm0NPerBlock, splitKV, isCausal,
-                     isKVCache, isPrefixCausal, slidingWindowLookBack,
-                     op.getNumRepeatsGQAAttr());
+                     length(gemm0NBlocksExpr), gemm0MPerBlock, gemm0NPerBlock,
+                     splitKV, isCausal, isKVCache, isPrefixCausal,
+                     slidingWindowLookBack, op.getNumRepeatsGQAAttr(),
+                     isDynamic);
 
     // Early exit: Skip all computation when there's no work but always write
     // output. The IfOp returns (outAcc, lseOut?) so the code after the if
@@ -1248,9 +1490,10 @@ struct GridwiseAttentionRewritePattern
           -std::numeric_limits<float>::infinity(), APFloat::opOK);
       earlyExitElseValues.push_back(initLseOut);
     }
-    std::optional<scf::IfOp> earlyExitIf = runEarlyExit(
-        rewriter, loc, start, end, splitKV, gemm0NPerBlock, op.getPrePadG0N(),
-        isCausal, isKVCache, earlyExitElseValues);
+    std::optional<scf::IfOp> earlyExitIf =
+        runEarlyExit(rewriter, loc, start, end, splitKV, gemm0NPerBlock,
+                     op.getPrePadG0NLength(), isCausal, isKVCache, isDynamic,
+                     earlyExitElseValues);
 
     // If gemm0K is equal to gemm0KPerBlock that means
     // effectively there is no K loop. Therefore, we
@@ -1268,7 +1511,7 @@ struct GridwiseAttentionRewritePattern
       // it is fine m iteration to be zero as it irrelevant to Q tensor
       // as the first gemm is Kt x Qt.
       auto gridCoordsGemm0LoadQ = layout::makeGxNGridLayout(
-          rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks), zero, gridSize, arch,
+          rewriter, loc, bid, gemm0MBlocksLength, zero, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
 
       loadedQ = rock::loadTile(
@@ -1292,6 +1535,13 @@ struct GridwiseAttentionRewritePattern
     nLoopInitArgs.push_back(maxRow);
     nLoopInitArgs.push_back(sumRow);
 
+    // The key sequence length before padding, which bounds the valid gemm0
+    // columns of a dynamic kernel.
+    Value unpaddedGemm0N;
+    if (isDynamic && op.getPrePadG0N())
+      unpaddedGemm0N =
+          getPrePadLengthValue(rewriter, loc, op, *op.getPrePadG0N());
+
     Value one = rewriter.createOrFold<arith::ConstantIntOp>(
         loc, rewriter.getI32Type(), 1);
     scf::ForOp nLoopOp =
@@ -1314,7 +1564,7 @@ struct GridwiseAttentionRewritePattern
       sumRow = nLoopOp.getRegionIterArg(gemm1NChunks + 1);
 
       layout::GridCoordinates gridCoordsGemm0 = layout::makeGxNGridLayout(
-          rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm0MBlocks), nLoopIV, gridSize, arch,
+          rewriter, loc, bid, gemm0MBlocksLength, nLoopIV, gridSize, arch,
           rock::getNumChipletsValue(op), splitKVConst);
       Value initAcc = rock::createZeroAccBuffer(
           rewriter, loc, {gemm0MPerBlock, gemm0NPerBlock}, accType);
@@ -1356,16 +1606,17 @@ struct GridwiseAttentionRewritePattern
       }
       Value firstGemmResult = kLoopOp.getResult(0);
 
-      int64_t prePadG0M = gemm0M;
-      if (op.getPrePadG0M().has_value()) {
-        prePadG0M = op.getPrePadG0M().value().getSExtValue();
+      ArrayAttr gemm0OutTileViewUnPadded;
+      if (isDynamic) {
+        gemm0OutTileViewUnPadded =
+            unpadSymbolicTileView(rewriter, loc, gemm0OutTileView,
+                                  op.getPrePadG0M(), op.getPrePadG0N());
+      } else {
+        int64_t prePadG0M = op.getPrePadG0MLength().value_or(gemm0M);
+        int64_t prePadG0N = op.getPrePadG0NLength().value_or(gemm0N);
+        gemm0OutTileViewUnPadded = unpadTileView(
+            rewriter, loc, gemm0OutTileView, prePadG0M, prePadG0N);
       }
-      int64_t prePadG0N = gemm0N;
-      if (op.getPrePadG0N().has_value()) {
-        prePadG0N = op.getPrePadG0N().value().getSExtValue();
-      }
-      ArrayAttr gemm0OutTileViewUnPadded =
-          unpadTileView(rewriter, loc, gemm0OutTileView, prePadG0M, prePadG0N);
 
       // undo Grouped-Query Attention (GQA) transforms
       // This is needed because the preSoftmaxElementWise inputs (if any), don't
@@ -1373,7 +1624,10 @@ struct GridwiseAttentionRewritePattern
       // the output of the first GEMM. See postProcessFirstGemm() to understand
       // the transforms done to preSoftmaxElementWise inputs.
       ArrayRef<int64_t> unpaddedShape = getLowerShape(gemm0OutTileViewUnPadded);
-      ArrayAttr undoGQA = undoGQATransforms(rewriter, loc, op, unpaddedShape);
+      ArrayAttr undoGQA =
+          isDynamic ? undoSymbolicGQATransforms(rewriter, loc, op,
+                                                gemm0OutTileViewUnPadded)
+                    : undoGQATransforms(rewriter, loc, op, unpaddedShape);
 
       // undo the GQA transforms for postProcessFirstGemm()
       if (undoGQA)
@@ -1415,75 +1669,83 @@ struct GridwiseAttentionRewritePattern
                                                           : APFloat::opInexact);
         softmaxInput = arith::MulFOp::create(rewriter, loc, softmaxInput, ln2Recip);
 
-        // fakeTensor is needed to generate the views and indices+mask with
-        // TransformsToPtrOp It represents the Q*K matrix (that is never written
-        // to global memory)
-        ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
-        assert(lowerShape.size() == 3);
-        int64_t tensorSize =
-            std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
-                            std::multiplies<int64_t>());
-        Value fakeTensor =
-            rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
-        Value fakeTensorM =
-            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[1]}, accType);
-        Value fakeTensorN =
-            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[2]}, accType);
-        Value negInfTensor = createConstantFloatOp(
-            rewriter, loc, softmaxInput.getType(),
-            cast<ShapedType>(softmaxInput.getType()).getElementType(),
-            -std::numeric_limits<float>::infinity(), APFloat::opOK);
+        if (isDynamic) {
+          softmaxInput = maskDynamicGemm0Output(
+              rewriter, loc, gridCoordsGemm0, softmaxInput, gemm0MPerBlock,
+              gemm0NPerBlock, unpaddedGemm0N, lastValidKVIndex, isCausal,
+              prefixOffset, op.getNumRepeatsGQAAttr());
+        } else {
+          // fakeTensor is needed to generate the views and indices+mask with
+          // TransformsToPtrOp It represents the Q*K matrix (that is never
+          // written to global memory)
+          ArrayRef<int64_t> lowerShape =
+              getLowerShape(gemm0OutTileViewUnPadded);
+          assert(lowerShape.size() == 3);
+          int64_t tensorSize =
+              std::accumulate(lowerShape.begin(), lowerShape.end(), 1LL,
+                              std::multiplies<int64_t>());
+          Value fakeTensor =
+              rock::createZeroAccBuffer(rewriter, loc, {tensorSize}, accType);
+          Value fakeTensorM = rock::createZeroAccBuffer(
+              rewriter, loc, {lowerShape[1]}, accType);
+          Value fakeTensorN = rock::createZeroAccBuffer(
+              rewriter, loc, {lowerShape[2]}, accType);
+          Value negInfTensor = createConstantFloatOp(
+              rewriter, loc, softmaxInput.getType(),
+              cast<ShapedType>(softmaxInput.getType()).getElementType(),
+              -std::numeric_limits<float>::infinity(), APFloat::opOK);
 
-        // Handle padding
-        bool hasPadding =
-            op.getPrePadG0M().has_value() || op.getPrePadG0N().has_value();
-        if (hasPadding) {
-          softmaxInput = createFirstGemmNegInfPadding(
-              rewriter, loc, gridCoordsGemm0, fakeTensor, softmaxInput,
-              negInfTensor, gemm0OutTileViewUnPadded);
+          // Handle padding
+          bool hasPadding =
+              op.getPrePadG0M().has_value() || op.getPrePadG0N().has_value();
+          if (hasPadding) {
+            softmaxInput = createFirstGemmNegInfPadding(
+                rewriter, loc, gridCoordsGemm0, fakeTensor, softmaxInput,
+                negInfTensor, gemm0OutTileViewUnPadded);
+          }
+
+          // Negative Infinite for extra values based on masking type
+          // KV cache masking is independent of causal masking - it masks out
+          // positions beyond lastValidKVIndex (padding). Apply it whenever KV
+          // cache is enabled, regardless of causal/prefix-causal mode.
+          softmaxInput = setGemm0OutputOutOfScope(
+              rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
+              softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+              gemm0OutTileViewUnPadded, isKVCache, nLoopIV,
+              gemm0NBlocksLastIter, lastValidKVIndex,
+              /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
+
+          // Sliding window masking: mask when key < max(0, lastValidKVIndex -
+          // slidingWindowLookBack). Independent of causal masking and applied
+          // on every iteration (like causal), alongside KV-cache masking.
+          softmaxInput = setGemm0OutputOutOfScope(
+              rewriter, loc, OutOfScopeType::SlidingWindow, gridCoordsGemm0,
+              softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+              gemm0OutTileViewUnPadded, slidingWindowLookBack > 0, nLoopIV,
+              gemm0NBlocksLastIter,
+              /*lastValidKVIndex=*/nullptr,
+              /*prefixOffset=*/nullptr, slidingWindowLowerBound);
+
+          // Causal masking: either prefix-causal or standard causal
+          // Prefix causal: mask when key > (query + offset).
+          // This combines causal masking with a prefix offset
+          softmaxInput = setGemm0OutputOutOfScope(
+              rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
+              softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+              gemm0OutTileViewUnPadded, isPrefixCausal, nLoopIV,
+              gemm0NBlocksLastIter,
+              /*lastValidKVIndex=*/nullptr, prefixOffset,
+              /*slidingWindowLowerBound=*/nullptr);
+
+          // Standard causal masking: mask when key > query
+          softmaxInput = setGemm0OutputOutOfScope(
+              rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
+              softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+              gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
+              gemm0NBlocksLastIter,
+              /*lastValidKVIndex=*/nullptr,
+              /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
         }
-
-        // Negative Infinite for extra values based on masking type
-        // KV cache masking is independent of causal masking - it masks out
-        // positions beyond lastValidKVIndex (padding). Apply it whenever KV
-        // cache is enabled, regardless of causal/prefix-causal mode.
-        softmaxInput = setGemm0OutputOutOfScope(
-            rewriter, loc, OutOfScopeType::KVCache, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, isKVCache, nLoopIV, gemm0NBlocksLastIter,
-            lastValidKVIndex,
-            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
-
-        // Sliding window masking: mask when key < max(0, lastValidKVIndex -
-        // slidingWindowLookBack). Independent of causal masking and applied on
-        // every iteration (like causal), alongside KV-cache masking.
-        softmaxInput = setGemm0OutputOutOfScope(
-            rewriter, loc, OutOfScopeType::SlidingWindow, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, slidingWindowLookBack > 0, nLoopIV,
-            gemm0NBlocksLastIter,
-            /*lastValidKVIndex=*/nullptr,
-            /*prefixOffset=*/nullptr, slidingWindowLowerBound);
-
-        // Causal masking: either prefix-causal or standard causal
-        // Prefix causal: mask when key > (query + offset).
-        // This combines causal masking with a prefix offset
-        softmaxInput = setGemm0OutputOutOfScope(
-            rewriter, loc, OutOfScopeType::PrefixCausal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, isPrefixCausal, nLoopIV,
-            gemm0NBlocksLastIter,
-            /*lastValidKVIndex=*/nullptr, prefixOffset,
-            /*slidingWindowLowerBound=*/nullptr);
-
-        // Standard causal masking: mask when key > query
-        softmaxInput = setGemm0OutputOutOfScope(
-            rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
-            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
-            gemm0NBlocksLastIter,
-            /*lastValidKVIndex=*/nullptr,
-            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
 
         IntegerAttr reductionAxis = rewriter.getIndexAttr(1);
 
@@ -1540,7 +1802,7 @@ struct GridwiseAttentionRewritePattern
         Value chunkIdx = rewriter.createOrFold<arith::ConstantIntOp>(
             loc, rewriter.getI32Type(), chunk);
         auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-            rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm1MBlocks), chunkIdx, gridSize, arch,
+            rewriter, loc, bid, gemm1MBlocksLength, chunkIdx, gridSize, arch,
             rock::getNumChipletsValue(op), splitKVConst);
 
         Value loadedV =
@@ -1621,7 +1883,7 @@ struct GridwiseAttentionRewritePattern
     // Note that we don't use splitKV here because that dimension belongs to the
     // batch size already for output tensors
     auto gridCoordsGemm1 = layout::makeGxNGridLayout(
-        rewriter, loc, bid, rewriter.getI64IntegerAttr(gemm1MBlocks), zero, gridSize, arch,
+        rewriter, loc, bid, gemm1MBlocksLength, zero, gridSize, arch,
         rock::getNumChipletsValue(op));
 
     // Compute output transforms - use grid lengths with splitKV for output

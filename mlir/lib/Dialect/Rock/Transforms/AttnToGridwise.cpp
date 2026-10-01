@@ -33,6 +33,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/dynamicDimUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -217,6 +218,76 @@ static Value moveNumHeadsToSeqLenOut(OpBuilder builder, Location loc,
   return rock::TransformOp::create(builder, loc, matrixUnmerge, mergerAttr);
 }
 
+/// moveNumHeadsToSeqLenQ() and moveNumHeadsToSeqLenOut() for dynamic shapes.
+/// The views are built top-down from the KV batch length `gemmGKV`, the batch
+/// of K, so that `inputTensor`'s batch, which is
+/// gemmGKV * numRepeats * splitKV, needs no division: (gemmGKV * splitKV,
+/// seqLen * numRepeats[, headDim]) -> (gemmGKV, splitKV, seqLen, numRepeats[,
+/// headDim]) -> (gemmGKV * numRepeats * splitKV, seqLen[, headDim]).
+static FailureOr<Value>
+moveNumHeadsToSeqLenDynamic(OpBuilder builder, Location loc, Value inputTensor,
+                            Value keys, int64_t numRepeats, int64_t splitKV) {
+  if (auto *defOp = inputTensor.getDefiningOp())
+    builder.setInsertionPointAfter(defOp);
+  bool hasHeadDim = cast<ShapedType>(inputTensor.getType()).getRank() == 3;
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<AffineExpr> gemmGKV = getDimExpr(keys, 0, symbols);
+  FailureOr<AffineExpr> seqLen = getDimExpr(inputTensor, 1, symbols);
+  FailureOr<AffineExpr> headDim =
+      hasHeadDim ? getDimExpr(inputTensor, 2, symbols)
+                 : FailureOr<AffineExpr>(builder.getAffineConstantExpr(1));
+  if (failed(gemmGKV) || failed(seqLen) || failed(headDim))
+    return failure();
+  auto simplify = [&](AffineExpr e) {
+    return simplifyAffineExpr(e, 0, symbols.size());
+  };
+  AffineExpr numRepeatsExpr = builder.getAffineConstantExpr(numRepeats);
+  AffineExpr splitKVExpr = builder.getAffineConstantExpr(splitKV);
+
+  SmallVector<StringRef> names = {"gemmG", "seqLen"};
+  SmallVector<AffineExpr> shape = {simplify(*gemmGKV * splitKV),
+                                   simplify(*seqLen * numRepeats)};
+  if (hasHeadDim) {
+    names.push_back("headDim");
+    shape.push_back(*headDim);
+  }
+  TopDownTMBuilder merger(builder, names, shape, symbols, loc);
+  merger.merge({"gemmG", "splitKV"}, {0, 1}, "gemmG", {*gemmGKV, splitKVExpr});
+  merger.merge({"seqLen", "numRepeats"}, {2, 3}, "seqLen",
+               {*seqLen, numRepeatsExpr});
+  if (hasHeadDim)
+    merger.passThrough({"headDim"}, {4}, {"headDim"});
+  TransformMapAttr mergerAttr = merger.get();
+
+  auto unmerge = TopDownTMBuilder::below(merger, mergerAttr);
+  unmerge.unmerge("gemmG", 0, {"gemmG", "numRepeats", "splitKV"},
+                  {*gemmGKV, numRepeatsExpr, splitKVExpr});
+  unmerge.passThrough({"seqLen"}, {1}, {"seqLen"});
+  if (hasHeadDim)
+    unmerge.passThrough({"headDim"}, {2}, {"headDim"});
+  TransformMapAttr unmergeAttr = unmerge.get();
+
+  return rock::transform(builder, inputTensor,
+                         builder.getArrayAttr({mergerAttr, unmergeAttr}));
+}
+
+/// moveNumHeadsToSeqLenGroupInput() for dynamic shapes: KV head g reads the
+/// entry of its first query head, g * numRepeats, of `inputTensor`.
+static FailureOr<Value>
+moveNumHeadsToSeqLenGroupInputDynamic(OpBuilder builder, Location loc,
+                                      Value inputTensor, Value keys,
+                                      int64_t numRepeats) {
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<AffineExpr> gemmGKV = getDimExpr(keys, 0, symbols);
+  FailureOr<AffineExpr> gemmGQ = getDimExpr(inputTensor, 0, symbols);
+  if (failed(gemmGKV) || failed(gemmGQ))
+    return failure();
+  TopDownTMBuilder embed(builder, {"gemmG"}, {*gemmGKV}, symbols, loc);
+  embed.embed("gemmG", 0, *gemmGQ, {"gemmG"}, {embed.cst(numRepeats)});
+  return rock::transform(builder, inputTensor,
+                         builder.getArrayAttr({embed.get()}));
+}
+
 // Result of GQA (Grouped-Query Attention) processing
 struct GQAResult {
   IntegerAttr numRepeats;
@@ -246,20 +317,51 @@ static void transformViewsAttn(OpBuilder &rw,
 // This function will implement GQA, moving numRepeat=num_heads_q/num_heads_kv
 // to the seq_len_q dimension. See moveNumHeadsToSeqLenQ() comment for more
 // details.
-static GQAResult processGQA(ConversionPatternRewriter &rw, Location loc,
-                            Value queries, Value keys, Value values,
-                            SmallVector<Value> &outputViews,
-                            DenseMap<Value, Value> &fusionInputMapOut,
-                            SmallVector<Value> &lseViews,
-                            DenseMap<Value, Value> &fusionInputMapLse,
-                            Value lastValidKVIndex, Value prefixOffset,
-                            int64_t numHeadsQ, int64_t numHeadsKV,
-                            int64_t splitKV) {
+static FailureOr<GQAResult>
+processGQA(ConversionPatternRewriter &rw, Location loc, Value queries,
+           Value keys, Value values, SmallVector<Value> &outputViews,
+           DenseMap<Value, Value> &fusionInputMapOut,
+           SmallVector<Value> &lseViews,
+           DenseMap<Value, Value> &fusionInputMapLse, Value lastValidKVIndex,
+           Value prefixOffset, int64_t numHeadsQ, int64_t numHeadsKV,
+           int64_t splitKV, bool isDynamic) {
 
   assert(numHeadsQ % numHeadsKV == 0);
   IntegerAttr numRepeatsAttr = nullptr;
 
-  if (numHeadsQ != numHeadsKV) {
+  if (numHeadsQ != numHeadsKV && isDynamic) {
+    int64_t numRepeats = numHeadsQ / numHeadsKV;
+    numRepeatsAttr = rw.getIndexAttr(numRepeats);
+    FailureOr<Value> newQueries = moveNumHeadsToSeqLenDynamic(
+        rw, loc, queries, keys, numRepeats, /*splitKV=*/1);
+    if (failed(newQueries))
+      return failure();
+    queries = *newQueries;
+    for (Value *groupInput : {&lastValidKVIndex, &prefixOffset}) {
+      if (!*groupInput)
+        continue;
+      FailureOr<Value> moved = moveNumHeadsToSeqLenGroupInputDynamic(
+          rw, loc, *groupInput, keys, numRepeats);
+      if (failed(moved))
+        return failure();
+      *groupInput = *moved;
+    }
+    bool failedView = false;
+    auto moveView = [&](Value v) {
+      FailureOr<Value> moved =
+          moveNumHeadsToSeqLenDynamic(rw, loc, v, keys, numRepeats, splitKV);
+      if (failed(moved)) {
+        failedView = true;
+        return v;
+      }
+      return *moved;
+    };
+    transformViewsAttn(rw, outputViews, fusionInputMapOut, moveView);
+    if (!lseViews.empty())
+      transformViewsAttn(rw, lseViews, fusionInputMapLse, moveView);
+    if (failedView)
+      return failure();
+  } else if (numHeadsQ != numHeadsKV) {
     int64_t numRepeats = numHeadsQ / numHeadsKV;
 
     numRepeatsAttr = rw.getIndexAttr(numRepeats);
@@ -292,25 +394,17 @@ computeGridSizeAttentionGemmElmtGemm(ConversionPatternRewriter &rw, Op op,
                                      int64_t splitKV) {
   GemmParamsAttr params0 = cast<GemmParamsAttr>(op.getGemm0Params().value());
 
-  SmallVector<int64_t, 3> aShape =
-      llvm::to_vector<3>(cast<ShapedType>(a.getType()).getShape());
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<AffineExpr> g = getDimExpr(a, 0, symbols);
+  FailureOr<AffineExpr> m = getDimExpr(a, 1, symbols);
+  if (failed(g) || failed(m))
+    return failure();
+  AffineExpr gridSize = simplifyAffineExpr(
+      m->floorDiv(params0.getMPerBlock()) * *g * splitKV, 0, symbols.size());
 
-  SmallVector<int64_t, 3> bShape =
-      llvm::to_vector<3>(cast<ShapedType>(b.getType()).getShape());
-
-  SmallVector<int64_t, 3> cShape =
-      llvm::to_vector<3>(cast<ShapedType>(c.getType()).getShape());
-
-  GemmSize gemm0Size(/*g=*/aShape[0], /*m=*/aShape[1],
-                     /*k=*/aShape[2],
-                     /*n=*/bShape[2]);
-
-  int64_t gridSize =
-      (gemm0Size.m / params0.getMPerBlock()) * gemm0Size.g * splitKV;
-
-  IntegerAttr gridSizeAttr = rw.getI32IntegerAttr(gridSize);
   func::FuncOp funcOp = cast<func::FuncOp>(op->getParentOp());
-  funcOp->setAttr(rock::GridSizeAttr::getMnemonic(), gridSizeAttr);
+  funcOp->setAttr(rock::GridSizeAttr::getMnemonic(),
+                  makeGridSizeAttr(rw, gridSize, symbols));
   return success();
 }
 
@@ -511,6 +605,93 @@ static LogicalResult retypeInterGemmBodyForSplitK(
   return rock::retypeElementwiseBodyShapes(builder, op, body, gemm0OutShape);
 }
 
+static LogicalResult
+checkDynamicAttentionSupport(RockGemmGemmWrapperInterface op, Value a, Value c,
+                             GemmParamsAttr params1, Value lastValidKVIndex,
+                             Value prefixOffset, IntegerAttr splitKV,
+                             IntegerAttr slidingWindowLookBack,
+                             BoolAttr preSoftmaxHasSplitKVTransforms) {
+  if (params1.getSplitKFactor() > 1)
+    return op.emitOpError("split-K is not supported with dynamic shapes");
+  if (splitKV.getInt() != 1 && preSoftmaxHasSplitKVTransforms &&
+      preSoftmaxHasSplitKVTransforms.getValue())
+    return op.emitOpError("split-KV elementwise inputs are not supported with "
+                          "dynamic shapes");
+  if (slidingWindowLookBack)
+    return op.emitOpError(
+        "sliding-window attention is not supported with dynamic shapes");
+  // a is (gemmG, gemm0M, gemm0K) and c is (gemmG, gemm1K, gemm1N).
+  if (cast<ShapedType>(a.getType()).isDynamicDim(2) ||
+      cast<ShapedType>(c.getType()).isDynamicDim(2))
+    return op.emitOpError("dynamic head dimensions are not supported");
+  return success();
+}
+
+/// The argument dimensions that the maps built for a dynamic attention mix:
+/// gemmG everywhere, gemm0K (head dim of Q and K), the key sequence length of
+/// K and V, the query sequence length of Q and the outputs, and gemm1N (head
+/// dim of V and the output). The elementwise inputs are in gemm0's output
+/// space (gemmG, gemm0M, gemm0N). With GQA, the batch of Q is numRepeats
+/// times that of K and V, and with split-KV, the batch of the outputs is
+/// splitKV times that of Q, so those batches are not equal.
+static SmallVector<std::pair<DimRef, DimRef>> getAttentionDimEqualities(
+    Value a, Value b, Value c, ArrayRef<Value> elementwiseInputs,
+    ArrayRef<Value> outputViews,
+    const DenseMap<Value, Value> &fusionInputMapOut, ArrayRef<Value> lseViews,
+    const DenseMap<Value, Value> &fusionInputMapLse, bool isGQA,
+    bool isSplitKV) {
+  SmallVector<std::pair<DimRef, DimRef>> equalities;
+  if (isGQA)
+    equalities.push_back({{b, 0}, {c, 0}});
+  else
+    equalities.append({{{a, 0}, {b, 0}}, {{a, 0}, {c, 0}}});
+  equalities.append({{{a, 2}, {b, 1}}, {{b, 2}, {c, 1}}});
+  auto addOutputEqualities = [&](Value view) {
+    if (!isSplitKV)
+      equalities.push_back({{a, 0}, {view, 0}});
+    equalities.push_back({{a, 1}, {view, 1}});
+    equalities.push_back({{c, 2}, {view, 2}});
+  };
+  for (Value view : outputViews)
+    addOutputEqualities(view);
+  for (auto &[orig, view] : fusionInputMapOut)
+    addOutputEqualities(view);
+  auto addLseEqualities = [&](Value view) {
+    if (!isSplitKV)
+      equalities.push_back({{a, 0}, {view, 0}});
+    equalities.push_back({{a, 1}, {view, 1}});
+  };
+  for (Value view : lseViews)
+    addLseEqualities(view);
+  for (auto &[orig, view] : fusionInputMapLse)
+    addLseEqualities(view);
+  for (Value input : elementwiseInputs) {
+    if (cast<ShapedType>(input.getType()).getRank() != 3)
+      continue;
+    equalities.push_back({{a, 0}, {input, 0}});
+    equalities.push_back({{a, 1}, {input, 1}});
+    equalities.push_back({{b, 2}, {input, 2}});
+  }
+  return equalities;
+}
+
+/// The prePadG0M/prePadG0N attribute for dimension `dim` of `matrix` when it
+/// is padded to a multiple of `multiple`: null when no padding is needed, an
+/// index when the length is static, and a #rock.arg_expr when it is dynamic.
+static FailureOr<Attribute> getPrePadLength(Builder &b, Value matrix,
+                                            uint32_t dim, int64_t multiple) {
+  SmallVector<ArgDimAttr> symbols;
+  FailureOr<AffineExpr> length = getDimExpr(matrix, dim, symbols);
+  if (failed(length))
+    return failure();
+  if (auto cst = dyn_cast<AffineConstantExpr>(*length)) {
+    if (cst.getValue() % multiple == 0)
+      return Attribute();
+    return Attribute(b.getIndexAttr(cst.getValue()));
+  }
+  return Attribute(ArgExprAttr::get(b.getContext(), *length, symbols));
+}
+
 static LogicalResult commonAttentionGemmElmtGemm(
     ConversionPatternRewriter &rw, RockGemmGemmWrapperInterface op, Value a,
     Value b, Value c, Value lastValidKVIndex, Value prefixOffset,
@@ -563,6 +744,21 @@ static LogicalResult commonAttentionGemmElmtGemm(
                            "gemm1N");
   });
 
+  auto func = op->getParentOfType<func::FuncOp>();
+  bool isDynamic = isDynamicKernel(func);
+  if (isDynamic) {
+    if (failed(checkDynamicAttentionSupport(
+            op, a, c, params1, lastValidKVIndex, prefixOffset, splitKV,
+            slidingWindowLookBack, preSoftmaxHasSplitKVTransforms)))
+      return failure();
+    emitDimEqualities(rw, func,
+                      getAttentionDimEqualities(
+                          a, b, c, elementwiseInputs, outputViews,
+                          fusionInputMapOut, lseViews, fusionInputMapLse,
+                          /*isGQA=*/numHeadsQ != numHeadsKV,
+                          /*isSplitKV=*/splitKV.getInt() != 1));
+  }
+
   const int64_t splitKFactor = params1.getSplitKFactor();
   if (splitKFactor > 1) {
     if (enableSoftmax)
@@ -590,16 +786,18 @@ static LogicalResult commonAttentionGemmElmtGemm(
   // Grouped-Query Attention (GQA)
   IntegerAttr numRepeatsGQA = nullptr;
   if (enableSoftmax) {
-    GQAResult gqa =
+    FailureOr<GQAResult> gqa =
         processGQA(rw, op.getLoc(), a, b, c, outputViews, fusionInputMapOut,
                    lseViews, fusionInputMapLse, lastValidKVIndex, prefixOffset,
-                   numHeadsQ, numHeadsKV, splitKVNum);
-    numRepeatsGQA = gqa.numRepeats;
-    a = gqa.queries;
-    b = gqa.keys;
-    c = gqa.values;
-    lastValidKVIndex = gqa.lastValidKVIndex;
-    prefixOffset = gqa.prefixOffset;
+                   numHeadsQ, numHeadsKV, splitKVNum, isDynamic);
+    if (failed(gqa))
+      return op.emitOpError("cannot express the dynamic GQA views");
+    numRepeatsGQA = gqa->numRepeats;
+    a = gqa->queries;
+    b = gqa->keys;
+    c = gqa->values;
+    lastValidKVIndex = gqa->lastValidKVIndex;
+    prefixOffset = gqa->prefixOffset;
   }
 
   // Note, matrix dimension correctness is handled in the verifier
@@ -617,45 +815,83 @@ static LogicalResult commonAttentionGemmElmtGemm(
   GemmSize gemm1Size(/*g=*/aShape[0], /*m=*/aShape[1],
                      /*k=*/cShape[1],
                      /*n=*/cShape[2]);
-  GemmSize gemm0ExtraPad = requiredPadding(params0, gemm0Size, 1, 1, splitKVNum)
-                               .value_or(GemmSize{0, 0, 0, 0});
-  GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
-                               .value_or(GemmSize{0, 0, 0, 0});
-  // gemm1N is split into nPerBlockG1-wide chunks folded back together with
-  // pairwise tt.join, so the chunk count must be a power of two. Round gemm1N
-  // up to a power of two to guarantee this (no-op for the untiled case).
-  int64_t requiredGemm1N = gemm1Size.n + gemm1ExtraPad.n;
-  gemm1ExtraPad.n += llvm::PowerOf2Ceil(requiredGemm1N) - requiredGemm1N;
+  Attribute prePadG0MAttr, prePadG0NAttr;
+  if (isDynamic) {
+    // Every multiple is a tile size: with split-KV, gemm0N is not padded to a
+    // multiple of the splits, as the N loop of each split stops at the last
+    // key block.
+    int64_t gemm0MPerBlock = params0.getMPerBlock();
+    int64_t gemm0NPerBlock = params0.getNPerBlock();
+    int64_t gemm0KPerBlock = params0.getKPerBlock();
+    int64_t gemm1MPerBlock = params1.getMPerBlock();
+    int64_t gemm1KPerBlock = params1.getKPerBlock();
+    // gemm1N (the head dim of V) is static. As below, its padded length is a
+    // power of two.
+    int64_t paddedGemm1N =
+        llvm::PowerOf2Ceil(llvm::alignTo(gemm1Size.n, params1.getNPerBlock()));
+    FailureOr<Attribute> prePadM =
+        getPrePadLength(rw, a, /*dim=*/1, gemm0MPerBlock);
+    FailureOr<Attribute> prePadN =
+        getPrePadLength(rw, b, /*dim=*/2, gemm0NPerBlock);
+    if (failed(prePadM) || failed(prePadN))
+      return op.emitOpError("cannot express the dynamic sequence lengths");
+    prePadG0MAttr = *prePadM;
+    prePadG0NAttr = *prePadN;
 
-  a = padMatrix(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
-                gemm0ExtraPad.k);
-  b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
-                gemm0ExtraPad.n);
-  c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
-                gemm1ExtraPad.n);
-  transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
-    return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
-                     gemm1ExtraPad.n);
-  });
-  if (hasLse) {
-    transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
-      return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
+    a = padMatrixToMultiple(a, rw, loc, "gemm0M", gemm0MPerBlock, "gemm0K",
+                            gemm0KPerBlock);
+    b = padMatrixToMultiple(b, rw, loc, "gemm0K", gemm0KPerBlock, "gemm0N",
+                            gemm0NPerBlock);
+    c = padMatrixToMultiple(c, rw, loc, "gemm1K", gemm1KPerBlock, "gemm1N",
+                            paddedGemm1N);
+    transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
+      return padMatrixToMultiple(v, rw, loc, "gemm1M", gemm1MPerBlock, "gemm1N",
+                                 paddedGemm1N);
     });
+    if (hasLse) {
+      transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
+        return padVectorToMultiple(v, rw, loc, "gemm1M", gemm1MPerBlock);
+      });
+    }
+  } else {
+    GemmSize gemm0ExtraPad =
+        requiredPadding(params0, gemm0Size, 1, 1, splitKVNum)
+            .value_or(GemmSize{0, 0, 0, 0});
+    GemmSize gemm1ExtraPad = requiredPadding(params1, gemm1Size, splitKVNum)
+                                 .value_or(GemmSize{0, 0, 0, 0});
+    // gemm1N is split into nPerBlockG1-wide chunks folded back together with
+    // pairwise tt.join, so the chunk count must be a power of two. Round
+    // gemm1N up to a power of two to guarantee this (no-op for the untiled
+    // case).
+    int64_t requiredGemm1N = gemm1Size.n + gemm1ExtraPad.n;
+    gemm1ExtraPad.n += llvm::PowerOf2Ceil(requiredGemm1N) - requiredGemm1N;
+
+    a = padMatrix(a, rw, loc, "gemm0M", gemm0ExtraPad.m, "gemm0K",
+                  gemm0ExtraPad.k);
+    b = padMatrix(b, rw, loc, "gemm0K", gemm0ExtraPad.k, "gemm0N",
+                  gemm0ExtraPad.n);
+    c = padMatrix(c, rw, loc, "gemm1K", gemm1ExtraPad.k, "gemm1N",
+                  gemm1ExtraPad.n);
+    transformViewsAttn(rw, outputViews, fusionInputMapOut, [&](Value v) {
+      return padMatrix(v, rw, loc, "gemm1M", gemm1ExtraPad.m, "gemm1N",
+                       gemm1ExtraPad.n);
+    });
+    if (hasLse) {
+      transformViewsAttn(rw, lseViews, fusionInputMapLse, [&](Value v) {
+        return padVector(v, rw, loc, "gemm1M", gemm1ExtraPad.m);
+      });
+    }
+
+    if (gemm0ExtraPad.m)
+      prePadG0MAttr = rw.getIndexAttr(gemm0Size.m);
+    if (gemm0ExtraPad.n)
+      prePadG0NAttr = rw.getIndexAttr(gemm0Size.n);
   }
 
   if (failed(
           computeGridSizeAttentionGemmElmtGemm(rw, op, a, b, c, splitKVNum))) {
     return op.emitError("failed to compute the grid size of "
                         "`GemmElementwiseGemmOp`/`AttentionOp`");
-  }
-
-  IntegerAttr prePadG0MAttr;
-  if (gemm0ExtraPad.m) {
-    prePadG0MAttr = rw.getIndexAttr(gemm0Size.m);
-  }
-  IntegerAttr prePadG0NAttr;
-  if (gemm0ExtraPad.n) {
-    prePadG0NAttr = rw.getIndexAttr(gemm0Size.n);
   }
 
   auto newOutputType = RankedTensorType::get(

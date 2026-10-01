@@ -1,0 +1,53 @@
+directory = "PrAttentionDecodeDynamic"
+prefix = "rocmlir-gen"
+suffix = "--operation attention --arch %arch -pv %random_data %rocmlir_gen_flags | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+# Dynamic attention with GQA, split-KV, a KV cache and a prefix offset. The
+# kernel takes the dimensions named here as runtime arguments; the host
+# harness still allocates the sizes given on the command line. With g dynamic,
+# the KV cache and prefix offset have a dynamic length too.
+[[axis]]
+name = "dynamic dims"
+values = ["g,seq_k", "g,seq_q,seq_k"]
+prefix = "--dynamic-dims "
+
+[[axis]]
+name = "data type"
+values = ["f32", "f16"]
+prefix = "-t "
+
+[[suite]]
+name = "pr_attention_decode_dynamic"
+
+# GQA: the query heads of each KV head are folded into seq_q, so the causal
+# mask compares the keys with row / num_repeats
+[[suite.test]]
+config = "-g 2 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 100 -seq_len_k 70 -head_dim_qk 64 -head_dim_v 64 -causal"
+
+# Split-KV: each split runs its share of the key blocks of the dynamic seq_k
+[[suite.test]]
+config = "-g 2 -seq_len_q 1 -seq_len_k 300 -head_dim_qk 64 -head_dim_v 64 --split_kv 4 --return_lse"
+
+# Split-KV with fewer key blocks than splits, so some splits have no work
+[[suite.test]]
+config = "-g 2 -seq_len_q 1 -seq_len_k 40 -head_dim_qk 64 -head_dim_v 64 --split_kv 4 --return_lse"
+
+# GQA with split-KV
+[[suite.test]]
+config = "-g 2 -num_heads_q 8 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 300 -head_dim_qk 64 -head_dim_v 64 --split_kv 4 --return_lse"
+
+# KV cache: each batch attends to its own number of keys
+[[suite.test]]
+config = "-g 3 -seq_len_q 1 -seq_len_k 300 -head_dim_qk 64 -head_dim_v 64 --last_valid_kv_index 10,150,299"
+
+# KV cache and prefix offset with GQA
+[[suite.test]]
+config = "-g 2 -num_heads_q 8 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 300 -head_dim_qk 64 -head_dim_v 64 --last_valid_kv_index 40,250 --prefix_offset 7,200"
+
+# KV cache and prefix offset with GQA and split-KV
+[[suite.test]]
+config = "-g 2 -num_heads_q 8 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 300 -head_dim_qk 64 -head_dim_v 64 --last_valid_kv_index 40,250 --prefix_offset 7,200 --split_kv 4 --return_lse"
+
+# KV cache and prefix offset with several queries
+[[suite.test]]
+config = "-g 2 -seq_len_q 64 -seq_len_k 200 -head_dim_qk 64 -head_dim_v 64 --last_valid_kv_index 70,199 --prefix_offset 3,90"
