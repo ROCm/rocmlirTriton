@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-driver -c --arch "gfx908:sramecc+:xnack-" -mlir-print-ir-after=rock-lower-stores -o /dev/null 2>&1 | FileCheck %s
 
 module {

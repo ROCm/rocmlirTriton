@@ -13,9 +13,9 @@ Usage:
     python verify_hipblaslt.py -m 32 -n 32 -k 32 -t f32 -arch gfx942 \\
         --hipblaslt-path <path> \\
         --rocmlir-gen-path <path> \\
-        --rocmlir-driver-path <path> \\
-        --runner-path <path> \\
-        --libs <shared_libs>
+        --rocmlir-driver-path <path>
+
+The rocMLIR reference is executed with rocm-run, which must be on PATH.
 """
 
 import argparse
@@ -75,8 +75,8 @@ def run_hipblaslt(hipblaslt_path, m, n, k, g, dtype, trans_a, trans_b):
         return None, str(e)
 
 
-def run_rocmlir_gen(rocmlir_gen_path, rocmlir_driver_path, runner_path, libs, m, n, k, g, dtype,
-                    trans_a, trans_b, arch):
+def run_rocmlir_gen(rocmlir_gen_path, rocmlir_driver_path, m, n, k, g, dtype, trans_a, trans_b,
+                    arch):
     """Run rocmlir-gen with -pr and execute to get reference output."""
     # Map dtype to rocmlir-gen format
     dtype_map = {'f32': 'f32', 'f16': 'f16', 'bf16': 'bf16', 'i8': 'i8', 'fp8': 'fp8'}
@@ -125,20 +125,13 @@ def run_rocmlir_gen(rocmlir_gen_path, rocmlir_driver_path, runner_path, libs, m,
         if driver_result.returncode != 0:
             return None, f"rocmlir-driver failed: {driver_result.stderr}"
 
-        # Run with mlir-runner
-        runner_cmd = [
-            runner_path,
-            '-O2',
-            f'--shared-libs={libs}',
-            '--entry-point-result=void',
-        ]
-        runner_result = subprocess.run(runner_cmd,
+        runner_result = subprocess.run(['rocm-run'],
                                        input=driver_result.stdout,
                                        capture_output=True,
                                        text=True,
                                        timeout=120)
         if runner_result.returncode != 0:
-            return None, f"mlir-runner failed: {runner_result.stderr}"
+            return None, f"rocm-run failed: {runner_result.stderr}"
 
         return runner_result.stdout, None
 
@@ -189,8 +182,6 @@ def main():
                         help='Path to hipblaslt-benchmark-driver')
     parser.add_argument('--rocmlir-gen-path', required=True, help='Path to rocmlir-gen')
     parser.add_argument('--rocmlir-driver-path', required=True, help='Path to rocmlir-driver')
-    parser.add_argument('--runner-path', required=True, help='Path to mlir-runner')
-    parser.add_argument('--libs', required=True, help='Comma-separated shared libraries')
     parser.add_argument('-arch',
                         '--arch',
                         required=True,
@@ -221,9 +212,8 @@ def main():
 
     # Run rocmlir-gen
     rocmlir_out, rocmlir_err = run_rocmlir_gen(args.rocmlir_gen_path, args.rocmlir_driver_path,
-                                               args.runner_path, args.libs, args.m, args.n, args.k,
-                                               args.g, args.dtype, args.transA, args.transB,
-                                               args.arch)
+                                               args.m, args.n, args.k, args.g, args.dtype,
+                                               args.transA, args.transB, args.arch)
 
     if rocmlir_err:
         print(f"ROCMLIR ERROR: {rocmlir_err}")

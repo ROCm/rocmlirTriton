@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=gpu --mlir-print-ir-after=rock-regularize-output 2>&1 | FileCheck %s
 
 // CHECK: rock.transform {{.*}} by <affine_map<(d0, d1, d2, d3, d4) -> (0, 0, 0, 0, d4)> by [<Broadcast{1} ["go"] at [0] -> ["go"] at [0]>, <Broadcast{1} ["no"] at [1] -> ["no"] at [1]>, <Broadcast{1} ["ho"] at [2] -> ["ho"] at [2]>, <Broadcast{1} ["wo"] at [3] -> ["wo"] at [3]>, <PassThrough ["ko"] at [4] -> ["ko"] at [4]>] bounds = [1, 1, 30, 30, 16] -> [1, 1, 1, 1, 16]>

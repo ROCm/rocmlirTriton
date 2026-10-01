@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --split-input-file --tosa-to-rock %s -o -| FileCheck %s
 
 // CHECK-LABEL: @test_basic

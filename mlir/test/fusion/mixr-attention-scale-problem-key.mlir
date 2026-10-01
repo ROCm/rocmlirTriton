@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // A pre-softmax elementwise multiply by an external input (migraphx.mul, which
 // lowers to arith.mulf in preSoftmaxBody) is an attention scale fusion and must

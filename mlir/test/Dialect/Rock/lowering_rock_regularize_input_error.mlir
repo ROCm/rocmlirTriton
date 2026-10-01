@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Error tests for rock-regularize-input pass.
 
 // RUN: rocmlir-opt -rock-regularize-input -verify-diagnostics --split-input-file %s

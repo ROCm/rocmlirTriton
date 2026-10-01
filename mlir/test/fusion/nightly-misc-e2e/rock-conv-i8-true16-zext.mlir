@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for a runtime memory crash in the generated i8
 // convolution. Without llvm-patches/patch208045.patch, executing the kernel
 // produced for this pinned shape and gemm:v4 perf config with rocm-run crashes.

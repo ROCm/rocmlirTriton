@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that -pv-f64 promotes the host CPU attention reference's interior
 // to f64 for non-quantized attention (f32, f16), and that it errors out
 // when used with quantized i8 attention or with non-attention kernels.

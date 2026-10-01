@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that the ResolveKernelLaunchParams pass causes the AMDGPU backend to
 // emit a non-zero .amdhsa_group_segment_fixed_size in the kernel descriptor,
 // proving that LDS is allocated statically in the binary rather than passed

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This test exercises the "consumer picks front() of quick tuning space"
 // behavior end-to-end. For each scenario, we:
 //   1) ask rocmlir-gen to emit the quick tuning space,

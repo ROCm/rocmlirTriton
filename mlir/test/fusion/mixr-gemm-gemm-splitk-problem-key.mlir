@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
 // Same GEMM-GEMM problem shape as mixr-gemm-gemm-problem-key.mlir, but without
 // the pre-second-GEMM add: the bare pattern has to stay split-k capable too,

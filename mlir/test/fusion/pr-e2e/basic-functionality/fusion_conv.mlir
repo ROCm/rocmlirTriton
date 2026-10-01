@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused conv test (migraphx IR): output = conv(filter, input + inputfusion) + ofusion
 //
 //   N=2, C=8, K=4, H=W=8, filter 3x3, pad=1, stride=1, group=1.

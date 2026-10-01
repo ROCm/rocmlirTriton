@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: not rocmlir-opt -rock-tensor-to-triton-ptr --split-input-file %s 2>&1 | FileCheck %s
 
 // Verifies that a rock.cast_to_ptr not in the extract_ptr chain triggers an error

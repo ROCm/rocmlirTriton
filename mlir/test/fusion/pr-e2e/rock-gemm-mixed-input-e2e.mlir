@@ -1,4 +1,7 @@
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f32_f16 -to f32 -g 1 -m 1 -k 1 -n 1 -pv | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
-// RUN: rocmlir-gen --arch %arch --operation gemm -ta f16 -tb f32 -to f32 -g 1 -m 1 -k 1 -n 1 -pv | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f32_f16 -to f32 -g 1 -m 1 -k 1 -n 1 -pv | rocmlir-driver -c | rocm-run | FileCheck %s
+// RUN: rocmlir-gen --arch %arch --operation gemm -ta f16 -tb f32 -to f32 -g 1 -m 1 -k 1 -n 1 -pv | rocmlir-driver -c | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]

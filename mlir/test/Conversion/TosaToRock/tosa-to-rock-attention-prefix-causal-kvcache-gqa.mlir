@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --tosa-to-rock %s | FileCheck %s
 
 // This test verifies that TosaToRock correctly detects the combination of:

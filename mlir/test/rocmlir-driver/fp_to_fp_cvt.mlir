@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // GEMM: f16 output writeback truncates the f32 accumulator to f16.
 // RUN: rocmlir-gen --arch gfx90a  --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX90A --implicit-check-not=v_cvt_pk_f16_f32
 // RUN: rocmlir-gen --arch gfx942  --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32

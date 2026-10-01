@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end cover for migraphx.pow, which rock-legalize-math-for-triton always
 // turns into a `__ocml_pow_f32` call. lowering_rock_legalize_math_for_triton.mlir
 // pins the rewrite on hand-written funcs; what this adds is the real migraphx

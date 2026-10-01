@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = gemm(A, B) + extra1 + extra2
 //
 // The original kernel interleaves reshape and add fusions in different

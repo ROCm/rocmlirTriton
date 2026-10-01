@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end check that rock-fuse-sibling-loops (+ CSE) deduplicates shared
 // operand loads when BOTH the M and N block tiles are non-power-of-two.
 //

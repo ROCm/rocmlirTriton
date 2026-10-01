@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -tosa-to-rock %s -o - | FileCheck %s
 // COM: From the MIGraphX-generated module
 // COM: func.func @mlir_reshape_transpose_reshape_convolution(%arg0: !migraphx.shaped<1x116x28x28xf32, 90944x784x28x1>, %arg1: !migraphx.shaped<116x1x3x3xf32, 9x9x3x1>) -> !migraphx.shaped<1x116x14x14xf32, 22736x196x14x1> attributes {rock.arch = "gfx1100", rock.kernel = "mixr"} {    %0 = migraphx.reshape %arg0 {dims = [1, 2, 58, 28, 28]} : <1x116x28x28xf32, 90944x784x28x1> -> <1x2x58x28x28xf32, 90944x45472x784x28x1>

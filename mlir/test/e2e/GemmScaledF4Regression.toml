@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # The suffix intentionally omits `%random_data -rand_type float`. Tests below
 # default to `-rand fixed`, which uses small per-dtype patterns that are safe
 # under f8E8M0FNU quantization. The f32-scale case explicitly opts in to

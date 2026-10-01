@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for a rocmlir-driver hang on gfx950: with the perf_config
 // below this kernel previously caused rocmlir-driver -c to spin
 // indefinitely. Compile-only; cross-compiles to gfx950 so the test runs on

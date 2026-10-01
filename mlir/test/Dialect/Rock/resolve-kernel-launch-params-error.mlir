@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s -verify-diagnostics
 // RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s -verify-diagnostics --mlir-print-ir-after-failure 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NA --implicit-check-not=rock.not_applicable

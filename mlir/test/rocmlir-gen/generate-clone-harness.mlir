@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -fut mlir_reshape_convolution  --arch gfx90a:sramecc+:xnack- --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_reshape_convolution --verifier clone - | FileCheck %s
 // RUN: rocmlir-gen -fut mlir_reshape_convolution  --arch gfx90a:sramecc+:xnack- --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_reshape_convolution --verifier clone - | rocmlir-driver -c | FileCheck %s --check-prefixes=CHECK_FULL
 

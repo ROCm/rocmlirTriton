@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -pass-pipeline='builtin.module(gpu.module(emulate-fp8-ext-trunc),emulate-fp8-ext-trunc)' -split-input-file %s | FileCheck %s
 // RUN: rocmlir-opt -pass-pipeline='builtin.module(gpu.module(emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=true}),emulate-fp8-ext-trunc{f8-conversion-instrs=false ocpf8-conversion-instrs=true})' -split-input-file %s | FileCheck %s --check-prefix=MI350_F8
 

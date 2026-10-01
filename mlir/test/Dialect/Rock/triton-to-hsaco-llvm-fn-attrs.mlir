@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: env LLVM_IR_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx942 llvm-fn-attrs=rocmlir-test-flag,rocmlir-test-attr=enabled,rocmlir-test-empty=,denormal-fp-math-f32=preserve-sign' %s 2>&1 | FileCheck %s
 
 // Verify the debug-only `llvm_fn_attrs` override loop in

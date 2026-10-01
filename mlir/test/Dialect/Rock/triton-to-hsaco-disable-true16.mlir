@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Case 1: gfx11 (RDNA3) -> disableTrue16 -> fake16 (plain VGPRs).
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1100' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=FAKE16

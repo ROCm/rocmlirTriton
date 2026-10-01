@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Check the naming of tuning parameters for xdlops and matrix c vectorization values
 
 // RUN: rocmlir-gen --arch gfx908 -p | rocmlir-driver -c -mlir-print-ir-after=rock-conv-to-gemm 2>&1 >/dev/null | FileCheck %s --check-prefix=STEP1

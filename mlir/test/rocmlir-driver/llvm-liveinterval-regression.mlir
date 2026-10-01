@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for an LLVM AMDGPU backend crash in Greedy Register Allocator
 // (LiveIntervalUnion::extract "Inconsistent LiveInterval") seen while tuning
 // this convfp16 workload on gfx1200. This is compile-only (no runtime

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Compile-only regression test for the SplitKit "Interference" assertion fixed
 // by llvm-patches/patch209704.patch: this conv_bwd_data f32 workload on gfx908
 // aborts in the greedy register allocator without the fix.

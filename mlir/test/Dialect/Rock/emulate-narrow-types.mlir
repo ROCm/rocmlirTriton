@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rock-emulate-narrow-types pass.
 // Input IR assumes RockConvertNarrowTypeSignaturesPass has already run:
 // function args are packed i8 with unrealized_conversion_cast back to i4.

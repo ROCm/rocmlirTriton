@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 set(LLVM_OPTIONAL_SOURCES
   mixrir.c
   tosa_miir.cc

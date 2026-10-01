@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify rocmlir-driver's --perf-config flag stamps the given perf config onto
 // the tunable op before lowering. With no pipeline requested, rocmlir-driver
 // only parses, stamps, and reprints the module, so the attribute is observable

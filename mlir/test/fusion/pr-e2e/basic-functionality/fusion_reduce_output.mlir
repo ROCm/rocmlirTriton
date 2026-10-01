@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM+reduce test (migraphx IR):
 //   gemm   = A_f16 * B_f16                       (f16, [1, 100, 100])
 //   fused  = extf( gemm + extra1 + extra2 )      (f32, [1, 100, 100])

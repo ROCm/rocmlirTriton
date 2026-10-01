@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-serialize-host-funcs pass.
 // The pass serializes non-kernel functions into a "rock.host_functions"
 // module attribute (as an array of strings) and erases them.

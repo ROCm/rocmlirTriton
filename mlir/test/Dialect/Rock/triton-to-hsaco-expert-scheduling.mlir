@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Case 1: gfx1250 -> isExpertSchedulingEnabled() -> expert scheduling mode 2.
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1250' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=EXPERT

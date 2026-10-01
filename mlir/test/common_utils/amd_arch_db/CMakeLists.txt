@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Test-only binding. Never linked into librockCompiler.
 pybind11_add_module(amd_arch_db MODULE binding.cpp)
 

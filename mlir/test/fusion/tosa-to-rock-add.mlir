@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=highlevel,gpu,triton,binary -arch amdgcn-amd-amdhsa:gfx1030 %s -o -| FileCheck %s
 
 // CHECK-LABEL: test_fusion

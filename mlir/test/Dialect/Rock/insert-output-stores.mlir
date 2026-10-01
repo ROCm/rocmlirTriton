@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-insert-output-stores -split-input-file -verify-diagnostics %s | FileCheck %s
 
 // CHECK-LABEL: func.func @simple_gemm

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -resolve-kernel-launch-params --split-input-file %s | FileCheck %s
 
 // Verifies that @global_smem is converted from external [0 x i8] (dynamic LDS)

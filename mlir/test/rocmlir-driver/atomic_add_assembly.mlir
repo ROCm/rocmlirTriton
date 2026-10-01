@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
 // RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t bf16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
 // RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t f32 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
