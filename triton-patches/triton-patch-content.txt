@@ -22,6 +22,8 @@ patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
 patch-elementwise-fastmath-flags.patch
 patch-gfx1310-isa-family.patch
+patch-lit-registered-target-features.patch
+patch-xfail-loop-pipeline-hip.patch
 patch11295.patch
 patch-direct-to-lds-swizzle-check-vec.patch
 patch10497.patch
@@ -71,6 +73,9 @@ patch-buffer-atomics.patch
   atomic add; gfx11 only F32; gfx942 no PK_ADD_BF16; gfx12 no F64).
   Upstreaming was attempted in https://github.com/triton-lang/triton/pull/10408
   but it was rejected.
+  Enabling RMW on RDNA3/GFX1170 also makes f32 buffer atomic fmin/fmax reachable
+  there, so patch11018 lists those rows of
+  test/TritonGPU/amd/amd-convert-buffer-ops-atomic-fminmax.mlir as BUF-F32.
 
 patch10498.patch
   Extends patch10450's soffset-split safety check to peel sign-preserving
@@ -290,6 +295,10 @@ patch11018.patch
   CDNA) used to be an ISel failure, while the generic atomicrmw fmax/fmin
   fallback always has a CAS expansion. That is what lets rocMLIR drop its
   isFastAtomicMaxSupported() fusion gate.
+  The gfx1100 and gfx1170 rows of the test matrix use BUF-F32 where upstream uses
+  NO-F32: upstream reaches those families with no buffer atomic RMW at all, while
+  patch-buffer-atomics enables it and GFX11 does carry
+  AtomicFMinFMaxF32GlobalInsts.
 
   Imports https://github.com/triton-lang/triton/pull/11018 (merged form), minus
   the LoadStoreOpToLLVM.cpp hunk, which patch-float-atomic-minmax-lowering.patch
@@ -544,3 +553,27 @@ patch11890.patch
   Drop this patch on the next Triton bump that includes upstream merge commit
   1725224a65ebc2dc7ca2ee1d84458344d93ee797.
 
+patch-lit-registered-target-features.patch
+  Adds the `<target>-registered-target` lit features to test/lit.cfg.py and
+  guards the llc pipelines of test/Conversion/tritongpu_to_ptx.mlir and
+  test/Conversion/tritongpu_to_ptx_mmav3.mlir with them. Same code as
+  llvm/test/lit.cfg.py, over config.targets_to_build, which
+  configure_lit_site_cfg fills in from LLVM_TARGETS_TO_BUILD.
+  rocmlirTriton builds LLVM with X86;AMDGPU only (see cmake/triton.cmake), so
+  `llc -mtriple nvptx64-nvidia-cuda` cannot resolve a target and both tests fail
+  rather than being skipped. The three RUN lines of tritongpu_to_ptx.mlir that
+  only need triton-opt keep running; tritongpu_to_ptx_mmav3.mlir is nothing but
+  an llc pipeline, so it reports unsupported.
+  Tracks https://github.com/triton-lang/triton/pull/12072. Drop this patch once
+  the pinned Triton revision includes that change.
+
+patch-xfail-loop-pipeline-hip.patch
+  Marks test/TritonGPU/loop-pipeline-hip.mlir XFAIL. On its ASYNC run the
+  direct-to-LDS swizzle clamp from patch11295.patch and
+  patch-direct-to-lds-swizzle-check-vec.patch narrows a swizzle that stays
+  inside the warp down to maxPhase 1 for a load whose local_alloc keeps the
+  unclamped layout, and the pipeliner fails with "doesn't know how to predicate
+  this op". XFAIL rather than UNSUPPORTED, so the fix shows up as an unexpected
+  pass.
+  rocmlirTriton PR 556 fixes the clamp; drop this patch when it lands, or once
+  the pinned Triton includes the fix upstream (triton-lang/triton PR 11295).

@@ -1445,8 +1445,15 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
   return {attnPerfConfig->getMPerBlockG0(), attnPerfConfig->getNPerBlockG0()};
 }
 
-// Compute the number of valid split-KV entries for each batch-head.
-// This determines which splits should have valid results vs -inf.
+// Compute a conservative number of valid split-KV entries, either one per
+// batch-head or, under causal / prefix-causal masking, one per (batch-head,
+// query-row). The GPU partitions keys using the last row in an M block, while
+// this host calculation uses each row independently, so it can include extra
+// empty splits but cannot exclude a split containing valid row data. Empty
+// splits have defined zero output and -inf LSE and are harmless in the combine.
+// TODO: If GridwiseAttnToBlockwise changes no-work workgroups to return without
+// writing, prefill their output/LSE slots with these identities in the host
+// wrapper and update the CPU reference to preserve this contract.
 // Note on the M/N convention: rocMLIR's blockwise attention computes the
 // transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
 // which puts the key-sequence dimension on GEMM0's M axis. The Triton
@@ -1454,29 +1461,33 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
 // dimension is GEMM0's N axis. Split-KV partitions the first GEMM along
 // the key-sequence dimension, hence we use gemm0NPerBlock here.
 static SmallVector<int32_t> computeValidSplitKV(int64_t nPerBlock) {
-  SmallVector<int32_t> validSplitKV;
-  for (int64_t i = 0; i < groupSize; ++i) {
-    int32_t effectiveLastValidKVIndex =
-        lastValidKVIndex.empty() ? (sequenceLengthK - 1) : lastValidKVIndex[i];
-    // For prefix causal masking, the effective inclusive index is
-    // min(P, queryPos + prefixOffset). Since queryPos is 0 for seqLenQ=1
-    // (decoding), this becomes min(P, prefixOffset).
-    // Note: prefixOffset implies causal is enabled, so we handle it first.
-    if (!prefixOffset.empty()) {
-      int32_t prefixLastValidKVIndex = static_cast<int32_t>(prefixOffset[i]);
-      effectiveLastValidKVIndex =
-          std::min(effectiveLastValidKVIndex, prefixLastValidKVIndex);
-    } else if (causalMasking) {
-      // Regular causal: only implemented if sequenceLengthQ <= nPerBlock
-      // P = min(P, n_block * gemm0NPerBlock)
-      effectiveLastValidKVIndex = 0;
-    }
-    int32_t numPerBlock = (effectiveLastValidKVIndex + nPerBlock) / nPerBlock;
+  assert(nPerBlock > 0 && "tile size must be positive");
+  auto numValidSplits = [&](int32_t lastValid) -> int32_t {
+    int32_t numPerBlock = (lastValid + nPerBlock) / nPerBlock;
     int32_t itersPerBlock = nPerBlock * llvm::divideCeil(numPerBlock, splitKV);
-    int32_t numValidKV =
-        llvm::divideCeil(effectiveLastValidKVIndex + 1, itersPerBlock);
-    for (int64_t j = 0; j < numHeadsQ; ++j)
-      validSplitKV.push_back(numValidKV);
+    return llvm::divideCeil(lastValid + 1, itersPerBlock);
+  };
+  SmallVector<int32_t> validSplitKV;
+  bool usePerRowMask = causalMasking || !prefixOffset.empty();
+  for (int64_t i = 0; i < groupSize; ++i) {
+    int32_t lastValidIndex =
+        lastValidKVIndex.empty() ? (sequenceLengthK - 1) : lastValidKVIndex[i];
+    if (usePerRowMask) {
+      for (int64_t j = 0; j < numHeadsQ; ++j) {
+        for (int64_t q = 0; q < sequenceLengthQ; ++q) {
+          int32_t rowLastValidIndex = static_cast<int32_t>(q);
+          if (!prefixOffset.empty())
+            rowLastValidIndex += static_cast<int32_t>(prefixOffset[i]);
+          rowLastValidIndex = std::min(rowLastValidIndex, lastValidIndex);
+          rowLastValidIndex = std::max(rowLastValidIndex, 0);
+          validSplitKV.push_back(numValidSplits(rowLastValidIndex));
+        }
+      }
+    } else {
+      int32_t numValidKV = numValidSplits(lastValidIndex);
+      for (int64_t j = 0; j < numHeadsQ; ++j)
+        validSplitKV.push_back(numValidKV);
+    }
   }
   return validSplitKV;
 }
@@ -1630,15 +1641,6 @@ static func::FuncOp createGPUWrapper(ModuleOp module,
             b, params,
             cast<rock::RockGemmGemmWrapperInterface>(attnOp.getOperation()))
             .second;
-
-    // TODO: causal masking is not implemented yet
-    // typically, causal masking is used in the prefill phase, where split-KV is
-    // not typically used
-    if (sequenceLengthQ > nPerBlock && causalMasking) {
-      llvm::errs() << "Causal masking + split-KV is not supported with "
-                      "sequenceLengthQ > nPerBlock (rocmlir-gen limitation)\n";
-      exit(1);
-    }
 
     // The split-KV finalization below masks out split slots that did not run.
     // Match GridwiseAttnToBlockwise's Triton lowering, which splits the
@@ -3509,16 +3511,28 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
                                SmallVector<int32_t> &validSplitKV) {
   assert(static_cast<size_t>(index) < shape.size() &&
          "Index out of bounds for shape");
-  assert(static_cast<size_t>(shape[0]) == validSplitKV.size() &&
-         "Shape size must match the size of validSplitKV");
+  bool perBatchMask = static_cast<size_t>(shape[0]) == validSplitKV.size();
+  [[maybe_unused]] bool perRowMask =
+      shape.size() > 2 &&
+      static_cast<size_t>(shape[0] * shape[2]) == validSplitKV.size();
+  assert((perBatchMask || perRowMask) &&
+         "validSplitKV must be per-batch-head or per-(batch-head,row)");
+  assert((perBatchMask || index == 1) &&
+         "per-row split-KV mask assumes the split axis is dim 1");
   // generate mask for valid resultTensor
   auto rangeTensor = createRange(builder, loc, index, shape);
 
   // constant tensor
-  SmallVector<int64_t> initialShape = {
-      static_cast<int64_t>(validSplitKV.size())};
-  for (size_t i = 1; i < shape.size(); i++)
-    initialShape.push_back(1);
+  SmallVector<int64_t> initialShape;
+  if (perBatchMask) {
+    initialShape = {static_cast<int64_t>(validSplitKV.size())};
+    for (size_t i = 1; i < shape.size(); ++i)
+      initialShape.push_back(1);
+  } else {
+    initialShape = {shape[0], 1, shape[2]};
+    for (size_t i = 3; i < shape.size(); ++i)
+      initialShape.push_back(1);
+  }
 
   auto initialType = RankedTensorType::get(initialShape, builder.getI32Type());
   auto denseAttr =
@@ -3529,7 +3543,8 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
   // Create zero tensor of target shape
   auto outType = RankedTensorType::get(shape, builder.getI32Type());
 
-  // Use tosa.mul to broadcast reshaped [batch,1,1,...] to [batch,D1,D2,...]
+  // Broadcast either [batch,1,1,...] or [batch,1,row,1,...] validity
+  // counts to [batch,D1,D2,...].
   Value validSplitKVTensor = rock::tosa::getMulOp(
       builder, loc, initialTensor,
       rock::tosa::getOneTensor(builder, loc, outType), outType);
@@ -3544,9 +3559,13 @@ static Value createMaskSplitKV(OpBuilder &builder, Location loc,
 static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
                                         Value resultTensor, Value lseTensor,
                                         SmallVector<int32_t> &validSplitKV) {
-  if (!lastValidKVIndex.empty())
-    assert(validSplitKV.size() == (numHeadsQ * lastValidKVIndex.size()) &&
-           "Number of valid split KV must match last valid K/V indices");
+  if (!lastValidKVIndex.empty()) {
+    [[maybe_unused]] size_t perBatchHead = numHeadsQ * lastValidKVIndex.size();
+    [[maybe_unused]] size_t perRow = perBatchHead * sequenceLengthQ;
+    assert((validSplitKV.size() == perBatchHead ||
+            validSplitKV.size() == perRow) &&
+           "split-KV validity must match batch-heads or batch-head rows");
+  }
   SmallVector<int64_t> newResultShape;
   SmallVector<int64_t> newResultShapeAfterTranpose = {
       groupSize * numHeadsQ, splitKV, sequenceLengthQ, headDimV};
@@ -3557,12 +3576,22 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
     newResultShape = newResultShapeAfterTranpose;
   }
 
-  auto elementType = cast<ShapedType>(lseTensor.getType()).getElementType();
+  Type storageType = cast<ShapedType>(lseTensor.getType()).getElementType();
+  Type computeType = storageType;
+  if (isa<Float16Type, BFloat16Type>(storageType))
+    computeType = builder.getF32Type();
+  auto castTo = [&](Type type, Value value) -> Value {
+    if (cast<ShapedType>(value.getType()).getElementType() == type)
+      return value;
+    return rock::tosa::createOpAndInfer<tosa::CastOp>(builder, loc, type,
+                                                      value);
+  };
+
   ImplicitLocOpBuilder implicitBuilder(loc, builder);
   auto newResultShapeValue =
       tosa::getTosaConstShape(implicitBuilder, newResultShape);
   resultTensor = rock::tosa::createOpAndInfer<tosa::ReshapeOp>(
-      builder, loc, elementType, resultTensor, newResultShapeValue);
+      builder, loc, storageType, resultTensor, newResultShapeValue);
   if (transposeO)
     resultTensor =
         rock::tosa::getTransposeOp(builder, loc, resultTensor, {0, 1, 3, 2});
@@ -3571,7 +3600,9 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
                                       sequenceLengthQ, 1};
   auto newLseShapeValue = tosa::getTosaConstShape(implicitBuilder, newLseShape);
   lseTensor = rock::tosa::createOpAndInfer<tosa::ReshapeOp>(
-      builder, loc, elementType, lseTensor, newLseShapeValue);
+      builder, loc, storageType, lseTensor, newLseShapeValue);
+  resultTensor = castTo(computeType, resultTensor);
+  lseTensor = castTo(computeType, lseTensor);
 
   Value resultTensorMask = createMaskSplitKV(
       builder, loc, newResultShapeAfterTranpose, 1, validSplitKV);
@@ -3586,29 +3617,44 @@ static Value computeFinalAttentionStage(OpBuilder builder, Location loc,
 
   IntegerAttr axisAttr = builder.getI32IntegerAttr(1);
   auto maxSplitKV = rock::tosa::createOpAndInfer<tosa::ReduceMaxOp>(
-      builder, loc, elementType, lseTensor, axisAttr);
+      builder, loc, computeType, lseTensor, axisAttr);
+
+  auto maxSplitKVType = cast<RankedTensorType>(maxSplitKV.getType());
+  APFloat lowestFinite = APFloat::getLargest(
+      cast<FloatType>(computeType).getFloatSemantics(), /*Negative=*/true);
+  Value lowestFiniteTensor =
+      createFloatSplatTensor(builder, loc, maxSplitKVType, lowestFinite);
+  Value maxSplitKVForNormalization =
+      rock::tosa::createOpAndInfer<tosa::MaximumOp>(
+          builder, loc, computeType, maxSplitKV, lowestFiniteTensor);
 
   auto norm = rock::tosa::createOpAndInfer<tosa::SubOp>(
-      builder, loc, elementType, lseTensor, maxSplitKV);
+      builder, loc, computeType, lseTensor, maxSplitKVForNormalization);
   auto exp = rock::tosa::createOpAndInfer<tosa::ExpOp>(builder, loc,
-                                                       elementType, norm);
+                                                       computeType, norm);
 
   auto sumExpNorm = rock::tosa::createOpAndInfer<tosa::ReduceSumOp>(
-      builder, loc, elementType, exp, axisAttr);
+      builder, loc, computeType, exp, axisAttr);
+  auto sumExpNormType = cast<RankedTensorType>(sumExpNorm.getType());
+  Value oneTensor = createFloatSplatTensor(builder, loc, sumExpNormType, 1.0f);
+  Value sumExpNormForNormalization =
+      rock::tosa::createOpAndInfer<tosa::MaximumOp>(builder, loc, computeType,
+                                                    sumExpNorm, oneTensor);
   auto sumExpNormRecip = rock::tosa::createOpAndInfer<tosa::ReciprocalOp>(
-      builder, loc, elementType, sumExpNorm);
+      builder, loc, computeType, sumExpNormForNormalization);
 
   Value outExp =
-      rock::tosa::getMulOp(builder, loc, exp, resultTensor, elementType);
+      rock::tosa::getMulOp(builder, loc, exp, resultTensor, computeType);
 
   // apply mask to outExp to prevent NaN values
   outExp = applyMask(builder, loc, outExp, resultTensorMask, 0.0f);
 
   auto outExpNorm = rock::tosa::createOpAndInfer<tosa::ReduceSumOp>(
-      builder, loc, elementType, outExp, axisAttr);
+      builder, loc, computeType, outExp, axisAttr);
 
   Value finalResult = rock::tosa::getMulOp(builder, loc, outExpNorm,
-                                           sumExpNormRecip, elementType);
+                                           sumExpNormRecip, computeType);
+  finalResult = castTo(storageType, finalResult);
 
   // broadcast the result in splitKV dimension
   // we have to do this because both cpu and gpu buffers have the same shape.
@@ -4901,9 +4947,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   Value lseOut;
-  // if split-kv is > 1, we use the LSE to compute the final result.
-  // There's no need to verify it, and it's expected to be different
-  // cpu vs gpu (sometimes).
+  // The GPU's split-KV boundaries depend on the sequence length and selected
+  // tile size. The CPU reference computes unsplit attention and broadcasts its
+  // LSE, so that LSE is not comparable with the GPU's per-split LSE. Only the
+  // final recombined output is verified for split-KV.
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
@@ -6082,8 +6129,9 @@ static LogicalResult populateHostHarnessLogic(
         outIndices.push_back(optionalArgsCounter);
         allOutIndices.push_back(optionalArgsCounter);
         allOutIndices.push_back(lseArgIdx);
-        // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
-        // is an intermediate used to compute the final result.
+        // TODO: Reproduce the GPU's sequence-length/tile-dependent split
+        // boundaries in the CPU reference so split-KV LSE can be verified.
+        // Until then, verify only the final recombined output for splitKV > 1.
         if (splitKV == 1)
           outIndices.push_back(lseArgIdx);
       } else {

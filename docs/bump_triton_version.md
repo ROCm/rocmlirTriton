@@ -178,7 +178,9 @@ subtree root and confirm there are no rejects:
 ```
 
 Offsets and small fuzz are expected (upstream shifted the surrounding
-lines); rejects are not.
+lines); rejects are not. Neither guarantees the result still matches the code,
+so once the tree builds, verify the survivors with `check-triton-lit-tests`
+(Step 12): most records ship the lit tests for the behavior they change.
 
 ## Step 3: Rebuild LLVM/MLIR
 
@@ -335,6 +337,21 @@ upstream fix and whether the workaround is still necessary. Do not remove the
 clamp based only on the revision change: also verify the behavior with
 `gridwise-attention-kvcache-clamp.mlir` and
 `mixr-attention-kvcache.mlir`.
+
+### 5.3.3 gfx950 packed-FP32 / MFMA hazard workaround
+
+`mlir/test/fusion/pr-e2e/attention/mixr-attention-flash-decoding-3d-output-fusion.mlir`
+pins a `perf_config` on its second `migraphx.dot` instead of using the gfx950
+default. The default config miscompiles on gfx950: LLVM inserts no wait
+between a `v_pk_fma_f32` that uses `op_sel` on src1 and an immediately
+following MFMA that reuses the previous MFMA's srcA, so lanes 48-63 of that
+MFMA produce wrong results. The LLVM issue is tracked by ROCM-32038.
+
+On every LLVM bump, check whether the new pinned LLVM revision contains the
+upstream fix. Remove the pin only when both hold: the revision contains the
+fix, and the unpinned test passes on gfx950. Neither is enough on its own. A
+passing test can just mean a scheduling change moved the two instructions
+apart, which hides the bug without fixing it.
 
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 
@@ -721,15 +738,19 @@ matrix. Because the table is compiled into the library, rebuild afterward
 ## Step 12: Run Tests
 
 ```bash
-cd build && ninja check-mlir && ninja check-rocmlir
+cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir
 ```
 
-`check-mlir` runs the upstream MLIR suite from `external/llvm-project`, which is
-the main signal that a fresh upstream import plus our re-applied `llvm-patches/`
-did not regress MLIR itself. Run it before `check-rocmlir`: it is far quicker, so
-regressions surface earlier. The nightly pipeline runs it too, and there with
-`MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that lands on `develop` is covered
-even if this step is skipped.
+`check-mlir` runs the upstream MLIR suite from `external/llvm-project` and
+`check-triton-lit-tests` Triton's own lit suite from `external/triton`. Together
+they are the main signal that a fresh upstream import plus our re-applied
+`llvm-patches/` and `triton-patches/` did not regress the vendored trees. Run
+both before `check-rocmlir`: they are far quicker, so regressions surface
+earlier. `check-triton-lit-tests` is the check that catches a Step 2 patch
+re-applied against drifted upstream context, because most Triton patch records
+carry the lit tests for the behavior they change. The nightly pipeline runs both
+too, `check-mlir` there with `MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that
+lands on `develop` is covered even if this step is skipped.
 
 ## Checklist Summary
 
@@ -749,6 +770,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
 - [ ] Generate diff for `llvm/cmake/modules/HandleLLVMOptions.cmake` and reconcile the mirrored `LLVM_ENABLE_ASSERTIONS` flag block in `cmake/triton.cmake` (see section 5.4.3)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
+- [ ] Check whether the pinned LLVM revision fixes the gfx950 packed-FP32 / MFMA hazard and re-evaluate the perfConfig pin in `mixr-attention-flash-decoding-3d-output-fusion.mlir` (see section 5.3.3)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
@@ -769,7 +791,7 @@ Use this checklist to track progress:
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
-- [ ] Run tests with `cd build && ninja check-mlir && ninja check-rocmlir`
+- [ ] Run tests with `cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir`
 - [ ] All tests pass
 - [ ] Commit all changes
 

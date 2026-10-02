@@ -1349,6 +1349,9 @@ struct GridwiseAttentionRewritePattern
     // output. The IfOp returns (outAcc, lseOut?) so the code after the if
     // always has defined values; the else branch yields zero-initialized
     // tensors.
+    // TODO: A true workgroup return that skips stores requires rocmlir-gen to
+    // prefill split output/LSE slots with zero/-inf and update its CPU
+    // reference; the host split-KV combine relies on those neutral values.
     SmallVector<Value> earlyExitElseValues;
     auto initOutAcc = rock::createZeroAccBuffer(
         rewriter, loc, {gemm1MPerBlock, gemm1N}, elemTypeOut);

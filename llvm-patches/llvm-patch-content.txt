@@ -858,3 +858,66 @@ Applies on top of patch201186.patch and does not apply to a tree without it.
 
 Drop this patch on the next LLVM/Triton bump that includes upstream commit
 077ec06128e27e3dce2b97563dab703f89024ddf.
+
+----------------------------------------------------------------------
+patch218363.patch
+----------------------------------------------------------------------
+- Upstream commit : 4362da25049882128f50a0f6b4fb69c1a0f8fd57
+- Upstream PR     : https://github.com/llvm/llvm-project/pull/218363
+- Upstream title  : [AMDGPU] Add wait states between different MFMAs sharing
+                    an accumulator
+- File Fixed      : llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+                    llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+                    llvm/test/CodeGen/AMDGPU/mai-hazards-gfx90a.mir
+                    llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir
+- Contents        : Moves the overlapped src2/C MFMA wait-state logic into
+                    getMFMAOverlappedSrcCWaitStates(), with the "XDL reader of
+                    a non-XDL writer needs no wait states" early-out hoisted to
+                    cover every writer. Adds getMFMANonMacAGPRFormOp() and
+                    isSameMFMA() to compare MFMAs across their mac and
+                    AGPR/VGPR forms, and updates checkMAIHazards90A() to
+                    require partial-overlap wait states on gfx940-family
+                    targets when two different MFMAs share the same
+                    accumulator tuple. Adds MIR coverage for mixed-MFMA
+                    accumulator-forwarding hazards (gfx942/gfx950 and a gfx90a
+                    no-change check) and for mac/non-mac matching.
+
+Symptom without the patch
+-------------------------
+On gfx940/gfx950, back-to-back MFMA instructions that write and then read the
+same accumulator tuple as src2/C can miss required wait states when the two
+instructions are different MFMA opcodes. This incorrectly relies on the
+zero-wait accumulator-forwarding path that only applies when the MFMA chain
+stays on one MFMA. On gfx950 this miscompiled the peeled K loop generated for
+non-power-of-two kPerBlock, which is why that feature was disabled there.
+
+Root cause
+----------
+The previous hazard logic in checkMAIHazards90A() treated full-overlap src2/C
+reads as safe for zero wait states on gfx940-family targets without checking
+whether the writer and reader are the same MFMA. Mixed-shape or mixed-form
+pairs therefore skipped the partial-overlap wait-state tables that should have
+been applied.
+
+CI coverage
+-----------
+mlir/test/fusion/pr-e2e/rock-conv-bwd-data-nonpow2-k-mfma-acc-hazard.mlir pins
+an f16 conv_bwd_data with kPerBlock=48, whose peeled K loop interleaves
+v_mfma_f32_16x16x32_f16 and v_mfma_f32_16x16x16_f16 on the same accumulators,
+and checks the GPU result against the CPU verifier. The miscompile does not
+make compilation fail, so this is a runtime test: it only runs on gfx950
+hardware, where it produces wrong results without this patch. A future
+LLVM bump that loses the fix will fail there.
+
+Downstream divergence from the upstream PR
+------------------------------------------
+Upstream calls AMDGPU::getAGPRFormOp(), introduced by the NFC rename in
+upstream #213274 (c27bee245fc0). The pinned tree predates that rename, so this
+patch calls the equivalent AMDGPU::getMFMASrcCVDstAGPROp() instead; for MFMAs
+the generated table is identical. The new gfx942 MIR tests are appended at the
+end of the pinned test file, since upstream has later tests after the
+insertion point. The vendored LLVM is built as libraries only, so these MIR
+tests cannot be run in this build.
+
+Drop this patch on the next LLVM/Triton bump that includes upstream commit
+4362da25049882128f50a0f6b4fb69c1a0f8fd57.

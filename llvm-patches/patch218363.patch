@@ -1,0 +1,384 @@
+diff --git a/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp b/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+index fe8dd7a15f..83ab3e70f7 100644
+--- a/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
++++ b/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.cpp
+@@ -2711,6 +2711,24 @@ int GCNHazardRecognizer::checkMAIHazards908(MachineInstr *MI) const {
+   return WaitStatesNeeded;
+ }
+ 
++/// One MFMA can be written with up to four opcodes that differ only in how vdst
++/// and src2 are encoded: both are either AGPRs or VGPRs, and the mac form ties
++/// vdst to src2 instead of taking them as separate operands. \returns the AGPR,
++/// non-mac opcode, so that every form of the same MFMA maps to one value.
++static unsigned getMFMANonMacAGPRFormOp(unsigned Opc) {
++  if (int NonMacOp = AMDGPU::getMFMAEarlyClobberOp(Opc); NonMacOp != -1)
++    Opc = NonMacOp;
++  if (int AGPROp = AMDGPU::getMFMASrcCVDstAGPROp(Opc); AGPROp != -1)
++    Opc = AGPROp;
++  return Opc;
++}
++
++/// \returns true if \p Opc0 and \p Opc1 are the same MFMA, ignoring the mac
++/// form and whether vdst/src2 are AGPRs or VGPRs.
++static bool isSameMFMA(unsigned Opc0, unsigned Opc1) {
++  return getMFMANonMacAGPRFormOp(Opc0) == getMFMANonMacAGPRFormOp(Opc1);
++}
++
+ static int
+ GFX940_XDL_N_PassWritesVGPROverlappedXDLOrSMFMASrcCWaitStates(int NumPasses,
+                                                               bool IsGFX950) {
+@@ -2761,6 +2779,66 @@ static int GFX940_XDL_N_PassWritesVGPROverlappedSrcABWaitStates(int NumPasses,
+   return NumPasses + 3 + (NumPasses != 2 && IsGFX950);
+ }
+ 
++int GCNHazardRecognizer::getMFMAOverlappedSrcCWaitStates(
++    const MachineInstr *Reader, const MachineInstr *Writer) const {
++  constexpr int SMFMA4x4WritesVGPROverlappedSMFMASrcCWaitStates = 2;
++  constexpr int SMFMA16x16WritesVGPROverlappedSMFMASrcCWaitStates = 8;
++  constexpr int SMFMA32x32WritesVGPROverlappedSMFMASrcCWaitStates = 16;
++  constexpr int SMFMA4x4WritesVGPROverlappedDMFMASrcCWaitStates = 3;
++  constexpr int SMFMA16x16WritesVGPROverlappedDMFMASrcCWaitStates = 9;
++  constexpr int SMFMA32x32WritesVGPROverlappedDMFMASrcCWaitStates = 17;
++  constexpr int DMFMA16x16WritesVGPROverlappedSrcCWaitStates = 9;
++  constexpr int GFX950_DMFMA16x16WritesVGPROverlappedSrcCWaitStates = 17;
++  constexpr int DMFMA4x4WritesVGPROverlappedSrcCWaitStates = 4;
++
++  // An XDL read of a non-XDL result needs no wait states. DGEMM is never XDL,
++  // so this also covers the f64 writers handled below.
++  if (TII.isXDL(*Reader) && !TII.isXDL(*Writer))
++    return 0;
++
++  switch (Writer->getOpcode()) {
++  case AMDGPU::V_MFMA_F64_16X16X4F64_e64:
++  case AMDGPU::V_MFMA_F64_16X16X4F64_vgprcd_e64:
++  case AMDGPU::V_MFMA_F64_16X16X4F64_mac_e64:
++  case AMDGPU::V_MFMA_F64_16X16X4F64_mac_vgprcd_e64:
++    return ST.hasGFX950Insts()
++               ? GFX950_DMFMA16x16WritesVGPROverlappedSrcCWaitStates
++               : DMFMA16x16WritesVGPROverlappedSrcCWaitStates;
++  case AMDGPU::V_MFMA_F64_4X4X4F64_e64:
++  case AMDGPU::V_MFMA_F64_4X4X4F64_vgprcd_e64:
++    return DMFMA4x4WritesVGPROverlappedSrcCWaitStates;
++  default:
++    break;
++  }
++
++  int NumPasses = TSchedModel.computeInstrLatency(Writer);
++  if (ST.hasGFX940Insts()) {
++    if (!TII.isXDL(*Writer))
++      return GFX940_SMFMA_N_PassWritesVGPROverlappedSMFMASrcCWaitStates(
++          NumPasses);
++    return TII.isXDL(*Reader)
++               ? GFX940_XDL_N_PassWritesVGPROverlappedXDLOrSMFMASrcCWaitStates(
++                     NumPasses, ST.hasGFX950Insts())
++               : GFX940_XDL_N_PassWritesVGPROverlappedSGEMMDGEMMSrcCWaitStates(
++                     NumPasses, ST.hasGFX950Insts());
++  }
++
++  bool IsDGEMM = SIInstrInfo::isDGEMM(Reader->getOpcode());
++  switch (NumPasses) {
++  case 2:
++    return IsDGEMM ? SMFMA4x4WritesVGPROverlappedDMFMASrcCWaitStates
++                   : SMFMA4x4WritesVGPROverlappedSMFMASrcCWaitStates;
++  case 8:
++    return IsDGEMM ? SMFMA16x16WritesVGPROverlappedDMFMASrcCWaitStates
++                   : SMFMA16x16WritesVGPROverlappedSMFMASrcCWaitStates;
++  case 16:
++    return IsDGEMM ? SMFMA32x32WritesVGPROverlappedDMFMASrcCWaitStates
++                   : SMFMA32x32WritesVGPROverlappedSMFMASrcCWaitStates;
++  default:
++    llvm_unreachable("unexpected number of passes");
++  }
++}
++
+ int GCNHazardRecognizer::checkMAIHazards90A(MachineInstr *MI) const {
+   int WaitStatesNeeded = 0;
+   unsigned Opc = MI->getOpcode();
+@@ -2788,15 +2866,6 @@ int GCNHazardRecognizer::checkMAIHazards90A(MachineInstr *MI) const {
+   // Loop for both DGEMM and S/HGEMM 2nd instruction.
+   for (const MachineOperand &Use : MI->explicit_uses()) {
+     const int LegacyVALUNotDotWritesVGPRWaitStates = 2;
+-    const int SMFMA4x4WritesVGPROverlappedSMFMASrcCWaitStates = 2;
+-    const int SMFMA16x16WritesVGPROverlappedSMFMASrcCWaitStates = 8;
+-    const int SMFMA32x32WritesVGPROverlappedSMFMASrcCWaitStates = 16;
+-    const int SMFMA4x4WritesVGPROverlappedDMFMASrcCWaitStates = 3;
+-    const int SMFMA16x16WritesVGPROverlappedDMFMASrcCWaitStates = 9;
+-    const int SMFMA32x32WritesVGPROverlappedDMFMASrcCWaitStates = 17;
+-    const int DMFMA16x16WritesVGPROverlappedSrcCWaitStates = 9;
+-    const int GFX950_DMFMA16x16WritesVGPROverlappedSrcCWaitStates = 17;
+-    const int DMFMA4x4WritesVGPROverlappedSrcCWaitStates = 4;
+     const int SMFMA4x4WritesVGPROverlappedSrcABWaitStates = 5;
+     const int SMFMA16x16WritesVGPROverlappedSrcABWaitStates = 11;
+     const int SMFMA32x32WritesVGPROverlappedSrcABWaitStates = 19;
+@@ -2848,64 +2917,16 @@ int GCNHazardRecognizer::checkMAIHazards90A(MachineInstr *MI) const {
+         else if (ST.hasGFX940Insts() &&
+                  TSchedModel.computeInstrLatency(MI1) == 2)
+           NeedWaitStates = GFX940_SMFMA4x4WritesVGPRFullSrcCWaitStates;
+-      } else {
+-        switch (Opc1) {
+-        case AMDGPU::V_MFMA_F64_16X16X4F64_e64:
+-        case AMDGPU::V_MFMA_F64_16X16X4F64_vgprcd_e64:
+-        case AMDGPU::V_MFMA_F64_16X16X4F64_mac_e64:
+-        case AMDGPU::V_MFMA_F64_16X16X4F64_mac_vgprcd_e64:
+-          if (!TII.isXDL(*MI))
+-            NeedWaitStates =
+-                ST.hasGFX950Insts()
+-                    ? GFX950_DMFMA16x16WritesVGPROverlappedSrcCWaitStates
+-                    : DMFMA16x16WritesVGPROverlappedSrcCWaitStates;
+-          break;
+-        case AMDGPU::V_MFMA_F64_4X4X4F64_e64:
+-        case AMDGPU::V_MFMA_F64_4X4X4F64_vgprcd_e64:
+-          if (!TII.isXDL(*MI))
+-            NeedWaitStates = DMFMA4x4WritesVGPROverlappedSrcCWaitStates;
+-          break;
+-        default:
+-          int NumPasses = TSchedModel.computeInstrLatency(MI1);
+-          if (ST.hasGFX940Insts()) {
+-            if (TII.isXDL(*MI) && !TII.isXDL(*MI1))
+-              break;
+-
+-            NeedWaitStates =
+-                TII.isXDL(*MI1)
+-                    ? (TII.isXDL(*MI)
+-                           ? GFX940_XDL_N_PassWritesVGPROverlappedXDLOrSMFMASrcCWaitStates(
+-                                 NumPasses, ST.hasGFX950Insts())
+-                           : GFX940_XDL_N_PassWritesVGPROverlappedSGEMMDGEMMSrcCWaitStates(
+-                                 NumPasses, ST.hasGFX950Insts()))
+-                    : GFX940_SMFMA_N_PassWritesVGPROverlappedSMFMASrcCWaitStates(
+-                          NumPasses);
+-            break;
+-          }
+ 
+-          switch (NumPasses) {
+-          case 2:
+-            NeedWaitStates =
+-                SIInstrInfo::isDGEMM(Opc)
+-                    ? SMFMA4x4WritesVGPROverlappedDMFMASrcCWaitStates
+-                    : SMFMA4x4WritesVGPROverlappedSMFMASrcCWaitStates;
+-            break;
+-          case 8:
+-            NeedWaitStates =
+-                SIInstrInfo::isDGEMM(Opc)
+-                    ? SMFMA16x16WritesVGPROverlappedDMFMASrcCWaitStates
+-                    : SMFMA16x16WritesVGPROverlappedSMFMASrcCWaitStates;
+-            break;
+-          case 16:
+-            NeedWaitStates =
+-                SIInstrInfo::isDGEMM(Opc)
+-                    ? SMFMA32x32WritesVGPROverlappedDMFMASrcCWaitStates
+-                    : SMFMA32x32WritesVGPROverlappedSMFMASrcCWaitStates;
+-            break;
+-          default:
+-            llvm_unreachable("unexpected number of passes");
+-          }
++        // The accumulator forwarding path that allows zero wait states is only
++        // available while the chain stays on a single MFMA. Two different MFMAs
++        // sharing an accumulator need the wait states of a partial overlap.
++        if (ST.hasGFX940Insts() && !isSameMFMA(Opc, Opc1)) {
++          NeedWaitStates = std::max(NeedWaitStates,
++                                    getMFMAOverlappedSrcCWaitStates(MI, MI1));
+         }
++      } else {
++        NeedWaitStates = getMFMAOverlappedSrcCWaitStates(MI, MI1);
+       }
+     } else {
+       switch (Opc1) {
+diff --git a/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h b/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+index aceede0cd9..7b66878ab5 100644
+--- a/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
++++ b/llvm/lib/Target/AMDGPU/GCNHazardRecognizer.h
+@@ -145,6 +145,11 @@ private:
+   int checkMAIHazards(MachineInstr *MI) const;
+   int checkMAIHazards908(MachineInstr *MI) const;
+   int checkMAIHazards90A(MachineInstr *MI) const;
++  /// Wait states needed when MFMA \p Reader reads as src2/C a register that the
++  /// earlier MFMA \p Writer wrote, taken from the wait state tables for
++  /// overlapping register tuples.
++  int getMFMAOverlappedSrcCWaitStates(const MachineInstr *Reader,
++                                      const MachineInstr *Writer) const;
+   /// Pad the latency between neighboring MFMA instructions with s_nops. The
+   /// percentage of wait states to fill with s_nops is specified by the command
+   /// line option '-amdgpu-mfma-padding-ratio'.
+diff --git a/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx90a.mir b/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx90a.mir
+index ddd8a4784e..c80fe3f1f3 100644
+--- a/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx90a.mir
++++ b/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx90a.mir
+@@ -1444,3 +1444,12 @@ body:             |
+     $agpr0_agpr1 = V_MFMA_F64_4X4X4F64_e64 $agpr0_agpr1, $agpr0_agpr1, $agpr0_agpr1, 0, 0, 0, implicit $mode, implicit $exec
+     BUFFER_STORE_DWORDX2_OFFEN_exact $vgpr2_vgpr3, $vgpr0, $sgpr0_sgpr1_sgpr2_sgpr3, 0, 0, 0, 0, implicit $exec
+ ...
++# GCN-LABEL: name: xdl_8pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F16
++# GCN-NEXT: V_MFMA_I32_16X16X4I8
++name:            xdl_8pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_I32_16X16X4I8_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++...
+diff --git a/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir b/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir
+index 1ef6b4c844..517fc03a40 100644
+--- a/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir
++++ b/llvm/test/CodeGen/AMDGPU/mai-hazards-gfx942.mir
+@@ -2512,3 +2512,161 @@ body:             |
+     $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_32X32X4F16_e64 $vgpr126_vgpr127, $vgpr128_vgpr129, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31, 0, 0, 0, implicit $mode, implicit $exec
+     $agpr2_agpr3_agpr4_agpr5 = V_SMFMAC_F32_16X16X32_F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4_vgpr5, $vgpr32, 0, 0, $agpr2_agpr3_agpr4_agpr5, implicit $mode, implicit $exec
+ ...
++# GCN-LABEL: name: xdl_sgemm16x16_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X32_F16
++# GFX942-NEXT: S_NOP 4
++# GFX950-NEXT: S_NOP 5
++# GCN-NEXT: V_MFMA_F32_16X16X16F16
++name:            xdl_sgemm16x16_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X32_F16_e64 $vgpr0_vgpr1_vgpr2_vgpr3, $vgpr4_vgpr5_vgpr6_vgpr7, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: nonxdl_sgemm16x16_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F32
++# GCN-NEXT: S_NOP 7
++# GCN-NEXT: V_MFMA_F32_4X4X1F32
++name:            nonxdl_sgemm16x16_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X4F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_4X4X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_sgemm16x16_mac_mfma_write_agpr_nonmac_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F16_mac
++# GCN-NEXT: V_MFMA_F32_16X16X4F16
++name:            xdl_sgemm16x16_mac_mfma_write_agpr_nonmac_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X4F16_mac_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_16X16X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_2pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_4X4X4F16
++# GFX942-NEXT: S_NOP 2
++# GFX950-NEXT: S_NOP 3
++# GCN-NEXT: V_MFMA_F32_16X16X16F16
++name:            xdl_2pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_4X4X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_8pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F16
++# GFX942-NEXT: S_NOP 8
++# GFX950-NEXT: S_NOP 9
++# GCN-NEXT: V_MFMA_I32_16X16X4I8
++name:            xdl_8pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_I32_16X16X4I8_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_16pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_32X32X4F16
++# GCN-NEXT: S_NOP 15
++# GFX942-NEXT: S_NOP 0
++# GFX950-NEXT: S_NOP 1
++# GCN-NEXT: V_MFMA_F32_32X32X1F32
++name:            xdl_16pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_32X32X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_32X32X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_8pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F16
++# GFX942-NEXT: S_NOP 8
++# GFX950-NEXT: S_NOP 9
++# GCN-NEXT: V_MFMA_F32_16X16X1F32
++name:            xdl_8pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_2pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_4X4X4F16
++# GCN-NEXT: S_NOP 2
++# GCN-NEXT: V_MFMA_F32_16X16X4F32
++name:            xdl_2pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_4X4X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X4F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: nonxdl_8pass_mfma_write_agpr_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X4F32
++# GCN-NEXT: V_MFMA_F32_16X16X16F16
++name:            nonxdl_8pass_mfma_write_agpr_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X4F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: nonxdl_2pass_mfma_write_agpr_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_4X4X1F32
++# GCN-NEXT: S_NOP 1
++# GCN-NEXT: V_MFMA_F32_16X16X16F16
++name:            nonxdl_2pass_mfma_write_agpr_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_4X4X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_4pass_mfma_write_agpr_smfmac_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X16F16
++# GFX942-NEXT: S_NOP 4
++# GFX950-NEXT: S_NOP 5
++# GCN-NEXT: V_SMFMAC_F32_16X16X32_F16
++name:            xdl_4pass_mfma_write_agpr_smfmac_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_SMFMAC_F32_16X16X32_F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4_vgpr5, $vgpr32, 0, 0, $agpr0_agpr1_agpr2_agpr3, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_16pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_32X32X4F16
++# GCN-NEXT: S_NOP 15
++# GFX942-NEXT: S_NOP 0
++# GFX950-NEXT: S_NOP 1
++# GCN-NEXT: V_MFMA_F32_32X32X4BF16_1K
++name:            xdl_16pass_mfma_write_agpr_different_xdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_32X32X4F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31 = V_MFMA_F32_32X32X4BF16_1K_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15_agpr16_agpr17_agpr18_agpr19_agpr20_agpr21_agpr22_agpr23_agpr24_agpr25_agpr26_agpr27_agpr28_agpr29_agpr30_agpr31, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: xdl_4pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_16X16X16F16
++# GFX942-NEXT: S_NOP 4
++# GFX950-NEXT: S_NOP 5
++# GCN-NEXT: V_MFMA_F32_16X16X4F32
++name:            xdl_4pass_mfma_write_agpr_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X16F16_e64 $vgpr0_vgpr1, $vgpr2_vgpr3, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X4F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: nonxdl_2pass_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_4X4X1F32
++# GCN-NEXT: S_NOP 1
++# GCN-NEXT: V_MFMA_F32_16X16X4F32
++name:            nonxdl_2pass_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_4X4X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3 = V_MFMA_F32_16X16X4F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3, 0, 0, 0, implicit $mode, implicit $exec
++...
++# GCN-LABEL: name: nonxdl_16pass_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++# GCN:      V_MFMA_F32_32X32X2F32
++# GCN-NEXT: S_NOP 15
++# GCN-NEXT: V_MFMA_F32_16X16X1F32
++name:            nonxdl_16pass_mfma_write_agpr_different_nonxdl_mfma_read_same_agpr_as_srcc
++body:             |
++  bb.0:
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_32X32X2F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++    $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15 = V_MFMA_F32_16X16X1F32_e64 $vgpr0, $vgpr1, $agpr0_agpr1_agpr2_agpr3_agpr4_agpr5_agpr6_agpr7_agpr8_agpr9_agpr10_agpr11_agpr12_agpr13_agpr14_agpr15, 0, 0, 0, implicit $mode, implicit $exec
++...

@@ -294,6 +294,10 @@ int main(int argc, char **argv) {
     std::cerr << "CK does not support different input/output data types!\n";
     exit(1);
   }
+  if (args.transposeO) {
+    std::cerr << "CK does not support transposed output!\n";
+    exit(1);
+  }
 
   size_t batchStrideA = args.gemmM * args.gemmK,
          batchStrideB = args.gemmK * args.gemmN,
