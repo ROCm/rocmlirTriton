@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-legalize-float-types pass.
 // Verifies that non-TT_Float types used in scaled GEMM kernels and wrappers
 // are legalized to integer types.

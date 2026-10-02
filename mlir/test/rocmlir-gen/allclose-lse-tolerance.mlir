@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests that the LSE (log-sum-exp) output of an attention kernel gets relaxed
 // tolerances (atol=1.5e-2, rtol=5e-4) while the main attention output (O) keeps
 // the normal K-scaled tolerance.

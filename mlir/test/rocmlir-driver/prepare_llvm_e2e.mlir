@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end test: verify AnalyzeMemoryUse + RockPrepareLLVM annotate
 // generated gemms correctly through the full pipeline.
 

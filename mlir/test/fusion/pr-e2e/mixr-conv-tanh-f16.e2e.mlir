@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Accuracy of the inline tanh approximation in rock-legalize-math-for-triton,
 // against the upstream CPU lowering of the same graph.
 //

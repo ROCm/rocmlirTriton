@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Check that a load narrowed by rock-narrow-redundant-loads stays narrow
 // through Triton's layout passes, and that its layout does not spread into the
 // epilogue it feeds. Whether the pass fires at all is covered by

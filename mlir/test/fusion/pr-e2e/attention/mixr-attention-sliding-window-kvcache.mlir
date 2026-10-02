@@ -1,5 +1,8 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel -arch %arch | rocmlir-gen --emit-tuning-key - | FileCheck %s --check-prefix=TUNING-KEY
-// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand_min_int 0 -rand_max_int 1024 -rand_type_int_for_inputs=3 -rand 1 -rand_type float -fut mlir_attention  --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_async_runtime%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand_min_int 0 -rand_max_int 1024 -rand_type_int_for_inputs=3 -rand 1 -rand_type float -fut mlir_attention  --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // TUNING-KEY: -t f16 -transQ false -transK true -transV false -transO false -causal false -return_lse false -split_kv 1 -sliding_window_look_back 3 -num_heads_q 1 -num_heads_kv 1 -g 2 -seq_len_q 1 -seq_len_k 8 -head_dim_qk 2 -head_dim_v 2
 // TUNING-KEY-NOT: last_valid_kv_index
 // CHECK: [1 1 1]

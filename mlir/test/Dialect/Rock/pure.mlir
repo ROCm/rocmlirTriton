@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that ops marked with the `Pure` trait are dead-code eliminated by
 // `-canonicalize` when their results are unused. Each function instantiates
 // one Pure op, ignores its result, and returns an unrelated value.

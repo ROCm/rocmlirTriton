@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Each pair below pins a problem hash followed by the hash of the ordered field
 // names used to build it. The latter is the generated map's automatic version:
 // adding, removing, renaming, or reordering a lookup-key field changes it

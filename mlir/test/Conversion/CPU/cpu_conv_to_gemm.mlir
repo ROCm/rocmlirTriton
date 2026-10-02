@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests for `--cpu-conv-to-gemm`. The pass rewrites a 2-D convolution-shaped
 // `linalg.generic` inside a `cpu_verifier` function into a single fused
 // `linalg.generic` (5 parallel + 3 reduction iterators, tagged with

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The numerical half of the clip story that clip-nnan-ttir.mlir and
 // clip-nnan-isa.mlir tell structurally. The same fused conv/bias/clip is
 // compiled twice, once with the kernel path's default no-NaN assumption (the
@@ -12,9 +15,9 @@
 // comparing two genuinely different lowerings rather than a kernel against
 // itself.
 
-// RUN: rocmlir-gen -fut conv_add_clip --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_clip --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut conv_add_clip --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_clip --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 
-// RUN: rocmlir-gen -fut conv_add_clip --arch %arch --clone-harness %s | rocmlir-driver -disable-fast-math -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_clip --verifier clone - | rocmlir-driver -disable-fast-math -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// RUN: rocmlir-gen -fut conv_add_clip --arch %arch --clone-harness %s | rocmlir-driver -disable-fast-math -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut conv_add_clip --verifier clone - | rocmlir-driver -disable-fast-math -c | rocm-run | FileCheck %s
 
 // CHECK: [1 1 1]
 module {

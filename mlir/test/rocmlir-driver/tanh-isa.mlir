@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Static ISA checks for the f32 tanh lowering in rock-legalize-math-for-triton.
 // Like mlir/test/fusion/pr-e2e/tosa-to-rock-tanh.e2e.mlir, but this one does
 // not need a GPU. The narrow types, which are the ones that get an inline

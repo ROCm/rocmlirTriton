@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline highlevel -arch gfx906 %s | FileCheck %s
 
 // CHECK-LABEL: test_conv_with_cast

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // COM: kcyx/nchw/nkhw, forward, n=1, c=2, k=2, input=8x8
 // COM: filter=1x1, dilation=1, padding=0 stride=1
 // RUN: rocmlir-gen --arch %arch -prc -rand=none -fil_layout=kcyx -in_layout=nchw -out_layout=nkhw -batchsize=1 -in_channels=2 -out_channels=2 -in_h=8 -in_w=8 -fil_h=1 -fil_w=1 --dilation_h=1 --dilation_w=1 --padding_h=0 --padding_w=0 --conv_stride_h=1 --conv_stride_w=1 | rocmlir-driver -host-pipeline=backend | rocm-run | FileCheck %s --check-prefix=CHECK1

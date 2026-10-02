@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --rock-detect-flash-decoding %s | FileCheck %s
 
 // Test with splitKV=128 and different dimensions (8 heads, 128 query seq, 64 head dim)

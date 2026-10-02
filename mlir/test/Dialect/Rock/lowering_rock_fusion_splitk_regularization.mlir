@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-fusion-splitk-regularization pass.
 // Tests that addf/subf with an external operand get that operand divided by
 // splitKFactor, while other fusion ops (mulf, extf, etc.) are unchanged.

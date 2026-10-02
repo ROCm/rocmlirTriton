@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verifies that perf configs carrying unsupported kpack values are hard-failed
 // (with a clear diagnostic) by the tuning driver rather than silently
 // classified as `N/A`. Covers both the gemm and the attention tuning paths on

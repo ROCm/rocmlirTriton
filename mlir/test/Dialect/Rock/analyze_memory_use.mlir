@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-analyze-memory-use %s | FileCheck %s
 
 // Note: the 64-bit index support is tested in large_tensor_detection

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests that the `-operation` flag path in `computeReductionK` computes the
 // correct K_eff for forward and backward-data convolutions.
 //

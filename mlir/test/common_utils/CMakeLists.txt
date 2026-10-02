@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 file(GLOB SRC_PY_FILES "${CMAKE_CURRENT_SOURCE_DIR}/*.py")
 
 # Test-only pybind11 binding over AmdArchDb. Never linked into librockCompiler

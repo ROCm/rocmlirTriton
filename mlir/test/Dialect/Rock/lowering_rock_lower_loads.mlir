@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-lower-loads pass.
 // The input to this pass is the output of rock-regularize-input:
 // every rock.load_marker's source is a pure transform chain (no fusions).

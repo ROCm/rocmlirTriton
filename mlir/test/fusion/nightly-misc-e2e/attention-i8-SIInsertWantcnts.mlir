@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression for an LLVM AMDGPU backend abort in SIInsertWaitcnts on
 // gfx950: without the cherry-picked fix in llvm-patches/patch6.patch,
 // rocmlir-driver -c aborts inside SIInsertWaitcnts::run when

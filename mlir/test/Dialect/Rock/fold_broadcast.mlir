@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --rock-fold-broadcast | FileCheck %s
 
 // CHECK-LABEL: func.func @fold_broadcast_b

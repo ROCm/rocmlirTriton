@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-regularize-inter-gemm-fusion pass.
 //
 // The pass canonicalizes the elementwise body of a `rock.gemm_elementwise_gemm`

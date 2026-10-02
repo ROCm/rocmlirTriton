@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -tosa-to-rock %s | FileCheck %s
 // CHECK-LABEL: @mlir_transpose_dot
 func.func @mlir_transpose_dot(%arg0: tensor<1x1x5x4xf32>, %arg1: tensor<1x1x5x3xf32>) -> tensor<1x1x4x3xf32> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 48 : i64} {

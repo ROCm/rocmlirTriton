@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-lower-reduce pass
 // Verifies that rock.reduce + rock.store is lowered to
 // broadcast transform + atomic store + prefill attribute.

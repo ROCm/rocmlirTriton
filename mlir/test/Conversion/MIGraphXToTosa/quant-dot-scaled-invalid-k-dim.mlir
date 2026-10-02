@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --migraphx-to-tosa -verify-diagnostics %s
 
 // Scaled quant_dot with K=100, which is not a multiple of blockSize (32).

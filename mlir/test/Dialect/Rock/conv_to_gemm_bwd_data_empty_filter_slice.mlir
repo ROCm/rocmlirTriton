@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // backwardDataKernelIds used to emit phantom kernel IDs for stride phases whose
 // filter slice is empty.
 

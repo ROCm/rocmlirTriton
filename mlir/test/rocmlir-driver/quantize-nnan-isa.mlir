@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A `migraphx.quantizelinear` rounds to nearest, ties to even with v_rndne,
 // then reduces its saturating float-to-int clamp to a single v_med3.
 //

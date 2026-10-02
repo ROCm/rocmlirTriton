@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused attention test (migraphx IR):
 //   q       = Q + fusionInput                                 (input fusion on Q)
 //   qk      = q @ K^T                                          (with GQA: 4 Q-heads share 2 KV-heads)

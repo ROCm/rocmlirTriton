@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -dump-pipelines -host-pipeline=backend -arch=gfx90a /dev/null -o /dev/null 2>&1 | FileCheck %s --check-prefix=RUNNER
 
 // RUNNER: Host Backend pipeline:

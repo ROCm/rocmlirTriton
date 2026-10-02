@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests that `sumErrorTolerance` uses different per-accumulation-step bounds
 // for fixed vs random input data. For f32:
 //   fixed  (seed = "fixed"): sumErrTol = 1e-6

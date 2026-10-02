@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Check that rock-narrow-redundant-loads fires on the pattern it was written
 // for: a group-quantized int4 GEMM whose weights carry one f16 scale per
 // 128-element group along K. Numerical correctness of this same kernel is

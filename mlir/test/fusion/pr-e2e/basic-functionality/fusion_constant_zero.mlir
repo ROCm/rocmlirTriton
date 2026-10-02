@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = (A + 0) * (B + 0) + 0
 //
 // NOTE: When lowered through the migraphx pipeline the `+ 0` adds are folded

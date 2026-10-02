@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // `--verifier=clone` builds the host harness assuming kernels have been
 // lowered through the rock kernel pipeline. Feeding it a kernel that still
 // contains higher-level dialects (tosa / migraphx) must produce an

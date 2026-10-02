@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-gridwise-attn-to-blockwise -split-input-file -verify-diagnostics %s | FileCheck %s
 
 // CHECK-LABEL: func @attn_mask_reshape_nonzero_qk_idx

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that the two ReLUs in this input-fused convolution remain single
 // min/max operations through Rock-to-TTIR. This guards the GPU pipeline's
 // disabled floating-point min/max expansion (into cmpf/select chains).

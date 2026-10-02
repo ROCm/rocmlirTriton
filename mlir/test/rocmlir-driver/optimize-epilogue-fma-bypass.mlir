@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // E2E test to exercise the OptimizeEpilogue pass, and show that bypassing
 // the epilogue relayout for an FMA dot removes an LDS round trip.
 //

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-analyze-memory-use %s | FileCheck %s
 
 // Large tensor (>2GB): tt.pointer_range should NOT be set

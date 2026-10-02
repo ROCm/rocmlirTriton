@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-emit-gpu-binary="arch=gfx90a" --split-input-file %s | FileCheck %s
 
 // Verifies gpu.binary is created with block_size and grid_size metadata

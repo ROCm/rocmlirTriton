@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A `migraphx.clip` collapses to a single v_med3. MIGraphXToTosa gives the tosa
 // maximum/minimum pair `nan_mode = IGNORE`, RockTosaToElementwise turns that
 // into `nnan`-flagged minnumf/maxnumf, and RockToTTIR folds the pair into

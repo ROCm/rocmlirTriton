@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression tests for the Triton plugin loader wired up in
 // mlir/include/mlir/InitRocMLIRDialects.h::registerTritonDialects.
 //

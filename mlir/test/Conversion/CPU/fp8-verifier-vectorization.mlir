@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression test for the fp8 CPU-verifier vectorization ordering.
 //
 // The host lowering pipeline must run `emulate-fp8-ext-trunc` AFTER the

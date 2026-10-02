@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Negative tests for rocmlir-gen command-line option validation.
 
 // --kernel-repeats only valid with -ph or -pv.

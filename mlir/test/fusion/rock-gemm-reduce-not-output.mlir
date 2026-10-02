@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: not rocmlir-driver -c -arch %arch %s 2>&1 | FileCheck %s
 // COM: rock.reduce is not the output, there's an arith.maximumf after it. This is not allowed and must fail.
 // CHECK: could not find rock.store along single-use chain from reduce

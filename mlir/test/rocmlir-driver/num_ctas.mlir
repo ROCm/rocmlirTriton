@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that the Triton pipeline correctly propagates numCTAs from
 // the perf_config into the ttg.num-ctas module attribute, and that
 // kernel launch parameters (grid_size, block_size) are set correctly.

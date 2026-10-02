@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch %s | rocmlir-driver -kernel-pipeline gpu -arch %arch | rocmlir-opt | FileCheck %s
 // Derived from https://github.com/ROCm/rocMLIR/issues/1188
 // and rocMLIR-internal/issues/1098

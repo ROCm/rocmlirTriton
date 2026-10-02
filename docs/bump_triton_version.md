@@ -336,7 +336,22 @@ clamp based only on the revision change: also verify the behavior with
 `gridwise-attention-kvcache-clamp.mlir` and
 `mixr-attention-kvcache.mlir`.
 
-### 5.3.3 Parameter-sweep skip list for the InlineSpiller spill-slot bug
+### 5.3.3 gfx950 packed-FP32 / MFMA hazard workaround
+
+`mlir/test/fusion/pr-e2e/attention/mixr-attention-flash-decoding-3d-output-fusion.mlir`
+pins a `perf_config` on its second `migraphx.dot` instead of using the gfx950
+default. The default config miscompiles on gfx950: LLVM inserts no wait
+between a `v_pk_fma_f32` that uses `op_sel` on src1 and an immediately
+following MFMA that reuses the previous MFMA's srcA, so lanes 48-63 of that
+MFMA produce wrong results. The LLVM issue is tracked by ROCM-32038.
+
+On every LLVM bump, check whether the new pinned LLVM revision contains the
+upstream fix. Remove the pin only when both hold: the revision contains the
+fix, and the unpinned test passes on gfx950. Neither is enough on its own. A
+passing test can just mean a scheduling change moved the two instructions
+apart, which hides the bug without fixing it.
+
+### 5.3.4 Parameter-sweep skip list for the InlineSpiller spill-slot bug
 
 `SKIPPED_PERF_CONFIGS` in `mlir/utils/performance/parameterSweeps.py` lists
 (chip, sweep kind, perf_config) combinations that `parameterSweeps.py` and
@@ -781,7 +796,8 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
 - [ ] Generate diff for `llvm/cmake/modules/HandleLLVMOptions.cmake` and reconcile the mirrored `LLVM_ENABLE_ASSERTIONS` flag block in `cmake/triton.cmake` (see section 5.4.3)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
-- [ ] Check whether the pinned LLVM revision fixes llvm/llvm-project#225054 and re-evaluate `SKIPPED_PERF_CONFIGS` in `parameterSweeps.py` (see section 5.3.3)
+- [ ] Check whether the pinned LLVM revision fixes the gfx950 packed-FP32 / MFMA hazard and re-evaluate the perfConfig pin in `mixr-attention-flash-decoding-3d-output-fusion.mlir` (see section 5.3.3)
+- [ ] Check whether the pinned LLVM revision fixes llvm/llvm-project#225054 and re-evaluate `SKIPPED_PERF_CONFIGS` in `parameterSweeps.py` (see section 5.3.4)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes

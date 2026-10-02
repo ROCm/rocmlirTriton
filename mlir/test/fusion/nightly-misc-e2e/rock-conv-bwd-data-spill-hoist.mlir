@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression test for an AMDGPU register-allocator crash that surfaces in
 // conv_bwd_data kernels. Without the fix, the Greedy Register
 // Allocator hits a MachineVerifier failure ("Bad machine code: Using an

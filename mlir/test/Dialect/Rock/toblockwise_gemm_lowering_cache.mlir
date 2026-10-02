@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Cache-modifier heuristics for rock-gridwise-gemm-to-blockwise.
 //
 // A is reused across nBlocks workgroups, B across mBlocks. When one GEMM

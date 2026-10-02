@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = (A * B) - 1.0
 //
 // Tests a broadcast-subtract as an output fusion (NON-zero-preserving:
