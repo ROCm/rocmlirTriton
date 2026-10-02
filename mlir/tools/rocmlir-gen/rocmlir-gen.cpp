@@ -1451,6 +1451,9 @@ getMandNPerBlock(OpBuilder builder, const GenParams &params,
 // this host calculation uses each row independently, so it can include extra
 // empty splits but cannot exclude a split containing valid row data. Empty
 // splits have defined zero output and -inf LSE and are harmless in the combine.
+// TODO: If GridwiseAttnToBlockwise changes no-work workgroups to return without
+// writing, prefill their output/LSE slots with these identities in the host
+// wrapper and update the CPU reference to preserve this contract.
 // Note on the M/N convention: rocMLIR's blockwise attention computes the
 // transposed product V * (K * Q^T) rather than the standard (Q * K^T) * V,
 // which puts the key-sequence dimension on GEMM0's M axis. The Triton
@@ -4944,9 +4947,10 @@ static func::FuncOp createCpuAttentionKernelWithMlir(ModuleOp module,
   }
 
   Value lseOut;
-  // if split-kv is > 1, we use the LSE to compute the final result.
-  // There's no need to verify it, and it's expected to be different
-  // cpu vs gpu (sometimes).
+  // The GPU's split-KV boundaries depend on the sequence length and selected
+  // tile size. The CPU reference computes unsplit attention and broadcasts its
+  // LSE, so that LSE is not comparable with the GPU's per-split LSE. Only the
+  // final recombined output is verified for split-KV.
   if (returnLSE)
     lseOut = block->getArgument(optionalArgsCounter++);
 
@@ -6125,8 +6129,9 @@ static LogicalResult populateHostHarnessLogic(
         outIndices.push_back(optionalArgsCounter);
         allOutIndices.push_back(optionalArgsCounter);
         allOutIndices.push_back(lseArgIdx);
-        // Only verify LSE when splitKV == 1; with splitKV > 1, the LSE
-        // is an intermediate used to compute the final result.
+        // TODO: Reproduce the GPU's sequence-length/tile-dependent split
+        // boundaries in the CPU reference so split-KV LSE can be verified.
+        // Until then, verify only the final recombined output for splitKV > 1.
         if (splitKV == 1)
           outIndices.push_back(lseArgIdx);
       } else {
