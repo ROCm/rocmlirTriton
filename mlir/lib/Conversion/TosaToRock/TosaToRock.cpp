@@ -1630,6 +1630,9 @@ struct AttentionMatcherValues {
   Value lse;
   Value causalMaskInput;
   Value lastKVIndex;
+  // Number of attention groups (batch x heads, x splitKV for flash decoding)
+  // that lastKVIndex and prefixOffset were validated against in match().
+  int64_t gemmG = 1;
   bool isCausal;
   Value prefixOffset;
   std::optional<int64_t> lookBack;
@@ -3229,10 +3232,17 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         return false;
       ArrayRef<int64_t> shape = cast<ShapedType>(v.getType()).getShape();
       bool valid = false;
-      if (shape.size() == 1 || (shape.size() == 2 && shape[1] == 1))
+      if (shape.size() == 1 || (shape.size() == 2 && shape[1] == 1)) {
         valid = shape[0] > 0 && gemmG % shape[0] == 0;
-      else if (shape.size() == 2)
+        // Reconstructing the per-group broadcast is only implemented for
+        // plain block arguments, but the mask matchers can hand back a
+        // derived value here (e.g. the prefix offset resolved up to a
+        // tosa.transpose of the block argument).
+        if (shape[0] != gemmG)
+          valid &= isa<BlockArgument>(v);
+      } else if (shape.size() == 2) {
         valid = shape[0] * shape[1] == gemmG;
+      }
       if (!valid) {
         LLVM_DEBUG(llvm::dbgs() << name << " does not broadcast across the "
                                 << gemmG << " attention groups\n");
@@ -3285,6 +3295,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     matched.lse = lse;
     matched.causalMaskInput = causalMaskInput;
     matched.lastKVIndex = lastKVIndex;
+    matched.gemmG = gemmG;
     matched.lookBack = lookBack;
     matched.lastKVClipMin = lastKVClipMin;
     matched.lastKVClipMax = lastKVClipMax;
@@ -3338,8 +3349,9 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     TypeAttr softmaxTypeAttr = TypeAttr::get(matched.softmaxType);
 
     // Helper to broadcast and reshape a block arg tensor to one entry per
-    // attention group; match() already checked the shapes are compatible.
-    int64_t gemmG = outputType.getShape()[0];
+    // attention group; match() already checked the shapes are compatible
+    // against this same group count.
+    int64_t gemmG = matched.gemmG;
     auto prepareBlockArgTensor = [&](Value &val) {
       if (!val)
         return;
