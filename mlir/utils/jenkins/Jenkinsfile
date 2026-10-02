@@ -1246,14 +1246,19 @@ void runBenchmarkMatrixRow(String CHIP) {
                             def tuningDBJob = params.tuningDBJob ?: 'MLIR/rocmlirTriton-weekly'
                             def tuningDBBuild = params.tuningDBBuild?.trim()
                             echo "Taking tuning databases from ${tuningDBJob}, build ${tuningDBBuild ?: 'lastSuccessful'}"
-                            copyArtifacts filter: 'build/perfDB/**',\
-                                optional: true,\
-                                flatten: true,\
-                                projectName: "/${tuningDBJob}",\
-                                selector: tuningDBBuild ? specific(tuningDBBuild) : lastSuccessful(),\
-                                target: 'build'
-                            sh 'ls -l build/tuning-date build/*.tsv'
-                            sh 'cat build/tuning-date'
+                            // Missing databases must not skip the later nightly stages;
+                            // perfRunner then benchmarks untuned.
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
+                                       message: "No tuning databases from ${tuningDBJob}; benchmarking untuned") {
+                                copyArtifacts filter: 'build/perfDB/**',\
+                                    optional: true,\
+                                    flatten: true,\
+                                    projectName: "/${tuningDBJob}",\
+                                    selector: tuningDBBuild ? specific(tuningDBBuild) : lastSuccessful(),\
+                                    target: 'build'
+                                sh 'ls -l build/tuning-date build/*.tsv'
+                                sh 'cat build/tuning-date'
+                            }
                         }
 
                         stage("Copy earlier performance results") {
