@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
 import perfRunner
-from perfCommonUtils import PERF_CONFIG_FIELD_NAMES
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES, parse_perfconfig
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
@@ -481,17 +481,71 @@ def _append_failure(log_path: str, config) -> None:
         f.write(f"{block}\n{_repro_command(config)}\n\n")
 
 
+# (chip, SWEEP_KIND, perf_config) combinations the sweeps skip because LLVM
+# miscompiles them: InlineSpiller stores a partially defined register
+# full-width into a spill slot that still holds a live buffer descriptor, and
+# the kernel faults the GPU or returns wrong results (llvm/llvm-project#225054).
+# TODO(ROCM-32030): Remove the entries once a fix for that issue reaches the
+# pinned LLVM; see the parameter-sweep skip list in docs/bump_triton_version.md.
+SKIPPED_PERF_CONFIGS = frozenset({
+    ('gfx950', 'attn',
+     'attn:mPerBlockG0=16,nPerBlockG0=128,nPerBlockG1=256,kPerBlock=512,kpack=1,numCTAs=1,'
+     'numWaves=16,matrixInstrNonkdim=16,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0'),
+    ('gfx950', 'attn',
+     'attn:mPerBlockG0=32,nPerBlockG0=256,nPerBlockG1=0,kPerBlock=128,kpack=1,numCTAs=1,'
+     'numWaves=16,matrixInstrNonkdim=32,splitKFactor=1,numStages=2,wavesPerEU=2,gridGroupSize=1'),
+    ('gfx950', 'attn',
+     'attn:mPerBlockG0=64,nPerBlockG0=128,nPerBlockG1=16,kPerBlock=512,kpack=1,numCTAs=1,'
+     'numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=1,gridGroupSize=2'),
+    ('gfx950', 'attn',
+     'attn:mPerBlockG0=32,nPerBlockG0=256,nPerBlockG1=128,kPerBlock=128,kpack=1,numCTAs=1,'
+     'numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=2,gridGroupSize=0'),
+})
+
+
+def _check_skipped_perf_configs() -> None:
+    """_is_skipped compares exact strings, so an entry whose keys differ
+    from PERF_CONFIG_FIELD_NAMES would never match again."""
+    for chip, kind, perf_config in SKIPPED_PERF_CONFIGS:
+        prefix, params = parse_perfconfig(perf_config)
+        if tuple(params) != PERF_CONFIG_FIELD_NAMES.get(prefix):
+            raise ValueError(f"SKIPPED_PERF_CONFIGS entry ({chip}, {kind}) does not use the "
+                             f"current PERF_CONFIG_FIELD_NAMES[{prefix!r}] keys: {perf_config}. "
+                             "See the parameter-sweep skip list in docs/bump_triton_version.md.")
+
+
+_check_skipped_perf_configs()
+
+
+def _is_skipped(config: perfRunner.PerfConfiguration) -> bool:
+    return (config.arch.split(':')[0], config.SWEEP_KIND, config.perfconfig) in SKIPPED_PERF_CONFIGS
+
+
 async def sweep_parameters(
     param_iter: Iterable[IterType], to_config: Callable[[IterType, Options],
                                                         perfRunner.PerfConfiguration],
     options: Options, paths: Paths
-) -> Tuple[int, int, List[perfRunner.PerfConfiguration], List[perfRunner.PerfConfiguration]]:
+) -> Tuple[int, int, int, List[perfRunner.PerfConfiguration], List[perfRunner.PerfConfiguration]]:
     failing_configs: List[perfRunner.PerfConfiguration] = []
     timed_out_configs: List[perfRunner.PerfConfiguration] = []
     passed = 0
     not_applicable = 0
-    configs = (to_config(p, options) for p in param_iter)
-    for chunk in grouper((drop_good_config(c, options, paths) for c in configs),
+    skipped = 0
+
+    # Skipped configs are still drawn from param_iter, so every later sample
+    # stays the one the seed would give without the skip list.
+    def configs_to_run():
+        nonlocal skipped
+        for params in param_iter:
+            config = to_config(params, options)
+            if _is_skipped(config):
+                skipped += 1
+                if not options.quiet:
+                    print("-" * 100 + f"\nSKIPPED: {multiline_repr(config)}")
+                continue
+            yield config
+
+    for chunk in grouper((drop_good_config(c, options, paths) for c in configs_to_run()),
                          options.concurrent_tests):
         tasks = [asyncio.create_task(coro) for coro in chunk]
         try:
@@ -511,7 +565,7 @@ async def sweep_parameters(
             else:
                 failing_configs.append(config)
 
-    return (passed, not_applicable, timed_out_configs, failing_configs)
+    return (passed, not_applicable, skipped, timed_out_configs, failing_configs)
 
 
 # Sweep spaces. We deliberately go wider than the production tuning space in
@@ -1042,7 +1096,7 @@ def to_gemm_test(params, options: Options) -> perfRunner.GemmConfiguration:
 async def run_config(param_iter: Iterable[IterType],
                      to_config: Callable[[IterType, Options], perfRunner.PerfConfiguration],
                      options: Options, paths: Paths, *, samples: int) -> bool:
-    n_passes, n_not_applicable, timeouts, failures = \
+    n_passes, n_not_applicable, n_skipped, timeouts, failures = \
         await sweep_parameters(param_iter, to_config, options, paths)
     if len(failures) != 0:
         print("*** Summary of failures ***")
@@ -1076,6 +1130,8 @@ async def run_config(param_iter: Iterable[IterType],
 
     print(f"Passed: {n_passes}, Not applicable: {n_not_applicable}, "
           f"Timed out: {n_timeouts}, Failed: {n_failures}")
+    if n_skipped:
+        print(f"Skipped (SKIPPED_PERF_CONFIGS): {n_skipped}")
 
     if timeouts_over_budget:
         print(
