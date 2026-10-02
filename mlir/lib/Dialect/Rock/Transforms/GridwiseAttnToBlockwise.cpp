@@ -476,17 +476,21 @@ struct GridwiseAttentionRewritePattern
                                    negInfTensor);
   }
 
-  enum class OutOfScopeType { KVCache, Causal, PrefixCausal, SlidingWindow };
+  enum class OutOfScopeType {
+    KVCache,
+    Causal,
+    PrefixCausal,
+    SlidingWindow,
+    CausalLookBack
+  };
 
-  Value setGemm0OutputOutOfScope(PatternRewriter &rewriter, Location loc,
-                                 OutOfScopeType outOfScopeType,
-                                 layout::GridCoordinates gridCoords,
-                                 Value firstGemmResult, Value fakeTensorM,
-                                 Value fakeTensorN, Value negInfTensor,
-                                 ArrayAttr tileView, bool enabled,
-                                 Value nLoopIV, Value gemm0NBlocksLastIter,
-                                 Value lastValidKVIndex, Value prefixOffset,
-                                 Value slidingWindowLowerBound) const {
+  Value setGemm0OutputOutOfScope(
+      PatternRewriter &rewriter, Location loc, OutOfScopeType outOfScopeType,
+      layout::GridCoordinates gridCoords, Value firstGemmResult,
+      Value fakeTensorM, Value fakeTensorN, Value negInfTensor,
+      ArrayAttr tileView, bool enabled, Value nLoopIV,
+      Value gemm0NBlocksLastIter, Value lastValidKVIndex, Value prefixOffset,
+      Value slidingWindowLowerBound, int64_t causalLookBack = 0) const {
     if (enabled) {
       ArrayAttr nView = outputViewToN(rewriter, loc, tileView);
       ArrayAttr mView = outputViewToM(rewriter, loc, tileView);
@@ -564,6 +568,41 @@ struct GridwiseAttentionRewritePattern
               rewriter, loc, splatType, slidingWindowLowerBound);
           isInvalid = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ult,
                                             nIndex, lowerBoundSplat);
+          break;
+        }
+        case OutOfScopeType::CausalLookBack: {
+          // Causal look-back: attend to key positions [max(0, query_pos - L),
+          // query_pos], so mask both the future (key > query, the causal edge)
+          // and anything older than the window (key < query - L).
+          //
+          // Unlike SlidingWindow, whose bound comes from a splatted scalar
+          // derived from lastValidKVIndex, the lower edge here moves with the
+          // query row, so it is computed from mIndex and the result is a band
+          // rather than a single interval. That is what makes this the prefill
+          // counterpart of the decode-oriented SlidingWindow path.
+          assert(causalLookBack > 0);
+          auto idxType = cast<ShapedType>(mIndex.getType());
+          Value lookBackConst = rewriter.createOrFold<arith::ConstantIntOp>(
+              loc, idxType.getElementType(), causalLookBack);
+          Value zeroConst = rewriter.createOrFold<arith::ConstantIntOp>(
+              loc, idxType.getElementType(), 0);
+          auto splatType = RankedTensorType::get(idxType.getShape(),
+                                                 idxType.getElementType());
+          Value lookBackSplat =
+              triton::SplatOp::create(b, loc, splatType, lookBackConst);
+          Value zeroSplat =
+              triton::SplatOp::create(b, loc, splatType, zeroConst);
+          // Clamp at zero so the early query rows keep the whole prefix and the
+          // unsigned compare below stays well defined.
+          Value rawLowerBound =
+              arith::SubIOp::create(b, loc, mIndex, lookBackSplat);
+          Value lowerBound =
+              arith::MaxSIOp::create(b, loc, rawLowerBound, zeroSplat);
+          Value tooOld = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::ult, nIndex, lowerBound);
+          Value inFuture = arith::CmpIOp::create(
+              b, loc, arith::CmpIPredicate::ugt, nIndex, mIndex);
+          isInvalid = arith::OrIOp::create(b, loc, tooOld, inFuture);
           break;
         }
         }
@@ -674,7 +713,7 @@ struct GridwiseAttentionRewritePattern
                int64_t gemm0M, int64_t gemm0N, int64_t gemm0MPerBlock,
                int64_t gemm0NPerBlock, int64_t splitKV, bool isCausal,
                bool isKVCache, bool isPrefixCausal,
-               int64_t slidingWindowLookBack,
+               int64_t slidingWindowLookBack, int64_t causalLookBack,
                IntegerAttr numRepeatsGQA = nullptr) const {
     Value gemm0NBlocksLastIter;
     Value lastValidKVIndex;
@@ -717,7 +756,8 @@ struct GridwiseAttentionRewritePattern
 
     // This is needed for KV Cache/Causal/Prefix Causal/Sliding Window masking
     // support
-    if (isCausal || isKVCache || isPrefixCausal || slidingWindowLookBack > 0) {
+    if (isCausal || isKVCache || isPrefixCausal || slidingWindowLookBack > 0 ||
+        causalLookBack > 0) {
       Value one = rewriter.createOrFold<arith::ConstantIntOp>(
           loc, rewriter.getI32Type(), 1);
       Value constGemm0NPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
@@ -841,6 +881,39 @@ struct GridwiseAttentionRewritePattern
         // surrounding DivUIOp/MinUIOp arithmetic.
         start =
             arith::MaxUIOp::create(rewriter, loc, start, slidingWindowStart);
+      }
+
+      // Same idea for causal look-back, but anchored at this block's first
+      // query row instead of lastValidKVIndex: every key below
+      // max(0, m_block * MPerBlock - L) is outside the band for every query in
+      // the block, so those N-blocks can be dropped entirely. This is where the
+      // speedup comes from; the mask above only fixes up the two edge tiles.
+      if (causalLookBack > 0) {
+        Value constGemm0MPerBlock = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), gemm0MPerBlock);
+        Value constLookBack = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), causalLookBack);
+        Value zeroConst = rewriter.createOrFold<arith::ConstantIntOp>(
+            loc, rewriter.getI32Type(), 0);
+        Value minRowOfBlock = arith::MulIOp::create(
+            rewriter, loc, gridCoordsGemm0.m_block, constGemm0MPerBlock);
+        // Under GQA the M axis packs numRepeatsGQA query heads, so an M index
+        // maps to query row M / numRepeatsGQA. Convert before subtracting L,
+        // the same way maxRowOfBlock does for the causal upper bound.
+        if (numRepeatsGQA) {
+          Value constNumRepeatsGQA =
+              rewriter.createOrFold<arith::ConstantIntOp>(
+                  loc, rewriter.getI32Type(), numRepeatsGQA.getInt());
+          minRowOfBlock = rewriter.createOrFold<arith::DivUIOp>(
+              loc, minRowOfBlock, constNumRepeatsGQA);
+        }
+        Value rawLowerBound =
+            arith::SubIOp::create(rewriter, loc, minRowOfBlock, constLookBack);
+        Value lowerBound =
+            arith::MaxSIOp::create(rewriter, loc, rawLowerBound, zeroConst);
+        Value lookBackStart = rewriter.createOrFold<arith::DivUIOp>(
+            loc, lowerBound, constGemm0NPerBlock);
+        start = arith::MaxUIOp::create(rewriter, loc, start, lookBackStart);
       }
 
       // compute last iteration of the block, this will be used later in
@@ -1167,12 +1240,17 @@ struct GridwiseAttentionRewritePattern
     int64_t splitKV = op.getSplitKV();
     int64_t slidingWindowLookBack =
         static_cast<int64_t>(op.getSlidingWindowLookBack().value_or(0));
+    int64_t causalLookBack =
+        static_cast<int64_t>(op.getCausalLookBack().value_or(0));
     // A row goes NaN as soon as the first processed tile has no valid score
     // (`exp2(-inf - -inf)` and `0 * NaN` stay NaN), even if later tiles are
     // valid. Causal-only, KV-cache-only, and prefix-causal-only start at tile
     // 0 and mask with unsigned `ugt`, so key 0 is never rejected. A
     // causal+sliding window can have disjoint lower/upper bounds, and split-KV
-    // partials can execute with no valid score. Padded query rows are written
+    // partials can execute with no valid score. causalLookBack derives the
+    // n-loop lower bound from the block's first row, so the block's last rows
+    // can find that first tile entirely below their own `query - lookBack`
+    // bound. Padded query rows are written
     // through padded output/LSE views, so a NaN there is not observable and is
     // not a reason to emit the guard. Arbitrary pre-softmax fusion is guarded
     // unless its result is proven not to overflow finite QK scores.
@@ -1182,9 +1260,9 @@ struct GridwiseAttentionRewritePattern
     // Alternatively, emit the guard unconditionally and drop this predicate;
     // it only adds one arith.maxnumf per row, but that needs perf data.
     bool mayHaveFullyMaskedRows =
-        op.getEnableSoftmax() &&
-        (preSoftmaxMayFullyMask(op) ||
-         (isCausal && slidingWindowLookBack > 0) || splitKV > 1);
+        op.getEnableSoftmax() && (preSoftmaxMayFullyMask(op) ||
+                                  (isCausal && slidingWindowLookBack > 0) ||
+                                  causalLookBack > 0 || splitKV > 1);
 
     // Gemm0 out is casted to be softmaxType (if null, it's casted to elemTypeV)
     Type elemTypeSoftmax = op.getSoftmaxType().value_or(elemTypeV);
@@ -1343,7 +1421,7 @@ struct GridwiseAttentionRewritePattern
                      lastValidKVIndexTensor, prefixOffsetTensor, gemm0M, gemm0N,
                      gemm0MPerBlock, gemm0NPerBlock, splitKV, isCausal,
                      isKVCache, isPrefixCausal, slidingWindowLookBack,
-                     op.getNumRepeatsGQAAttr());
+                     causalLookBack, op.getNumRepeatsGQAAttr());
 
     // Early exit: Skip all computation when there's no work but always write
     // output. The IfOp returns (outAcc, lseOut?) so the code after the if
@@ -1598,14 +1676,29 @@ struct GridwiseAttentionRewritePattern
             /*lastValidKVIndex=*/nullptr, prefixOffset,
             /*slidingWindowLowerBound=*/nullptr);
 
-        // Standard causal masking: mask when key > query
+        // Standard causal masking: mask when key > query. Skipped when
+        // causalLookBack is set, since that case masks both band edges itself.
         softmaxInput = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
             softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
-            gemm0OutTileViewUnPadded, isCausal && !isPrefixCausal, nLoopIV,
+            gemm0OutTileViewUnPadded,
+            isCausal && !isPrefixCausal && causalLookBack == 0, nLoopIV,
             gemm0NBlocksLastIter,
             /*lastValidKVIndex=*/nullptr,
             /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
+
+        // Causal look-back (banded) masking: mask when key > query or
+        // key < max(0, query - causalLookBack). Only the two edge tiles of the
+        // band actually need this; the N-blocks entirely below the band are
+        // dropped by the `start` bound in getNLoopInfo().
+        softmaxInput = setGemm0OutputOutOfScope(
+            rewriter, loc, OutOfScopeType::CausalLookBack, gridCoordsGemm0,
+            softmaxInput, fakeTensorM, fakeTensorN, negInfTensor,
+            gemm0OutTileViewUnPadded, causalLookBack > 0, nLoopIV,
+            gemm0NBlocksLastIter,
+            /*lastValidKVIndex=*/nullptr,
+            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr,
+            causalLookBack);
 
         IntegerAttr reductionAxis = rewriter.getIndexAttr(1);
 

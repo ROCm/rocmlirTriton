@@ -284,6 +284,24 @@ func.func @rock_gridwise_attention_sliding_window(%q: tensor<1x384x64xf32>, %k: 
 // CHECK: rock.gridwise_attention
 // CHECK: slidingWindowLookBack = 383
 
+func.func @rock_gridwise_attention_causal_look_back(%q: tensor<1x384x64xf32>, %k: tensor<1x64x384xf32>, %v: tensor<1x384x64xf32>) -> tensor<1x384x64xf32> attributes {rock.block_size = 64 : i32, rock.grid_size = 24 : i32, rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
+  ^bb0(%arg_qk: tensor<1x384x384xf32>):
+    rock.yield %arg_qk : tensor<1x384x384xf32>
+  } {
+    operandSegmentSizes = array<i32: 1, 1, 1, 0, 0, 0>,
+    params0 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    params1 = #rock.gemm_params<kPerBlock = 32, mPerBlock = 32, nPerBlock = 32, numWaves = 1, kpack = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>,
+    splitKV = 1 : i32,
+    causal,
+    causalLookBack = 128 : i32
+  } : tensor<1x384x64xf32>, tensor<1x64x384xf32>, tensor<1x384x64xf32> -> tensor<1x384x64xf32>
+  return %result : tensor<1x384x64xf32>
+}
+// CHECK-LABEL: func.func @rock_gridwise_attention_causal_look_back
+// CHECK: rock.gridwise_attention
+// CHECK: causalLookBack = 128
+
 func.func @rock_attention(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.attention{
     qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
@@ -307,6 +325,17 @@ func.func @rock_attention_sliding_window(%q: tensor<1x384x64xf16>, %k: tensor<1x
 // CHECK: rock.attention
 // CHECK: lastValidKVIndex = (%{{.*}} : tensor<1xi32>)
 // CHECK: slidingWindowLookBack = 383
+
+func.func @rock_attention_causal_look_back(%q: tensor<1x384x64xf16>, %k: tensor<1x384x64xf16>, %v: tensor<1x384x64xf16>) -> tensor<1x384x64xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %result = rock.attention{
+    qk = %q * tr %k : tensor<1x384x64xf16>, tensor<1x384x64xf16>
+    softmax(qk) * %v : tensor<1x384x64xf16>
+  } {splitKV = 1 : i32, numHeadsKV = 1 : i32, numHeadsQ = 1 : i32, causal, causalLookBack = 128 : i32} -> tensor<1x384x64xf16>
+  return %result : tensor<1x384x64xf16>
+}
+// CHECK-LABEL: func.func @rock_attention_causal_look_back
+// CHECK: rock.attention
+// CHECK: causalLookBack = 128
 
 func.func @rock_reduce_sum(%in: tensor<8x32xf32>) -> tensor<8x1xf32> attributes {rock.arch = "##TOKEN_ARCH##"} {
   %result = rock.reduce sum %in {axis = 1 : index} : tensor<8x32xf32> -> tensor<8x1xf32>
