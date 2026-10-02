@@ -2846,6 +2846,8 @@ def get_solver_name(test_vector, arch, num_cu, num_chiplets):
 
 RUNNABLE_TEST_RE = re.compile(r"//\s*RUN\s*:(.*)")
 ROCMLIRGEN_RE = re.compile(r"rocmlir-gen.*?-fut\s*(\w+)")
+# rocm-run wraps mlir-runner, so a RUN line that ends in it runs the kernel too.
+ROCM_RUN_RE = re.compile(r"\brocm-run\b")
 
 
 def find_run_command(filename):
@@ -2867,7 +2869,8 @@ def find_run_command(filename):
                 if has_rocmlir_gen and not fut_name:
                     fut_name = has_rocmlir_gen.group(1)
 
-                if 'runner' in line:  # Stop processing lines after finding a runner
+                # Stop processing lines after finding a runner
+                if 'runner' in line or ROCM_RUN_RE.search(line):
                     return rocmlir_cmd, fut_name
 
     # Not found a "RUN" command or a runner
