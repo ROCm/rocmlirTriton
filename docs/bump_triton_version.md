@@ -336,6 +336,38 @@ clamp based only on the revision change: also verify the behavior with
 `gridwise-attention-kvcache-clamp.mlir` and
 `mixr-attention-kvcache.mlir`.
 
+### 5.3.3 Parameter-sweep skip list for the InlineSpiller spill-slot bug
+
+`SKIPPED_PERF_CONFIGS` in `mlir/utils/performance/parameterSweeps.py` lists
+(chip, sweep kind, perf_config) combinations that `parameterSweeps.py` and
+`attentionSweeps.py` skip. LLVM's InlineSpiller stores a partially defined
+register full-width into a spill slot that still holds a live buffer
+descriptor, so those kernels fault the GPU or return wrong results. The LLVM
+issue is tracked by ROCM-32030 and upstream as llvm/llvm-project#225054.
+
+On every LLVM bump, check whether the new pinned LLVM revision contains a fix
+for that issue. Do not drop an entry based only on the revision change: also
+run the config with the entry removed on the listed chip and check that it
+passes. All entries are gfx950 attention configs, found as these samples of
+`attentionSweeps.py attention`:
+
+| Seed | Sample | Data type | Failure without a fix |
+|------|--------|-----------|-----------------------------------------------|
+| 40   | 259    | bf16      | Memory access fault |
+| 44   | 208    | i8        | Memory access fault |
+| 44   | 246    | bf16      | Memory access fault; wrong results with `-rand` |
+| 45   | 8      | i8        | Wrong results with `-rand 3` |
+
+The default fixed input pattern can hide the wrong results, so also run each
+config with a few `-rand` seeds.
+
+The entries are compared as exact strings, so `parameterSweeps.py` refuses to
+load if an entry's keys differ from `PERF_CONFIG_FIELD_NAMES` in
+`perfCommonUtils.py`. After a field rename, renaming the key in each entry is
+enough, because the seeds still draw the same configs. Any other change to the
+field list changes which configs the seeds draw, so rewriting the strings is
+not enough: the seeds in the table have to be tested again.
+
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 
 Some Triton enums are hand-replicated in the Rock dialect so we can carry the
@@ -749,6 +781,7 @@ Use this checklist to track progress:
 - [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
 - [ ] Generate diff for `llvm/cmake/modules/HandleLLVMOptions.cmake` and reconcile the mirrored `LLVM_ENABLE_ASSERTIONS` flag block in `cmake/triton.cmake` (see section 5.4.3)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
+- [ ] Check whether the pinned LLVM revision fixes llvm/llvm-project#225054 and re-evaluate `SKIPPED_PERF_CONFIGS` in `parameterSweeps.py` (see section 5.3.3)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
