@@ -1,14 +1,16 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Regression test for triton-patches/patch-direct-to-lds-swizzle-check-vec.patch.
+// Regression test for triton-patches/patch-direct-to-lds-swizzle-check-vec.patch
+// and triton-patches/patch-direct-to-lds-swizzle-chunk.patch.
 //
-// The clamp from patch11295.patch measures the lane shuffle with the shared
-// encoding's vec, but the lowering divides the offset delta by the load's
-// vector, which the register-to-shared run, the target's LDS write widths, the
-// pointer contiguity and the mask alignment cap. Each tile below hits one of
-// those caps, reaches outside the warp with a load vector of one f32, and was
-// left unclamped before that mismatch was fixed.
+// The clamp from patch11295.patch has to measure the lane shuffle with the
+// vector the load uses, which the register-to-shared run, the target's LDS
+// write widths, the pointer contiguity and the mask alignment cap. Each tile
+// below hits one of those caps and loads one f32 per lane, so a warp writes 64
+// consecutive f32, half of a 128-wide row. maxPhase = 8 keeps the swizzle
+// inside that chunk and the deduced maxPhase = 16 does not, whatever layout
+// CoalesceAsyncCopy then gives the copy.
 
 // RUN: rocmlir-opt --tritonamdgpu-pipeline='use_async_copy=1' --split-input-file %s | FileCheck %s
 
@@ -51,9 +53,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // Two f32 per thread over contiguous pointers, but CDNA4 writes only 32 and 128
 // bits to LDS, so the load vector is still one element and maxPhase = 16 has to
-// halve twice.
+// halve once. The two f32 a lane holds here must not be read as two lanes.
 
-// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [1, 0]}>
+// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [1, 0]}>
 // CHECK-LABEL: @swizzle_clamped_two_elems_per_lane
 // CHECK: ttg.async_copy_global_to_local {{.*}} -> <64x128xf32, #[[$SHARED]],
 
@@ -88,9 +90,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // Four f32 per thread, which fits a 128-bit LDS write, but every lane reads the
 // same pointer, so the async copy loads one element at a time and the layout's
-// four must not be used. No swizzle stays inside the warp.
+// four must not be used. maxPhase = 16 has to halve once.
 
-// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [1, 0]}>
 // CHECK-LABEL: @swizzle_clamped_splat_pointer
 // CHECK: ttg.async_copy_global_to_local {{.*}} -> <64x128xf32, #[[$SHARED]],
 
@@ -121,9 +123,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // Four f32 per thread over contiguous pointers, which fits a 128-bit LDS write,
 // but the mask changes from one element to the next, so the async copy loads
-// one element at a time. No swizzle stays inside the warp.
+// one element at a time. maxPhase = 16 has to halve once.
 
-// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+// CHECK: #[[$SHARED:.+]] = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 8, order = [1, 0]}>
 // CHECK-LABEL: @swizzle_clamped_mask_alignment
 // CHECK: ttg.async_copy_global_to_local {{.*}} -> <64x128xf32, #[[$SHARED]],
 

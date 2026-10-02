@@ -26,6 +26,7 @@ patch-lit-registered-target-features.patch
 patch-xfail-loop-pipeline-hip.patch
 patch11295.patch
 patch-direct-to-lds-swizzle-check-vec.patch
+patch-direct-to-lds-swizzle-chunk.patch
 patch10497.patch
 patch10694.patch
 patch-fma-lds-swizzle.patch
@@ -458,6 +459,35 @@ patch-direct-to-lds-swizzle-check-vec.patch
   Stacks on patch11295.patch and must be applied after it.
 
   Not filed upstream yet; upstream PR 11295 carries the same mismatch.
+
+patch-direct-to-lds-swizzle-chunk.patch
+  Checks the direct-to-LDS swizzle against the chunk a warp writes instead of
+  the lanes of the layout the load has before CoalesceAsyncCopy, and makes the
+  lowering refuse a swizzle that leaves that chunk.
+
+  Without scatter support each direct-to-LDS load of a warp writes one aligned
+  chunk of lanes * vec consecutive elements, and the swizzle is applied by
+  exchanging source pointers between the lanes, so it has to keep every
+  element inside its chunk. swizzlesInsideWarp walked the lanes of warp 0 in
+  the layout the load has in LowerLoops, but CoalesceAsyncCopy rewrites that
+  layout whenever it narrows the load, and the walk then overstated how far
+  the shuffle moves. It clamped swizzles that stay inside the warp, down to
+  maxPhase 1 for a load in loop-pipeline-hip.mlir whose local_alloc kept the
+  unclamped layout, which crashed the pipeliner.
+
+  isSwizzleInsideDirectToLdsChunk tests the condition on the shared layout
+  alone. The clamp uses it with the load vector computed by
+  patch-direct-to-lds-swizzle-check-vec.patch, and both direct-to-LDS
+  lowerings use it with their final vector and emit an error instead of
+  shuffling pointers from outside the warp. When the clamp would change a
+  layout that a memdesc user pins, createStreamOps stream copies the load. The
+  async_copy_swizzle_clamped_to_warp case from patch11295.patch now expects
+  maxPhase 8, since its coalesced copy writes two whole rows per warp.
+
+  Stacks on patch-direct-to-lds-swizzle-check-vec.patch and must be applied
+  after it.
+
+  Not filed upstream yet; upstream PR 11295 carries the same check.
 
 patch-elementwise-fastmath-flags.patch
   Carries fast-math flags across the dialect boundary in the elementwise
