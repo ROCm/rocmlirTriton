@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx942 --operation gemm_gemm -t f32 -p | FileCheck %s
 
 // CHECK: func.func @rock_gemm_gemm

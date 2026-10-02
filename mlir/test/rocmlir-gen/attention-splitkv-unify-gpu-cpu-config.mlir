@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression test: with no --perf_config, the split-KV block size used by the
 // CPU reference (rocmlir-gen) must equal the one the compiler picks for the GPU
 // kernel (AffixTuningParameters). rocmlir-gen resolves it from the *same*

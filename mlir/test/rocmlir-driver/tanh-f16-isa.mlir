@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Static ISA checks for the f16 tanh lowering in rock-legalize-math-for-triton.
 // The f32 case is in tanh-isa.mlir; this file pins the opposite property, that
 // an f16 tanh is evaluated at f32 and rounded back rather than kept at f16 on

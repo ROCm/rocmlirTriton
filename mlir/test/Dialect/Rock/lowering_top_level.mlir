@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // This tests checks the following aspects of lowering component:
 // * Can pass arguments correctly
 // * Can pass arguments in the right sequence

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --operation conv_bwd_data -t f32 --arch %arch --num_cu 64 --num_chiplets 1 \
 // RUN:   --fil_layout gkc01 --in_layout ngc01 --out_layout ngk01 \
 // RUN:   --batchsize 1 --in_channels 192 --in_h 64 --in_w 64 --out_channels 384 \

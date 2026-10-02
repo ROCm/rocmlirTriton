@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Cache-modifier heuristics for rock-gridwise-attn-to-blockwise.
 //
 // Q is reused across the whole nLoop and always stays cached. K and V are only

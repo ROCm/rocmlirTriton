@@ -160,10 +160,6 @@ int64_t getMaxNumCTAs(StringRef arch);
 /// Get the maximum supported `kpack` perf-config value for this arch.
 int64_t getMaxKpack(StringRef arch);
 
-/// Whether a non-power-of-two `kPerBlock` perf-config value may be used on this
-/// arch, i.e. whether the K loop may be peeled into power-of-two segments.
-bool supportsNonPow2KPerBlock(StringRef arch);
-
 /// Whether an f32 `tt.dot` should be emulated with the 3xBF16 trick
 /// (`InputPrecision::BF16x3`) instead of being issued as an IEEE f32 dot.
 /// This is the heuristic behind the `useBf16x3ForF32` perfConfig knob's `-1`

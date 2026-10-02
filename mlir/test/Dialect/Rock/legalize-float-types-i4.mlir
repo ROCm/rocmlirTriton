@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the sub-byte i4 handling in rock-legalize-float-types.
 // These test the case where the GEMM operand is wider (e.g. f16) but root
 // block args are i4, requiring broadcast transforms and sub-byte extraction.

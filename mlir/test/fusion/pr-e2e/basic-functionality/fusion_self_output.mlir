@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C = gemm(A,B) * exp(gemm(A,B)) + gemm(A,B)
 //
 // Tests an output-fusion DAG that consumes the GEMM result multiple times:

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // A `migraphx.max` next to a `migraphx.clip` is enough to see every shape the
 // IEEE-754-2019 NaN-propagating min/max instructions take. MIGraphXToTosa turns
 // the clip into `tosa.clamp` and RockTosaToElementwise expands that into an

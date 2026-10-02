@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rocmlirTriton rock-add-triton-metadata pass.
 //
 // The pass runs right after rock-lower-stores. For each rock.blockwise_gemm

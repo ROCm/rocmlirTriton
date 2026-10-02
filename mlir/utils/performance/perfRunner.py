@@ -3103,9 +3103,7 @@ def benchmark_fusion_kernels(test_dir,
                 continue
 
         # Run fusion test
-        rocmlir_gen_args = [
-            '-ph', '-fut=' + fut_name + '_wrapper', '--perf_config=' + best_perf, '-'
-        ]
+        rocmlir_gen_args = ['-ph', '-fut=' + fut_name, '--perf_config=' + best_perf, '-']
         nanoseconds = run_fusion_kernel(filename, rocmlir_gen_args, paths)
         one_entry = config.table_entry(nanoseconds)
         # Keep the best performance

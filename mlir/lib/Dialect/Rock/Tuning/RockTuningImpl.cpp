@@ -453,10 +453,8 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
   // K tiles far larger than the problem's K.
   capKPerBlockByK(kList, k);
 
-  // Also tune non-pow2 K tiles, on non-scaled GEMMs and on the arches where the
-  // peeled K loop is known to compile correctly.
-  if (!gemmOp.getScaleA() && !gemmOp.getScaleB() &&
-      rock::supportsNonPow2KPerBlock(arch)) {
+  // Also tune non-pow2 K tiles on non-scaled GEMMs.
+  if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
     // An integer GEMM keeps its i32 accumulator exact only while every K
     // segment is at least 4 wide, which rock-gridwise-gemm-to-blockwise
     // enforces; a tile is fully covered by that rule iff it is a multiple of 4.
@@ -1964,8 +1962,11 @@ static LogicalResult getQuickTuningProblemKey(RockGemmWrapperInterface gemmIF,
       out.untunable("convolution_spatial_rank");
       return success();
     }
+    // Grouped convolutions are already tuned from tier1, but the key has no
+    // groups field (c and k are totals), so they would alias an ungrouped
+    // problem. Retuning cannot fix that; only adding the field can.
     if (inShape[iLayoutMap["gi"]] != 1)
-      out.unsupported("convolution_groups");
+      out.untunable("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
       out.untunable("asymmetric_padding");
 
@@ -2167,8 +2168,9 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
       out.untunable("convolution_spatial_rank");
       return success();
     }
+    // As for conv: the key has no groups field.
     if (inShape[iLayoutMap["gi"]] != 1)
-      out.unsupported("convolution_groups");
+      out.untunable("convolution_groups");
     if (padding[0] != padding[1] || padding[2] != padding[3])
       out.untunable("asymmetric_padding");
 

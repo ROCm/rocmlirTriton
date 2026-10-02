@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The extra rocmlir-opt calls check IR validity
 
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation gemm -g 3 -m 1024 -k 769 -n 512 -pv | rocmlir-opt | FileCheck %s --enable-var-scope --check-prefixes=CHECK,NOTRA,NOTRB,NOTRO

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Negative tests for rock-tosa-to-elementwise pass.
 //
 // Plain tosa.cast reports unsupported source float types gracefully, while

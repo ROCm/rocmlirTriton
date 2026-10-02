@@ -154,13 +154,14 @@ TEST(QuickTuningProblemKeyTest, OutputTypeIsTunableOnlyWhereRecorded) {
   EXPECT_EQ(convKey->untunableFields, "output_data_type");
 }
 
-// Groups are recorded (-g) and so worth retuning; the high pads are not.
-TEST(QuickTuningProblemKeyTest, ConvGroupsWarnButAsymmetricPaddingIsSilent) {
+// Neither is fixed by retuning: the key has no groups field, and the problem
+// string records no high pads. Both still avoid the maps, but silently.
+TEST(QuickTuningProblemKeyTest, ConvGroupsAndAsymmetricPaddingAreSilent) {
   MLIRContext ctx;
   auto grouped = keyFor(ctx, conv("f16", "f16", kSymmetricPadding, 2));
   ASSERT_TRUE(grouped);
-  EXPECT_EQ(grouped->unsupportedFields, "convolution_groups");
-  EXPECT_EQ(grouped->untunableFields, "");
+  EXPECT_EQ(grouped->unsupportedFields, "");
+  EXPECT_EQ(grouped->untunableFields, "convolution_groups");
 
   auto trimmed = keyFor(ctx, conv("f16", "f16",
                                   "1 : index, 0 : index, 1 : index, "

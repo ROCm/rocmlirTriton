@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 """Sweep random (problem-shape, perf-config) combinations through the rocMLIR
-pipeline (rocmlir-gen | rocmlir-driver -c | mlir-runner) and classify each as
+pipeline (rocmlir-gen | rocmlir-driver -c | rocm-run) and classify each as
 PASS / NOT_APPLICABLE / FAIL. Run from the build directory.
 
 Requires Python 3.9 or newer (uses ``asyncio.to_thread``).
@@ -258,7 +258,7 @@ def _positive_int(s: str) -> int:
 async def test_config(config, options: Options, paths: Paths) -> TestResult:
     """Runs the given configuration through rocmlir-gen | (optional
     rocmlir-driver --host-pipeline=highlevel) | rocmlir-driver -c |
-    mlir-runner and returns ``PASS`` (correct), ``NOT_APPLICABLE`` (rejected
+    rocm-run and returns ``PASS`` (correct), ``NOT_APPLICABLE`` (rejected
     upstream as inapplicable), or ``FAIL`` (lowering bug, runner crash, or
     incorrect numerical result).
 
@@ -376,7 +376,7 @@ async def test_config(config, options: Options, paths: Paths) -> TestResult:
             runner_out, runner_errs = await _communicate_with_timeout(runner, timeout)
         except asyncio.TimeoutError:
             await _kill_process(runner)
-            _print_timeout(config, rocmlir_gen_opts, f"Timeout in mlir-runner stage ({timeout}s)",
+            _print_timeout(config, rocmlir_gen_opts, f"Timeout in rocm-run stage ({timeout}s)",
                            options.debug)
             return TestResult.TIMEOUT
         runner_out = _decode_cmd_output(runner_out)
@@ -816,7 +816,7 @@ def sample_perf_config(rng: random.Random,
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
-    if pow2_only or not amd_arch_db.supports_non_pow2_k_per_block(arch):
+    if pow2_only:
         k_choices = [v for v in k_choices if _is_pow2(v)]
     return (
         rng.choice(m_choices),
@@ -1139,7 +1139,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
                         type=int,
                         default=120,
                         help='Per-stage timeout in seconds, applied independently '
-                        'to rocmlir-gen, rocmlir-driver, and mlir-runner '
+                        'to rocmlir-gen, rocmlir-driver, and rocm-run '
                         '(0 disables the timeout). Default %(default)s.')
     parser.add_argument('--max-timeout-rate',
                         type=float,
@@ -1170,7 +1170,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     # Offline cap-validation flag. --dry-run prints sampled (shape, perf)
     # pairs and whether the per-thread state cap (see _perf_within_budget)
     # would ACCEPT or REJECT each one, without running rocmlir-gen,
-    # rocmlir-driver, or mlir-runner.
+    # rocmlir-driver, or rocm-run.
     parser.add_argument('--dry-run',
                         action='store_true',
                         help='Sample configs and print whether the cap would '
@@ -1201,7 +1201,7 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
 def _dry_run(kind: str, num_samples: int, arch: str, seed: Optional[int]) -> bool:
     """Print sampled (shape, perf) pairs together with the cap's verdict.
 
-    Does NOT spawn rocmlir-gen / rocmlir-driver / mlir-runner. The point is to
+    Does NOT spawn rocmlir-gen / rocmlir-driver / rocm-run. The point is to
     verify the per-thread state cap (_perf_within_budget) cheaply.
 
     The RNG sequence here matches a *real* run only until the first rejection

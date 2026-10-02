@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end (rock IR -> Triton) check for the rock.o_transposed metadata flow
 // on a rock.attention kernel (the companion gemm case lives in
 // accelerate-matmul-preserve-rock-metadata.mlir).

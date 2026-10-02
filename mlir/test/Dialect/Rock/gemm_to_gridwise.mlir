@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Ensures that the padding application, group application, etc. in gemm-to-gridwise
 // function as expected.
 

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch gfx908 -p -operation conv -fil_layout gkyxc -in_layout ngchw -out_layout hwgkn \
 // RUN: | rocmlir-driver -c -mlir-print-ir-after=rock-conv-to-gemm -mlir-print-local-scope 2>&1 \
 // RUN: | FileCheck %s --check-prefix=FWD

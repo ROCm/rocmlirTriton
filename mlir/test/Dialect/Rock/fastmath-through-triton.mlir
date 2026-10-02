@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Pins what happens to `rock-allow-fast-math-flags`' output once it crosses into
 // Triton: for every op that pass can tag and that Triton will legalize, this
 // records whether the flags are still there by the time the op is in the LLVM

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // On gfx11 before gfx1150 (FeatureDPPSrc1SGPR) a DPP src1 must be a VGPR --
 // neither an SGPR nor an immediate. LLVM used to enforce only the register half
 // of that rule, so GCNDPPCombine would fold the softmax sum's v_mov_b32_dpp

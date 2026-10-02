@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Non-power-of-2 f32 gemm (m=1000, n=405) paired with a tiny-tile
 // perf_config (mPerBlock=16). Exercises the padding path for awkwardly-
 // sized shapes; the perf_config is f32-specific so this lives as a

@@ -142,6 +142,10 @@ def clean_data_for_humans(data: pd.DataFrame, title: str)\
         parameters = ATTN_TEST_PARAMETERS
 
     index_cols = {k: k for k in parameters}  # Preserves order
+    # Fusion results have one row per test file, and one problem can appear in
+    # several files with different fusions around it.
+    if "FileName" in data.columns:
+        index_cols["FileName"] = "FileName"
     if all((x in data.columns) for x in {"FilterLayout", "InputLayout", "OutputLayout"}):
         if (((data["FilterLayout"] == "kcyx") & (data["InputLayout"] == "nchw") &
              (data["OutputLayout"] == "nkhw")) |

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for rock-regularize-input pass.
 // Tests that load_markers whose source contains fusion ops are distributed
 // so each leaf (block arg or constant) gets its own load_marker, and fusion

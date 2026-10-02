@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias --operation attention --transK=true  --operation attention -t i8 --arch gfx90a:sramecc+:xnack- -pv | FileCheck %s --enable-var-scope --check-prefixes=CHECK_I8_FULL
 // RUN: rocmlir-gen -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-bias --operation attention --transK=true  --operation attention -t i8 --arch gfx90a:sramecc+:xnack- -pv | FileCheck %s --enable-var-scope --check-prefixes=CHECK_I8_NOSCALE
 // RUN: rocmlir-gen -seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --operation attention --transK=true  --operation attention -t i8 --arch gfx90a:sramecc+:xnack- -pv | FileCheck %s --enable-var-scope --check-prefixes=CHECK_I8_NOBIAS

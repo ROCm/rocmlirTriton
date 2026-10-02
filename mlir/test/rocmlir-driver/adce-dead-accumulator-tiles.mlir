@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Pins the extra ADCE run that TritonToHsaco adds after LLVM's default
 // pipeline.
 //

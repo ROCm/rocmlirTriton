@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Tests for the CPU attention verifier. The CPU verifier exists in two flavours:
 // -pv: the fast verifier. May not exactly match GPU semantics.
 // -pv-strict. Matches GPU semantics.

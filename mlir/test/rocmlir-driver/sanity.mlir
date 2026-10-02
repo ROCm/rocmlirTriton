@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Sanity test to ensure every step of the lowering process gets valid MLIR,
 // LLVM IR, and AMD GCN ISA.
 

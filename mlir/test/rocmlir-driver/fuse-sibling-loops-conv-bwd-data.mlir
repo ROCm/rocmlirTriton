@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end check that rock-fuse-sibling-loops fuses the per-sub-gemm K-loops
 // produced by a backward-data convolution, even when those loops originate from
 // *different* GEMMs of the same conv.

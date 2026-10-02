@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // REQUIRES: asserts
 // RUN: rocmlir-gen --arch gfx90a --store-method atomic_add --operation gemm -t f16 -p | rocmlir-driver -c --debug-only=convert-triton-amdgpu-to-llvm | FileCheck %s --check-prefix=BUFFER_ATOMIC_ADD
 // RUN: rocmlir-gen --arch gfx90a --store-method atomic_add --operation gemm -t bf16 -p | rocmlir-driver -c --debug-only=convert-triton-amdgpu-to-llvm | FileCheck %s --check-prefix=ATOMICRMW

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 
 // RUN: rocmlir-gen --arch %arch -p -fil_layout ykcx 2>&1 | FileCheck %s
 // RUN: rocmlir-gen --arch %arch -p -fil_layout kycx 2>&1 | FileCheck %s

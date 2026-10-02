@@ -1,3 +1,6 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 # Tests for mixed filter/input/output layouts, using
 # a small config that was previously known to trigger such bugs
 
@@ -6,7 +9,7 @@
 
 directory = "MixedConvLayouts"
 prefix = "rocmlir-gen"
-suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | mlir-runner -O2 --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_float16_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s --check-prefix="
+suffix = "--arch %arch %pv %random_data %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
 
 [[axis]]
 name = "operation"

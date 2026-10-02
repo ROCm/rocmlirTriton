@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The companion to oob-buffer-store-fold.mlir, for the shape that test does not
 // reach. When tritonamdgpu-annotate-buffer-op-split-safety lets the buffer-op
 // emitter lift a uniform part of the offset into an soffset SGPR, the emitter

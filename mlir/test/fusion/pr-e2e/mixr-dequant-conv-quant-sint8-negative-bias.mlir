@@ -1,4 +1,7 @@
-// RUN: rocmlir-gen -fut mlir_dequantizelinear_convolution_quantizelinear --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_dequantizelinear_convolution_quantizelinear --verifier clone - | rocmlir-driver -c | mlir-runner --shared-libs=%linalg_test_lib_dir/libmlir_rocm_runtime%shlibext,%conv_validation_wrapper_library_dir/libconv-validation-wrappers%shlibext,%linalg_test_lib_dir/libmlir_runner_utils%shlibext,%linalg_test_lib_dir/libmlir_c_runner_utils%shlibext --entry-point-result=void | FileCheck %s
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// RUN: rocmlir-gen -fut mlir_dequantizelinear_convolution_quantizelinear --arch %arch --clone-harness %s | rocmlir-driver -host-pipeline=migraphx,highlevel -kernel-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_dequantizelinear_convolution_quantizelinear --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
 // CHECK: [1 1 1]
 module {
   func.func @mlir_dequantizelinear_convolution_quantizelinear(%arg0: !migraphx.shaped<49xui8, 1>, %arg1: !migraphx.shaped<1xf32, 1>, %arg2: !migraphx.shaped<1xui8, 1>, %arg3: !migraphx.shaped<1x1x7x7xf32, 7x7x7x1>, %arg4: !migraphx.shaped<1x1x7x7xsi8, 7x7x7x1>, %arg5: !migraphx.shaped<1x1x1x1xf32, 1x1x1x1>) -> !migraphx.shaped<1x1x7x7xsi8, 49x49x7x1> attributes {rock.kernel} {

@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The middle of the story that clip-nnan-isa.mlir only measures the end of: a
 // `migraphx.clip` arrives in TTIR as one `tt.clampf`. Every stage has to agree
 // for that to happen -- MIGraphXToTosa must set `nan_mode = IGNORE`,

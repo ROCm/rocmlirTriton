@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify the public FP8/BF8 aliases select gfx117x's four OCP WMMA variants.
 // Rock's GEMM lowering maps the generator's logical A/B buffers to the WMMA
 // instruction's B/A operands, so the two mixed instruction suffixes are

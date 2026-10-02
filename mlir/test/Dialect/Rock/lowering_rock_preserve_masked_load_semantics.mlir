@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-preserve-masked-load-semantics -mlir-print-local-scope %s | FileCheck %s
 
 // ============================================================

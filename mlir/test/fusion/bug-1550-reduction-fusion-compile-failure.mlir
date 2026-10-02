@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -c -arch "gfx908:sramecc+:xnack-"  %s
 
 // CHECK-LABEL: @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape

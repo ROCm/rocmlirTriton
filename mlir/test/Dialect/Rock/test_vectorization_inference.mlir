@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-vectorization-inference-test \
 // RUN:   -allow-unregistered-dialect --mlir-print-local-scope %s 2>&1 \
 // RUN:   | FileCheck %s --implicit-check-not="Unexpected op"

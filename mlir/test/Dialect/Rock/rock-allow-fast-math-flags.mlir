@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Exercise rock-allow-fast-math-flags: each op is tagged with the fast-math
 // flag(s) the AMDGPU backend can exploit for that specific kind of op.
 //   arith.divf                              -> nsz + arcp + afn         (hw reciprocal + approx)

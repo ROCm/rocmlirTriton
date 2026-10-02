@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // End-to-end check that rock-fuse-sibling-loops (+ CSE) deduplicates the shared
 // A tile load when a non-power-of-two N tile is decomposed into pow2 sub-gemms.
 //

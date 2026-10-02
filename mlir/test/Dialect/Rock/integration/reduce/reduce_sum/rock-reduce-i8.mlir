@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s \
 // RUN:   | rocmlir-gen -fut test_reduce_i8 --arch %arch --clone-harness - \
 // RUN:   | rocmlir-driver -kernel-pipeline highlevel -host-pipeline highlevel \

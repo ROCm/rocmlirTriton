@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Ensures that the padding application, group application, etc. in
 // attn-to-gridwise function as expected for rock.attention and
 // rock.gemm_elementwise_gemm.

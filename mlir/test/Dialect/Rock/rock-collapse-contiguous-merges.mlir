@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: sed -e 's/##ARCH##/%arch/g' %s | rocmlir-opt -rock-collapse-contiguous-merges -split-input-file - | FileCheck %s
 
 // End-to-end check of the RockCollapseContiguousMerges pass on the IR shape it

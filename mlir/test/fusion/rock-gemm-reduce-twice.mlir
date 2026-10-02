@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: not rocmlir-driver -c -arch %arch %s 2>&1 | FileCheck %s
 // COM: nested reductions like reduce(reduce(x)) are not allowed
 // CHECK: could not find rock.store along single-use chain from reduce

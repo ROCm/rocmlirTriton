@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Verify that Triton knobs encoded in a perfConfig string flow through
 // `fillCompilationConfigs` and gate the relevant pass options in the
 // Triton pipeline. The original five knobs

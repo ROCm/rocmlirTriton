@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Some old behavior in Triton was implemented such that `shuffleXor` on RDNA
 // fell through to the CDNA DPP chain (ROW_HALF_MIRROR / ROW_ROR / QUAD_PERM),
 // which assumes 64-lane wavefronts. Executed on RDNA's 32-lane wavefronts it

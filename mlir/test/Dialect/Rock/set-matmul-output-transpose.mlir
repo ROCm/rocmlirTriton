@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rocmlirTriton rock-set-matmul-output-transpose pass.
 //
 // The pass runs right after tritonamdgpu-accelerate-matmul. For each

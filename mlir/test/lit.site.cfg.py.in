@@ -1,4 +1,7 @@
 @LIT_SITE_CFG_IN_HEADER@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
 
 import sys
 
@@ -31,15 +34,12 @@ config.llvm_host_triple = '@LLVM_HOST_TRIPLE@'
 config.host_arch = "@HOST_ARCH@"
 config.mlir_src_root = "@MLIR_SOURCE_DIR@"
 config.mlir_obj_root = "@MLIR_BINARY_DIR@"
-config.mlir_runner_utils_dir = "@MLIR_RUNNER_UTILS_DIR@"
 config.mlir_tools_dir = "@MLIR_TOOLS_DIR@"
 config.mlir_cmake_config_dir = "@MLIR_CMAKE_CONFIG_DIR@"
 config.mlir_rock_tools_dir = "@ROCMLIR_TOOLS_DIR@"
-config.linalg_test_lib_dir = "@MLIR_DIALECT_LINALG_INTEGRATION_TEST_LIB_DIR@"
 config.mlir_lib_dir = "@MLIR_LIB_DIR@"
 config.build_examples = @LLVM_BUILD_EXAMPLES@
 config.run_rocm_tests = @LLVM_HAS_AMDGPU_TARGET@
-config.conv_validation_wrapper_library_dir = "@MLIR_CONV_VALIDATION_WRAPPER_LIBRARY_DIR@"
 config.enable_rocm_runner = @MLIR_ENABLE_ROCM_RUNNER@
 if config.enable_rocm_runner:
     config.available_features.add('rocm-runner')

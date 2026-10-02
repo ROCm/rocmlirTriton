@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Triton predicates stores branchlessly: a masked-off lane gets an offset past
 // the buffer descriptor's NumRecords so the hardware drops the store. That hides
 // the predicate from dead code elimination, and for a depthwise convolution

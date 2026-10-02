@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-driver -kernel-pipeline=gpu %s | rocmlir-opt
 
 #map = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)>

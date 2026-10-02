@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --split-input-file --rock-roll-dot-k %s | FileCheck %s
 
 // The pass is idempotent: a second run rolls nothing further, so every

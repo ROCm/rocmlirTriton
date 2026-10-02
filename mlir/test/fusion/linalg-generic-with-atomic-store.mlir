@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt -rock-affix-params %s -verify-diagnostics
 
 #map_a = affine_map<(d0, d1, d2) -> ((d0 * 1024 + d1) * 1024 + d2)>

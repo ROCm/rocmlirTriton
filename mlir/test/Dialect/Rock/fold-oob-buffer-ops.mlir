@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-opt --rock-fold-oob-buffer-ops --split-input-file %s | FileCheck %s
 
 // Each case pins one of the conditions the fold needs: a statically false

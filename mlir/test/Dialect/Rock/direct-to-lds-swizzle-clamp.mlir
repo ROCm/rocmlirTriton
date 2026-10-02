@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Regression test for triton-patches/patch11295.patch.
 //
 // Here 64 lanes cover only half of the 128 K columns, so the deduced

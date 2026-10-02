@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // RUN: rocmlir-gen --arch %arch -operation gemm -t f16 -out_datatype f32 -g 1 -m 1024 -k 1024 -n 1024 -transA=False -transB=False --perf_config= \
 // RUN: | rocmlir-tuning-driver --tuning-space=quick --rep=10 --warmup=1 --sleep-us=100 --use-median --show-all-measurements=false --two-stage-topk=2 \
 // RUN:     --coarse-warmup-floor-ms=0 \

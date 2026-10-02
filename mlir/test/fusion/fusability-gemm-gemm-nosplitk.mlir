@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // An elementwise body between the two GEMMs is legal under split-k: it is
 // pointwise in (gemmM, gemmN) and split-k only partitions gemmN, so each split
 // reads its own slice of the body's inputs.

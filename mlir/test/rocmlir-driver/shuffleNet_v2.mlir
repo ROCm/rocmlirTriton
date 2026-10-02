@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // The test was extracted from the ShuffleNet_V2 model of MIGraphX. https://github.com/ROCm/AMDMIGraphX/issues/2315
 // RUN: rocmlir-driver -kernel-pipeline migraphx,highlevel %s | rocmlir-opt
 

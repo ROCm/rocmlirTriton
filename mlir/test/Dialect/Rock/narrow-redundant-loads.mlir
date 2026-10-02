@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Unit tests for the rocmlirTriton rock-narrow-redundant-loads pass.
 //
 // The pass runs on TTIR, inside makeTTIR right after triton-combine-ops. It

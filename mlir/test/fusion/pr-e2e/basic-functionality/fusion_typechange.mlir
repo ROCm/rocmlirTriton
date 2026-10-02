@@ -1,3 +1,6 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
 // Fused GEMM test (migraphx IR): C_f32 = extf(gemm(truncf(A_f32), truncf(B_f32)))
 //
 // Tests type-changing fusions: a f32->f16 convert on each GEMM input and a
