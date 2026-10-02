@@ -361,6 +361,13 @@ passes. All entries are gfx950 attention configs, found as these samples of
 The default fixed input pattern can hide the wrong results, so also run each
 config with a few `-rand` seeds.
 
+The entries are compared as exact strings, so `parameterSweeps.py` refuses to
+load if an entry's keys differ from `PERF_CONFIG_FIELD_NAMES` in
+`perfCommonUtils.py`. After a field rename, renaming the key in each entry is
+enough, because the seeds still draw the same configs. Any other change to the
+field list changes which configs the seeds draw, so rewriting the strings is
+not enough: the seeds in the table have to be tested again.
+
 ### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
 
 Some Triton enums are hand-replicated in the Rock dialect so we can carry the

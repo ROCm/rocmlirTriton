@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Sequence, Optional, Tuple, TypeVar
 
 import perfRunner
-from perfCommonUtils import PERF_CONFIG_FIELD_NAMES
+from perfCommonUtils import PERF_CONFIG_FIELD_NAMES, parse_perfconfig
 from perfRunner import (ConvConfiguration, Paths, get_arch, get_num_cu)
 
 # Hard dependency, copied next to the scripts by ci-performance-scripts.
@@ -501,6 +501,20 @@ SKIPPED_PERF_CONFIGS = frozenset({
      'attn:mPerBlockG0=32,nPerBlockG0=256,nPerBlockG1=128,kPerBlock=128,kpack=1,numCTAs=1,'
      'numWaves=8,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=2,gridGroupSize=0'),
 })
+
+
+def _check_skipped_perf_configs() -> None:
+    """_is_skipped compares exact strings, so an entry whose keys differ
+    from PERF_CONFIG_FIELD_NAMES would never match again."""
+    for chip, kind, perf_config in SKIPPED_PERF_CONFIGS:
+        prefix, params = parse_perfconfig(perf_config)
+        if tuple(params) != PERF_CONFIG_FIELD_NAMES.get(prefix):
+            raise ValueError(f"SKIPPED_PERF_CONFIGS entry ({chip}, {kind}) does not use the "
+                             f"current PERF_CONFIG_FIELD_NAMES[{prefix!r}] keys: {perf_config}. "
+                             "See the parameter-sweep skip list in docs/bump_triton_version.md.")
+
+
+_check_skipped_perf_configs()
 
 
 def _is_skipped(config: perfRunner.PerfConfiguration) -> bool:
