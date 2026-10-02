@@ -1,6 +1,3 @@
-// PR CI, nightly MIGraphX, and weekly stages (Parameter sweeps, Tune MLIR kernels,
-// Archive weekly tuning perfDB) are enabled. The nightly "Benchmark and Report
-// Performance" and "Code coverage" stages remain commented out.
 import com.cloudbees.groovy.cps.NonCPS
 import groovy.transform.Field
 import hudson.plugins.git.extensions.impl.CheckoutOption
@@ -19,6 +16,9 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 // checkouts that can exceed that on a slow network.
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
+
+@Field
+final String DEFAULT_TUNING_DB_JOB = 'MLIR/rocmlirTriton-weekly'
 
 // Run `script` under bash with pipefail, so a failing command is not masked by
 // the exit code of a later pipe stage such as `tee`. Plain `sh` has no pipefail.
@@ -382,10 +382,11 @@ Map<String,String> dockerArgs() {
 }
 
 
-/*
-void buildCK(String cmakeOpts) {
+void buildCK(String cmakeOpts, String buildTarget = '') {
     sh '[ ! -d build ] || rm -rf build'
-    cmakeBuild generator: 'Unix Makefiles',\
+    // CK's Unix Makefiles do not expose device_gemm_operations as a directly
+    // buildable target, while Ninja handles this target graph correctly.
+    cmakeBuild generator: (buildTarget ? 'Ninja' : 'Unix Makefiles'),\
         buildDir: 'build',\
         buildType: 'Release',\
         installation: 'InSearchPath',\
@@ -393,9 +394,37 @@ void buildCK(String cmakeOpts) {
                       -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
                      ${cmakeOpts}
                      """
-    sh 'cd build; make -j $(nproc)'
+    if (buildTarget) {
+        shStrict "cmake --build build --target ${buildTarget} --parallel \$(nproc)"
+    } else {
+        shStrict 'cd build; make -j $(nproc)'
+    }
 }
-*/
+
+void installCKGemmOnly(String installDir) {
+    sh """#!/usr/bin/env bash
+        set -euo pipefail
+
+        install_dir="${installDir}"
+        cmake_dir="\${install_dir}/lib/cmake/composable_kernel"
+        mkdir -p "\${install_dir}/include/ck" "\${install_dir}/lib" "\${cmake_dir}"
+
+        cp -R include/ck/. "\${install_dir}/include/ck/"
+        cp -R library/include/ck/. "\${install_dir}/include/ck/"
+        cp build/include/ck/config.h build/include/ck/version.h "\${install_dir}/include/ck/"
+        cp build/lib/libdevice_gemm_operations.a "\${install_dir}/lib/"
+        cp build/composable_kernelConfig.cmake \
+           build/composable_kernelConfigVersion.cmake \
+           "\${cmake_dir}/"
+
+        mapfile -t gemm_export_files < <(find build -type f -name 'composable_kerneldevice_gemm_operationsTargets*.cmake' -print)
+        if [ "\${#gemm_export_files[@]}" -eq 0 ]; then
+            echo "Could not find CK device_gemm_operations CMake export files"
+            exit 1
+        fi
+        cp "\${gemm_export_files[@]}" "\${cmake_dir}/"
+    """
+}
 
 void buildMIGraphX(String cmakeOpts) {
     sh '[ ! -d build ] || rm -rf build'
@@ -416,12 +445,32 @@ void getAndBuildMIGraphX(String cmakeOpts) {
     buildMIGraphX(cmakeOpts)
 }
 
-/*
-void getAndBuildCK(String cmakeOpts) {
+void getAndBuildCK(String cmakeOpts, String buildTarget = '') {
     robustExternalCheckout('https://github.com/ROCm/composable_kernel.git', params.CKBranch)
-    buildCK(cmakeOpts)
+    buildCK(cmakeOpts, buildTarget)
 }
-*/
+
+String ckFp8CmakeOptions(String chip) {
+    // CK auto-derives CK_USE_*_FP8 from GPU_TARGETS, so we only force the
+    // numeric macro values via CMAKE_CXX_FLAGS to keep CK's `#if` checks correct.
+    if ("${chip}".startsWith('gfx94')) {
+        return '-DCMAKE_CXX_FLAGS="-O3 -DCK_USE_FNUZ_FP8=1"'
+    }
+    if ("${chip}" == 'gfx950' || "${chip}".startsWith('gfx12')) {
+        return '-DCMAKE_CXX_FLAGS="-O3 -DCK_USE_OCP_FP8=1 -DCK_TILE_USE_OCP_FP8=1"'
+    }
+    return '-DCMAKE_CXX_FLAGS="-O3"'
+}
+
+String ckDtypesCmakeOptions(String chip) {
+    // The MLIR vs CK perf configs exercise f16/f32 GEMM, with int8 available
+    // for the CK GEMM driver. Restricting DTYPES avoids building unused CK
+    // operation instances on older arches such as gfx908.
+    if ("${chip}".startsWith('gfx94') || "${chip}" == 'gfx950' || "${chip}".startsWith('gfx12')) {
+        return '-DDTYPES="fp8;bf8;fp16;fp32;int8"'
+    }
+    return '-DDTYPES="fp16;fp32;int8"'
+}
 
 void showEnv() {
     echo "$env.NODE_NAME"
@@ -527,9 +576,10 @@ void preMergeCheckPackage(String codepath) {
         echo "Skipping fat library target list check"
     }
 }
+*/
 
 void splitConfigFile(String inputFilePath, String outputFilePath, int run, int totalSplits = 5) {
-    sh """
+    shStrict """
     lines=\$(grep -Ev '(^\\s*\$|^\\s*#)' ${inputFilePath} | wc -l)
     lines_per_chunk=\$(((lines + ${totalSplits} - 1) / ${totalSplits}))
     start_line=\$((lines_per_chunk * (${run} - 1) + 1))
@@ -568,13 +618,12 @@ void postProcessPerfRes(String chip) {
     // Save results for future comparison
     archiveArtifacts artifacts: 'build/*_mlir_*.csv,build/perf-run-date', allowEmptyArchive: true, onlyIfSuccessful: true
 }
-*/
 
-//Get the GPU name of architecture
+// Get the base GPU chip name as reported by the runtime (e.g. gfx1200, gfx942).
 def get_gpu_architecture() {
     try {
         def result = sh(script: 'rocminfo', returnStdout: true).trim()
-        def arch_pattern = /Name:\s+amdgcn-amd-amdhsa--(gfx\d+\w*((:\w+[\+\-]))*)/
+        def arch_pattern = /Name:\s+amdgcn-amd-amdhsa--(gfx[0-9a-z]+)/
         def matches = (result =~ arch_pattern)
         if (matches) {
             return matches[0][1]
@@ -839,11 +888,14 @@ boolean shouldRunBuildAndTest(String codepath) {
     }
 }
 
-/*
 boolean isNotNavi3x(String chip) {
     return "${chip}" != 'gfx1100' && "${chip}" != 'gfx1101'
 }
-*/
+
+boolean supportsCKBenchmark(String chip) {
+    // CK does not generate a device_gemm_operations target for gfx906.
+    return isNotNavi3x(chip) && "${chip}" != 'gfx906'
+}
 
 void collectCoverageData(String profdata, String cov, String cpath) {
     sh """
@@ -1072,7 +1124,10 @@ Map<String,String> classifyBuildFailure(String logText) {
         'Configure and build rocmlirTriton', 'Static checks', 'Run tests',
         'Upstream MLIR: check-mlir', 'Shared Library: fixed E2E', 'Shared Library: random E2E',
         'Install MIGraphX Dependencies', 'Build and Verify MIGraphX with MLIR', 'Verify MIGraphX with MLIR',
-        'MIGraphX'
+        'MIGraphX',
+        'Benchmark and Report Performance', 'Build MLIR', 'Copy tuning database',
+        'Test MLIR vs MIOpen/hipBLASLt', 'Test Fusion', 'Test Attention', 'Test MLIR vs CK',
+        'Create performance reports'
     ]
     def stageSearchText = (logBeforeAnchor.length() > 0) ? logBeforeAnchor : logText
     def stageIdx = -1
@@ -1141,6 +1196,209 @@ void sendTeamsBuildNotification(String buildNumber, String statusMessage, String
     }
 }
 
+// Matrix-row body of the "Benchmark and Report Performance" stage. It lives
+// outside the pipeline block, which is compiled into a single JVM method and so
+// is capped at 64 KB of bytecode.
+void runBenchmarkMatrixRow(String CHIP) {
+    // Prepare node
+    withHealthyNode(
+        getLabelFromChip(CHIP),
+        {
+            checkNodeHealth()
+        },
+        {
+            stage("SCM Checkout") {
+                try {
+                    robustScmCheckout()
+                } catch (e) {
+                    error "[SCM] Checkout failed on ${env.NODE_NAME}: ${e}"
+                }
+            }
+            try {
+                String args = ''
+                def img = null
+                stage("Prepare Docker environment") {
+                    // Fill in the docker args from the node
+                    dockerArgs()
+
+                    args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
+                    // Check these args
+                    echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
+                    explicitDockerLogin()
+                    img = pullDockerImage(dockerImage())
+                }
+                // Spin up ONE container and stay in it for all substages
+                img.inside(args) {
+                    withEnv([
+                        "HOME=${env.WORKSPACE}",
+                        "PATH=/opt/rocm/llvm/bin:${env.PATH}"
+                    ]) {
+                        // cmake.sh deletes build/ before configuring, so nothing may be
+                        // copied into build/ before this stage.
+                        stage("Build MLIR") {
+                            echo "chip is ${CHIP}"
+                            echo "Container environment:"
+                            showEnv()
+                            buildProject('check-rocmlir-build-only ci-performance-scripts hipblaslt-benchmark-driver',
+                                         '-DROCMLIR_ENABLE_BENCHMARKS=hipblaslt')
+                        }
+
+                        stage("Copy tuning database") {
+                            // A job that has not picked up the new parameters reports null.
+                            def tuningDBJob = params.tuningDBJob ?: DEFAULT_TUNING_DB_JOB
+                            def tuningDBBuild = params.tuningDBBuild?.trim()
+                            echo "Taking tuning databases from ${tuningDBJob}, build ${tuningDBBuild ?: 'lastSuccessful'}"
+                            // Missing databases must not skip the later nightly stages;
+                            // perfRunner then benchmarks untuned.
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
+                                       message: "No tuning databases from ${tuningDBJob}; benchmarking untuned") {
+                                copyArtifacts filter: 'build/perfDB/**',\
+                                    optional: true,\
+                                    flatten: true,\
+                                    projectName: "/${tuningDBJob}",\
+                                    selector: tuningDBBuild ? specific(tuningDBBuild) : lastSuccessful(),\
+                                    target: 'build'
+                                sh 'ls -l build/tuning-date build/*.tsv'
+                                sh 'cat build/tuning-date'
+                            }
+                        }
+
+                        stage("Copy earlier performance results") {
+                            copyArtifacts filter: 'build/*.csv,build/perf-run-date',\
+                                optional: true,\
+                                flatten: true,\
+                                projectName: "/${env.JOB_NAME}",\
+                                selector: lastSuccessful(),\
+                                target: 'build/oldData'
+                        }
+
+                        stage("Test MLIR vs MIOpen/hipBLASLt") {
+                            dir('build') {
+                                def convInput = "${env.WORKSPACE}/mlir/utils/performance/configs/tier1-conv-configs"
+                                def convToUse = "${env.WORKSPACE}/build/tier1-conv-configs"
+                                def gemmInput = "${env.WORKSPACE}/mlir/utils/performance/configs/tier1-gemm-configs"
+                                def gemmToUse = "${env.WORKSPACE}/build/tier1-gemm-configs"
+                                if (params.nightly) {
+                                    def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
+                                    splitConfigFile(convInput, convToUse, runIndex)
+                                    splitConfigFile(gemmInput, gemmToUse, runIndex)
+                                }
+                                sh 'date --utc +%Y-%m-%d > perf-run-date'
+                                sh 'ls -l /dev/kfd'
+                                sh 'ls -l /dev/dri'
+                                // Run MLIR vs MIOpen perf benchmarks.
+                                shStrict """python3 ./bin/perfRunner.py --op=conv --batch-all \
+                                    --configs-file=${convToUse} \
+                                    --tuning-db=${env.WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
+                                    --quick-tuning-db=${env.WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
+                                // Run MLIR vs hipBLASLt perf benchmarks
+                                shStrict """python3 ./bin/perfRunner.py --op=gemm --batch-all \
+                                    --configs-file=${gemmToUse} \
+                                    --tuning-db=${env.WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
+                                    --quick-tuning-db=${env.WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
+                            }
+                        }
+
+                        stage("Test Fusion") {
+                            dir('build') {
+                                // Run fusion resnet50 perf benchmarks
+                                shStrict """python3 ./bin/perfRunner.py --op=fusion --test-dir=${env.WORKSPACE}/mlir/test/fusion/resnet50-e2e/ --tuning-db=${env.WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
+                                // Run bert perf benchmarks
+                                shStrict """python3 ./bin/perfRunner.py --op fusion --test-dir=${env.WORKSPACE}/mlir/test/xmir/bert-torch-tosa-e2e/ --tuning-db=${env.WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
+                            }
+                        }
+
+                        if (isNotNavi3x(CHIP)) {
+                            stage("Test Attention") {
+                                dir('build') {
+                                    def attnInput = "${env.WORKSPACE}/mlir/utils/performance/configs/tier1-attention-configs"
+                                    def attnToUse = "${env.WORKSPACE}/build/tier1-attention-configs"
+                                    if (params.nightly) {
+                                        def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
+                                        splitConfigFile(attnInput, attnToUse, runIndex)
+                                    }
+                                    // Run attention benchmarks
+                                    shStrict """python3 ./bin/perfRunner.py --op=attention -b \
+                                        --configs-file=${attnToUse} \
+                                        --tuning-db=${env.WORKSPACE}/build/mlir_tuning_${CHIP}.tsv"""
+                                }
+                            }
+                        }
+
+                        if (params.checkCK && supportsCKBenchmark(CHIP)) {
+                            stage("Test MLIR vs CK") {
+                                catchError (buildResult: null) { // This is an optional stage
+                                    def ckInstallDir = "${env.WORKSPACE}/composable_kernel/build/CKInstallDir"
+                                    dir('composable_kernel') {
+                                        sh 'rm -rf composable_kernel'
+                                        getAndBuildCK("""
+                                            -DGPU_TARGETS=${CHIP}
+                                            -DCMAKE_PREFIX_PATH="/opt/rocm"
+                                            -DCMAKE_INSTALL_PREFIX=${ckInstallDir}
+                                            -DCMAKE_BUILD_TYPE=Release
+                                            -DBUILD_TESTING=OFF
+                                            -DBUILD_CK_EXAMPLES=OFF
+                                            -DBUILD_CK_TUTORIALS=OFF
+                                            -DBUILD_CK_PROFILER=OFF
+                                            -DENABLE_CLANG_CPP_CHECKS=OFF
+                                            ${ckDtypesCmakeOptions(CHIP)}
+                                            ${ckFp8CmakeOptions(CHIP)}
+                                            """,
+                                            'device_gemm_operations')
+                                        installCKGemmOnly(ckInstallDir)
+                                        sh 'echo `git rev-parse HEAD`'
+                                    }
+                                    // --no-clean keeps the tuning databases and perf results in build/.
+                                    buildProject("ck-benchmark-driver",
+                                                 "--no-clean -DCMAKE_PREFIX_PATH=${ckInstallDir} -DROCMLIR_ENABLE_BENCHMARKS=ck")
+
+                                    dir('build') {
+                                        def gemmInput = "${env.WORKSPACE}/mlir/utils/performance/configs/tier1-gemm-configs"
+                                        def gemmToUse = "${env.WORKSPACE}/build/tier1-gemm-configs"
+                                        if (params.nightly) {
+                                            def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
+                                            splitConfigFile(gemmInput, gemmToUse, runIndex)
+                                        }
+                                        shStrict """python3 ./bin/perfRunner.py --op=gemm --batch-all \
+                                            --configs-file=${gemmToUse} \
+                                            --tuning-db=${env.WORKSPACE}/build/mlir_tuning_${CHIP}.tsv --data-type f32 f16 i8_i8 --external-gemm-library CK"""
+                                        def ckChip = get_gpu_architecture()
+                                        sh "python3 ./bin/createPerformanceReports.py ${ckChip} CK"
+                                    }
+                                }
+                            }
+                        }
+
+                        stage("Create performance reports") {
+                            // perfRunner.py names its CSVs after the chip it runs on, which
+                            // need not match the CHIP matrix value.
+                            def reportChip = get_gpu_architecture()
+                            echo "Detected GPU chip for reports: ${reportChip} (CHIP matrix value: ${CHIP})"
+                            dir('build') {
+                                sh 'ls -l'
+                                sh "python3 ./bin/createPerformanceReports.py ${reportChip} MIOpen"
+                                sh "python3 ./bin/createPerformanceReports.py ${reportChip} hipBLASLt"
+                                sh "python3 ./bin/createFusionPerformanceReports.py ${reportChip}"
+                                sh "python3 ./bin/perfRegressionReport.py ${reportChip}"
+                                sh "python3 ./bin/perfRegressionReport.py ${reportChip} ./oldData/${reportChip}_mlir_vs_hipblaslt_perf.csv ./${reportChip}_mlir_vs_hipblaslt_perf.csv"
+                                sh 'mkdir -p reports && cp ./*.html reports'
+                            }
+                            postProcessPerfRes(reportChip)
+                        }
+                    }
+                }
+            }
+            // Post block in scripted Jenkins works as try {} catch {} finally {}
+            catch (e) {
+                throw e
+            }
+            finally {
+                cleanWs()
+            }
+        }
+    )
+}
+
 pipeline {
     agent none
     options { parallelsAlwaysFailFast() }
@@ -1154,8 +1412,12 @@ pipeline {
                      description: 'Run weekly-only jobs')
         string(name: 'MIGraphXBranch', defaultValue: 'develop',
                description: 'The MIGraphX branch/commit to verify against.')
-        // string(name: 'CKBranch', defaultValue: 'develop',
-        //     description: 'The Composable Kernel branch to be used with the job')
+        string(name: 'CKBranch', defaultValue: 'develop',
+            description: 'The Composable Kernel branch to be used with the job')
+        string(name: 'tuningDBJob', defaultValue: DEFAULT_TUNING_DB_JOB,
+               description: 'Jenkins job whose archived build/perfDB the nightly benchmark reads its tuning databases from')
+        string(name: 'tuningDBBuild', defaultValue: '',
+               description: 'Build number of tuningDBJob to read the tuning databases from. Empty means its last successful build.')
 
         // Each below control whether to run a individual stage from parallel run
         // They default to true or empty but developer can toggle them for debugging purpose
@@ -1165,8 +1427,8 @@ pipeline {
                      description: 'Run the static library stage')
         booleanParam(name: 'checkMIGraphX', defaultValue: false,
                      description: 'Run the MIGraphX integration tests')
-        // booleanParam(name: 'checkCK', defaultValue: true,
-        //              description: 'Compare performance against CK')
+        booleanParam(name: 'checkCK', defaultValue: true,
+                     description: 'Compare performance against CK')
         booleanParam(name: 'runCodeCoverage', defaultValue: params.weekly || (!params.weekly && !params.nightly),
                      description: 'Collect and upload code-coverage info.')
         booleanParam(name: 'runCoverageHtml', defaultValue: false,
@@ -1717,7 +1979,6 @@ PY
                 }
             }
         }
-        /* // --- NIGHTLY STAGE (commented out) ---
         stage("Benchmark and Report Performance") {
             when {
                 beforeAgent true;
@@ -1737,203 +1998,12 @@ PY
                             expression { shouldRunFromChip(CHIP) }
                         }
                         steps {
-                            script {
-                                // Prepare node
-                                withHealthyNode(
-                                    getLabelFromChip(CHIP),
-                                    {
-                                        checkNodeHealth()
-                                    },
-                                    {
-                                        stage("SCM Checkout") {
-                                            try {
-                                                robustScmCheckout()
-                                            } catch (e) {
-                                                error "[SCM] Checkout failed on ${env.NODE_NAME}: ${e}"
-                                            }
-                                        }
-                                        try {
-                                            String args = ''
-                                            def img = null
-                                            stage("Prepare Docker environment") {
-                                                // Fill in the docker args from the node
-                                                dockerArgs()
-
-                                                args = DOCKER_ARGS_BY_NODE[env.NODE_NAME]
-                                                // Check these args
-                                                echo "Running ${CHIP} on ${env.NODE_NAME} with: ${args}"
-                                                explicitDockerLogin()
-                                                img = pullDockerImage(dockerImage())
-                                            }
-                                            // Spin up ONE container and stay in it for all substages
-                                            img.inside(args) {
-                                                // The only way the env variables worked with all other changes
-                                                withEnv([
-                                                    "HOME=${env.WORKSPACE}",
-                                                    "PATH=/opt/rocm/llvm/bin:${env.PATH}"
-                                                ]) {   
-                                                    stage("Copy tuning database") {
-                                                        echo "chip is ${CHIP}"
-                                                        echo "Container environment:"
-                                                        showEnv()
-                                                        copyArtifacts filter: 'build/perfDB/**',\
-                                                            optional: true,\
-                                                            flatten: true,\
-                                                            projectName: "/MLIR/mlir-weekly",\
-                                                            selector: lastSuccessful(),\
-                                                            target: 'build'
-                                                            sh 'ls build'
-                                                            sh 'cat build/tuning-date'
-                                                    }
-
-                                                    stage("Build MLIR") {
-                                                        // Clean up build settings to disable static library and allow ROCm testing
-                                                        buildProject(
-                                                            'check-rocmlir-build-only ci-performance-scripts hipblaslt-benchmark-driver',
-                                                            '-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ ' +
-                                                            '-DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang ' +
-                                                            '-DROCMLIR_ENABLE_BENCHMARKS=hipblaslt'
-                                                        )
-                                                    }
-
-                                                    stage("Copy earlier performance results") {
-                                                        copyArtifacts filter: 'build/*.csv,build/perf-run-date',\
-                                                            optional: true,\
-                                                            flatten: true,\
-                                                            projectName: "/${JOB_NAME}",\
-                                                            selector: lastSuccessful(),\
-                                                            target: 'build/oldData'
-                                                    }
-
-                                                    stage("Test MLIR vs MIOpen/hipBLASLt") {
-                                                        dir('build') {
-                                                            def convInput = "${WORKSPACE}/mlir/utils/performance/configs/tier1-conv-configs"
-                                                            def convToUse = "${WORKSPACE}/build/tier1-conv-configs"
-                                                            def gemmInput = "${WORKSPACE}/mlir/utils/performance/configs/tier1-gemm-configs"
-                                                            def gemmToUse = "${WORKSPACE}/build/tier1-gemm-configs"
-                                                            script {
-                                                                if (params.nightly) {
-                                                                    def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
-                                                                    splitConfigFile(convInput, convToUse, runIndex)
-                                                                    splitConfigFile(gemmInput, gemmToUse, runIndex)
-                                                                }
-                                                            }
-                                                            sh 'date --utc +%Y-%m-%d > perf-run-date'
-                                                            sh 'ls -l /dev/kfd'
-                                                            sh 'ls -l /dev/dri'
-                                                            // Run MLIR vs MIOpen perf benchmarks.
-                                                            sh """python3 ./bin/perfRunner.py --op=conv --batch-all \
-                                                                --configs-file=${convToUse} \
-                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
-                                                                --quick-tuning-db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
-                                                            // Run MLIR vs hipBLASLt perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op=gemm --batch-all \
-                                                                --configs-file=${gemmToUse} \
-                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv \
-                                                                --quick-tuning-db=${WORKSPACE}/build/mlir_quick_tuning_${CHIP}.tsv"""
-                                                        }
-                                                    }
-
-                                                    stage("Test Fusion") {
-                                                        dir('build') {
-                                                            // Run fusion resnet50 perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op=fusion --test-dir=${WORKSPACE}/mlir/test/fusion/resnet50-e2e/ --tuning-db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
-                                                            // Run bert perf benchmarks
-                                                            sh """python3 ./bin/perfRunner.py --op fusion --test-dir=${WORKSPACE}/mlir/test/xmir/bert-torch-tosa-e2e/ --tuning-db=${WORKSPACE}/build/tuning_fusion_${CHIP}.tsv"""
-                                                        }
-                                                    }
-
-                                                    if (isNotNavi3x(CHIP)) {
-                                                        stage("Test Attention") {
-                                                            dir('build') {
-                                                                def attnInput = "${WORKSPACE}/mlir/utils/performance/configs/tier1-attention-configs"
-                                                                def attnToUse = "${WORKSPACE}/build/tier1-attention-configs"
-                                                                script {
-                                                                    if (params.nightly) {
-                                                                        def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
-                                                                        splitConfigFile(attnInput, attnToUse, runIndex)
-                                                                    }
-                                                                }
-                                                                // Run attention benchmarks
-                                                                sh """python3 ./bin/perfRunner.py --op=attention -b \
-                                                                    --configs-file=${attnToUse} \
-                                                                    --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv"""
-                                                            }
-                                                        }
-                                                    }
-
-                                                    if (params.checkCK && isNotNavi3x(CHIP)) {
-                                                        stage("Test MLIR vs CK") {
-                                                            catchError (buildResult: null) { // This is an optional stage
-                                                                dir('composable_kernel') {
-                                                                    sh 'rm -rf composable_kernel'
-                                                                    getAndBuildCK('''
-                                                                        -DGPU_TARGETS=${CHIP}
-                                                                        -DCMAKE_CXX_FLAGS="-O3"
-                                                                        -DCMAKE_PREFIX_PATH="/opt/rocm"
-                                                                        -DCMAKE_INSTALL_PREFIX=${WORKSPACE}/composable_kernel/build/CKInstallDir
-                                                                        -DCMAKE_BUILD_TYPE=Release
-                                                                        ''')
-                                                                    sh 'cd build; make install'
-                                                                    sh 'echo `git rev-parse HEAD`'
-                                                                }
-                                                                sh 'rm -f build/CMakeCache.txt'
-                                                                buildProject("ck-benchmark-driver",
-                                                                            '''-DCMAKE_PREFIX_PATH=${WORKSPACE}/composable_kernel/build/CKInstallDir
-                                                                                -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
-                                                                                -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                                                -DROCMLIR_ENABLE_BENCHMARKS=ck''')
-
-
-                                                                dir('build') {
-                                                                    def gemmInput = "${WORKSPACE}/mlir/utils/performance/configs/tier1-gemm-configs"
-                                                                    def gemmToUse = "${WORKSPACE}/build/tier1-gemm-configs"
-                                                                    script {
-                                                                        if (params.nightly) {
-                                                                            def runIndex = ((env.BUILD_NUMBER as int) - 1) % 5 + 1
-                                                                            splitConfigFile(gemmInput, gemmToUse, runIndex)
-                                                                        }
-                                                                    }
-                                                                    sh """python3 ./bin/perfRunner.py --op=gemm --batch-all \
-                                                                --configs-file=${gemmToUse} \
-                                                                --tuning-db=${WORKSPACE}/build/mlir_tuning_${CHIP}.tsv --data-type f32 f16 i8_i8 --external-gemm-library CK"""
-                                                                    sh 'python3 ./bin/createPerformanceReports.py ${CHIP} CK'
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    stage("Create performance reports") {
-                                                        dir('build') {
-                                                            sh 'ls -l'
-                                                            sh 'python3 ./bin/createPerformanceReports.py ${CHIP} MIOpen'
-                                                            sh 'python3 ./bin/createPerformanceReports.py ${CHIP} hipBLASLt'
-                                                            sh 'python3 ./bin/createFusionPerformanceReports.py ${CHIP}'
-                                                            sh 'python3 ./bin/perfRegressionReport.py ${CHIP}'
-                                                            sh 'python3 ./bin/perfRegressionReport.py ${CHIP} ./oldData/${CHIP}_mlir_vs_hipblaslt_perf.csv ./${CHIP}_mlir_vs_hipblaslt_perf.csv'
-                                                            sh 'mkdir -p reports && cp ./*.html reports'
-                                                        }
-                                                        postProcessPerfRes("${CHIP}")
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        // Post block in scripted Jenkins works as try {} catch {} finally {}
-                                        catch (e) {
-                                            throw e
-                                        }
-                                        finally {
-                                            cleanWs()
-                                        }
-                                    }
-                                )
-                            }
+                            script { runBenchmarkMatrixRow(CHIP) }
                         }
                     }
                 }
             }
         }
-        */ // --- END Benchmark/Report NIGHTLY STAGE ---
         stage ("MIGraphX") {
             when {
                 beforeAgent true;
