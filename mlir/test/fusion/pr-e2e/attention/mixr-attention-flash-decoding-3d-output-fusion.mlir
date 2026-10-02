@@ -24,7 +24,10 @@ module {
     %15 = migraphx.reshape %14 {dims = [1, 2, 256, 1]} : <1x2x256x1xf32, 512x256x1x1> -> <1x2x256x1xf32, 512x256x1x1>
     %16 = migraphx.multibroadcast %15 {out_dyn_dims = [], out_lens = [1, 2, 256, 128]} : <1x2x256x1xf32, 512x256x1x1> -> <1x2x256x128xf32, 512x256x1x0>
     %17 = migraphx.div %12, %16 : <1x2x256x128xf32, 65536x32768x128x1>, <1x2x256x128xf32, 512x256x1x0> -> <1x2x256x128xf32, 65536x32768x128x1>
-    %18 = migraphx.dot %17, %5 : <1x2x256x128xf32, 65536x32768x128x1>, <1x2x128x256xf32, 65536x128x1x256> -> <1x2x256x256xf32, 131072x65536x256x1>
+    // TODO(ROCM-32038): Temporarily pin a safe perfConfig for this kernel, as
+    // the gfx950 default produces incorrect results because of a known LLVM
+    // error.
+    %18 = migraphx.dot %17, %5 {perf_config = "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0"} : <1x2x256x128xf32, 65536x32768x128x1>, <1x2x128x256xf32, 65536x128x1x256> -> <1x2x256x256xf32, 131072x65536x256x1>
     
     // Output fusion: Scale the attention output
     %output_scale = migraphx.literal (dense<2.0> : tensor<1xf32>) : <1xf32, 0>
