@@ -17,6 +17,9 @@ String DOCKER_HUB_CREDS = "DOCKER_HUB_CREDS"
 @Field
 final int GIT_SCM_TIMEOUT_MINUTES = 120
 
+@Field
+final String DEFAULT_TUNING_DB_JOB = 'MLIR/rocmlirTriton-weekly'
+
 // Run `script` under bash with pipefail, so a failing command is not masked by
 // the exit code of a later pipe stage such as `tee`. Plain `sh` has no pipefail.
 def shStrict(String script) {
@@ -1242,7 +1245,7 @@ void runBenchmarkMatrixRow(String CHIP) {
 
                         stage("Copy tuning database") {
                             // A job that has not picked up the new parameters reports null.
-                            def tuningDBJob = params.tuningDBJob ?: 'MLIR/rocmlirTriton-weekly'
+                            def tuningDBJob = params.tuningDBJob ?: DEFAULT_TUNING_DB_JOB
                             def tuningDBBuild = params.tuningDBBuild?.trim()
                             echo "Taking tuning databases from ${tuningDBJob}, build ${tuningDBBuild ?: 'lastSuccessful'}"
                             // Missing databases must not skip the later nightly stages;
@@ -1411,7 +1414,7 @@ pipeline {
                description: 'The MIGraphX branch/commit to verify against.')
         string(name: 'CKBranch', defaultValue: 'develop',
             description: 'The Composable Kernel branch to be used with the job')
-        string(name: 'tuningDBJob', defaultValue: 'MLIR/rocmlirTriton-weekly',
+        string(name: 'tuningDBJob', defaultValue: DEFAULT_TUNING_DB_JOB,
                description: 'Jenkins job whose archived build/perfDB the nightly benchmark reads its tuning databases from')
         string(name: 'tuningDBBuild', defaultValue: '',
                description: 'Build number of tuningDBJob to read the tuning databases from. Empty means its last successful build.')
