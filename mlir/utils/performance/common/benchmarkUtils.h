@@ -44,6 +44,7 @@ struct BenchmarkArgs {
   DataType outDataType{DataType::UNKNOWN};
   bool transposeA{false};
   bool transposeB{false};
+  bool transposeO{false};
   bool transScaleA{false};
   bool transScaleB{false};
   std::string fusion{""};
