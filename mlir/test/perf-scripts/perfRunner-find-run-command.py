@@ -36,6 +36,8 @@ TEST_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
 # The directories the weekly `Tune Fusion` stage passes to --test-dir.
 WEEKLY_FUSION_DIRS = ("fusion/resnet50-e2e", "xmir/bert-torch-tosa-e2e")
 
+# Split so that lit does not take it for a RUN line of this test.
+RUN_PREFIX = "// RUN" + ":"
 GEN = "rocmlir-gen --clone-harness -arch %arch -fut test %s"
 DRIVER = ("rocmlir-driver -kernel-pipeline migraphx,highlevel "
           "-host-pipeline migraphx,highlevel -arch %arch")
@@ -46,7 +48,7 @@ class FindRunCommandTest(unittest.TestCase):
     def find(self, run_line):
         with tempfile.NamedTemporaryFile('w', suffix='.mlir', delete=False) as f:
             f.write("// Copyright Advanced Micro Devices, Inc.\n")
-            f.write(f"// RUN: {run_line}\n")
+            f.write(f"{RUN_PREFIX} {run_line}\n")
             path = f.name
         try:
             return find_run_command(path)
