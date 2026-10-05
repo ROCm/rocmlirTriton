@@ -126,13 +126,18 @@ if(WIN32)
     # for C/C++ only (ml64 misparses a leading -W as its /W warning level).
     add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-command-line-argument>")
   else()
-    # cl.exe: /permissive- is the MSVC switch that turns on conformant two-phase
-    # name lookup, i.e. the equivalent of -fno-delayed-template-parsing above.
-    # Triton sets it for its own targets; set it globally so MLIR/Rock match.
-    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/permissive->")
-    # MSVC's default 1 MB stack overflows on MLIR's deeply recursive templates,
-    # and TableGen'd dialect files exceed the default section limit.
-    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/bigobj>")
+    # cl.exe equivalents of -fno-delayed-template-parsing above: /permissive-
+    # for conformant two-phase name lookup, /bigobj for objects that exceed the
+    # 2^16 COFF section limit.
+    #
+    # Both are near-redundant: HandleLLVMOptions.cmake sets them for LLVM and,
+    # via mlir/CMakeLists.txt, for our own subtree, and Triton sets them for its
+    # targets. What is left over is external/triton/test/lib, which Triton's own
+    # flag block does not reach -- those eight TUs get both flags only from here.
+    add_compile_options(
+      "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+      "$<$<COMPILE_LANGUAGE:CXX>:/bigobj>"
+    )
     # C4068: `#pragma clang ...` in sources shared with the Clang build.
     # C4530: LLVM builds with exceptions off (/EHs-c-), but MSVC's <ostream>
     #        contains EH constructs and warns. Both are fatal under /WX.
