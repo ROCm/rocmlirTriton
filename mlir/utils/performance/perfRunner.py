@@ -2301,8 +2301,11 @@ class AttentionConfiguration(PerfConfiguration):
     @classmethod
     def from_table_entry(cls, row, arch, num_cu, num_chiplets):
         look_back = int(row['SlidingWindowLookBack'])
-        # Tuning tables collected before the band existed have no such column.
-        causal_look_back = int(row.get('CausalLookBack', -1))
+        # Tuning tables collected before the band existed have no such column. A
+        # mixed-file concat is worse than that: the column exists and the legacy
+        # row carries NaN, which `get` happily returns and `int` then rejects.
+        causal_look_back = row.get('CausalLookBack', -1)
+        causal_look_back = -1 if pd.isna(causal_look_back) else int(causal_look_back)
         return cls(dtype=row['DataType'],
                    g=int(row['G']),
                    seq_len_q=int(row['SeqLenQ']),

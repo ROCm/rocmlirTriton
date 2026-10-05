@@ -1358,14 +1358,27 @@ static LogicalResult detectMissingArguments() {
             << "causal_look_back is not supported with prefix_offset\n";
         return failure();
       }
-      // A band at least as wide as the key sequence reaches key 0 for every
-      // query, so it is plain causal. Drop it rather than emit bound arithmetic
-      // that can never tighten the loop.
-      if (causalLookBack > sequenceLengthK - 1) {
+      // The band keeps keys max(0, q - L) .. min(q, seq_len_k - 1), so only its
+      // lower edge differs from plain causal, and that edge is a function of
+      // the query row alone. It clamps to zero for every row -- making the band
+      // exactly plain causal -- precisely when L covers the longest query row.
+      // The key length enters only through the upper bound, so it says nothing
+      // about degeneracy: at seq_len_q 256, seq_len_k 128 and L 128, query 200
+      // must keep keys 72..127 while plain causal keeps 0..127.
+      if (causalLookBack >= sequenceLengthQ - 1) {
         llvm::errs() << "warning: causal_look_back (" << causalLookBack
-                     << ") covers the whole key sequence (" << sequenceLengthK
+                     << ") covers the whole query sequence (seq_len_q "
+                     << sequenceLengthQ
                      << "); falling back to plain causal masking\n";
         causalLookBack = -1;
+      } else if (causalLookBack > sequenceLengthK - 1) {
+        // Non-degenerate, but verifyCausalLookBack bounds the band by the key
+        // sequence length, so the attribute cannot represent one this wide.
+        llvm::errs() << "causal_look_back (" << causalLookBack
+                     << ") must be less than seq_len_k (" << sequenceLengthK
+                     << ") unless it also covers seq_len_q (" << sequenceLengthQ
+                     << ")\n";
+        return failure();
       }
     }
   }

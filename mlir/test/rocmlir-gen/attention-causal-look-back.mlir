@@ -1,9 +1,24 @@
+// Copyright Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=32 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 -pv | rocmlir-opt | FileCheck %s --enable-var-scope
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=128 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 -pv | rocmlir-opt | FileCheck %s --check-prefix=DEGENERATE
 // RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=-1 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 -pv | rocmlir-opt | FileCheck %s --check-prefix=DEGENERATE
 // RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention -causal_look_back=32 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 2>&1 | FileCheck %s --check-prefix=NEEDS-CAUSAL
 // RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=0 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 2>&1 | FileCheck %s --check-prefix=NOT-POSITIVE
 // RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=32 -prefix_offset=4 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 2>&1 | FileCheck %s --check-prefix=NO-PREFIX
+
+// Degeneracy is set by the query length: the band's lower edge is max(0, q - L)
+// and clamps to zero for every row only once L covers the longest query row.
+// At seq_len_q 256 and L 128 it still masks -- query 200 keeps keys 72..127,
+// not 0..127 -- and the attribute cannot represent a band wider than the key
+// sequence, so fail instead of quietly widening the mask.
+// RUN: not rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=128 -seq_len_q 256 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 2>&1 | FileCheck %s --check-prefix=TOO-WIDE
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=255 -seq_len_q 256 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 -pv 2>&1 | FileCheck %s --check-prefix=WIDE-DEGENERATE
+// A square band at exactly seq_len_q - 1 reaches key 0 from the last query row,
+// so it is degenerate even though it is still within the verifier's bound.
+// RUN: rocmlir-gen --arch gfx90a:sramecc+:xnack- --operation attention --causal -causal_look_back=127 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -t f32 -pv 2>&1 | FileCheck %s --check-prefix=SQUARE-DEGENERATE
 
 // The band changes how many key blocks the n-loop visits, so it has to be part
 // of the tuning identity; a plain causal problem must keep the key it had
@@ -62,3 +77,13 @@
 // NEEDS-CAUSAL: causal_look_back requires -causal
 // NOT-POSITIVE: causal_look_back must be -1 or a positive integer
 // NO-PREFIX: causal_look_back is not supported with prefix_offset
+
+// TOO-WIDE: causal_look_back (128) must be less than seq_len_k (128) unless it also covers seq_len_q (256)
+
+// Once the band reaches the last query row, every lower bound clamps to zero and
+// dropping it really is plain causal.
+// WIDE-DEGENERATE: warning: causal_look_back (255) covers the whole query sequence (seq_len_q 256)
+// WIDE-DEGENERATE-NOT: causalLookBack
+
+// SQUARE-DEGENERATE: warning: causal_look_back (127) covers the whole query sequence (seq_len_q 128)
+// SQUARE-DEGENERATE-NOT: causalLookBack

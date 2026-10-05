@@ -1790,6 +1790,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getSlidingWindowLookBack())
     return emitError("slidingWindowLookBack only works for attention.");
 
+  if (!getEnableSoftmax() && getCausalLookBack())
+    return emitError("causalLookBack only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1811,6 +1814,10 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (failed(verifySlidingWindowLookBack(getOperation(),
                                          getSlidingWindowLookBack(),
                                          getLastValidKVIndex(), maxSeqLen)))
+    return failure();
+
+  if (failed(verifyCausalLookBack(getOperation(), getCausalLookBack(),
+                                  getCausal(), getPrefixOffset(), maxSeqLen)))
     return failure();
 
   // The elementwise inputs are plain views of the first GEMM's output space:
