@@ -909,6 +909,11 @@ make compilation fail, so this is a runtime test: it only runs on gfx950
 hardware, where it produces wrong results without this patch. A future
 LLVM bump that loses the fix will fail there.
 
+gfx950 rejects a non-power-of-two kPerBlock again, because Triton cannot lower
+the direct-to-LDS copy of some peeled K segments (see
+rock::supportsNonPow2KPerBlock). Until that is lifted the test is excluded in
+mlir/test/fusion/pr-e2e/lit.local.cfg and this patch has no E2E coverage.
+
 Downstream divergence from the upstream PR
 ------------------------------------------
 Upstream calls AMDGPU::getAGPRFormOp(), introduced by the NFC rename in
