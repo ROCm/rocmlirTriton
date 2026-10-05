@@ -9,9 +9,8 @@
 #ifndef ROCMLIR_TUNING_DRIVER_CACHE_FLUSH_H
 #define ROCMLIR_TUNING_DRIVER_CACHE_FLUSH_H
 
+#include "mlir/Support/HipRuntime.h"
 #include "mlir/Support/LogicalResult.h"
-
-#include <hip/hip_runtime.h>
 
 namespace rocmlir::tuningdriver {
 

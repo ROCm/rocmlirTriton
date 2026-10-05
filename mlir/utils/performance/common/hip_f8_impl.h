@@ -27,7 +27,72 @@
 
 // Note this is a copy of: /include/rocblas/internal/rocblas_hip_f8_impl.h
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <cstdint>
+#include <cstring>
+#include <intrin.h>
+
+// MSVC has no _Float16 and no equivalent switch. The helpers below select on
+// `constexpr bool is_half` with a *runtime* `if`, so the half branches must
+// still type-check when T is float. A distinct 16-bit type that converts to
+// float satisfies both: std::is_same<float, _Float16> stays false, and
+// `T x = reinterpret_cast<const _Float16 &>(bits)` compiles for T = float.
 namespace benchmark {
+namespace msvc_compat {
+struct Float16 {
+  uint16_t bits;
+
+  operator float() const {
+    const uint32_t sign = static_cast<uint32_t>(bits >> 15) << 31;
+    const uint32_t exp = (bits >> 10) & 0x1F;
+    const uint32_t mant = bits & 0x3FF;
+    uint32_t out;
+    if (exp == 0) {
+      if (mant == 0) {
+        out = sign; // +/- zero
+      } else {
+        // Subnormal half: renormalise into a normal float. IEEE-754 subnormals
+        // have an effective unbiased exponent of 1 - bias, not -bias, so the
+        // biased float exponent starts at (1 - 15) + 127.
+        uint32_t e = (1 - 15) + 127;
+        uint32_t m = mant;
+        while ((m & 0x400) == 0) {
+          m <<= 1;
+          --e;
+        }
+        m &= 0x3FF;
+        out = sign | (e << 23) | (m << 13);
+      }
+    } else if (exp == 0x1F) {
+      out = sign | 0x7F800000u | (mant << 13); // inf / NaN
+    } else {
+      out = sign | ((exp - 15 + 127) << 23) | (mant << 13);
+    }
+    float f;
+    std::memcpy(&f, &out, sizeof(f));
+    return f;
+  }
+};
+static_assert(sizeof(Float16) == 2, "Float16 must alias a uint16_t");
+} // namespace msvc_compat
+} // namespace benchmark
+
+using _Float16 = benchmark::msvc_compat::Float16;
+#endif // _MSC_VER && !__clang__
+
+namespace benchmark {
+
+// __builtin_clz has no cl.exe spelling. Like the builtin, this is undefined
+// for 0; the one caller below has already excluded that case.
+inline int count_leading_zeros(uint32_t v) {
+#if defined(_MSC_VER) && !defined(__clang__)
+  unsigned long index;
+  _BitScanReverse(&index, v);
+  return 31 - static_cast<int>(index);
+#else
+  return __builtin_clz(v);
+#endif
+}
 
 template <int wm, int we, typename T, bool negative_zero_nan, bool clip>
 uint8_t cast_to_f8(T _x, bool stoch, uint32_t rng) {
@@ -200,8 +265,12 @@ T cast_from_f8(uint8_t x) {
   constexpr int weo = is_half ? 5 : 8;
   constexpr int wmo = is_half ? 10 : (is_float ? 23 : 7);
 
+  // `if constexpr`, not `if`: the branches are selected on constexpr
+  // conditions, so with a plain `if` both have to type-check for both T. The
+  // float branch assigns a float to T, which has no conversion when T is the
+  // MSVC Float16 stand-in above; discarding the untaken branch avoids that.
   T fInf, fNegInf, fNaN, fNeg0;
-  if (is_half) {
+  if constexpr (is_half) {
     const uint16_t ihInf = 0x7C00;
     const uint16_t ihNegInf = 0xFC00;
     const uint16_t ihNaN = 0x7C01;
@@ -210,7 +279,7 @@ T cast_from_f8(uint8_t x) {
     fNegInf = reinterpret_cast<const _Float16 &>(ihNegInf);
     fNaN = reinterpret_cast<const _Float16 &>(ihNaN);
     fNeg0 = reinterpret_cast<const _Float16 &>(ihNeg0);
-  } else if (is_float) {
+  } else if constexpr (is_float) {
     const uint32_t ifInf = 0x7F800000;
     const uint32_t ifNegInf = 0xFF800000;
     const uint32_t ifNaN = 0x7F800001;
@@ -221,8 +290,10 @@ T cast_from_f8(uint8_t x) {
     fNeg0 = reinterpret_cast<const float &>(ifNeg0);
   }
 
+  // Value-initialise rather than `return 0`: T is an aggregate under the MSVC
+  // shim above, and zeroing its bits is the correct +0 for both T choices.
   if (x == 0)
-    return 0;
+    return T{};
 
   uint32_t sign = x >> 7;
   uint32_t mantissa = x & ((1 << wm) - 1);
@@ -248,7 +319,7 @@ T cast_from_f8(uint8_t x) {
   // subnormal input
   if (exponent == 0) {
     // guaranteed mantissa!=0 since cases 0x0 and 0x80 are handled above
-    int sh = 1 + __builtin_clz(mantissa) - (32 - wm);
+    int sh = 1 + count_leading_zeros(mantissa) - (32 - wm);
     mantissa <<= sh;
     exponent += 1 - sh;
     mantissa &= ((1 << wm) - 1);
