@@ -236,9 +236,12 @@ def _sample_attn_shape(rng: random.Random, n_per_block: int):
         causal,
         return_lse,
         split_kv,
+        # causal_look_back precedes the KV-cache pair so that pair stays at the
+        # tail of the tuple, which attention-tuning-db-compat.py indexes from the
+        # end.
+        causal_look_back,
         last_valid_kv_index,
         sliding_window_look_back,
-        causal_look_back,
     )
 
 
@@ -332,7 +335,7 @@ def to_gemm_gemm_test(params, options: Options) -> perfRunner.GemmGemmConfigurat
 def to_attn_test(params, options: Options) -> perfRunner.AttentionConfiguration:
     shape, perf = params
     (dtype, g, slq, slk, nhq, nhkv, hdqk, hdv, scale, bias, tq, tk, tv, to, causal, return_lse,
-     split_kv, last_valid_kv_index, sliding_window_look_back, causal_look_back) = shape
+     split_kv, causal_look_back, last_valid_kv_index, sliding_window_look_back) = shape
     attn_config = perfRunner.AttentionConfiguration(
         dtype=dtype,
         g=g,
