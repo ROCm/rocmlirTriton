@@ -31,8 +31,8 @@ CONV_COLUMNS = [
 ]
 ATTENTION_COLUMNS = [
     'TransQ', 'TransK', 'TransV', 'TransO', 'Causal', 'ReturnLSE', 'SplitKV',
-    'SlidingWindowLookBack', 'WithAttnScale', 'WithAttnBias', 'TransBias', 'G', 'SeqLenQ',
-    'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
+    'SlidingWindowLookBack', 'CausalLookBack', 'WithAttnScale', 'WithAttnBias', 'TransBias', 'G',
+    'SeqLenQ', 'SeqLenK', 'NumHeadsQ', 'NumHeadsKV', 'HeadDimQK', 'HeadDimV'
 ]
 GEMM_GEMM_COLUMNS = ['TransA', 'TransB', 'TransC', 'TransO', 'G', 'M', 'K', 'N', 'O']
 CONV_GEMM_COLUMNS = [
@@ -198,14 +198,17 @@ def load_data(files):
     if 'WithAttnBias' in df.columns and 'TransBias' not in df.columns:
         df['TransBias'] = False
 
-    # Sliding look-back is optional (KV-cache only) and omitted from the key when
-    # disabled, so legacy attention rows may lack the column or carry NaN after a
-    # mixed-file concat; normalize it to the disabled sentinel -1. Only attention
-    # grouping reads SlidingWindowLookBack, so defaulting it is a no-op elsewhere.
-    if 'SlidingWindowLookBack' not in df.columns:
-        df['SlidingWindowLookBack'] = -1
-    else:
-        df['SlidingWindowLookBack'] = df['SlidingWindowLookBack'].fillna(-1)
+    # The look-backs are optional and omitted from the key when disabled, so
+    # legacy attention rows may lack the column or carry NaN after a mixed-file
+    # concat; normalize them to the disabled sentinel -1. Both are attention
+    # grouping keys, and groupby drops NaN keys by default, so an un-normalized
+    # legacy row would silently vanish from the coverage problem set. Only
+    # attention grouping reads these, so defaulting them is a no-op elsewhere.
+    for look_back_col in ('SlidingWindowLookBack', 'CausalLookBack'):
+        if look_back_col not in df.columns:
+            df[look_back_col] = -1
+        else:
+            df[look_back_col] = df[look_back_col].fillna(-1)
 
     # Drop rows that are repeated header lines (happens when using --retry=failed in tuningRunner.py).
     before = len(df)

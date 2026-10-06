@@ -27,6 +27,18 @@ def load_mlir_data(filename: str):
         df['PerfConfig'] = df['PerfConfig'].fillna('None')
     if 'numCU' not in df:
         df.insert(4, 'numCU', get_num_cu(df['Chip'][0]))
+    # The attention look-backs are part of ATTN_TEST_PARAMETERS, which
+    # compute_perf_stats joins on. A baseline collected before a look-back
+    # existed lacks the column, and the resulting KeyError is caught by
+    # comparing the new data against itself -- a report of zero change rather
+    # than the real regression. Backfill the disabled sentinel so old and new
+    # data still join.
+    if 'TransQ' in df:
+        for look_back_col in ('SlidingWindowLookBack', 'CausalLookBack'):
+            if look_back_col not in df:
+                df[look_back_col] = -1
+            else:
+                df[look_back_col] = df[look_back_col].fillna(-1)
     return df
 
 
