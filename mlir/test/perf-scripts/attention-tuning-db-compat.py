@@ -200,8 +200,8 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         plain_causal_config = make_config(
             "-with-attn-scale false -with-attn-bias false -transBias false", causal=True)
         plain_causal_key = drop_flags(plain_causal_config.to_command_line(),
-                                     " -with-attn-scale false", " -with-attn-bias false",
-                                     " -transBias false")
+                                      " -with-attn-scale false", " -with-attn-bias false",
+                                      " -transBias false")
 
         banded_config = make_config(
             "-causal_look_back 4 "
