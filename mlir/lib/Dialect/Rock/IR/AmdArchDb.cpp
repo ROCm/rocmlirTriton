@@ -675,7 +675,7 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
 // CoalesceAsyncCopy turns into a direct-to-LDS copy that cannot be lowered, so
 // we neither tune nor accept such a kPerBlock there. Enable it on gfx950 again
 // once the XFAIL test
-// mlir/test/rocmlir-driver/conv-gfx942-async-copy-nonpow2-kperblock-narrow-segment.mlir
+// mlir/test/rocmlir-driver/gfx942-async-copy-nonpow2-kperblock-narrow-segment.mlir
 // passes.
 bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
   auto [chip, _] = parseArchString(arch);

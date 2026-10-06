@@ -12,15 +12,22 @@
 // canLoadDirectToLDS rejects the copy, the buffer load to LDS is left unlowered
 // and LLVM translation fails on a `builtin.unrealized_conversion_cast`.
 //
-// gfx950 takes this path by default for f32 convolutions, and the first RUN is
-// the config the weekly tuning hit there. gfx950 now rejects these perf configs,
-// so the test compiles them for gfx942 with useAsyncCopy=1 and
-// useBf16x3ForF32=1, which takes the same path.
+// gfx950 takes this path by default for f32 GEMMs and convolutions. The first
+// RUN is a plain GEMM that hits it, the second is the convolution the weekly
+// tuning hit there. gfx950 now rejects these perf configs, so the test compiles
+// them for gfx942 with useAsyncCopy=1 and useBf16x3ForF32=1, which takes the
+// same path.
 //
 // Once this passes, remove the XFAIL and enable non-power-of-2 kPerBlock on
 // gfx950 again.
 
 // XFAIL: *
+
+// RUN: rocmlir-gen --operation gemm -t f32 \
+// RUN:   --arch gfx942:sramecc+:xnack- --num_cu 304 --num_chiplets 8 \
+// RUN:   -g 1 -m 16 -n 16 -k 72 \
+// RUN:   --perf_config="gemm:mPerBlock=16,nPerBlock=16,kPerBlock=36,kpack=1,numCTAs=1,numWaves=2,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=1" \
+// RUN:   | rocmlir-driver -c --arch gfx942:sramecc+:xnack- | FileCheck %s
 
 // RUN: rocmlir-gen --operation conv -t f32 \
 // RUN:   --arch gfx942:sramecc+:xnack- --num_cu 304 --num_chiplets 8 \
