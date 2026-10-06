@@ -670,16 +670,16 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
 }
 
 // A non-power-of-two kPerBlock makes rock-gridwise-gemm-to-blockwise peel the
-// K loop into several power-of-two segments. On gfx950 the last segment can
-// copy a tile with fewer rows than a warp has lanes, which Triton's
-// CoalesceAsyncCopy turns into a direct-to-LDS copy that cannot be lowered, so
-// we neither tune nor accept such a kPerBlock there. Enable it on gfx950 again
-// once the XFAIL test
+// K loop into several power-of-two segments. On CDNA4, which copies to LDS
+// asynchronously by default, the last segment can copy a tile with fewer rows
+// than a warp has lanes, which Triton's CoalesceAsyncCopy turns into a
+// direct-to-LDS copy that cannot be lowered, so we neither tune nor accept such
+// a kPerBlock there. Enable it on CDNA4 again once the XFAIL test
 // mlir/test/rocmlir-driver/gfx942-async-copy-nonpow2-kperblock-narrow-segment.mlir
 // passes.
 bool mlir::rock::supportsNonPow2KPerBlock(StringRef arch) {
-  auto [chip, _] = parseArchString(arch);
-  return chip != "gfx950";
+  auto [isaFamily, _] = getArch(arch);
+  return isaFamily != ISAFamily::CDNA4;
 }
 
 // Decomposing an f32 dot into three bf16 products trades the f32 MFMA
