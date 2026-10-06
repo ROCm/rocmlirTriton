@@ -147,9 +147,10 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
 
     def test_perf_runner_accepts_causal_look_back_endpoints(self):
         """The disabled sentinel and the widest representable band are valid."""
-        disabled = make_config("-causal_look_back -1 "
-                               "-with-attn-scale false -with-attn-bias false -transBias false",
-                               causal=True)
+        disabled = make_config(
+            "-causal_look_back -1 "
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
         self.assertIsNone(disabled.causal_look_back)
 
         for look_back in (1, 15):
@@ -182,9 +183,10 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         that reused the full triangle's ranking would be tuned against a
         different kernel than the one it runs.
         """
-        config = make_config("-causal_look_back 4 "
-                             "-with-attn-scale false -with-attn-bias false -transBias false",
-                             causal=True)
+        config = make_config(
+            "-causal_look_back 4 "
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
 
         gen_args = config.generate_mlir_driver_commandline("", kernel_repeats=None).split()
         self.assertEqual(gen_args.count("-causal_look_back=4"), 1)
@@ -205,7 +207,8 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
 
         banded_config = make_config(
             "-causal_look_back 4 "
-            "-with-attn-scale false -with-attn-bias false -transBias false", causal=True)
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
 
         self.assertIn("-causal_look_back 4", banded_config.to_command_line())
         self.assertIsNone(self.lookup_from_legacy_key(banded_config, plain_causal_key))
@@ -231,12 +234,26 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
         straight to int raises. Treat it as the disabled sentinel instead.
         """
         row = {
-            'DataType': 'f16', 'G': 1, 'SeqLenQ': 16, 'SeqLenK': 16,
-            'NumHeadsQ': 1, 'NumHeadsKV': 1, 'HeadDimQK': 32, 'HeadDimV': 32,
-            'WithAttnScale': 'False', 'WithAttnBias': 'False', 'TransBias': 'False',
-            'TransQ': 'False', 'TransK': 'False', 'TransV': 'False', 'TransO': 'False',
-            'Causal': 'True', 'ReturnLSE': 'False', 'SplitKV': 1,
-            'SlidingWindowLookBack': -1, 'CausalLookBack': float('nan'),
+            'DataType': 'f16',
+            'G': 1,
+            'SeqLenQ': 16,
+            'SeqLenK': 16,
+            'NumHeadsQ': 1,
+            'NumHeadsKV': 1,
+            'HeadDimQK': 32,
+            'HeadDimV': 32,
+            'WithAttnScale': 'False',
+            'WithAttnBias': 'False',
+            'TransBias': 'False',
+            'TransQ': 'False',
+            'TransK': 'False',
+            'TransV': 'False',
+            'TransO': 'False',
+            'Causal': 'True',
+            'ReturnLSE': 'False',
+            'SplitKV': 1,
+            'SlidingWindowLookBack': -1,
+            'CausalLookBack': float('nan'),
         }
 
         rebuilt = AttentionConfiguration.from_table_entry(row, ARCH, NUM_CU, NUM_CHIPLETS)
