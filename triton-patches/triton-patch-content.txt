@@ -16,7 +16,7 @@ patch-cost-aware-dot-rematerialization.patch
 patch-negligible-anchor-layout-conflict.patch
 patch-warp-id-readfirstlane.patch
 patch-gfx1170.patch
-patch-gfx1170-fp8-cvt.patch
+patch11486.patch
 patch-optimize-epilogue-rock-metadata.patch
 patch-optimize-epilogue-fma-blocked.patch
 patch-partitionloops-clang-cl.patch
@@ -198,49 +198,57 @@ patch-gfx1170.patch
   Drop this patch on the next Triton bump that pulls gfx1170 support upstream
   into external/triton.
 
-patch-gfx1170-fp8-cvt.patch
+patch11486.patch
+  Upstream PR: https://github.com/triton-lang/triton/pull/11486
+  Upstream title: [AMD] Use hardware cvt instructions for OCP fp8 casts on
+  gfx1170
+
   Applies on top of patch-gfx1170.patch and uses the hardware OCP fp8/bf8
-  conversion instructions on gfx1170. gfx1170 and RDNA4 have
-  FeatureFP8ConversionInsts, i.e. the *plain*
-  v_cvt_pk_f32_{fp8,bf8} / v_cvt_pk_{fp8,bf8}_f32 ops, and on them those ops
-  read and write the OCP encoding -- unlike CDNA3, where the same mnemonics
-  mean FNUZ, which is why the existing plain converters could not simply be
-  reused. They also lack the scaled v_cvt_scalef32_pk_* ops that CDNA4 and
-  gfx1250 use, so the CDNA4 OCP converters could not be reused either.
-  ConvertFpCastOpToLLVM therefore gains a hasPlainOcpFp8HW({GFX1170})
-  capability and a plain-hardware branch in each of the twelve OCP fp8
-  dispatchers, replacing the software bit-manipulation fallback. Those twelve
-  branches share two helpers, plainHWUpcastFromFp8 and plainHWDowncastToFp8,
-  parameterized by the f32/f16/bf16 type on the non-fp8 side. There is no
-  plain 16-bit-source op, so f16/bf16 casts hop through f32; both hops are
-  lossless for these value ranges, leaving the hardware op as the single
-  rounding site. createDestOps no longer forces OCP f8 -> f32 through an f16
-  intermediate on these targets, since they can now do it directly.
-  RTZ downcasts stay on the software path because the hardware op is
-  round-to-nearest-even only, and the stochastic-rounding v_cvt_sr_* ops are
-  not wired up at all: that needs an RNG operand on tt.fp_to_fp, which the
-  Triton IR contract does not currently have.
+  conversion instructions on gfx1170. gfx1170 has FeatureFP8ConversionInsts,
+  i.e. the *unscaled* v_cvt_f32_{fp8,bf8} / v_cvt_pk_{fp8,bf8}_f32 ops, and on
+  it those ops read and write the OCP encoding -- the same instructions CDNA3
+  uses for FNUZ, the target decides the format. It lacks the scaled
+  v_cvt_scalef32_pk_* ops that CDNA4 and gfx1250 use. ConvertFpCastOpToLLVM
+  gains a hasUnscaledOcpFp8Cvt({GFX1170}) capability and routes these OCP
+  casts on it to hardware instead of the software bit-manipulation fallback:
+  - f32/f16/bf16 -> f8E4M3FN/f8E5M2 (RTNE) reuse the existing unscaled
+    downcast helpers shared with CDNA3 FNUZ, with "fnuz" dropped from their
+    names (Fp32ToFp8E4M3HW, Fp16ToFp8E5M2HW, Bf16ToFp8E4M3HW, ...). f16/bf16
+    widen to f32 first, which is exact.
+  - f8E4M3FN/f8E5M2 -> f32 use the new F8x4ToFp32 helper: one
+    v_cvt_f32_{fp8,bf8} per byte, byte_sel 0-3, over a packed dword.
+    createDestOps no longer routes this through an f16 intermediate on
+    gfx1170.
+  - f8 -> f16/bf16 upcasts and RTZ downcasts stay on the software path.
+  The packed upcast v_cvt_pk_f32_{fp8,bf8} is avoided because LLVM selects
+  its fake16 form and prints it without the .l/.h suffix the gfx12 assembler
+  demands in real-true16 mode (LCOMPILER-2609). Also adds a gfx1250
+  fp8 -> f32 check to tritongpu_to_llvm_gfx1250.mlir, and deletes
+  test/Conversion/amd/fp_to_fp_gfx1170.mlir from patch-gfx1170.patch, which
+  pinned the software fallback this patch replaces;
+  test/Conversion/amd/ocp_fp8_cvt_lowering.mlir covers the same casts.
 
-  RDNA4 is deliberately left out of hasPlainOcpFp8HW even though it has the
-  instructions. Its packed upcast is selected as the fake16 form of
-  v_cvt_pk_f32_{fp8,bf8} and printed without the .l/.h suffix the assembler
-  demands in the real-true16 mode gfx12 defaults to, so the kernel fails to
-  assemble (LCOMPILER-2609). gfx11 escapes this only because make_amdgcn /
-  make_hsaco pass `-real-true16` for every gfx11 kernel, which covers gfx1170.
-  Add RDNA4 once LCOMPILER-2609 is fixed.
+  Differs from upstream only where the pinned Triton does:
+  - Upstream calls gfx1170's family ISAFamily::RDNA4m; here it is
+    ISAFamily::GFX1170 (patch-gfx1170.patch).
+  - The pinned ConvertFpCastOpToLLVM still uses free-function ConverterT
+    dispatchers rather than upstream's ConverterInterface classes, so the
+    routing is in those dispatchers: Fp8E4M3fnToFp32 / Fp8E5M2ToFp32 become
+    ISA-dependent (the CDNA4+ bodies move to *ToFp32HW), and the renamed
+    unscaled helpers are forward-declared.
+  - Upstream's rename turns Bf16ToFp8E5M2fnuzHW into Bf16ToFp8E5M2HW, which
+    here was already taken by the CDNA4 scaled converter. That converter is
+    renamed Bf16ToFp8E5M2rtneHW, matching Fp16ToFp8E5M2rtneHW and
+    Fp32ToFp8E5M2rtneHW.
+  - Upstream's CvtFp8E4M3ToFp32::getNumElements fix is a merge bug in
+    upstream's class layout and has no counterpart here.
 
-  A lone OCP fp8/bf8 value upcasting to f32 uses the scalar v_cvt_f32_{fp8,bf8}
-  rather than the packed op. getNumElements returns 1 instead of the default 4
-  for exactly that case on hasPlainOcpFp8HW targets, which is what stops
-  createDestOps padding the value out with undef before the converter sees it;
-  ScalarF8ToFp32 then emits a single ROCDL::CvtF32{Fp8,Bf8}Op with byteSel 0.
-  Previously this emitted two packed converts and discarded three of the four
-  results. The gate is deliberately narrow -- every other type pair keeps its
-  previous element count, two-element groups still use the packed op, and
-  CDNA3's FNUZ converters are untouched despite having the same shape.
+  mlir/test/rocmlir-driver/{fp8,bf8}_cvt_lowering.mlir check the result end
+  to end: on gfx1170 rocdl.cvt.f32.{fp8,bf8} and rocdl.cvt.pk.{fp8,bf8}.f32
+  reach v_cvt_f32_* / v_cvt_pk_*_f32 in the ISA, with no packed upcast.
 
-  Drop this patch once gfx1170 OCP fp8/bf8 hardware conversion support is in
-  the pinned Triton revision.
+  Drop this patch on the next Triton bump that includes upstream merge commit
+  fa2e589b55706d0de73d25641840e134f20a2c65.
 
 patch10497.patch
   Adds the RDNA FMA-dot layout rebalancing logic in AccelerateAMDMatmul, plus
