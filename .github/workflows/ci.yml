@@ -22,7 +22,7 @@ jobs:
       image: python:3.8
       options: --user root
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0
 
@@ -41,12 +41,12 @@ jobs:
         run: |
           echo "Determining merge base..."
 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_REF="origin/${{ github.base_ref }}"
-            BASE_BRANCH="${{ github.base_ref }}"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            BASE_REF="origin/$GITHUB_BASE_REF"
+            BASE_BRANCH="$GITHUB_BASE_REF"
           else
-            BASE_REF="origin/${{ github.ref_name }}"
-            BASE_BRANCH="${{ github.ref_name }}"
+            BASE_REF="origin/$GITHUB_REF_NAME"
+            BASE_BRANCH="$GITHUB_REF_NAME"
           fi
 
           echo "BASE_REF=$BASE_REF"
