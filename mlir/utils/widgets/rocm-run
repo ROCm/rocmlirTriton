@@ -12,23 +12,34 @@
 # The matching LLVM build directory is then located by:
 #   1. The in-tree LLVM build under <build>/external/llvm-project/llvm.
 #   2. The LLVM_DIR entry in the rocMLIR build's CMakeCache.txt.
+#
+# This script must not fork before the final exec (no command substitutions,
+# subshells, or pipes): rocprofv3 profiles it by LD_PRELOADing a library whose
+# constructor spawns threads, and fork() in that state can deadlock the child
+# on an inherited lock. Paths are therefore built by parameter expansion and
+# left unnormalized (they may contain ".." segments).
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+case "$SCRIPT_PATH" in
+    */*) SCRIPT_DIR="${SCRIPT_PATH%/*}" ;;
+    *)   SCRIPT_DIR="." ;;
+esac
+[[ "$SCRIPT_DIR" == /* ]] || SCRIPT_DIR="$PWD/$SCRIPT_DIR"
 
+# Sets BASEDIR on success.
 find_rocmlir_build() {
     # Co-located in <build>/bin/ (the cmake-installed location).
     if [[ -x "$SCRIPT_DIR/rocmlir-driver" ]]; then
-        ( cd "$SCRIPT_DIR/.." && pwd )
+        BASEDIR="$SCRIPT_DIR/.."
         return 0
     fi
 
     # Source-tree fallbacks (script in mlir/utils/widgets/).
-    local repo_root
-    repo_root="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)"
+    local repo_root="$SCRIPT_DIR/../../.."
     for dir in "$repo_root/build" "$PWD/.." "$PWD" "$PWD/build" \
                "$HOME/rocmlir/build"; do
         if [[ -x "$dir/bin/rocmlir-driver" ]]; then
-            ( cd "$dir" && pwd )
+            BASEDIR="$dir"
             return 0
         fi
     done
@@ -37,15 +48,15 @@ find_rocmlir_build() {
     return 1
 }
 
+# Sets LLVM_BUILD on success.
 find_llvm_build() {
     local rocmlir_build="$1"
 
     # Current monolithic layout: LLVM/MLIR tools and runtime libraries are built
     # under <build>/external/llvm-project/llvm.
-    local in_tree_llvm
-    in_tree_llvm="$rocmlir_build/external/llvm-project/llvm"
+    local in_tree_llvm="$rocmlir_build/external/llvm-project/llvm"
     if [[ -x "$in_tree_llvm/bin/mlir-runner" ]]; then
-        ( cd "$in_tree_llvm" && pwd )
+        LLVM_BUILD="$in_tree_llvm"
         return 0
     fi
 
@@ -53,13 +64,16 @@ find_llvm_build() {
     # so we don't pick up "LLVM_DIR-ADVANCED:INTERNAL=1" if it appears first.
     local cache="$rocmlir_build/CMakeCache.txt"
     if [[ -f "$cache" ]]; then
-        local llvm_dir
-        llvm_dir="$(awk '/^LLVM_DIR:/ {sub(/^[^=]*=/, ""); print; exit}' "$cache")"
+        local line llvm_dir=""
+        while IFS= read -r line; do
+            case "$line" in
+                LLVM_DIR:*=*) llvm_dir="${line#*=}"; break ;;
+            esac
+        done < "$cache"
         if [[ -n "$llvm_dir" ]]; then
-            local candidate
-            candidate="$(cd "$llvm_dir/../../.." 2>/dev/null && pwd)"
+            local candidate="$llvm_dir/../../.."
             if [[ -x "$candidate/bin/mlir-runner" ]]; then
-                echo "$candidate"
+                LLVM_BUILD="$candidate"
                 return 0
             fi
         fi
@@ -69,8 +83,8 @@ find_llvm_build() {
     return 1
 }
 
-BASEDIR="$(find_rocmlir_build)" || exit 1
-LLVM_BUILD="$(find_llvm_build "$BASEDIR")" || exit 1
+find_rocmlir_build || exit 1
+find_llvm_build "$BASEDIR" || exit 1
 
 exec "${LLVM_BUILD}/bin/mlir-runner" \
     -O2 \

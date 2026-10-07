@@ -63,11 +63,11 @@ PERFCONFIG = ("attn:mPerBlockG0=32,nPerBlockG0=256,nPerBlockG1=32,kPerBlock=32,k
 TMP_PREFIX = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/attention-tuning-db-compat")
 
 
-def make_config(extra_flags, g=1):
+def make_config(extra_flags, g=1, causal=False):
     """Build a canonical attention config with the requested optional flags."""
     key = ("-t f16 "
            "-transQ false -transK false -transV false -transO false "
-           f"-causal false -return_lse false -split_kv 1 -g {g} "
+           f"-causal {str(causal).lower()} -return_lse false -split_kv 1 -g {g} "
            "-seq_len_q 16 -seq_len_k 16 -num_heads_q 1 -num_heads_kv 1 "
            "-head_dim_qk 32 -head_dim_v 32 "
            f"{extra_flags}")
@@ -144,6 +144,197 @@ class AttentionTuningDbCompatTest(unittest.TestCase):
             with self.subTest(look_back=look_back), self.assertRaises(ValueError):
                 make_config(f"-last_valid_kv_index 15 -sliding_window_look_back {look_back} "
                             "-with-attn-scale false -with-attn-bias false -transBias false")
+
+    def test_perf_runner_accepts_causal_look_back_endpoints(self):
+        """The disabled sentinel and the widest representable band are valid."""
+        disabled = make_config(
+            "-causal_look_back -1 "
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
+        self.assertIsNone(disabled.causal_look_back)
+
+        for look_back in (1, 15):
+            with self.subTest(look_back=look_back):
+                banded = make_config(
+                    f"-causal_look_back {look_back} "
+                    "-with-attn-scale false -with-attn-bias false -transBias false",
+                    causal=True)
+                self.assertEqual(banded.causal_look_back, look_back)
+
+    def test_perf_runner_rejects_invalid_causal_look_backs(self):
+        """Band widths outside {-1} union [1, K - 1] are rejected."""
+        for look_back in (-2, 0, 16, 17):
+            with self.subTest(look_back=look_back), self.assertRaises(ValueError):
+                make_config(
+                    f"-causal_look_back {look_back} "
+                    "-with-attn-scale false -with-attn-bias false -transBias false",
+                    causal=True)
+
+    def test_perf_runner_rejects_causal_look_back_without_causal(self):
+        """The band only narrows causal's upper bound, so it needs causal."""
+        with self.assertRaisesRegex(ValueError, "causal_look_back requires causal"):
+            make_config("-causal_look_back 4 "
+                        "-with-attn-scale false -with-attn-bias false -transBias false")
+
+    def test_causal_look_back_reaches_rocmlir_gen_and_tuning_key(self):
+        """The width must travel to the kernel and into the tuning identity.
+
+        It changes how many key blocks the n-loop visits, so a banded problem
+        that reused the full triangle's ranking would be tuned against a
+        different kernel than the one it runs.
+        """
+        config = make_config(
+            "-causal_look_back 4 "
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
+
+        gen_args = config.generate_mlir_driver_commandline("", kernel_repeats=None).split()
+        self.assertEqual(gen_args.count("-causal_look_back=4"), 1)
+        self.assertIn("-causal_look_back 4", config.to_command_line())
+
+    def test_perf_runner_keeps_causal_look_back_distinct(self):
+        """A banded kernel must not fall back to a row that lacks the band.
+
+        Like sliding_window_look_back, causal_look_back only appears in banded
+        keys, so its distinctness relies on the key string rather than on the
+        false-flag stripping in lookup_tuning_db.
+        """
+        plain_causal_config = make_config(
+            "-with-attn-scale false -with-attn-bias false -transBias false", causal=True)
+        plain_causal_key = drop_flags(plain_causal_config.to_command_line(),
+                                      " -with-attn-scale false", " -with-attn-bias false",
+                                      " -transBias false")
+
+        banded_config = make_config(
+            "-causal_look_back 4 "
+            "-with-attn-scale false -with-attn-bias false -transBias false",
+            causal=True)
+
+        self.assertIn("-causal_look_back 4", banded_config.to_command_line())
+        self.assertIsNone(self.lookup_from_legacy_key(banded_config, plain_causal_key))
+
+    def test_perf_runner_matches_pre_band_causal_key(self):
+        """A plain causal row from before the band existed must still match.
+
+        The band token is emitted only when set, so an unbanded key is unchanged
+        and every shipped tuning DB row keeps matching.
+        """
+        config = make_config("-with-attn-scale false -with-attn-bias false -transBias false",
+                             causal=True)
+        legacy_key = drop_flags(config.to_command_line(), " -with-attn-scale false",
+                                " -with-attn-bias false", " -transBias false")
+
+        self.assertNotIn("causal_look_back", legacy_key)
+        self.assertEqual(self.lookup_from_legacy_key(config, legacy_key), PERFCONFIG)
+
+    def test_perf_runner_reads_nan_causal_look_back_as_disabled(self):
+        """A legacy row in a mixed-file concat carries NaN, not a missing column.
+
+        `row.get` returns that NaN rather than the default, so converting it
+        straight to int raises. Treat it as the disabled sentinel instead.
+        """
+        row = {
+            'DataType': 'f16',
+            'G': 1,
+            'SeqLenQ': 16,
+            'SeqLenK': 16,
+            'NumHeadsQ': 1,
+            'NumHeadsKV': 1,
+            'HeadDimQK': 32,
+            'HeadDimV': 32,
+            'WithAttnScale': 'False',
+            'WithAttnBias': 'False',
+            'TransBias': 'False',
+            'TransQ': 'False',
+            'TransK': 'False',
+            'TransV': 'False',
+            'TransO': 'False',
+            'Causal': 'True',
+            'ReturnLSE': 'False',
+            'SplitKV': 1,
+            'SlidingWindowLookBack': -1,
+            'CausalLookBack': float('nan'),
+        }
+
+        rebuilt = AttentionConfiguration.from_table_entry(row, ARCH, NUM_CU, NUM_CHIPLETS)
+        self.assertIsNone(rebuilt.causal_look_back)
+
+    def test_quick_tuning_gen_groups_by_causal_look_back(self):
+        """Band width is part of the attention problem identity.
+
+        Omitting it from the grouping columns would collapse a banded problem
+        and a plain causal one into a single group, whose key is taken from the
+        first row, so one of them would be handed the other's ranking.
+        """
+        self.assertIn('CausalLookBack', get_target_columns("attention"))
+
+    def test_quick_tuning_gen_fills_causal_look_back_when_mixing_files(self):
+        """Mixing TSVs must not drop rows that predate the band column.
+
+        pd.concat keeps CausalLookBack from the newer file and fills the legacy
+        row with NaN. Since CausalLookBack is now a grouping key and groupby
+        drops NaN keys by default, that row would silently disappear unless the
+        NaN is backfilled to the disabled default.
+        """
+        base_header = ("DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
+                       "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
+                       "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\t"
+                       "TransBias\tSlidingWindowLookBack")
+        base_row = (f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+                    f"True\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+                    f"{PERFCONFIG}\t1.0\tFalse\t-1")
+
+        legacy_path = Path(f"{self.tmp_prefix}.legacy.debug")
+        legacy_path.write_text(base_header + "\n" + base_row + "\n")
+
+        current_path = Path(f"{self.tmp_prefix}.current.debug")
+        current_path.write_text(base_header + "\tCausalLookBack\n" + base_row + "\t-1\n")
+
+        df = load_data([str(legacy_path), str(current_path)])
+        self.assertFalse(df["CausalLookBack"].isna().any())
+
+        grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
+                             as_index=False)["TFlops"].max()
+        self.assertEqual(len(grouped), 1)
+
+    def test_quick_tuning_gen_separates_band_widths(self):
+        """Two rows that differ only in band width stay separate problems."""
+        header = ("DataType\tChip\tnumCU\tnumChiplets\tTransQ\tTransK\tTransV\tTransO\t"
+                  "Causal\tReturnLSE\tSplitKV\tWithAttnScale\tWithAttnBias\tG\tSeqLenQ\t"
+                  "SeqLenK\tNumHeadsQ\tNumHeadsKV\tHeadDimQK\tHeadDimV\tPerfConfig\tTFlops\t"
+                  "TransBias\tSlidingWindowLookBack\tCausalLookBack\n")
+
+        def row(look_back, tflops):
+            return (f"f16\tgfx950\t{NUM_CU}\t{NUM_CHIPLETS}\tFalse\tFalse\tFalse\tFalse\t"
+                    f"True\tFalse\t1\tTrue\tTrue\t1\t16\t16\t1\t1\t32\t32\t"
+                    f"{PERFCONFIG}\t{tflops}\tFalse\t-1\t{look_back}\n")
+
+        path = Path(f"{self.tmp_prefix}.widths.debug")
+        path.write_text(header + row(-1, 1.0) + row(4, 2.0) + row(8, 3.0))
+
+        df = load_data([str(path)])
+        grouped = df.groupby(get_target_columns("attention") + ["PerfConfig"],
+                             as_index=False)["TFlops"].max()
+        self.assertEqual(len(grouped), 3)
+
+    def test_attention_sweep_bands_are_valid_and_causal(self):
+        """Sampled bands always satisfy the constraints perfRunner enforces."""
+        banded = 0
+        for seed in range(200):
+            # Unpack by name rather than by index: the tuple's tail is ordered
+            # for attention-tuning-db-compat's negative indexing, so a positional
+            # read here would quietly follow a reorder instead of failing.
+            (_dtype, _g, _slq, seq_len_k, _nhq, _nhkv, _hdqk, _hdv, _scale, _bias,
+             _tq, _tk, _tv, _to, causal, _return_lse, _split_kv, causal_look_back,
+             _last_valid_kv_index, _sliding_window_look_back) = \
+                attentionSweeps._sample_attn_shape(random.Random(seed), n_per_block=16)
+            if causal_look_back is None:
+                continue
+            banded += 1
+            self.assertTrue(causal, "band sampled without causal masking")
+            self.assertGreaterEqual(causal_look_back, 1)
+            self.assertLess(causal_look_back, seq_len_k)
+        self.assertGreater(banded, 0, "no banded sample found in 200 seeds")
 
     def test_attention_sweep_handles_single_key_kv_cache(self):
         """K=1 KV-cache samples use P=0 and disable sliding look-back."""

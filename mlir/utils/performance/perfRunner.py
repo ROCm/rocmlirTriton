@@ -2185,6 +2185,7 @@ class AttentionConfiguration(PerfConfiguration):
                  last_valid_kv_index: Optional[List[int]] = None,
                  trans_bias: bool = False,
                  sliding_window_look_back: Optional[int] = None,
+                 causal_look_back: Optional[int] = None,
                  supports_split_k: bool = False):
         if dtype not in DATA_TYPES_ATTENTION:
             raise ValueError(f"Invalid datatype for a: {dtype}")
@@ -2203,6 +2204,17 @@ class AttentionConfiguration(PerfConfiguration):
                 raise ValueError("sliding_window_look_back must be positive or -1")
             if sliding_window_look_back > seq_len_k - 1:
                 raise ValueError("sliding_window_look_back must not exceed seq_len_k - 1")
+        if causal_look_back == -1:
+            causal_look_back = None
+        if causal_look_back is not None:
+            if causal_look_back <= 0:
+                raise ValueError("causal_look_back must be positive or -1")
+            if not causal:
+                raise ValueError("causal_look_back requires causal")
+            # At L >= seq_len_k the band covers the whole causal triangle, which
+            # rocmlir-gen reports as degenerate rather than accepting.
+            if causal_look_back >= seq_len_k:
+                raise ValueError("causal_look_back must be less than seq_len_k")
         if supports_split_k:
             raise ValueError("attention does not support split-K")
 
@@ -2228,6 +2240,10 @@ class AttentionConfiguration(PerfConfiguration):
         # inclusive last-valid KV index. rocmlir-gen defaults P to seq_len_k - 1
         # when it is absent. None (or -1) means non-sliding attention.
         self.sliding_window_look_back = sliding_window_look_back
+        # A positive look-back L makes query m attend to [max(0, m - L), m], a
+        # band that moves with the query row rather than the fixed interval
+        # sliding_window_look_back describes. None (or -1) means plain causal.
+        self.causal_look_back = causal_look_back
         # Only set in KV-cache mode (seq_len_q == 1). Emitted as
         # ``-last_valid_kv_index=...`` by generate_problem_commandline(), which
         # is the single source of truth for the rocmlir-gen argv (the sweep
@@ -2272,9 +2288,9 @@ class AttentionConfiguration(PerfConfiguration):
             self.datatype, self.chip, self.num_cu, self.num_chiplets, self.trans_q, self.trans_k,
             self.trans_v, self.trans_o, self.causal, self.return_lse, self.split_kv,
             (-1 if self.sliding_window_look_back is None else self.sliding_window_look_back),
-            self.with_attn_scale, self.with_attn_bias, self.trans_bias, self.g, self.seq_len_q,
-            self.seq_len_k, self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v,
-            self.perfconfig,
+            (-1 if self.causal_look_back is None else self.causal_look_back), self.with_attn_scale,
+            self.with_attn_bias, self.trans_bias, self.g, self.seq_len_q, self.seq_len_k,
+            self.num_heads_q, self.num_heads_kv, self.head_dim_qk, self.head_dim_v, self.perfconfig,
             self.compute_tflops(nanoseconds)
         ]
         assert (len(self.TABLE_COLUMNS) == len(values))
@@ -2285,6 +2301,11 @@ class AttentionConfiguration(PerfConfiguration):
     @classmethod
     def from_table_entry(cls, row, arch, num_cu, num_chiplets):
         look_back = int(row['SlidingWindowLookBack'])
+        # Tuning tables collected before the band existed have no such column. A
+        # mixed-file concat is worse than that: the column exists and the legacy
+        # row carries NaN, which `get` happily returns and `int` then rejects.
+        causal_look_back = row.get('CausalLookBack', -1)
+        causal_look_back = -1 if pd.isna(causal_look_back) else int(causal_look_back)
         return cls(dtype=row['DataType'],
                    g=int(row['G']),
                    seq_len_q=int(row['SeqLenQ']),
@@ -2304,6 +2325,7 @@ class AttentionConfiguration(PerfConfiguration):
                    split_kv=int(row['SplitKV']),
                    trans_bias=table_bool(row['TransBias']),
                    sliding_window_look_back=None if look_back <= 0 else look_back,
+                   causal_look_back=None if causal_look_back <= 0 else causal_look_back,
                    arch=arch,
                    num_cu=num_cu,
                    num_chiplets=num_chiplets)
@@ -2329,8 +2351,9 @@ class AttentionConfiguration(PerfConfiguration):
             f"-split_kv={self.split_kv}",
             *([f"-sliding_window_look_back={self.sliding_window_look_back}"]
               if self.sliding_window_look_back is not None else []),
-            *([f"-last_valid_kv_index={','.join(map(str, self.last_valid_kv_index))}"]
-              if self.last_valid_kv_index is not None else []),
+            *([f"-causal_look_back={self.causal_look_back}"] if self.causal_look_back is not None
+              else []), *([f"-last_valid_kv_index={','.join(map(str, self.last_valid_kv_index))}"]
+                          if self.last_valid_kv_index is not None else []),
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -2357,6 +2380,7 @@ class AttentionConfiguration(PerfConfiguration):
         return_lse = False
         split_kv = 1
         sliding_window_look_back = None
+        causal_look_back = None
         last_valid_kv_index = None
         with_attn_scale = False
         with_attn_bias = False
@@ -2403,6 +2427,8 @@ class AttentionConfiguration(PerfConfiguration):
                 split_kv = int(val)
             elif opt.endswith("-sliding_window_look_back"):
                 sliding_window_look_back = int(val)
+            elif opt.endswith("-causal_look_back"):
+                causal_look_back = int(val)
             elif opt.endswith("-last_valid_kv_index"):
                 last_valid_kv_index = [int(x) for x in val.split(",")]
             elif opt.endswith("-perf_config"):
@@ -2444,6 +2470,7 @@ class AttentionConfiguration(PerfConfiguration):
                      last_valid_kv_index=last_valid_kv_index,
                      trans_bias=trans_bias,
                      sliding_window_look_back=sliding_window_look_back,
+                     causal_look_back=causal_look_back,
                      supports_split_k=supports_split_k)
         return config
 
@@ -2455,7 +2482,9 @@ class AttentionConfiguration(PerfConfiguration):
             f"-causal {str(self.causal).lower()} " +
             f"-return_lse {str(self.return_lse).lower()} " + f"-split_kv {str(self.split_kv)} " +
             (f"-sliding_window_look_back {str(self.sliding_window_look_back)} "
-             if self.sliding_window_look_back is not None else "") + f"-g {self.g} " +
+             if self.sliding_window_look_back is not None else "") +
+            (f"-causal_look_back {str(self.causal_look_back)} "
+             if self.causal_look_back is not None else "") + f"-g {self.g} " +
             f"-seq_len_q {str(self.seq_len_q)} -seq_len_k {str(self.seq_len_k)} -num_heads_q {str(self.num_heads_q)} -num_heads_kv {str(self.num_heads_kv)} -head_dim_qk {str(self.head_dim_qk)} -head_dim_v {str(self.head_dim_v)} "
             + f"-with-attn-scale {str(self.with_attn_scale).lower()} " +
             f"-with-attn-bias {str(self.with_attn_bias).lower()} " +
