@@ -32,6 +32,16 @@
 // RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=1 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=MINIMAL
 // MINIMAL: [1 1 1]
 
+// Band plus a decode-style sliding window on the same op. Setting both became
+// reachable once the frontend could infer causalLookBack, so pin it here: the
+// band bounds the upper edge per query row while the window bounds the lower
+// edge from last_valid_kv_index (127 by default), leaving keys
+// [max(63, m - 8), m]. Every query below row 63 is therefore fully masked, so
+// this also covers the empty-row guard with two independent lower bounds in
+// play rather than one.
+// RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=8 -sliding_window_look_back=64 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=SLIDING
+// SLIDING: [1 1 1]
+
 // With LSE returned: the band's LSE is finite on every row, since no row is
 // ever fully masked. The clamped denominator must not leak into it.
 // RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=8 -return_lse -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv -pr -pvr | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=LSE

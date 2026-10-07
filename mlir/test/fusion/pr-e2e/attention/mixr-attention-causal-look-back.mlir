@@ -6,7 +6,16 @@
 // width, so this checks that the band the frontend detects is the band the
 // kernel actually computes, not just that the attribute gets attached.
 
-// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -rand 1 -rand_type float -fut mlir_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel | FileCheck %s --check-prefix=LOWERING
+// RUN: rocmlir-gen -fut mlir_attention --arch %arch --clone-harness %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel | rocmlir-gen -ph -fut mlir_attention --verifier clone - | rocmlir-driver -c | rocm-run | FileCheck %s
+
+// The numerics below only mean something if the band actually became an
+// attribute rather than staying an elementwise mask, so check the lowering
+// too. `causal` uses LOWERING-NEXT so it cannot be satisfied by the `causal`
+// prefix of the `causalLookBack` line above it.
+// LOWERING: rock.attention
+// LOWERING: causalLookBack = 3
+// LOWERING-NEXT: causal
 
 module {
   // CHECK: [1 1 1]

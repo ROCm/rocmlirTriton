@@ -6,15 +6,14 @@
 // n-loop visits, so a banded problem must not reuse the ranking measured for
 // the full causal triangle.
 //
-// RUN: rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | rocmlir-gen --emit-tuning-key - | FileCheck %s
-// CHECK: gfx942
-// CHECK-SAME: -causal true -return_lse false -split_kv 1 -causal_look_back 3 -num_heads_q 1
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel | rocmlir-gen --emit-tuning-key - | FileCheck %s
+// CHECK: -causal true -return_lse false -split_kv 1 -causal_look_back 3 -num_heads_q 1
 
 // The 8x8 literal below keeps max(0, row - 3) <= col <= row, so L = 3. Rows 0
 // to 3 still reach key 0 and look exactly like plain causal; from row 4 on the
 // lower edge marches right with the diagonal, which is what makes it a band.
 module {
-  func.func @mlir_attention(%arg0: !migraphx.shaped<1x2x8x64xf16, 1024x512x64x1>, %arg1: !migraphx.shaped<1x14x8x64xf16, 7168x64x896x1>, %arg2: !migraphx.shaped<1x14x8x64xf16, 7168x512x64x1>) -> !migraphx.shaped<1x14x8x64xf16, 7168x512x64x1> attributes {rock.arch = "gfx942", rock.kernel = "mixr"} {
+  func.func @mlir_attention(%arg0: !migraphx.shaped<1x2x8x64xf16, 1024x512x64x1>, %arg1: !migraphx.shaped<1x14x8x64xf16, 7168x64x896x1>, %arg2: !migraphx.shaped<1x14x8x64xf16, 7168x512x64x1>) -> !migraphx.shaped<1x14x8x64xf16, 7168x512x64x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
     %0 = migraphx.literal(dense<[[[[-0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [-0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [-0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [-0.000000e+00, -0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [0xFC00, -0.000000e+00, -0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00], [0xFC00, 0xFC00, -0.000000e+00, -0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00], [0xFC00, 0xFC00, 0xFC00, -0.000000e+00, -0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00], [0xFC00, 0xFC00, 0xFC00, 0xFC00, -0.000000e+00, -0.000000e+00, -0.000000e+00, -0.000000e+00]]]]> : tensor<1x1x8x8xf16>) : <1x1x8x8xf16, 64x64x8x1>
     %1 = migraphx.literal(dense<3.535160e-01> : tensor<1xf16>) : <1xf16, 0>
     %2 = migraphx.reshape %arg0 {dims = [1, 2, 1, 8, 64]} : <1x2x8x64xf16, 1024x512x64x1> -> <1x2x1x8x64xf16, 1024x512x512x64x1>
