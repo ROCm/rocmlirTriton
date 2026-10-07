@@ -69,12 +69,12 @@ bool is4GBMemoryType(ShapedType type);
 bool isAtomicRMWTypeSupported(Type type);
 
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
-/// `requirePow2Tiles` selects the stricter tile constraints on mPerBlock,
-/// nPerBlock, and kPerBlock required by gemm+gemm and scaled GEMMs.
-/// Emits an error on `op` for the first invalid field.
+/// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
+/// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
+/// support. Emits an error on `op` for the first invalid field.
 LogicalResult validatePerfConfig(Operation *op,
                                  RockTuningParamAttrInterface params,
-                                 bool requirePow2Tiles);
+                                 bool requirePow2MN, bool requirePow2K);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
