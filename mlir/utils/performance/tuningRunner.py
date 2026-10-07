@@ -1692,7 +1692,7 @@ def _problem_hash(test_vector: str, options: Options) -> str:
         str(options.num_chiplets), options.tuning_space_kind, options.rocmlir_gen_flags,
         test_vector.strip()
     ])
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha1(key.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def _run_pipeline(commands: List[List[str]],

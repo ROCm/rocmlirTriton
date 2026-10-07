@@ -1,12 +1,9 @@
-# gitleaks.toml
+# gitleaks configuration for rocmlirTriton
 # Reference: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
 #
-# The default for repositories that ship no gitleaks config of their
-# own. A repository that ships one replaces this file wholesale rather
-# than layering onto it, so suppressions that belong to a single
-# repository belong in that repository's `gitleaks.toml` and
-# `.gitleaksignore`, not here. What goes here is what should hold for a
-# repository that has said nothing.
+# pr-security-scan.yml and weekly-security-scan.yml pass this file to the
+# shared ROCm/rocm-security-gh scan, where it replaces the shared default
+# config wholesale rather than layering onto it.
 #
 # Within a scan, the layering is:
 #   * the `[[allowlists]]` below, applying to every rule.
@@ -36,11 +33,18 @@ useDefault = true
 # Allowlist by location only where a real first-party secret structurally
 # can't live. Dependency lock files qualify: their contents are generated
 # from a manifest, and the high-entropy strings they carry are artifact
-# digests rather than credentials. Add vendored third-party trees here as
-# callers bring them in, one explicit path per entry.
+# digests rather than credentials.
 description = "Generated dependency lock files"
 paths = [
   '''.*\.lock$''',
+]
+
+[[allowlists]]
+description = "Vendored upstream trees (LLVM, Triton), imported via git subtree"
+# Downstream edits to these trees are still scanned, because each one must
+# come with a matching patch under llvm-patches/ or triton-patches/.
+paths = [
+  '''^external/''',
 ]
 
 [[allowlists]]
@@ -53,6 +57,19 @@ regexes = [
   '''(?i)\bINVALID_TOKEN\s*=''',
   '''(?i)\bwrong_secret\s*=''',
   '''(?i)\bsecret\s*='''
+]
+
+[[allowlists]]
+description = "Dummy LLM_GATEWAY_KEY value in the Claude sanitizer tests"
+# test_sanitize.sh feeds this made-up key to sanitize_claude_actions.sh to
+# check that the sanitizer rejects it. Both the path and the exact value
+# must match, so a real secret added to that file is still reported.
+condition = "AND"
+paths = [
+  '''^\.github/scripts/tests/test_sanitize\.sh$''',
+]
+regexes = [
+  '''^sk-secret-xyzzy-12345$''',
 ]
 
 [[allowlists]]
