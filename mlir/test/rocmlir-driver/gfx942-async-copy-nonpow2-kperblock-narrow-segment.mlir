@@ -18,6 +18,12 @@
 // them for gfx942 with useAsyncCopy=1 and useBf16x3ForF32=1, which takes the
 // same path.
 //
+// The copy only goes wrong when its shared layout has a different order than
+// its blocked layout. For the 16x4 tile of the first two RUNs that only happens
+// when the f32 dot is split into BF16x3 (useBf16x3ForF32=1, the gfx950
+// default), and with useBf16x3ForF32=0 they compile. The 32x2 tile of the third
+// RUN fails with either value.
+//
 // Once this passes, remove the XFAIL and enable non-power-of-2 kPerBlock on
 // gfx950 again.
 
