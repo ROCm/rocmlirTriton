@@ -38,6 +38,12 @@ apply the changes, or fix the formatting manually.
    downstream patches (see `llvm-patches/`); CI runs it in nightly only.
 5. Open a PR against `develop`. Describe *what* changed and *why*; link any related issue.
 6. Ensure CI passes and request review from the relevant [CODEOWNERS](.github/CODEOWNERS).
+   CI also runs security scans (bandit, gitleaks, trivy and zizmor) through
+   the shared ROCm security workflow, skipping the vendored `external/` trees.
+   Their configs live in [`.github/scan_tools_configs/`](.github/scan_tools_configs/).
+   If a scan flags a false positive, add a narrowly scoped, commented
+   suppression as described at the top of the matching config, rather than
+   disabling the scan.
 
 By opening a PR, you agree your contribution is licensed under the terms in [LICENSE](LICENSE).
 
