@@ -1689,6 +1689,39 @@ verifySlidingWindowLookBack(Operation *op,
   return success();
 }
 
+// causalLookBack narrows causal masking to the band
+// max(0, query - L) <= key <= query. It is the prefill counterpart of
+// slidingWindowLookBack: the lower edge is derived from the query row rather
+// than from a runtime KV-cache length, so it needs neither lastValidKVIndex nor
+// prefixOffset, and it is meaningless without causal's upper bound.
+static LogicalResult verifyCausalLookBack(Operation *op,
+                                          std::optional<int32_t> causalLookBack,
+                                          bool causal, Value prefixOffset,
+                                          int64_t maxSeqLen) {
+  if (!causalLookBack)
+    return success();
+  int32_t lookBack = static_cast<int32_t>(*causalLookBack);
+
+  if (lookBack <= 0)
+    return op->emitError("causalLookBack must be positive");
+
+  if (!causal)
+    return op->emitError("causalLookBack requires causal to be enabled");
+
+  if (prefixOffset)
+    return op->emitError("causalLookBack is not supported with prefixOffset");
+
+  // A band at least as wide as the key sequence reaches key 0 for every query,
+  // so it is plain causal. Reject it here rather than emit loop-bound
+  // arithmetic that can never tighten the loop; the producer should drop the
+  // attribute instead.
+  if (lookBack >= maxSeqLen)
+    return op->emitError("causalLookBack must be less than max sequence "
+                         "length; a band that wide is plain causal masking");
+
+  return success();
+}
+
 // The pre-second-GEMM region (the pre-softmax region of attention) is optional
 // in the assembly format, so an empty region is legal. When present, however,
 // downstream passes (e.g. RegularizeInterGemmFusion, GridwiseAttnToBlockwise)
@@ -1757,6 +1790,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getSlidingWindowLookBack())
     return emitError("slidingWindowLookBack only works for attention.");
 
+  if (!getEnableSoftmax() && getCausalLookBack())
+    return emitError("causalLookBack only works for attention.");
+
   // Validate prefix offset constraints
   // prefixOffset requires causal to be enabled (prefix causal = causal +
   // prefixOffset)
@@ -1778,6 +1814,10 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (failed(verifySlidingWindowLookBack(getOperation(),
                                          getSlidingWindowLookBack(),
                                          getLastValidKVIndex(), maxSeqLen)))
+    return failure();
+
+  if (failed(verifyCausalLookBack(getOperation(), getCausalLookBack(),
+                                  getCausal(), getPrefixOffset(), maxSeqLen)))
     return failure();
 
   // The elementwise inputs are plain views of the first GEMM's output space:
@@ -2383,6 +2423,10 @@ LogicalResult AttentionOp::verify() {
   if (failed(verifySlidingWindowLookBack(getOperation(),
                                          getSlidingWindowLookBack(),
                                          getLastValidKVIndex(), maxSeqLen)))
+    return failure();
+
+  if (failed(verifyCausalLookBack(getOperation(), getCausalLookBack(),
+                                  getCausal(), getPrefixOffset(), maxSeqLen)))
     return failure();
 
   return verifyGemmPlusGemmLikeOp(*this, getLastValidKVIndex(), getLse(),

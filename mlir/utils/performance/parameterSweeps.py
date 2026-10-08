@@ -858,7 +858,10 @@ def sample_perf_config(rng: random.Random,
     exercise the non-pow2 K peeling in rock-gridwise-gemm-to-blockwise), both
     gemm/conv only; callers whose pipeline doesn't run those passes
     (attention / gemm+gemm, which use GemmGemmParamsAttr) pass
-    ``pow2_only=True`` to stay on the pow2 grid.
+    ``pow2_only=True`` to stay on the pow2 grid. ``kPerBlock`` also stays a
+    power of two on arches where
+    ``amd_arch_db.supports_non_pow2_k_per_block(arch)`` is false, whatever
+    ``pow2_only`` is.
 
     ``is_attention`` adds the attn-only ``nPerBlockG1`` field: untiled (``0``)
     half the time, otherwise a power-of-two tile from
@@ -870,7 +873,7 @@ def sample_perf_config(rng: random.Random,
     if pow2_only:
         m_choices = [v for v in m_choices if _is_pow2(v)]
         n_choices = [v for v in n_choices if _is_pow2(v)]
-    if pow2_only:
+    if pow2_only or not amd_arch_db.supports_non_pow2_k_per_block(arch):
         k_choices = [v for v in k_choices if _is_pow2(v)]
     return (
         rng.choice(m_choices),

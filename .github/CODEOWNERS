@@ -4,7 +4,7 @@
 # applies the LAST matching pattern, so the perimeter entries at the bottom
 # of this file are what actually gate merges into those paths -- even if a
 # future change adds another wildcard rule above them.
-* @causten @dhernandez0 @justinrosner @pabloantoniom @umangyadav
+* @ilango100 @rachgupt93 @gouthamb-amd @asparkhi
 
 # =============================================================================
 # Security perimeter for the Claude auto-review pipeline.
@@ -29,6 +29,6 @@
 # from the default branch's already-reviewed copy of the workflow. See
 # `.github/workflows/CLAUDE_AUTO_REVIEW.md` (§6) for the full three-layer
 # defense model.
-.github/workflows/  @causten @dhernandez0 @justinrosner @pabloantoniom @umangyadav
-.github/scripts/    @causten @dhernandez0 @justinrosner @pabloantoniom @umangyadav
-.claude/            @causten @dhernandez0 @justinrosner @pabloantoniom @umangyadav
+.github/workflows/  @ilango100 @rachgupt93 @gouthamb-amd @asparkhi
+.github/scripts/    @ilango100 @rachgupt93 @gouthamb-amd @asparkhi
+.claude/            @ilango100 @rachgupt93 @gouthamb-amd @asparkhi

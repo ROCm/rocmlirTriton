@@ -28,13 +28,15 @@ import git
 
 
 def get_diff(base_commit, ignore_external_files: bool) -> Tuple[bool, str]:
-    command = f"git-clang-format --diff {base_commit}"
+    command = ['git-clang-format', '--diff', base_commit]
     if ignore_external_files:
         # Restrict formatting to changed files outside the vendored external/
         # tree.
-        command = (f"git-clang-format --diff {base_commit} -- "
-                   f"$(git diff --name-only --diff-filter=d {base_commit} | grep -v '^external/')")
-    diff_run = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        changed = subprocess.run(['git', 'diff', '--name-only', '--diff-filter=d', base_commit],
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE).stdout.decode().splitlines()
+        command += ['--'] + [f for f in changed if not f.startswith('external/')]
+    diff_run = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     is_diff_run_succesful = diff_run.returncode <= 1
     diff = diff_run.stdout.decode()
     print(diff)
@@ -150,6 +152,11 @@ def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
     include_dirs.append(
         os.path.join(repo_root, 'build', 'external', 'llvm-project', 'llvm', 'tools', 'mlir',
                      'include'))
+    # HIP lives outside the repo, so it has no source/build pair. Headers that
+    # reach <hip/...> (e.g. mlir/include/mlir/Support/HipRuntime.h) are
+    # otherwise unparseable in a header-only diff, since the interpolated
+    # compile line comes from a .cpp that does not carry HIP's include path.
+    include_dirs.append(os.path.join(os.environ.get('ROCM_PATH', '/opt/rocm'), 'include'))
 
     extra_args = ['-extra-arg=-std=c++17']
     for inc in include_dirs:
@@ -170,10 +177,10 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     # Exclude the vendored upstream trees from the diff entirely so clang-tidy
     # is never invoked on external/ files. Without this, clang-tidy-diff.py can
     # timeout on large diffs.
-    diff_command = f'git diff -U0 --no-prefix {base_commit}'
+    diff_command = ['git', 'diff', '-U0', '--no-prefix', base_commit]
     if ignore_external_files:
-        diff_command += " -- . ':!external'"
-    r = subprocess.run(diff_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        diff_command += ['--', '.', ':!external']
+    r = subprocess.run(diff_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     diff = r.stdout.decode("utf-8", "ignore")
     if ignore_config is not None and os.path.exists(ignore_config):
         ignore = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern,

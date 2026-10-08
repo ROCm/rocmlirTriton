@@ -121,3 +121,7 @@ __pycache__/
 .pytest_cache/
 .venv
 venv/
+# CI definitions inside the vendored upstream trees; they never run here.
+# zizmor honors .gitignore when collecting workflows, so this keeps it out of
+# external/. Files already tracked there are unaffected.
+/external/*/.github

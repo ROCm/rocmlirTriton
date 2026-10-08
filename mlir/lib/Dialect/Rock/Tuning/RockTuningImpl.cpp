@@ -453,8 +453,10 @@ static std::vector<uint32_t> computeKPerBlock(RockGemmWrapperInterface gemmOp,
   // K tiles far larger than the problem's K.
   capKPerBlockByK(kList, k);
 
-  // Also tune non-pow2 K tiles on non-scaled GEMMs.
-  if (!gemmOp.getScaleA() && !gemmOp.getScaleB()) {
+  // Also tune non-pow2 K tiles, on non-scaled GEMMs and on the arches where the
+  // peeled K loop is known to compile correctly.
+  if (!gemmOp.getScaleA() && !gemmOp.getScaleB() &&
+      rock::supportsNonPow2KPerBlock(arch)) {
     // An integer GEMM keeps its i32 accumulator exact only while every K
     // segment is at least 4 wide, which rock-gridwise-gemm-to-blockwise
     // enforces; a tile is fully covered by that rule iff it is a multiple of 4.
@@ -1440,6 +1442,12 @@ getTuningProblemStr(RockGemmGemmWrapperInterface gemmGemmOp,
         slidingWindowLookBack && *slidingWindowLookBack > 0)
       problemOS << "-sliding_window_look_back " << *slidingWindowLookBack
                 << sep;
+    // Likewise for the banded causal look-back: it changes how many key blocks
+    // the n-loop visits, so a banded problem must not reuse the ranking
+    // measured for the full causal triangle.
+    if (auto causalLookBack = attentionOp.getCausalLookBack();
+        causalLookBack && *causalLookBack > 0)
+      problemOS << "-causal_look_back " << *causalLookBack << sep;
     problemOS << "-num_heads_q " << attentionOp.getNumHeadsQ() << sep;
     problemOS << "-num_heads_kv " << attentionOp.getNumHeadsKV() << sep;
     problemOS << "-g " << qShape[0] / attentionOp.getNumHeadsQ() << sep;
@@ -2057,8 +2065,8 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
         attnOp, out,
         {"causal", "kTransposed", "numHeadsKV", "numHeadsQ", "oTransposed",
          "params0", "params1", "preSoftmaxHasSplitKVTransforms", "qTransposed",
-         "slidingWindowLookBack", "softmaxType", "splitKV", "vTransposed",
-         "operandSegmentSizes"});
+         "slidingWindowLookBack", "causalLookBack", "softmaxType", "splitKV",
+         "vTransposed", "operandSegmentSizes"});
 
     if (attnOp.getProperties().getOperandSegmentSizes().size() != 6)
       out.unsupported("operand_schema");
