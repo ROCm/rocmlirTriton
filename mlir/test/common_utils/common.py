@@ -1,30 +1,27 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
+import functools
+import json
 import os
 import subprocess
-
-from hip import hip
-
-
-def hip_check(call_result):
-    err = call_result[0]
-    result = call_result[1:]
-    if len(result) == 1:
-        result = result[0]
-    if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
-        raise RuntimeError(str(err))
-    return result
+import sys
 
 
-def get_agents():
-    """Return each visible device's `gcnArchName` in HIP device order.
+def _query_agents():
+    from hip import hip
 
-    HIP applies HIP_VISIBLE_DEVICES itself, so index 0 is the device the tests
-    will run on. Keep the duplicates and the ordering: callers need to tell a
-    homogeneous machine from a mixed one, and picking an arch out of a set
-    would vary between runs under hash randomization.
-    """
+    def hip_check(call_result):
+        err = call_result[0]
+        result = call_result[1:]
+        if len(result) == 1:
+            result = result[0]
+        if isinstance(err, hip.hipError_t) and err != hip.hipError_t.hipSuccess:
+            # Spelled out because str() of an IntEnum is just the number on
+            # Python 3.11+, and the Jenkins failure classifier matches the name.
+            raise RuntimeError('%s.%s' % (type(err).__name__, err.name))
+        return result
+
     agents = []
     device_count = hip_check(hip.hipGetDeviceCount())
     for device in range(device_count):
@@ -33,6 +30,26 @@ def get_agents():
         agents.append(props.gcnArchName.decode('utf-8'))
 
     return agents
+
+
+@functools.lru_cache(maxsize=None)
+def get_agents():
+    """Return each visible device's `gcnArchName` in HIP device order.
+
+    HIP applies HIP_VISIBLE_DEVICES itself, so index 0 is the device the tests
+    will run on. Keep the duplicates and the ordering: callers need to tell a
+    homogeneous machine from a mixed one, and picking an arch out of a set
+    would vary between runs under hash randomization.
+
+    The query runs in a child process because a GPU hang aborts every process
+    that has HIP initialized, not just the one that caused it. If lit opened
+    HIP itself, one hanging test would take down lit and every result it had
+    collected, without naming the test. The child's stderr is left uncaptured
+    so a HIP error such as hipErrorNoDevice, which the Jenkins failure
+    classifier looks for, still reaches the log.
+    """
+    output = subprocess.check_output([sys.executable, __file__], text=True)
+    return tuple(json.loads(output))
 
 
 def apply_arch_features(config, lit_config):
@@ -64,11 +81,12 @@ def apply_arch_features(config, lit_config):
     if not config.rocm_path:
         return
 
+    # Fatal rather than no_AMD_GPU: skipping every GPU test on a node whose GPU
+    # is broken would report a pass.
     try:
         agents = get_agents()
-    except subprocess.CalledProcessError:
-        config.no_AMD_GPU = True
-        return
+    except subprocess.CalledProcessError as e:
+        lit_config.fatal("Querying the visible GPUs failed: %s" % e)
 
     if not agents:
         config.no_AMD_GPU = True
@@ -121,3 +139,7 @@ def apply_device_environment(config):
 
     if not selected and config.mixed_arch_detected:
         config.environment['HIP_VISIBLE_DEVICES'] = '0'
+
+
+if __name__ == '__main__':
+    print(json.dumps(_query_agents()))
