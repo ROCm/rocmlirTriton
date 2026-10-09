@@ -2253,7 +2253,8 @@ PY
                 def buildNum = env.BUILD_NUMBER ?: '?'
                 def buildUrl = env.BUILD_URL ?: ''
                 def jobName = env.JOB_NAME ?: ''
-                def isOfficialNightlyOrWeekly = (jobName == 'MLIR/rocmlirTriton-nightly')
+                def isOfficialNightlyOrWeekly =
+                    ['MLIR/rocmlirTriton-nightly', 'MLIR/rocmlirTriton-weekly'].contains(jobName)
                 def failureDetails = null
                 def logText = ''
                 if ((result == 'FAILURE' || result == 'ABORTED') && (params.nightly || params.weekly) && isOfficialNightlyOrWeekly) {
