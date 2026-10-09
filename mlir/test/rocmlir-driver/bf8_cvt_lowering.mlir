@@ -1,8 +1,8 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// TODO(rocmlirTriton): Route RDNA4 to the plain cvt instructions as well, and
-// check it here, once LCOMPILER-2609 is fixed in LLVM.
+// TODO(rocmlirTriton): Route RDNA4 to the unscaled cvt instructions as well,
+// and check it here, once upstream Triton enables them for RDNA4.
 
 // The f8E5M2 (bf8) half of fp8_cvt_lowering.mlir: same quantized-GEMM kernel
 // shape and the same per-architecture routing, see that file for why the kernel
@@ -20,9 +20,12 @@
 // RUN: rocmlir-gen --clone-harness -arch gfx1170 -fut mlir_bf8_cvt %s \
 // RUN: | rocmlir-driver -arch=gfx1170 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | rocmlir-driver -arch=gfx1170 -kernel-pipeline=gpu,triton \
-// RUN: | FileCheck %s --check-prefix=LLIR1170
+// RUN: | FileCheck %s --check-prefix=LLIR1170 \
+// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8
 
-// LLIR1170-DAG: rocdl.cvt.pk.f32.bf8
+// The upcast converts one byte per instruction; the packed upcast is avoided
+// because LLVM emits it in a form the gfx12 assembler rejects (LCOMPILER-2609).
+// LLIR1170-DAG: rocdl.cvt.f32.bf8
 // LLIR1170-DAG: rocdl.cvt.pk.bf8.f32
 
 // On gfx942 these mnemonics use FNUZ encoding, so OCP casts must remain on the
@@ -32,7 +35,8 @@
 // RUN: | rocmlir-driver -arch=gfx942 -kernel-pipeline=gpu,triton \
 // RUN: | FileCheck %s --check-prefix=LLIR942 \
 // RUN:   --implicit-check-not=rocdl.cvt.pk.bf8.f32 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8
+// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8 \
+// RUN:   --implicit-check-not=rocdl.cvt.f32.bf8
 
 // LLIR942: llvm.func
 
@@ -42,19 +46,19 @@
 // RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx1170 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1170 2>&1
 // RUN: FileCheck %s --check-prefix=ASM1170 < %t.gfx1170
 
-// ASM1170-DAG: v_cvt_pk_f32_bf8
+// ASM1170-DAG: v_cvt_f32_bf8
 // ASM1170-DAG: v_cvt_pk_bf8_f32
 
-// RDNA4 has the same OCP instructions, but must stay on the software path:
-// LCOMPILER-2609 makes the packed upcast unassemblable in the real-true16 mode
-// gfx12 defaults to. llvm.func prevents the negative check from passing
-// vacuously.
+// RDNA4 has the same OCP instructions, but upstream Triton only routes gfx1170
+// to them, so RDNA4 stays on the software path. llvm.func prevents the
+// negative check from passing vacuously.
 // RUN: rocmlir-gen --clone-harness -arch gfx1200 -fut mlir_bf8_cvt %s \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=gpu,triton \
 // RUN: | FileCheck %s --check-prefix=LLIR1200 \
 // RUN:   --implicit-check-not=rocdl.cvt.pk.bf8.f32 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8
+// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8 \
+// RUN:   --implicit-check-not=rocdl.cvt.f32.bf8
 
 // LLIR1200: llvm.func
 
