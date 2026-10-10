@@ -1634,12 +1634,25 @@ struct AttentionMatcherValues {
   // that lastKVIndex and prefixOffset were validated against in match().
   int64_t gemmG = 1;
   bool isCausal;
+  // Width of a banded causal mask, i.e. the largest key distance any query
+  // attends over. 0 means the full causal triangle.
+  int64_t causalLookBack = 0;
   Value prefixOffset;
   std::optional<int64_t> lookBack;
   std::optional<int32_t> lastKVClipMin;
   std::optional<int32_t> lastKVClipMax;
   Type softmaxType;
   ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder;
+};
+
+// What a successful causal-mask match yields: the value carrying the scores
+// the mask was applied to, plus the shape of the mask itself.
+struct CausalMaskMatch {
+  Value scores;
+  // Largest key distance any query attends over, i.e. the band width L of
+  // max(0, row - L) <= col <= row. 0 means the full causal triangle, which
+  // needs no causalLookBack attribute.
+  int64_t lookBack = 0;
 };
 
 struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
@@ -1725,7 +1738,16 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     OnesLowerZerosUpper,
   };
 
-  bool isValidCausalMask(Operation *op, CausalMaskKind kind) const {
+  // Matches the full causal triangle or a band, returning the band width L of
+  // the kept region max(0, row - L) <= col <= row. A mask whose last row still
+  // reaches key 0 yields 0, meaning plain causal.
+  //
+  // A diagonal-only mask is reported as plain causal rather than as a band of
+  // width 0, because 0 is the "full triangle" spelling. That only matters for a
+  // 1x1 mask; for anything larger the diagonal is not a valid triangle and the
+  // match fails below.
+  FailureOr<int64_t> matchCausalMaskWidth(Operation *op,
+                                          CausalMaskKind kind) const {
     DenseElementsAttr constAttr;
     if (auto tosaConst = dyn_cast<tosa::ConstOp>(op))
       constAttr = dyn_cast<DenseElementsAttr>(tosaConst.getValuesAttr());
@@ -1734,55 +1756,96 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       constAttr = dyn_cast<DenseElementsAttr>(arithConst.getValue());
 
     if (!constAttr)
-      return false;
+      return failure();
 
     auto shapedType = cast<ShapedType>(constAttr.getType());
     auto shape = shapedType.getShape();
 
     // First two dims must be 1 (broadcast dimensions)
     if (shape.size() != 4 || shape[0] != 1 || shape[1] != 1)
-      return false;
+      return failure();
 
     // Sanity check that this is an integer or float
     bool isInt = constAttr.getElementType().isIntOrIndex();
     bool isFloat = isa<FloatType>(constAttr.getElementType());
     if (!isInt && !isFloat)
-      return false;
+      return failure();
 
     // Integer-only kinds require an integer element type, and vice versa
     if (kind == CausalMaskKind::ZerosLowerNegInfUpper && !isFloat)
-      return false;
+      return failure();
 
     if (kind != CausalMaskKind::ZerosLowerNegInfUpper && !isInt)
-      return false;
+      return failure();
 
     int64_t seqLen = shape[2];
     int64_t maxSeqLen = shape[3];
 
     auto validateMask = [&](auto values, auto isZero, auto isOne,
-                            auto isNegInf) -> bool {
+                            auto isNegInf) -> FailureOr<int64_t> {
+      auto isKept = [&](int64_t row, int64_t col) {
+        auto val = values[row * maxSeqLen + col];
+        switch (kind) {
+        case CausalMaskKind::OnesLowerZerosUpper:
+          return isOne(val);
+        case CausalMaskKind::ZerosLowerOnesUpper:
+        case CausalMaskKind::ZerosLowerNegInfUpper:
+          return isZero(val);
+        }
+        llvm_unreachable("unhandled CausalMaskKind");
+      };
+      auto isBlocked = [&](int64_t row, int64_t col) {
+        auto val = values[row * maxSeqLen + col];
+        switch (kind) {
+        case CausalMaskKind::OnesLowerZerosUpper:
+          return isZero(val);
+        case CausalMaskKind::ZerosLowerOnesUpper:
+          return isOne(val);
+        case CausalMaskKind::ZerosLowerNegInfUpper:
+          return isNegInf(val);
+        }
+        llvm_unreachable("unhandled CausalMaskKind");
+      };
+
+      // Derive the band width from the last query row, whose lower edge is the
+      // one least likely to be clamped at key 0. A last row that still reaches
+      // key 0 means the band spans the whole sequence, i.e. plain causal.
+      int64_t lookBack = 0;
+      int64_t lastRow = seqLen - 1;
+      int64_t firstKept = 0;
+      while (firstKept < maxSeqLen && !isKept(lastRow, firstKept))
+        ++firstKept;
+      if (firstKept >= maxSeqLen)
+        return failure();
+      if (firstKept > 0)
+        lookBack = lastRow - firstKept;
+
+      // verifyCausalLookBack bounds the band by the key sequence length, so a
+      // wider band cannot be expressed as an attribute. That is reachable
+      // whenever there are more queries than keys, because the lower edge is
+      // measured from the query row while the key length only clips the upper
+      // one: at seqLen 8, maxSeqLen 4 and a band of 4, the last row keeps only
+      // key 3, so firstKept is 3 and the width comes out as 4. Fail the match
+      // rather than widen or clamp, which leaves the mask in the pre-softmax
+      // elementwise region for the kernel to apply verbatim.
+      if (lookBack >= maxSeqLen)
+        return failure();
+
+      // The attribute is i32. Checking here keeps rewrite() unable to fail.
+      if (lookBack > std::numeric_limits<int32_t>::max())
+        return failure();
+
       for (int64_t row = 0; row < seqLen; ++row) {
         for (int64_t col = 0; col < maxSeqLen; ++col) {
-          auto val = values[row * maxSeqLen + col];
-          bool isLower = col <= row;
-
-          switch (kind) {
-          case CausalMaskKind::OnesLowerZerosUpper:
-            if (isLower ? !isOne(val) : !isZero(val))
-              return false;
-            break;
-          case CausalMaskKind::ZerosLowerOnesUpper:
-            if (isLower ? !isZero(val) : !isOne(val))
-              return false;
-            break;
-          case CausalMaskKind::ZerosLowerNegInfUpper:
-            if (isLower ? !isZero(val) : !isNegInf(val))
-              return false;
-            break;
-          }
+          bool inBand =
+              col <= row &&
+              (lookBack == 0 || col >= std::max<int64_t>(0, row - lookBack));
+          if (inBand ? !isKept(row, col) : !isBlocked(row, col))
+            return failure();
         }
       }
-      return true;
+
+      return lookBack;
     };
 
     if (isInt) {
@@ -1897,7 +1960,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   //   (1) tosa.greater(const1, const2) comparing two constant 0..N range
   //       tensors (normal polarity only)
   //   (2) A pre-folded broadcasted constant mask tensor
-  FailureOr<Value> getCausalFromSelect(Value input) const {
+  FailureOr<CausalMaskMatch> getCausalFromSelect(Value input) const {
     auto maybeSelect = getSelectWithNegInf(input);
     if (failed(maybeSelect))
       return failure();
@@ -1929,7 +1992,8 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
       if (failed(isConstantRange(greater.getInput2(), 1)))
         return failure();
 
-      return scores;
+      // A constant-range comparison spells out the full triangle, never a band.
+      return CausalMaskMatch{scores, /*lookBack=*/0};
     } else if (succeeded(maybeBroadcast)) {
       // The input from MIGraphX will not be a constant range, so we cannot
       // use the isConstantRange function. Instead we need to check that
@@ -1939,15 +2003,14 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         return failure();
 
       Operation *defOp = maybeNonOne.value().getDefiningOp();
-      if (invertedPolarity) {
-        if (!isValidCausalMask(defOp, CausalMaskKind::OnesLowerZerosUpper))
-          return failure();
-      } else {
-        if (!isValidCausalMask(defOp, CausalMaskKind::ZerosLowerOnesUpper))
-          return failure();
-      }
+      CausalMaskKind kind = invertedPolarity
+                                ? CausalMaskKind::OnesLowerZerosUpper
+                                : CausalMaskKind::ZerosLowerOnesUpper;
+      FailureOr<int64_t> lookBack = matchCausalMaskWidth(defOp, kind);
+      if (failed(lookBack))
+        return failure();
 
-      return scores;
+      return CausalMaskMatch{scores, *lookBack};
     }
     return failure();
   }
@@ -1956,7 +2019,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   //   - Looks for tosa.add(scores, mask) where mask is a constant with:
   //     * 0s in lower triangle (allow attention)
   //     * -inf values in upper triangle (block attention)
-  FailureOr<Value> getCausalFromAdd(Value input) const {
+  FailureOr<CausalMaskMatch> getCausalFromAdd(Value input) const {
     DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
                                   tensor::ExpandShapeOp::getOperationName(),
                                   tosa::CastOp::getOperationName()};
@@ -1968,25 +2031,20 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     Value input1 = add.getInput1();
     Value input2 = add.getInput2();
 
-    // Try to find the causal mask constant in either input
-    // Check if input2 is a causal mask (broadcasted via mul)
-    auto maybeNonOne2 = mulBroadcast(input2);
-    if (succeeded(maybeNonOne2)) {
-      Operation *defOp = maybeNonOne2.value().getDefiningOp();
-      if (defOp &&
-          isValidCausalMask(defOp, CausalMaskKind::ZerosLowerNegInfUpper)) {
-        return input1;
-      }
-    }
-
-    // Check if input1 is a causal mask (broadcasted via mul)
-    auto maybeNonOne1 = mulBroadcast(input1);
-    if (succeeded(maybeNonOne1)) {
-      Operation *defOp = maybeNonOne1.value().getDefiningOp();
-      if (defOp &&
-          isValidCausalMask(defOp, CausalMaskKind::ZerosLowerNegInfUpper)) {
-        return input2;
-      }
+    // Try to find the causal mask constant in either input, returning the
+    // other one as the scores the mask was applied to.
+    for (auto [maskSide, scoresSide] :
+         {std::make_pair(input2, input1), std::make_pair(input1, input2)}) {
+      auto maybeNonOne = mulBroadcast(maskSide);
+      if (failed(maybeNonOne))
+        continue;
+      Operation *defOp = maybeNonOne.value().getDefiningOp();
+      if (!defOp)
+        continue;
+      FailureOr<int64_t> lookBack =
+          matchCausalMaskWidth(defOp, CausalMaskKind::ZerosLowerNegInfUpper);
+      if (succeeded(lookBack))
+        return CausalMaskMatch{scoresSide, *lookBack};
     }
 
     return failure();
@@ -1994,7 +2052,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
 
   // Detects a standard causal mask for attention ops.
   // Tries both select-based and add-based patterns.
-  FailureOr<Value> getCausal(Value input) const {
+  FailureOr<CausalMaskMatch> getCausal(Value input) const {
     // Check that the input that comes from the causal mask (verified to be
     // -inf values in getCausalFromSelect or getCausalFromAdd) is used by an
     // exp op.
@@ -3201,13 +3259,14 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         hasInvalidRank(prefixOffset, "prefixOffset"))
       return failure();
 
-    // Try standard causal detection if not prefix causal
+    // Try standard causal detection if not prefix causal. A banded mask comes
+    // back with a non-zero lookBack; 0 means the full triangle.
     auto causal = getCausal(kvCacheInput);
     bool isCausal = succeeded(causal) || prefixOffset;
     // Use causal input if standard causal, otherwise use kvCacheInput
     // (which is also set for prefix causal pattern)
     Value causalMaskInput =
-        (succeeded(causal) && !prefixOffset) ? causal.value() : kvCacheInput;
+        (succeeded(causal) && !prefixOffset) ? causal->scores : kvCacheInput;
 
     OpBuilder b{op};
     ElementwiseRegionFinder<tosa::MatMulOp> preSoftmaxElementwiseFinder;
@@ -3289,6 +3348,10 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     // rewriter
     AttentionMatcherValues matched;
     matched.isCausal = isCausal;
+    // Only a genuine band survives here: getCausal reports 0 for the full
+    // triangle, and prefix causal owns the upper bound itself.
+    matched.causalLookBack =
+        (succeeded(causal) && !prefixOffset) ? causal->lookBack : 0;
     matched.prefixOffset = prefixOffset;
     matched.softmaxType = softmaxType;
     matched.softmaxValues = softmaxMatcherValues;
@@ -3398,6 +3461,19 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
     }
 
     UnitAttr causalAttr = isCausal ? rewriter.getUnitAttr() : nullptr;
+
+    // A banded causal mask becomes the causalLookBack attribute, which lets the
+    // N-loop skip the key blocks below the band instead of loading them and
+    // masking every element. match() already restricted this to a genuine band
+    // under plain causal masking, narrow enough for verifyCausalLookBack to
+    // accept and to fit in i32, so there is nothing left to reject here.
+    assert(matched.causalLookBack >= 0 &&
+           matched.causalLookBack <= std::numeric_limits<int32_t>::max() &&
+           "match() must bound causalLookBack; rewrite() cannot fail");
+    IntegerAttr causalLookBackAttr;
+    if (matched.causalLookBack > 0)
+      causalLookBackAttr = rewriter.getI32IntegerAttr(
+          static_cast<int32_t>(matched.causalLookBack));
     ElementwiseRegionFinder<tosa::MatMulOp> elemwiseRegion =
         matched.preSoftmaxElementwiseFinder;
 
@@ -3420,7 +3496,7 @@ struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
         /*vTransposed=*/nullptr,
         /*oTransposed=*/nullptr, causalAttr,
         /*splitKV=*/rewriter.getI32IntegerAttr(1), lookBackAttr,
-        /*causalLookBack=*/nullptr, softmaxTypeAttr,
+        causalLookBackAttr, softmaxTypeAttr,
         /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSoftmaxElemwiseBlock = &attnOp.getPreSoftmaxBody().emplaceBlock();
     {
