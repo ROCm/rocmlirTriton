@@ -32,6 +32,21 @@
 // RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=1 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=MINIMAL
 // MINIMAL: [1 1 1]
 
+// Band plus a KV cache, which is the shape the feature was originally reported
+// against (causal + kv-cache + a static look-back mask). last_valid_kv_index P
+// caps keys at P while the band caps them per query row, so the kept set is
+// [max(0, m - L), min(m, P)].
+//
+// P = 120 leaves every row non-empty, since the widest lower edge is 127 - 8.
+// RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=8 -last_valid_kv_index=120 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f32 -rand 1 -rand_type float -pv | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=KVCACHE
+// KVCACHE: [1 1 1]
+
+// P = 100 puts the two bounds in conflict: every query past row 108 has its
+// whole band above the cache end, so rows 109..127 are fully masked. This is
+// the empty-row guard reached from the cache side rather than the band side.
+// RUN: rocmlir-gen --arch %arch --operation attention --causal -causal_look_back=8 -last_valid_kv_index=100 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 32 -head_dim_v 32 -t f16 -rand 1 -rand_type float -pv | rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix=KVCACHE-EMPTY
+// KVCACHE-EMPTY: [1 1 1]
+
 // Band plus a decode-style sliding window on the same op. Setting both became
 // reachable once the frontend could infer causalLookBack, so pin it here: the
 // band bounds the upper edge per query row while the window bounds the lower

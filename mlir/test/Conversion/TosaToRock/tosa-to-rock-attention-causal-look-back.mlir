@@ -93,6 +93,71 @@ func.func @mlir_causal_attention_look_back_select(%arg0: tensor<64xf32>, %arg1: 
   return %out : tensor<64xf32>
 }
 
+// A banded mask alongside a KV-cache mask, which is the combination the band
+// was originally reported against (causal + kv-cache + a static look-back).
+// Unlike prefix causal the two compose fine: getAttentionMask peels the
+// kv-cache select first and getCausal then runs on what is left, so both
+// bounds end up on the op and the elementwise region comes out empty.
+//
+// The band keeps max(0, row - 2) <= col <= row over 4 queries and 16 keys, so
+// L = 2. Dropping the band from this graph leaves lastValidKVIndex alone with
+// no causal and no causalLookBack, so the width below really is coming from
+// the band and not from the cache mask.
+// CHECK-LABEL: func @mlir_attention_kvcache_with_band
+// CHECK: rock.attention
+// CHECK: lastValidKVIndex = (%{{.*}} : tensor<14xi32>)
+// CHECK-NEXT: causalLookBack = 2
+// CHECK-NEXT: causal
+func.func @mlir_attention_kvcache_with_band(%arg0: tensor<14xi32>, %arg1: tensor<4608xf16>, %arg2: tensor<2048xf16>, %arg3: tensor<14336xf16>) -> tensor<3584xf16> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
+  %band = "tosa.const"() <{values = dense<[[[[-0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [-0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [-0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00], [0xFC00, -0.000000e+00, -0.000000e+00, -0.000000e+00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00, 0xFC00]]]]> : tensor<1x1x4x16xf16>}> : () -> tensor<1x1x4x16xf16>
+  %band_ones = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x14x4x16xf16>}> : () -> tensor<1x14x4x16xf16>
+  // The column range has to stay 1 along the query axis so the constant really
+  // is 0..15; tosa.mul below is what broadcasts it across queries and heads.
+  %colrange = "tosa.const"() <{values = dense<[[[[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]]]> : tensor<1x1x1x16xi32>}> : () -> tensor<1x1x1x16xi32>
+  %ones_i32 = "tosa.const"() <{values = dense<1> : tensor<1x14x4x16xi32>}> : () -> tensor<1x14x4x16xi32>
+  %neginf = "tosa.const"() <{values = dense<0xFC00> : tensor<1x14x4x16xf16>}> : () -> tensor<1x14x4x16xf16>
+  %zero = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf16>}> : () -> tensor<1xf16>
+  %kones = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x2x7x64x16xf16>}> : () -> tensor<1x2x7x64x16xf16>
+  %scale = "tosa.const"() <{values = dense<1.250000e-01> : tensor<1x14x4x16xf16>}> : () -> tensor<1x14x4x16xf16>
+  %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
+  %expanded = tensor.expand_shape %arg2 [[0, 1, 2, 3, 4]] output_shape [1, 2, 1, 16, 64] : tensor<2048xf16> into tensor<1x2x1x16x64xf16>
+  %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [1, 4, 18, 64] : tensor<4608xf16> into tensor<1x4x18x64xf16>
+  %q = tosa.transpose %expanded_0 {perms = array<i32: 0, 2, 1, 3>} : (tensor<1x4x18x64xf16>) -> tensor<1x18x4x64xf16>
+  %extracted_slice = tensor.extract_slice %q[0, 0, 0, 0] [1, 14, 4, 64] [1, 1, 1, 1] : tensor<1x18x4x64xf16> to tensor<1x14x4x64xf16>
+  %kt = tosa.transpose %expanded {perms = array<i32: 0, 1, 2, 4, 3>} : (tensor<1x2x1x16x64xf16>) -> tensor<1x2x1x64x16xf16>
+  %kb = tosa.mul %kt, %kones, %shift : (tensor<1x2x1x64x16xf16>, tensor<1x2x7x64x16xf16>, tensor<1xi8>) -> tensor<1x2x7x64x16xf16>
+  %collapsed = tensor.collapse_shape %extracted_slice [[0, 1], [2], [3]] : tensor<1x14x4x64xf16> into tensor<14x4x64xf16>
+  %collapsed_3 = tensor.collapse_shape %kb [[0, 1, 2], [3], [4]] : tensor<1x2x7x64x16xf16> into tensor<14x64x16xf16>
+  %qk = tosa.matmul %collapsed, %collapsed_3, %zero, %zero {acc_type = f32} : (tensor<14x4x64xf16>, tensor<14x64x16xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<14x4x16xf16>
+  %expanded_4 = tensor.expand_shape %qk [[0, 1], [2], [3]] output_shape [1, 14, 4, 16] : tensor<14x4x16xf16> into tensor<1x14x4x16xf16>
+  %scaled = tosa.mul %expanded_4, %scale, %shift : (tensor<1x14x4x16xf16>, tensor<1x14x4x16xf16>, tensor<1xi8>) -> tensor<1x14x4x16xf16>
+  %band_bcast = tosa.mul %band, %band_ones, %shift : (tensor<1x1x4x16xf16>, tensor<1x14x4x16xf16>, tensor<1xi8>) -> tensor<1x14x4x16xf16>
+  %banded = tosa.add %scaled, %band_bcast : (tensor<1x14x4x16xf16>, tensor<1x14x4x16xf16>) -> tensor<1x14x4x16xf16>
+  %colb = tosa.mul %colrange, %ones_i32, %shift : (tensor<1x1x1x16xi32>, tensor<1x14x4x16xi32>, tensor<1xi8>) -> tensor<1x14x4x16xi32>
+  %expanded_kv = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [1, 14, 1, 1] : tensor<14xi32> into tensor<1x14x1x1xi32>
+  %kvb = tosa.mul %expanded_kv, %ones_i32, %shift : (tensor<1x14x1x1xi32>, tensor<1x14x4x16xi32>, tensor<1xi8>) -> tensor<1x14x4x16xi32>
+  %gt = tosa.greater %colb, %kvb : (tensor<1x14x4x16xi32>, tensor<1x14x4x16xi32>) -> tensor<1x14x4x16xi1>
+  %c1 = tosa.cast %gt : (tensor<1x14x4x16xi1>) -> tensor<1x14x4x16xi32>
+  %c2 = tosa.cast %c1 : (tensor<1x14x4x16xi32>) -> tensor<1x14x4x16xi8>
+  %c3 = tosa.cast %c2 : (tensor<1x14x4x16xi8>) -> tensor<1x14x4x16xi1>
+  %masked = tosa.select %c3, %neginf, %banded : (tensor<1x14x4x16xi1>, tensor<1x14x4x16xf16>, tensor<1x14x4x16xf16>) -> tensor<1x14x4x16xf16>
+  %f32 = tosa.cast %masked : (tensor<1x14x4x16xf16>) -> tensor<1x14x4x16xf32>
+  %mx = tosa.reduce_max %f32 {axis = 3 : i32} : (tensor<1x14x4x16xf32>) -> tensor<1x14x4x1xf32>
+  %sub = tosa.sub %f32, %mx : (tensor<1x14x4x16xf32>, tensor<1x14x4x1xf32>) -> tensor<1x14x4x16xf32>
+  %exp = tosa.exp %sub : (tensor<1x14x4x16xf32>) -> tensor<1x14x4x16xf32>
+  %sum = tosa.reduce_sum %exp {axis = 3 : i32} : (tensor<1x14x4x16xf32>) -> tensor<1x14x4x1xf32>
+  %recip = tosa.reciprocal %sum : (tensor<1x14x4x1xf32>) -> tensor<1x14x4x1xf32>
+  %sm = tosa.mul %exp, %recip, %shift : (tensor<1x14x4x16xf32>, tensor<1x14x4x1xf32>, tensor<1xi8>) -> tensor<1x14x4x16xf32>
+  %smh = tosa.cast %sm : (tensor<1x14x4x16xf32>) -> tensor<1x14x4x16xf16>
+  %collapsed_5 = tensor.collapse_shape %smh [[0, 1], [2], [3]] : tensor<1x14x4x16xf16> into tensor<14x4x16xf16>
+  %expanded_6 = tensor.expand_shape %arg3 [[0, 1, 2]] output_shape [14, 16, 64] : tensor<14336xf16> into tensor<14x16x64xf16>
+  %av = tosa.matmul %collapsed_5, %expanded_6, %zero, %zero {acc_type = f32} : (tensor<14x4x16xf16>, tensor<14x16x64xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<14x4x64xf16>
+  %expanded_7 = tensor.expand_shape %av [[0, 1], [2], [3]] output_shape [1, 14, 4, 64] : tensor<14x4x64xf16> into tensor<1x14x4x64xf16>
+  %outt = tosa.transpose %expanded_7 {perms = array<i32: 0, 2, 1, 3>} : (tensor<1x14x4x64xf16>) -> tensor<1x4x14x64xf16>
+  %collapsed_8 = tensor.collapse_shape %outt [[0, 1, 2, 3]] : tensor<1x4x14x64xf16> into tensor<3584xf16>
+  return %collapsed_8 : tensor<3584xf16>
+}
+
 // A genuine band that the rock.attention attribute cannot express. There are 8
 // queries but only 4 keys, and the mask keeps max(0, row - 4) <= col <= row,
 // so L = 4. The lower edge is measured from the query row while the key length
