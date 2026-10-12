@@ -7,9 +7,11 @@
 For each (arch, dtype), this enumerates the *exhaustive* tuning space of a large
 GEMM (large so tile sizes are never capped by the problem dims), lowers each
 perf config only as far as the ``triton`` stage -- where ``ttg.shared`` is
-computed -- and then runs the standalone ``resolve-kernel-launch-params`` pass.
-If that pass reports the config's shared-memory usage exceeds the arch LDS
-limit, the config's LDS-relevant projection is recorded.
+computed, and where ``rock-check-lds-limit`` rejects a config as soon as it is
+known to overflow -- and then runs the standalone
+``resolve-kernel-launch-params`` pass on the configs that got through. If
+either reports the config's shared-memory usage exceeds the arch LDS limit, the
+config's LDS-relevant projection is recorded.
 
 Only a handful of perf-config fields actually change ``ttg.shared``. Measured
 empirically (vary one field, hold the rest, watch ttg.shared):
@@ -63,6 +65,7 @@ import random
 import re
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,8 +81,10 @@ from tqdm import tqdm
 # blacklisted, making regeneration non-idempotent (it would shrink to nothing).
 BLACKLIST_BYPASS_ENV = "ROCMLIR_DISABLE_LDS_BLACKLIST"
 
-# Diagnostic emitted by ResolveKernelLaunchParams when ttg.shared > LDS limit.
-# Keep in sync with mlir/lib/Dialect/Rock/Transforms/ResolveKernelLaunchParams.cpp.
+# Diagnostic emitted by rock-check-lds-limit (in rocmlir-driver) and
+# resolve-kernel-launch-params (in rocmlir-opt) when ttg.shared > LDS limit.
+# Keep in sync with checkSharedMemoryFitsLDS in
+# mlir/lib/Dialect/Rock/utility/loweringUtils.cpp.
 LDS_OVERFLOW_MARKER = "exceeds LDS limit"
 
 # The perf-config fields that affect ttg.shared, in the order of GemmLdsKey in
@@ -240,25 +245,30 @@ def classify_lds(paths: perfRunner.Paths, arch: str, gen_dtype: str, perf_config
     case matters for --verify: a rejected config must NOT be misread as "no
     longer overflows" (that would be spurious drift).
     """
-    gen = subprocess.Popen(gen_args(paths, arch, gen_dtype, dims) +
-                           [f"--perf_config={perf_config}"],
-                           stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL)
-    driver = subprocess.Popen(
-        [paths.mlir_paths.rocmlir_driver_path, "--kernel-pipeline=gpu,triton", "--arch", arch],
-        stdin=gen.stdout,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL)
-    gen.stdout.close()
-    opt = subprocess.Popen([paths.mlir_paths.rocmlir_opt_path, "-resolve-kernel-launch-params"],
-                           stdin=driver.stdout,
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.PIPE)
-    driver.stdout.close()
+    # The driver's stderr goes to a file, not a pipe: nothing drains it while we
+    # block on opt, so a long driver diagnostic would fill a pipe and deadlock.
+    with tempfile.TemporaryFile() as driver_err:
+        gen = subprocess.Popen(gen_args(paths, arch, gen_dtype, dims) +
+                               [f"--perf_config={perf_config}"],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+        driver = subprocess.Popen(
+            [paths.mlir_paths.rocmlir_driver_path, "--kernel-pipeline=gpu,triton", "--arch", arch],
+            stdin=gen.stdout,
+            stdout=subprocess.PIPE,
+            stderr=driver_err)
+        gen.stdout.close()
+        opt = subprocess.Popen([paths.mlir_paths.rocmlir_opt_path, "-resolve-kernel-launch-params"],
+                               stdin=driver.stdout,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE)
+        driver.stdout.close()
 
-    _, err = opt.communicate()
-    gen.wait()
-    driver.wait()
+        _, opt_err = opt.communicate()
+        gen.wait()
+        driver.wait()
+        driver_err.seek(0)
+        err = driver_err.read() + opt_err
     if LDS_OVERFLOW_MARKER in err.decode("utf-8", errors="replace"):
         return LDS_OVERFLOW
     if gen.returncode != 0 or driver.returncode != 0 or opt.returncode != 0:

@@ -24,7 +24,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -148,14 +147,9 @@ struct ResolveKernelLaunchParamsPass
       return signalPassFailure();
     }
 
-    int64_t maxLDS = rock::getLDSSize(archStr);
-    if (sharedMemSize > maxLDS) {
-      rock::markAsNotApplicable(moduleOp);
-      mlir::emitError(moduleOp.getLoc(), "ttg.shared (")
-          << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
-          << archStr;
+    if (failed(
+            rock::checkSharedMemoryFitsLDS(moduleOp, sharedMemSize, archStr)))
       return signalPassFailure();
-    }
 
     if (failed(validateKernelLaunchDimensions(moduleOp)))
       return signalPassFailure();

@@ -3,7 +3,10 @@
 //
 // REQUIRES: asserts
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch --mlir-print-ir-after=rock-gridwise-attn-to-blockwise -o /dev/null 2>&1 -debug-only=rock-gridwise-attn-to-blockwise | FileCheck %s
-// RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch gfx942 | rocmlir-driver -kernel-pipeline gpu,triton -arch gfx942 --mlir-print-ir-after=tritongpu-coalesce -o /dev/null 2>&1 | FileCheck %s --check-prefix=VECTORIZATION
+// RUN: sed s/##TOKEN_ARCH##/gfx942/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch gfx942 | not rocmlir-driver -kernel-pipeline gpu,triton -arch gfx942 --mlir-print-ir-after=tritongpu-coalesce -o /dev/null 2>&1 | FileCheck %s --check-prefix=VECTORIZATION
+
+// The perf config needs more LDS than gfx942 has, so the triton pipeline stops
+// at rock-check-lds-limit, after printing the IR checked here.
 
 // CHECK: elemTypeQLoad: f16
 // CHECK: elemTypeKLoad: i4
@@ -12,6 +15,7 @@
 // VECTORIZATION-DAG: #[[V_LAYOUT:.*]] = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [1, 64], warpsPerCTA = [2, 8], order = [1, 0]}>
 // VECTORIZATION: tt.load {{.*}} : tensor<128x1x!tt.ptr<f16>, #[[Q_LAYOUT]]>
 // VECTORIZATION: tt.load {{.*}} : tensor<64x4096x!tt.ptr<f16>, #[[V_LAYOUT]]>
+// VECTORIZATION: exceeds LDS limit
 module {
   func.func @mlir_attention_int4(%arg0: !migraphx.shaped<4096x4096xf16, 8192x1>, %arg1: !migraphx.shaped<4096xf16, 1>, %arg2: !migraphx.shaped<4096xf16, 1>, %arg3: !migraphx.shaped<4096x2048xui8, 2048x1>, %arg4: !migraphx.shaped<4096x4096xf16, 4096x1>) -> !migraphx.shaped<4096x4096xf16, 4096x1> attributes {rock.arch = "##TOKEN_ARCH##", rock.kernel = "mixr"} {
     %0 = migraphx.unpack %arg3 {axis = 1 : i64} : <4096x2048xui8, 2048x1> -> <4096x4096xi8, 4096x1>
