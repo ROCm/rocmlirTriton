@@ -1393,6 +1393,17 @@ LogicalResult GemmOp::verify() {
       failed(verifyScale(getScaleB(), /*isA=*/false)))
     return failure();
 
+  // E4M3 scales use the 16-wide WMMA scale intrinsic. TTIR accepts only 16 or
+  // 32, and a mixed E8M0/E4M3 pair is legal only when both sides share this
+  // block size. E8M0 block-32 graphs are unchanged.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(getScaleA()) || isE4M3Scale(getScaleB())) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+
   if (getParams().has_value() && getQuantBlockSize().has_value()) {
     int64_t quantBlockSize = getQuantBlockSize().value();
     auto params = cast<GemmParamsAttr>(getParams().value());
@@ -1481,6 +1492,15 @@ LogicalResult GridwiseGemmOp::verify() {
                           /*isA=*/false))) {
     return failure();
   }
+  // Same rule as GemmOp: an E4M3 scale, on either side, uses the 16-wide
+  // WMMA scale intrinsic. A mixed E8M0/E4M3 pair is legal at that block size.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(scaleA) || isE4M3Scale(scaleB)) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
   return verifyGridwiseGemm(*this);
 }
 

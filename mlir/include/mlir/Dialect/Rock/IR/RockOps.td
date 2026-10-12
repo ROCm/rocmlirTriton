@@ -110,8 +110,8 @@ def Rock_GemmOp
                        RockFusionRoot, AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorOf<GemmInputTypes>, "matrix A">:$a,
           Arg<TensorOf<GemmInputTypes>, "matrix B">:$b,
-          Optional<TensorOf<[F8E8M0FNU]>>:$scaleA,
-          Optional<TensorOf<[F8E8M0FNU]>>:$scaleB, UnitAttr:$aTransposed,
+          Optional<TensorOf<[F8E8M0FNU, F8E4M3FN]>>:$scaleA,
+          Optional<TensorOf<[F8E8M0FNU, F8E4M3FN]>>:$scaleB, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$oTransposed,
           UnitAttr:$aScaleTransposed, UnitAttr:$bScaleTransposed,
           OptionalAttr<I64Attr>:$quantBlockSize,
@@ -134,10 +134,11 @@ def Rock_GemmOp
     consecutive elements along the K dimension that share a single scale factor.
     The scale tensors have shape [G] x M x ceil(K / quantBlockSize) for `scaleA`
     and [G] x N x ceil(K / quantBlockSize) for `scaleB`.
-    The scale type should be f8E8M0FNU (E8M0), where each byte encodes a
-    power-of-two exponent: value = 2^(byte - 127). This matches the MXFP block
-    scaling convention used by hardware instructions such as
-    V_MFMA_SCALE_F32_*_F8F6F4 on AMD gfx950.
+    `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
+    power-of-two exponent, value = 2^(byte - 127), and the block size is 32.
+    This matches V_MFMA_SCALE_F32_*_F8F6F4. `f8E4M3FN` is the gfx1250 WMMA
+    scale and requires `quantBlockSize` 16. Do not bitcast `f8E4M3FN` to `i8`:
+    `i8` means E8M0.
 
     The parameters `gridSize` and `params` are optional as
     they can be inferred by a tuning process or a heuristic, but they must be
@@ -513,8 +514,8 @@ def Rock_GridwiseGemmOp
                                 AttrSizedOperandSegments]>,
       Arguments<(ins Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix A view">:$a,
           Arg<TensorRankOf<GemmInputTypes, [3]>, "matrix B view">:$b,
-          Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleA,
-          Optional<TensorRankOf<[F8E8M0FNU], [3]>>:$scaleB,
+          Optional<TensorRankOf<[F8E8M0FNU, F8E4M3FN], [3]>>:$scaleA,
+          Optional<TensorRankOf<[F8E8M0FNU, F8E4M3FN], [3]>>:$scaleB,
           OptionalAttr<I64Attr>:$quantBlockSize, Rock_GemmParamsAttr:$params)>,
       Results<(outs AnyRankedTensor:$c)> {
   let summary = "Gridwise GEMM";
@@ -526,8 +527,10 @@ def Rock_GridwiseGemmOp
     along the K dimension that share a single scale factor. Each scale tensor
     has its K dimension reduced by a factor of `quantBlockSize` relative to the
     corresponding data tensor (i.e., kScale = ceil(K / quantBlockSize)).
-    The scale type should be f8E8M0FNU (E8M0), encoding a power-of-two
-    exponent per block: value = 2^(byte - 127).
+    `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
+    power-of-two exponent, value = 2^(byte - 127), and the block size is 32.
+    `f8E4M3FN` is the gfx1250 WMMA scale and requires `quantBlockSize` 16.
+    Do not bitcast `f8E4M3FN` to `i8`: `i8` means E8M0.
   }];
   let assemblyFormat = [{
     `(` $a `,` $b
@@ -634,8 +637,8 @@ def Rock_BlockwiseGemmOp
                              DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins TensorOf<GemmInputTypes>:$matrixA,
           TensorOf<GemmInputTypes>:$matrixB, TensorOf<GemmOutputTypes>:$matrixC,
-          Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleA,
-          Optional<TensorOf<[F8E8M0FNU, I8]>>:$matrixScaleB,
+          Optional<TensorOf<[F8E8M0FNU, F8E4M3FN, I8]>>:$matrixScaleA,
+          Optional<TensorOf<[F8E8M0FNU, F8E4M3FN, I8]>>:$matrixScaleB,
           OptionalAttr<I64Attr>:$quantBlockSize,
           OptionalAttr<TypeAttr>:$matrixAOrigElemType,
           OptionalAttr<TypeAttr>:$matrixBOrigElemType,
@@ -651,13 +654,14 @@ def Rock_BlockwiseGemmOp
     consecutive elements along the K dimension that share a single scale factor.
     Each scale tensor has its K dimension reduced by a factor of `quantBlockSize`
     relative to the corresponding data tensor (i.e., kScale = ceil(K / quantBlockSize)).
-    The scale type should be f8E8M0FNU (E8M0), encoding a power-of-two
-    exponent per block: value = 2^(byte - 127).
+    `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
+    power-of-two exponent, value = 2^(byte - 127), and the block size is 32.
+    `i8` is that same E8M0 encoding after a bitcast. `f8E4M3FN` is the gfx1250
+    WMMA scale and uses block size 16. Do not bitcast `f8E4M3FN` to `i8`.
 
     During RockToTTIR lowering, this op maps to `tt.dot_scaled` when scales are
-    present, where the Triton hardware instruction (e.g.,
-    V_MFMA_SCALE_F32_*_F8F6F4 on gfx950) consumes F8/F6/F4 data with E8M0
-    scales natively.
+    present. The scale element type is preserved: `i8` is E8M0 for the gfx950
+    V_MFMA_SCALE_F32_*_F8F6F4 path, and `f8E4M3FN` is the gfx1250 WMMA scale.
 
     We might lower to `tt.dot_scaled` even if there are no scales as well, when
     `matrixAOrigElemType` or `matrixBOrigElemType` are defined. This is to avoid

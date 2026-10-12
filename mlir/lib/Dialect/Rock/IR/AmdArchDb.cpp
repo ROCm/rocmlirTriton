@@ -183,9 +183,21 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   bool hasScales =
       static_cast<bool>(scaleAType) || static_cast<bool>(scaleBType);
 
+  // E4M3 scales are the gfx1250 WMMA format. The MFMA path bitcasts every
+  // scale to i8, which the hardware reads as E8M0, so an E4M3 scale must not
+  // be classified as ScaledMFMA. It is ScaledWMMA only on WMMA version 3.
+  auto isE4M3Scale = [](Type scaleType) {
+    return static_cast<bool>(scaleType) &&
+           isa<Float8E4M3FNType>(getElementTypeOrSelf(scaleType));
+  };
+  bool e4m3Scale = isE4M3Scale(scaleAType) || isE4M3Scale(scaleBType);
+  int wmmaVersion = rock::getWmmaVersion(isaFamily);
+  if (e4m3Scale && wmmaVersion < 3)
+    return MatrixAccelKind::None;
+
   // Check MFMA support (CDNA architectures)
   int mfmaVersion = rock::getMfmaVersion(isaFamily);
-  if (mfmaVersion > 0) {
+  if (mfmaVersion > 0 && !e4m3Scale) {
     // Scaled MFMA requires: CDNA4 (version 4) + F8/F6/F4 input types
     // This mirrors AccelerateAMDMatmul.cpp:
     bool canUseScaledMfma =
@@ -202,7 +214,6 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   }
 
   // Check WMMA support (RDNA architectures)
-  int wmmaVersion = rock::getWmmaVersion(isaFamily);
   if (wmmaVersion > 0) {
     // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2,
     // E2M1) Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops. See
@@ -214,8 +225,8 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
         hasScaledWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
       return MatrixAccelKind::ScaledWMMA;
     }
-    // Fallback to regular WMMA
-    if (hasWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
+    // Fallback to regular WMMA. An E4M3 scale has no unscaled lowering.
+    if (!e4m3Scale && hasWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
       return MatrixAccelKind::WMMA;
     }
   }

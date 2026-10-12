@@ -574,6 +574,16 @@ func.func @gemm_scaled_missing_quantblocksize(%a: tensor<64x128xf4E2M1FN>, %b: t
   func.return
 }
 
+// Test case: E4M3 scales require quantBlockSize 16
+func.func @gemm_e4m3_scale_block_32(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf8E4M3FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
 // Test case: ScaleA with invalid rank (rank 1)
 func.func @gemm_scaleA_wrong_rank(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>, 
                                   %scaleA: tensor<64xf8E8M0FNU>,
@@ -686,20 +696,20 @@ func.func @gemm_scaleB_transposed_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: 
   func.return
 }
 
-// scaleA type must be f8E8M0FNU
-func.func @gemm_scaleA_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
-  %scaleA_bad: tensor<64x4xf8E4M3FN>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{'rock.gemm' op operand #2 must be tensor of f8E8M0FNU type values, but got 'tensor<64x4xf8E4M3FN>'}}
-  rock.gemm %a scaled by %scaleA_bad * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+func.func @gemm_e4m3_scaleA_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+  %scaleA: tensor<64x4xf8E4M3FN>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
   : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
   func.return
 }
 
-// scaleB type must be f8E8M0FNU
-func.func @gemm_scaleB_type_invalid(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
-  %scaleA: tensor<64x4xf8E8M0FNU>, %scaleB_bad: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{'rock.gemm' op operand #3 must be tensor of f8E8M0FNU type values, but got 'tensor<32x4xf8E4M3FN>'}}
-  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB_bad {quantBlockSize = 32 : i64}
+// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+func.func @gemm_e4m3_scaleB_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+  %scaleA: tensor<64x4xf8E8M0FNU>, %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
   : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
   func.return
 }
@@ -786,11 +796,11 @@ func.func @gridwise_gemm_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: t
   func.return
 }
 
-// scaleA type must be f8E8M0FNU
-func.func @gridwise_gemm_scaleA_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
-    %scaleA_bad: tensor<1x8x1xf8E4M3FN>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{'rock.gridwise_gemm' op operand #2 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x8x1xf8E4M3FN>'}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA_bad, %scaleB) {
+// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+func.func @gridwise_gemm_e4m3_scaleA_block_32(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
+    %scaleA: tensor<1x8x1xf8E4M3FN>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) {
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E4M3FN>, tensor<1x16x1xf8E8M0FNU> -> tensor<1x8x16xf32>
@@ -798,11 +808,11 @@ func.func @gridwise_gemm_scaleA_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: te
   func.return
 }
 
-// scaleB type must be f8E8M0FNU
-func.func @gridwise_gemm_scaleB_type_invalid(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
-    %scaleA: tensor<1x8x1xf8E8M0FNU>, %scaleB_bad: tensor<1x16x1xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
-  // expected-error @+1 {{'rock.gridwise_gemm' op operand #3 must be 3D tensor of f8E8M0FNU type values, but got 'tensor<1x16x1xf8E4M3FN>'}}
-  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB_bad) {
+// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+func.func @gridwise_gemm_e4m3_scaleB_block_32(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
+    %scaleA: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  %result = rock.gridwise_gemm(%A, %B, %scaleA, %scaleB) {
     quantBlockSize = 32 : i64,
     params = #common_params
   } : tensor<1x8x32xf4E2M1FN>, tensor<1x32x16xf4E2M1FN>, tensor<1x8x1xf8E8M0FNU>, tensor<1x16x1xf8E4M3FN> -> tensor<1x8x16xf32>
