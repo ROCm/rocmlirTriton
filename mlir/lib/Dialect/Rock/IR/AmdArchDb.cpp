@@ -192,7 +192,7 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
   };
   bool e4m3Scale = isE4M3Scale(scaleAType) || isE4M3Scale(scaleBType);
   int wmmaVersion = rock::getWmmaVersion(isaFamily);
-  if (e4m3Scale && wmmaVersion < 3)
+  if (e4m3Scale && wmmaVersion != 3)
     return MatrixAccelKind::None;
 
   // Check MFMA support (CDNA architectures)
