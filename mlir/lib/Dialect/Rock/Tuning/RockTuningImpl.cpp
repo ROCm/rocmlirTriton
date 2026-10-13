@@ -1733,7 +1733,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
         problemOS << "false" << sep;
       }
       // rocmlir-gen defaults this to 32. E4M3 scales are only legal at 16, so
-      // the problem string has to carry the value or a replay fails verification.
+      // the problem string has to carry the value or a replay fails
+      // verification.
       if (rGemmOp.getQuantBlockSize().has_value()) {
         problemOS << "-quantBlockSize " << rGemmOp.getQuantBlockSize().value()
                   << sep;

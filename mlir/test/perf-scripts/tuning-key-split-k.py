@@ -197,7 +197,8 @@ class E4M3ScaleBlockSizeTest(unittest.TestCase):
         config = self._parse(raw)
         self.assertEqual(config.quant_block_size, 16)
         self.assertIn("-quantBlockSize 16", config.to_command_line())
-        self.assertIn("-quantBlockSize 16", config.generate_problem_commandline(kernel_repeats=None))
+        self.assertIn("-quantBlockSize 16",
+                      config.generate_problem_commandline(kernel_repeats=None))
 
         # A key that names the scale but omits the block size must not fall back
         # to rocmlir-gen's default of 32.
