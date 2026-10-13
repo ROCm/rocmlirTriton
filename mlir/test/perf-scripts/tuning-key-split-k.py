@@ -185,5 +185,42 @@ class SplitKTuningKeyTest(unittest.TestCase):
         self.assertNotIn('-disable-split-k-for-tuning', external_cmd.split())
 
 
+class E4M3ScaleBlockSizeTest(unittest.TestCase):
+
+    def _parse(self, raw):
+        return GemmConfiguration.from_command_line(raw.split(), ARCH, NUM_CU, NUM_CHIPLETS)
+
+    def test_e4m3_block_size_round_trips(self):
+        raw = ("-t f4E2M1FN -out_datatype f32 -transA false -transB false -transO false "
+               "-scaledGemm -scale_a_dtype f8E4M3FN -scale_b_dtype f8E4M3FN "
+               "-quantBlockSize 16 -g 1 -m 64 -n 64 -k 64")
+        config = self._parse(raw)
+        self.assertEqual(config.quant_block_size, 16)
+        self.assertIn("-quantBlockSize 16", config.to_command_line())
+        self.assertIn("-quantBlockSize 16", config.generate_problem_commandline(kernel_repeats=None))
+
+        # A key that names the scale but omits the block size must not fall back
+        # to rocmlir-gen's default of 32.
+        omitted = raw.replace("-quantBlockSize 16 ", "")
+        inferred = self._parse(omitted)
+        self.assertEqual(inferred.quant_block_size, 16)
+        self.assertIn("-quantBlockSize 16", inferred.to_command_line())
+
+        with self.assertRaises(ValueError):
+            self._parse(raw.replace("-quantBlockSize 16", "-quantBlockSize 32"))
+
+    def test_e8m0_block_size_is_preserved_when_present(self):
+        raw = ("-t f4E2M1FN -out_datatype f32 -transA false -transB false -transO false "
+               "-scaledGemm -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU "
+               "-g 1 -m 64 -n 64 -k 64")
+        omitted = self._parse(raw)
+        self.assertIsNone(omitted.quant_block_size)
+        self.assertNotIn("-quantBlockSize", omitted.to_command_line())
+
+        present = self._parse(raw.replace("-g ", "-quantBlockSize 32 -g "))
+        self.assertEqual(present.quant_block_size, 32)
+        self.assertIn("-quantBlockSize 32", present.to_command_line())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
