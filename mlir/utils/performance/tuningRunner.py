@@ -1416,7 +1416,7 @@ def verify_perfconfig(perfconfig: str, config: PerfConfiguration, paths: Paths, 
                 rc, outs, errs = _run_pipeline(verification_commands,
                                                env=env,
                                                cwd=tmpdir,
-                                               timeout=options.verify_timeout)
+                                               timeout=options.verify_timeout or None)
             except subprocess.TimeoutExpired:
                 raise TuningError(
                     format_error(
@@ -1631,12 +1631,15 @@ def tune_config(test_vector: str,
 
             if rc != 0:
                 gpu_logger.error(
-                    format_error("Tuning pipeline failed",
-                                 command=tuning_pipeline,
-                                 stdout=tuning_output,
-                                 stderr=tuning_errors,
-                                 exit_code=rc,
-                                 gpu_id=gpu_id))
+                    format_error(
+                        "Tuning pipeline failed",
+                        command=tuning_pipeline,
+                        stdout=tuning_output,
+                        stderr=tuning_errors,
+                        exit_code=rc,
+                        gpu_id=gpu_id,
+                        # A crash backtrace is useless without its middle frames.
+                        max_lines=80))
                 return TuningResult(test_vector=test_vector, success=False, gpu_id=gpu_id)
 
             # Log any stderr output from tuning driver because it may contain warnings
@@ -2741,7 +2744,7 @@ def parse_arguments(args=None) -> argparse.Namespace:
                         type=int,
                         default=DEFAULT_VERIFY_TIMEOUT_SECONDS,
                         metavar='SECONDS',
-                        help="Timeout in seconds for each verification run "
+                        help="Timeout in seconds for each verification run, 0 to disable "
                         f"(default: {DEFAULT_VERIFY_TIMEOUT_SECONDS})")
 
     parser.add_argument("--gpus",
