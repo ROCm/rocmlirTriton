@@ -1670,6 +1670,16 @@ LogicalResult BlockwiseGemmOp::verify() {
     return emitOpError(
         "scaleA and scaleB must both be present or both be null.");
 
+  // Same rule as GemmOp: an E4M3 scale, on either side, uses the 16-wide
+  // WMMA scale intrinsic. i8 remains the E8M0 bitcast and keeps block 32.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(getMatrixScaleA()) || isE4M3Scale(getMatrixScaleB())) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+
   return success();
 }
 

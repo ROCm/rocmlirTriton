@@ -892,6 +892,22 @@ func.func @blockwise_gemm_scaleB_only(
   return %0 : tensor<64x64xf32>
 }
 
+// E4M3 scales require quantBlockSize 16. Shapes match a block of 32
+// (K = 64, scale K = 2) so verification reaches the block-size rule.
+func.func @blockwise_gemm_e4m3_scale_block_32(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %scaleA: tensor<64x2xf8E4M3FN>, %scaleB: tensor<64x2xf8E4M3FN>,
+    %c: tensor<64x64xf32>) -> tensor<64x64xf32>
+    attributes {rock.kernel, rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  %0 = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 32 : i64}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x2xf8E4M3FN>,
+      tensor<64x64xf8E4M3FN> scaled by tensor<64x2xf8E4M3FN>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %0 : tensor<64x64xf32>
+}
+
 // quantBlockSize is required when scales are present
 func.func @blockwise_gemm_no_quantblocksize(
     %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
