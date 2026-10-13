@@ -135,7 +135,8 @@ def Rock_GemmOp
     The scale tensors have shape [G] x M x ceil(K / quantBlockSize) for `scaleA`
     and [G] x N x ceil(K / quantBlockSize) for `scaleB`.
     `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
-    power-of-two exponent, value = 2^(byte - 127), and the block size is 32.
+    power-of-two exponent, value = 2^(byte - 127). `rocmlir-gen` defaults
+    `quantBlockSize` to 32, but E8M0 can also be used with block size 16.
     This matches V_MFMA_SCALE_F32_*_F8F6F4. `f8E4M3FN` is the gfx1250 WMMA
     scale and requires `quantBlockSize` 16. Do not bitcast `f8E4M3FN` to `i8`:
     `i8` means E8M0.
