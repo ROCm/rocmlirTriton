@@ -42,6 +42,7 @@
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -94,6 +95,12 @@ bool isTTFloat(Type t) {
   return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
              Float8E5M2FNUZType, Float16Type, BFloat16Type, Float32Type,
              Float64Type>(t);
+}
+
+bool hasFp8ElementType(Type t) {
+  Type elem = getElementTypeOrSelf(t);
+  return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
+             Float8E5M2FNUZType>(elem);
 }
 
 // Keep in sync with TT_Int in TritonTypes.td.

@@ -131,10 +131,11 @@ struct BinaryConverter : public OpRewritePattern<TosaOp> {
 // That is the whole of the translation: IGNORE says a NaN operand loses, which
 // is exactly what the num forms do, and nothing here claims NaN cannot occur.
 // Kernels that do make that stronger promise get `nnan` added to these ops
-// later by RockAllowFastMathFlags, which is what lets RockToTTIR fold a clamp
-// pair into a single tt.clampf. Flagging them here instead would also catch
-// TOSA arriving through tosa-to-rock rather than from MIGraphX, where IGNORE
-// carries no such promise and a NaN operand must still return the other one.
+// later by RockAllowFastMathFlags, which is what lets RockFoldClampToTriton
+// fold a clamp pair into a single tt.clampf. Flagging them here instead would
+// also catch TOSA arriving through tosa-to-rock rather than from MIGraphX,
+// where IGNORE carries no such promise and a NaN operand must still return the
+// other one.
 template <typename TosaOp, typename PropagateOp, typename NumOp, typename IntOp>
 struct MinMaxConverter : public OpRewritePattern<TosaOp> {
   using OpRewritePattern<TosaOp>::OpRewritePattern;
