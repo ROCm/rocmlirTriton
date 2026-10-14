@@ -234,6 +234,12 @@ A Triton bump that drops, renames, reorders, or changes the options on any pass 
 
 If a Triton bump introduces a new arch-conditional branch in `Pipelines.cpp` that gfx942 doesn't exercise, prefer adding a second prefix (e.g. `TRITON_GFX1250`) for the relevant arch over weakening the existing one.
 
+##### Downstream LDS check (`rock-check-lds-limit`)
+
+`makeLLIR` runs the downstream `rock-check-lds-limit` pass right before `convert-triton-amdgpu-to-llvm`, so a kernel that overflows LDS is rejected before that expensive lowering. The pass reads `ttg.shared`, so it must stay after every pass in our pipeline that writes it. Today that is only `allocate-amdgpu-shared-memory`; Proton and the NVIDIA passes also write it, but our pipeline doesn't run them. If a bump adds or moves a pass that writes `ttg.shared` or otherwise changes the shared-memory allocation, move `rock-check-lds-limit` after it and keep it before `convert-triton-amdgpu-to-llvm`.
+
+Keep the check in `resolve-kernel-launch-params` too: that pass still sizes `@global_smem` from `ttg.shared`, and it is the only LDS check when it runs on its own. Both passes report an overflow through `rock::checkSharedMemoryFitsLDS`, whose `exceeds LDS limit` wording `generateLDSBlacklist.py` matches (`LDS_OVERFLOW_MARKER`), so keep the two in sync.
+
 ##### Understanding Pass Bindings (from `triton_amd.cc`)
 
 The file `external/triton/third_party/amd/python/triton_amd.cc` contains the Python bindings for Triton passes. When `compiler.py` adds a new pass call, check `triton_amd.cc` to find the actual C++ pass creation function.
@@ -808,6 +814,7 @@ Use this checklist to track progress:
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
 - [ ] Refresh the `TRITON` prefix in `mlir/test/rocmlir-driver/pipelines.mlir` if any of `makeTTIR` / `makeTTGIR` / `makeLLIR` changed (see section 5.1)
+- [ ] Keep `rock-check-lds-limit` after the last pass that writes `ttg.shared` and before `convert-triton-amdgpu-to-llvm`, and keep the LDS check in `resolve-kernel-launch-params` (see section 5.1)
 - [ ] Update `TritonToHsaco.cpp::translateTritonToHsaco()` for `make_llir()` Part 2 changes
 - [ ] Preserve `TritonToHsaco.cpp::setModuleFunctionAttributes()` stamping of linked definitions for expert scheduling and `denormal_fpenv` (do not copy upstream's process-global expert-scheduling option or `"denormal-fp-math-f32"` string; see section 8.1)
 - [ ] Keep LLVM IR verification in `TritonToHsaco.cpp` gated on `kVerifyLLVMIR` (upstream verifies unconditionally in `to_module()` and in the codegen pass manager; see section 5.2)
