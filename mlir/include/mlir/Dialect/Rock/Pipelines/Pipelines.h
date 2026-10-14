@@ -61,7 +61,7 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
       *this, "disable-fast-math",
       desc("Skip `rock-allow-fast-math-flags` (and with it the clamp fold) "
            "(by default the pass runs and tags floating-point ops with "
-           "fastmath flags like `arcp`/`contract`/`nsz`/`afn` for "
+           "fastmath flags like `arcp`/`contract`/`reassoc`/`nsz`/`afn` for "
            "reciprocal-style and FMA-friendly lowering), and keep every f32 "
            "`tt.dot` at IEEE precision"),
       init(false)};

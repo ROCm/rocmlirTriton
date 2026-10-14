@@ -25,6 +25,11 @@
 //                Also on round-tripping `arith.extf(arith.truncf %wide) ->
 //                %wide` pairs whose intermediate is f16/bf16, so the redundant
 //                materialization folds away.
+//   * `reassoc`  on `arith.{add,sub,mul}f` and `math.fma` -> permits regrouping
+//                add/mul chains, including the combiner of a reduction, so the
+//                backend can pick the cheapest reduction tree instead of the
+//                one the source spelled out. Results can differ in the last
+//                bits, as for any reordered reduction.
 //   * `nsz`      on `arith.{add,sub,mul,div,neg}f` -> permits ignoring the
 //                sign of zero (enables a handful of LLVM peepholes such as
 //                `x + 0 -> x`, `0 - x -> -x` via sign-bit XOR).
@@ -153,9 +158,15 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   constexpr arith::FastMathFlags divFlags = arith::FastMathFlags::arcp |
                                             arith::FastMathFlags::nsz |
                                             arith::FastMathFlags::afn;
-  // Allow mul+add to fuse into fma (v_fma_f32).
-  constexpr arith::FastMathFlags fmaFlags =
-      arith::FastMathFlags::contract | arith::FastMathFlags::nsz;
+  // Allow mul+add to fuse into fma (v_fma_f32), and add/mul chains (including
+  // the combiner of a reduction) to be regrouped (`reassoc`). Regrouping only
+  // moves the rounding error around: on gfx1150 softmax/attention and
+  // layernorm-style sum/sum-of-squares kernels in f16 and f32 stay within the
+  // error of the strict order (f16 attention error vs. an f64 reference rose by
+  // at most ~25%, f32 results were unchanged).
+  constexpr arith::FastMathFlags fmaFlags = arith::FastMathFlags::contract |
+                                            arith::FastMathFlags::nsz |
+                                            arith::FastMathFlags::reassoc;
   // `0 - x` can lower to a sign-bit XOR; other ±0 peepholes too. This does not
   // imply `nnan`, so maximumf continues to propagate NaNs by default.
   constexpr arith::FastMathFlags nszOnly = arith::FastMathFlags::nsz;
