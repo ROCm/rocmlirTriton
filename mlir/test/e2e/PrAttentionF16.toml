@@ -117,6 +117,18 @@ config = "-seq_len_q 384 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal -
 [[suite.test]]
 config = "-return_lse -num_heads_q 4 -num_heads_kv 2 -seq_len_q 128 -seq_len_k 128 -head_dim_qk 64 -head_dim_v 64 -causal -causal_look_back=3"
 
+# GQA + KV cache + causal look-back, batch=3: the shape the band was originally
+# reported against. The cache end caps keys at last_valid_kv_index while the
+# band caps them per query row, and the two bounds are derived independently,
+# so a query whose band sits entirely past the cache end is fully masked.
+[[suite.test]]
+config = "-rand 1 -last_valid_kv_index=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 128 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal -causal_look_back=8 --with-attn-scale --with-attn-bias"
+
+# Same, plus return LSE and split-kv: the LSE of a fully masked row must come
+# from the clamped denominator rather than leaking -inf through the combine.
+[[suite.test]]
+config = "-rand 1 -return_lse -split_kv 4 -last_valid_kv_index=17,1,32 -g 3 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 128 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 -causal -causal_look_back=8 --with-attn-scale --with-attn-bias"
+
 # GQA + KV Cache
 [[suite.test]]
 config = "-rand 1 -last_valid_kv_index=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias"
