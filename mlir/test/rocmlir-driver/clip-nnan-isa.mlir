@@ -3,8 +3,8 @@
 //
 // A `migraphx.clip` collapses to a single v_med3. MIGraphXToTosa gives the tosa
 // maximum/minimum pair `nan_mode = IGNORE`, RockTosaToElementwise turns that
-// into `nnan`-flagged minnumf/maxnumf, and RockToTTIR folds the pair into
-// `tt.clampf`.
+// into `nnan`-flagged minnumf/maxnumf, and RockFoldClampToTriton folds the pair
+// into `tt.clampf`.
 //
 // The contrast is minmax-isa.mlir, where the same clip under
 // `-disable-fast-math` keeps IEEE-2019 NaN propagation and costs a v_maximum

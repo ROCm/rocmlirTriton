@@ -83,6 +83,11 @@ int getWmmaVersion(triton::amdgpu::ISAFamily isaFamily);
 ///   {F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64}
 bool isTTFloat(Type t);
 
+/// Return true if the element type of `t` is an FP8 type. Triton maps FP8 to
+/// i8, so arith casts and comparisons on it must go through tt.fp_to_fp or be
+/// left alone rather than being handed to Triton's generic lowering.
+bool hasFp8ElementType(Type t);
+
 /// Return true if `t` is one of the types in Triton's TT_Int set.
 /// Mirrors the TT_Int type constraint from TritonTypes.td:
 ///   {I1, I4, I8, I16, I32, I64}

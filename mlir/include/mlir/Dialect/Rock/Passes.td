@@ -173,6 +173,23 @@ def RockAllowFastMathFlagsPass
                            "math::MathDialect"];
 }
 
+def RockFoldClampToTritonPass
+    : Pass<"rock-fold-clamp-to-triton", "::mlir::func::FuncOp"> {
+  let summary = "Fold a nested minnumf/maxnumf pair into tt.clampf";
+  let description = [{
+    Folds `maxnumf(minnumf(x, hi), lo)` and `minnumf(maxnumf(x, lo), hi)` with
+    constant, ordered bounds into a single `tt.clampf` with
+    `propagateNan = none`, which the AMD backend lowers to one `v_med3` for f16
+    and f32.
+
+    Only a pair whose two ops both carry `nnan` is folded, since dropping the
+    NaN handling is only unobservable when NaNs are assumed away. That makes
+    this pass depend on `rock-allow-fast-math-flags` having run first.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "func::FuncDialect",
+                           "triton::TritonDialect"];
+}
+
 def RockLegalizeFloatTypesPass
     : Pass<"rock-legalize-float-types", "::mlir::func::FuncOp"> {
   let summary = "Legalize float types not in Triton's TT_Float to integers";
