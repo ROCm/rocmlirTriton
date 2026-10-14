@@ -5,7 +5,8 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | rocmlir-driver -kernel-pipeline gpu -arch %arch --mlir-print-ir-after=rock-gridwise-attn-to-blockwise -o /dev/null 2>&1 -debug-only=rock-gridwise-attn-to-blockwise | FileCheck %s
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline migraphx,highlevel -arch %arch | not rocmlir-driver -kernel-pipeline gpu,triton -arch %arch --mlir-print-ir-after=tritongpu-coalesce -o /dev/null 2>&1 | FileCheck %s --check-prefix=VECTORIZATION
 
-// The perf config needs more LDS than any arch has, so the triton pipeline
+// The perf config needs 1 MiB of LDS (ttg.shared = 1048576 on every CI arch),
+// more than any arch has (at most 320 KiB, on gfx1250), so the triton pipeline
 // stops at rock-check-lds-limit, after printing the IR checked here.
 
 // CHECK: elemTypeQLoad: f16
