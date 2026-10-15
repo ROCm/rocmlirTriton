@@ -52,6 +52,19 @@ TEST(AmdArchDbTest, ParseArchString) {
     EXPECT_EQ(features, 0u);
   }
   {
+    // The "-strict" target modifier has to survive into the chip name: it is
+    // what selects the restricted gfx1250 code object down in LLVM.
+    auto [chip, features] = parseArchString("gfx1250-strict");
+    EXPECT_EQ(chip.str(), "gfx1250-strict");
+    EXPECT_EQ(features, 0u);
+  }
+  {
+    auto [chip, features] =
+        parseArchString("amdgcn-amd-amdhsa:gfx1250-strict:xnack-");
+    EXPECT_EQ(chip.str(), "gfx1250-strict");
+    EXPECT_EQ(features, 0u);
+  }
+  {
     auto [chip, features] = parseArchString("gfx999");
     EXPECT_EQ(chip.str(), "gfx999");
     EXPECT_EQ(features, 0u);
@@ -627,6 +640,11 @@ TEST(AmdArchDbTest, MaxKpack) {
   EXPECT_EQ(getMaxKpack("gfx1170"), 2); // GFX1170
   EXPECT_EQ(getMaxKpack("gfx1200"), 2); // RDNA4
   EXPECT_EQ(getMaxKpack("gfx1250"), 1); // GFX1250
+  // A "-strict" target modifier selects a code-object variant of gfx1250, so
+  // it has to resolve to the same answer as the base arch rather than falling
+  // through to the malformed-id case.
+  EXPECT_EQ(getMaxKpack("gfx1250-strict"), 1);
+  EXPECT_EQ(getMaxKpack("amdgcn-amd-amdhsa:gfx1250-strict"), 1);
 }
 
 // --- archSupportsAccelFp8 ---
