@@ -11,9 +11,9 @@
 // The expectations above stop at the LLVM dialect, which can only show that a
 // flag survived, not that it bought anything. This run goes all the way to
 // assembly so the instruction each op actually reaches is pinned too.
-// RUN: AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -c %s 2>&1 \
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=ASM
-// RUN: AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 --disable-fast-math -c %s 2>&1 \
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 --disable-fast-math -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=NOFM-ASM
 
 #flat_to_gemm = #rock.transform_map<affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
