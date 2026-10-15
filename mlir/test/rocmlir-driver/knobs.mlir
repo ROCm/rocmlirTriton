@@ -22,22 +22,22 @@
 
 // gfx950 default: async-copy on by per-arch default.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX950_DEFAULT
 
 // gfx950 with useAsyncCopy=0 (force off).
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,0,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX950_OFF
 
 // gfx942 default: async-copy off by per-arch default.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX942_DEFAULT
 
 // gfx942 with useAsyncCopy=1 (force on).
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ASYNC_GFX942_ON
 
 // ASYNC_GFX950_DEFAULT: tritonamdgpu-pipeline{use_async_copy=true
@@ -59,24 +59,24 @@
 // gfx942 default: pingpong on by per-arch default (numStages=2 -> pass is
 // scheduled).
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=PP_GFX942_DEFAULT
 
 // gfx942 with useBlockPingpong=0: pipeline pass sees use_pingpong=false and
 // the block-pingpong pass is absent.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,0,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=PP_GFX942_OFF
 
 // gfx1250 default: async-copy on, but pingpong is off by per-arch default
 // (only gfx942 and gfx950+async-copy enable it).
 // RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=PP_GFX1250_DEFAULT
 
 // gfx1250 with useBlockPingpong=1: force on.
 // RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=PP_GFX1250_ON
 
 // PP_GFX942_DEFAULT: tritonamdgpu-pipeline{{.*}}use_pingpong=true
@@ -97,35 +97,35 @@
 
 // gfx942 default: in-thread-transpose pass is scheduled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX942_DEFAULT
 
 // gfx942 with useInThreadTranspose=0: pass absent.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,0,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX942_OFF
 
 // gfx950 default: in-thread-transpose pass is absent.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX950_DEFAULT
 
 // gfx950 with useInThreadTranspose=1: force on.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX950_ON
 
 // gfx1170 default: in-thread-transpose pass is scheduled. gfx11.7 is in the
 // per-arch default set (gfx942 / gfx110 / gfx115 / gfx117 / gfx120), matching
 // compiler.py's is_in_thread_transpose_enabled.
 // RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_DEFAULT
 
 // gfx1170 with useInThreadTranspose=0: override beats the per-arch default, so
 // the pass is absent.
 // RUN: rocmlir-gen --arch gfx1170 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,-1,-1,0,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ITT_GFX1170_OFF
 
 // ITT_GFX942_DEFAULT: tritonamdgpu-in-thread-transpose
@@ -147,17 +147,17 @@
 // Default: all three buffer-ops passes are scheduled, atomics on, small-tensor
 // range analysis off (matches the historical hardcoded values).
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=BUF_DEFAULT
 
 // useBufferOps=0: all three buffer-ops passes are skipped.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,0,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=BUF_OFF
 
 // useBufferAtomics=0: convert-to-buffer-ops sees allow-buffer-atomics=false.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,0 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=BUF_NOATOMICS
 
 // BUF_DEFAULT: tritonamdgpu-canonicalize-pointers
@@ -179,7 +179,7 @@
 // trailing token is discarded. Here useAsyncCopy=0 (field 12) must still force
 // async-copy off on gfx950 even though a stray scheduleHint=2 trails.
 // RUN: rocmlir-gen --arch gfx950 --operation gemm -t f16 -p --perf_config=gemm:v2:64,64,64,1,1,4,16,1,2,0,0,0,-1,-1,-1,-1,2 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=V2_BACKCOMPAT
 
 // V2_BACKCOMPAT: tritonamdgpu-pipeline{use_async_copy=false
@@ -198,22 +198,22 @@
 
 // Default (v3 string, knob absent -> defaults to -1): rewrite conv kernels only.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v3:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RL_DEFAULT
 
 // v5 with useReductionLayout=-1 (heuristic default): rewrite conv kernels only.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RL_HEURISTIC
 
 // v5 with useReductionLayout=0 (explicit off): disable the rewrite entirely.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,0,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RL_OFF
 
 // v5 with useReductionLayout=1 (force on): force option on.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RL_ON
 
 // RL_DEFAULT: rock-set-reduction-layout{num-stages=2 use-reduction-layout=-1}
@@ -231,17 +231,17 @@
 
 // v5 with useOptimizeEpilogue=-1 (automatic policy): pass is scheduled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,-1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=OE_DEFAULT
 
 // v5 with useOptimizeEpilogue=0 (explicit off): pass is absent.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,0 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=OE_OFF
 
 // v5 with useOptimizeEpilogue=1 (explicit on): pass is scheduled.
 // RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p --perf_config=gemm:v5:64,64,64,1,1,4,16,1,2,0,0,-1,-1,-1,-1,-1,-1,1 \
-// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines 2>&1 >/dev/null \
+// RUN:   | rocmlir-driver --kernel-pipeline=gpu,triton --dump-pipelines -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=OE_ON
 
 // OE_DEFAULT: rock-set-matmul-output-transpose

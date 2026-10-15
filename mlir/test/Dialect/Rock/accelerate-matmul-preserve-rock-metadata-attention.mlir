@@ -38,19 +38,19 @@
 // on the value dot is dropped from the layout decision.
 
 // --- gfx1200 (WMMA v2): metadata survives accelerate-matmul on the value dot ---
-// RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL12
+// RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACCEL12
 // --- gfx1200 (WMMA v2): set-matmul-output-transpose flips true -> false ---
-// RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT12
+// RUN: sed s/##ARCH##/gfx1200/g %s | rocmlir-driver -c -arch gfx1200 --mlir-print-ir-after=rock-set-matmul-output-transpose -o /dev/null 2>&1 | FileCheck %s --check-prefix=SETT12
 
 // --- gfx1250 (WMMA v3): metadata survives accelerate-matmul on the value dot ---
-// RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL1250
+// RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACCEL1250
 // --- gfx1250 (WMMA v3): set-matmul-output-transpose flips true -> false ---
-// RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT1250
+// RUN: sed s/##ARCH##/gfx1250/g %s | rocmlir-driver -c -arch gfx1250 --mlir-print-ir-after=rock-set-matmul-output-transpose -o /dev/null 2>&1 | FileCheck %s --check-prefix=SETT1250
 
 // --- gfx1100 (WMMA v1): metadata survives accelerate-matmul on the value dot ---
-// RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul 2>&1 1>/dev/null | FileCheck %s --check-prefix=ACCEL11
+// RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=tritonamdgpu-accelerate-matmul -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACCEL11
 // --- gfx1100 (WMMA v1): set-matmul-output-transpose keeps isTranspose = true ---
-// RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=rock-set-matmul-output-transpose 2>&1 1>/dev/null | FileCheck %s --check-prefix=SETT11
+// RUN: sed s/##ARCH##/gfx1100/g %s | rocmlir-driver -c -arch gfx1100 --mlir-print-ir-after=rock-set-matmul-output-transpose -o /dev/null 2>&1 | FileCheck %s --check-prefix=SETT11
 
 // Both dots share the accelerate-matmul default WMMA (isTranspose = true). The
 // scores dot is untagged; only the value dot carries the metadata.
