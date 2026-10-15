@@ -419,10 +419,8 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
   case ISAFamily::GCN5_1:
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1310:
     return 1;
@@ -444,12 +442,8 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 20;
   case ISAFamily::CDNA4:
     return 256;
-  case ISAFamily::RDNA1:
-    return 20;
-  case ISAFamily::RDNA2:
-    return 2;
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
     return 2;
   case ISAFamily::RDNA4:
     return 12;
@@ -551,8 +545,6 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   switch (isaFamily) {
   // No Infinity Cache: L2 is the last level (largest L2 in the family).
   case ISAFamily::GCN5_1:
-  case ISAFamily::RDNA1:
-    return 4 * kMiB;
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2: // per-GCD
     return 8 * kMiB;
@@ -562,11 +554,9 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
     return 256 * kMiB;
   case ISAFamily::GFX1250:
     return 192 * kMiB;
-  case ISAFamily::RDNA2:
-    return 128 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
-  case ISAFamily::GFX1170: // guess, see the TODO above
+  case ISAFamily::RDNA4m: // guess, see the TODO above
     return 1 * kMiB;
   case ISAFamily::RDNA4:
     return 64 * kMiB;
@@ -589,10 +579,8 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::CDNA4:
     return 8;
     break;
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1250:
   case ISAFamily::GFX1310:
@@ -615,9 +603,6 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
     return 512;
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
-    return 1024;
   case ISAFamily::RDNA3:
     // Match LLVM's coverage: getTotalNumVGPRs() in
     // llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp and the
@@ -626,7 +611,7 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
     if (chip == "gfx1100" || chip == "gfx1101" || chip == "gfx1151")
       return 1536;
     return 1024;
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
     return 1024;
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1310:
@@ -724,10 +709,8 @@ bool mlir::rock::tritonLowersTanhToNativeInst(StringRef arch) {
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
   case ISAFamily::RDNA3:
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
     return false;
   }
