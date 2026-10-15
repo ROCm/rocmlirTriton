@@ -617,6 +617,10 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
   // older archs (gfx9 < gfx950, all of gfx11, gfx12 < gfx1250) still
   // accept kpack in {1, 2}.
   auto [chip, _] = parseArchString(arch);
+  // A target modifier like gfx1250-strict's "-strict" suffix selects a
+  // code-object variant, not a different ISA, so kpack support follows the
+  // base arch. Without this the hex parse below just fails on the suffix.
+  chip = chip.split('-').first;
   // consume_front does double duty: it checks for the "gfx" prefix and
   // strips it from `chip` in-place when present
   if (!chip.consume_front("gfx"))
