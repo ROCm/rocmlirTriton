@@ -245,10 +245,10 @@ TEST(PerfConfigOrderingGemmGemmTest,
                          "gfx1200", "gfx1250"}) {
     EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
         e.builder, p, e.f16, e.f16, e.f16, arch, e.op()))
-        << "default not applicable on " << arch << " for f16";
+        << "default not applicable on " << arch.str() << " for f16";
     EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
         e.builder, p, e.f32, e.f32, e.f32, arch, e.op()))
-        << "default not applicable on " << arch << " for f32";
+        << "default not applicable on " << arch.str() << " for f32";
   }
 }
 
