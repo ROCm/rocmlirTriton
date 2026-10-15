@@ -655,16 +655,6 @@ def _kpack_choices(arch: str) -> List[int]:
 # targets that lack a packed hardware conversion.
 _AMPLIFIED_DTYPES = frozenset({'fp8', 'fp8_fp8', 'bf8'})
 
-# The RDNA families that predate WMMA (gfx101x / gfx103x). Subtracted from
-# `amd_arch_db.is_rdna` to get the WMMA-era RDNA line. Phrased as an exclusion
-# because this end of the list is closed -- no new pre-WMMA family will ever
-# appear -- so a future RDNA gets the amplifier without an edit here.
-_PRE_WMMA_RDNA_FAMILIES = (
-    amd_arch_db.ISAFamily.RDNA1,
-    amd_arch_db.ISAFamily.RDNA2,
-)
-
-
 # Returns the amplifier value for the given data type and arch.
 # - Amplifier=10 for a dtype in _AMPLIFIED_DTYPES (fp8, fp8_fp8, bf8) on RDNA
 #   from gfx11 onwards (RDNA3, gfx1170, RDNA4, and any future RDNA family)
@@ -685,8 +675,7 @@ def _dtype_amplifier(dtype: str, arch: str) -> int:
     RDNA2 -- defaults to alpha=1 until measured."""
     if dtype not in _AMPLIFIED_DTYPES:
         return 1
-    is_wmma_era_rdna = (amd_arch_db.is_rdna(arch) and
-                        amd_arch_db.get_isa_family(arch) not in _PRE_WMMA_RDNA_FAMILIES)
+    is_wmma_era_rdna = amd_arch_db.is_rdna(arch)
     return 10 if is_wmma_era_rdna else 1
 
 

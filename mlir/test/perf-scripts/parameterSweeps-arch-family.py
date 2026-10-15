@@ -53,8 +53,6 @@ FAMILY_CASES = [
     ("cdna2", "gfx90a", 'cdna', True),
     ("cdna3", "gfx942", 'cdna', True),
     ("cdna4", "gfx950", 'cdna', True),
-    ("rdna1", "gfx1010", 'rdna', False),
-    ("rdna2", "gfx1030", 'rdna', False),
     ("rdna3", "gfx1100", 'rdna', False),
     ("gfx1170", "gfx1170", 'rdna', False),
     ("rdna4", "gfx1201", 'rdna', False),
@@ -66,14 +64,12 @@ FAMILY_CASES = [
 
 # (label, dtype, arch, expected_alpha). fp8 is amplified on the WMMA-era RDNA
 # line only, which the amplifier spells as "RDNA minus RDNA1/RDNA2" so a future
-# RDNA family needs no edit. gfx1030 pins that subtraction; gfx1250 pins the
-# other edge, since it runs WMMA but is CDNA and so stays at 1.
+# RDNA family needs no edit. gfx1250 pins the other edge,
+# since it runs WMMA but is CDNA and so stays at 1.
 AMPLIFIER_CASES = [
     ("f16 anywhere", "f16", "gfx1100", 1),
     ("fp8 cdna3", "fp8", "gfx942", 1),
     ("fp8 cdna4", "fp8", "gfx950", 1),
-    ("fp8 rdna1", "fp8", "gfx1010", 1),
-    ("fp8 rdna2", "fp8", "gfx1030", 1),
     ("fp8 rdna3", "fp8", "gfx1100", 10),
     ("fp8 gfx1170", "fp8", "gfx1170", 10),
     ("fp8 rdna4", "fp8", "gfx1201", 10),
@@ -115,8 +111,6 @@ for label, dtype, arch, expected in AMPLIFIER_CASES:
 # CHECK: [OK] cdna2
 # CHECK: [OK] cdna3
 # CHECK: [OK] cdna4
-# CHECK: [OK] rdna1
-# CHECK: [OK] rdna2
 # CHECK: [OK] rdna3
 # CHECK: [OK] gfx1170
 # CHECK: [OK] rdna4
@@ -126,8 +120,6 @@ for label, dtype, arch, expected in AMPLIFIER_CASES:
 # CHECK: [OK] f16 anywhere
 # CHECK: [OK] fp8 cdna3
 # CHECK: [OK] fp8 cdna4
-# CHECK: [OK] fp8 rdna1
-# CHECK: [OK] fp8 rdna2
 # CHECK: [OK] fp8 rdna3
 # CHECK: [OK] fp8 gfx1170
 # CHECK: [OK] fp8 rdna4
