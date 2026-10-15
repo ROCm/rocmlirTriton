@@ -10,10 +10,9 @@
 //
 // Compile-only: cross-compiles for each target, so no GPU is needed.
 
-// RUN: rocmlir-gen --arch gfx1030 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
-// RUN: rocmlir-gen --arch gfx1100 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
-// RUN: rocmlir-gen --arch gfx1101 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
-// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
+// RUN: rocmlir-gen --arch gfx1100 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
+// RUN: rocmlir-gen --arch gfx1101 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
+// RUN: rocmlir-gen --arch gfx942 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARITH
 
 // v0 holds workitem.id.x at kernel entry, so this is the warp id being moved
 // into an SGPR.
