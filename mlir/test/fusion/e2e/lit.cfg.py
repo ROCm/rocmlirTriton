@@ -26,7 +26,7 @@ from common import apply_device_environment
 # name: The name of this test suite.
 config.name = 'Fusion E2E'
 
-config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
+config.test_format = lit.formats.ShTest()
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = ['.mlir']
