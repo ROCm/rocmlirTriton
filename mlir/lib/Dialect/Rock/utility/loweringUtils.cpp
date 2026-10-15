@@ -1038,3 +1038,15 @@ void mlir::rock::markAsNotApplicable(Operation *op) {
   moduleOp->setAttr(rock::NotApplicableAttr::getMnemonic(),
                     UnitAttr::get(op->getContext()));
 }
+
+LogicalResult mlir::rock::checkSharedMemoryFitsLDS(ModuleOp moduleOp,
+                                                   int64_t sharedMemSize,
+                                                   StringRef arch) {
+  int64_t maxLDS = getLDSSize(arch);
+  if (sharedMemSize <= maxLDS)
+    return success();
+  markAsNotApplicable(moduleOp);
+  return emitError(moduleOp.getLoc(), "ttg.shared (")
+         << sharedMemSize << ") exceeds LDS limit (" << maxLDS << ") for "
+         << arch;
+}

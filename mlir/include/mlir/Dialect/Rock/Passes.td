@@ -579,6 +579,23 @@ def ResolveKernelLaunchParamsPass
   let dependentDialects = ["LLVM::LLVMDialect"];
 }
 
+def RockCheckLdsLimitPass : Pass<"rock-check-lds-limit", "::mlir::ModuleOp"> {
+  let summary = "Reject kernels whose shared memory exceeds the LDS limit";
+  let description = [{
+    Fails, and marks the module `rock.not_applicable`, when the `ttg.shared`
+    size computed by `allocate-amdgpu-shared-memory` exceeds the LDS size of
+    `arch`.
+
+    `resolve-kernel-launch-params` performs the same check, but it runs on LLVM
+    dialect IR, after `convert-triton-amdgpu-to-llvm`. For tiles far beyond the
+    LDS budget that conversion can take minutes and tens of GiB of memory, all
+    for a kernel that is then rejected, so this pass rejects such kernels as
+    soon as their shared-memory size is known.
+  }];
+  let options = [Option<"arch", "arch", "std::string", /*default=*/"\"\"",
+                        "Target chip whose LDS size bounds `ttg.shared`">];
+}
+
 def TritonToHsacoPass : Pass<"triton-to-hsaco", "::mlir::ModuleOp"> {
   let summary = "Convert Triton LLVM dialect IR to HSACO binary";
   let description = [{

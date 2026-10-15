@@ -303,6 +303,13 @@ static void makeLLIR(mlir::OpPassManager *pm,
   // Because we do not implement the instrumentation thing (see
   // docs/bump_triton_version.md Step 6), a single call is sufficient.
 
+  // --- rocmlirTriton pass ----
+  // Must run before convert-triton-amdgpu-to-llvm: on kernels that overflow
+  // LDS, that conversion can take minutes and tens of GiB before
+  // resolve-kernel-launch-params would reject the kernel anyway.
+  pm->addPass(rock::createRockCheckLdsLimitPass({arch}));
+  // --- rocmlirTriton pass ----
+
   // `ftz` controls the denorm flushing behaviour of exp2:
   //  - ftz = 1: exp2 becomes the raw `v_exp_f32`, which flushes input and
   //    output denorms regardless of the kernel's `denormal-fp-math-f32`.

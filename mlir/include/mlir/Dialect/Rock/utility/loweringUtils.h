@@ -25,6 +25,7 @@
 #include <optional>
 
 namespace mlir {
+class ModuleOp;
 class Operation;
 class Type;
 
@@ -284,6 +285,12 @@ arith::NarrowTypeEmulationConverter create4BitTypeConverter();
 /// consumers (tuning driver) inspect this attribute on PM failure to
 /// distinguish a "not-applicable" config from a real compilation bug.
 void markAsNotApplicable(Operation *op);
+
+/// Fail with an "exceeds LDS limit" error, and mark `moduleOp` not applicable,
+/// when `sharedMemSize` bytes of shared memory do not fit in the LDS of
+/// `arch`. generateLDSBlacklist.py matches on the wording of that error.
+LogicalResult checkSharedMemoryFitsLDS(ModuleOp moduleOp, int64_t sharedMemSize,
+                                       StringRef arch);
 
 } // end namespace rock
 } // end namespace mlir
