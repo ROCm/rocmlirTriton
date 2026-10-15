@@ -8,6 +8,8 @@
 
 # rocmlirTriton
 
+
+
 > MLIR-based GEMM, convolution, attention, GEMM+GEMM, and CONV+GEMM kernel generator for AMD GPUs, built on a Triton compilation backend.
 
 rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with vendored Triton (under `external/triton`) and Triton-pinned LLVM/MLIR (under `external/llvm-project`) producing the final HSACO.
