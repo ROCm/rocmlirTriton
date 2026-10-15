@@ -153,6 +153,22 @@ add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
                  "external/llvm-project/llvm"
                  EXCLUDE_FROM_ALL)
 
+# The Rock unittests (mlir/unittests, built when MLIR_INCLUDE_TESTS is ON) link
+# llvm_gtest / llvm_gtest_main. LLVM only creates those targets inside its own
+# tree when LLVM_INCLUDE_TESTS is ON, but this project is configured with
+# -DLLVM_INCLUDE_TESTS=OFF (see build_cmd.txt). Add LLVM's third-party gtest
+# subdirectory here, in the top-level directory scope, so gtest compiles with
+# LLVM's own flags rather than inheriting the strict -Werror/-Wundef/-Wshadow
+# options that mlir/ adds to its subtree (which gtest's bundled headers trip).
+if(MLIR_INCLUDE_TESTS AND NOT TARGET llvm_gtest)
+  set(_rocmlir_gtest_third_party "${ROCMLIR_LLVM_PROJECT_DIR}/third-party")
+  if(EXISTS "${_rocmlir_gtest_third_party}/unittest/googletest/include/gtest/gtest.h")
+    add_subdirectory("${_rocmlir_gtest_third_party}/unittest"
+                     "${CMAKE_BINARY_DIR}/third-party/unittest"
+                     EXCLUDE_FROM_ALL)
+  endif()
+endif()
+
 # MLIR writes its build-tree config files to ${CMAKE_BINARY_DIR} (top-level),
 # not to its own per-directory binary dir. See
 # external/llvm-project/mlir/cmake/modules/CMakeLists.txt (the

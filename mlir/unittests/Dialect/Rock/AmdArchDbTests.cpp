@@ -449,7 +449,7 @@ static int64_t minKDim(StringRef arch, Type inputTypeA, Type inputTypeB,
                        uint32_t instrNonKDim) {
   FailureOr<int64_t> kDim =
       getAccelInstrMinKDim(arch, inputTypeA, inputTypeB, instrNonKDim);
-  EXPECT_TRUE(succeeded(kDim)) << arch << " has no matrix instruction at "
+  EXPECT_TRUE(succeeded(kDim)) << arch.str() << " has no matrix instruction at "
                                << instrNonKDim << "x" << instrNonKDim;
   return succeeded(kDim) ? *kDim : 0;
 }

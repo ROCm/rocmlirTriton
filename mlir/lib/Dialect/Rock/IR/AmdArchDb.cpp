@@ -534,6 +534,7 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   switch (isaFamily) {
   // No Infinity Cache: L2 is the last level (largest L2 in the family).
   case ISAFamily::GCN5_1:
+    return 4 * kMiB;
   case ISAFamily::CDNA1:
   case ISAFamily::CDNA2: // per-GCD
     return 8 * kMiB;
