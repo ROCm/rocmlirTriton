@@ -414,6 +414,16 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
   // ScaledWMMA: gfx1250 (wmmaVersion 3) with supported F8/F4 types + scales
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f8e4m3fn, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
+  // E4M3 scales are ScaledWMMA on gfx1250 and unsupported on gfx950.
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f8e4m3fn, e.f8e4m3fn,
+                               e.f8e4m3fn),
+            MatrixAccelKind::ScaledWMMA);
+  EXPECT_EQ(getMatrixAccelKind("gfx950", e.f8e4m3fn, e.f8e4m3fn, e.f8e4m3fn,
+                               e.f8e4m3fn),
+            MatrixAccelKind::None);
+  EXPECT_NE(getMatrixAccelKind("gfx950", e.f8e4m3fn, e.f8e4m3fn, e.f8e4m3fn,
+                               e.f8e4m3fn),
+            MatrixAccelKind::ScaledMFMA);
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e5m2, e.f8e5m2, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
   // TODO: F4 (E2M1) and F6 (E3M2, E2M3) should also return ScaledWMMA on

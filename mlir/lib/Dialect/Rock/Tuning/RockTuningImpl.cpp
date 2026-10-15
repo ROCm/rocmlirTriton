@@ -1703,6 +1703,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
         problemOS << "f32";
       } else if (isa<Float8E8M0FNUType>(scaleAElemType)) {
         problemOS << "f8E8M0FNU";
+      } else if (isa<Float8E4M3FNType>(scaleAElemType)) {
+        problemOS << "f8E4M3FN";
       } else {
         llvm_unreachable("Unsupported scale A element type");
       }
@@ -1712,6 +1714,8 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
         problemOS << "f32";
       } else if (isa<Float8E8M0FNUType>(scaleBElemType)) {
         problemOS << "f8E8M0FNU";
+      } else if (isa<Float8E4M3FNType>(scaleBElemType)) {
+        problemOS << "f8E4M3FN";
       } else {
         llvm_unreachable("Unsupported scale B element type");
       }
@@ -1727,6 +1731,13 @@ static LogicalResult getTuningProblemStr(rock::RockGemmWrapperInterface gemmIF,
         problemOS << "true" << sep;
       } else {
         problemOS << "false" << sep;
+      }
+      // rocmlir-gen defaults this to 32. E4M3 scales are only legal at 16, so
+      // the problem string has to carry the value or a replay fails
+      // verification.
+      if (rGemmOp.getQuantBlockSize().has_value()) {
+        problemOS << "-quantBlockSize " << rGemmOp.getQuantBlockSize().value()
+                  << sep;
       }
     }
 
