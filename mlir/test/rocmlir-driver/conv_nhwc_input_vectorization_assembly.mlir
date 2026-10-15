@@ -17,7 +17,7 @@
 // RUN:   --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 \
 // RUN:   --groupsize 1 -p \
 // RUN:   --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2 \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CDNA --implicit-check-not=buffer_load_ushort
 
 // RUN: rocmlir-gen --operation conv -t f16 --arch gfx950 \
@@ -27,7 +27,7 @@
 // RUN:   --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 \
 // RUN:   --groupsize 1 -p \
 // RUN:   --perf_config=gemm:mPerBlock=64,nPerBlock=64,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=32,splitKFactor=1,numStages=3 \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CDNA --implicit-check-not=buffer_load_ushort
 
 // RUN: rocmlir-gen --operation conv -t f16 --arch gfx1100 \
@@ -37,7 +37,7 @@
 // RUN:   --conv_stride_h 1 --conv_stride_w 1 --padding_h 1 --padding_w 1 \
 // RUN:   --groupsize 1 -p \
 // RUN:   --perf_config=gemm:mPerBlock=64,nPerBlock=16,kPerBlock=64,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=2 \
-// RUN:   | AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RDNA --implicit-check-not=buffer_load_u16
 
 // CDNA: buffer_load_dwordx4
