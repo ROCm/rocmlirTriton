@@ -193,7 +193,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAllocateSharedMemoryNvPass();
   mlir::registerLLVMDIScope();
   mlir::LLVM::registerInlinerInterface(registry);
-  mlir::NVVM::registerInlinerInterface(registry);
   mlir::registerLLVMDILocalVariable();
 
   // TritonAMDGPUToLLVM passes
@@ -220,7 +219,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonAMDGPUScheduleLoops();
   mlir::registerTritonAMDGPUCanonicalizePointers();
   mlir::registerTritonAMDGPUConvertToBufferOps();
-  mlir::registerTritonAMDGPUAnnotateBufferOpSplitSafety();
   mlir::registerTritonAMDGPUInThreadTranspose();
   mlir::registerTritonAMDGPUCoalesceAsyncCopy();
   mlir::registerTritonAMDGPUUpdateAsyncWaitCount();

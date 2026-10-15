@@ -499,10 +499,9 @@ LogicalResult narrowLoad(const NarrowingCandidate &candidate) {
   auto type = cast<RankedTensorType>(load.getType());
   auto narrowedType = RankedTensorType::get(
       candidate.narrowShape, type.getElementType(), type.getEncoding());
-  tt::LoadOp narrowedLoad =
-      tt::LoadOp::create(rewriter, load.getLoc(), narrowedType, operands[0],
-                         operands[1], operands[2], load.getCacheAttr(),
-                         load.getEvictAttr(), load.getIsVolatileAttr());
+  tt::LoadOp narrowedLoad = tt::LoadOp::create(
+      rewriter, load.getLoc(), narrowedType, operands[0], operands[1],
+      operands[2], load.getCachePolicyAttr(), load.getIsVolatileAttr());
   copyDiscardableAttrs(load, narrowedLoad);
   Value result =
       tt::BroadcastOp::create(rewriter, load.getLoc(), type, narrowedLoad);
