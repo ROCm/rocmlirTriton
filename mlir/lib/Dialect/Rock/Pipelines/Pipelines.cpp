@@ -523,13 +523,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
-  // Must run after lower-stores to catch redundant casts that cannot be
-  // flagged earlier due to loads/stores that sit between truncf/extf pairs,
-  // and before RockToTTIR, whose clamp fold only matches a minnumf/maxnumf
-  // pair that already carries `nnan`.
-  if (!options.disableFastMath)
-    addWithDCE(rock::createRockAllowFastMathFlagsPass());
-
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
@@ -590,11 +583,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   rock::RockToTTIRPassOptions rockToTTIROpts;
   rockToTTIROpts.disableFastMath = options.disableFastMath;
   funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
-  // A second run, for the float ops RockToTTIR synthesizes itself (the
-  // reduction combiners), which did not exist yet at the run above. Ops that
-  // run already flagged are left alone, so the repeat costs nothing.
+  // Must run after lower-stores to catch redundant casts that cannot be
+  // flagged earlier due to loads/stores that sit between truncf/extf pairs,
+  // and after RockToTTIR so the float ops it synthesizes itself (the reduction
+  // combiners) are flagged too. One run covers everything.
   if (!options.disableFastMath)
     addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
+  // Needs the `nnan` flags the pass above attaches to minnumf/maxnumf.
+  addWithFuncDCE(funcPm2, rock::createRockFoldClampToTritonPass());
   // RockTensorToTritonPtrPass operates on ModuleOp (converts func.func to
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());

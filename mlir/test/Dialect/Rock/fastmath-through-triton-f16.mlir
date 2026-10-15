@@ -43,21 +43,21 @@ module attributes {rock.arch = "gfx942"} {
   // code.
   // CHECK-LABEL: llvm.func @arith_f16
   // CHECK-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : f16
-  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
-  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
-  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
+  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
+  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
+  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
   // CHECK-DAG: llvm.fneg %{{.*}} {fastmathFlags = #llvm.fastmath<nsz>} : f16
   // CHECK-DAG: llvm.frem %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz>} : f16
   // CHECK-DAG: llvm.intr.maxnum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nnan, nsz>} : (f16, f16) -> f16
   // CHECK-DAG: llvm.intr.maximum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz>} : (f16, f16) -> f16
   // CHECK-DAG: llvm.intr.minimum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz>} : (f16, f16) -> f16
-  // CHECK-DAG: llvm.intr.fma(%{{.*}}, %{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract>} : (f16, f16, f16) -> f16
+  // CHECK-DAG: llvm.intr.fma(%{{.*}}, %{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : (f16, f16, f16) -> f16
   //
   // Still scalar on gfx1250, and the flags ride along unchanged.
   // PACKED-LABEL: llvm.func @arith_f16
-  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
-  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
-  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f16
+  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
+  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
+  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f16
   // PACKED-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : f16
   //
   // This is where `arcp` is worth the most in the emitted code: the divide
