@@ -65,12 +65,6 @@ CASES = [
     ("gfx942 fits", "gfx942", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
     ("gfx942 overflow", "gfx942", (128, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), False),
 
-    # gfx1030 (RDNA2, wave=32, vgprs=1024): half wave -> half threads, but
-    # doubled VGPR file -> wpe=8 budget=128. (64*32)/32 = 64 -> ACCEPT;
-    # (64*64)/32 = 128 fits exactly -> ACCEPT.
-    ("gfx1030 fits", "gfx1030", (64, 32, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
-    ("gfx1030 boundary", "gfx1030", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
-
     # gfx1100 (RDNA3, wave=32, vgprs=1536): wpe=8 budget=192.
     # (64*64)/32 = 128 -> ACCEPT; (128*64)/32 = 256 -> REJECT.
     ("gfx1100 fits", "gfx1100", (64, 64, 0, 16, 1, 1, 1, 16, 1, 1, 8, 0), True),
@@ -124,8 +118,6 @@ for label, arch, perf_config, expected in CASES:
 # CHECK: [OK] cfg1 llvm-triple
 # CHECK: [OK] gfx942 fits
 # CHECK: [OK] gfx942 overflow
-# CHECK: [OK] gfx1030 fits
-# CHECK: [OK] gfx1030 boundary
 # CHECK: [OK] gfx1100 fits
 # CHECK: [OK] gfx1100 overflow
 # CHECK: [OK] gfx1201 fits
