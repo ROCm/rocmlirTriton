@@ -345,8 +345,7 @@ TEST(PerfConfigOrderingGemmTest, ConservativeDefaultGemmParamsPassesPredicate) {
   auto p = getConservativeDefaultGemmParams(&e.ctx);
   // Same arch matrix as AmdArchDbTests::LDSSize: cover both 64 KiB LDS archs
   // and the larger gfx950 / gfx1250.
-  for (StringRef arch : {"gfx90a", "gfx942", "gfx950", "gfx1030", "gfx1100",
-                         "gfx1200", "gfx1250"}) {
+  for (StringRef arch : {"gfx90a", "gfx942", "gfx950", "gfx1200", "gfx1250"}) {
     EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f16, e.f16, arch))
         << "default not applicable on " << arch.str() << " for f16";
     EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, arch))

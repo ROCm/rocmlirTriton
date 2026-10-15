@@ -71,8 +71,6 @@ TEST(AmdArchDbTest, MaxNumChiplets) {
   EXPECT_EQ(getMaxNumChiplets("gfx90a"), 1);  // CDNA2
   EXPECT_EQ(getMaxNumChiplets("gfx942"), 8);  // CDNA3
   EXPECT_EQ(getMaxNumChiplets("gfx950"), 8);  // CDNA4
-  EXPECT_EQ(getMaxNumChiplets("gfx1010"), 1); // RDNA1
-  EXPECT_EQ(getMaxNumChiplets("gfx1030"), 1); // RDNA2
   EXPECT_EQ(getMaxNumChiplets("gfx1100"), 1); // RDNA3
   EXPECT_EQ(getMaxNumChiplets("gfx1170"), 1); // GFX1170
   EXPECT_EQ(getMaxNumChiplets("gfx1200"), 1); // RDNA4
@@ -127,16 +125,11 @@ TEST(AmdArchDbTest, MinNumCU) {
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
   EXPECT_EQ(getMinNumCU("gfx950"), 256);  // CDNA4
-  EXPECT_EQ(getMinNumCU("gfx1010"), 20);  // RDNA1
-  EXPECT_EQ(getMinNumCU("gfx1030"), 2);   // RDNA2
   EXPECT_EQ(getMinNumCU("gfx1100"), 2);   // RDNA3
   EXPECT_EQ(getMinNumCU("gfx1170"), 2);   // GFX1170
   EXPECT_EQ(getMinNumCU("gfx1200"), 12);  // RDNA4
   EXPECT_EQ(getMinNumCU("gfx1250"), 256); // GFX1250
   EXPECT_EQ(getMinNumCU("gfx1310"), 32);  // GFX1310
-  // The RDNA2 APUs the old family floor of 30 rejected outright.
-  EXPECT_LE(getMinNumCU("gfx1036"), 2); // 2 CUs
-  EXPECT_LE(getMinNumCU("gfx1033"), 8); // 8 CUs
 }
 
 // --- getMaxWavesPerEU ---
@@ -147,8 +140,6 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
   EXPECT_EQ(getMaxWavesPerEU("gfx90a"), 8);   // CDNA2
   EXPECT_EQ(getMaxWavesPerEU("gfx942"), 8);   // CDNA3
   EXPECT_EQ(getMaxWavesPerEU("gfx950"), 8);   // CDNA4
-  EXPECT_EQ(getMaxWavesPerEU("gfx1010"), 16); // RDNA1
-  EXPECT_EQ(getMaxWavesPerEU("gfx1030"), 16); // RDNA2
   EXPECT_EQ(getMaxWavesPerEU("gfx1100"), 16); // RDNA3
   EXPECT_EQ(getMaxWavesPerEU("gfx1170"), 16); // GFX1170
   EXPECT_EQ(getMaxWavesPerEU("gfx1200"), 16); // RDNA4
@@ -164,8 +155,6 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
   EXPECT_EQ(getVGPRsPerEU("gfx90a"), 512);   // CDNA2
   EXPECT_EQ(getVGPRsPerEU("gfx942"), 512);   // CDNA3
   EXPECT_EQ(getVGPRsPerEU("gfx950"), 512);   // CDNA4
-  EXPECT_EQ(getVGPRsPerEU("gfx1010"), 1024); // RDNA1
-  EXPECT_EQ(getVGPRsPerEU("gfx1030"), 1024); // RDNA2
   EXPECT_EQ(getVGPRsPerEU("gfx1100"), 1536); // RDNA3, 1536 physical VGPRs
   EXPECT_EQ(getVGPRsPerEU("gfx1102"), 1024); // RDNA3, cut-down VGPR file
   EXPECT_EQ(getVGPRsPerEU("gfx1170"), 1024); // GFX1170, no Feature1536VGPRs
@@ -184,7 +173,6 @@ TEST(AmdArchDbTest, WaveSize) {
   EXPECT_EQ(getWaveSize("gfx90a"), 64);  // CDNA2
   EXPECT_EQ(getWaveSize("gfx942"), 64);  // CDNA3
   EXPECT_EQ(getWaveSize("gfx950"), 64);  // CDNA4
-  EXPECT_EQ(getWaveSize("gfx1030"), 32); // RDNA2
   EXPECT_EQ(getWaveSize("gfx1100"), 32); // RDNA3
   EXPECT_EQ(getWaveSize("gfx1150"), 32); // RDNA3.5
   EXPECT_EQ(getWaveSize("gfx1170"), 32); // GFX1170
@@ -200,7 +188,6 @@ TEST(AmdArchDbTest, LDSSize) {
   EXPECT_EQ(getLDSSize("gfx90a"), 65536);   // CDNA2: 64 KB
   EXPECT_EQ(getLDSSize("gfx942"), 65536);   // CDNA3: 64 KB
   EXPECT_EQ(getLDSSize("gfx950"), 163840);  // CDNA4: 160 KB
-  EXPECT_EQ(getLDSSize("gfx1030"), 65536);  // RDNA2: 64 KB
   EXPECT_EQ(getLDSSize("gfx1100"), 65536);  // RDNA3: 64 KB
   EXPECT_EQ(getLDSSize("gfx1170"), 65536);  // GFX1170: 64 KB (gfx11 core)
   EXPECT_EQ(getLDSSize("gfx1200"), 65536);  // RDNA4: 64 KB
@@ -217,8 +204,6 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
   EXPECT_EQ(getLastLevelCacheSize("gfx90a"), 8 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx942"), 256 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx950"), 256 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1010"), 4 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1030"), 128 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1100"), 96 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB); // guess, see below
   EXPECT_EQ(getLastLevelCacheSize("gfx1200"), 32 * kMiB);
@@ -234,17 +219,6 @@ TEST(AmdArchDbTest, LastLevelCacheSize) {
 // Pinned per chip so that a family-wide value can never creep back in.
 TEST(AmdArchDbTest, LastLevelCacheSizePerChip) {
   constexpr int64_t kMiB = 1024 * 1024;
-  // RDNA1, no MALL in the family.
-  EXPECT_EQ(getLastLevelCacheSize("gfx1012"), 2 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1013"), 4 * kMiB);
-  // RDNA2: Infinity Cache on the discrete parts, L2 only on the APUs.
-  EXPECT_EQ(getLastLevelCacheSize("gfx1031"), 96 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1032"), 32 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1034"), 16 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1033"), 1 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx1035"), 2 * kMiB);
-  // 2 CU part: 256 KiB, the smallest last level cache of any target.
-  EXPECT_EQ(getLastLevelCacheSize("gfx1036"), 256 * 1024);
   // RDNA3 / RDNA3.5. gfx1151 is the only APU here known to have a MALL.
   EXPECT_EQ(getLastLevelCacheSize("gfx1101"), 64 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1102"), 32 * kMiB);
@@ -519,7 +493,6 @@ TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {
   ArchTestEnv e;
   // No matrix core at all.
   EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx906", e.f16, e.f16, 16)));
-  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx1010", e.f16, e.f16, 16)));
   // A matrix core that has no instruction for these inputs: RDNA3 WMMA takes no
   // f32 operands. This is the FMA path, which the widened kPerBlock range
   // treats as having no instruction-alignment requirement.
@@ -551,8 +524,6 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_FALSE(supportsTDM("gfx90a"));  // CDNA2
   EXPECT_FALSE(supportsTDM("gfx942"));  // CDNA3
   EXPECT_FALSE(supportsTDM("gfx950"));  // CDNA4
-  EXPECT_FALSE(supportsTDM("gfx1010")); // RDNA1
-  EXPECT_FALSE(supportsTDM("gfx1030")); // RDNA2
   EXPECT_FALSE(supportsTDM("gfx1100")); // RDNA3
   EXPECT_FALSE(supportsTDM("gfx1170")); // GFX1170
   EXPECT_FALSE(supportsTDM("gfx1200")); // RDNA4
@@ -570,8 +541,6 @@ TEST(AmdArchDbTest, TritonLowersTanhToNativeInst) {
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx90a"));  // CDNA2
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx942"));  // CDNA3
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx950"));  // CDNA4
-  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1010")); // RDNA1
-  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1030")); // RDNA2
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1100")); // RDNA3
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1170")); // GFX1170
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx1200")); // RDNA4
@@ -593,8 +562,6 @@ TEST(AmdArchDbTest, IsCDNA) {
   EXPECT_TRUE(isCDNA("gfx90a"));   // CDNA2
   EXPECT_TRUE(isCDNA("gfx942"));   // CDNA3
   EXPECT_TRUE(isCDNA("gfx950"));   // CDNA4
-  EXPECT_FALSE(isCDNA("gfx1010")); // RDNA1
-  EXPECT_FALSE(isCDNA("gfx1030")); // RDNA2
   EXPECT_FALSE(isCDNA("gfx1100")); // RDNA3
   EXPECT_FALSE(isCDNA("gfx1170")); // GFX1170
   EXPECT_FALSE(isCDNA("gfx1200")); // RDNA4
@@ -612,8 +579,6 @@ TEST(AmdArchDbTest, IsRDNA) {
   EXPECT_FALSE(isRDNA("gfx90a"));  // CDNA2
   EXPECT_FALSE(isRDNA("gfx942"));  // CDNA3
   EXPECT_FALSE(isRDNA("gfx950"));  // CDNA4
-  EXPECT_TRUE(isRDNA("gfx1010"));  // RDNA1
-  EXPECT_TRUE(isRDNA("gfx1030"));  // RDNA2
   EXPECT_TRUE(isRDNA("gfx1100"));  // RDNA3
   EXPECT_TRUE(isRDNA("gfx1170"));  // GFX1170
   EXPECT_TRUE(isRDNA("gfx1200"));  // RDNA4
@@ -654,7 +619,7 @@ TEST(AmdArchDbTest, MultiCTALaunch) {
 // --- getMaxKpack ---
 
 TEST(AmdArchDbTest, MaxKpack) {
-  // kpack in {1,2} for gfx9<gfx950 and all of gfx10/gfx11/gfx12<gfx1250;
+  // kpack in {1,2} for gfx9<gfx950 and all of gfx11/gfx12<gfx1250;
   // kpack==1 only on gfx950+, gfx1250+. gfx1170 (0x1170) is in the gfx11 range.
   EXPECT_EQ(getMaxKpack("gfx908"), 2);  // CDNA1
   EXPECT_EQ(getMaxKpack("gfx950"), 1);  // CDNA4
@@ -676,8 +641,6 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
   EXPECT_FALSE(archSupportsAccelFp8("gfx90a"));  // CDNA2: MFMA but no FP8 MFMA
   EXPECT_TRUE(archSupportsAccelFp8("gfx942"));   // CDNA3 (native fp8 MFMA)
   EXPECT_TRUE(archSupportsAccelFp8("gfx950"));   // CDNA4 (native fp8 MFMA)
-  EXPECT_FALSE(archSupportsAccelFp8("gfx1010")); // RDNA1: no WMMA at all
-  EXPECT_FALSE(archSupportsAccelFp8("gfx1030")); // RDNA2: no WMMA at all
   EXPECT_FALSE(archSupportsAccelFp8("gfx1100")); // RDNA3: no fp8 WMMA
   EXPECT_TRUE(archSupportsAccelFp8("gfx1170"));  // GFX1170 (native fp8 WMMA v2)
   EXPECT_TRUE(archSupportsAccelFp8("gfx1200"));  // RDNA4 (native fp8 WMMA)
@@ -701,8 +664,6 @@ TEST(AmdArchDbTest, ArchSupportsScaledGemm) {
   EXPECT_FALSE(archSupportsScaledGemm("gfx90a"));  // CDNA2
   EXPECT_FALSE(archSupportsScaledGemm("gfx942"));  // CDNA3 (no ScaledMFMA)
   EXPECT_TRUE(archSupportsScaledGemm("gfx950"));   // CDNA4 (ScaledMFMA)
-  EXPECT_FALSE(archSupportsScaledGemm("gfx1010")); // RDNA1
-  EXPECT_FALSE(archSupportsScaledGemm("gfx1030")); // RDNA2
   EXPECT_FALSE(archSupportsScaledGemm("gfx1100")); // RDNA3
   EXPECT_FALSE(archSupportsScaledGemm("gfx1170")); // GFX1170 (WMMA v2 < 3)
   EXPECT_FALSE(archSupportsScaledGemm("gfx1200")); // RDNA4 (no ScaledWMMA)
