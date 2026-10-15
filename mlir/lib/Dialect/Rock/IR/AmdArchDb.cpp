@@ -464,7 +464,7 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   constexpr int64_t kKiB = 1024;
   constexpr int64_t kMiB = 1024 * kKiB;
 
-  // The gfx10xx / gfx11xx / gfx12xx ISA families each span both discrete parts
+  // The gfx11xx / gfx12xx ISA families each span both discrete parts
   // with a memory-attached last level cache (Infinity Cache / MALL) and APUs,
   // most of which stop at an L2 of 2 MiB or less - though gfx1151 shows an APU
   // can carry a MALL too. Either way the answer is not a property of the
@@ -475,29 +475,14 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   // from this always covers the live device.
   //
   // gfx11xx / gfx12xx sizes from
-  // https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html, which
-  // does not cover gfx10xx; those come from the per-chip tables amdgpu reports
-  // to userspace in drivers/gpu/drm/amd/amdkfd/kfd_crat.c (cache_level 3 where
-  // a chip has a MALL, otherwise cache_level 2). Both sources index by product
-  // or codename rather than by gfx number, so looking a figure up again means
-  // mapping the target back to its chip first.
+  // https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html
+  // those come from the per-chip tables amdgpu reports to userspace in
+  // drivers/gpu/drm/amd/amdkfd/kfd_crat.c (cache_level 3 where a chip has a
+  // MALL, otherwise cache_level 2). Both sources index by product or codename
+  // rather than by gfx number, so looking a figure up again means mapping the
+  // target back to its chip first.
   int64_t perChipSize =
       llvm::StringSwitch<int64_t>(chip)
-          // RDNA1: no MALL anywhere in the family, L2 is the last level.
-          .Case("gfx1010", 4 * kMiB)
-          .Case("gfx1011", 4 * kMiB)
-          .Case("gfx1012", 2 * kMiB)
-          .Case("gfx1013", 4 * kMiB)
-          // RDNA2 discrete: Infinity Cache.
-          .Case("gfx1030", 128 * kMiB)
-          .Case("gfx1031", 96 * kMiB)
-          .Case("gfx1032", 32 * kMiB)
-          .Case("gfx1034", 16 * kMiB)
-          // RDNA2 APUs: no MALL. gfx1036 is a 2 CU part and its L2 is sized to
-          // match, so it is the smallest last level cache of any target here.
-          .Case("gfx1033", 1 * kMiB)
-          .Case("gfx1035", 2 * kMiB)
-          .Case("gfx1036", 256 * kKiB)
           // RDNA3 discrete: Infinity Cache.
           .Case("gfx1100", 96 * kMiB)
           .Case("gfx1101", 64 * kMiB)
@@ -633,7 +618,7 @@ int64_t mlir::rock::getMaxNumCTAs(StringRef arch) {
 // future archs instead of generating configs that the backend should not use.
 int64_t mlir::rock::getMaxKpack(StringRef arch) {
   // kpack != 1 is unsupported on gfx950 and gfx1250 (and any newer arch);
-  // older archs (gfx9 < gfx950, all of gfx10/gfx11, gfx12 < gfx1250) still
+  // older archs (gfx9 < gfx950, all of gfx11, gfx12 < gfx1250) still
   // accept kpack in {1, 2}.
   auto [chip, _] = parseArchString(arch);
   // consume_front does double duty: it checks for the "gfx" prefix and
@@ -649,7 +634,7 @@ int64_t mlir::rock::getMaxKpack(StringRef arch) {
   if (n < 0x950) // gfx9 pre-CDNA4 (e.g., gfx908/90a)
     return 2;
 
-  if (0x1000 <= n && n < 0x1250) // all of gfx10/gfx11 + gfx12 < gfx1250
+  if (0x1000 <= n && n < 0x1250) // all of gfx11 + gfx12 < gfx1250
     return 2;
 
   return 1; // gfx950+, gfx1250+, gfx13xx+, anything else
