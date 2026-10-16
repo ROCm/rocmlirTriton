@@ -316,6 +316,7 @@ endif()
 
 include(cmake/triton.cmake)
 include(cmake/rocm.cmake)
+include(cmake/triton-amd-codegen.cmake)
 
 # TODO: Re-enable mlir-hal when updated for newer LLVM (22+)
 # mlir-hal has API incompatibilities with LLVM 22 (getArgAttrsAttr, etc.)
