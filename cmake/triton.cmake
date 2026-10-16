@@ -1,5 +1,3 @@
-message(STATUS "Adding Triton src dependency")
-
 #===----------------------------------------------------------------------===//
 # Fetch LLVM/MLIR and Triton sources
 #
@@ -84,8 +82,6 @@ if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
     "${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_TAG}; if this file is "
     "missing the download is incomplete or the pin is wrong.\n")
 endif()
-
-message(STATUS "Adding Triton-pinned LLVM/MLIR (fetched llvm-project) src dependency")
 
 # LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
 # effect when LLVM processes its own CMakeLists.txt.
