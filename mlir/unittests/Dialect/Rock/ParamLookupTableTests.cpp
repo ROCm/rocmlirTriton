@@ -36,6 +36,26 @@ static constexpr StringLiteral kAttentionDataTypes[] = {"bf16", "f16", "f32",
 // Data types with dedicated gfx1100 and gfx1101 gemm and conv lists.
 static constexpr StringLiteral kNavi3TunedDataTypes[] = {"f16", "f32", "i8"};
 
+// --- normalizeArch ---
+
+// Lookup keys are built from the normalized arch, so a target modifier like
+// gfx1250-strict's "-strict" suffix has to be stripped here: strict is a
+// code-object variant of gfx1250, not a different ISA, and shares its tuning
+// entries and LDS blacklist rather than needing a duplicate set of its own.
+TEST(NormalizeArchTest, StripsTargetModifier) {
+  EXPECT_EQ(normalizeArch("gfx1250-strict"), "gfx1250");
+  EXPECT_EQ(normalizeArch("amdgcn-amd-amdhsa:gfx1250-strict:xnack-"),
+            "gfx1250");
+}
+
+TEST(NormalizeArchTest, KeepsPlainArch) {
+  EXPECT_EQ(normalizeArch("gfx1250"), "gfx1250");
+  EXPECT_EQ(normalizeArch("gfx90a"), "gfx90a");
+  EXPECT_EQ(normalizeArch("amdgcn-amd-amdhsa:gfx942:xnack-"), "gfx942");
+}
+
+// --- findFallback ---
+
 TEST(FindFallbackTest, ExactMatch) {
   // Exact match should return itself
   EXPECT_EQ("gfx942_conv_f16",
