@@ -358,14 +358,19 @@ def Rock_TransformOp
     : Rock_Op<"transform", [Pure, ViewLikeOpInterface,
                             AllElementTypesMatch<["input", "output"]>,
                             DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
-      Arguments<(ins AnyShaped:$input, Rock_TransformMapAttr:$transform)>,
-      Results<(outs AnyShaped:$output)> {
+      Arguments<(ins AnyRankedTensor:$input,
+          Rock_TransformMapAttr:$transform)>,
+      Results<(outs AnyRankedTensor:$output)> {
   let summary = "Tensor transformation";
   let description = [{
     Create a view `output` of the tensor `input` with the same element type
     such that, when the coordinates used to index into `output` are passed through
     the coordinate transformations `transforms` from left to right,
     they become coordinates into the `input` tensor.
+
+    Both `input` and `output` are ranked tensors. rocmlirTriton works at the
+    tensor level throughout, so memref operands (which this op accepted back
+    when it was part of rocMLIR) are rejected.
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
