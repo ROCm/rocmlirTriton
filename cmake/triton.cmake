@@ -15,11 +15,11 @@
 
 include(FetchContent)
 
-set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/triton-lang/llvm-project"
+set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_TAG "triton-main-20260821"
+set(ROCMLIR_LLVM_GIT_TAG "rocmlirTriton"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ilango100/triton-windows"
+set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
 set(ROCMLIR_TRITON_GIT_TAG "rocmlirTriton"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
