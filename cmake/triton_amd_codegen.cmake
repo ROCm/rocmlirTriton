@@ -93,6 +93,15 @@ ExternalProject_Add(triton_amd_codegen
   USES_TERMINAL_BUILD TRUE)
 
 ExternalProject_Get_Property(triton_amd_codegen BINARY_DIR)
-set(ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY "${BINARY_DIR}/${triton_amd_codegen_libname}")
 
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different "${BINARY_DIR}/${triton_amd_codegen_libname}" ${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}
+	DEPENDS triton_amd_codegen
+)
+add_custom_target(triton_amd_codegen_lib
+	ALL
+	DEPENDS ${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}
+)
+
+set(ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY "${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}")
 message(STATUS "triton_amd_codegen: ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}")
