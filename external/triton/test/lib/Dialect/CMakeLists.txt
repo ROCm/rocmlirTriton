@@ -1,3 +1,0 @@
-add_library(TritonTestDialect TestLoopPeeling.cpp)
-target_link_libraries(TritonTestDialect PUBLIC MLIRPass TritonTransforms)
-target_compile_options(TritonTestDialect PRIVATE ${TRITON_DISABLE_EH_RTTI_FLAGS})
