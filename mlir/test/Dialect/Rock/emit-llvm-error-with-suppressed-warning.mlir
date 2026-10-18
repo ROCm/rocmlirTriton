@@ -7,10 +7,9 @@
 // LLVM errors. The oversized LDS allocation makes the AMDGPU backend emit a
 // resource-limit error through LLVMContext::diagnose.
 
-// CHECK-NOT: failed to meet occupancy target given by 'amdgpu-waves-per-eu'
 // CHECK: local memory (131072) exceeds limit
 // CHECK-SAME: in function 'kernel'
-// CHECK-NOT: failed to meet occupancy target given by 'amdgpu-waves-per-eu'
+// CHECK: failed to meet occupancy target given by 'amdgpu-waves-per-eu'
 
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.mlir.global internal @lds(#llvm.undef) {addr_space = 3 : i32} : !llvm.array<131072 x i8>

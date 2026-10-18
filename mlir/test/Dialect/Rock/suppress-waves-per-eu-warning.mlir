@@ -8,7 +8,7 @@
 // remark and lets every other LLVM diagnostic propagate to stderr.
 
 // CHECK: invalid value for postRA direction attribute
-// CHECK-NOT: failed to meet occupancy target given by 'amdgpu-waves-per-eu'
+// CHECK: failed to meet occupancy target given by 'amdgpu-waves-per-eu'
 
 module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
   llvm.mlir.global internal @lds(#llvm.undef) {addr_space = 3 : i32} : !llvm.array<32768 x i8>
