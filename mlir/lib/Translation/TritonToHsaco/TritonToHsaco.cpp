@@ -16,6 +16,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Translation/TritonToHsaco.h"
+#include <dlfcn.h>
+
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -92,13 +94,12 @@
 #include "llvm/Transforms/Scalar/ADCE.h"
 
 #include <array>
+#include <llvm/Bitcode/BitcodeWriter.h>
 #include <mutex>
 
 // LLD for linking
-#if LLVM_HAS_AMDGPU_TARGET
 #include "lld/Common/Driver.h"
 LLD_HAS_DRIVER(elf)
-#endif
 
 #define DEBUG_TYPE "triton-to-hsaco"
 
@@ -173,6 +174,10 @@ public:
     return false;
   }
 };
+
+//===----------------------------------------------------------------------===//
+// make_llir (part 2) - LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+//===----------------------------------------------------------------------===//
 
 /// Initialize LLVM targets (call once) - from init_targets in llvm.cc
 void initializeLLVMTargets() {
@@ -255,7 +260,7 @@ void setABIVersion(llvm::Module &module, int version) {
 }
 
 /// Mirrors upstream compiler.py `is_coexec_scheduler_supported(arch)`.
-static bool isCoexecSchedulerSupported(llvm::StringRef arch) {
+bool isCoexecSchedulerSupported(llvm::StringRef arch) {
   return arch.starts_with("gfx1250");
 }
 
@@ -571,7 +576,7 @@ void disableHighDuplicationDeviceLibInlining(llvm::Module &module) {
   }
 }
 
-static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
+std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel) {
   switch (optLevel) {
   case 0:
     return llvm::OptimizationLevel::O0;
@@ -594,24 +599,25 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
 
+  // Disable the VectorCombine pass. Mirrors upstream compiler.py make_llir(),
+  // which now calls `llvm.optimize_module(..., disable_vector_combine=True)`;
+  // in llvm.cc that registers a should-run callback skipping VectorCombinePass.
+  // VectorCombinePass::name() returns the C++ class name, not the registry
+  // name "vector-combine".
+  llvm::PassInstrumentationCallbacks passInstrCb;
+  passInstrCb.registerShouldRunOptionalPassCallback(
+      [](llvm::StringRef passName, llvm::Any) {
+        return passName != "VectorCombinePass";
+      });
+
   llvm::PipelineTuningOptions tuningOptions;
   tuningOptions.LoopUnrolling = true;
   tuningOptions.LoopInterleaving = true;
   tuningOptions.LoopVectorization = true;
   tuningOptions.SLPVectorization = true;
 
-  // Disable the VectorCombine pass. Mirrors upstream compiler.py make_llir(),
-  // which now calls `llvm.optimize_module(..., disable_vector_combine=True)`;
-  // in llvm.cc that registers a should-run callback skipping VectorCombinePass.
-  // VectorCombinePass::name() returns the C++ class name, not the registry
-  // name "vector-combine".
-  llvm::PassInstrumentationCallbacks pic;
-  pic.registerShouldRunOptionalPassCallback(
-      [](llvm::StringRef passName, llvm::Any) {
-        return passName != "VectorCombinePass";
-      });
-
-  llvm::PassBuilder pb(tm, tuningOptions, /*PGOOpt=*/std::nullopt, &pic);
+  llvm::PassBuilder pb(tm, tuningOptions, /*PGOOpt=*/std::nullopt,
+                       &passInstrCb);
 
   pb.registerModuleAnalyses(mam);
   pb.registerCGSCCAnalyses(cgam);
@@ -655,7 +661,6 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   // accumulator phi, which happens after the pipeline's own ADCE.
   if (optLevel != llvm::OptimizationLevel::O0)
     mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ADCEPass()));
-  // --- rocmlirTriton pass ----
 
   mpm.run(module, mam);
 }
@@ -687,258 +692,12 @@ void disablePrintInline(llvm::Module &module) {
   }
 }
 
-//===----------------------------------------------------------------------===//
-// make_amdgcn - LLVM IR to AMDGCN assembly (compiler.py lines 452-473)
-// Inspired by translateLLVMIRToASM in external/triton/python/src/llvm.cc
-//===----------------------------------------------------------------------===//
-
-/// Inline everything, verify, then run the target's code generation pipeline,
-/// writing `fileType` to `os`. Matches llvm.cc lines 329-377. Returns false if
-/// the target cannot emit `fileType`.
-bool emitMachineCode(llvm::Module &module, llvm::TargetMachine *machine,
-                     llvm::CodeGenFileType fileType,
-                     llvm::raw_pwrite_stream &os) {
-  // inline everything (matches llvm.cc lines 329-332)
-  for (llvm::Function &f : module.functions())
-    if (!f.hasFnAttribute(llvm::Attribute::NoInline))
-      f.addFnAttr(llvm::Attribute::AlwaysInline);
-
-  // verify and run inliner (matches llvm.cc lines 333-344), see kVerifyLLVMIR
-  llvm::legacy::PassManager pm;
-  pm.add(llvm::createAlwaysInlinerLegacyPass());
-  if constexpr (kVerifyLLVMIR)
-    pm.add(llvm::createVerifierPass());
-  pm.run(module);
-
-  // emit machine code (matches llvm.cc lines 360-377)
-  llvm::legacy::PassManager pass;
-  if (machine->addPassesToEmitFile(pass, os, nullptr, fileType))
-    return false;
-  pass.run(module);
-  return true;
-}
-
-std::string translateLLVMIRToASM(llvm::Module &module,
-                                 llvm::TargetMachine *machine) {
-  std::string result;
-  {
-    llvm::raw_string_ostream stream(result);
-    llvm::buffer_ostream pstream(stream);
-    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::AssemblyFile,
-                         pstream))
-      return {};
-  }
-  return result;
-}
-
-/// Emit a relocatable object straight from the target machine.
-///
-/// This is the same code generation `translateLLVMIRToASM` performs, asking for
-/// `ObjectFile` instead of `AssemblyFile` so that the MC layer writes the
-/// object directly. It replaces printing ISA to text and parsing that text back
-/// with `AMDGPUAsmParser` (`assembleAMDGCN`), which together account for
-/// roughly half of binary emission on large kernels and buy nothing when the
-/// text is never read.
-///
-/// This is a deliberate deviation from upstream Triton, taken purely for
-/// compile time. Upstream always routes the binary through AMDGCN text, and can
-/// afford to: `make_amdgcn` and `make_hsaco` are separate Python-visible stages
-/// there and it caches the `.s` as a build artifact, so the text is a product
-/// it owes the caller either way. We have no such stage boundary and need the
-/// text only when a dump is requested, so `translateTritonToHsaco` keeps the
-/// round trip for exactly those cases and skips it otherwise. Anyone
-/// reconciling this file with llvm.cc should expect the difference rather than
-/// "fix" it.
-std::optional<SmallVector<char, 0>>
-translateLLVMIRToObject(llvm::Module &module, llvm::TargetMachine *machine) {
-  llvm::SmallVector<char, 0> result;
-  {
-    // Unlike the assembly path this needs no `buffer_ostream`, since
-    // `raw_svector_ostream` is already a seekable `raw_pwrite_stream`.
-    llvm::raw_svector_ostream svos(result);
-    if (!emitMachineCode(module, machine, llvm::CodeGenFileType::ObjectFile,
-                         svos)) {
-      llvm::errs() << "Target does not support direct object emission\n";
-      return std::nullopt;
-    }
-  }
-  return result;
-}
-
-/// Translate LLVM IR module to AMDGCN assembly string
-std::string makeAMDGCN(llvm::Module &module, llvm::TargetMachine *tm) {
-  return translateLLVMIRToASM(module, tm);
-}
-
-//===----------------------------------------------------------------------===//
-// make_hsaco - AMDGCN assembly to HSACO binary (compiler.py lines 476-488)
-//===----------------------------------------------------------------------===//
-
-/// Assemble AMDGCN assembly to object code (amd.assemble_amdgcn)
-std::optional<SmallVector<char, 0>> assembleAMDGCN(StringRef assembly,
-                                                   llvm::Triple &triple,
-                                                   StringRef archStr,
-                                                   StringRef features) {
-  std::string error;
-  const llvm::Target *target =
-      llvm::TargetRegistry::lookupTarget(triple, error);
-  if (!target) {
-    llvm::errs() << "Target lookup error: " << error << "\n";
-    return std::nullopt;
-  }
-
-  llvm::SourceMgr srcMgr;
-  srcMgr.AddNewSourceBuffer(llvm::MemoryBuffer::getMemBuffer(assembly),
-                            llvm::SMLoc());
-
-  llvm::MCTargetOptions mcOptions;
-  std::unique_ptr<llvm::MCRegisterInfo> mri(target->createMCRegInfo(triple));
-  std::unique_ptr<llvm::MCAsmInfo> mai(
-      target->createMCAsmInfo(*mri, triple, mcOptions));
-  std::unique_ptr<llvm::MCSubtargetInfo> sti(
-      target->createMCSubtargetInfo(triple, archStr, features));
-
-  llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
-  std::unique_ptr<llvm::MCObjectFileInfo> mofi(
-      target->createMCObjectFileInfo(ctx, /*PIC=*/false,
-                                     /*LargeCodeModel=*/false));
-  ctx.setObjectFileInfo(mofi.get());
-
-  llvm::SmallString<128> cwd;
-  if (!llvm::sys::fs::current_path(cwd))
-    ctx.setCompilationDir(cwd);
-
-  llvm::SmallVector<char, 0> result;
-  llvm::raw_svector_ostream svos(result);
-
-  std::unique_ptr<llvm::MCInstrInfo> mcii(target->createMCInstrInfo());
-  std::unique_ptr<llvm::MCCodeEmitter> ce(
-      target->createMCCodeEmitter(*mcii, ctx));
-  std::unique_ptr<llvm::MCAsmBackend> mab(
-      target->createMCAsmBackend(*sti, *mri, mcOptions));
-  std::unique_ptr<llvm::MCObjectWriter> ow(mab->createObjectWriter(svos));
-  std::unique_ptr<llvm::MCStreamer> mcStreamer(target->createMCObjectStreamer(
-      triple, ctx, std::move(mab), std::move(ow), std::move(ce), *sti));
-
-  std::unique_ptr<llvm::MCAsmParser> parser(
-      createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
-  std::unique_ptr<llvm::MCTargetAsmParser> tap(
-      target->createMCAsmParser(*sti, *parser, *mcii));
-  if (!tap) {
-    llvm::errs() << "Assembler initialization error\n";
-    return std::nullopt;
-  }
-
-  parser->setTargetParser(*tap);
-  parser->Run(/*NoInitialTextSection=*/false);
-
-  return SmallVector<char, 0>(result.begin(), result.end());
-}
-
-/// Invoke LLD to link object file to HSACO - matches triton_amd.cc lldInvoke
-static std::optional<std::string> lldInvoke(const char *inPath,
-                                            const char *outPath) {
-#if LLVM_HAS_AMDGPU_TARGET
-  // Workaround: Disable parallelism to avoid hangs caused by LLVM's thread pool
-  // when the following code is executed in a forked child process.
-  // Context: lld::elf::LinkerDriver::link uses parallelFor which uses the
-  // LLVM's thread pool. During cleanup at ~TaskGroup() the child process hangs
-  // waiting.
-  //
-  // IMPORTANT: LLD's CommonLinkerContext uses a global static pointer (not
-  // thread_local) to store the linker context. This means lldMain is NOT
-  // thread-safe - concurrent calls will race on the global context pointer.
-  // We must serialize all LLD invocations with a mutex.
-  static std::mutex lldMutex;
-  std::lock_guard<std::mutex> lock(lldMutex);
-
-  std::array<const char *, 6> args = {"ld.lld", "--threads=1", "-shared",
-                                      inPath,   "-o",          outPath};
-  std::string errString;
-  llvm::raw_string_ostream errStream(errString);
-  auto lldRes = lld::lldMain(args, llvm::outs(), errStream,
-                             {{lld::Gnu, &lld::elf::link}});
-  bool noErrors = (!lldRes.retCode && lldRes.canRunAgain);
-  if (!noErrors) {
-    errStream.flush();
-    return errString;
-  }
-  return std::nullopt;
-#else
-  return "ROCM conversions not enabled";
-#endif
-}
-
-/// Link object file to HSACO using LLD (amd.link_hsaco)
-std::optional<SmallVector<char, 0>> linkHSACO(ArrayRef<char> objectCode) {
-#if LLVM_HAS_AMDGPU_TARGET
-  int tempObjFd = -1;
-  llvm::SmallString<128> tempObjFilename;
-  if (llvm::sys::fs::createTemporaryFile("kernel", "o", tempObjFd,
-                                         tempObjFilename)) {
-    llvm::errs() << "Failed to create temporary object file\n";
-    return std::nullopt;
-  }
-  llvm::FileRemover cleanupObj(tempObjFilename);
-  {
-    llvm::raw_fd_ostream tempObjOs(tempObjFd, true);
-    tempObjOs << StringRef(objectCode.data(), objectCode.size());
-    tempObjOs.flush();
-  }
-
-  llvm::SmallString<128> tempHsacoFilename;
-  if (llvm::sys::fs::createTemporaryFile("kernel", "hsaco",
-                                         tempHsacoFilename)) {
-    llvm::errs() << "Failed to create temporary HSACO file\n";
-    return std::nullopt;
-  }
-  llvm::FileRemover cleanupHsaco(tempHsacoFilename);
-
-  // Use lldMain for safe re-entry support (matches triton_amd.cc)
-  auto errOpt = lldInvoke(tempObjFilename.c_str(), tempHsacoFilename.c_str());
-  if (errOpt) {
-    llvm::errs() << "LLD invocation error: " << *errOpt << "\n";
-    return std::nullopt;
-  }
-
-  auto hsacoFile =
-      llvm::MemoryBuffer::getFile(tempHsacoFilename, /*IsText=*/false);
-  if (!hsacoFile) {
-    llvm::errs() << "Failed to read HSACO file\n";
-    return std::nullopt;
-  }
-
-  StringRef buffer = (*hsacoFile)->getBuffer();
-  return SmallVector<char, 0>(buffer.begin(), buffer.end());
-#else
-  llvm::errs() << "AMDGPU target not built. Rebuild LLVM with AMDGPU in "
-                  "LLVM_TARGETS_TO_BUILD\n";
-  return std::nullopt;
-#endif
-}
-
-/// Convert AMDGCN assembly to HSACO binary - make_hsaco in compiler.py
-std::optional<SmallVector<char, 0>> makeHSACO(StringRef amdgcnAsm,
-                                              llvm::Triple &triple,
-                                              StringRef archStr,
-                                              StringRef features) {
-  // Assemble to object code
-  auto objectCode = assembleAMDGCN(amdgcnAsm, triple, archStr, features);
-  if (!objectCode) {
-    return std::nullopt;
-  }
-
-  // Link to HSACO
-  return linkHSACO(*objectCode);
-}
-
 /// Mirrors upstream compiler.py `is_expert_scheduling_enabled(arch)`. gfx1250
 /// is the only arch with AMDGPU expert-scheduling codegen support. Upstream
 /// enables it there by default but honors the optional
 /// `knobs.amd.use_expert_scheduling` (env `TRITON_HIP_USE_EXPERT_SCHEDULING`)
 /// override
-static bool isExpertSchedulingEnabled(llvm::StringRef arch,
-                                      int useExpertScheduling) {
+bool isExpertSchedulingEnabled(llvm::StringRef arch, int useExpertScheduling) {
   if (!arch.starts_with("gfx1250"))
     return false;
   if (useExpertScheduling == mlir::rock::kKnobDefault)
@@ -946,33 +705,9 @@ static bool isExpertSchedulingEnabled(llvm::StringRef arch,
   return useExpertScheduling != 0;
 }
 
-} // namespace
-
-//===----------------------------------------------------------------------===//
-// Public API
-//===----------------------------------------------------------------------===//
-
-namespace mlir {
-namespace rock {
-
-static void appendFeature(std::string &features, llvm::StringRef feature) {
-  if (!features.empty())
-    features += ",";
-  features += feature;
-}
-
-FailureOr<llvm::SmallVector<char, 0>>
-translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
-  initializeLLVMTargets();
-
-  // Note: Translation interfaces must be registered before running the pass
-  // pipeline. They are registered in:
-  // 1. registerTritonToHsacoTranslation() for standalone translation use
-  // 2. InitRocMLIRDialects.h for rocmlir-driver and other tools
-
-  // Translate MLIR to LLVM IR (llvm.to_module in compiler.py)
-  llvm::LLVMContext llvmContext;
-  llvmContext.setDiagnosticHandler(std::make_unique<SuppressWarningHandler>());
+std::unique_ptr<llvm::Module>
+mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
+           const mlir::rock::TritonToHsacoOptions &options) {
   // llvm.cc's to_module() calls translateModuleToLLVMIR with verification
   // always enabled, see kVerifyLLVMIR.
   std::unique_ptr<llvm::Module> llvmModule =
@@ -980,7 +715,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                               /*disableVerification=*/!kVerifyLLVMIR);
   if (!llvmModule) {
     llvm::errs() << "Failed to translate module to LLVM IR\n";
-    return failure();
+    return nullptr;
   }
 
   StringRef arch = options.arch;
@@ -995,10 +730,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // implication backwards and take `+xnack` as the request for asan.
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
 
-  // Upstream compiler.py disable_real_true16_feature() passes `-real-true16`
-  // for every gfx11 (RDNA3 / RDNA3.5) kernel, unconditionally, in both
-  // make_amdgcn and make_hsaco. It is no longer gated on fp8 operand usage.
-  bool disableTrue16 = arch.starts_with("gfx11");
   bool enableExpertScheduling =
       isExpertSchedulingEnabled(arch, options.useExpertScheduling);
 
@@ -1012,7 +743,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
                                 options.enableFpFusion,
                                 /*asmComments=*/false);
   if (!tm) {
-    return failure();
+    return nullptr;
   }
   llvmModule->setDataLayout(tm->createDataLayout());
 
@@ -1049,7 +780,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   // Preserve explicit caller-provided libraries, then satisfy any remaining
   // OCML/OCKL references from the copies packaged into rockCompiler.
   if (!linkExternalDeviceLibraries(*llvmModule, options.externLibPaths))
-    return failure();
+    return nullptr;
 
   auto needsLib = [&](StringRef prefix) -> bool {
     return llvm::any_of(llvmModule->functions(), [&](llvm::Function &fn) {
@@ -1060,11 +791,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   for (const EmbeddedDeviceLibrary &library : embeddedDeviceLibraries) {
     if (needsLib(library.symbolPrefix) &&
         !linkEmbeddedDeviceLibrary(*llvmModule, library.filename))
-      return failure();
+      return nullptr;
   }
 
   if (!validateDeviceLibSymbols(*llvmModule))
-    return failure();
+    return nullptr;
 
   // Stamp shared attributes only after linking so outlined device-library
   // definitions use the same backend policy as the kernel. Apply
@@ -1080,13 +811,11 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
       mapToLevel(options.optLevel);
   if (!optLevel.has_value()) {
     llvm::errs() << "Invalid optimization level: " << options.optLevel << "\n";
-    return failure();
+    return nullptr;
   }
 
-  // optimize_module in llvm.cc
   optimizeModule(*llvmModule, tm.get(), arch, optLevel.value(), enableAsan);
 
-  // Handle architected SGPRs (compiler.py lines 427-434)
   if (hasArchitectedSGPRs(triple, arch)) {
     for (llvm::Function &fn : *llvmModule) {
       if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
@@ -1098,7 +827,6 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // scalarize_packed_fops (compiler.py line 436-437)
   if (options.scalarizePackedFops) {
     for (llvm::Function &fn : *llvmModule) {
       if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
@@ -1108,96 +836,302 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     }
   }
 
-  // cleanup_bitcode_metadata in compiler.py
   cleanupBitcodeMetadata(*llvmModule);
-
-  // disable_print_inline in compiler.py
   disablePrintInline(*llvmModule);
+  return llvmModule;
+}
 
-  // make_amdgcn (compiler.py)
-  std::string asmFeatures;
-  if (disableTrue16)
-    asmFeatures = "-real-true16";
-  // Only annotate the assembly when someone has asked to see it below.
-  // getBoolEnv asserts the name is registered in Triton's
-  // CACHE_INVALIDATING_ENV_VARS; a rocMLIR-specific switch must be added there.
-  const bool dumpAmdgcn = triton::tools::getBoolEnv("AMDGCN_ENABLE_DUMP");
-  auto tmAsm =
-      createTargetMachine(*llvmModule, triple, arch, asmFeatures,
-                          options.enableFpFusion, /*asmComments=*/dumpAmdgcn);
-  if (!tmAsm) {
-    return failure();
+//===----------------------------------------------------------------------===//
+// make_amdgcn - LLVM IR to AMDGCN assembly
+//===----------------------------------------------------------------------===//
+
+struct TritonAMDGPUCodegenOptions {
+  uint32_t abiVersion;
+  const char *triple;
+  const char *processor;
+  const char *features;
+  const char *abi;
+  const char *flags;
+  const char *disabledPasses;
+  uint8_t enableFPFusion;
+  uint8_t disableOptimization;
+  uint8_t canonicalizeGEP;
+  uint8_t dumpIR;
+  uint8_t enableTiming;
+};
+
+/// RAII container for triton_amd_codegen library
+class TritonAMDGPUCodegenLibrary {
+public:
+  using CompileFn = int (*)(const char *llvmIR, size_t llvmIRSize,
+                            const TritonAMDGPUCodegenOptions *options,
+                            char **amdgcn, size_t *amdgcnSize, char **error);
+  using AssembleFn = int (*)(const char *assembly, size_t assemblySize,
+                             const char *triple, const char *processor,
+                             const char *features, char **object,
+                             size_t *objectSize, char **error);
+  using FreeFn = void (*)(void *pointer);
+  using RevFn = char (*)();
+
+  CompileFn compile;
+  AssembleFn assemble;
+  void (*free)(void *pointer);
+  const char *(*revision)();
+
+  static const TritonAMDGPUCodegenLibrary &getLibrary() {
+    if (library)
+      return *library;
+    library = new TritonAMDGPUCodegenLibrary();
+    return *library;
   }
 
-  // Dump LLVM IR if LLVM_IR_ENABLE_DUMP is set.
+private:
+  TritonAMDGPUCodegenLibrary() {
+#ifdef _WIN32
+    const char *libraryName = "triton_amd_codegen.dll";
+#else
+    const char *libraryName = "libtriton_amd_codegen.so";
+#endif
+
+    handle = dlopen(libraryName, RTLD_LOCAL | RTLD_NOW);
+    if (char *error = dlerror())
+      llvm::errs() << "Error in dlopen: " << error << '\n';
+
+    compile =
+        reinterpret_cast<CompileFn>(dlsym(handle, "triton_amdgpu_compile"));
+    assemble =
+        reinterpret_cast<AssembleFn>(dlsym(handle, "triton_amdgpu_assemble"));
+    free =
+        reinterpret_cast<void (*)(void *)>(dlsym(handle, "triton_amdgpu_free"));
+    revision = reinterpret_cast<const char *(*)()>(
+        dlsym(handle, "triton_amdgpu_revision"));
+    if (!compile || !assemble || !free || !revision)
+      llvm::errs() << "Error finding symbols: " << dlerror() << '\n';
+  }
+
+  ~TritonAMDGPUCodegenLibrary() { dlclose(handle); }
+
+  // Disable copy and move
+  TritonAMDGPUCodegenLibrary(const TritonAMDGPUCodegenLibrary &) = delete;
+  TritonAMDGPUCodegenLibrary &
+  operator=(const TritonAMDGPUCodegenLibrary &) = delete;
+  TritonAMDGPUCodegenLibrary(TritonAMDGPUCodegenLibrary &&) = delete;
+  TritonAMDGPUCodegenLibrary &operator=(TritonAMDGPUCodegenLibrary &&) = delete;
+
+  inline static TritonAMDGPUCodegenLibrary *library = nullptr;
+  void *handle = nullptr;
+};
+
+std::string compileAMDGPU(llvm::Module &module, const std::string &triple,
+                          const std::string &processor,
+                          const std::string &features, const std::string &flags,
+                          bool enableFPFusion) {
+  std::string llvmBitcode;
+  llvm::raw_string_ostream stream(llvmBitcode);
+  llvm::WriteBitcodeToFile(module, stream);
+
+  TritonAMDGPUCodegenOptions codegenOptions{
+      .abiVersion = 1,
+      .triple = triple.c_str(),
+      .processor = processor.c_str(),
+      .features = features.c_str(),
+      .abi = "",
+      .flags = flags.c_str(),
+      .disabledPasses = "",
+      .enableFPFusion = enableFPFusion,
+      .disableOptimization = 0,
+      .canonicalizeGEP = 0,
+      .dumpIR = 0,
+      .enableTiming = 0,
+  };
+  char *amdgcnAsm = nullptr;
+  size_t amdgcnAsmSize = 0;
+  char *error = nullptr;
+
+  const auto &library = TritonAMDGPUCodegenLibrary::getLibrary();
+  if (library.compile(llvmBitcode.data(), llvmBitcode.size(), &codegenOptions,
+                      &amdgcnAsm, &amdgcnAsmSize, &error) != 0) {
+    llvm::errs() << "Failed compiling to AMDGCN: " << error << '\n';
+    library.free(error);
+    return "";
+  }
+
+  std::string amdgcnAsmStr(amdgcnAsm, amdgcnAsmSize);
+  library.free(amdgcnAsm);
+  return amdgcnAsmStr;
+}
+
+/// Translate LLVM IR module to AMDGCN assembly string
+std::string makeAMDGCN(llvm::Module &module,
+                       const mlir::rock::TritonToHsacoOptions &options) {
+
+  std::string features;
+  std::string flags;
+  if (options.arch == "gfx1250" &&
+      isExpertSchedulingEnabled(options.arch, options.useExpertScheduling)) {
+    flags = "amdgpu-anti-hints-for-va-vdst";
+  }
+
+  std::string amdgcnAsm =
+      compileAMDGPU(module, options.triple, options.arch, features, flags,
+                    options.enableFpFusion);
+  return amdgcnAsm;
+}
+
+//===----------------------------------------------------------------------===//
+// make_hsaco - AMDGCN assembly to HSACO binary
+//===----------------------------------------------------------------------===//
+
+/// Assemble AMDGCN assembly to object code (amd.assemble_amdgcn)
+std::string assembleAMDGCN(const std::string &assembly,
+                           const std::string &triple,
+                           const std::string &processor,
+                           const std::string &features) {
+  char *objectFile = nullptr;
+  size_t objectFileSize = 0;
+  char *error = nullptr;
+  const auto &library = TritonAMDGPUCodegenLibrary::getLibrary();
+  if (library.assemble(assembly.c_str(), assembly.size(), triple.c_str(),
+                       processor.c_str(), features.c_str(), &objectFile,
+                       &objectFileSize, &error) != 0) {
+    llvm::errs() << "Failed to assemble AMDGCN: " << error << '\n';
+    library.free(error);
+    return "";
+  }
+  std::string objectFileStr(objectFile, objectFileSize);
+  library.free(objectFile);
+  return objectFileStr;
+}
+
+// Copy of lldInvoke() in
+// triton_amd.cc lldInvoke
+std::optional<std::string> lldInvoke(const char *inPath, const char *outPath) {
+  // NOTE: lld supports linking any target even if LLVM is not built with the
+  // target support. So AMDGPU target is not necessary (needed only for
+  // triton_amd_codegen library).
+
+  // IMPORTANT: LLD's CommonLinkerContext uses a global static pointer (not
+  // thread_local) to store the linker context. This means lldMain is NOT
+  // thread-safe - concurrent calls will race on the global context pointer.
+  // We must serialize all LLD invocations with a mutex.
+  static std::mutex lldMutex;
+  std::lock_guard<std::mutex> lock(lldMutex);
+
+  std::array args = {"ld.lld", "--threads=1", "-shared", inPath, "-o", outPath};
+  std::string errString;
+  llvm::raw_string_ostream errStream(errString);
+  auto lldRes = lld::lldMain(args, llvm::outs(), errStream,
+                             {{lld::Gnu, &lld::elf::link}});
+  bool noErrors = (!lldRes.retCode && lldRes.canRunAgain);
+  if (!noErrors) {
+    errStream.flush();
+    return errString;
+  }
+  return std::nullopt;
+}
+
+/// Link object file to HSACO using LLD (amd.link_hsaco)
+std::string linkHSACO(const std::string &objectCode) {
+  int tempObjFd = -1;
+  llvm::SmallString<128> tempObjFilename;
+  if (llvm::sys::fs::createTemporaryFile("kernel", "o", tempObjFd,
+                                         tempObjFilename)) {
+    llvm::errs() << "Failed to create temporary object file\n";
+    return "";
+  }
+  llvm::FileRemover cleanupObj(tempObjFilename);
+  {
+    llvm::raw_fd_ostream tempObjOs(tempObjFd, true);
+    tempObjOs << objectCode;
+    tempObjOs.flush();
+  }
+
+  llvm::SmallString<128> tempHsacoFilename;
+  if (llvm::sys::fs::createTemporaryFile("kernel", "hsaco",
+                                         tempHsacoFilename)) {
+    llvm::errs() << "Failed to create temporary HSACO file\n";
+    return "";
+  }
+  llvm::FileRemover cleanupHsaco(tempHsacoFilename);
+
+  // Use lldMain for safe re-entry support (matches triton_amd.cc)
+  auto errOpt = lldInvoke(tempObjFilename.c_str(), tempHsacoFilename.c_str());
+  if (errOpt) {
+    llvm::errs() << "LLD invocation error: " << *errOpt << "\n";
+    return "";
+  }
+
+  auto hsacoFile =
+      llvm::MemoryBuffer::getFile(tempHsacoFilename, /*IsText=*/false);
+  if (!hsacoFile) {
+    llvm::errs() << "Failed to read HSACO file\n";
+    return "";
+  }
+
+  StringRef buffer = (*hsacoFile)->getBuffer();
+  return buffer.str();
+}
+
+/// Convert AMDGCN assembly to HSACO binary - make_hsaco in compiler.py
+std::string makeHSACO(const std::string &amdgcnAsm, const std::string &triple,
+                      const std::string &arch, const std::string &features) {
+  // Assemble to object code
+  auto objectCode = assembleAMDGCN(amdgcnAsm, triple, arch, features);
+  if (objectCode.size() == 0) {
+    return "";
+  }
+
+  // Link to HSACO
+  return linkHSACO(objectCode);
+}
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// Public API
+//===----------------------------------------------------------------------===//
+
+namespace mlir {
+namespace rock {
+
+FailureOr<std::string>
+translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
+  initializeLLVMTargets();
+  llvm::LLVMContext llvmContext;
+
+  auto llvmModule = mlirToLLVM(module, llvmContext, options);
+  if (!llvmModule)
+    return failure();
+
   if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
     llvm::errs() << "// -----// LLVM IR Dump //----- //\n";
     llvmModule->print(llvm::errs(), nullptr);
     llvm::errs() << "\n";
   }
 
-  // LLVMContext::diagnose no longer aborts on a DS_Error diagnostic; it only
-  // records DiagnosticHandler::HasErrors and prints the message. Backend
-  // errors such as the AMDGPU RegisterAllocator out-of-registers error surface
-  // this way during code generation, so propagate them as a failure instead of
-  // emitting a binary for a kernel that the backend rejected.
-  auto codegenFailed = [&] {
-    if (!llvmContext.getDiagHandlerPtr()->HasErrors)
-      return false;
-    llvm::errs() << "LLVM backend reported errors during code generation\n";
-    return true;
-  };
-
-  // Everything below this point intentionally diverges from upstream Triton,
-  // which always emits AMDGCN text and re-parses it. We only pay for the text
-  // when something is going to read it; see `translateLLVMIRToObject` for what
-  // that saves and why upstream has no reason to do the same.
-  //
-  // The assembler in `assembleAMDGCN` is configured with `hsacoFeatures`, which
-  // carries the `+xnack` that asan needs (see `enableAsan` above) and that
-  // `asmFeatures` (and hence `tmAsm`) does not. Emitting the object straight
-  // from `tmAsm` would silently drop it and change the target ID, so the
-  // `+xnack` case keeps the text round trip; its compile time does not matter.
-  if (!enableAsan && !dumpAmdgcn) {
-    std::optional<SmallVector<char, 0>> objectCode =
-        translateLLVMIRToObject(*llvmModule, tmAsm.get());
-    if (!objectCode)
-      return failure();
-    if (codegenFailed())
-      return failure();
-
-    auto hsaco = linkHSACO(*objectCode);
-    if (!hsaco)
-      return failure();
-    return std::move(*hsaco);
-  }
-
-  std::string amdgcnAsm = makeAMDGCN(*llvmModule, tmAsm.get());
+  auto amdgcnAsm = makeAMDGCN(*llvmModule, options);
   if (amdgcnAsm.empty()) {
     llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
   }
 
-  if (codegenFailed())
-    return failure();
-
-  // make_amdgcn (compiler.py)
-  if (dumpAmdgcn) {
+  if (triton::tools::getBoolEnv("AMDGCN_ENABLE_DUMP")) {
     llvm::errs() << "// -----// AMDGCN Dump //----- //\n" << amdgcnAsm << "\n";
   }
 
   // make_hsaco (compiler.py)
   std::string hsacoFeatures;
+  bool enableAsan = (options.features.find("+xnack") != options.features.npos);
   if (enableAsan)
     hsacoFeatures = "+xnack";
-  if (disableTrue16)
-    appendFeature(hsacoFeatures, "-real-true16");
-  auto hsaco = makeHSACO(amdgcnAsm, triple, arch, hsacoFeatures);
-  if (!hsaco) {
+  auto hsaco =
+      makeHSACO(amdgcnAsm, options.triple, options.arch, hsacoFeatures);
+  if (hsaco.empty()) {
+    llvm::errs() << "Failed to make HSACO assembly\n";
     return failure();
   }
 
-  return std::move(*hsaco);
+  return hsaco;
 }
 
 void registerTritonToHsacoTranslation() {
@@ -1222,15 +1156,9 @@ void registerTritonToHsacoTranslation() {
       });
 }
 
-} // namespace rock
-} // namespace mlir
-
 //===----------------------------------------------------------------------===//
 // Pass Wrapper
 //===----------------------------------------------------------------------===//
-
-namespace mlir {
-namespace rock {
 
 #define GEN_PASS_DEF_TRITONTOHSACOPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
@@ -1270,9 +1198,7 @@ public:
     }
 
     // Store the HSACO binary as a module attribute
-    llvm::SmallVector<char, 0> &hsaco = *hsacoOrErr;
-    auto hsacoAttr = StringAttr::get(module.getContext(),
-                                     StringRef(hsaco.data(), hsaco.size()));
+    auto hsacoAttr = StringAttr::get(module.getContext(), *hsacoOrErr);
     module->setAttr("triton.hsaco", hsacoAttr);
   }
 };
