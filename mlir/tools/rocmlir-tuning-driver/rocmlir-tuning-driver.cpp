@@ -129,7 +129,7 @@ using namespace rocmlir::tuningdriver;
 #define HIPCHECK(expr) HIPCHECK_WITH_CONTEXT(expr, "")
 
 // Mirrors _launch() from external/triton/third_party/amd/backend/driver.c
-// (lines 603-646). Simplified: gridY/gridZ always 1, blockSize pre-computed,
+// Simplified: gridY/gridZ always 1, blockSize pre-computed,
 // launch_cooperative_grid always 0. Returns LogicalResult instead of void.
 // Note: hipEventRecord is handled by callers, not by this function.
 // Do not move this to tritonUtils.cpp: that utility library is linked into the

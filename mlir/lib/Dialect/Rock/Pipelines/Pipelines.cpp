@@ -188,8 +188,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   if (options.useOptimizeEpilogue != 0)
     pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
-  pm->addPass(mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands(
-      {options.arch}));
+  pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeDotOperands());
   pm->addNestedPass<mlir::triton::FuncOp>(
       mlir::createTritonAMDGPUHoistLayoutConversions());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -320,7 +319,9 @@ static void makeLLIR(mlir::OpPassManager *pm,
   // options on two separate pipelines; both have to be set to get IEEE
   // denormals end to end.
   bool ftz = options.allowFlushDenorm;
-  pm->addPass(mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz));
+  // TODO: See whether to expose wgp_cu_mode
+  pm->addPass(
+      mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz, false));
   pm->addPass(
       mlir::triton::AMD::createTritonAMDGPUConvertWarpSpecializeToLLVMPass(
           arch));
@@ -768,9 +769,9 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   if (options.compile) {
     // Add the TritonToHsaco pass to convert LLVM dialect to HSACO binary
     // This implements the functionality from Triton's compiler.py:
-    // - make_llir() lines 358-449: LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-    // - make_amdgcn() lines 452-473: LLVM -> AMDGCN assembly
-    // - make_hsaco() lines 476-488: AMDGCN assembly -> HSACO binary
+    // - make_llir(): LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+    // - make_amdgcn(): LLVM -> AMDGCN assembly
+    // - make_hsaco(): AMDGCN assembly -> HSACO binary
     rock::TritonToHsacoPassOptions hsacoOpts;
     hsacoOpts.triple = options.triple;
     hsacoOpts.arch = arch;
