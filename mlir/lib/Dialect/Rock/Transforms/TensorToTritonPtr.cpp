@@ -78,8 +78,7 @@ static bool isReusableConstantGlobal(LLVM::GlobalOp global) {
   return global.getConstant() &&
          global.getLinkage() == LLVM::Linkage::Internal &&
          global.getAddrSpace() == 1 &&
-         global.getAlignment().value_or(0) >= 16 &&
-         (global.getTlsMode() == LLVM::ThreadLocalMode::NotThreadLocal) &&
+         global.getAlignment().value_or(0) >= 16 && !global.getThreadLocal_() &&
          !global.getExternallyInitialized();
 }
 

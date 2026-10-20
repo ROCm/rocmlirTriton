@@ -827,14 +827,7 @@ mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
     }
   }
 
-  if (options.scalarizePackedFops) {
-    for (llvm::Function &fn : *llvmModule) {
-      if (!fn.isDeclaration() && fn.hasExternalLinkage()) {
-        mlir::triton::AMD::runScalarizePackedFOpsPass(fn);
-        break;
-      }
-    }
-  }
+  // TODO: Add MFMA Schedule pass based on options
 
   cleanupBitcodeMetadata(*llvmModule);
   disablePrintInline(*llvmModule);
