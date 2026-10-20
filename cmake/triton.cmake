@@ -17,11 +17,11 @@ include(FetchContent)
 
 set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_TAG "rocmlirTriton"
+set(ROCMLIR_LLVM_GIT_TAG "rmt-core-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
 set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
-set(ROCMLIR_TRITON_GIT_TAG "rocmlirTriton"
+set(ROCMLIR_TRITON_GIT_TAG "rmt-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
 
 message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_TAG}")
@@ -512,4 +512,3 @@ function(rocmlir_add_triton_includes target)
     target_include_directories(obj.${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
   endif()
 endfunction(rocmlir_add_triton_includes)
-

@@ -27,7 +27,7 @@ endif()
 # AMD code-generation LLVM from Triton cmake/amd-llvm-build-info.json
 set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the standalone AMD code-generation LLVM")
-set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG "rmt-amd"
+set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG "rmt-amd-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the standalone AMD code-generation LLVM")
 set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG}-1"
     CACHE STRING
