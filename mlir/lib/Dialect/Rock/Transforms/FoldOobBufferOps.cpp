@@ -819,8 +819,6 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
   switch (isaFamily) {
   // gfx9 has no OOB_SELECT field, so a zero-stride buffer always checks the
   // offset against NumRecords.
-  case triton::amdgpu::ISAFamily::GCN5_1:
-  case triton::amdgpu::ISAFamily::CDNA1:
   case triton::amdgpu::ISAFamily::CDNA2:
   case triton::amdgpu::ISAFamily::CDNA3:
   case triton::amdgpu::ISAFamily::CDNA4:
@@ -834,7 +832,7 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
   // gfx1250 rebuilds the descriptor with a 45-bit NumRecords, shifting flags
   // left by 28 so only bits [3:0] survive: swizzle_enable, a one-bit OOB_select
   // that checks the offset either way at zero stride, and a two-bit type.
-  case triton::amdgpu::ISAFamily::GFX1250: {
+  case triton::amdgpu::ISAFamily::CDNA5: {
     constexpr uint64_t swizzleEnable = 1, typeMask = 3 << 2;
     return (bits & (swizzleEnable | typeMask)) == 0;
   }
@@ -875,7 +873,7 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
   // declines everywhere rather than modelling one target's rule. The field
   // width is what names all ones.
   unsigned fieldBits =
-      isaFamily == triton::amdgpu::ISAFamily::GFX1250 ? 45 : 32;
+      isaFamily == triton::amdgpu::ISAFamily::CDNA5 ? 45 : 32;
   if (lowest->isZero() ||
       ugeAtCommonWidth(*highest, APInt::getMaxValue(fieldBits)))
     return std::nullopt;

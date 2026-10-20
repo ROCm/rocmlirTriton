@@ -99,7 +99,7 @@ static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
   if (withScale && mfmaVersion < 4)
     return false;
 
-  // All known MFMA tile sizes across CDNA1/CDNA2/CDNA3/CDNA4:
+  // All known MFMA tile sizes across CDNA2/CDNA3/CDNA4:
   // - 16x16: mfma_f32_16x16x*, mfma_i32_16x16x*,
   // mfma_scale_f32_16x16x128_f8f6f4
   // - 32x32: mfma_f32_32x32x*, mfma_i32_32x32x*, mfma_scale_f32_32x32x64_f8f6f4
@@ -328,7 +328,7 @@ bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   // We deliberately do NOT probe through getMatrixAccelKind here, because
   // Triton's composeMfmaKeyFor silently rewrites OCP FP8 (E4M3FN / E5M2)
   // inputs to f16 on any MFMA v<=3 (see MfmaGroup.cpp), which would make
-  // such a probe report MFMA success on CDNA1 / CDNA2 / CDNA3 even though
+  // such a probe report MFMA success on  CDNA2 / CDNA3 even though
   // those archs have no native FP8 intrinsics. The version cut-offs below
   // mirror the Triton MFMA / WMMA databases:
   //   - MFMA v3 (CDNA3 / gfx942) : FNUZ FP8 native.
@@ -384,7 +384,7 @@ int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
   switch (isaFamily) {
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return 8;
   default:
     return 1;
@@ -411,13 +411,11 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
     if (numCUs == 64)
       return 2;
     return 1;
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     if (numCUs == 256)
       return 8;
     return 1;
   case ISAFamily::Unknown:
-  case ISAFamily::GCN5_1:
-  case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::RDNA3:
   case ISAFamily::RDNA4m:
@@ -432,10 +430,6 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
-  case ISAFamily::GCN5_1:
-    return 10;
-  case ISAFamily::CDNA1:
-    return 120;
   case ISAFamily::CDNA2:
     return 104;
   case ISAFamily::CDNA3:
@@ -447,7 +441,7 @@ int64_t mlir::rock::getMinNumCU(StringRef arch) {
     return 2;
   case ISAFamily::RDNA4:
     return 12;
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return 256;
   case ISAFamily::GFX1310:
     return 32;
@@ -528,17 +522,13 @@ int64_t mlir::rock::getLastLevelCacheSize(StringRef arch) {
   // under-size a cache-flush buffer rather than merely blunt a load hint. Give
   // each one a per-chip entry as soon as real numbers exist.
   switch (isaFamily) {
-  // No Infinity Cache: L2 is the last level (largest L2 in the family).
-  case ISAFamily::GCN5_1:
-    return 4 * kMiB;
-  case ISAFamily::CDNA1:
   case ISAFamily::CDNA2: // per-GCD
     return 8 * kMiB;
   // Infinity Cache.
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
     return 256 * kMiB;
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return 192 * kMiB;
   case ISAFamily::RDNA3:
     return 96 * kMiB;
@@ -558,8 +548,6 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
 
   switch (isaFamily) {
-  case ISAFamily::GCN5_1:
-  case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
@@ -568,7 +556,7 @@ int64_t mlir::rock::getMaxWavesPerEU(StringRef arch) {
   case ISAFamily::RDNA3:
   case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
   case ISAFamily::GFX1310:
     return 16;
     break;
@@ -582,9 +570,6 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   auto [isaFamily, chip] = getArch(arch);
 
   switch (isaFamily) {
-  case ISAFamily::GCN5_1:
-  case ISAFamily::CDNA1:
-    return 256;
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
@@ -602,7 +587,7 @@ int64_t mlir::rock::getVGPRsPerEU(StringRef arch) {
   case ISAFamily::RDNA4:
   case ISAFamily::GFX1310:
     return 1536;
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return 1024;
   case ISAFamily::Unknown:
     return 512;
@@ -681,7 +666,7 @@ bool mlir::rock::supportsTDM(StringRef arch) {
 bool mlir::rock::tritonLowersTanhToNativeInst(StringRef arch) {
   auto [isaFamily, _] = getArch(arch);
   switch (isaFamily) {
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return true;
   case ISAFamily::GFX1310:
     // TODO(gfx1310): Backend LLVM supports lowering to tanh, but the lowering
@@ -690,8 +675,6 @@ bool mlir::rock::tritonLowersTanhToNativeInst(StringRef arch) {
     // intrinsic.
     return false;
   case ISAFamily::Unknown:
-  case ISAFamily::GCN5_1:
-  case ISAFamily::CDNA1:
   case ISAFamily::CDNA2:
   case ISAFamily::CDNA3:
   case ISAFamily::CDNA4:
