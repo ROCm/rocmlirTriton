@@ -46,15 +46,15 @@ module attributes {rock.arch = "gfx942"} {
   // deliberately do not.
   // CHECK-LABEL: llvm.func @arith_f32
   // CHECK-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : f32
-  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f32
-  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f32
-  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : f32
+  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
+  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
+  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
   // CHECK-DAG: llvm.fneg %{{.*}} {fastmathFlags = #llvm.fastmath<nsz>} : f32
   // CHECK-DAG: llvm.frem %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz>} : f32
   // CHECK-DAG: llvm.intr.maxnum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nnan, nsz>}
   // CHECK-DAG: llvm.intr.maximum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz>}
   // CHECK-DAG: llvm.intr.minimum(%{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz>}
-  // CHECK-DAG: llvm.intr.fma(%{{.*}}, %{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract>}
+  // CHECK-DAG: llvm.intr.fma(%{{.*}}, %{{.*}}, %{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>}
   //
   // NOFM-LABEL: llvm.func @arith_f32
   // NOFM-DAG: llvm.fdiv %{{.*}}, %{{.*}} : f32
@@ -71,9 +71,9 @@ module attributes {rock.arch = "gfx942"} {
   // The packed conversion applies at f32 too, so it is checked here rather than
   // only on bf16.
   // PACKED-LABEL: llvm.func @arith_f32
-  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : vector<2xf32>
-  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : vector<2xf32>
-  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract>} : vector<2xf32>
+  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xf32>
+  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xf32>
+  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xf32>
   // PACKED-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : f32
   func.func @arith_f32(%a: tensor<4096xf32>, %b: tensor<4096xf32>,
                        %c: tensor<4096xf32>, %out: tensor<4096xf32>)

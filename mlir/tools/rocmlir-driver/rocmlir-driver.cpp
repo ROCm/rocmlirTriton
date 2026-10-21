@@ -135,12 +135,13 @@ static cl::opt<std::string> perfConfig(
 
 static cl::opt<bool> disableFastMath(
     "disable-fast-math", cl::init(false),
-    cl::desc("Skip rock-allow-fast-math-flags after split-k regularization "
-             "(by default the pass tags float ops with fastmath flags like "
-             "arcp/contract/nsz/afn), and keep every f32 tt.dot at IEEE "
-             "precision. Expect a perf drop larger than the relaxations "
-             "themselves are worth: the quick tuning list is tuned with the "
-             "3xBF16 dot decomposition enabled on gfx950"));
+    cl::desc(
+        "Skip rock-allow-fast-math-flags and, with it, the clamp fold "
+        "(by default the pass tags float ops with fastmath flags like "
+        "arcp/contract/reassoc/nsz/afn), and keep every f32 tt.dot at IEEE "
+        "precision. Expect a perf drop larger than the relaxations "
+        "themselves are worth: the quick tuning list is tuned with the "
+        "3xBF16 dot decomposition enabled on gfx950"));
 
 /// Values copied out of the `cl::opt`s above before any pipeline runs.
 ///
