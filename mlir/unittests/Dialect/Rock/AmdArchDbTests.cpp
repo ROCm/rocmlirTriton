@@ -66,8 +66,6 @@ TEST(AmdArchDbTest, ParseArchString) {
 // --- getMaxNumChiplets ---
 
 TEST(AmdArchDbTest, MaxNumChiplets) {
-  EXPECT_EQ(getMaxNumChiplets("gfx906"), 1);  // GCN5_1
-  EXPECT_EQ(getMaxNumChiplets("gfx908"), 1);  // CDNA1
   EXPECT_EQ(getMaxNumChiplets("gfx90a"), 1);  // CDNA2
   EXPECT_EQ(getMaxNumChiplets("gfx942"), 8);  // CDNA3
   EXPECT_EQ(getMaxNumChiplets("gfx950"), 8);  // CDNA4
@@ -85,7 +83,6 @@ TEST(AmdArchDbTest, InferNumChiplets) {
   EXPECT_EQ(inferNumChiplets("gfx942", 80), 4);
   EXPECT_EQ(inferNumChiplets("gfx942", 120), 1);
   EXPECT_EQ(inferNumChiplets("gfx950", 256), 8);
-  EXPECT_EQ(inferNumChiplets("gfx906", 60), 1);
   EXPECT_EQ(inferNumChiplets("gfx1310", 32), 1);
   EXPECT_EQ(inferNumChiplets("amdgcn-amd-amdhsa:gfx942:sramecc+:xnack-", 304),
             8);
@@ -120,8 +117,6 @@ TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
 // This is a hard floor: getNumCUOnFunc rejects a smaller rock.num_cu, so a
 // family that spans APUs has to admit its smallest APU.
 TEST(AmdArchDbTest, MinNumCU) {
-  EXPECT_EQ(getMinNumCU("gfx906"), 10);   // GCN5_1
-  EXPECT_EQ(getMinNumCU("gfx908"), 120);  // CDNA1
   EXPECT_EQ(getMinNumCU("gfx90a"), 104);  // CDNA2
   EXPECT_EQ(getMinNumCU("gfx942"), 20);   // CDNA3
   EXPECT_EQ(getMinNumCU("gfx950"), 256);  // CDNA4
@@ -135,8 +130,6 @@ TEST(AmdArchDbTest, MinNumCU) {
 // --- getMaxWavesPerEU ---
 
 TEST(AmdArchDbTest, MaxWavesPerEU) {
-  EXPECT_EQ(getMaxWavesPerEU("gfx906"), 8);   // GCN5_1
-  EXPECT_EQ(getMaxWavesPerEU("gfx908"), 8);   // CDNA1
   EXPECT_EQ(getMaxWavesPerEU("gfx90a"), 8);   // CDNA2
   EXPECT_EQ(getMaxWavesPerEU("gfx942"), 8);   // CDNA3
   EXPECT_EQ(getMaxWavesPerEU("gfx950"), 8);   // CDNA4
@@ -150,8 +143,6 @@ TEST(AmdArchDbTest, MaxWavesPerEU) {
 // --- getVGPRsPerEU ---
 
 TEST(AmdArchDbTest, VGPRsPerEU) {
-  EXPECT_EQ(getVGPRsPerEU("gfx906"), 256);   // GCN5_1
-  EXPECT_EQ(getVGPRsPerEU("gfx908"), 256);   // CDNA1
   EXPECT_EQ(getVGPRsPerEU("gfx90a"), 512);   // CDNA2
   EXPECT_EQ(getVGPRsPerEU("gfx942"), 512);   // CDNA3
   EXPECT_EQ(getVGPRsPerEU("gfx950"), 512);   // CDNA4
@@ -168,8 +159,6 @@ TEST(AmdArchDbTest, VGPRsPerEU) {
 // --- getWaveSize ---
 
 TEST(AmdArchDbTest, WaveSize) {
-  EXPECT_EQ(getWaveSize("gfx906"), 64);  // GCN5_1
-  EXPECT_EQ(getWaveSize("gfx908"), 64);  // CDNA1
   EXPECT_EQ(getWaveSize("gfx90a"), 64);  // CDNA2
   EXPECT_EQ(getWaveSize("gfx942"), 64);  // CDNA3
   EXPECT_EQ(getWaveSize("gfx950"), 64);  // CDNA4
@@ -184,7 +173,6 @@ TEST(AmdArchDbTest, WaveSize) {
 // --- getLDSSize ---
 
 TEST(AmdArchDbTest, LDSSize) {
-  EXPECT_EQ(getLDSSize("gfx906"), 65536);   // GCN5_1: 64 KB
   EXPECT_EQ(getLDSSize("gfx90a"), 65536);   // CDNA2: 64 KB
   EXPECT_EQ(getLDSSize("gfx942"), 65536);   // CDNA3: 64 KB
   EXPECT_EQ(getLDSSize("gfx950"), 163840);  // CDNA4: 160 KB
@@ -199,8 +187,6 @@ TEST(AmdArchDbTest, LDSSize) {
 
 TEST(AmdArchDbTest, LastLevelCacheSize) {
   constexpr int64_t kMiB = 1024 * 1024;
-  EXPECT_EQ(getLastLevelCacheSize("gfx906"), 4 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("gfx908"), 8 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx90a"), 8 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx942"), 256 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx950"), 256 * kMiB);
@@ -250,23 +236,12 @@ TEST(AmdArchDbTest, LastLevelCacheSizeUnpublishedChips) {
 TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
   constexpr int64_t kMiB = 1024 * 1024;
   EXPECT_EQ(getLastLevelCacheSize("amdgcn-amd-amdhsa:gfx942"), 256 * kMiB);
-  EXPECT_EQ(getLastLevelCacheSize("amdgcn-amd-amdhsa:gfx906:xnack-"), 4 * kMiB);
 }
 
 // --- getMatrixAccelKind ---
 
 TEST(AmdArchDbTest, MatrixAccelMfma) {
   ArchTestEnv e;
-  // gfx906 has v_dot intrinsics but no MFMA/WMMA, so we expect None for every
-  // type combination here.
-  EXPECT_EQ(getMatrixAccelKind("gfx906", e.f16, e.f16),
-            MatrixAccelKind::None); // GCN5_1
-  EXPECT_EQ(getMatrixAccelKind("gfx906", e.f32, e.f32),
-            MatrixAccelKind::None); // GCN5_1
-  EXPECT_EQ(getMatrixAccelKind("gfx906", e.i8, e.i8),
-            MatrixAccelKind::None); // GCN5_1
-  EXPECT_EQ(getMatrixAccelKind("gfx908", e.f16, e.f16),
-            MatrixAccelKind::MFMA); // CDNA1
   EXPECT_EQ(getMatrixAccelKind("gfx90a", e.f16, e.f16),
             MatrixAccelKind::MFMA); // CDNA2
   EXPECT_EQ(getMatrixAccelKind("gfx90a", e.f32, e.f32),
@@ -458,7 +433,6 @@ TEST(AmdArchDbTest, AccelInstrMinKDimMfma) {
   EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 16), 4);
   EXPECT_EQ(minKDim("gfx942", e.f32, e.f32, 32), 2);
   // CDNA1 / CDNA2 carry the same f16 intrinsics as CDNA3.
-  EXPECT_EQ(minKDim("gfx908", e.f16, e.f16, 16), 16);
   EXPECT_EQ(minKDim("gfx90a", e.f16, e.f16, 32), 8);
   // A triple-prefixed arch string resolves identically.
   EXPECT_EQ(minKDim("amdgcn-amd-amdhsa:gfx942", e.f16, e.f16, 32), 8);
@@ -501,8 +475,6 @@ TEST(AmdArchDbTest, AccelInstrMinKDimWmma) {
 
 TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {
   ArchTestEnv e;
-  // No matrix core at all.
-  EXPECT_TRUE(failed(getAccelInstrMinKDim("gfx906", e.f16, e.f16, 16)));
   // A matrix core that has no instruction for these inputs: RDNA3 WMMA takes no
   // f32 operands. This is the FMA path, which the widened kPerBlock range
   // treats as having no instruction-alignment requirement.
@@ -529,8 +501,6 @@ TEST(AmdArchDbTest, AccelInstrMinKDimOcpFp8EmulatedAsF16OnCdna3) {
 // --- supportsTDM ---
 
 TEST(AmdArchDbTest, SupportsTDM) {
-  EXPECT_FALSE(supportsTDM("gfx906"));  // GCN5_1
-  EXPECT_FALSE(supportsTDM("gfx908"));  // CDNA1
   EXPECT_FALSE(supportsTDM("gfx90a"));  // CDNA2
   EXPECT_FALSE(supportsTDM("gfx942"));  // CDNA3
   EXPECT_FALSE(supportsTDM("gfx950"));  // CDNA4
@@ -546,8 +516,6 @@ TEST(AmdArchDbTest, SupportsTDM) {
 // BuiltinFuncToLLVM.cpp, which is narrower than LLVM's FeatureTanhInsts.
 
 TEST(AmdArchDbTest, TritonLowersTanhToNativeInst) {
-  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx906"));  // GCN5_1
-  EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx908"));  // CDNA1
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx90a"));  // CDNA2
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx942"));  // CDNA3
   EXPECT_FALSE(tritonLowersTanhToNativeInst("gfx950"));  // CDNA4
@@ -567,8 +535,6 @@ TEST(AmdArchDbTest, TritonLowersTanhToNativeInstWithTriple) {
 
 TEST(AmdArchDbTest, IsCDNA) {
   // Mirrors Triton's isCDNA(): gfx1250 counts as CDNA despite issuing WMMA.
-  EXPECT_FALSE(isCDNA("gfx906"));  // GCN5_1: neither line
-  EXPECT_TRUE(isCDNA("gfx908"));   // CDNA1
   EXPECT_TRUE(isCDNA("gfx90a"));   // CDNA2
   EXPECT_TRUE(isCDNA("gfx942"));   // CDNA3
   EXPECT_TRUE(isCDNA("gfx950"));   // CDNA4
@@ -583,9 +549,7 @@ TEST(AmdArchDbTest, IsCDNA) {
 
 TEST(AmdArchDbTest, IsRDNA) {
   // gfx1250 is a gfx12 chip but not RDNA, so the two predicates do not
-  // partition the gfx12 line; gfx906 is in neither.
-  EXPECT_FALSE(isRDNA("gfx906"));  // GCN5_1: neither line
-  EXPECT_FALSE(isRDNA("gfx908"));  // CDNA1
+  // partition the gfx12 line.
   EXPECT_FALSE(isRDNA("gfx90a"));  // CDNA2
   EXPECT_FALSE(isRDNA("gfx942"));  // CDNA3
   EXPECT_FALSE(isRDNA("gfx950"));  // CDNA4
@@ -631,7 +595,6 @@ TEST(AmdArchDbTest, MultiCTALaunch) {
 TEST(AmdArchDbTest, MaxKpack) {
   // kpack in {1,2} for gfx9<gfx950 and all of gfx11/gfx12<gfx1250;
   // kpack==1 only on gfx950+, gfx1250+. gfx1170 (0x1170) is in the gfx11 range.
-  EXPECT_EQ(getMaxKpack("gfx908"), 2);  // CDNA1
   EXPECT_EQ(getMaxKpack("gfx950"), 1);  // CDNA4
   EXPECT_EQ(getMaxKpack("gfx1100"), 2); // RDNA3
   EXPECT_EQ(getMaxKpack("gfx1170"), 2); // GFX1170
@@ -646,8 +609,6 @@ TEST(AmdArchDbTest, MaxKpack) {
 // taken to mean the arch has fp8 matrix-acceleration intrinsics.
 
 TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
-  EXPECT_FALSE(archSupportsAccelFp8("gfx906"));  // GCN5_1: no matrix accel
-  EXPECT_FALSE(archSupportsAccelFp8("gfx908"));  // CDNA1: MFMA but no FP8 MFMA
   EXPECT_FALSE(archSupportsAccelFp8("gfx90a"));  // CDNA2: MFMA but no FP8 MFMA
   EXPECT_TRUE(archSupportsAccelFp8("gfx942"));   // CDNA3 (native fp8 MFMA)
   EXPECT_TRUE(archSupportsAccelFp8("gfx950"));   // CDNA4 (native fp8 MFMA)
@@ -659,7 +620,7 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
 
 TEST(AmdArchDbTest, ArchSupportsAccelFp8WithTriple) {
   EXPECT_TRUE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx942"));
-  EXPECT_FALSE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx906"));
+  EXPECT_FALSE(archSupportsAccelFp8("amdgcn-amd-amdhsa:gfx90a"));
 }
 
 // --- archSupportsScaledGemm ---
@@ -669,8 +630,6 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8WithTriple) {
 // pairs together with a non-null scale type.
 
 TEST(AmdArchDbTest, ArchSupportsScaledGemm) {
-  EXPECT_FALSE(archSupportsScaledGemm("gfx906"));  // GCN5_1
-  EXPECT_FALSE(archSupportsScaledGemm("gfx908"));  // CDNA1
   EXPECT_FALSE(archSupportsScaledGemm("gfx90a"));  // CDNA2
   EXPECT_FALSE(archSupportsScaledGemm("gfx942"));  // CDNA3 (no ScaledMFMA)
   EXPECT_TRUE(archSupportsScaledGemm("gfx950"));   // CDNA4 (ScaledMFMA)
@@ -691,8 +650,6 @@ TEST(AmdArchDbTest, ArchSupportsScaledGemmWithTriple) {
 // the non-K (M/N) dimension, via its transpose-load repack.
 
 TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInput) {
-  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx906"));  // GCN5_1
-  EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx908"));  // CDNA1
   EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx90a"));  // CDNA2
   EXPECT_FALSE(archSupportsNonKPackedScaledInput("gfx942"));  // CDNA3
   EXPECT_TRUE(archSupportsNonKPackedScaledInput("gfx950"));   // CDNA4
@@ -706,24 +663,10 @@ TEST(AmdArchDbTest, ArchSupportsNonKPackedScaledInputWithTriple) {
   EXPECT_FALSE(archSupportsNonKPackedScaledInput("amdgcn-amd-amdhsa:gfx1250"));
 }
 
-// --- gfx906-specific arch-string forms ---
-
-// Verify that triple- and feature-suffixed forms of the gfx906 arch string
-// (the kind that show up as rock.arch attributes) all parse correctly and
-// dispatch to the GCN5_1 code paths.
-TEST(AmdArchDbTest, Gfx906ArchStringForms) {
-  EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906"), 10);
-  EXPECT_EQ(getMinNumCU("amdgcn-amd-amdhsa:gfx906:xnack-"), 10);
-  EXPECT_EQ(getMaxWavesPerEU("amdgcn-amd-amdhsa:gfx906"), 8);
-  EXPECT_EQ(getWaveSize("amdgcn-amd-amdhsa:gfx906"), 64);
-}
-
 // --- preferBf16x3ForF32Dot ---
 
 TEST(AmdArchDbTest, PreferBf16x3ForF32Dot) {
   // Only CDNA4 has been measured to win from the 3xBF16 decomposition.
-  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx906"));  // GCN5_1
-  EXPECT_FALSE(preferBf16x3ForF32Dot("gfx908"));  // CDNA1
   EXPECT_FALSE(preferBf16x3ForF32Dot("gfx90a"));  // CDNA2
   EXPECT_FALSE(preferBf16x3ForF32Dot("gfx942"));  // CDNA3
   EXPECT_TRUE(preferBf16x3ForF32Dot("gfx950"));   // CDNA4

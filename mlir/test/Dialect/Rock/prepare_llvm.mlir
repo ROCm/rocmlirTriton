@@ -54,8 +54,8 @@ llvm.func @buffer_alias_scopes(%arg0: !llvm.ptr {llvm.noalias}, %arg1: !llvm.ptr
   %extent = llvm.mlir.constant(128 : i64) : i64
   %stride = llvm.mlir.constant(0 : i16) : i16
   %c0 = llvm.mlir.constant(0 : i32) : i32
-  %rsrc0 = rocdl.make.buffer.rsrc %arg0, %stride, %extent, %flags : !llvm.ptr, i64 to <8>
-  %rsrc1 = rocdl.make.buffer.rsrc %arg1, %stride, %extent, %flags : !llvm.ptr, i64 to <8>
+  %rsrc0 = rocdl.make.buffer.rsrc %arg0, %stride, %extent, %flags : !llvm.ptr to <8>
+  %rsrc1 = rocdl.make.buffer.rsrc %arg1, %stride, %extent, %flags : !llvm.ptr to <8>
   // CHECK: rocdl.raw.ptr.buffer.load
   // CHECK-SAME: alias_scopes = [#[[$BAS0]]]
   // CHECK-SAME: noalias_scopes = [#[[$BAS1]]]

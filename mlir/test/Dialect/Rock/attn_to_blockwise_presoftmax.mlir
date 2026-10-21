@@ -23,7 +23,7 @@ func.func @attn_mask_reshape_nonzero_qk_idx(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %mask_reshaped = rock.transform %mask by <affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)> by [<Unmerge{1, 64, 64} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xi8> to tensor<1x64x64xi8>
   %result = rock.gridwise_attention(%q, %k, %v, %mask_reshaped) preSoftmaxOps = {
@@ -59,7 +59,7 @@ func.func @attn_scalar_broadcast(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %s0 = rock.transform %scale by <affine_map<(d0, d1, d2) -> (d0 + d1 + d2)> by [<Unmerge{1, 1, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 1, 1] -> [1]> : tensor<1xf32> to tensor<1x1x1xf32>
   %s1 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0, 0, 0)> by [<PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>, <Broadcast{1} ["dim1"] at [1] -> ["dim1"] at [1]>, <Broadcast{1} ["dim2"] at [2] -> ["dim2"] at [2]>] bounds = [1, 64, 64] -> [1, 1, 1]> : tensor<1x1x1xf32> to tensor<1x64x64xf32>
@@ -94,7 +94,7 @@ func.func @attn_external_splat_constants(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %cst_scale = arith.constant dense<1.250000e-01> : tensor<1x64x64xf32>
   %cst_fill = arith.constant dense<1.000000e+01> : tensor<1x64x64xf32>
@@ -131,7 +131,7 @@ func.func @attn_splat_constants_in_body(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %mask_reshaped = rock.transform %mask by <affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) * 64 + d2)> by [<Unmerge{1, 64, 64} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 64, 64] -> [4096]> : tensor<4096xi8> to tensor<1x64x64xi8>
   %result = rock.gridwise_attention(%q, %k, %v, %mask_reshaped) preSoftmaxOps = {
@@ -165,7 +165,7 @@ func.func @attn_no_presoftmax_ops(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %result = rock.gridwise_attention(%q, %k, %v) preSoftmaxOps = {
   ^bb0(%arg_qk: tensor<1x64x64xf32>):
@@ -199,7 +199,7 @@ func.func @attn_external_transform_chain(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %t0 = rock.transform %s0 by <affine_map<(d0, d1, d2) -> (d0 + d1 + d2)> by [<Unmerge{1, 1, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 1, 1] -> [1]> : tensor<1xf32> to tensor<1x1x1xf32>
   %t1 = rock.transform %s1 by <affine_map<(d0, d1, d2) -> (d0 + d1 + d2)> by [<Unmerge{1, 1, 1} ["exp0", "exp1", "exp2"] at [0, 1, 2] -> ["dim0"] at [0]>] bounds = [1, 1, 1] -> [1]> : tensor<1xf32> to tensor<1x1x1xf32>
@@ -233,7 +233,7 @@ func.func @attn_external_non_splat_constant(
       rock.block_size = 256 : i32,
       rock.grid_size = 1 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   %cst = arith.constant dense<[[[1.0, 2.0, 3.0, 4.0],
                                  [5.0, 6.0, 7.0, 8.0],
@@ -264,7 +264,7 @@ func.func @error_body_non_splat_constant(
       rock.block_size = 256 : i32,
       rock.grid_size = 1 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-"
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-"
     } {
   // expected-error @below {{'rock.gridwise_attention' op non-splat constant in preSoftmaxBody cannot be tiled}}
   // expected-error @below {{Failed to post process first GEMM output}}
@@ -302,7 +302,7 @@ func.func @attn_single_chiplet_odd_cu(
       rock.block_size = 256 : i32,
       rock.grid_size = 2 : i32,
       rock.kernel,
-      rock.arch = "amdgcn-amd-amdhsa:gfx908:sramecc+:xnack-",
+      rock.arch = "amdgcn-amd-amdhsa:gfx90a:sramecc+:xnack-",
       rock.num_cu = 35 : i64,
       rock.num_chiplets = 1 : i64
     } {

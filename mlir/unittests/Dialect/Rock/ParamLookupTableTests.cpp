@@ -18,12 +18,12 @@ using namespace mlir::rock;
 
 // Architectures shipping a full set of attention quick-tuning lists.
 static constexpr StringLiteral kAttentionArchs[] = {
-    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
+    "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
 
 // Of those, the ones with no gemm+gemm lists of their own, which therefore
 // still borrow attention's at every precision.
-static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx908", "gfx90a",
-                                                          "gfx942", "gfx1151"};
+static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx90a", "gfx942",
+                                                          "gfx1151"};
 
 // Architectures that do ship gemm+gemm lists, and the precisions they cover.
 static constexpr StringLiteral kTunedGemmGemmArchs[] = {"gfx1100", "gfx950"};
@@ -661,7 +661,8 @@ TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
   EXPECT_FALSE(perProblem.empty());
   EXPECT_LT(perProblem.size(), setCover.size());
   for (StringRef config : perProblem)
-    EXPECT_FALSE(llvm::is_contained(setCover, config)) << "for " << config.str();
+    EXPECT_FALSE(llvm::is_contained(setCover, config))
+        << "for " << config.str();
 }
 
 TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {

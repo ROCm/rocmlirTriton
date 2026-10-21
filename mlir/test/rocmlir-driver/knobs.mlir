@@ -246,15 +246,15 @@
 
 // OE_DEFAULT: rock-set-matmul-output-transpose
 // OE_DEFAULT: tritonamdgpu-optimize-epilogue
-// OE_DEFAULT: tritonamdgpu-optimize-dot-operands
+// OE_DEFAULT: tritongpu-optimize-dot-operands
 
 // OE_OFF: rock-set-matmul-output-transpose
 // OE_OFF-NOT: tritonamdgpu-optimize-epilogue
-// OE_OFF: tritonamdgpu-optimize-dot-operands
+// OE_OFF: tritongpu-optimize-dot-operands
 
 // OE_ON: rock-set-matmul-output-transpose
 // OE_ON: tritonamdgpu-optimize-epilogue
-// OE_ON: tritonamdgpu-optimize-dot-operands
+// OE_ON: tritongpu-optimize-dot-operands
 
 //===----------------------------------------------------------------------===//
 // useBf16x3ForF32

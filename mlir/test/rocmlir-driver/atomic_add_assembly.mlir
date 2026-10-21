@@ -1,14 +1,5 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
-// RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t bf16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
-// RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t f32 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
-// RUN: rocmlir-gen --arch gfx906 --store-method atomic_add --operation gemm -t i8 -out_datatype i32 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=BUFFER_ATOMIC_ADD_I32
-
-// RUN: rocmlir-gen --arch gfx908 --store-method atomic_add --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=BUFFER_ATOMIC_ADD_F16
-// RUN: rocmlir-gen --arch gfx908 --store-method atomic_add --operation gemm -t bf16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP
-// RUN: rocmlir-gen --arch gfx908 --store-method atomic_add --operation gemm -t f32 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=BUFFER_ATOMIC_ADD_F32
 
 // RUN: rocmlir-gen --arch gfx90a --store-method atomic_add --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=BUFFER_ATOMIC_ADD_F16
 // RUN: rocmlir-gen --arch gfx90a --store-method atomic_add --operation gemm -t bf16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GLOBAL_ATOMIC_CMPSWAP

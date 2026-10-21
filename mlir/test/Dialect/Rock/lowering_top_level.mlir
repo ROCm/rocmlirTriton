@@ -23,7 +23,7 @@
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}
 // CHECK:       %[[IN3:.*]] = rock.transform %[[IN2]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}Merge{128, 30, 30} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FILTER]] * %[[IN3]]
-func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel, rock.num_cu = 120 : i32} {
+func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.num_cu = 120 : i32} {
   %result = rock.conv(%filter, %input) {
     dilations = [1 : index,  1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -45,7 +45,7 @@ func.func @rock_conv(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}
 // CHECK:       %[[IN3:.*]] = rock.transform %[[IN2]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}Merge{128, 30, 30} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FILTER]] * %[[IN3]]
-func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x1x8x32x32xf16>, %output : tensor<128x1x128x30x30xf16>) -> tensor<128x1x128x30x30xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel, rock.num_cu = 120 : i32} {
+func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x1x8x32x32xf16>, %output : tensor<128x1x128x30x30xf16>) -> tensor<128x1x128x30x30xf16> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.num_cu = 120 : i32} {
   %result = rock.conv(%filter, %input) {
     dilations = [1 : index,  1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -67,7 +67,7 @@ func.func @rock_conv_f16(%filter : tensor<1x128x8x3x3xf16>, %input : tensor<128x
 // CHECK:       %[[IN2:.*]] = rock.transform %[[IN1]] by {{.*}}Embed{1, 1}{{.*}}Embed{1, 1}
 // CHECK:       %[[IN3:.*]] = rock.transform %[[IN2]] by {{.*}}Merge{8, 3, 3} ["gemmK"]{{.*}}Merge{128, 30, 30} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FILTER]] * %[[IN3]]
-func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x8x32x32xi8>, %output : tensor<128x1x128x30x30xi32>) -> tensor<128x1x128x30x30xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel, rock.num_cu = 120 : i32} {
+func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x8x32x32xi8>, %output : tensor<128x1x128x30x30xi32>) -> tensor<128x1x128x30x30xi32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.num_cu = 120 : i32} {
   %result = rock.conv(%filter, %input) {
     dilations = [1 : index,  1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -91,7 +91,7 @@ func.func @rock_conv_i8(%filter : tensor<1x128x8x3x3xi8>, %input : tensor<128x1x
 // CHECK:       %[[OUT2:.*]] = rock.transform %[[OUT1]] by {{.*}}Slice{0, 1, 0, 1} ["0slice", "1slice"]{{.*}}Slice{0, 14, 0, 14} ["0islice", "1islice"]
 // CHECK:       %[[OUT3:.*]] = rock.transform %[[OUT2]] by {{.*}}Merge{1024, 1, 1} ["gemmK"]{{.*}}Merge{128, 14, 14} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FIL3]] * %[[OUT3]]
-func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tensor<128x1x1024x14x14xf32>, %output: tensor<128x1x1024x14x14xf32>) -> tensor<128x1x1024x14x14xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tensor<128x1x1024x14x14xf32>, %output: tensor<128x1x1024x14x14xf32>) -> tensor<128x1x1024x14x14xf32> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 120 : i32} {
   %result = rock.conv_bwd_data(%filter, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -115,7 +115,7 @@ func.func @rock_conv_bwd_data(%filter: tensor<1x1024x1024x1x1xf32>, %input: tens
 // CHECK:       %[[OUT2:.*]] = rock.transform %[[OUT1]] by {{.*}}Slice{0, 3, 0, 3} ["0slice", "1slice"]{{.*}}Slice{0, 32, 0, 32} ["0islice", "1islice"]
 // CHECK:       %[[OUT3:.*]] = rock.transform %[[OUT2]] by {{.*}}Merge{128, 3, 3} ["gemmK"]{{.*}}Merge{128, 32, 32} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FIL3]] * %[[OUT3]]
-func.func @rock_conv_bwd_data_small(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x8x32x32xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel, rock.num_cu = 120 : i32} {
+func.func @rock_conv_bwd_data_small(%filter : tensor<1x128x8x3x3xf32>, %input : tensor<128x1x8x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x8x32x32xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel, rock.num_cu = 120 : i32} {
   %result = rock.conv_bwd_data(%filter, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],
@@ -139,7 +139,7 @@ func.func @rock_conv_bwd_data_small(%filter : tensor<1x128x8x3x3xf32>, %input : 
 // CHECK:       %[[OUT2:.*]] = rock.transform %[[OUT1]] by {{.*}}Slice{0, 1, 0, 1} ["0slice", "1slice"]{{.*}}Slice{0, 14, 0, 14} ["0islice", "1islice"]
 // CHECK:       %[[OUT3:.*]] = rock.transform %[[OUT2]] by {{.*}}Merge{1024, 1, 1} ["gemmK"]{{.*}}Merge{128, 14, 14} ["gemmN"]
 // CHECK:       rock.gemm tr %[[FIL3]] * %[[OUT3]]
-func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: tensor<128x1x1024x14x14xf16>, %output: tensor<128x1x1024x14x14xf16>) -> tensor<128x1x1024x14x14xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.num_cu = 120 : i32} {
+func.func @rock_conv_bwd_data_f16(%filter: tensor<1x1024x1024x1x1xf16>, %input: tensor<128x1x1024x14x14xf16>, %output: tensor<128x1x1024x14x14xf16>) -> tensor<128x1x1024x14x14xf16> attributes {rock.kernel, rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.num_cu = 120 : i32} {
   %result = rock.conv_bwd_data(%filter, %output) {
     dilations = [1 : index, 1 : index],
     filter_layout = ["g", "k", "c", "0", "1"],

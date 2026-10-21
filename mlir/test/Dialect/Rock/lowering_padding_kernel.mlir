@@ -15,7 +15,7 @@
 // CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: rock.gridwise_gemm(%[[padK]], %[[inputK]])
-func.func @rock_conv_kcyx_nchw_nkhw_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<64x32x2x11x11xf32>, %output : tensor<64x32x128x9x9xf32>) -> tensor<64x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel} {
+func.func @rock_conv_kcyx_nchw_nkhw_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<64x32x2x11x11xf32>, %output : tensor<64x32x128x9x9xf32>) -> tensor<64x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni","gi", "ci", "0i", "1i"],
@@ -35,7 +35,7 @@ func.func @rock_conv_kcyx_nchw_nkhw_padding_kernel(%filter : tensor<32x128x2x3x3
 // CHECK: %[[swapped:.*]] = rock.transform %[[gemmFilter]] by {{.*}}PassThrough ["gemmM", "gemmK"]{{.*}}-> ["gemmM", "gemmK"]
 // CHECK-NOT: Pad{{.*}}gemmKPad
 // CHECK: rock.gridwise_gemm(%[[swapped]], %{{.*}})
-func.func @rock_conv_kcyx_nchw_nkhw_no_extra_padding(%filter : tensor<1x128x64x3x3xf32>, %input : tensor<128x1x64x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel} {
+func.func @rock_conv_kcyx_nchw_nkhw_no_extra_padding(%filter : tensor<1x128x64x3x3xf32>, %input : tensor<128x1x64x32x32xf32>, %output : tensor<128x1x128x30x30xf32>) -> tensor<128x1x128x30x30xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni","gi", "ci", "0i", "1i"],
@@ -56,7 +56,7 @@ func.func @rock_conv_kcyx_nchw_nkhw_no_extra_padding(%filter : tensor<1x128x64x3
 // CHECK: %[[padK:.*]] = rock.transform %[[swapped]] by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: %[[inputK:.*]] = rock.transform %{{.*}} by {{.*}}Pad{0, 14} ["gemmKPad"]{{.*}}-> ["gemmK"]
 // CHECK: rock.gridwise_gemm(%[[padK]], %[[inputK]])
-func.func @rock_conv_kcyx_nchw_nkhw_partial_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<128x32x2x11x11xf32>, %output : tensor<128x32x128x9x9xf32>) -> tensor<128x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx908", rock.kernel} {
+func.func @rock_conv_kcyx_nchw_nkhw_partial_padding_kernel(%filter : tensor<32x128x2x3x3xf32>, %input : tensor<128x32x2x11x11xf32>, %output : tensor<128x32x128x9x9xf32>) -> tensor<128x32x128x9x9xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx90a", rock.kernel} {
   %result = rock.conv(%filter, %input) {
     filter_layout = ["g", "k", "c", "0", "1"],
     input_layout = ["ni","gi", "ci", "0i", "1i"],
