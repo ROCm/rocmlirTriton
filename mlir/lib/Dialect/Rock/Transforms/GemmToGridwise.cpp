@@ -203,6 +203,22 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
 
+  // Padding K up to a full kPerBlock makes the last reduction tile read past
+  // the data, which forces a mask onto the loads in the K loop and -- because
+  // the loop has a single body -- narrows them for every iteration, not just
+  // the padded one. Where that narrowing costs something, leave K short
+  // instead and let rock-gridwise-gemm-to-blockwise peel the leftover tail.
+  //
+  // Scaled GEMMs and split-K both rely on operands whose K divides exactly
+  // (quantBlockSize slicing and the split reshape respectively), so they keep
+  // the padding regardless.
+  bool peelKTail =
+      !(scaleA && scaleB) && splitKFactor == 1 &&
+      kTailPeelingPays(size.k, cast<GemmParamsAttr>(params).getKPerBlock(),
+                       elemTypeA, elemTypeB);
+  if (peelKTail)
+    extraPad.k = 0;
+
   a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
   b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
   transformViews([&](Value v) {

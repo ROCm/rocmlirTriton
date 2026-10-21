@@ -58,6 +58,17 @@ std::optional<GemmSize> requiredPadding(Attribute paramsAttr, GemmSize gemmSize,
                                         int64_t mulByMPerBlock = 1,
                                         int64_t mulByNPerBlock = 1);
 
+/// True when padding `gemmK` up to a multiple of `kPerBlock` would narrow the
+/// K loop's global loads below one 32-bit dword, so that peeling the leftover
+/// tail (rock-gridwise-gemm-to-blockwise) buys back more than the extra code
+/// costs. `elemTypeA` and `elemTypeB` are the GEMM operand element types.
+///
+/// This is a performance gate, not a legality one: padding K stays correct for
+/// every shape. See the comment on the definition for the measurements behind
+/// the dword threshold.
+bool kTailPeelingPays(int64_t gemmK, int64_t kPerBlock, Type elemTypeA,
+                      Type elemTypeB);
+
 int64_t obtainBlockSize(int64_t waveSize, GemmParamsAttr params);
 
 /// Build a `ParamsAttr` from `perfConfig`, falling back to `defaults.front()`

@@ -19,6 +19,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <memory>
+#include <numeric>
 
 #define DEBUG_TYPE "rock-tuning-parameter"
 
@@ -131,6 +132,39 @@ std::optional<GemmSize> mlir::rock::requiredPadding(Attribute paramsAttr,
   return calculatePadding(kPerBlock * mulByKPerBlock,
                           mPerBlock * mulByMPerBlock,
                           nPerBlock * mulByNPerBlock, gemmSize);
+}
+
+bool mlir::rock::kTailPeelingPays(int64_t gemmK, int64_t kPerBlock,
+                                  Type elemTypeA, Type elemTypeB) {
+  int64_t kExtra = llvm::alignTo(gemmK, kPerBlock) - gemmK;
+  if (kExtra == 0)
+    return false;
+
+  if (!elemTypeA.isIntOrFloat() || !elemTypeB.isIntOrFloat())
+    return false;
+  int64_t elemBits = std::min(elemTypeA.getIntOrFloatBitWidth(),
+                              elemTypeB.getIntOrFloatBitWidth());
+  // Sub-byte operands reach the loads packed several to a byte, so the width
+  // reasoning below does not describe them. Leave them on the padded path.
+  if (elemBits < 8)
+    return false;
+
+  // Padding K makes the last reduction tile read past the data, so every load
+  // in the K loop becomes masked. Triton sizes a masked load by the mask's
+  // constancy along the contiguous axis, which it derives from the divisibility
+  // of the comparison's bound -- i.e. gcd(kPerBlock, kExtra) elements here.
+  // That width is chosen once, for the one loop body, so the final tile's
+  // constraint applies to every iteration.
+  //
+  // Measured on gfx1151 f16 (M=N=16384, 128x128x64, 15 interleaved rounds):
+  // while the resulting access is still at least a dword the extra
+  // instructions hide behind the matrix-core work -- a 33% larger loop body at
+  // gcd 2 cost [-3.5%, +4.0%] -- but once it drops below a dword they do not,
+  // and gcd 1 cost [+8.9%, +17.5%]. So peel exactly when the access would go
+  // sub-dword: for 16-bit operands that is an odd gemmK, and for 8-bit
+  // operands a gemmK that is not a multiple of four.
+  constexpr int64_t kDwordBits = 32;
+  return std::gcd(kPerBlock, kExtra) * elemBits < kDwordBits;
 }
 
 int64_t mlir::rock::obtainBlockSize(int64_t waveSize, GemmParamsAttr params) {
