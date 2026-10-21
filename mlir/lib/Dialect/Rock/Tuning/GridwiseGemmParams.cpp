@@ -136,6 +136,14 @@ std::optional<GemmSize> mlir::rock::requiredPadding(Attribute paramsAttr,
 
 bool mlir::rock::kTailPeelingPays(int64_t gemmK, int64_t kPerBlock,
                                   Type elemTypeA, Type elemTypeB) {
+  // Escape hatch, and how the padded/peeled A/B below was collected: both
+  // lowerings of one shape from one binary. Read once -- getenv is not safe
+  // against a concurrent setenv.
+  static const bool peelingDisabled =
+      std::getenv("ROCMLIR_DISABLE_K_TAIL_PEELING") != nullptr;
+  if (peelingDisabled)
+    return false;
+
   int64_t kExtra = llvm::alignTo(gemmK, kPerBlock) - gemmK;
   if (kExtra == 0)
     return false;
@@ -150,21 +158,38 @@ bool mlir::rock::kTailPeelingPays(int64_t gemmK, int64_t kPerBlock,
     return false;
 
   // Padding K makes the last reduction tile read past the data, so every load
-  // in the K loop becomes masked. Triton sizes a masked load by the mask's
-  // constancy along the contiguous axis, which it derives from the divisibility
-  // of the comparison's bound -- i.e. gcd(kPerBlock, kExtra) elements here.
-  // That width is chosen once, for the one loop body, so the final tile's
-  // constraint applies to every iteration.
+  // in the K loop becomes masked. Peeling the tail instead removes that mask,
+  // and with it a block of per-iteration address arithmetic, and drops one
+  // trip. What it does *not* do is widen the loads: their width is set by how
+  // the operand rows sit in memory, and padding never moved them. Row m of an
+  // operand starts at byte m * gemmK * sizeof(elem), so an odd gemmK on a
+  // 16-bit operand leaves only 2-byte alignment provable across the tile and
+  // the loads stay 16-bit either way. Peeling is therefore a trade: fewer
+  // instructions on every trip, against an unrolled power-of-two tail paid
+  // once.
   //
-  // Measured on gfx1151 f16 (M=N=16384, 128x128x64, 15 interleaved rounds):
-  // while the resulting access is still at least a dword the extra
-  // instructions hide behind the matrix-core work -- a 33% larger loop body at
-  // gcd 2 cost [-3.5%, +4.0%] -- but once it drops below a dword they do not,
-  // and gcd 1 cost [+8.9%, +17.5%]. So peel exactly when the access would go
-  // sub-dword: for 16-bit operands that is an odd gemmK, and for 8-bit
-  // operands a gemmK that is not a multiple of four.
-  constexpr int64_t kDwordBits = 32;
-  return std::gcd(kPerBlock, kExtra) * elemBits < kDwordBits;
+  // Measured on gfx1151 (M=N=8192, 128x128x64, 32 interleaved samples,
+  // comparing the two lowerings of the same shape), as a function of that row
+  // alignment:
+  //
+  //   16 B   loads b128, no mask to remove            -- nothing to gain
+  //    8 B   loads b64,  mask already free            -- nothing to gain
+  //    4 B   loads b32,  mask already free            -- tail only: f16
+  //                                                      k=2814 +4.7% SLOWER
+  //    2 B   loads 16-bit, mask on the critical path  -- f16 k=2815 -3.8%,
+  //                                                      i8 k=2814 -5.2%
+  //    1 B   loads 8-bit, so load-bound the saved
+  //          instructions are invisible               -- i8 k=2815 +1.9%,
+  //                                                      no gain
+  //
+  // So the trade only pays at exactly 2-byte alignment: wider and the mask
+  // was costing nothing, narrower and removing it changes nothing. For 16-bit
+  // operands that means an odd gemmK; for 8-bit operands, gemmK = 2 (mod 4).
+  //
+  // gcd(kPerBlock, kExtra) * elemBits is that alignment in bits: for a
+  // power-of-two kPerBlock it reduces to 2^v2(gemmK) * elemBits.
+  constexpr int64_t kTwoByteBits = 16;
+  return std::gcd(kPerBlock, kExtra) * elemBits == kTwoByteBits;
 }
 
 int64_t mlir::rock::obtainBlockSize(int64_t waveSize, GemmParamsAttr params) {

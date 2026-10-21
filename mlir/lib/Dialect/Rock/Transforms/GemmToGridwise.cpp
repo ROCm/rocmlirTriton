@@ -204,10 +204,11 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
 
   // Padding K up to a full kPerBlock makes the last reduction tile read past
-  // the data, which forces a mask onto the loads in the K loop and -- because
-  // the loop has a single body -- narrows them for every iteration, not just
-  // the padded one. Where that narrowing costs something, leave K short
-  // instead and let rock-gridwise-gemm-to-blockwise peel the leftover tail.
+  // the data, which forces a mask onto the loads in the K loop -- on every
+  // iteration, since the loop has a single body. For the few operand shapes
+  // where that mask is what the loop is waiting on, leave K short instead and
+  // let rock-gridwise-gemm-to-blockwise peel the leftover tail; see
+  // kTailPeelingPays for which shapes those are and the measurements.
   //
   // Scaled GEMMs and split-K both rely on operands whose K divides exactly
   // (quantBlockSize slicing and the split reshape respectively), so they keep
