@@ -134,7 +134,7 @@
 // TRITON-NEXT:rock-set-matmul-output-transpose,
 // TRITON-NEXT:tritongpu-remove-layout-conversions{disable-remat-splitting=false},
 // TRITON-NEXT:tritonamdgpu-optimize-epilogue,
-// TRITON-NEXT:tritonamdgpu-optimize-dot-operands{gfx-arch=gfx942},
+// TRITON-NEXT:tritongpu-optimize-dot-operands{hoist-layout-conversion=true},
 // TRITON-NEXT:tt.func(tritonamdgpu-hoist-layout-conversions),
 // TRITON-NEXT:tt.func(tritonamdgpu-sink-layout-conversions),
 // TRITON-NEXT:tritongpu-fuse-nested-loops,
@@ -170,7 +170,7 @@
 // TRITON-NEXT:triton-amdgpu-membar{gfx-arch=gfx942},
 // TRITON-NEXT:tritongpu-global-scratch-memory-allocation,
 // TRITON-NEXT:rock-check-lds-limit{arch=gfx942},
-// TRITON-NEXT:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch=gfx942},
+// TRITON-NEXT:convert-triton-amdgpu-to-llvm{cu-mode=false ftz=true gfx-arch=gfx942},
 // TRITON-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{gfx-arch=gfx942},
 // TRITON-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON-NEXT:cse,
@@ -204,7 +204,7 @@
 // TRITON_GFX1250-NEXT:rock-set-matmul-output-transpose,
 // TRITON_GFX1250-NEXT:tritongpu-remove-layout-conversions{disable-remat-splitting=false},
 // TRITON_GFX1250-NEXT:tritonamdgpu-optimize-epilogue,
-// TRITON_GFX1250-NEXT:tritonamdgpu-optimize-dot-operands{gfx-arch=gfx1250},
+// TRITON_GFX1250-NEXT:tritongpu-optimize-dot-operands{hoist-layout-conversion=true},
 // TRITON_GFX1250-NEXT:tt.func(tritonamdgpu-hoist-layout-conversions),
 // TRITON_GFX1250-NEXT:tt.func(tritonamdgpu-sink-layout-conversions),
 // TRITON_GFX1250-NEXT:tritongpu-fuse-nested-loops,
@@ -238,7 +238,7 @@
 // TRITON_GFX1250-NEXT:triton-amdgpu-membar{gfx-arch=gfx1250},
 // TRITON_GFX1250-NEXT:tritongpu-global-scratch-memory-allocation,
 // TRITON_GFX1250-NEXT:rock-check-lds-limit{arch=gfx1250},
-// TRITON_GFX1250-NEXT:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch=gfx1250},
+// TRITON_GFX1250-NEXT:convert-triton-amdgpu-to-llvm{cu-mode=false ftz=true gfx-arch=gfx1250},
 // TRITON_GFX1250-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{gfx-arch=gfx1250},
 // TRITON_GFX1250-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_GFX1250-NEXT:cse,
@@ -274,7 +274,7 @@
 // TRITON_RDNA-NEXT:rock-set-matmul-output-transpose,
 // TRITON_RDNA-NEXT:tritongpu-remove-layout-conversions{disable-remat-splitting=false},
 // TRITON_RDNA-NEXT:tritonamdgpu-optimize-epilogue,
-// TRITON_RDNA-NEXT:tritonamdgpu-optimize-dot-operands{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
+// TRITON_RDNA-NEXT:tritongpu-optimize-dot-operands{hoist-layout-conversion=true},
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-hoist-layout-conversions),
 // TRITON_RDNA-NEXT:tt.func(tritonamdgpu-sink-layout-conversions),
 // TRITON_RDNA-NEXT:tritongpu-fuse-nested-loops,
@@ -310,7 +310,7 @@
 // TRITON_RDNA-NEXT:triton-amdgpu-membar{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:tritongpu-global-scratch-memory-allocation,
 // TRITON_RDNA-NEXT:rock-check-lds-limit{arch={{gfx1100|gfx1170|gfx1201}}},
-// TRITON_RDNA-NEXT:convert-triton-amdgpu-to-llvm{ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
+// TRITON_RDNA-NEXT:convert-triton-amdgpu-to-llvm{cu-mode=false ftz=true gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:triton-amdgpu-convert-warp-specialize-to-llvm{gfx-arch={{gfx1100|gfx1170|gfx1201}}},
 // TRITON_RDNA-NEXT:canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true},
 // TRITON_RDNA-NEXT:cse,
@@ -334,7 +334,7 @@
 // TRITON block above, which matches `ftz=true` on both passes for this same
 // arch; what this adds is that the value follows the option, which a hardcoded
 // `true` would also satisfy above but not here.
-// NOFTZ:convert-triton-amdgpu-to-llvm{ftz=false gfx-arch=gfx942}
+// NOFTZ:convert-triton-amdgpu-to-llvm{cu-mode=false ftz=false gfx-arch=gfx942}
 // NOFTZ:convert-builtin-func-to-llvm{ftz=false gfx-arch=gfx942}
 
 // `--kernel-pipeline=binary` is now strictly the GPU-only compile: it must

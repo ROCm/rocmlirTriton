@@ -1,8 +1,8 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// RUN: rocmlir-gen --arch gfx908 --operation gemm -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=GEMM
-// RUN: rocmlir-gen --arch gfx908 --operation conv -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=CONV
+// RUN: rocmlir-gen --arch gfx90a --operation gemm -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=GEMM
+// RUN: rocmlir-gen --arch gfx90a --operation conv -p -ph --kernel-repeats=5 | FileCheck %s --check-prefix=CONV
 
 // GEMM-LABEL: @rock_gemm_gpu
 // GEMM-DAG: %[[zero:.*]] = arith.constant 0 : index
