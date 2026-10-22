@@ -126,6 +126,8 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
     rocm_install(FILES ${full_output_path}
             DESTINATION lib)
+	rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION lib)
 
     # Backward compatibility to provide `librockCompiler` build target.
     # INTERFACE libraries are not exposed as build targets.
