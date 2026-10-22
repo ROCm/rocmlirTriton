@@ -13,6 +13,7 @@
 
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/ConvolutionDims.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
@@ -1035,6 +1036,23 @@ createGemmGemmTuningRangeQuick(TuningParamSet *newSpace,
   }
 }
 
+static void createElementwiseTuningRangeBF(TuningParamSet *newSpace,
+                                           func::FuncOp funcOp,
+                                           TuningParamSetKind kind) {
+  (void)kind;
+  for (int64_t tileSize : {128, 256, 512, 1024}) {
+    for (int64_t numWaves : {1, 2, 4, 8}) {
+      for (int64_t numStages : {1, 2, 3, 4}) {
+        auto params = ElementwiseParamsAttr::get(funcOp.getContext(), tileSize,
+                                                 /*numCTAs=*/1, numWaves,
+                                                 numStages, /*wavesPerEU=*/0);
+        newSpace->tuningRange.insert(
+            cast<RockTuningParamAttrInterface>(params));
+      }
+    }
+  }
+}
+
 TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
   struct TuningParamSet *newSpace;
   newSpace = new TuningParamSet();
@@ -1078,8 +1096,30 @@ TuningParamSet *createTunableParamSpace(ModuleOp mod, TuningParamSetKind kind) {
         return WalkResult::interrupt();
       });
   if (!findPrimary.wasInterrupted() && !findGemmGemm.wasInterrupted()) {
-    llvm::report_fatal_error("Expected to find GEMM, convolution, attention, "
-                             "gemm+gemm or conv+gemm op, and didn't.");
+    // Check for elementwise-only kernels.
+    bool foundElementwise = false;
+    mod->walk([&](func::FuncOp funcOp) {
+      if (!rock::isElementwiseKernel(funcOp))
+        return;
+      foundElementwise = true;
+      newSpace->primaryOpType = KernelType::Elementwise;
+
+      switch (kind) {
+      case TuningParamSetKind::Quick:
+        llvm::report_fatal_error(
+            "Quick tuning is not yet supported for elementwise kernels");
+        break;
+      case TuningParamSetKind::Full:
+      case TuningParamSetKind::Exhaustive:
+        createElementwiseTuningRangeBF(newSpace, funcOp, kind);
+        break;
+      }
+    });
+    if (!foundElementwise) {
+      llvm::report_fatal_error(
+          "Expected to find GEMM, convolution, attention, "
+          "gemm+gemm, conv+gemm, or elementwise op, and didn't.");
+    }
   }
   return newSpace;
 }
@@ -1112,7 +1152,21 @@ bool tuningSetParam(ModuleOp &mod, ParamEntry *paramEntry) {
         op->setAttr("perf_config", attr);
         return WalkResult::interrupt();
       });
-  return setPrimary.wasInterrupted() || setGemmGemm.wasInterrupted();
+  if (setPrimary.wasInterrupted() || setGemmGemm.wasInterrupted())
+    return true;
+
+  // Elementwise kernel: set perf_config on the function.
+  auto setElem = mod->walk([&](func::FuncOp funcOp) -> WalkResult {
+    if (!rock::isElementwiseKernel(funcOp))
+      return WalkResult::advance();
+    auto *ctx = funcOp.getContext();
+    SmallString<ROCMLIR_TUNING_PARAM_STRING_BUFSZ> perfConfig;
+    paramEntry->param.getPerfConfigStr(perfConfig);
+    StringAttr attr = StringAttr::get(ctx, perfConfig);
+    funcOp->setAttr("perf_config", attr);
+    return WalkResult::interrupt();
+  });
+  return setElem.wasInterrupted();
 }
 
 bool tuningSetStr(ModuleOp &mod, StringRef perfConfig) {
@@ -1132,11 +1186,23 @@ bool tuningSetStr(ModuleOp &mod, StringRef perfConfig) {
     op->setAttr("perf_config", StringAttr::get(ctx, perfConfig));
     ++numGemmGemm;
   });
+
+  auto setElem = mod->walk([&](func::FuncOp funcOp) -> WalkResult {
+    if (!rock::isElementwiseKernel(funcOp))
+      return WalkResult::advance();
+    auto *ctx = funcOp.getContext();
+    StringAttr attr = StringAttr::get(ctx, perfConfig);
+    funcOp->setAttr("perf_config", attr);
+    return WalkResult::interrupt();
+  });
+  bool foundElemKernel = setElem.wasInterrupted();
   assert(numGemm <= 1 && "expected at most one gemm op to stamp");
   assert(numGemmGemm <= 1 && "expected at most one gemm+gemm op to stamp");
   assert(!(numGemm && numGemmGemm) &&
          "expected either a gemm or a gemm+gemm op, not both");
-  return numGemm || numGemmGemm;
+  assert(!((numGemm || numGemmGemm) && foundElemKernel) &&
+         "expected either a FusionRoot op or an elementwise kernel, not both");
+  return numGemm || numGemmGemm || foundElemKernel;
 }
 
 TuningTable *tuningTableCreate() {
@@ -2293,6 +2359,42 @@ std::optional<QuickTuningProblemKey> getQuickTuningProblemKey(ModuleOp mod) {
 // operation. String format of the problem will not be required by the DB,
 // since it can store each field separately.
 // Currently serialize the problem in MIOpenDriver command friendly format
+static LogicalResult getTuningProblemStr(func::FuncOp funcOp,
+                                         SmallVectorImpl<char> &out) {
+  constexpr char sep = ' ';
+  constexpr char tab = '\t';
+  llvm::raw_svector_ostream problemOS(out);
+
+  int64_t numCU = rock::getNumCUValue(funcOp);
+  int64_t numChiplets = rock::getNumChipletsValue(funcOp);
+
+  problemOS << StringRef(rock::getArchValue(funcOp)).trim("\"") << tab;
+  problemOS << numCU << tab;
+  problemOS << numChiplets << tab;
+  problemOS << "elementwise" << sep;
+
+  // Report the biggest tensor shape and datatype.
+  ShapedType biggestType;
+  int64_t maxElems = 0;
+  for (BlockArgument arg : funcOp.getArguments()) {
+    if (auto shaped = dyn_cast<ShapedType>(arg.getType())) {
+      if (shaped.hasStaticShape() && shaped.getNumElements() > maxElems) {
+        maxElems = shaped.getNumElements();
+        biggestType = shaped;
+      }
+    }
+  }
+  if (biggestType) {
+    problemOS << "-t" << sep << biggestType.getElementType() << sep;
+    for (int64_t dim : biggestType.getShape())
+      problemOS << dim << "x";
+    // Remove trailing 'x'.
+    out.pop_back();
+  }
+
+  return success();
+}
+
 LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
   auto serializeWithFusionInfo = [&](auto tuningOp) -> LogicalResult {
     if (failed(getTuningProblemStr(tuningOp, out)))
@@ -2349,7 +2451,14 @@ LogicalResult getTuningProblemStr(ModuleOp mod, SmallVectorImpl<char> &out) {
     if (findGemmGemm.wasInterrupted())
       return serializeWithFusionInfo(gemmGemmOp);
   }
-  return failure();
+  // Try elementwise kernels.
+  LogicalResult elemResult = failure();
+  mod->walk([&](func::FuncOp funcOp) {
+    if (!rock::isElementwiseKernel(funcOp))
+      return;
+    elemResult = getTuningProblemStr(funcOp, out);
+  });
+  return elemResult;
 }
 
 bool tuningTableUpdate(TuningTable *perfTable, StringRef problem,

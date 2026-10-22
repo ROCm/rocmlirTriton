@@ -482,14 +482,21 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
   addWithDCE(rock::createRockRegularizeInterGemmFusionPass());
+  addWithDCE(rock::createRockRegularizeElementwisePass());
   addWithDCE(rock::createRockConvToGemmPass());
   addWithDCE(rock::createRockFusionSplitkRegularizationPass());
+
+  // ElementwiseToGridwise needs to run before GemmToGridwise
+  addWithDCE(rock::createRockElementwiseToGridwisePass());
   addWithDCE(rock::createRockGemmToGridwisePass());
   addWithDCE(rock::createRockAttnToGridwisePass());
 
   // Must run after AttnToGridwise and before GridwiseGemmToBlockwise.
   addWithDCE(rock::createRockDecomposeNonPow2TilesPass());
 
+  // GridwiseElementwiseToBlockwise needs to run before GridwiseAttnToBlockwise
+  // and GridwiseGemmToBlockwise
+  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
   addWithDCE(rock::createRockGridwiseAttnToBlockwisePass());
   addWithDCE(rock::createRockGridwiseGemmToBlockwisePass());
   // Must run after ToBlockwise passes, which build the K loop and the

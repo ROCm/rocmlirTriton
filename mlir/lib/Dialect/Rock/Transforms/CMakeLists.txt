@@ -40,6 +40,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   SortDimensionsMemoryLayout.cpp
   InsertOutputStores.cpp
   InsertOutputFusionLoads.cpp
+  RegularizeElementwise.cpp
   RegularizeInput.cpp
   LowerLoads.cpp
   LowerReduce.cpp
@@ -48,6 +49,8 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
   RockPrepareLLVM.cpp
+  ElementwiseToGridwise.cpp
+  GridwiseElementwiseToBlockwise.cpp
   RockTosaToElementwise.cpp
   RockAllowFastMathFlags.cpp
 

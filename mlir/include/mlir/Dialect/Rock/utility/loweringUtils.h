@@ -72,10 +72,13 @@ bool isAtomicRMWTypeSupported(Type type);
 /// Validate every field shared by Rock GEMM tuning parameter attributes.
 /// `requirePow2MN` and `requirePow2K` select the stricter tile constraints
 /// required by gemm+gemm, scaled GEMMs, and targets without non-power-of-two K
-/// support. Emits an error on `op` for the first invalid field.
+/// support. Elementwise kernels carry sentinel GEMM tile sizes, so
+/// `isElementwiseKernel` skips the m/n/k checks. Emits an error on `op` for
+/// the first invalid field.
 LogicalResult validatePerfConfig(Operation *op,
                                  RockTuningParamAttrInterface params,
-                                 bool requirePow2MN, bool requirePow2K);
+                                 bool requirePow2MN, bool requirePow2K,
+                                 bool isElementwiseKernel = false);
 
 // Heuristic to determine if every element in the output would be written by the
 // backward data convolution algorithm.
@@ -191,6 +194,15 @@ bool isFusionOp(Operation *op);
 // (arith/math elementwise), view-like ops (rock.transform, etc.), and
 // rock.reduce.
 bool isForwardTraceOp(Operation *op);
+
+/// Returns true if `funcOp` is an elementwise-only kernel: has rock.kernel,
+/// no FusionRoot ops and at least one fusion op (arith/math elementwise).
+bool isElementwiseKernel(func::FuncOp funcOp);
+
+/// Collect the inputs of an elementwise kernel: tensor-typed fusion op
+/// operands that trace back (through rock.transform chains) to block arguments
+/// or arith.constant ops, rather than being produced by other fusion ops.
+SetVector<Value> getElementwiseKernelInputs(func::FuncOp funcOp);
 
 /// Walk the fusion chain from `root` (the FusionRoot result) and collect
 /// operands of fusion ops that are NOT in the FusionRoot-result chain. These

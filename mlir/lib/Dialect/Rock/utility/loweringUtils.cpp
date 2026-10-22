@@ -10,6 +10,8 @@
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/IR/RockGemmGemmWrapperInterface.h"
+#include "mlir/Dialect/Rock/IR/RockGemmWrapperInterface.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
@@ -184,20 +186,23 @@ static LogicalResult validateNPerBlockG1(Operation *op, int64_t nPerBlockG1) {
 LogicalResult
 mlir::rock::validatePerfConfig(Operation *op,
                                RockTuningParamAttrInterface params,
-                               bool requirePow2MN, bool requirePow2K) {
-  auto validateMN =
-      requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
-    return failure();
-  if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
-    return failure();
-  if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
-    if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+                               bool requirePow2MN, bool requirePow2K,
+                               bool isElementwiseKernel) {
+  if (!isElementwiseKernel) {
+    auto validateMN =
+        requirePow2MN ? validatePositivePowerOfTwo : validatePositiveValue;
+    if (failed(validateMN(op, "mPerBlock", params.getMPerBlock())))
       return failure();
-  auto validateK =
-      requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
-  if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
-    return failure();
+    if (failed(validateMN(op, "nPerBlock", params.getNPerBlock())))
+      return failure();
+    if (auto gemmGemmParams = dyn_cast<GemmGemmParamsAttr>(params))
+      if (failed(validateNPerBlockG1(op, gemmGemmParams.getNPerBlockG1())))
+        return failure();
+    auto validateK =
+        requirePow2K ? validatePositivePowerOfTwo : validatePositiveValue;
+    if (failed(validateK(op, "kPerBlock", params.getKPerBlock())))
+      return failure();
+  }
   if (failed(validateKpack(op, params.getKpack())))
     return failure();
   if (failed(validateNumCTAs(op, params.getNumCTAs())))
@@ -721,6 +726,41 @@ bool mlir::rock::isFusionOp(Operation *op) {
 
 bool mlir::rock::isForwardTraceOp(Operation *op) {
   return isFusionOp(op) || isa<ViewLikeOpInterface>(op) || isa<ReduceOp>(op);
+}
+
+bool mlir::rock::isElementwiseKernel(func::FuncOp funcOp) {
+  if (!funcOp->hasAttr(KernelAttr::getMnemonic()))
+    return false;
+
+  bool hasFusionRoot = false;
+  bool hasFusionOp = false;
+  funcOp.walk([&](Operation *op) {
+    if (op->hasTrait<OpTrait::rock::FusionRoot>())
+      hasFusionRoot = true;
+    if (isFusionOp(op))
+      hasFusionOp = true;
+  });
+
+  return !hasFusionRoot && hasFusionOp;
+}
+
+SetVector<Value> mlir::rock::getElementwiseKernelInputs(func::FuncOp funcOp) {
+  SetVector<Value> leafInputs;
+  funcOp.walk([&](Operation *op) {
+    if (!isFusionOp(op))
+      return;
+    for (Value operand : op->getOperands()) {
+      if (!isa<RankedTensorType>(operand.getType()))
+        continue;
+      SmallVector<TransformMapAttr> transforms;
+      auto [underlying, _] = rock::untransform(operand, transforms);
+      if (!isa<BlockArgument>(underlying) &&
+          !underlying.getDefiningOp<arith::ConstantOp>())
+        continue;
+      leafInputs.insert(operand);
+    }
+  });
+  return leafInputs;
 }
 
 FusionInfo mlir::rock::collectFusionInfo(Value root) {
