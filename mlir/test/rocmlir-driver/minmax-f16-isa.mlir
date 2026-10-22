@@ -60,15 +60,16 @@
 // GFX1170-DAG: v_pk_maximum_f16
 // GFX1170-DAG: v_pk_minimum_f16
 
-// gfx1250's packed f16 ops come out in the three-operand form instead.
+// gfx1250 now lowers packed f16 min/max to the two-operand IEEE forms, like
+// gfx1170.
 // RUN: rocmlir-gen --clone-harness -arch gfx1250 -fut mlir_minmax_f16 %s \
 // RUN: | rocmlir-driver -disable-fast-math -arch=gfx1250 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -disable-fast-math -arch=gfx1250 -kernel-pipeline=gpu,triton,binary -o /dev/null > %t.gfx1250 2>&1
 // RUN: FileCheck %s --check-prefix=GFX1250 < %t.gfx1250
 // RUN: FileCheck /dev/null --implicit-check-not=v_cndmask < %t.gfx1250
 
-// GFX1250-DAG: v_pk_maximum3_f16
-// GFX1250-DAG: v_pk_minimum3_f16
+// GFX1250-DAG: v_pk_maximum_f16
+// GFX1250-DAG: v_pk_minimum_f16
 
 module {
   func.func @mlir_minmax_f16(%a: !migraphx.shaped<1x256x256xf16, 65536x256x1>,
