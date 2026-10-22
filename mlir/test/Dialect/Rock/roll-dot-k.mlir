@@ -276,11 +276,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #blocked = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [16, 2], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 2], order = [0, 1]}>
 #blocked2 = #ttg.blocked<{sizePerThread = [4, 4], threadsPerWarp = [4, 8], warpsPerCTA = [2, 1], order = [1, 0]}>
-// The same padding as above, reached through a partitioned encoding. What the
-// partitioned encoding wraps does not matter, and in particular the layout
-// comparison is never reached here: `toLinearLayout` asserts on a partitioned
-// encoding wrapping a padded one.
-#padded = #ttg.padded_shared<[128:+4] {order = [0, 1], shape = [128, 64]}>
+// The same padding as above, reached through a partitioned encoding. Keep the
+// wrapped layout verifier-valid for the per-partition logical shape; rolling is
+// still rejected for partitioned shared encodings before any reinterpret path.
+#padded = #ttg.padded_shared<[32:+4] {order = [0, 1], shape = [32, 64]}>
 #shared = #ttg.partitioned_shared<{numPartitions = 2, numGroups = 2, partitionDim = 0, partitionLayout = #padded}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory

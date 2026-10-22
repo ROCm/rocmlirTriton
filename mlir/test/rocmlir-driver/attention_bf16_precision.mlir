@@ -4,8 +4,10 @@
 // Verifies the BF16 precision difference between GPU and CPU for attention
 // with scale and bias (the pre-softmax elementwise fusion: scale*QK + bias).
 //
-// On the GPU (RDNA3/RDNA4), the kernel uses v_dot2_bf16_bf16 to compute
-// scale*QK+bias, performing the multiply-add in bf16 precision.
+// On the GPU (RDNA3/RDNA4), the kernel uses native bf16 matrix instructions
+// (currently WMMA) for the attention GEMMs, while the fused elementwise path
+// rounds through bf16. This creates a precision profile distinct from the CPU
+// reference.
 //
 // On the CPU (host reference), the first GEMM accumulates in f32
 // (llvm.fmul/fadd : f32), and although scale*QK+bias is expressed as bf16
@@ -31,9 +33,10 @@
 // RUN:   | rocmlir-driver -c \
 // RUN:   | FileCheck %s --check-prefix=CPU
 
-// GPU uses bf16 dot for the pre-softmax scale*QK+bias fusion
-// GFX1100: v_dot2_bf16_bf16
-// GFX1200: v_dot2_bf16_bf16
+// GPU uses native bf16 matrix instructions (WMMA on current RDNA3/RDNA4
+// lowering).
+// GFX1100: v_wmma_f32_16x16x16_bf16
+// GFX1200: v_wmma_f32_16x16x16_bf16
 
 // CPU first GEMM accumulates in f32
 // CPU: llvm.func @host_naive_attention
