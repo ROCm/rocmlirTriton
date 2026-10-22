@@ -7,6 +7,32 @@ else()
   endif()
 endif()
 
+if(WIN32)
+  include(FetchContent)
+  FetchContent_Declare(
+    dlfcn_win32
+    GIT_REPOSITORY https://github.com/dlfcn-win32/dlfcn-win32
+    GIT_TAG v1.4.2
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE)
+  FetchContent_MakeAvailable(dlfcn_win32)
+
+  set(ROCMLIR_DLFCN_TARGET "")
+  if(TARGET dlfcn-win32::dl)
+    set(ROCMLIR_DLFCN_TARGET dlfcn-win32::dl)
+  elseif(TARGET dlfcn_win32::dl)
+    set(ROCMLIR_DLFCN_TARGET dlfcn_win32::dl)
+  elseif(TARGET dl)
+    set(ROCMLIR_DLFCN_TARGET dl)
+  elseif(TARGET dlfcn-win32)
+    set(ROCMLIR_DLFCN_TARGET dlfcn-win32)
+  endif()
+
+  if(NOT ROCMLIR_DLFCN_TARGET)
+    message(FATAL_ERROR "Unable to find dlfcn-win32 CMake target after FetchContent")
+  endif()
+endif()
+
 set(TRITON_AMD_DEVICE_LIB_DIR
   "${TRITON_PROJECT_DIR}/third_party/amd/backend/lib")
 set(TRITON_AMD_DEVICE_LIB_NAMES ocml ockl)
@@ -94,10 +120,24 @@ target_link_libraries(TritonToHsacoTranslation
   lldCommon
 )
 
+if(WIN32)
+  target_link_libraries(TritonToHsacoTranslation
+    PRIVATE
+    ${ROCMLIR_DLFCN_TARGET}
+  )
+endif()
+
 rocmlir_add_triton_includes(TritonToHsacoTranslation)
 
 target_include_directories(obj.TritonToHsacoTranslation PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}")
+
+if(WIN32)
+  get_target_property(_rocmlir_dlfcn_includes ${ROCMLIR_DLFCN_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+  if(_rocmlir_dlfcn_includes)
+    target_include_directories(obj.TritonToHsacoTranslation PRIVATE ${_rocmlir_dlfcn_includes})
+  endif()
+endif()
 
 # Add LLD include directory for compilation (header access). Look in both the
 # source-tree layout (llvm-project/lld/include, used when LLVM is built in-tree)
