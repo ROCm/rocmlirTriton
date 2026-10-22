@@ -58,14 +58,15 @@
 
 // An unseen problem and a missing architecture/kernel/data-type map are normal
 // for new models, so both silently use the set cover. Hits and a disabled
-// per-problem layer are quiet too.
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick -o /dev/null 2>&1 \
+// per-problem layer are quiet too. (quick tuning still prints perfconfigs on
+// stdout; these checks assert that stderr stays empty.)
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick -o /dev/null 2>&1 \
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick -o /dev/null 2>&1 \
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
-// RUN: env ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick -o /dev/null 2>&1 \
+// RUN: env ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --arch gfx942 --operation=gemm -t f32 -g 1 -m 127 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
 
 // A compiler-recognized mode that was not represented during exhaustive
@@ -79,5 +80,5 @@
 
 // The same mode under a key with no map (gfx942_gemm_bf16) has no ranking to
 // fall back from, so it stays quiet.
-// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick -o /dev/null 2>&1 \
+// RUN: rocmlir-gen --arch gfx942 --operation=gemm -t bf16 -out_datatype f32 -g 1 -m 128 -n 512 -k 512 --num_cu=304 --emit-tuning-space=quick 2>&1 >/dev/null \
 // RUN:   | count 0
