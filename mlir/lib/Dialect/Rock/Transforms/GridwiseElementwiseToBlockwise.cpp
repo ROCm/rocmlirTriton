@@ -112,7 +112,8 @@ RockGridwiseElementwiseToBlockwisePass::processKernel(func::FuncOp func) {
     else
       b.setInsertionPointAfter(bid.getDefiningOp());
     auto loadMarker = LoadMarkerOp::create(b, loc, tileType, input, tilingViews,
-                                           ValueRange{bid});
+                                           ValueRange{bid},
+                                           rock::CacheModifier::NONE);
     propagateOutputType(input, loadMarker.getResult());
   }
 

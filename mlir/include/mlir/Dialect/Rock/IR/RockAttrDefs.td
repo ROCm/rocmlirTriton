@@ -646,6 +646,9 @@ def Rock_ElementwiseParamsAttr
     int64_t getUseInThreadTranspose() { return -1; }
     int64_t getUseBufferOps() { return -1; }
     int64_t getUseBufferAtomics() { return -1; }
+    int64_t getUseReductionLayout() { return -1; }
+    int64_t getUseOptimizeEpilogue() { return -1; }
+    int64_t getUseBf16x3ForF32() { return -1; }
     int64_t getScheduleHint() { return -1; }
   }];
 
