@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -134,27 +135,41 @@ std::optional<GemmSize> mlir::rock::requiredPadding(Attribute paramsAttr,
                           nPerBlock * mulByNPerBlock, gemmSize);
 }
 
-bool mlir::rock::kTailPeelingPays(int64_t gemmK, int64_t kPerBlock,
-                                  Type elemTypeA, Type elemTypeB) {
-  // Escape hatch, and how the padded/peeled A/B below was collected: both
-  // lowerings of one shape from one binary. Read once -- getenv is not safe
-  // against a concurrent setenv.
-  static const bool peelingDisabled =
-      std::getenv("ROCMLIR_DISABLE_K_TAIL_PEELING") != nullptr;
-  if (peelingDisabled)
-    return false;
+/// Narrowest element width the peeling path reasons about. Sub-byte operands
+/// reach the loads packed several to a byte, so neither the row-stride
+/// argument in `kTailPeelingMightPay` nor `DecomposeNonPow2K`'s segment
+/// handling covers them.
+static constexpr int64_t kMinPeelElemBits = 8;
 
-  int64_t kExtra = llvm::alignTo(gemmK, kPerBlock) - gemmK;
-  if (kExtra == 0)
+bool mlir::rock::canPeelKTail(int64_t gemmK, int64_t kPerBlock, Type elemTypeA,
+                              Type elemTypeB) {
+  int64_t kRem = gemmK % kPerBlock;
+  if (kRem == 0)
     return false;
 
   if (!elemTypeA.isIntOrFloat() || !elemTypeB.isIntOrFloat())
     return false;
-  int64_t elemBits = std::min(elemTypeA.getIntOrFloatBitWidth(),
-                              elemTypeB.getIntOrFloatBitWidth());
-  // Sub-byte operands reach the loads packed several to a byte, so the width
-  // reasoning below does not describe them. Leave them on the padded path.
-  if (elemBits < 8)
+  if (std::min(elemTypeA.getIntOrFloatBitWidth(),
+               elemTypeB.getIntOrFloatBitWidth()) < kMinPeelElemBits)
+    return false;
+
+  // The peeled tail is contracted as one blockwise GEMM per set bit of `kRem`
+  // (see emitKReductionLoop), so the narrowest segment is `kRem`'s lowest set
+  // bit. An integer GEMM whose segments are not all at least
+  // `kMinIntegerKSegment` wide is lowered through f32 and loses accumulator
+  // bits, which DecomposeNonPow2K handles by refusing the kernel outright --
+  // so never ask it to. Note this rules out every 8-bit shape peeling could
+  // speed up: those need gemmK = 2 (mod 4), which forces a 2-wide segment.
+  if ((elemTypeA.isInteger() || elemTypeB.isInteger()) &&
+      kRem % kMinIntegerKSegment != 0)
+    return false;
+
+  return true;
+}
+
+bool mlir::rock::kTailPeelingMightPay(int64_t gemmK, int64_t kPerBlock,
+                                      Type elemTypeA, Type elemTypeB) {
+  if (!canPeelKTail(gemmK, kPerBlock, elemTypeA, elemTypeB))
     return false;
 
   // Padding K makes the last reduction tile read past the data, so every load
@@ -168,28 +183,49 @@ bool mlir::rock::kTailPeelingPays(int64_t gemmK, int64_t kPerBlock,
   // instructions on every trip, against an unrolled power-of-two tail paid
   // once.
   //
-  // Measured on gfx1151 (M=N=8192, 128x128x64, 32 interleaved samples,
-  // comparing the two lowerings of the same shape), as a function of that row
-  // alignment:
+  // Measured on gfx1151 (M=N=8192, 128x128x64, numWaves=8, 11 independent
+  // repetitions of the A/B, comparing the two lowerings of the same shape),
+  // as a function of that row alignment:
   //
   //   16 B   loads b128, no mask to remove            -- nothing to gain
   //    8 B   loads b64,  mask already free            -- nothing to gain
-  //    4 B   loads b32,  mask already free            -- tail only: f16
-  //                                                      k=2814 +4.7% SLOWER
-  //    2 B   loads 16-bit, mask on the critical path  -- f16 k=2815 -3.8%,
-  //                                                      i8 k=2814 -5.2%
+  //    4 B   loads b32,  mask already free            -- tail only, slower
+  //    2 B   loads 16-bit, mask on the critical path  -- f16 k=2815 -3.4%
   //    1 B   loads 8-bit, so load-bound the saved
-  //          instructions are invisible               -- i8 k=2815 +1.9%,
-  //                                                      no gain
+  //          instructions are invisible               -- no gain
   //
-  // So the trade only pays at exactly 2-byte alignment: wider and the mask
-  // was costing nothing, narrower and removing it changes nothing. For 16-bit
-  // operands that means an odd gemmK; for 8-bit operands, gemmK = 2 (mod 4).
+  // So there is something to trade only at exactly 2-byte alignment: wider and
+  // the mask was costing nothing, narrower and removing it changes nothing.
+  // Which way the trade lands from there is down to the tile config, in ways
+  // no static rule we could find predicts -- the same shape swings from -10%
+  // at 256x128x64/8 waves to +47% at 256x128x64/4 waves. Hence this is only a
+  // gate on *offering* `useKTailPeeling` to the tuner, which then measures.
   //
   // gcd(kPerBlock, kExtra) * elemBits is that alignment in bits: for a
   // power-of-two kPerBlock it reduces to 2^v2(gemmK) * elemBits.
+  int64_t kExtra = kPerBlock - (gemmK % kPerBlock);
+  int64_t elemBits = std::min(elemTypeA.getIntOrFloatBitWidth(),
+                              elemTypeB.getIntOrFloatBitWidth());
   constexpr int64_t kTwoByteBits = 16;
-  return std::gcd(kPerBlock, kExtra) * elemBits == kTwoByteBits;
+  if (std::gcd(kPerBlock, kExtra) * elemBits != kTwoByteBits)
+    return false;
+
+  // Everything peeling saves is per main-loop trip, and everything it costs is
+  // the one-off tail, so the trade needs trips to multiply across. The tail is
+  // not cheap: measured against the single padded trip it replaces, it runs
+  // ~1.5x the MMA, ~2.5x the LDS traffic and tens of barriers instead of one,
+  // because the Triton layouts cannot express a non-power-of-two K tile and
+  // the leftover has to become one barrier-separated phase per set bit.
+  //
+  // That is why the conv shapes this started from gain nothing. `gemmK` there
+  // is C*Y*X, so the odd values come from RGB input layers -- gemmK = 27, 75,
+  // 147 -- which leave 0 to 4 main-loop trips. Measured over 7 repetitions
+  // they all came out inside the +-2.5% noise floor (ResNet-50 conv1 -0.8%,
+  // VGG -0.8%, C=3 5x5 -1.0%), while the 43-trip GEMM at k=2815 was a
+  // repeatable -3.4%. Below this floor there is no point spending tuning time
+  // on the knob; see the compile-time numbers in the PR description.
+  constexpr int64_t kMinPeelMainLoopTrips = 16;
+  return gemmK / kPerBlock >= kMinPeelMainLoopTrips;
 }
 
 int64_t mlir::rock::obtainBlockSize(int64_t waveSize, GemmParamsAttr params) {

@@ -58,18 +58,25 @@ std::optional<GemmSize> requiredPadding(Attribute paramsAttr, GemmSize gemmSize,
                                         int64_t mulByMPerBlock = 1,
                                         int64_t mulByNPerBlock = 1);
 
-/// True when peeling the leftover K tail (in
-/// rock-gridwise-gemm-to-blockwise) is worth more than padding `gemmK` up to a
-/// multiple of `kPerBlock`, which is only so for operands whose rows land on
-/// exactly 2-byte alignment. `elemTypeA` and `elemTypeB` are the GEMM operand
-/// element types.
+/// True when `gemmK` may be left unpadded so that rock-gemm-to-gridwise's
+/// leftover K tail is peeled instead (see emitKReductionLoop). False means the
+/// shape must take the padded path; it says nothing about which is faster.
+/// `elemTypeA` and `elemTypeB` are the GEMM operand element types.
 ///
-/// This is a performance gate, not a legality one: padding K stays correct for
-/// every shape, and peeling is correct for every shape this returns true for.
-/// See the comment on the definition for the measurements behind the
-/// threshold.
-bool kTailPeelingPays(int64_t gemmK, int64_t kPerBlock, Type elemTypeA,
-                      Type elemTypeB);
+/// Callers holding a `GemmOp` must also check the op-level conditions that
+/// require an exactly dividing K -- block scaling and split-K -- which this
+/// cannot see; rock-gemm-to-gridwise does.
+bool canPeelKTail(int64_t gemmK, int64_t kPerBlock, Type elemTypeA,
+                  Type elemTypeB);
+
+/// True when peeling the K tail could plausibly beat padding for this problem,
+/// i.e. when it is legal and the operand row stride is what holds the K loop's
+/// loads down to 16 bits. Which of the two actually wins depends on the tile
+/// config, so this only decides whether to spend a tuning dimension on
+/// `useKTailPeeling`; see `createGemmTuningRangeBF`. Implies
+/// `canPeelKTail`.
+bool kTailPeelingMightPay(int64_t gemmK, int64_t kPerBlock, Type elemTypeA,
+                          Type elemTypeB);
 
 int64_t obtainBlockSize(int64_t waveSize, GemmParamsAttr params);
 
@@ -269,7 +276,8 @@ inline GemmParamsAttr getConservativeDefaultGemmParams(
                              /*useBufferAtomics=*/kKnobDefault,
                              /*useReductionLayout=*/kKnobDefault,
                              /*useOptimizeEpilogue=*/kKnobDefault,
-                             /*useBf16x3ForF32=*/kKnobDefault);
+                             /*useBf16x3ForF32=*/kKnobDefault,
+                             /*useKTailPeeling=*/kKnobDefault);
 }
 
 /// Bump the first param matching `isApplicable` to the front, preserving the

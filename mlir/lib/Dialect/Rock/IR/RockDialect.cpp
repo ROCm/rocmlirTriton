@@ -2467,7 +2467,8 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
                                 int64_t useBufferOps, int64_t useBufferAtomics,
                                 int64_t useReductionLayout,
                                 int64_t useOptimizeEpilogue,
-                                int64_t useBf16x3ForF32) {
+                                int64_t useBf16x3ForF32,
+                                int64_t useKTailPeeling) {
   const std::pair<StringRef, int64_t> boolKnobs[] = {
       {"useAsyncCopy", useAsyncCopy},
       {"useBlockPingpong", useBlockPingpong},
@@ -2477,6 +2478,7 @@ LogicalResult validateKnobBlock(StringRef perfConfigStr, int64_t useAsyncCopy,
       {"useReductionLayout", useReductionLayout},
       {"useOptimizeEpilogue", useOptimizeEpilogue},
       {"useBf16x3ForF32", useBf16x3ForF32},
+      {"useKTailPeeling", useKTailPeeling},
   };
   for (auto [name, value] : boolKnobs) {
     if (!isValidKnobBoolean(value)) {
@@ -2664,7 +2666,8 @@ parseNamedGemmLikeConfig(MLIRContext *context, StringRef perfConfigStr,
           perfConfigStr, knob("useAsyncCopy"), knob("useBlockPingpong"),
           knob("useInThreadTranspose"), knob("useBufferOps"),
           knob("useBufferAtomics"), knob("useReductionLayout"),
-          knob("useOptimizeEpilogue"), knob("useBf16x3ForF32"))))
+          knob("useOptimizeEpilogue"), knob("useBf16x3ForF32"),
+          knob("useKTailPeeling"))))
     return failure();
   return ordered;
 }
@@ -2736,8 +2739,9 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
-  // Never carried by a positional config: the knob postdates v6.
+  // Never carried by a positional config: these knobs postdate v6.
   int64_t useBf16x3ForF32 = kKnobDefault;
+  int64_t useKTailPeeling = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2757,7 +2761,8 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     if (failed(validateKnobBlock(
             perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
             useInThreadTranspose, useBufferOps, useBufferAtomics,
-            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32,
+            useKTailPeeling))) {
       return {};
     }
   }
@@ -2767,7 +2772,7 @@ GemmParamsAttr GemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       numCTAs, numWaves, matrixInstrNonkdim, splitKFactor, numStages,
       wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue, useBf16x3ForF32);
+      useOptimizeEpilogue, useBf16x3ForF32, useKTailPeeling);
 }
 
 //===-----------------------------------------------------===//
@@ -2839,8 +2844,9 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
   int64_t useBufferAtomics = kKnobDefault;
   int64_t useReductionLayout = kKnobDefault;
   int64_t useOptimizeEpilogue = kKnobDefault;
-  // Never carried by a positional config: the knob postdates v6.
+  // Never carried by a positional config: these knobs postdate v6.
   int64_t useBf16x3ForF32 = kKnobDefault;
+  int64_t useKTailPeeling = kKnobDefault;
   if (version >= 2) {
     useAsyncCopy = params[idx++];
     useBlockPingpong = params[idx++];
@@ -2860,7 +2866,8 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
     if (failed(validateKnobBlock(
             perfConfigStrAttr.strref(), useAsyncCopy, useBlockPingpong,
             useInThreadTranspose, useBufferOps, useBufferAtomics,
-            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32))) {
+            useReductionLayout, useOptimizeEpilogue, useBf16x3ForF32,
+            useKTailPeeling))) {
       return {};
     }
   }
@@ -2870,7 +2877,7 @@ GemmGemmParamsAttr GemmGemmParamsAttr::get(StringAttr perfConfigStrAttr) {
       kPerBlock, kpack, numCTAs, numWaves, matrixInstrNonkdim, splitKFactor,
       numStages, wavesPerEU, gridGroupSize, useAsyncCopy, useBlockPingpong,
       useInThreadTranspose, useBufferOps, useBufferAtomics, useReductionLayout,
-      useOptimizeEpilogue, useBf16x3ForF32);
+      useOptimizeEpilogue, useBf16x3ForF32, useKTailPeeling);
 }
 
 //===----------------------------------------------------------------------===//
