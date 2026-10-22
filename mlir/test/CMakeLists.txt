@@ -40,6 +40,11 @@ set(LLVM_LIT_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
 set(LLVM_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
 set(MLIR_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
 set(ROCMLIR_TOOLS_DIR ${ROCMLIR_BIN_DIR})
+# triton_amd_codegen is dlopen-ed by name from TritonToHsaco, so its directory
+# has to be on the loader search path. It is staged next to the other libraries
+# rather than next to the tools, which on Windows is not searched by default.
+get_filename_component(ROCMLIR_TRITON_AMD_CODEGEN_DIR
+                       "${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}" DIRECTORY)
 if(CMAKE_HOST_WIN32 AND NOT CYGWIN)
   set(LLVM_EXTERNAL_LIT "${LLVM_LIT_TOOLS_DIR}/llvm-lit.py")
 else()
