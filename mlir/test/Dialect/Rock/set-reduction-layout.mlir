@@ -831,3 +831,80 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     tt.return %6 : tensor<128x64xi32, #blocked>
   }
 }
+
+// -----
+
+// The gather's mask is built with a tt.broadcast whose source is a 1x64 row
+// (#blockedRow) that carries the same blocked encoding as the load except along
+// the broadcast dim, where its sizePerThread is 1 instead of 4. Redistributing
+// the load's warps onto K moves the broadcast *result* to warpsPerCTA = [4, 1]
+// while the source would keep [2, 2], which disagree on the non-broadcast dim
+// and trip tt.broadcast's "matching source and result layouts up to
+// broadcasting" verifier. The pass must redistribute the broadcast source too,
+// moving its warps the same way while preserving its own sizePerThread.
+
+#blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedB = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+#blockedRow = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @gather_mask_broadcast_source_redistributed
+  // The gather B load moves onto K (warpsPerCTA = [4, 1]).
+  // CHECK-DAG:     tt.load {{.*}}tensor<64x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // The broadcast source keeps its own sizePerThread = [1, 1] but follows the
+  // warp redistribution so source and result agree on the non-broadcast dim.
+  // CHECK-DAG:     tt.broadcast {{.*}} : tensor<1x64xi1, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>> -> tensor<64x64xi1, #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>>
+  // The free A operand keeps its layout.
+  // CHECK-DAG:     tt.load {{.*}}tensor<128x64x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>>
+  tt.func @gather_mask_broadcast_source_redistributed(%pa: !tt.ptr<i8>, %pb: !tt.ptr<i8>) -> tensor<128x64xi32, #blockedA> {
+    %acc = arith.constant dense<0> : tensor<128x64xi32, #blockedA>
+    %lim = arith.constant dense<32> : tensor<1x64xi32, #blockedRow>
+    %range = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedRow}>>
+    %row = tt.expand_dims %range {axis = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 0, parent = #blockedRow}>> -> tensor<1x64xi32, #blockedRow>
+    %cmp = arith.cmpi ult, %row, %lim : tensor<1x64xi32, #blockedRow>
+    %mask = tt.broadcast %cmp : tensor<1x64xi1, #blockedRow> -> tensor<64x64xi1, #blockedB>
+    %sa = tt.splat %pa : !tt.ptr<i8> -> tensor<128x64x!tt.ptr<i8>, #blockedA>
+    %sb = tt.splat %pb : !tt.ptr<i8> -> tensor<64x64x!tt.ptr<i8>, #blockedB>
+    %la = tt.load %sa : tensor<128x64x!tt.ptr<i8>, #blockedA>
+    %lb = tt.load %sb, %mask : tensor<64x64x!tt.ptr<i8>, #blockedB>
+    %ca = ttg.convert_layout %la : tensor<128x64xi8, #blockedA> -> tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
+    %cb = ttg.convert_layout %lb : tensor<64x64xi8, #blockedB> -> tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x64xi8, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<64x64xi8, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xi32, #blockedA>
+    tt.return %d : tensor<128x64xi32, #blockedA>
+  }
+}
+
+// -----
+
+// Multi-use / non-broadcast-dim conflict on a tt.broadcast in the gather's
+// mask. The gather A operand (128x32, #oldB, order [0, 1]) has reduction dim 1,
+// so warps would move onto dim 1. Its mask is built by broadcasting a 1x32 row
+// (#srcRow) along dim 0 -- a *non-broadcast* dim for the reduction. The row and
+// the mask carry different sizePerThread on dim 1 (1 vs 4), so once the warps
+// move there no warp-preserving remap of the source can match the result, and
+// the tt.broadcast verifier would reject it. The pass must detect this and bail,
+// leaving every layout untouched.
+
+#oldB = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>
+#srcRow = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>
+#blockedB = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [0, 1]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @broadcast_source_conflict_bails
+  // CHECK:         tt.load {{.*}}tensor<128x32x!tt.ptr<i8>, #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [0, 1]}>>
+  //   CHECK-NOT:   warpsPerCTA = [1, 4]
+  tt.func @broadcast_source_conflict_bails(%pa: !tt.ptr<i8>, %pb: !tt.ptr<i8>) -> tensor<128x64xi32, #oldB> {
+    %acc = arith.constant dense<0> : tensor<128x64xi32, #oldB>
+    %lim = arith.constant dense<16> : tensor<1x32xi32, #srcRow>
+    %row = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 0, parent = #srcRow}>>
+    %rowE = tt.expand_dims %row {axis = 0 : i32} : tensor<32xi32, #ttg.slice<{dim = 0, parent = #srcRow}>> -> tensor<1x32xi32, #srcRow>
+    %cmp = arith.cmpi ult, %rowE, %lim : tensor<1x32xi32, #srcRow>
+    %mask = tt.broadcast %cmp : tensor<1x32xi1, #srcRow> -> tensor<128x32xi1, #oldB>
+    %sa = tt.splat %pa : !tt.ptr<i8> -> tensor<128x32x!tt.ptr<i8>, #oldB>
+    %sb = tt.splat %pb : !tt.ptr<i8> -> tensor<32x64x!tt.ptr<i8>, #blockedB>
+    %la = tt.load %sa, %mask : tensor<128x32x!tt.ptr<i8>, #oldB>
+    %lb = tt.load %sb : tensor<32x64x!tt.ptr<i8>, #blockedB>
+    %ca = ttg.convert_layout %la : tensor<128x32xi8, #oldB> -> tensor<128x32xi8, #ttg.dot_op<{opIdx = 0, parent = #oldB}>>
+    %cb = ttg.convert_layout %lb : tensor<32x64xi8, #blockedB> -> tensor<32x64xi8, #ttg.dot_op<{opIdx = 1, parent = #oldB}>>
+    %d = tt.dot %ca, %cb, %acc : tensor<128x32xi8, #ttg.dot_op<{opIdx = 0, parent = #oldB}>> * tensor<32x64xi8, #ttg.dot_op<{opIdx = 1, parent = #oldB}>> -> tensor<128x64xi32, #oldB>
+    tt.return %d : tensor<128x64xi32, #oldB>
+  }
+}
