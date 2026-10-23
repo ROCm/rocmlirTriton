@@ -133,6 +133,8 @@ bool archSupportsAccelFp8(StringRef arch);
 /// MFMA on CDNA4 / gfx950, scaled WMMA on GFX1250).
 bool archSupportsScaledGemm(StringRef arch);
 
+int64_t getFixedScaledGemmBlockSize(StringRef arch);
+
 /// Whether this architecture can lower a scaled GEMM whose sub-byte (fp4)
 /// operand is packed along the non-K (M/N) dimension rather than K.
 bool archSupportsNonKPackedScaledInput(StringRef arch);

@@ -78,6 +78,8 @@ int getWmmaVersion(ISAFamily isaFamily) {
     return 2;
   case ISAFamily::CDNA5:
     return 3;
+  case ISAFamily::GFX1310:
+    return 0;
   default:
     break;
   }

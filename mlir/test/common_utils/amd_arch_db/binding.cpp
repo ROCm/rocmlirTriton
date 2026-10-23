@@ -71,6 +71,13 @@ PYBIND11_MODULE(amd_arch_db, m) {
       py::arg("arch"));
 
   m.def(
+      "get_fixed_scaled_gemm_block_size",
+      [](const std::string &arch) {
+        return mlir::rock::getFixedScaledGemmBlockSize(arch);
+      },
+      py::arg("arch"));
+
+  m.def(
       "arch_supports_non_k_packed_scaled_input",
       [](const std::string &arch) {
         return mlir::rock::archSupportsNonKPackedScaledInput(arch);
