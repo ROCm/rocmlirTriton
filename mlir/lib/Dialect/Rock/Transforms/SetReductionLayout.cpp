@@ -279,8 +279,7 @@ bool rewriteGatherLoad(
   // each such source onto the same reduction dim while keeping its own
   // sizePerThread/threadsPerWarp, so source and result stay in step. The anchor
   // old->new pair (and its #linear partner) seed the map.
-  auto redistributeWarps =
-      [&](triton::gpu::BlockedEncodingAttr enc)
+  auto redistributeWarps = [&](triton::gpu::BlockedEncodingAttr enc)
       -> triton::gpu::BlockedEncodingAttr {
     SmallVector<unsigned> spt(enc.getSizePerThread());
     SmallVector<unsigned> tpw(enc.getThreadsPerWarp());
@@ -360,13 +359,15 @@ bool rewriteGatherLoad(
       continue;
     auto iface =
         dyn_cast<triton::DialectInferLayoutInterface>(&newSrcEnc.getDialect());
-    if (iface && succeeded(iface->verifyBroadcastOpEncoding(newSrcTy, newResTy)))
+    if (iface &&
+        succeeded(iface->verifyBroadcastOpEncoding(newSrcTy, newResTy)))
       continue;
-    LLVM_DEBUG(llvm::dbgs()
-               << "rock-set-reduction-layout: redistributed layout would make a "
-                  "tt.broadcast's source and result disagree (reduction dim is "
-                  "a non-broadcast dim, or the source feeds conflicting "
-                  "broadcasts); skipping\n");
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "rock-set-reduction-layout: redistributed layout would make a "
+           "tt.broadcast's source and result disagree (reduction dim is "
+           "a non-broadcast dim, or the source feeds conflicting "
+           "broadcasts); skipping\n");
     return false;
   }
 

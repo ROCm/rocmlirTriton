@@ -872,8 +872,7 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
   // access past either does varies by target, so a range that could be either
   // declines everywhere rather than modelling one target's rule. The field
   // width is what names all ones.
-  unsigned fieldBits =
-      isaFamily == triton::amdgpu::ISAFamily::CDNA5 ? 45 : 32;
+  unsigned fieldBits = isaFamily == triton::amdgpu::ISAFamily::CDNA5 ? 45 : 32;
   if (lowest->isZero() ||
       ugeAtCommonWidth(*highest, APInt::getMaxValue(fieldBits)))
     return std::nullopt;
