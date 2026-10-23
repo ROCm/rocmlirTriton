@@ -287,10 +287,8 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
             MatrixAccelKind::None); // GFX1170 (no f32 WMMA inputs)
   EXPECT_EQ(getMatrixAccelKind("gfx1200", e.f32, e.f32),
             MatrixAccelKind::None); // RDNA4
-  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f16, e.f16),
-            MatrixAccelKind::None);
-  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f32, e.f32),
-            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f16, e.f16), MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f32, e.f32), MatrixAccelKind::None);
   EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::None);
   // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
