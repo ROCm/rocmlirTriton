@@ -180,7 +180,8 @@ TEST(AmdArchDbTest, LDSSize) {
   EXPECT_EQ(getLDSSize("gfx1170"), 65536);  // GFX1170: 64 KB (gfx11 core)
   EXPECT_EQ(getLDSSize("gfx1200"), 65536);  // RDNA4: 64 KB
   EXPECT_EQ(getLDSSize("gfx1250"), 327680); // GFX1250: 320 KB
-  EXPECT_EQ(getLDSSize("gfx1310"), 65536);  // GFX1310: 64 KB in public LLVM
+  EXPECT_EQ(getLDSSize("gfx1310"), 256 * 1024);
+  EXPECT_EQ(getLDSSize("amdgcn-amd-amdhsa:gfx1310"), 256 * 1024);
 }
 
 // --- getLastLevelCacheSize ---
@@ -217,20 +218,20 @@ TEST(AmdArchDbTest, LastLevelCacheSizePerChip) {
   EXPECT_EQ(getLastLevelCacheSize("gfx1153"), 1 * kMiB);
   // RDNA4.
   EXPECT_EQ(getLastLevelCacheSize("gfx1201"), 64 * kMiB);
-  // gfx1310
-  EXPECT_EQ(getLastLevelCacheSize("gfx1310"), 256 * kMiB);
 }
 
 // The gfx117x caches are unpublished, so they fall back to their ISA family,
 // whose value is a guess at a bare APU L2. Pinned so that the guess is a
 // deliberate choice: if any of these turns out to carry a MALL, as the APU
-// gfx1151 does, the real value is much larger. These, gfx1153 pinned above
-// are the only chips not on a published number.
+// gfx1151 does, the real value is much larger. These and gfx1153, pinned
+// above, are not on a published number.
 TEST(AmdArchDbTest, LastLevelCacheSizeUnpublishedChips) {
   constexpr int64_t kMiB = 1024 * 1024;
   EXPECT_EQ(getLastLevelCacheSize("gfx1170"), 1 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1171"), 1 * kMiB);
   EXPECT_EQ(getLastLevelCacheSize("gfx1172"), 1 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1310"), 256 * kMiB);
+  EXPECT_EQ(getLastLevelCacheSize("amdgcn-amd-amdhsa:gfx1310"), 256 * kMiB);
 }
 
 TEST(AmdArchDbTest, LastLevelCacheSizeWithTriple) {
@@ -287,7 +288,11 @@ TEST(AmdArchDbTest, MatrixAccelWmma) {
   EXPECT_EQ(getMatrixAccelKind("gfx1200", e.f32, e.f32),
             MatrixAccelKind::None); // RDNA4
   EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f16, e.f16),
-            MatrixAccelKind::None); // GFX1310
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f32, e.f32),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f8e4m3fn, e.f8e4m3fn),
+            MatrixAccelKind::None);
   // gfx1170 has native fp8 WMMA (WMMA v2); without scales it uses regular WMMA.
   EXPECT_EQ(getMatrixAccelKind("gfx1170", e.f8e4m3fn, e.f8e4m3fn),
             MatrixAccelKind::WMMA); // GFX1170 (fp8 WMMA v2)
@@ -508,6 +513,7 @@ TEST(AmdArchDbTest, SupportsTDM) {
   EXPECT_FALSE(supportsTDM("gfx1170")); // GFX1170
   EXPECT_FALSE(supportsTDM("gfx1200")); // RDNA4
   EXPECT_TRUE(supportsTDM("gfx1250"));  // GFX1250
+  EXPECT_FALSE(supportsTDM("gfx1310"));
 }
 
 // --- tritonLowersTanhToNativeInst ---
@@ -616,6 +622,7 @@ TEST(AmdArchDbTest, ArchSupportsAccelFp8) {
   EXPECT_TRUE(archSupportsAccelFp8("gfx1170"));  // GFX1170 (native fp8 WMMA v2)
   EXPECT_TRUE(archSupportsAccelFp8("gfx1200"));  // RDNA4 (native fp8 WMMA)
   EXPECT_TRUE(archSupportsAccelFp8("gfx1250"));  // GFX1250 (native fp8 WMMA)
+  EXPECT_FALSE(archSupportsAccelFp8("gfx1310"));
 }
 
 TEST(AmdArchDbTest, ArchSupportsAccelFp8WithTriple) {
@@ -637,11 +644,37 @@ TEST(AmdArchDbTest, ArchSupportsScaledGemm) {
   EXPECT_FALSE(archSupportsScaledGemm("gfx1170")); // GFX1170 (WMMA v2 < 3)
   EXPECT_FALSE(archSupportsScaledGemm("gfx1200")); // RDNA4 (no ScaledWMMA)
   EXPECT_TRUE(archSupportsScaledGemm("gfx1250"));  // GFX1250 (ScaledWMMA)
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1310"));
 }
 
 TEST(AmdArchDbTest, ArchSupportsScaledGemmWithTriple) {
   EXPECT_TRUE(archSupportsScaledGemm("amdgcn-amd-amdhsa:gfx950"));
   EXPECT_FALSE(archSupportsScaledGemm("amdgcn-amd-amdhsa:gfx942"));
+}
+
+TEST(AmdArchDbTest, FixedScaledGemmBlockSize) {
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx950"), 32);
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx1310"), 32);
+  EXPECT_EQ(getFixedScaledGemmBlockSize("amdgcn-amd-amdhsa:gfx1310"), 32);
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx1250"), 0);
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx942"), 0);
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx1100"), 0);
+}
+
+TEST(AmdArchDbTest, At2) {
+  ArchTestEnv e;
+  constexpr int64_t kMiB = 1024 * 1024;
+  EXPECT_EQ(getLDSSize("gfx1310"), 256 * 1024);
+  EXPECT_EQ(getLDSSize("amdgcn-amd-amdhsa:gfx1310"), 256 * 1024);
+  EXPECT_FALSE(supportsTDM("gfx1310"));
+  EXPECT_FALSE(archSupportsAccelFp8("gfx1310"));
+  EXPECT_FALSE(archSupportsScaledGemm("gfx1310"));
+  EXPECT_EQ(getFixedScaledGemmBlockSize("gfx1310"), 32);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f32, e.f32), MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f16, e.f16), MatrixAccelKind::None);
+  EXPECT_EQ(getMatrixAccelKind("gfx1310", e.f8e4m3fn, e.f8e4m3fn),
+            MatrixAccelKind::None);
+  EXPECT_EQ(getLastLevelCacheSize("gfx1310"), 256 * kMiB);
 }
 
 // --- archSupportsNonKPackedScaledInput ---

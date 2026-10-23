@@ -227,6 +227,8 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
     }
     // Fallback to regular WMMA. An E4M3 scale has no unscaled lowering.
     if (!e4m3Scale && hasWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
+      if (isaFamily == ISAFamily::GFX1310 && elemA.isF32() && elemB.isF32())
+        return MatrixAccelKind::None;
       return MatrixAccelKind::WMMA;
     }
   }
@@ -336,6 +338,8 @@ bool mlir::rock::archSupportsAccelFp8(StringRef arch) {
   //   - WMMA v2 (RDNA4 / gfx12*) : OCP FP8 native.
   //   - WMMA v3 (gfx1250)        : OCP FP8 native.
   auto [isaFamily, _] = getArch(arch);
+  if (isaFamily == ISAFamily::GFX1310)
+    return false;
   return rock::getMfmaVersion(isaFamily) >= 3 ||
          rock::getWmmaVersion(isaFamily) >= 2;
 }
@@ -376,6 +380,13 @@ bool mlir::rock::archSupportsNonKPackedScaledInput(StringRef arch) {
   // or the native path for gfx1250 is implemented, we should add gfx1250 here.
   auto [isaFamily, _] = getArch(arch);
   return isaFamily == ISAFamily::CDNA4;
+}
+
+int64_t mlir::rock::getFixedScaledGemmBlockSize(StringRef arch) {
+  auto [isaFamily, _] = getArch(arch);
+  if (isaFamily == ISAFamily::CDNA4 || isaFamily == ISAFamily::GFX1310)
+    return 32;
+  return 0;
 }
 
 int64_t mlir::rock::getMaxNumChiplets(StringRef arch) {
@@ -458,7 +469,9 @@ int64_t mlir::rock::getWaveSize(StringRef arch) {
 }
 
 int64_t mlir::rock::getLDSSize(StringRef arch) {
-  auto [_, chip] = getArch(arch);
+  auto [isaFamily, chip] = getArch(arch);
+  if (isaFamily == ISAFamily::GFX1310)
+    return 256 * 1024;
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.getSharedMemorySize();
 }
@@ -658,7 +671,9 @@ bool mlir::rock::preferBf16x3ForF32Dot(StringRef arch) {
 }
 
 bool mlir::rock::supportsTDM(StringRef arch) {
-  auto [_, chip] = getArch(arch);
+  auto [isaFamily, chip] = getArch(arch);
+  if (isaFamily == ISAFamily::GFX1310)
+    return false;
   triton::AMD::TargetInfo targetInfo(chip.str());
   return targetInfo.supportsTDM();
 }
