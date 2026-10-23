@@ -241,8 +241,7 @@ TEST(PerfConfigOrderingGemmGemmTest,
   // by IsApplicableRejectsGemm1VTileOverflow.
   GemmGemmOrderingTestEnv e;
   auto p = getConservativeDefaultGemmGemmParams(&e.ctx);
-  for (StringRef arch : {"gfx90a", "gfx942", "gfx950",
-                         "gfx1200", "gfx1250"}) {
+  for (StringRef arch : {"gfx90a", "gfx942", "gfx950", "gfx1200", "gfx1250"}) {
     EXPECT_TRUE(isGemmGemmParamsConservativelyApplicable(
         e.builder, p, e.f16, e.f16, e.f16, arch, e.op()))
         << "default not applicable on " << arch.str() << " for f16";
