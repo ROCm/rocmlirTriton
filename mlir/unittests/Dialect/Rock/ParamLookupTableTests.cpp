@@ -18,12 +18,12 @@ using namespace mlir::rock;
 
 // Architectures shipping a full set of attention quick-tuning lists.
 static constexpr StringLiteral kAttentionArchs[] = {
-    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
+    "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
 
 // Of those, the ones with no gemm+gemm lists of their own, which therefore
 // still borrow attention's at every precision.
-static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx908", "gfx90a",
-                                                          "gfx942", "gfx1151"};
+static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx90a", "gfx942",
+                                                          "gfx1151"};
 
 // Architectures that do ship gemm+gemm lists, and the precisions they cover.
 static constexpr StringLiteral kTunedGemmGemmArchs[] = {"gfx1100", "gfx950"};
@@ -412,7 +412,7 @@ TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
     auto configs = ParamLookupTable<GemmParamsAttr>::lookup(
         arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
-        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << "for " << arch.str() << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
   };
   auto expectGemmGemmListWithinCap = [&](StringRef arch, KernelType kernel,
@@ -420,7 +420,7 @@ TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
     auto configs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
         arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
-        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << "for " << arch.str() << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
   };
 
@@ -543,8 +543,8 @@ TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
   // Each architecture's bf16 list must stay distinct from its f16 list.
   for (StringRef arch : {"gfx942", "gfx1100", "gfx1201"}) {
     auto attentionBf16 = get(arch, bf16);
-    EXPECT_FALSE(attentionBf16.empty()) << "for " << arch;
-    EXPECT_FALSE(attentionBf16 == get(arch, f16)) << "for " << arch;
+    EXPECT_FALSE(attentionBf16.empty()) << "for " << arch.str();
+    EXPECT_FALSE(attentionBf16 == get(arch, f16)) << "for " << arch.str();
   }
 }
 
@@ -661,7 +661,8 @@ TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
   EXPECT_FALSE(perProblem.empty());
   EXPECT_LT(perProblem.size(), setCover.size());
   for (StringRef config : perProblem)
-    EXPECT_FALSE(llvm::is_contained(setCover, config)) << "for " << config;
+    EXPECT_FALSE(llvm::is_contained(setCover, config))
+        << "for " << config.str();
 }
 
 TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {

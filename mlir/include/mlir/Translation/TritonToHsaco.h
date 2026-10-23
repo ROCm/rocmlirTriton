@@ -19,6 +19,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include <string>
 #include <vector>
@@ -46,12 +47,12 @@ struct TritonToHsacoOptions {
 
 /// Translate a Triton LLVM dialect module to HSACO binary.
 /// This implements the functionality from Triton's compiler.py:
-/// - make_llir() lines 358-449: LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-/// - make_amdgcn() lines 452-473: LLVM -> AMDGCN assembly
-/// - make_hsaco() lines 476-488: AMDGCN assembly -> HSACO binary
+/// - make_llir() (part 2): LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+/// - make_amdgcn(): LLVM -> AMDGCN assembly
+/// - make_hsaco(): AMDGCN assembly -> HSACO binary
 ///
 /// Returns the HSACO binary on success, or failure on error.
-FailureOr<llvm::SmallVector<char, 0>>
+FailureOr<std::string>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options);
 
 /// Register the translation with mlir-translate.

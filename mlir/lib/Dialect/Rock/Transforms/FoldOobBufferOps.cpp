@@ -51,6 +51,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
+#include <mlir/IR/BuiltinAttributes.h>
 
 namespace mlir {
 namespace rock {
@@ -192,6 +193,12 @@ static std::optional<APInt> matchConstantInt(Value value) {
   if (attrType && (attrType.isUnsigned() || attrType.getWidth() == 1))
     return attr.getValue().zextOrTrunc(width);
   return attr.getValue().sextOrTrunc(width);
+}
+
+static std::optional<APInt> matchConstantInt(Attribute attr) {
+  if (auto intAttr = dyn_cast_if_present<IntegerAttr>(attr))
+    return intAttr.getValue();
+  return std::nullopt;
 }
 
 static intrange::OverflowFlags
@@ -812,24 +819,20 @@ static bool flagsKeepBoundsCheck(triton::amdgpu::ISAFamily isaFamily,
   switch (isaFamily) {
   // gfx9 has no OOB_SELECT field, so a zero-stride buffer always checks the
   // offset against NumRecords.
-  case triton::amdgpu::ISAFamily::GCN5_1:
-  case triton::amdgpu::ISAFamily::CDNA1:
   case triton::amdgpu::ISAFamily::CDNA2:
   case triton::amdgpu::ISAFamily::CDNA3:
   case triton::amdgpu::ISAFamily::CDNA4:
     return !(bits & tidEnable);
   // Of the four OOB_SELECT encodings only 3 checks the offset against
   // NumRecords when the stride is zero; 2 disables bounds checking entirely.
-  case triton::amdgpu::ISAFamily::RDNA1:
-  case triton::amdgpu::ISAFamily::RDNA2:
   case triton::amdgpu::ISAFamily::RDNA3:
-  case triton::amdgpu::ISAFamily::GFX1170:
+  case triton::amdgpu::ISAFamily::RDNA4m:
   case triton::amdgpu::ISAFamily::RDNA4:
     return !(bits & tidEnable) && ((bits >> 28) & 3) == 3;
   // gfx1250 rebuilds the descriptor with a 45-bit NumRecords, shifting flags
   // left by 28 so only bits [3:0] survive: swizzle_enable, a one-bit OOB_select
   // that checks the offset either way at zero stride, and a two-bit type.
-  case triton::amdgpu::ISAFamily::GFX1250: {
+  case triton::amdgpu::ISAFamily::CDNA5: {
     constexpr uint64_t swizzleEnable = 1, typeMask = 3 << 2;
     return (bits & (swizzleEnable | typeMask)) == 0;
   }
@@ -869,8 +872,7 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
   // access past either does varies by target, so a range that could be either
   // declines everywhere rather than modelling one target's rule. The field
   // width is what names all ones.
-  unsigned fieldBits =
-      isaFamily == triton::amdgpu::ISAFamily::GFX1250 ? 45 : 32;
+  unsigned fieldBits = isaFamily == triton::amdgpu::ISAFamily::CDNA5 ? 45 : 32;
   if (lowest->isZero() ||
       ugeAtCommonWidth(*highest, APInt::getMaxValue(fieldBits)))
     return std::nullopt;
@@ -944,14 +946,15 @@ static OobShape classifyOobOffset(Value voffset, Value soffset,
 /// The descriptor, offsets and cache policy a buffer access presents to the
 /// hardware, which the atomics spell three different ways.
 struct BufferAccess {
-  Value rsrc, voffset, soffset, aux;
+  Value rsrc, voffset, soffset;
+  Attribute aux;
 };
 
 /// Whether the cache policy `aux` could carry `CPol::VOLATILE`. That bit is not
 /// a hardware one: LLVM turns it into `MOVolatile`, which has to reach the
 /// hardware as written however the offset compares. A policy this cannot read
 /// counts as volatile, since the alternative is dropping such an access.
-static bool mayBeVolatile(Value aux) {
+static bool mayBeVolatile(Attribute aux) {
   constexpr unsigned volatileBit = 31;
   std::optional<APInt> bits = matchConstantInt(aux);
   if (!bits)
@@ -1011,8 +1014,15 @@ static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
             ValueRange args = call.getArgs();
             if (args.size() < 4)
               return std::nullopt;
+
+            auto valueType =
+                dyn_cast<IntegerType>(args[args.size() - 1].getType());
+            IntegerAttr attr;
+            if (!valueType ||
+                !matchPattern(args[args.size() - 1], m_Constant(&attr)))
+              return std::nullopt;
             return BufferAccess{args[args.size() - 4], args[args.size() - 3],
-                                args[args.size() - 2], args[args.size() - 1]};
+                                args[args.size() - 2], attr};
           })
       .Default([](auto) { return std::nullopt; });
 }

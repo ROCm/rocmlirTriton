@@ -1,8 +1,5 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// TODO(rocmlirTriton): Route RDNA4 to the unscaled cvt instructions as well,
-// and check it here, once upstream Triton enables them for RDNA4.
 
 // The f8E5M2 (bf8) half of fp8_cvt_lowering.mlir: same quantized-GEMM kernel
 // shape and the same per-architecture routing, see that file for why the kernel
@@ -49,18 +46,15 @@
 // ASM1170-DAG: v_cvt_f32_bf8
 // ASM1170-DAG: v_cvt_pk_bf8_f32
 
-// RDNA4 has the same OCP instructions, but upstream Triton only routes gfx1170
-// to them, so RDNA4 stays on the software path. llvm.func prevents the
-// negative check from passing vacuously.
+// RDNA4 now routes OCP bf8 casts to hardware conversion instructions as well.
 // RUN: rocmlir-gen --clone-harness -arch gfx1200 -fut mlir_bf8_cvt %s \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=gpu,triton \
 // RUN: | FileCheck %s --check-prefix=LLIR1200 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.bf8.f32 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8 \
-// RUN:   --implicit-check-not=rocdl.cvt.f32.bf8
+// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.bf8
 
-// LLIR1200: llvm.func
+// LLIR1200-DAG: rocdl.cvt.f32.bf8
+// LLIR1200-DAG: rocdl.cvt.pk.bf8.f32
 
 // gfx950 has the plain cvt instructions as well, but CDNA4 is routed to the
 // scaled cvt instructions, which convert the same OCP formats once the scale

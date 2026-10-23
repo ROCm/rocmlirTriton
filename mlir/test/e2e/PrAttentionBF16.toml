@@ -94,9 +94,9 @@ config = "-num_heads_q 4 -num_heads_kv 2 -seq_len_q 384 -seq_len_k 384 -head_dim
 
 # GQA + KV Cache
 # Relaxed thresholds: the CPU reference accidentally computes scale*QK+bias in
-# f32, while the GPU correctly rounds to bf16 between multiply and add 
-# (via v_dot2_bf16_bf16 on RDNA). With last_valid_kv_index limiting valid softmax
-# positions this causes up to ~8.7x relDiff.
+# f32, while the GPU follows native bf16 matrix/epilogue lowering on RDNA
+# (currently WMMA-based in this pipeline). With last_valid_kv_index limiting
+# valid softmax positions this causes up to ~8.7x relDiff.
 [[suite.test]]
 config = "-rand 1 -last_valid_kv_index=17 -num_heads_q 4 -num_heads_kv 2 -seq_len_q 1 -seq_len_k 384 -head_dim_qk 64 -head_dim_v 64 --with-attn-scale --with-attn-bias"
 

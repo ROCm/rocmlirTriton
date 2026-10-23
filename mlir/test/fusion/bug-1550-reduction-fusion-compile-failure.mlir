@@ -1,10 +1,10 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// RUN: rocmlir-driver -c -arch "gfx908:sramecc+:xnack-"  %s
+// RUN: rocmlir-driver -c -arch "gfx90a:sramecc+:xnack-"  %s
 
 // CHECK-LABEL: @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape
-func.func @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape(%arg0: tensor<320xf32>, %arg1: tensor<32768xf32>, %arg2: tensor<11520xf32>, %arg3: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg4: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg5: tensor<2621440xf32>) -> (tensor<64xf32>, tensor<64xf32>, tensor<2621440xf32>) attributes {rock.arch = "gfx908:sramecc+:xnack-", rock.kernel = "mixr", rock.num_cu = 120 : i64} {
+func.func @mlir_convolution_reshape_mul_reshape_reduce_sum_reshape_mul_mul_reshape_reduce_sum_reshape(%arg0: tensor<320xf32>, %arg1: tensor<32768xf32>, %arg2: tensor<11520xf32>, %arg3: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg4: tensor<64xf32> {rock.prefill = 0.000000e+00 : f32}, %arg5: tensor<2621440xf32>) -> (tensor<64xf32>, tensor<64xf32>, tensor<2621440xf32>) attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr", rock.num_cu = 120 : i64} {
   %cst = arith.constant dense<2.44140629E-5> : tensor<2x32x10x64x64xf32>
   %0 = rock.transform %arg1 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 4 + d1) * 64 + d2) * 64 + d3)> by [<Unmerge{2, 4, 64, 64} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [2, 4, 64, 64] -> [32768]> : tensor<32768xf32> to tensor<2x4x64x64xf32>
   %1 = rock.transform %arg2 by <affine_map<(d0, d1, d2, d3) -> (((d0 * 4 + d1) * 3 + d2) * 3 + d3)> by [<Unmerge{320, 4, 3, 3} ["exp0", "exp1", "exp2", "exp3"] at [0, 1, 2, 3] -> ["dim0"] at [0]>] bounds = [320, 4, 3, 3] -> [11520]> : tensor<11520xf32> to tensor<320x4x3x3xf32>

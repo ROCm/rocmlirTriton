@@ -73,7 +73,7 @@ using namespace mlir;
 using namespace mlir::triton;
 
 // Based on make_ttir() in
-// @triton//:third_party/amd/backend/compiler.py
+// triton/third_party/amd/backend/compiler.py
 static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   pm->addPass(mlir::createInlinerPass());
 
@@ -82,16 +82,17 @@ static void makeTTIR(mlir::OpPassManager *pm, StringRef arch) {
   }
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::triton::createTritonCombineOps());
+
   // --- rocmlirTriton pass ----
   // Must run after combine-ops, which folds chained addptrs into the single
   // offset this pass re-materializes and turns select+load into a masked load,
   // and before CSE and LICM, which respectively deduplicate the narrowed
   // address computations and hoist any load narrowing made loop-invariant.
   pm->addPass(rock::createRockNarrowRedundantLoadsPass());
-  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::triton::createTritonReorderBroadcast());
   pm->addPass(mlir::createCSEPass());
-  pm->addPass(mlir::createLoopInvariantCodeMotionPass());
+  pm->addPass(mlir::triton::createTritonLoopInvariantCodeMotion());
   pm->addPass(mlir::createSymbolDCEPass());
   pm->addPass(mlir::triton::createTritonLoopUnroll());
 }
@@ -164,8 +165,9 @@ static bool isBufferOpsAnalyzeSmallTensorRangeEnabled(
     return analyzeSmallTensorRangeOverride;
   return false;
 }
+
 // Based on make_ttgir() in
-// @triton//:third_party/amd/backend/compiler.py
+// triton/third_party/amd/backend/compiler.py
 static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
                       const rock::TritonOptions &options) {
   pm->addPass(mlir::triton::createConvertTritonToTritonGPU(
@@ -177,17 +179,16 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
   pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeThreadLocality());
   pm->addPass(mlir::createTritonAMDGPUAccelerateMatmul(
       {options.arch, options.matrixInstrNonkdim, options.kpack}));
+
   // --- rocmlirTriton pass ----
   // Must run after accelerate-matmul (consumes the accelerator dot) and before
   // remove-layout-conversions (folds away the convert_layout ops it inserts).
   pm->addPass(rock::createRockSetMatmulOutputTransposePass());
-  // --- rocmlirTriton pass ----
 
   pm->addPass(mlir::triton::gpu::createTritonGPURemoveLayoutConversions());
   if (options.useOptimizeEpilogue != 0)
     pm->addPass(mlir::createTritonAMDGPUOptimizeEpilogue());
-  pm->addPass(mlir::triton::amdgpu::createTritonAMDGPUOptimizeDotOperands(
-      {options.arch}));
+  pm->addPass(mlir::triton::gpu::createTritonGPUOptimizeDotOperands());
   pm->addNestedPass<mlir::triton::FuncOp>(
       mlir::createTritonAMDGPUHoistLayoutConversions());
   pm->addNestedPass<mlir::triton::FuncOp>(
@@ -195,7 +196,7 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
 
   pm->addPass(mlir::triton::gpu::createTritonGPUFuseNestedLoops());
   pm->addPass(mlir::createCanonicalizerPass());
-  pm->addPass(mlir::createLoopInvariantCodeMotionPass());
+  pm->addPass(mlir::triton::createTritonLoopInvariantCodeMotion());
   pm->addPass(mlir::createCanonicalizerPass());
 
   bool useAsyncCopy = isAsyncCopyEnabled(options.arch, options.useAsyncCopy);
@@ -217,7 +218,6 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
     rollDotKOpts.arch = options.arch;
     pm->addPass(rock::createRockRollDotKPass(rollDotKOpts));
   }
-  // --- rocmlirTriton pass ----
 
   if (useAsyncCopy) {
     pm->addPass(mlir::createTritonAMDGPUCoalesceAsyncCopy({options.arch}));
@@ -255,23 +255,19 @@ static void makeTTGIR(mlir::OpPassManager *pm, int threadPerWarp,
       mlir::createTritonAMDGPUPrepareIfCombining());
   pm->addPass(mlir::createCanonicalizerPass());
   pm->addPass(mlir::createCSEPass());
-  if (useBufferOps) {
-    // Run after CSE so matching assume and loop-bound expressions share SSA,
-    // letting range analysis prove both non-negative.
-    pm->addPass(mlir::createTritonAMDGPUAnnotateBufferOpSplitSafety());
-  }
   pm->addPass(mlir::createSymbolDCEPass());
-  // TODO(roctriton): Implement options like this.
+
+  // TODO: Implement fp sanitizer
   // if (options.instrumentationMode == "fpsan") {
   //   pm->addPass(mlir::createTritonAMDGPUFPSanitizer());
   // }
 }
 
 // Based on make_llir() in
-// @triton//:third_party/amd/backend/compiler.py
+// triton/third_party/amd/backend/compiler.py
 //
-// NOTE: make_llir is divided into two parts in our project:
-// 1. makeLLIR (the function below)
+// NOTE: make_llir is converted to two functions in our project:
+// 1. makeLLIR (converts TTGIR -> LLVM MLIR)
 // 2. TritonToHsaco (in TritonToHsaco.cpp)
 // See the comment at the bottom of this function for more details.
 static void makeLLIR(mlir::OpPassManager *pm,
@@ -280,6 +276,7 @@ static void makeLLIR(mlir::OpPassManager *pm,
 
   pm->addPass(mlir::createTritonAMDGPUUpdateAsyncWaitCount({arch}));
   pm->addPass(mlir::triton::AMD::createConvertWarpPipelinePass(arch));
+
   // --- rocmlirTriton pass ----
   // Redistribute the layout of the reduction dimension to reduce register
   // pressure. Always scheduled; `useReductionLayout` decides which kernels it
@@ -289,7 +286,7 @@ static void makeLLIR(mlir::OpPassManager *pm,
   reductionLayoutOpts.useReductionLayout = options.useReductionLayout;
   reductionLayoutOpts.numStages = options.numStages;
   pm->addPass(rock::createRockSetReductionLayoutPass(reductionLayoutOpts));
-  // --- rocmlirTriton pass ----
+
   pm->addPass(mlir::createSCFToControlFlowPass());
 
   // TODO: do we need this?
@@ -297,11 +294,8 @@ static void makeLLIR(mlir::OpPassManager *pm,
   pm->addPass(mlir::createConvertIndexToLLVMPass());
 
   pm->addPass(mlir::triton::createAllocateAMDGPUSharedMemoryPass(arch));
+  pm->addPass(mlir::triton::createTritonAMDGPUMembar({arch}));
   pm->addPass(mlir::triton::gpu::createTritonGPUGlobalScratchAllocationPass());
-  // Upstream calls this pass twice, between
-  // HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", ...).
-  // Because we do not implement the instrumentation thing (see
-  // docs/bump_triton_version.md Step 6), a single call is sufficient.
 
   // --- rocmlirTriton pass ----
   // Must run before convert-triton-amdgpu-to-llvm: on kernels that overflow
@@ -325,7 +319,9 @@ static void makeLLIR(mlir::OpPassManager *pm,
   // options on two separate pipelines; both have to be set to get IEEE
   // denormals end to end.
   bool ftz = options.allowFlushDenorm;
-  pm->addPass(mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz));
+  // TODO: See whether to expose wgp_cu_mode
+  pm->addPass(
+      mlir::triton::createConvertTritonAMDGPUToLLVMPass(arch, ftz, false));
   pm->addPass(
       mlir::triton::AMD::createTritonAMDGPUConvertWarpSpecializeToLLVMPass(
           arch));
@@ -355,7 +351,6 @@ static void makeLLIR(mlir::OpPassManager *pm,
     pm->addPass(mlir::createCanonicalizerPass());
     pm->addPass(mlir::createCSEPass());
   }
-  // --- rocmlirTriton pass ----
 
   // IMPORTANT:
   //
@@ -778,9 +773,9 @@ void rock::buildBackendPipeline(OpPassManager &pm,
   if (options.compile) {
     // Add the TritonToHsaco pass to convert LLVM dialect to HSACO binary
     // This implements the functionality from Triton's compiler.py:
-    // - make_llir() lines 358-449: LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-    // - make_amdgcn() lines 452-473: LLVM -> AMDGCN assembly
-    // - make_hsaco() lines 476-488: AMDGCN assembly -> HSACO binary
+    // - make_llir(): LLVM-IR (MLIR) -> LLVM-IR (LLVM)
+    // - make_amdgcn(): LLVM -> AMDGCN assembly
+    // - make_hsaco(): AMDGCN assembly -> HSACO binary
     rock::TritonToHsacoPassOptions hsacoOpts;
     hsacoOpts.triple = options.triple;
     hsacoOpts.arch = arch;

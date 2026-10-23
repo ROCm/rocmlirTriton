@@ -7,7 +7,7 @@
 // directly in the output.
 
 // Stamp a perf config when the input has none.
-// RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1030 -n 128 -k 8 -m 256 \
+// RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1200 -n 128 -k 8 -m 256 \
 // RUN: | rocmlir-driver --perf-config "gemm:v1:128,64,64,1,1,4,16,1,2,0,0" \
 // RUN: | FileCheck %s --check-prefix=SET
 
@@ -15,7 +15,7 @@
 // SET-SAME: perf_config = "gemm:v1:128,64,64,1,1,4,16,1,2,0,0"
 
 // Override a perf config that is already present on the op.
-// RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1030 -n 128 -k 8 -m 256 --perf_config "gemm:v1:64,64,16,1,1,4,16,1,1,0,0" \
+// RUN: rocmlir-gen --operation gemm -t f32 --arch gfx1200 -n 128 -k 8 -m 256 --perf_config "gemm:v1:64,64,16,1,1,4,16,1,1,0,0" \
 // RUN: | rocmlir-driver --perf-config "gemm:v1:128,64,64,1,1,4,16,1,2,0,0" \
 // RUN: | FileCheck %s --check-prefix=OVERRIDE
 

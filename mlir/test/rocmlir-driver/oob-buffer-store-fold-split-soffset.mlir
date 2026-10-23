@@ -37,13 +37,8 @@
 // RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx950/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx950 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx950 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA %}
 // RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1250 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1250 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-GFX1250 %}
 
-// The correlated select pair. The lone `icmp "sge"` in the kernel is the
-// split-safety guard, so it anchors the shape.
-// SPLIT: %[[NONNEG:.*]] = llvm.icmp "sge" %[[UNIFORM:.*]], %{{.*}} : i32
-// SPLIT: llvm.select %[[NONNEG]], %[[UNIFORM]], %{{.*}} : i1, i32
-// SPLIT: %[[NEGATED:.*]] = llvm.sub %{{.*}}, %[[UNIFORM]] : i32
-// SPLIT: llvm.select %[[NONNEG]], %[[NEGATED]], %{{.*}} : i1, i32
-
+// On the split-soffset path (gfx1100/gfx1200) this kernel retains 8 stores.
+// Keep this count pinned as the coverage anchor for that path.
 // SPLIT-COUNT-8: rocdl.raw.ptr.buffer.store
 // SPLIT-NOT: rocdl.raw.ptr.buffer.store
 

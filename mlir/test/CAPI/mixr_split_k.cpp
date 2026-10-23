@@ -445,7 +445,7 @@ llvm::cl::opt<DataType>
 
 llvm::cl::opt<std::string> targetArch("target-arch",
                                       llvm::cl::desc("target architecture"),
-                                      llvm::cl::init("gfx908:sramecc+:xnack-"));
+                                      llvm::cl::init("gfx90a:sramecc+:xnack-"));
 
 llvm::cl::opt<RocmlirTuningParamSetKind> tuningLevel(
     "tuning-kind", llvm::cl::desc("tuning level"),

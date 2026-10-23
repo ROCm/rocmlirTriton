@@ -82,9 +82,11 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation loc) {
   mlirOperationSetAttributeByName(
       func, mlirStringRefCreateFromCString(mlir::rock::KernelAttr::getMnemonic().data()), mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString(mlir::rock::ArchAttr::getMnemonic().data()),
+      func,
+      mlirStringRefCreateFromCString(
+          mlir::rock::ArchAttr::getMnemonic().data()),
       mlirStringAttrGet(
-          ctx, mlirStringRefCreateFromCString("gfx908:sramecc+:xnack-")));
+          ctx, mlirStringRefCreateFromCString("gfx90a:sramecc+:xnack-")));
   mlirBlockInsertOwnedOperation(moduleBody, 0, func);
 
   //-------------- conv0 = migraphx.convolution
@@ -195,12 +197,12 @@ static bool constructAndTraverseIr(MlirContext ctx) {
       mlirRockTuningSpaceCreate(module, RocmlirTuningParamSetKindFull);
   printf("Got tuning space,\n");
   unsigned fNum = mlirRockTuningGetNumParams(tuningSpace);
-  // CHECK: full set = 524
+  // CHECK: full set = 522
   printf("full set = %u\n", fNum);
   MlirRockTuningParam tuningParam = mlirRockTuningParamCreate();
   MlirRockTuningTable tuningTable = mlirRockTuningTableCreate();
 
-  MlirMIGraphXBackendOptions opts = {"gfx908:sramecc+:xnack-",
+  MlirMIGraphXBackendOptions opts = {"gfx90a:sramecc+:xnack-",
                                      "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
   unsigned numSuccesses = 0;
   char problemKey[ROCMLIR_TUNING_KEY_BUFSZ];
@@ -358,7 +360,7 @@ static void checkLdsUsageFits(MlirContext ctx) {
   // the kernel/Triton/backend pipeline internally; the per-problem (gemmO,
   // arch, elementType) args are ignored. The module is passed in the MIGraphX
   // dialect (the function clones and lowers it). This convolution is applicable
-  // on the module's own arch (gfx908) with the smallest config.
+  // on the module's own arch (gfx90a) with the smallest config.
   MlirLocation loc = mlirLocationUnknownGet(ctx);
   MlirModule module = makeAndDumpMIXR(ctx, loc);
   int moduleFits = mlirMIGraphXLDSUsageFitsArch(0, nullptr, f16, module);
@@ -418,7 +420,7 @@ checkPipelineConstructionPreservesThreading(MlirDialectRegistry registry) {
   preserved = preserved && mlirContextGetNumThreads(ctx) == 1;
 
   MlirPassManager backendPm = mlirPassManagerCreate(ctx);
-  MlirMIGraphXBackendOptions opts = {"gfx908:sramecc+:xnack-",
+  MlirMIGraphXBackendOptions opts = {"gfx90a:sramecc+:xnack-",
                                      "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
   bool backendPipelineAdded = mlirMIGraphXAddBackendPipeline(backendPm, &opts);
   // CHECK: backend pipeline construction succeeded : 1

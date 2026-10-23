@@ -24,9 +24,9 @@
 // assembly so the codegen difference is pinned too. The implicit-check-nots
 // carry the negative half: with the flags on, no f16 divide falls back to the
 // fixup sequence, and with them off, none reaches a bare reciprocal.
-// RUN: AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -c %s 2>&1 \
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=ASM --implicit-check-not=v_div_fixup_f16
-// RUN: AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 --disable-fast-math -c %s 2>&1 \
+// RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -arch=gfx942 --disable-fast-math -c %s 2>&1 \
 // RUN: | FileCheck %s --check-prefix=NOFM-ASM --implicit-check-not=v_rcp_f16
 
 #flat_to_gemm = #rock.transform_map<affine_map<(d0, d1, d2) -> (d1 * 64 + d2)>
