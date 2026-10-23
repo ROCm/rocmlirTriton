@@ -82,7 +82,9 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation loc) {
   mlirOperationSetAttributeByName(
       func, mlirStringRefCreateFromCString(mlir::rock::KernelAttr::getMnemonic().data()), mlirUnitAttrGet(ctx));
   mlirOperationSetAttributeByName(
-      func, mlirStringRefCreateFromCString(mlir::rock::ArchAttr::getMnemonic().data()),
+      func,
+      mlirStringRefCreateFromCString(
+          mlir::rock::ArchAttr::getMnemonic().data()),
       mlirStringAttrGet(
           ctx, mlirStringRefCreateFromCString("gfx90a:sramecc+:xnack-")));
   mlirBlockInsertOwnedOperation(moduleBody, 0, func);
