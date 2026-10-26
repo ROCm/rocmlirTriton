@@ -25,7 +25,8 @@ module {
     %15 = migraphx.reshape %14 {dims = [1, 12, 2, 256, 1]} : <1x12x2x256x1xf32, 6144x512x256x1x1> -> <1x12x2x256x1xf32, 6144x512x256x1x1>
     %16 = migraphx.multibroadcast %15 {out_dyn_dims = [], out_lens = [1, 12, 2, 256, 128]} : <1x12x2x256x1xf32, 6144x512x256x1x1> -> <1x12x2x256x128xf32, 6144x512x256x1x0>
     %17 = migraphx.div %12, %16 : <1x12x2x256x128xf32, 786432x65536x32768x128x1>, <1x12x2x256x128xf32, 6144x512x256x1x0> -> <1x12x2x256x128xf32, 786432x65536x32768x128x1>
-    %18 = migraphx.dot %17, %5 : <1x12x2x256x128xf32, 786432x65536x32768x128x1>, <1x12x2x128x256xf32, 786432x65536x128x1x256> -> <1x12x2x256x256xf32, 1572864x131072x65536x256x1>
+    // TODO(ROCM-32038): Pin a safe gfx950 config for the second GEMM.
+    %18 = migraphx.dot %17, %5 {perf_config = "attn:mPerBlockG0=32,nPerBlockG0=32,nPerBlockG1=0,kPerBlock=32,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=0,splitKFactor=1,numStages=1,wavesPerEU=0,gridGroupSize=0"} : <1x12x2x256x128xf32, 786432x65536x32768x128x1>, <1x12x2x128x256xf32, 786432x65536x128x1x256> -> <1x12x2x256x256xf32, 1572864x131072x65536x256x1>
     %19 = migraphx.log %15 : <1x12x2x256x1xf32, 6144x512x256x1x1> -> <1x12x2x256x1xf32, 6144x512x256x1x1>
     %20 = migraphx.add %9, %19 : <1x12x2x256x1xf32, 6144x512x256x1x1>, <1x12x2x256x1xf32, 6144x512x256x1x1> -> <1x12x2x256x1xf32, 6144x512x256x1x1>
     return %18, %20 : !migraphx.shaped<1x12x2x256x256xf32, 1572864x131072x65536x256x1>, !migraphx.shaped<1x12x2x256x1xf32, 6144x512x256x1x1>
