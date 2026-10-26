@@ -606,7 +606,6 @@ void setHeartbeat() {
 List<String> getEnabledMfmaArchitectures() {
     def architectures = []
     if (params.disable942 == false) architectures << 'gfx942'
-    if (params.disable908 == false) architectures << 'gfx908'
     if (params.disable90a == false) architectures << 'gfx90a'
     return architectures
 }
@@ -617,7 +616,7 @@ String getLabelFromCodepath(String codepath) {
     if (codepath == "mfma") {
         def architectures = getEnabledMfmaArchitectures()
         if (architectures.isEmpty()) {
-            error 'mfma codepath selected but all of gfx942/gfx908/gfx90a are disabled'
+            error 'mfma codepath selected but all of gfx942/gfx90a are disabled'
         }
         label = "mlir && (${architectures.join(' || ')})"
     } else if (codepath == "gfx950") {
@@ -656,8 +655,6 @@ String getLabelFromChip(String chip) {
     switch (chip) {
         case "gfx906":
             return getLabelFromCodepath("vanilla")
-        case "gfx908":
-            return "mlir && gfx908"
         case "gfx90a":
             return "mlir && gfx90a"
         case "gfx942":
@@ -686,7 +683,7 @@ String getLabelFromChip(String chip) {
 int setLitWorkerCount() {
     int limit_lit_workers = 8
     def gpu_arch = get_gpu_architecture()
-    if (gpu_arch.contains('gfx908') || gpu_arch.contains('gfx90a') || gpu_arch.contains('gfx950')) {
+    if (gpu_arch.contains('gfx90a') || gpu_arch.contains('gfx950')) {
         limit_lit_workers = 20
     } else if (gpu_arch.contains('gfx942')) {
         limit_lit_workers = 64
@@ -787,8 +784,6 @@ boolean shouldRunFromChip(String chip) {
             // Special case because all our "vanilla" hosts are gfx90a.
             return params.disable90a == false &&
                    (shouldRunFromCodepath("mfma") || shouldRunFromCodepath("vanilla"))
-        case "gfx908":
-            return params.disable908 == false && shouldRunFromCodepath("mfma")
         case "gfx942":
             return params.disable942 == false && shouldRunFromCodepath("mfma")
         case "gfx950":
@@ -806,7 +801,7 @@ boolean shouldRunFromChip(String chip) {
 void archivePerfDB() {
     // Note: add additional architectures here
     dir ('build/perfDB') {
-        def architectures = params.canXdlops ? ['gfx908', 'gfx90a', 'gfx942', 'gfx950', 'gfx1100', 'gfx1201'] : ['vanilla']
+        def architectures = params.canXdlops ? ['gfx90a', 'gfx942', 'gfx950', 'gfx1100', 'gfx1201'] : ['vanilla']
         for (arch in architectures) {
             try {
                 unstash name: "MLIR-PerfDB-${arch}"
@@ -1189,8 +1184,6 @@ pipeline {
                      description: 'Disable testing on Navi4x')
         booleanParam(name: 'disable90a', defaultValue: false,
                      description: 'Disable testing on gfx90a')
-        booleanParam(name: 'disable908', defaultValue: false,
-                     description: 'Disable testing on gfx908')
         booleanParam(name: 'disable942', defaultValue: false,
                      description: 'Disable testing on gfx942')
         booleanParam(name: 'disable950', defaultValue: false,
@@ -1515,7 +1508,7 @@ pipeline {
                 axes {
                     axis {
                         name 'CHIP'
-                        values 'gfx908', 'gfx90a', 'gfx942', 'gfx950', 'gfx1100', 'gfx1201'
+                        values 'gfx90a', 'gfx942', 'gfx950', 'gfx1100', 'gfx1201'
                     }
                 }
                 // One big scripted step per matrix row
@@ -1736,7 +1729,7 @@ PY
                 axes {
                     axis {
                         name 'CHIP'
-                        values 'gfx908', 'gfx90a', 'gfx942', 'gfx950', 'gfx1030', 'gfx1100', 'gfx1201'
+                        values 'gfx90a', 'gfx942', 'gfx950', 'gfx1030', 'gfx1100', 'gfx1201'
                     }
                 }
                 // One big scripted step per matrix row
