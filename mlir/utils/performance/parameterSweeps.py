@@ -1250,7 +1250,8 @@ def build_options_and_paths(args: argparse.Namespace) -> Tuple[Options, Paths]:
                       arch=arch,
                       concurrent_tests=args.jobs,
                       num_cu=num_cu,
-                      num_chiplets=amd_arch_db.infer_num_chiplets(chip, num_cu),
+                      num_chiplets=amd_arch_db.resolve_num_chiplets(
+                          chip, num_cu, perfRunner.query_compute_partition()),
                       test_timeout_sec=args.test_timeout_sec,
                       max_timeout_rate=args.max_timeout_rate)
     paths = perfRunner.create_paths(None, mlir_build_dir)

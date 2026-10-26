@@ -117,6 +117,72 @@ TEST(AmdArchDbTest, InferNumChipletsGfx1250) {
   EXPECT_EQ(inferNumChiplets("gfx1251", 256), 8);
 }
 
+// Partition mode overrides the CU table for the modes that fix the per-device
+// XCD count. SPX and a missing mode stay on the table.
+TEST(AmdArchDbTest, ResolveNumChipletsFromPartition) {
+  // MI300X/MI325X DPX: 152 CUs, 4 XCDs. The table has no row for 152.
+  EXPECT_EQ(inferNumChiplets("gfx942", 152), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 152, ComputePartitionMode::DPX), 4);
+  // The mode wins even when the CU count looks like a harvested part.
+  EXPECT_EQ(resolveNumChiplets("gfx942", 140, ComputePartitionMode::DPX), 4);
+
+  // MI300A TPX: 76 CUs, 2 XCDs. Also absent from the table.
+  EXPECT_EQ(inferNumChiplets("gfx942", 76), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 76, ComputePartitionMode::TPX), 2);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 38, ComputePartitionMode::CPX), 1);
+
+  // SPX does not name the die size, so the full-part rows still answer it.
+  EXPECT_EQ(resolveNumChiplets("gfx942", 304, ComputePartitionMode::SPX), 8);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 228, ComputePartitionMode::SPX), 6);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 80, ComputePartitionMode::SPX), 4);
+
+  // gfx950 partition counts no longer have to land on 128/64/32.
+  EXPECT_EQ(inferNumChiplets("gfx950", 120), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx950", 120, ComputePartitionMode::DPX), 4);
+  EXPECT_EQ(resolveNumChiplets("gfx950", 120, ComputePartitionMode::QPX), 2);
+  EXPECT_EQ(resolveNumChiplets("gfx950", 120, ComputePartitionMode::CPX), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx950", 256, ComputePartitionMode::SPX), 8);
+
+  // gfx1250 has no published partition map. A mode must not invent one.
+  EXPECT_EQ(resolveNumChiplets("gfx1250", 32, ComputePartitionMode::DPX), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx1250", 256, std::nullopt), 8);
+
+  // One-XCD architectures ignore a mode and stay on the table.
+  EXPECT_EQ(resolveNumChiplets("gfx1100", 48, ComputePartitionMode::DPX), 1);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 80, std::nullopt),
+            inferNumChiplets("gfx942", 80));
+
+  for (ComputePartitionMode mode :
+       {ComputePartitionMode::SPX, ComputePartitionMode::DPX,
+        ComputePartitionMode::TPX, ComputePartitionMode::QPX,
+        ComputePartitionMode::CPX}) {
+    for (StringRef arch : {"gfx942", "gfx950", "gfx1250", "gfx1100"}) {
+      int64_t chiplets = resolveNumChiplets(arch, /*numCUs=*/152, mode);
+      EXPECT_TRUE(chiplets == 1 || chiplets % 2 == 0) << arch.str() << " " << chiplets;
+    }
+  }
+}
+
+TEST(AmdArchDbTest, ParseComputePartitionText) {
+  std::optional<ComputePartitionMode> parsed = parseComputePartition("dpx");
+  ASSERT_TRUE(parsed.has_value());
+  EXPECT_EQ(*parsed, ComputePartitionMode::DPX);
+  EXPECT_FALSE(parseComputePartition("nope").has_value());
+
+  // The token rocm-smi prints, surrounded by the labels it also prints.
+  std::optional<ComputePartitionMode> fromSmi = parseComputePartitionText(
+      "================================== Compute Partition =====================================\n"
+      "GPU[0]          : Compute Partition:       DPX\n");
+  ASSERT_TRUE(fromSmi.has_value());
+  EXPECT_EQ(*fromSmi, ComputePartitionMode::DPX);
+  EXPECT_EQ(resolveNumChiplets("gfx942", 152, fromSmi), 4);
+
+  // A usage dump that names every mode is not a device report.
+  EXPECT_FALSE(parseComputePartitionText("SPX DPX TPX QPX CPX").has_value());
+  EXPECT_FALSE(parseComputePartitionText("").has_value());
+  EXPECT_FALSE(parseComputePartitionText("Compute Partition: N/A").has_value());
+}
+
 // --- getMinNumCU ---
 
 // This is a hard floor: getNumCUOnFunc rejects a smaller rock.num_cu, so a
