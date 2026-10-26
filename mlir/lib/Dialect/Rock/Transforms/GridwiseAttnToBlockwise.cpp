@@ -1724,6 +1724,29 @@ struct GridwiseAttentionRewritePattern
 
         std::tie(maxRowDiffExp, sumRow, maxRow) =
             updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
+      } else if (isCausal && !isPrefixCausal) {
+        // Causal gemm-gemm without softmax: zero out positions where the N
+        // (key) index is ahead of the M (query) index. Zero is the additive
+        // identity of the second gemm's accumulation, where softmax attention
+        // masks with -inf instead. Only the blocks crossing the diagonal have
+        // mixed validity; fully invalid blocks are skipped by the N loop.
+        ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
+        assert(lowerShape.size() == 3);
+        Value fakeTensorM =
+            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[1]}, accType);
+        Value fakeTensorN =
+            rock::createZeroAccBuffer(rewriter, loc, {lowerShape[2]}, accType);
+        auto firstGemmType = cast<RankedTensorType>(firstGemmResult.getType());
+        Value zeroTensor = createConstantFloatOp(
+            rewriter, loc, firstGemmType, firstGemmType.getElementType(), 0.0f,
+            APFloat::opOK);
+        firstGemmResult = setGemm0OutputOutOfScope(
+            rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
+            firstGemmResult, fakeTensorM, fakeTensorN, zeroTensor,
+            gemm0OutTileViewUnPadded, /*enabled=*/true, nLoopIV,
+            gemm0NBlocksLastIter,
+            /*lastValidKVIndex=*/nullptr,
+            /*prefixOffset=*/nullptr, /*slidingWindowLowerBound=*/nullptr);
       }
 
       // Emit blockwise GEMM 1.

@@ -4200,6 +4200,7 @@ createGpuGemmElementwiseGemmKernel(ModuleOp module, const GenParams &params) {
   auto gemmElntGemm = rock::GemmElementwiseGemmOp::create(
       builder, loc, outputLogicalType, a, b, c, elemwiseInputs, transposeA,
       transposeB, transposeC, transposeO,
+      /*causal=*/UnitAttr{},
       /*params0=*/nullptr, /*params1=*/nullptr);
   {
     Block *preSecondGemmBlock =

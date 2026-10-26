@@ -660,8 +660,8 @@ struct GemmElementwiseGemmRewritePattern
     auto newOp = rock::GemmElementwiseGemmOp::create(
         rw, op->getLoc(), op->getResultTypes(), newTensorQ, newTensorK,
         newTensorV, op.getElemwiseInputs(), transposedQ, transposedK,
-        transposedV, op.getOTransposedAttr(), op.getParams0Attr(),
-        op.getParams1Attr());
+        transposedV, op.getOTransposedAttr(), op.getCausalAttr(),
+        op.getParams0Attr(), op.getParams1Attr());
 
     if (rock::gemmGemmHasPreSecondGemmFusion(op)) {
       rw.inlineRegionBefore(op.getPreSecondGemmBody(),

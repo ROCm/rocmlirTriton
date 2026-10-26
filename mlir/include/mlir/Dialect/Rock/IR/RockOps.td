@@ -270,6 +270,7 @@ def Rock_GemmElementwiseGemmOp
           TensorOf<[F32, F16, BF16]>:$b, TensorOf<[F32, F16, BF16]>:$c,
           Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
+          UnitAttr:$causal,
           OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
@@ -281,12 +282,17 @@ def Rock_GemmElementwiseGemmOp
     fusion just before the second GEMM, defined by `preSecondGemmBody` with inputs `elemwiseInputs`.
 
     If none of the `transposed` attributes are set, then `a` is [G] x M x K,
-    `b` is [G] x K x N, `c` is [G] x N x O and `out` is [G] x M x O, where G is the 
+    `b` is [G] x K x N, `c` is [G] x N x O and `out` is [G] x M x O, where G is the
     optional group dimension (which is assumed to be 1 if not set).
 
     The transpose attributes allow for the non-group dimensions of the matrix to be
     transposed. For example, if `aTransposed` is set, then the argument `a` should be
     a [G] x K x M memory.
+
+    If causal is enabled, the first gemm's result is masked with zeros where
+    the N position is ahead of the M position (zero being the additive
+    identity of the second gemm, where softmax attention masks with -inf),
+    and N-loop iterations that are entirely above the diagonal are skipped.
 
     The parameters `gridSize`, and `blockSize` are optional as they can be
     inferred by a tuning process or a heuristic, but they must be set before
@@ -298,6 +304,7 @@ def Rock_GemmElementwiseGemmOp
   let assemblyFormat = [{
     `{` `\n`
         ` ` `ab` `=` (`tr` $aTransposed^)? $a `*` (`tr` $bTransposed^)? $b `:` type($a) `,` type($b) `\n`
+        (`causal` `\n` $causal^)?
         (`ab` `=` `elementwise` (`otherIns` `(` $elemwiseInputs^ `:` type($elemwiseInputs) `)`)? $preSecondGemmBody^ `\n`)?
         `out` `=` `ab` `*` (`tr` $cTransposed^)? $c `:` type($c) `\n`
     `}` attr-dict `->` type($result)

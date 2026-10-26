@@ -1548,6 +1548,134 @@ struct ConvElementwiseGemmRewritePattern
   }
 };
 
+// This function checks if a given input is a constant range. There are two
+// possible cases that we can handle:
+// - The input is broadcasted -> we can then check the resulting broadcasted
+//   value to see if it's a constant range
+// - The input is already a constant range
+static LogicalResult isConstantRange(TypedValue<TensorType> input,
+                                     size_t nonOneDimFromEnd) {
+  // Lambda to get constant result from either tosa.const or arith.constant
+  auto getConstantResult = [&](Value input) -> FailureOr<Value> {
+    DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
+                                  tensor::ExpandShapeOp::getOperationName()};
+    auto maybeTosaConst =
+        getDefiningOpSkipping<tosa::ConstOp>(input, opsToSkip);
+    auto maybeArithConst =
+        getDefiningOpSkipping<arith::ConstantOp>(input, opsToSkip);
+    if (succeeded(maybeTosaConst)) {
+      return maybeTosaConst.value().getResult();
+    } else if (succeeded(maybeArithConst)) {
+      return maybeArithConst.value().getResult();
+    }
+    return failure();
+  };
+
+  // input is a constant with a range from 0 to maxSeqLen
+  Value rangeInput = mulBroadcast(input).value_or(input);
+
+  // check that rangeInput is a const with range 0..maxSeqLen
+  Value rangeResult;
+  auto rangeConstantResult = getConstantResult(rangeInput);
+  bool isRange = succeeded(rangeConstantResult) &&
+                 rock::isConstRange(rangeConstantResult.value());
+
+  if (!isRange)
+    return failure();
+
+  rangeResult = rangeConstantResult.value();
+
+  auto shapedType = dyn_cast<ShapedType>(rangeResult.getType());
+  if (!shapedType)
+    return failure();
+
+  auto shape = shapedType.getShape();
+  assert(nonOneDimFromEnd < shape.size());
+  size_t rangeDim = shape.size() - nonOneDimFromEnd - 1;
+
+  // For flash decoding with splitKV, the constant range tensor may have
+  // an additional non-1 dimension at index 1 or 2 (where heads or splitKV
+  // typically appear in attention layouts). We allow at most one such
+  // additional dimension.
+  bool foundExtraNonOneDim = false;
+  for (auto [i, dim] : llvm::enumerate(shape)) {
+    if (dim != 1) {
+      // The range dimension is always allowed to be non-1
+      if (i == rangeDim)
+        continue;
+      // Allow one additional non-1 dimension at index 1 or 2
+      if (!foundExtraNonOneDim && (i == 1 || i == 2)) {
+        foundExtraNonOneDim = true;
+        continue;
+      }
+      // Any other non-1 dimension is not allowed
+      return failure();
+    }
+  }
+  return success();
+}
+
+// True when the value resolves (through reshape-like ops, casts, and
+// broadcasts realized as tosa.mul) to a splat constant equal to zero.
+static bool isConstZeroSplat(Value v) {
+  DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
+                                tensor::ExpandShapeOp::getOperationName(),
+                                tosa::CastOp::getOperationName()};
+  Value base = mulBroadcast(v).value_or(v);
+  Attribute attr;
+  auto maybeTosaConst = getDefiningOpSkipping<tosa::ConstOp>(base, opsToSkip);
+  auto maybeArithConst =
+      getDefiningOpSkipping<arith::ConstantOp>(base, opsToSkip);
+  if (succeeded(maybeTosaConst))
+    attr = maybeTosaConst.value().getValuesAttr();
+  else if (succeeded(maybeArithConst))
+    attr = maybeArithConst.value().getValue();
+  auto splat = dyn_cast_or_null<SplatElementsAttr>(attr);
+  if (!splat)
+    return false;
+  if (isa<FloatType>(splat.getElementType()))
+    return splat.getSplatValue<APFloat>().isZero();
+  if (splat.getElementType().isIntOrIndex())
+    return splat.getSplatValue<APInt>().isZero();
+  return false;
+}
+
+// Detect a causal mask whose masked-out value is zero on the elementwise
+// chain between two gemms:
+//   select(greater(col_range, row_range), 0, scores)
+// optionally through casts and reshape-like ops. Returns the select and the
+// unmasked scores value to continue matching from. This differs from the
+// attention causal mask (getCausalFromSelect) in that the masked-out value
+// is the additive identity zero rather than -inf, since there is no softmax
+// between the mask and the second gemm.
+static FailureOr<std::pair<tosa::SelectOp, Value>>
+getCausalZeroSelect(Value input) {
+  DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
+                                tensor::ExpandShapeOp::getOperationName(),
+                                tosa::CastOp::getOperationName()};
+  auto maybeSelect = getDefiningOpSkipping<tosa::SelectOp>(input, opsToSkip);
+  if (failed(maybeSelect))
+    return failure();
+  tosa::SelectOp select = maybeSelect.value();
+  if (!isConstZeroSplat(select.getInput2()))
+    return failure();
+  Value scores = select.getInput3();
+
+  opsToSkip.insert(tosa::MulOp::getOperationName());
+  auto maybeGreater =
+      getDefiningOpSkipping<tosa::GreaterOp>(select.getInput1(), opsToSkip);
+  if (failed(maybeGreater))
+    return failure();
+  tosa::GreaterOp greater = maybeGreater.value();
+  // The column (key) range varies along the last dim and the row (query)
+  // range along the second-to-last, so col > row masks the upper triangle.
+  if (failed(isConstantRange(greater.getInput1(), 0)))
+    return failure();
+  if (failed(isConstantRange(greater.getInput2(), 1)))
+    return failure();
+  return std::make_pair(select, scores);
+}
+
 struct GemmElementwiseGemmRewritePattern
     : public OpRewritePattern<tosa::MatMulOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1570,7 +1698,7 @@ struct GemmElementwiseGemmRewritePattern
 
   void rewrite(tosa::MatMulOp op,
                const ElementwiseRegionFinder<tosa::MatMulOp> &elemwiseFinder,
-               PatternRewriter &rewriter) const {
+               PatternRewriter &rewriter, bool causal) const {
     Location loc = op.getLoc();
 
     auto outputType = cast<RankedTensorType>(op.getType());
@@ -1590,6 +1718,7 @@ struct GemmElementwiseGemmRewritePattern
             /*kTransposed=*/nullptr,
             /*vTransposed=*/nullptr,
             /*oTransposed=*/nullptr,
+            /*causal=*/causal ? rewriter.getUnitAttr() : UnitAttr{},
             /*params0=*/nullptr, /*params1=*/nullptr);
     Block *preSecondGemmElemwiseBlock =
         &gemmElentwiseGemmOp.getPreSecondGemmBody().emplaceBlock();
@@ -1609,10 +1738,31 @@ struct GemmElementwiseGemmRewritePattern
                                 PatternRewriter &rewriter) const override {
     FailureOr<ElementwiseRegionFinder<tosa::MatMulOp>> elemwiseFinder =
         match(op);
-    if (succeeded(elemwiseFinder)) {
-      rewrite(op, elemwiseFinder.value(), rewriter);
+    if (failed(elemwiseFinder))
+      return failure();
+
+    // A causal mask zeroing the upper triangle of the first gemm's result
+    // can be dropped from the elementwise chain and lowered as the fused
+    // kernel's causal mode, which also skips the fully masked-out tiles.
+    bool causal = false;
+    auto maybeMask = getCausalZeroSelect(op.getA());
+    if (succeeded(maybeMask)) {
+      auto [select, scores] = maybeMask.value();
+      // Only strip a single-use mask whose unmasked scores still reach the
+      // first gemm, so the remaining chain stays a valid fusion.
+      ElementwiseRegionFinder<tosa::MatMulOp> probe;
+      probe.visit(scores);
+      if (select->hasOneUse() && succeeded(probe.getFirstGemmBasedOp())) {
+        rewriter.replaceOp(select, scores);
+        causal = true;
+        elemwiseFinder = match(op);
+        if (failed(elemwiseFinder))
+          return failure();
+      }
     }
-    return elemwiseFinder;
+
+    rewrite(op, elemwiseFinder.value(), rewriter, causal);
+    return success();
   }
 };
 
@@ -1658,72 +1808,6 @@ struct CausalMaskMatch {
 struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  // This function checks if a given input is a constant range. There are two
-  // possible cases that we can handle:
-  // - The input is broadcasted -> we can then check the resulting broadcasted
-  //   value to see if it's a constant range
-  // - The input is already a constant range
-  LogicalResult isConstantRange(TypedValue<TensorType> input,
-                                size_t nonOneDimFromEnd) const {
-    // Lambda to get constant result from either tosa.const or arith.constant
-    auto getConstantResult = [&](Value input) -> FailureOr<Value> {
-      DenseSet<StringRef> opsToSkip{tensor::CollapseShapeOp::getOperationName(),
-                                    tensor::ExpandShapeOp::getOperationName()};
-      auto maybeTosaConst =
-          getDefiningOpSkipping<tosa::ConstOp>(input, opsToSkip);
-      auto maybeArithConst =
-          getDefiningOpSkipping<arith::ConstantOp>(input, opsToSkip);
-      if (succeeded(maybeTosaConst)) {
-        return maybeTosaConst.value().getResult();
-      } else if (succeeded(maybeArithConst)) {
-        return maybeArithConst.value().getResult();
-      }
-      return failure();
-    };
-
-    // input is a constant with a range from 0 to maxSeqLen
-    Value rangeInput = mulBroadcast(input).value_or(input);
-
-    // check that rangeInput is a const with range 0..maxSeqLen
-    Value rangeResult;
-    auto rangeConstantResult = getConstantResult(rangeInput);
-    bool isRange = succeeded(rangeConstantResult) &&
-                   rock::isConstRange(rangeConstantResult.value());
-
-    if (!isRange)
-      return failure();
-
-    rangeResult = rangeConstantResult.value();
-
-    auto shapedType = dyn_cast<ShapedType>(rangeResult.getType());
-    if (!shapedType)
-      return failure();
-
-    auto shape = shapedType.getShape();
-    assert(nonOneDimFromEnd < shape.size());
-    size_t rangeDim = shape.size() - nonOneDimFromEnd - 1;
-
-    // For flash decoding with splitKV, the constant range tensor may have
-    // an additional non-1 dimension at index 1 or 2 (where heads or splitKV
-    // typically appear in attention layouts). We allow at most one such
-    // additional dimension.
-    bool foundExtraNonOneDim = false;
-    for (auto [i, dim] : llvm::enumerate(shape)) {
-      if (dim != 1) {
-        // The range dimension is always allowed to be non-1
-        if (i == rangeDim)
-          continue;
-        // Allow one additional non-1 dimension at index 1 or 2
-        if (!foundExtraNonOneDim && (i == 1 || i == 2)) {
-          foundExtraNonOneDim = true;
-          continue;
-        }
-        // Any other non-1 dimension is not allowed
-        return failure();
-      }
-    }
-    return success();
-  }
 
   // The three causal mask patterns we recognize:
   //   ZerosLowerOnesUpper:   int mask, 0s in lower triangle, 1s in upper

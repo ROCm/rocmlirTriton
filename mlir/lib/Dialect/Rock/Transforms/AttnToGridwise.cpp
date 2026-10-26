@@ -741,7 +741,7 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
       /*lastValidKVIndex=*/nullptr, /*prefixOffset=*/nullptr,
-      /*causal=*/nullptr, splitKV, /*slidingWindowLookBack=*/nullptr,
+      adaptor.getCausalAttr(), splitKV, /*slidingWindowLookBack=*/nullptr,
       /*causalLookBack=*/nullptr, adaptor.getElemwiseInputs(),
       op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
