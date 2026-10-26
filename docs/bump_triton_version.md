@@ -2,204 +2,112 @@
 
 ## Overview
 
-rocmlirTriton vendors Triton under `external/triton/` and the
-Triton-pinned LLVM/MLIR tree under `external/llvm-project/`, both via
-`git subtree`. Several Triton Python functions are replicated in C++
-within this project, so every upstream Triton/LLVM import must reconcile
-those C++ implementations and the downstream patch records under
-`triton-patches/` and `llvm-patches/`.
+rocmlirTriton no longer vendors `external/triton` and
+`external/llvm-project` in-tree. It now fetches pinned external branches at
+configure time:
 
-Note that we want to use Triton from https://github.com/triton-lang/triton-windows, as that includes Windows support not included in https://github.com/triton-lang/triton
+- `cmake/triton.cmake` (FetchContent)
+  - `ROCMLIR_TRITON_GIT_TAG` (`rmt-<date>`)
+  - `ROCMLIR_LLVM_GIT_TAG` (`rmt-core-<date>`)
+- `cmake/triton_amd_codegen.cmake` (ExternalProject_Add)
+  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG` (`rmt-amd-<date>`)
 
-## Step 1: Import new upstream revisions
+Downstream patches are no longer stored as `*.patch` files in this repo.
+They live as commits on the external branch tips.
 
-Use the Triton-bump commit-message convention for upstream subtree
-imports, such as `[TRITON-BUMP]` or a Jira-tracked
-`[AIROCMLIR-NNN]` prefix. The `[EXTERNAL]` prefix is reserved for
-downstream vendored-tree patch commits that modify `external/triton/`
-or `external/llvm-project/` outside an upstream import / bump commit.
+We still synchronize the same Triton/LLVM source files into rocmlirTriton C++
+mirrors (pipelines, LLVM lowering, arch DB, etc.); only the *update mechanism*
+changed.
 
-### 1.1 Record the current repository commit
+Note: Triton updates are based on
+https://github.com/triton-lang/triton-windows (`main-windows`).
+
+## Step 1: Capture current pins and create new external update branches
+
+### 1.1 Record current rocmlirTriton baseline
 
 ```bash
 export OLD_REPO=$(git rev-parse HEAD)
 ```
-### 1.2 Drop the previously applied patches
 
-Before importing new upstream revisions, reverse-apply every downstream
-patch so the vendored trees match clean upstream again. This turns the
-subsequent `git subtree pull` into a clean upstream-to-upstream merge
-instead of one that has to reconcile our local edits.
+### 1.2 Record current external pins from CMake
 
-Reverse-apply every `*.patch` in each directory from its subtree root.
-Order matters for stacked patches (ones that touch the same file build on
-each other), so reverse newest-first; `sort -r` does this for our
-PR-numbered patch names (e.g. `patch10498` is reversed before the
-`patch10450` it stacks on):
+Read the current branch/tag pins from:
+
+- `cmake/triton.cmake`
+- `cmake/triton_amd_codegen.cmake`
+
+Set the date suffix you plan to bump to:
 
 ```bash
-# LLVM patches -> external/llvm-project
-cd external/llvm-project
-for p in $(ls ../../llvm-patches/*.patch | sort -r); do
-  patch -p1 -R --force < "$p"
-done
-cd ../..
-
-# Triton patches -> external/triton
-cd external/triton
-for p in $(ls ../../triton-patches/*.patch | sort -r); do
-  patch -p1 -R --force < "$p"
-done
-cd ../..
+export BUMP_DATE=$(date +%F)   # e.g. 2026-10-26
+export NEW_TRITON_BRANCH="rmt-${BUMP_DATE}"
+export NEW_LLVM_CORE_BRANCH="rmt-core-${BUMP_DATE}"
+export NEW_LLVM_AMD_BRANCH="rmt-amd-${BUMP_DATE}"
 ```
 
-### 1.3 Pull the new versions
+## Step 2: Update external repositories (not rocmlirTriton)
 
-Import the desired upstream Triton and LLVM revisions into their vendored
-subtrees from the repository root. Replace `<triton-ref>` with the latest
-commit hash from https://github.com/triton-lang/triton-windows/tree/main-windows,
-and replace `<llvm_ref>` with the commit hash in llvm-info.json on `main-windows`:
+Create/update the branch tips in the external repos first, then point
+rocmlirTriton at those new branch names.
 
-Each `git subtree pull --squash` creates two commits: a synthetic
-`Squashed '<prefix>/' changes from <old>..<new>` commit (the merge's
-second parent, whose message carries a long per-upstream-commit list plus
-the `git-subtree-dir:` / `git-subtree-split:` trailers) and a merge commit
-that joins it into the branch. Collapse each pair into a single commit
-with a clean message, keeping only the two `git-subtree-*` trailers (drop
-the bullet list):
+### 2.1 Triton branch (`rmt-<date>`)
 
-```bash
-# Triton
-git subtree pull --prefix=external/triton \
-  https://github.com/triton-lang/triton-windows.git <triton-ref> --squash
-split=$(git log -1 --format=%b HEAD^2 | sed -n 's/^git-subtree-split: //p')
-git reset --soft HEAD^1
-git commit -m "Bump external/triton to ${split:0:12}" \
-  -m "git-subtree-dir: external/triton
-git-subtree-split: $split"
+In your `ROCm/triton` clone:
 
-# LLVM
-git subtree pull --prefix=external/llvm-project \
-  https://github.com/llvm/llvm-project.git <llvm-ref> --squash
-split=$(git log -1 --format=%b HEAD^2 | sed -n 's/^git-subtree-split: //p')
-git reset --soft HEAD^1
-git commit -m "Bump external/llvm-project to ${split:0:12}" \
-  -m "git-subtree-dir: external/llvm-project
-git-subtree-split: $split"
-```
+1. Create `rmt-<date>` from the prior `rmt-*` baseline.
+2. Pull/cherry-pick desired upstream Triton-Windows commits.
+3. Cherry-pick any remaining downstream commits still needed.
+4. Drop downstream commits that are now upstream.
 
-Note: Always use `--squash`. The `triton-windows` `main-windows` branch is
-rebased onto upstream Triton on every release, which rewrites its commit
-SHAs. A non-squash `git subtree pull` relies on shared commit ancestry, so a
-rebased upstream makes the entire branch look like new work and produces
-spurious conflicts (or `fatal: refusing to merge unrelated histories`).
-`--squash` sidesteps this.
+### 2.2 LLVM branches (`rmt-core-<date>`, `rmt-amd-<date>`)
 
-### 1.4 Clean the git history
+In your `ROCm/llvm-project` clone:
 
-Step 1.2 has to be its own commit, because `git subtree pull` refuses to
-run with a dirty working tree. Once the bumps are in, the history looks
-like:
+1. Create `rmt-core-<date>` and `rmt-amd-<date>` from the prior branch tips.
+2. Pull/cherry-pick required LLVM commits for each line (core vs AMD codegen).
+3. Cherry-pick any remaining downstream commits still needed.
+4. Drop no-longer-needed downstream commits.
 
-```
-<OLD_REPO>
-Remove previously applied patches
-Bump external/triton to <triton-sha>
-Bump external/llvm-project to <llvm-sha>
-```
+## Step 3: Point rocmlirTriton at the new external branches
 
-We don't want to carry the additional "Remove previously applied
-patches" commit, so we fold it into the bump with an interactive rebase:
+After pushing the new external branch tips, update the branch names in:
 
-```bash
-git rebase -i "$OLD_REPO"
-```
+- `cmake/triton.cmake`
+  - `ROCMLIR_TRITON_GIT_TAG`
+  - `ROCMLIR_LLVM_GIT_TAG`
+- `cmake/triton_amd_codegen.cmake`
+  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG`
+  - (and `ROCMLIR_AMD_CODEGEN_LLVM_REVISION` if your policy bumps it)
 
-In the todo list, mark the Triton bump as `squash` so it merges into the
-patch-removal commit directly above it:
-
-```
-pick   <hash> Remove previously applied patches
-squash <hash> Bump external/triton to <triton-sha>
-pick   <hash> Bump external/llvm-project to <llvm-sha>
-```
-
-When the combined-message editor opens, keep the `Bump external/triton to
-<triton-sha>` subject and its `git-subtree-dir:` / `git-subtree-split:`
-trailers, and delete everything else. The result is a single commit that
-both bumps Triton and drops the now-obsolete patches.
-
-Capture the tip after any folding, since the rebase rewrites hashes:
-
-```bash
-export NEW_REPO=$(git rev-parse HEAD)
-```
-
-## Step 2: Reconcile downstream patch records and re-apply the survivors
-
-We keep downstream patch records under `triton-patches/` and
-`llvm-patches/` so the next upstream import can re-apply or reconcile
-local divergence. After Step 1 the vendored trees are at clean upstream
-of the new revision (Step 1.2 reverse-applied every patch), so a patch's
-change being present in the tree right now means it landed upstream.
-
-Re-evaluate every patch and sort it into one of three buckets: drop
-(now upstream), apply (still needed, applies cleanly), or update
-(still needed but upstream context drifted, so the hunks must be refreshed
-first). Keep the human-readable patch indexes in sync at the same time:
-`triton-patches/triton-patch-content.txt` and
-`llvm-patches/llvm-patch-content.txt` should drop removed patches, rename
-survivors, and update the "drop this patch" guidance for the new pins.
-
-### 2.1 Classify each patch
-
-For each patch, check the files that are modified and do:
-
-```bash
-cd external/triton
-git diff ${OLD_REPO}..${NEW_REPO} -- FILE
-```
-
-Compare the upstream changes with the corresponding `.patch` file.
-
-If the changes are already in `external/triton`, then remove the `.patch` file
-and its entry in the matching `*-patch-content.txt` index.
-If they are still needed, then update the .patch contents accordingly.
-
-### 2.2 Apply the survivors to the vendored tree
-
-The records are not applied at build time; the edits must be committed
-into the vendored tree. Apply every still required patch from its
-subtree root and confirm there are no rejects:
-
-```bash
-( cd external/triton      && patch -p1 < ../../triton-patches/PATCH.patch )
-( cd external/llvm-project && patch -p1 < ../../llvm-patches/PATCH.patch )
-```
-
-Offsets and small fuzz are expected (upstream shifted the surrounding
-lines); rejects are not. Neither guarantees the result still matches the code,
-so once the tree builds, verify the survivors with `check-triton-lit-tests`
-(Step 12): most records ship the lit tests for the behavior they change.
-
-## Step 3: Rebuild LLVM/MLIR
-
-The LLVM version must remain compatible with the imported Triton tree
-(`external/triton/cmake/llvm-hash.txt` is a useful cross-check). Build
-from the vendored trees:
+Then build:
 
 ```bash
 bash cmake.sh
 ```
 
-Patch files are not applied during configure or build; they are records
-of downstream cherry-picks that must be kept in sync with the committed
-vendored trees.
+## Step 4: Analyze upstream changes
 
-## Step 4: Analyze Upstream Changes
+Use the external repo SHAs/refs for old vs new comparisons.
 
-Generate a diff between `OLD_REPO` and `NEW_REPO` for the key files that
-need synchronization. Those are:
+Example setup:
+
+```bash
+export TRITON_REPO=/path/to/ROCm/triton
+export LLVM_REPO=/path/to/ROCm/llvm-project
+
+export OLD_TRITON=<old-rmt-triton-commit>
+export NEW_TRITON=<new-rmt-triton-commit>
+export OLD_LLVM_CORE=<old-rmt-core-commit>
+export NEW_LLVM_CORE=<new-rmt-core-commit>
+```
+
+For the rest of this doc, paths like `external/triton/...` and
+`external/llvm-project/...` refer to paths *inside those external repositories*
+(i.e. under `$TRITON_REPO` / `$LLVM_REPO`), not paths committed in
+rocmlirTriton.
+
+Generate diffs for the key Triton files (same sync targets as before):
 
 ```bash
 for f in \
@@ -211,7 +119,7 @@ for f in \
     third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
     CMakeLists.txt \
     python/build_helpers.py; do
-  git diff "$OLD_REPO..$NEW_REPO" --function-context -- "external/triton/$f" > "$(basename "$f").diff"
+  git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" --function-context -- "$f" > "$(basename "$f").diff"
 done
 ```
 
@@ -292,9 +200,24 @@ Header: `mlir/include/mlir/Dialect/Rock/utility/tritonUtils.h`
 
 If there are any new architecture not handled by our rocmlirTriton functions we should see warnings/errors because the switch would not be handling all cases.
 
-We also carry a **downstream patch** to this file: `triton-patches/patch-wmma-preserve-discardable-attrs.patch`. It adds a `copyDiscardableAttrs()` helper that the accelerate-matmul rewrite patterns call when creating the new (WMMA/MFMA/scaled) dot, so that the `rock.o_transposed` metadata set by `rock-add-triton-metadata` survives onto the rewritten dot. `mlir/lib/Dialect/Rock/Transforms/SetMatmulOutputTranspose.cpp` reads that metadata back via `getDiscardableAttr(rock::OTransposedAttr::getNameStr())`, so dropping the patch silently breaks `rock-set-matmul-output-transpose` (no compile error, just lost output-transpose tuning).
+We also carry a **downstream commit** on the ROCm/triton `rmt-*` branch for
+this file: it adds a `copyDiscardableAttrs()` helper that the
+accelerate-matmul rewrite patterns call when creating the new
+(WMMA/MFMA/scaled) dot, so that the `rock.o_transposed` metadata set by
+`rock-add-triton-metadata` survives onto the rewritten dot.
+`mlir/lib/Dialect/Rock/Transforms/SetMatmulOutputTranspose.cpp` reads that
+metadata back via `getDiscardableAttr(rock::OTransposedAttr::getNameStr())`,
+so dropping this downstream commit silently breaks
+`rock-set-matmul-output-transpose` (no compile error, just lost
+output-transpose tuning).
 
-Because this is a downstream patch, the `AccelerateAMDMatmul.cpp.diff` generated in Step 4 will show `copyDiscardableAttrs` and its call sites as *removed* (our patched old tree vs. pristine new upstream) — that is expected and is the signal to **re-apply the patch**, not a deletion to accept. After a bump, confirm `copyDiscardableAttrs` is present in the vendored `AccelerateAMDMatmul.cpp` with a call at every dot-creation site, and that `accelerate-matmul-preserve-rock-metadata*.mlir` / `set-matmul-output-transpose.mlir` still pass.
+Because this is downstream-only, `AccelerateAMDMatmul.cpp.diff` in Step 4 may
+show `copyDiscardableAttrs` and its call sites as removed when comparing
+patched-old vs fresh-upstream. Treat that as a replay signal (cherry-pick onto
+new `rmt-*`), not an automatic deletion. After a bump, confirm
+`copyDiscardableAttrs` is present in the Triton branch tip used by
+rocmlirTriton and that `accelerate-matmul-preserve-rock-metadata*.mlir` /
+`set-matmul-output-transpose.mlir` still pass.
 
 ### 5.3.1 Kernel Launch Wrapper (from `driver.c`)
 
@@ -403,7 +326,8 @@ will silently drift if upstream changes them, so diff the source on every bump:
 | `CacheModifier` / `CacheModifierAttr` in `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` | `TT_CacheModifierAttr` in `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` | Names **and** integer values must match one-to-one (currently `none=1, ca=2, cg=3, wb=4, cs=5, wt=6, cv=7`). The Rock->Triton lowering relies on the integer values lining up. |
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  include/triton/Dialect/Triton/IR/TritonAttrDefs.td
 ```
 
 If upstream adds, renames, or renumbers a `CacheModifier` case, update the Rock
@@ -425,7 +349,8 @@ diff the source on every bump:
 | `kTritonMaxTensorNumElements` in `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` | `maxTensorNumElements` in `external/triton/include/triton/Dialect/Triton/IR/Traits.h` | Integer value must match exactly (currently `1048576`). It gates the tuning space (`exceedsTritonTensorCap`) against Triton's per-tensor element cap enforced by `verifyTensorSize`; if it drifts high, tuning emits configs that fail Triton verification, and if it drifts low, valid configs get dropped. |
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- external/triton/include/triton/Dialect/Triton/IR/Traits.h
+git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  include/triton/Dialect/Triton/IR/Traits.h
 ```
 
 ### 5.4.2 Mirrored libdevice symbols and the tanh arch gate
@@ -443,12 +368,12 @@ source on every bump:
 |-----------|-----------------|---------------|
 | `kOcmlTanhF32` / `kOcmlTanhF64` in `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` | `tanh()` in `external/triton/third_party/amd/language/hip/libdevice.py` | Symbol strings must match, and the dtype split must stay f32/f64 (the pass computes anything narrower than f32 at f32). `kOcmlTanhF32` must also stay in sync with the `calleeName == "__ocml_tanh_f32"` match in `third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp`, which is what turns the call into `llvm.amdgcn.tanh.f32`. |
 | `kOcmlPowF32` / `kOcmlPowF64` | `pow()` in the same file | Symbol strings and the same f32/f64 split. The `__ocml_pown_*` integer-exponent entries are deliberately not mirrored: the pass only lowers `math.powf`, whose exponent is a float. |
-| `tritonLowersTanhToNativeInst()` in `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` | the `getISAFamily() == ISAFamily::GFX1250` guard on the `__ocml_tanh_f32` branch of `BuiltinFuncToLLVM.cpp` | The set of families Triton rewrites on. Note this is deliberately *not* LLVM's `FeatureTanhInsts`, which is wider: LLVM gives gfx13 `v_tanh_f32` but Triton does not rewrite there, so querying the LLVM feature would pick a full OCML library call believing it to be one instruction. If upstream widens the guard to a feature check or to more families, widen the switch to match; the point of choosing the call on these targets is that it stops being a call. |
+| `tritonLowersTanhToNativeInst()` in `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` | the `getISAFamily() == ISAFamily::CDNA5` (historically `GFX1250`) guard on the `__ocml_tanh_f32` branch of `BuiltinFuncToLLVM.cpp` | The set of families Triton rewrites on. Note this is deliberately *not* LLVM's `FeatureTanhInsts`, which is wider: LLVM gives gfx13 `v_tanh_f32` but Triton does not rewrite there, so querying the LLVM feature would pick a full OCML library call believing it to be one instruction. If upstream widens the guard to a feature check or to more families, widen the switch to match; the point of choosing the call on these targets is that it stops being a call. |
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- \
-  external/triton/third_party/amd/language/hip/libdevice.py \
-  external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp
+git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  third_party/amd/language/hip/libdevice.py \
+  third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp
 ```
 
 A renamed symbol does not fail the build, and the lit tests that pin these
@@ -456,7 +381,7 @@ strings (`lowering_rock_legalize_math_for_triton.mlir`,
 `fastmath-through-triton-transcendentals.mlir`) keep passing because they check
 the same copies:
 the reference stays unresolved until the `ocml.bc` link in `TritonToHsaco`, so it
-surfaces as a link failure there or, for the gfx1250 rewrite above, as a silent
+surfaces as a link failure there or, for the gfx1250 / CDNA5 rewrite above, as a silent
 loss of `v_tanh_f32` that `mlir/test/rocmlir-driver/tanh-isa.mlir` catches.
 
 A moved gate is quieter still, since both sides keep compiling and the call is
@@ -475,23 +400,30 @@ subtree that builds `-Werror` / `/WX`), so `cmake/triton.cmake` hand-copies the
 block before `add_subdirectory(external/triton)`. Drift is silent -- a missed
 define leaves Triton as the one subtree still on `NDEBUG` in an assertions
 build, with nothing failing to announce it. This **manual copy** is keyed to the
-vendored LLVM rather than to Triton, so diff it on every LLVM bump:
+pinned LLVM rather than to Triton, so diff it on every LLVM bump:
 
 | Rock copy | Upstream source | What to check |
 |-----------|-----------------|---------------|
 | the `if(LLVM_ENABLE_ASSERTIONS)` block in `cmake/triton.cmake` | the `if( LLVM_ENABLE_ASSERTIONS )` block at `external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake:113-155` | Every define and option upstream adds under that `if` must appear in the copy, with the same build-type guard on `-UNDEBUG`. Three deviations are deliberate: the guard reads our `rocmlir_uppercase_build_type`, the `CHECK_CXX_SOURCE_COMPILES` probe is replaced by the `SUPPORTS_LIBCXX_HARDENING_MODE` that LLVM's own scope already cached, and the `LIBCXX_HARDENING_MODE` override warning is dropped as LLVM has already emitted it. |
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- \
-  external/llvm-project/llvm/cmake/modules/HandleLLVMOptions.cmake
+git -C "$LLVM_REPO" diff "$OLD_LLVM_CORE..$NEW_LLVM_CORE" -- \
+  llvm/cmake/modules/HandleLLVMOptions.cmake
 ```
 
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
 `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
 capabilities using Triton APIs (`ISAFamily`, `MfmaIntrinsic::selectFor`,
-`WmmaIntrinsic::selectFor`, `TargetInfo`). When a new architecture is added
-upstream (e.g. a hypothetical RDNA5 / CDNA5), this file needs review:
+`WmmaIntrinsic::selectFor`, `TargetInfo`). When architecture support changes
+upstream (new family, removed family, or family rename/reclassification), this
+file needs review.
+
+In particular, if upstream removes unsupported families/targets (e.g. `GCN5_1`,
+`CDNA1`) or renames/reclassifies one (e.g. `GFX1250` -> `CDNA5`), make the same
+cleanup in rocmlirTriton and dependent tests/scripts so behavior stays aligned.
+
+For new-family additions (e.g. a hypothetical RDNA5 / CDNA5), use this checklist:
 
 | Function | What to check |
 |----------|---------------|
@@ -531,9 +463,9 @@ silently return a fallback value. The `ISAFamily` enum is defined in
 not touch the header):
 
 ```bash
-git diff "$OLD_REPO..$NEW_REPO" -- \
-  external/triton/third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
-  external/triton/third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
+git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
+  third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp
 ```
 
 ### 5.6 Hardware feature detection
@@ -779,23 +711,23 @@ matrix. Because the table is compiled into the library, rebuild afterward
 cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir
 ```
 
-`check-mlir` runs the upstream MLIR suite from `external/llvm-project` and
-`check-triton-lit-tests` Triton's own lit suite from `external/triton`. Together
-they are the main signal that a fresh upstream import plus our re-applied
-`llvm-patches/` and `triton-patches/` did not regress the vendored trees. Run
-both before `check-rocmlir`: they are far quicker, so regressions surface
-earlier. `check-triton-lit-tests` is the check that catches a Step 2 patch
-re-applied against drifted upstream context, because most Triton patch records
-carry the lit tests for the behavior they change. The nightly pipeline runs both
-too, `check-mlir` there with `MLIR_INCLUDE_INTEGRATION_TESTS=ON`, so a bump that
-lands on `develop` is covered even if this step is skipped.
+`check-mlir` runs the upstream MLIR suite from the fetched LLVM tree and
+`check-triton-lit-tests` runs Triton's lit suite from the fetched Triton tree.
+Together they are the main signal that the new external branch pins plus our
+mirrored rocmlirTriton updates still compose correctly. Run both before
+`check-rocmlir`: they are far quicker, so regressions surface earlier. The
+nightly pipeline runs both too (`check-mlir` there with
+`MLIR_INCLUDE_INTEGRATION_TESTS=ON`), so a bump that lands on `develop` is
+covered even if this step is skipped.
 
 ## Checklist Summary
 
 Use this checklist to track progress:
 
 - [ ] Record `OLD_REPO`
-- [ ] Import new Triton / LLVM upstream revisions and record `NEW_REPO`
+- [ ] Create/update external branches: `rmt-<date>`, `rmt-core-<date>`, `rmt-amd-<date>`
+- [ ] Pull upstream commits into those branches and cherry-pick surviving downstream commits
+- [ ] Update `ROCMLIR_TRITON_GIT_TAG`, `ROCMLIR_LLVM_GIT_TAG`, `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG` in CMake files
 - [ ] Build with `cmake.sh`
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
 - [ ] Generate diff for `python/src/llvm.cc`
@@ -827,7 +759,8 @@ Use this checklist to track progress:
 - [ ] Diff `TargetFeatures.cpp` and re-check the `isCDNA` / `isRDNA` classification that picks the tuning space (see section 5.5)
 - [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
 - [ ] Mirror new or dropped `knobs.amd.*` switches, and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
-- [ ] Refresh `triton-patches/` and `llvm-patches/` records and indexes
+- [ ] Reconcile downstream-only commits on the new external branch tips (drop upstreamed commits, keep required ones)
+- [ ] Keep architecture removals/renames/reclassification in sync with upstream (`AmdArchDb.cpp`, tests, perf scripts; see section 5.5), e.g. `GCN5_1`/`CDNA1` removal and `GFX1250 -> CDNA5`
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
@@ -851,7 +784,8 @@ If a new pass is added in upstream Triton and called in `compiler.py`:
 
 If a pass signature changes:
 
-1. Check the new signature in Triton headers (e.g., `external/triton/third_party/amd/include/TritonAMDGPUTransforms/Passes.h`)
+1. Check the new signature in Triton headers (e.g.,
+   `$TRITON_REPO/third_party/amd/include/TritonAMDGPUTransforms/Passes.h`)
 2. Update the C++ call to match the new parameters
 3. Handle any new required arguments
 
@@ -875,6 +809,10 @@ If new Triton headers are needed:
 ---
 
 ## File Quick Reference
+
+(For entries under `external/triton/...` and `external/llvm-project/...`, read
+those as paths inside your external repo checkouts: `$TRITON_REPO` /
+`$LLVM_REPO`.)
 
 | Purpose | File Path |
 |---------|-----------|
