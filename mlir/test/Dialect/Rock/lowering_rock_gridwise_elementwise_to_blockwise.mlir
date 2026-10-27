@@ -7,7 +7,7 @@ module {
   // CHECK: %[[LM0:.*]] = rock.load_marker %arg0 views
   // CHECK: %[[ADD:.*]] = arith.addf %[[LM0]], %[[LM1]] : tensor<256xf32>
   // CHECK: %[[SM:.*]] = rock.store_marker %[[ADD]] views
-  // CHECK: rock.store %[[SM]] to %dest
+  // CHECK: rock.store %[[SM]] to %{{.*}}
   func.func @insert_markers(%arg0: tensor<256xf32>, %arg1: tensor<256xf32>, %dest: tensor<256xf32>) -> tensor<256xf32> attributes {rock.kernel, rock.elementwise, rock.block_size = 256 : i32, rock.grid_size = 1 : i32} {
     %0 = arith.addf %arg0, %arg1 : tensor<256xf32>
     %1 = rock.store %0 to %dest by set : tensor<256xf32> -> tensor<256xf32> to tensor<256xf32>
