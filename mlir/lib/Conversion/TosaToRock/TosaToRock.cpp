@@ -1808,7 +1808,6 @@ struct CausalMaskMatch {
 struct AttentionRewritePattern : public OpRewritePattern<tosa::MatMulOp> {
   using OpRewritePattern::OpRewritePattern;
 
-
   // The three causal mask patterns we recognize:
   //   ZerosLowerOnesUpper:   int mask, 0s in lower triangle, 1s in upper
   //                          (select-based, normal polarity)

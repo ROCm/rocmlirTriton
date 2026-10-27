@@ -270,8 +270,7 @@ def Rock_GemmElementwiseGemmOp
           TensorOf<[F32, F16, BF16]>:$b, TensorOf<[F32, F16, BF16]>:$c,
           Variadic<AnyTensor>:$elemwiseInputs, UnitAttr:$aTransposed,
           UnitAttr:$bTransposed, UnitAttr:$cTransposed, UnitAttr:$oTransposed,
-          UnitAttr:$causal,
-          OptionalAttr<RockTuningParamAttrInterface>:$params0,
+          UnitAttr:$causal, OptionalAttr<RockTuningParamAttrInterface>:$params0,
           OptionalAttr<RockTuningParamAttrInterface>:$params1)>,
       Results<(outs TensorOf<[F32, F16, BF16]>:$result)> {
   let summary = "GEMM-elementwise-GEMM operation";

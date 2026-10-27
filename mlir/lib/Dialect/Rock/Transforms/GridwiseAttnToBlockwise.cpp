@@ -1737,9 +1737,9 @@ struct GridwiseAttentionRewritePattern
         Value fakeTensorN =
             rock::createZeroAccBuffer(rewriter, loc, {lowerShape[2]}, accType);
         auto firstGemmType = cast<RankedTensorType>(firstGemmResult.getType());
-        Value zeroTensor = createConstantFloatOp(
-            rewriter, loc, firstGemmType, firstGemmType.getElementType(), 0.0f,
-            APFloat::opOK);
+        Value zeroTensor = createConstantFloatOp(rewriter, loc, firstGemmType,
+                                                 firstGemmType.getElementType(),
+                                                 0.0f, APFloat::opOK);
         firstGemmResult = setGemm0OutputOutOfScope(
             rewriter, loc, OutOfScopeType::Causal, gridCoordsGemm0,
             firstGemmResult, fakeTensorM, fakeTensorN, zeroTensor,
