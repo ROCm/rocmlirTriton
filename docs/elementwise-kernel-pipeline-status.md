@@ -72,4 +72,4 @@ Hybrid approach:
 - [x] Add `rock.elementwise` attr + whitelist updates.
 - [x] Add three elementwise passes and unit tests.
 - [x] Add standalone elementwise pipeline (`buildElementwisePipeline`).
-- [x] Driver flag integration: `--elementwise-kernel-mode` selects the standalone elementwise GPU pipeline.
+- [x] Driver flag integration: `--elementwise` selects the standalone elementwise GPU pipeline.
