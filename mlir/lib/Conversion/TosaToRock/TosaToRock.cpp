@@ -1590,13 +1590,22 @@ static LogicalResult isConstantRange(TypedValue<TensorType> input,
     return failure();
 
   auto shape = shapedType.getShape();
-  assert(nonOneDimFromEnd < shape.size());
+  if (nonOneDimFromEnd >= shape.size())
+    return failure();
   size_t rangeDim = shape.size() - nonOneDimFromEnd - 1;
+
+  // The data was validated in flattened order, so the shape alone decides
+  // which logical axis the range varies along. The requested axis must be
+  // non-unit, or a row range would pass as a column range (and vice versa),
+  // letting a reversed comparison flip the triangle being masked.
+  if (shape[rangeDim] == 1)
+    return failure();
 
   // For flash decoding with splitKV, the constant range tensor may have
   // an additional non-1 dimension at index 1 or 2 (where heads or splitKV
   // typically appear in attention layouts). We allow at most one such
-  // additional dimension.
+  // additional dimension, and only before the range dimension: past it, the
+  // flattened iota would vary along that axis rather than the requested one.
   bool foundExtraNonOneDim = false;
   for (auto [i, dim] : llvm::enumerate(shape)) {
     if (dim != 1) {
@@ -1604,7 +1613,7 @@ static LogicalResult isConstantRange(TypedValue<TensorType> input,
       if (i == rangeDim)
         continue;
       // Allow one additional non-1 dimension at index 1 or 2
-      if (!foundExtraNonOneDim && (i == 1 || i == 2)) {
+      if (!foundExtraNonOneDim && (i == 1 || i == 2) && i < rangeDim) {
         foundExtraNonOneDim = true;
         continue;
       }
