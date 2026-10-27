@@ -1854,8 +1854,9 @@ static void classifyQuickTuningAttributes(
 }
 
 static bool isKnownQuickTuningFunctionAttribute(StringRef name) {
-  return name == "rock.kernel" || name == "rock.arch" ||
-         name == "rock.num_cu" || name == "rock.num_chiplets" ||
+  return name == "rock.kernel" || name == "rock.elementwise" ||
+         name == "rock.arch" || name == "rock.num_cu" ||
+         name == "rock.num_chiplets" ||
          name == "rock.enable_splitk_for_tuning" ||
          name == "rock.input_fusions" || name == "rock.output_fusions" ||
          name == "rock.conv_kernel" || name == "rock.block_size" ||

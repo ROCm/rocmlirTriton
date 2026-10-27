@@ -641,6 +641,14 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   }];
 }
 
+def Rock_Elementwise : Rock_Attr<"Elementwise"> {
+  let mnemonic = "rock.elementwise";
+  let description = [{
+    Marker attribute indicating that a kernel function is a standalone
+    elementwise kernel (no GEMM/conv/attention root).
+  }];
+}
+
 def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
   let mnemonic = "rock.conv_kernel";
   let description = [{
