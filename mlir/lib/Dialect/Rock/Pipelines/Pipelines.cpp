@@ -602,8 +602,8 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   ttFuncPm.addPass(createCSEPass());
 }
 
-void rock::buildElementwiseKernelPipeline(
-    OpPassManager &pm, const rock::KernelOptions &options) {
+void rock::buildElementwisePipeline(OpPassManager &pm,
+                                    const rock::KernelOptions &options) {
   auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createRemoveDeadValuesPass());
@@ -889,9 +889,9 @@ void rock::registerPipelines() {
       " representations and algorithms for sparse tensors.",
       buildKernelPipeline);
   PassPipelineRegistration<rock::KernelOptions>(
-      "rock-elementwise-kernel-pipeline",
+      "rock-elementwise-pipeline",
       "Lower standalone elementwise Rock kernels to TTIR-ready form.",
-      buildElementwiseKernelPipeline);
+      buildElementwisePipeline);
   PassPipelineRegistration<rock::TritonOptions>(
       "rock-triton-pipeline", "Convert Triton IR to TritonGPU IR.",
       buildTritonPipeline);
