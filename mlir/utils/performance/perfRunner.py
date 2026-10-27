@@ -3297,8 +3297,7 @@ def main(args=None):
     arch = get_arch()
     chip = get_chip()
     num_cu = get_num_cu(chip)
-    num_chiplets = amd_arch_db.resolve_num_chiplets(chip, num_cu,
-                                                    query_compute_partition())
+    num_chiplets = amd_arch_db.resolve_num_chiplets(chip, num_cu, query_compute_partition())
 
     root_dir = str(
         subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())

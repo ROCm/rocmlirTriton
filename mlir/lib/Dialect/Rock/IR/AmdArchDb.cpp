@@ -434,14 +434,13 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
 std::optional<ComputePartitionMode>
 mlir::rock::parseComputePartition(StringRef name) {
   std::string upper = name.trim().upper();
-  int parsed =
-      StringSwitch<int>(upper)
-          .Case("SPX", static_cast<int>(ComputePartitionMode::SPX))
-          .Case("DPX", static_cast<int>(ComputePartitionMode::DPX))
-          .Case("TPX", static_cast<int>(ComputePartitionMode::TPX))
-          .Case("QPX", static_cast<int>(ComputePartitionMode::QPX))
-          .Case("CPX", static_cast<int>(ComputePartitionMode::CPX))
-          .Default(-1);
+  int parsed = StringSwitch<int>(upper)
+                   .Case("SPX", static_cast<int>(ComputePartitionMode::SPX))
+                   .Case("DPX", static_cast<int>(ComputePartitionMode::DPX))
+                   .Case("TPX", static_cast<int>(ComputePartitionMode::TPX))
+                   .Case("QPX", static_cast<int>(ComputePartitionMode::QPX))
+                   .Case("CPX", static_cast<int>(ComputePartitionMode::CPX))
+                   .Default(-1);
   if (parsed < 0)
     return std::nullopt;
   return static_cast<ComputePartitionMode>(parsed);
@@ -506,9 +505,9 @@ mlir::rock::numChipletsForPartition(StringRef arch,
   return std::nullopt;
 }
 
-int64_t mlir::rock::resolveNumChiplets(
-    StringRef arch, int64_t numCUs,
-    std::optional<ComputePartitionMode> partition) {
+int64_t
+mlir::rock::resolveNumChiplets(StringRef arch, int64_t numCUs,
+                               std::optional<ComputePartitionMode> partition) {
   if (partition) {
     if (std::optional<int64_t> fromPartition =
             numChipletsForPartition(arch, *partition))

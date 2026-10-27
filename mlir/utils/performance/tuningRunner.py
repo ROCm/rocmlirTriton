@@ -2929,8 +2929,8 @@ def main(args=None):
     if parsed_args.target_num_chiplets is not None:
         num_chiplets = parsed_args.target_num_chiplets
     elif parsed_args.target_arch is None and parsed_args.target_num_cu is None:
-        num_chiplets = amd_arch_db.resolve_num_chiplets(
-            chip, num_cu, perfRunner.query_compute_partition())
+        num_chiplets = amd_arch_db.resolve_num_chiplets(chip, num_cu,
+                                                        perfRunner.query_compute_partition())
     else:
         num_chiplets = amd_arch_db.infer_num_chiplets(chip, num_cu)
 

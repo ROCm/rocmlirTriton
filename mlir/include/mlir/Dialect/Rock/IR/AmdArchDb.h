@@ -138,7 +138,7 @@ std::optional<ComputePartitionMode> parseComputePartitionText(StringRef text);
 /// die size still comes from `inferNumChiplets`, gfx1250, and 1-XCD archs).
 /// A returned count is 1 or even, which is what the grid layout allows.
 std::optional<int64_t> numChipletsForPartition(StringRef arch,
-                                              ComputePartitionMode partition);
+                                               ComputePartitionMode partition);
 
 /// Partition mode when the caller has one, otherwise `inferNumChiplets`.
 int64_t resolveNumChiplets(

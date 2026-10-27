@@ -1884,8 +1884,7 @@ static LogicalResult runTuningLoop(ModuleOp source) {
 // missing, times out, or the output does not name exactly one mode. The CU
 // table then stays the answer, which is the cross-compile case.
 static std::optional<rock::ComputePartitionMode> queryComputePartitionMode() {
-  llvm::ErrorOr<std::string> program =
-      llvm::sys::findProgramByName("rocm-smi");
+  llvm::ErrorOr<std::string> program = llvm::sys::findProgramByName("rocm-smi");
   if (!program)
     return std::nullopt;
 

@@ -158,7 +158,8 @@ TEST(AmdArchDbTest, ResolveNumChipletsFromPartition) {
         ComputePartitionMode::CPX}) {
     for (StringRef arch : {"gfx942", "gfx950", "gfx1250", "gfx1100"}) {
       int64_t chiplets = resolveNumChiplets(arch, /*numCUs=*/152, mode);
-      EXPECT_TRUE(chiplets == 1 || chiplets % 2 == 0) << arch.str() << " " << chiplets;
+      EXPECT_TRUE(chiplets == 1 || chiplets % 2 == 0)
+          << arch.str() << " " << chiplets;
     }
   }
 }
@@ -171,7 +172,8 @@ TEST(AmdArchDbTest, ParseComputePartitionText) {
 
   // The token rocm-smi prints, surrounded by the labels it also prints.
   std::optional<ComputePartitionMode> fromSmi = parseComputePartitionText(
-      "================================== Compute Partition =====================================\n"
+      "================================== Compute Partition "
+      "=====================================\n"
       "GPU[0]          : Compute Partition:       DPX\n");
   ASSERT_TRUE(fromSmi.has_value());
   EXPECT_EQ(*fromSmi, ComputePartitionMode::DPX);

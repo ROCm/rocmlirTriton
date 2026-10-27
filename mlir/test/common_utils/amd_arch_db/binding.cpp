@@ -142,7 +142,8 @@ PYBIND11_MODULE(amd_arch_db, m) {
 
   m.def(
       "resolve_num_chiplets",
-      [](const std::string &arch, int64_t numCUs, const std::string &partition) {
+      [](const std::string &arch, int64_t numCUs,
+         const std::string &partition) {
         std::optional<mlir::rock::ComputePartitionMode> mode =
             mlir::rock::parseComputePartition(partition);
         return mlir::rock::resolveNumChiplets(arch, numCUs, mode);
