@@ -13,9 +13,8 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/Builders.h"
 
+#include "ElementwiseUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-
-#include "llvm/ADT/SetVector.h"
 
 namespace mlir {
 namespace rock {
@@ -28,37 +27,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-static bool isStandaloneElementwiseKernel(func::FuncOp funcOp) {
-  return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
-         funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic());
-}
-
-static int64_t getTileSize(func::FuncOp func) {
-  if (auto blockSize =
-          func->getAttrOfType<IntegerAttr>(rock::BlockSizeAttr::getMnemonic()))
-    return blockSize.getInt();
-  return 256;
-}
-
-static llvm::SetVector<Value> getElementwiseKernelInputs(func::FuncOp funcOp) {
-  llvm::SetVector<Value> leafInputs;
-  funcOp.walk([&](Operation *op) {
-    if (!isFusionOp(op))
-      return;
-    for (Value operand : op->getOperands()) {
-      if (!isa<RankedTensorType>(operand.getType()))
-        continue;
-      SmallVector<TransformMapAttr> transforms;
-      auto [underlying, _] = rock::untransform(operand, transforms);
-      if (!isa<BlockArgument>(underlying) &&
-          !underlying.getDefiningOp<arith::ConstantOp>())
-        continue;
-      leafInputs.insert(operand);
-    }
-  });
-  return leafInputs;
-}
 
 static ArrayAttr buildTilingViews(OpBuilder &b, Location loc, int64_t gridSize,
                                   int64_t tileSize) {
@@ -87,7 +55,7 @@ void RockGridwiseElementwiseToBlockwisePass::runOnOperation() {
     return signalPassFailure();
   }
 
-  int64_t tileSize = getTileSize(func);
+  int64_t tileSize = getElementwiseTileSize(func);
   int64_t gridSize = gridSizeAttr.getInt();
   if (tileSize <= 0 || gridSize <= 0) {
     func.emitError("invalid block size/grid size for elementwise kernel");

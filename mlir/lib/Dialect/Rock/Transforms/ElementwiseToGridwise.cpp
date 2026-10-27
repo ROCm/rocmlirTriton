@@ -13,7 +13,7 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/Builders.h"
 
-#include "llvm/ADT/SetVector.h"
+#include "ElementwiseUtils.h"
 #include "llvm/Support/MathExtras.h"
 
 namespace mlir {
@@ -27,37 +27,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-static bool isStandaloneElementwiseKernel(func::FuncOp funcOp) {
-  return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
-         funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic());
-}
-
-static int64_t getTileSize(func::FuncOp func) {
-  if (auto blockSize =
-          func->getAttrOfType<IntegerAttr>(rock::BlockSizeAttr::getMnemonic()))
-    return blockSize.getInt();
-  return 256;
-}
-
-static llvm::SetVector<Value> getElementwiseKernelInputs(func::FuncOp funcOp) {
-  llvm::SetVector<Value> leafInputs;
-  funcOp.walk([&](Operation *op) {
-    if (!isFusionOp(op))
-      return;
-    for (Value operand : op->getOperands()) {
-      if (!isa<RankedTensorType>(operand.getType()))
-        continue;
-      SmallVector<TransformMapAttr> transforms;
-      auto [underlying, _] = rock::untransform(operand, transforms);
-      if (!isa<BlockArgument>(underlying) &&
-          !underlying.getDefiningOp<arith::ConstantOp>())
-        continue;
-      leafInputs.insert(operand);
-    }
-  });
-  return leafInputs;
-}
 
 /// Merge `v` to 1D then pad to `paddedSize`.
 static Value flattenAndPad(OpBuilder &b, Location loc, Value v,
@@ -107,7 +76,7 @@ void RockElementwiseToGridwisePass::runOnOperation() {
   if (!isStandaloneElementwiseKernel(func))
     return;
 
-  int64_t tileSize = getTileSize(func);
+  int64_t tileSize = getElementwiseTileSize(func);
   if (tileSize <= 0) {
     func.emitError("rock.block_size must be positive for elementwise kernels");
     return signalPassFailure();

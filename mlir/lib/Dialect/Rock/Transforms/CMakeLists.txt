@@ -9,6 +9,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RollDotK.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
+  ElementwiseUtils.cpp
   GemmToGridwise.cpp
   AttnToGridwise.cpp
   ElementwiseToGridwise.cpp

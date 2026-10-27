@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "ElementwiseUtils.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -23,11 +24,6 @@ using namespace mlir;
 using namespace mlir::rock;
 
 namespace {
-
-static bool isStandaloneElementwiseKernel(func::FuncOp funcOp) {
-  return funcOp->hasAttr(rock::KernelAttr::getMnemonic()) &&
-         funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic());
-}
 
 struct RockRegularizeElementwisePass
     : public rock::impl::RockRegularizeElementwisePassBase<
