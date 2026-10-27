@@ -1,4 +1,13 @@
 // RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-opt --tosa-to-rock -verify-diagnostics -o -| FileCheck %s
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-driver -kernel-pipeline=highlevel,gpu | FileCheck %s --check-prefix=LOWER
+
+// The causal kernel must also lower through the whole kernel pipeline: the
+// gridwise verifier accepts causal without softmax, and both gemms survive
+// down to TTIR.
+// LOWER: tt.func @gemm_gemm_causal_zero_mask
+// LOWER-COUNT-2: tt.dot
+// LOWER: tt.func @gemm_gemm_zero_mask_arg_pred
+// LOWER: tt.func @gemm_gemm_zero_mask_reversed_pred
 
 // A causal mask that zeroes the upper triangle of the first gemm's result is
 // lowered to the fused kernel's causal mode instead of staying a select in
