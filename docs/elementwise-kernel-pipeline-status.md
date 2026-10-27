@@ -62,7 +62,7 @@ Hybrid approach:
 ## Progress log
 
 - [x] Created this status/design document.
-- [ ] Add `rock.elementwise` attr + whitelist updates.
-- [ ] Add three elementwise passes and unit tests.
+- [x] Add `rock.elementwise` attr + whitelist updates.
+- [x] Add three elementwise passes and unit tests.
 - [ ] Wire separate elementwise kernel pipeline.
 - [ ] Driver integration and end-to-end tests.

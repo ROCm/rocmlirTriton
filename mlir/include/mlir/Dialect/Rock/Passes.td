@@ -140,6 +140,27 @@ def RockRegularizeInterGemmFusionPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
+def RockRegularizeElementwisePass
+    : Pass<"rock-regularize-elementwise", "::mlir::func::FuncOp"> {
+  let summary = "Push inter-fusion rock.transform ops to elementwise inputs";
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
+                           "math::MathDialect"];
+}
+
+def RockElementwiseToGridwisePass
+    : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
+  let summary = "Compute grid size and flatten/pad standalone elementwise kernels";
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
+                           "func::FuncDialect"];
+}
+
+def RockGridwiseElementwiseToBlockwisePass
+    : Pass<"rock-gridwise-elementwise-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "Insert load/store markers for tiled standalone elementwise kernels";
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
+                           "func::FuncDialect", "triton::TritonDialect"];
+}
+
 def RockGridwiseGemmToBlockwisePass
     : Pass<"rock-gridwise-gemm-to-blockwise", "::mlir::func::FuncOp"> {
   let summary = "expand gridwise gemm into blockwise copy, blockwise gemm, and "
