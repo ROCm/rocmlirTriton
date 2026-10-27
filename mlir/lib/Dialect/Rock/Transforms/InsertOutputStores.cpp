@@ -207,7 +207,10 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
       fusionRoots.push_back(op);
   });
 
-  if (fusionRoots.empty())
+  bool isElementwiseKernel =
+      funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic());
+
+  if (fusionRoots.empty() && !isElementwiseKernel)
     return success();
 
   // This pass must run before any rock.store ops are inserted.
@@ -221,10 +224,22 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
 
   auto returnOp = cast<func::ReturnOp>(funcOp.getBody().back().getTerminator());
 
-  auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
-  if (failed(maybeStoreInfos))
-    return failure();
-  auto &storeInfos = *maybeStoreInfos;
+  SmallVector<ReturnStoreInfo> storeInfos;
+  if (fusionRoots.empty()) {
+    // Standalone elementwise kernels have no FusionRoot trait. Store every
+    // returned tensor into a newly-added output argument.
+    for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
+      ReturnStoreInfo info;
+      info.returnIndex = i;
+      info.returnOperand = returnOp.getOperand(i);
+      storeInfos.push_back(info);
+    }
+  } else {
+    auto maybeStoreInfos = identifyReturnStores(fusionRoots, returnOp);
+    if (failed(maybeStoreInfos))
+      return failure();
+    storeInfos = std::move(*maybeStoreInfos);
+  }
 
   if (storeInfos.size() != returnOp.getNumOperands())
     return returnOp.emitError("expected ")
