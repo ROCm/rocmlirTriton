@@ -54,6 +54,13 @@ Hybrid approach:
    - add lit tests per pass
    - add pipeline-level tests to ensure no GEMM-only pass failures on elementwise kernels
 
+## rocmlir-gen host/codegen support check
+
+`rocmlir-gen --clone-harness` works for standalone elementwise kernels marked
+`rock.elementwise`: it emits both the kernel function and a corresponding
+`*_cpu_host` function. See test:
+`mlir/test/rocmlir-gen/elementwise-clone-harness.mlir`.
+
 ## Out of scope for this bring-up
 
 - reduction support in elementwise kernels (`rock.reduce` / reduce lowering)
@@ -65,4 +72,4 @@ Hybrid approach:
 - [x] Add `rock.elementwise` attr + whitelist updates.
 - [x] Add three elementwise passes and unit tests.
 - [x] Add standalone elementwise pipeline (`buildElementwisePipeline`).
-- [ ] Driver integration (deferred).
+- [x] Driver flag integration: `--elementwise-kernel-mode` selects the standalone elementwise GPU pipeline.
