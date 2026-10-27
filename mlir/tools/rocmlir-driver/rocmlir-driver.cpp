@@ -226,11 +226,6 @@ static LogicalResult
 runKernelPipeline(StringRef archName, ModuleOp m,
                   llvm::SmallDenseSet<StringRef> &kernelPipelineSet,
                   bool noFastMath) {
-  PassManager pm(m->getName(), PassManager::Nesting::Implicit);
-  if (failed(applyPassManagerCLOptions(pm)))
-    return failure();
-  applyDefaultTimingPassManagerCLOptions(pm);
-  pm.enableVerifier(!disableVerifyPasses);
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
   if (archName.empty() && needArch) {
@@ -294,35 +289,87 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   if (gemmGemmWalk.wasInterrupted())
     return failure();
 
-  // Set up lowering pipeline.
+  // Stage A: GPU-dialect lowering.
   if (kernelPipelineSet.contains("gpu")) {
-    // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
     opts.disableFastMath = noFastMath;
 
-    rock::buildKernelPipeline(pm, opts);
-  }
-  if (kernelPipelineSet.contains("triton")) {
-    rock::buildTritonPipeline(pm, tritonOpts);
-  }
-  if (kernelPipelineSet.contains("binary")) {
-    rock::buildBackendPipeline(pm, backendOpts);
+    auto isKernel = [](func::FuncOp f) {
+      return f->hasAttr(rock::KernelAttr::getMnemonic());
+    };
+    auto isElementwiseKernel = [&](func::FuncOp f) {
+      return isKernel(f) && f->hasAttr(rock::ElementwiseAttr::getMnemonic());
+    };
+
+    bool hasElementwiseKernel =
+        llvm::any_of(m.getOps<func::FuncOp>(), isElementwiseKernel);
+
+    if (!hasElementwiseKernel) {
+      PassManager gpuPm(m->getName(), PassManager::Nesting::Implicit);
+      if (failed(applyPassManagerCLOptions(gpuPm)))
+        return failure();
+      applyDefaultTimingPassManagerCLOptions(gpuPm);
+      gpuPm.enableVerifier(!disableVerifyPasses);
+      rock::buildKernelPipeline(gpuPm, opts);
+      if (dumpPipelines) {
+        llvm::errs() << "Kernel pipeline:\n";
+        gpuPm.printAsTextualPipeline(llvm::errs());
+        llvm::errs() << "\n";
+      }
+      if (failed(gpuPm.run(m)))
+        return failure();
+    } else {
+      // Run the existing GEMM/conv/attention pipeline on non-elementwise
+      // kernels.
+      if (failed(runWithDetach(
+              m, "Kernel GPU (non-elementwise)",
+              [&](func::FuncOp f) { return isElementwiseKernel(f); },
+              [&](PassManager &gpuPm) {
+                rock::buildKernelPipeline(gpuPm, opts);
+              })))
+        return failure();
+
+      // Run the standalone elementwise pipeline on elementwise kernels.
+      if (failed(runWithDetach(
+              m, "Kernel GPU (elementwise)",
+              [&](func::FuncOp f) { return !isElementwiseKernel(f); },
+              [&](PassManager &gpuPm) {
+                rock::buildElementwiseKernelPipeline(gpuPm, opts);
+              })))
+        return failure();
+    }
   }
 
-  if (dumpPipelines) {
-    llvm::errs() << "Kernel pipeline:\n";
-    pm.printAsTextualPipeline(llvm::errs());
-    llvm::errs() << "\n";
-  }
+  // Stage B: Triton + backend lowering over all lowered kernels.
+  bool needsPostGpu = kernelPipelineSet.contains("triton") ||
+                      kernelPipelineSet.contains("binary");
+  if (!needsPostGpu)
+    return success();
 
-  // Skip the kernel-backend pipeline on CPU-only / kernel-less modules
-  // Mirrors the kernel/host gating that Phases 1-2 get from `runWithDetach`
+  // Skip the kernel-backend pipeline on CPU-only / kernel-less modules.
   bool hasKernel = llvm::any_of(m.getOps<func::FuncOp>(), [](func::FuncOp f) {
     return f->hasAttr(rock::KernelAttr::getMnemonic());
   });
   if (!hasKernel)
     return success();
+
+  PassManager pm(m->getName(), PassManager::Nesting::Implicit);
+  if (failed(applyPassManagerCLOptions(pm)))
+    return failure();
+  applyDefaultTimingPassManagerCLOptions(pm);
+  pm.enableVerifier(!disableVerifyPasses);
+
+  if (kernelPipelineSet.contains("triton"))
+    rock::buildTritonPipeline(pm, tritonOpts);
+  if (kernelPipelineSet.contains("binary"))
+    rock::buildBackendPipeline(pm, backendOpts);
+
+  if (dumpPipelines) {
+    llvm::errs() << "Kernel post-GPU pipeline:\n";
+    pm.printAsTextualPipeline(llvm::errs());
+    llvm::errs() << "\n";
+  }
 
   return pm.run(m);
 }
