@@ -5,12 +5,13 @@
 // `migraphx.clip` arrives in TTIR as one `tt.clampf`. Every stage has to agree
 // for that to happen -- MIGraphXToTosa must set `nan_mode = IGNORE`,
 // RockTosaToElementwise must pick minnumf/maxnumf over the propagating pair,
-// RockAllowFastMathFlags must mark them `nnan`, and only then does RockToTTIR
-// fold them. `-disable-fast-math` turns each of those off, so the two runs
-// below also serve as a check that the flag reaches every one of those stages.
+// RockAllowFastMathFlags must mark them `nnan`, and only then does
+// RockFoldClampToTriton fold them. `-disable-fast-math` turns each of those off,
+// so the two runs below also serve as a check that the flag reaches every one of
+// those stages.
 //
-// `-kernel-pipeline=gpu` stops right after RockToTTIR; running on to `triton`
-// would lower tt.clampf away again.
+// `-kernel-pipeline=gpu` stops right after the clamp fold; running on to
+// `triton` would lower tt.clampf away again.
 
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut clip_nnan %s \
 // RUN: | rocmlir-driver -arch=%arch -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
@@ -29,8 +30,8 @@
 // Under -disable-fast-math the clip stays on the NaN-propagating pair, so there
 // is nothing for the fold to match. The flag has to be given to both driver
 // invocations: the first covers migraphx-to-tosa's NaN mode and
-// rock-tosa-to-elementwise, the second gates rock-allow-fast-math-flags and
-// rock-to-ttir.
+// rock-tosa-to-elementwise, the second gates rock-allow-fast-math-flags (and so
+// the `nnan` that rock-fold-clamp-to-triton demands) and rock-to-ttir.
 // RUN: rocmlir-gen --clone-harness -arch %arch -fut clip_nnan %s \
 // RUN: | rocmlir-driver -disable-fast-math -arch=%arch -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | rocmlir-driver -disable-fast-math -arch=%arch -kernel-pipeline=gpu -o - \

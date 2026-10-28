@@ -68,9 +68,9 @@ module @perop_tests {
   // Binary float arith ops get `contract` (so LLVM can fuse mul+add into
   // fma) and `nsz` (so LLVM can apply ±0 peepholes around them).
   // CHECK-LABEL: func.func @binary_arith_adds_contract_nsz
-  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
-  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
+  // CHECK: arith.subf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
+  // CHECK: arith.mulf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
   func.func @binary_arith_adds_contract_nsz(%a: f32, %b: f32) -> f32
       attributes {rock.kernel} {
     %0 = arith.addf %a, %b : f32
@@ -157,7 +157,7 @@ module @perop_tests {
   // `math.fma` is the only `math.*` op in the FMA-fusion bucket -- it gets
   // `nsz + contract` rather than transcendental's `afn`.
   // CHECK-LABEL: func.func @math_fma_adds_contract_nsz
-  // CHECK: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  // CHECK: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
   func.func @math_fma_adds_contract_nsz(%a: f32, %b: f32, %c: f32) -> f32
       attributes {rock.kernel} {
     %0 = math.fma %a, %b, %c : f32
@@ -167,7 +167,7 @@ module @perop_tests {
   // Combiners nested in a `tt.reduce` region are added by RockToTTIR. Make sure
   // that they can get the proper flags added.
   // CHECK-LABEL: func.func @reduce_combiner_is_reached
-  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : f32
+  // CHECK: arith.addf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : f32
   func.func @reduce_combiner_is_reached(%arg0: tensor<64x64xf32>) -> tensor<64xf32>
       attributes {rock.kernel} {
     %0 = "tt.reduce"(%arg0) <{axis = 1 : i32}> ({
@@ -211,11 +211,11 @@ module @perop_tests {
 // ROCK-NEXT: arith.negf %{{.*}} : tensor<2x3xf32>
 
 // FAST-LABEL: func.func @migraphx_pipeline_adds_per_op_flags
-// FAST:      arith.subf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+// FAST:      arith.subf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
 // FAST-NEXT: math.exp %{{.*}} fastmath<nsz,contract,afn> : tensor<2x3xf32>
-// FAST-NEXT: arith.addf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+// FAST-NEXT: arith.addf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
 // FAST-NEXT: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : tensor<2x3xf32>
-// FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<nsz,contract> : tensor<2x3xf32>
+// FAST-NEXT: arith.mulf %{{.*}}, %{{.*}} fastmath<reassoc,nsz,contract> : tensor<2x3xf32>
 // FAST-NEXT: arith.negf %{{.*}} fastmath<nsz> : tensor<2x3xf32>
 func.func @migraphx_pipeline_adds_per_op_flags(
     %a: !migraphx.shaped<2x3xf32, 3x1>,
