@@ -479,7 +479,9 @@ def MIGraphX_MultiBroadcastOp :
 defvar QuantDotInTypes = [F8E4M3FNUZ, F8E5M2FNUZ, F8E4M3FN, F8E5M2, F4E2M1FN,
                           I8, SI8];
 defvar QuantDotOutTypes = [F32, I32, SI32];
-defvar QuantDotScaleTypes = [F8E8M0FNU, F32];
+// f8E8M0FNU/f32 scales are MX block scales (block size 32). f8E4M3FN scales
+// are NVFP4-style block scales (block size 16), supported on gfx1250.
+defvar QuantDotScaleTypes = [F8E8M0FNU, F8E4M3FN, F32];
 
 def MIGraphX_QuantDotOp
     : MIGraphX_Op<"quant_dot", [AttrSizedOperandSegments]>,

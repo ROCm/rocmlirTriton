@@ -2216,10 +2216,22 @@ LogicalResult MatmulTBlockScaledOp::verify() {
                        "with A, got D=")
            << D << " vs N=" << N;
 
-  // Verify C is a multiple of block size
+  // f8E8M0FNU scales use block size 32 (MX); f8E4M3FN scales use block size
+  // 16 (NVFP4-style).
+  const Type aScaleElemType = getElementTypeOrSelf(getAScale().getType());
+  const Type bScaleElemType = getElementTypeOrSelf(getBScale().getType());
+  if (aScaleElemType != bScaleElemType)
+    return emitOpError("expect a_scale and b_scale to have the same element "
+                       "type, got ")
+           << aScaleElemType << " and " << bScaleElemType;
+  const BlockSize expectedBlockSize = isa<Float8E4M3FNType>(aScaleElemType)
+                                          ? BlockSize::BLOCK_SIZE_16
+                                          : BlockSize::BLOCK_SIZE_32;
   const uint32_t blockSize = BlockSizeAttr::getBlockSizeValue(getBlockSize());
-  if (blockSize != BlockSizeAttr::getBlockSizeValue(BlockSize::BLOCK_SIZE_32))
-    return emitOpError("expect block size to be 32, got ") << blockSize;
+  if (blockSize != BlockSizeAttr::getBlockSizeValue(expectedBlockSize))
+    return emitOpError("expect block size to be ")
+           << BlockSizeAttr::getBlockSizeValue(expectedBlockSize) << ", got "
+           << blockSize;
   if (ShapedType::isStatic(C) && C % blockSize != 0)
     return emitOpError("expect C to be a multiple of block size, got C=")
            << C << ", block_size=" << blockSize;

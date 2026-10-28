@@ -57,14 +57,17 @@ private:
 
   // Helper function to apply scaling: converts input and scale to target type,
   // then multiplies them.
-  // When the scale is not f8E8M0FNU, it is first roundtripped through
-  // f8E8M0FNU (e.g. f32 -> f8E8M0FNU -> f32) so that the host decomposition
-  // matches the kernel path, which casts scales to f8E8M0FNU block exponents
-  // for tosa.matmul_t_block_scaled / rock.gemm.
+  // When the scale is f32, it is first roundtripped through f8E8M0FNU
+  // (e.g. f32 -> f8E8M0FNU -> f32) so that the host decomposition matches the
+  // kernel path, which casts f32 scales to f8E8M0FNU block exponents for
+  // tosa.matmul_t_block_scaled / rock.gemm. f8E4M3FN scales are used as is.
   Value applyScale(PatternRewriter &rewriter, Location loc, Value input,
                    Value scale, Type targetElemType) const {
-    Type f8E8M0Type = Float8E8M0FNUType::get(rewriter.getContext());
-    scale = convertToType(rewriter, loc, scale, f8E8M0Type);
+    Type scaleElemType = cast<MIXRShapedType>(scale.getType()).getElementType();
+    if (!isa<Float8E4M3FNType>(scaleElemType)) {
+      Type f8E8M0Type = Float8E8M0FNUType::get(rewriter.getContext());
+      scale = convertToType(rewriter, loc, scale, f8E8M0Type);
+    }
     Value convertedScale = convertToType(rewriter, loc, scale, targetElemType);
     Value convertedInput = convertToType(rewriter, loc, input, targetElemType);
 

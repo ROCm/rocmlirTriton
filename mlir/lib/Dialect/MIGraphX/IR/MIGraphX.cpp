@@ -508,6 +508,12 @@ LogicalResult QuantDotOp::verify() {
     }
     if (aElemType != bElemType)
       return emitOpError("input types must have the same element type");
+    Type scaleAElemType = getScaleA().getType().getElementType();
+    Type scaleBElemType = getScaleB().getType().getElementType();
+    if (isa<Float8E4M3FNType>(scaleAElemType) !=
+        isa<Float8E4M3FNType>(scaleBElemType))
+      return emitOpError("f8E4M3FN scales must be used for both scaleA and "
+                         "scaleB");
     if (!isa<Float4E2M1FNType>(aElemType) || !isa<Float4E2M1FNType>(bElemType))
       return emitOpError(
           "Scaled quant dot ops only support f4E2M1FN element type");

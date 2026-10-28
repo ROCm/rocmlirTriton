@@ -219,6 +219,13 @@ def Tosa_MXFPScaleTensor3D : AnyTypeOf<[
   TosaUnrankedTensorOf<[Tosa_MXFPScaleNumber]>,
   TosaTensorRankOf<[Tosa_MXFPScaleNumber], [3]>
 ]>;
+// f8E4M3FN block scales (NVFP4-style, block size 16) for gfx1250 WMMA.
+def Tosa_BlockScaledMatmulScaleNumber
+    : AnyTypeOf<[F8E8M0FNU, F8E4M3FN], "block scaled matmul scale number">;
+def Tosa_BlockScaledMatmulScaleTensor3D : AnyTypeOf<[
+  TosaUnrankedTensorOf<[Tosa_BlockScaledMatmulScaleNumber]>,
+  TosaTensorRankOf<[Tosa_BlockScaledMatmulScaleNumber], [3]>
+]>;
 def Tosa_MXFPDataTensor4D : AnyTypeOf<[
   TosaUnrankedTensorOf<[Tosa_MXFPNumber]>,
   TosaTensorRankOf<[Tosa_MXFPNumber], [4]>

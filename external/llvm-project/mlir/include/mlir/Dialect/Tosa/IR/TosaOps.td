@@ -471,9 +471,9 @@ def Tosa_MatmulTBlockScaledOp : Tosa_InferShapedTypeOp<"matmul_t_block_scaled", 
 
   let arguments = (ins
     Tosa_MXFPDataTensor3D:$a_data,
-    Tosa_MXFPScaleTensor3D:$a_scale,
+    Tosa_BlockScaledMatmulScaleTensor3D:$a_scale,
     Tosa_MXFPDataTensor3D:$b_data,
-    Tosa_MXFPScaleTensor3D:$b_scale,
+    Tosa_BlockScaledMatmulScaleTensor3D:$b_scale,
     Tosa_BlockSizeAttr:$block_size
   );
 

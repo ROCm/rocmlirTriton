@@ -39,6 +39,39 @@ func.func @quant_dot_with_both_scales_f8e8m0fnu(
 
 // -----
 
+// CHECK-LABEL: func.func @quant_dot_with_both_scales_f8e4m3fn
+// CHECK-SAME: (%[[ARG0:.*]]: !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1>,
+// CHECK-SAME:  %[[ARG1:.*]]: !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1>,
+// CHECK-SAME:  %[[ARG2:.*]]: !migraphx.shaped<1x16x512xf8E4M3FN, 8192x512x1>,
+// CHECK-SAME:  %[[ARG3:.*]]: !migraphx.shaped<1x512x16xf8E4M3FN, 8192x16x1>)
+func.func @quant_dot_with_both_scales_f8e4m3fn(
+  %arg0: !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1>,
+  %arg1: !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1>,
+  %arg2: !migraphx.shaped<1x16x512xf8E4M3FN, 8192x512x1>,
+  %arg3: !migraphx.shaped<1x512x16xf8E4M3FN, 8192x16x1>
+) -> !migraphx.shaped<1x16x16xf32, 256x16x1> {
+  // f8E4M3FN scales are not roundtripped through f8E8M0FNU
+  // CHECK-DAG: %[[CVT_A:.*]] = migraphx.convert %[[ARG0]] : <1x16x512xf4E2M1FN, 8192x512x1> to <1x16x512xf32, 8192x512x1>
+  // CHECK-DAG: %[[CVT_B:.*]] = migraphx.convert %[[ARG1]] : <1x512x16xf4E2M1FN, 8192x16x1> to <1x512x16xf32, 8192x16x1>
+  // CHECK-DAG: %[[CVT_SCALE_A:.*]] = migraphx.convert %[[ARG2]] : <1x16x512xf8E4M3FN, 8192x512x1> to <1x16x512xf32, 8192x512x1>
+  // CHECK-DAG: %[[CVT_SCALE_B:.*]] = migraphx.convert %[[ARG3]] : <1x512x16xf8E4M3FN, 8192x16x1> to <1x512x16xf32, 8192x16x1>
+  // CHECK-DAG: %[[MUL_A:.*]] = migraphx.mul %[[CVT_A]], %[[CVT_SCALE_A]] : <1x16x512xf32, 8192x512x1>, <1x16x512xf32, 8192x512x1> -> <1x16x512xf32, 8192x512x1>
+  // CHECK-DAG: %[[MUL_B:.*]] = migraphx.mul %[[CVT_B]], %[[CVT_SCALE_B]] : <1x512x16xf32, 8192x16x1>, <1x512x16xf32, 8192x16x1> -> <1x512x16xf32, 8192x16x1>
+  // CHECK: %[[DOT:.*]] = migraphx.dot %[[MUL_A]], %[[MUL_B]] : <1x16x512xf32, 8192x512x1>, <1x512x16xf32, 8192x16x1> -> <1x16x16xf32, 256x16x1>
+  // CHECK: return %[[DOT]]
+  %0 = migraphx.quant_dot
+       %arg0 scaled by %arg2,
+       %arg1 scaled by %arg3
+     : !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1> scaled by
+       !migraphx.shaped<1x16x512xf8E4M3FN, 8192x512x1>,
+       !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1> scaled by
+       !migraphx.shaped<1x512x16xf8E4M3FN, 8192x16x1>
+     -> !migraphx.shaped<1x16x16xf32, 256x16x1>
+  return %0 : !migraphx.shaped<1x16x16xf32, 256x16x1>
+}
+
+// -----
+
 // CHECK-LABEL: func.func @quant_dot_with_both_scales_f32
 // CHECK-SAME: (%[[ARG0:.*]]: !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1>, 
 // CHECK-SAME:  %[[ARG1:.*]]: !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1>,

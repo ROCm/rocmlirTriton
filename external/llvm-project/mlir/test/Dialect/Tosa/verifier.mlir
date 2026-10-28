@@ -1421,6 +1421,22 @@ func.func @test_matmul_t_block_scaled_block_size_mismatch(%arg0: tensor<4x8x32xf
 
 // -----
 
+func.func @test_matmul_t_block_scaled_e4m3_scale_block_size_mismatch(%arg0: tensor<4x8x32xf4E2M1FN>, %arg1: tensor<4x8x1xf8E4M3FN>, %arg2: tensor<4x16x32xf4E2M1FN>, %arg3: tensor<4x16x1xf8E4M3FN>) -> tensor<4x8x16xf32> {
+  // expected-error@+1 {{'tosa.matmul_t_block_scaled' op expect block size to be 16, got 32}}
+  %0 = tosa.matmul_t_block_scaled %arg0, %arg1, %arg2, %arg3 {block_size = #tosa.block_size<BLOCK_SIZE_32>} : (tensor<4x8x32xf4E2M1FN>, tensor<4x8x1xf8E4M3FN>, tensor<4x16x32xf4E2M1FN>, tensor<4x16x1xf8E4M3FN>) -> tensor<4x8x16xf32>
+  return %0 : tensor<4x8x16xf32>
+}
+
+// -----
+
+func.func @test_matmul_t_block_scaled_scale_type_mismatch(%arg0: tensor<4x8x32xf4E2M1FN>, %arg1: tensor<4x8x2xf8E4M3FN>, %arg2: tensor<4x16x32xf4E2M1FN>, %arg3: tensor<4x16x2xf8E8M0FNU>) -> tensor<4x8x16xf32> {
+  // expected-error@+1 {{'tosa.matmul_t_block_scaled' op expect a_scale and b_scale to have the same element type, got 'f8E4M3FN' and 'f8E8M0FNU'}}
+  %0 = tosa.matmul_t_block_scaled %arg0, %arg1, %arg2, %arg3 {block_size = #tosa.block_size<BLOCK_SIZE_16>} : (tensor<4x8x32xf4E2M1FN>, tensor<4x8x2xf8E4M3FN>, tensor<4x16x32xf4E2M1FN>, tensor<4x16x2xf8E8M0FNU>) -> tensor<4x8x16xf32>
+  return %0 : tensor<4x8x16xf32>
+}
+
+// -----
+
 func.func @cast_from_block_scaled_incompatible_input_output_shape(%arg0: tensor<4x32xf4E2M1FN>, %arg1: tensor<4x1xf8E8M0FNU>) -> tensor<5x32xf32> {
   // expected-error@+1 {{'tosa.cast_from_block_scaled' op require compatible shapes for input_data ('tensor<4x32xf4E2M1FN>') and output_data ('tensor<5x32xf32>')}}
   %0 = tosa.cast_from_block_scaled %arg0, %arg1 {block_size = #tosa.block_size<BLOCK_SIZE_32> : i32} : (tensor<4x32xf4E2M1FN>, tensor<4x1xf8E8M0FNU>) -> tensor<5x32xf32>

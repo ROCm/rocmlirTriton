@@ -88,6 +88,27 @@ func.func @quant_dot_only_scale_a(
 
 // -----
 
+// Test: f8E4M3FN scaleA with f8E8M0FNU scaleB (should fail - block sizes differ)
+func.func @quant_dot_mixed_e4m3_e8m0_scales(
+  %arg0: !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1>,
+  %arg1: !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1>,
+  %arg2: !migraphx.shaped<1x16x512xf8E4M3FN, 8192x512x1>,
+  %arg3: !migraphx.shaped<1x512x16xf8E8M0FNU, 8192x16x1>
+) -> !migraphx.shaped<1x16x16xf32, 256x16x1> {
+  // expected-error @+1 {{f8E4M3FN scales must be used for both scaleA and scaleB}}
+  %0 = migraphx.quant_dot
+       %arg0 scaled by %arg2,
+       %arg1 scaled by %arg3
+     : !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1> scaled by
+       !migraphx.shaped<1x16x512xf8E4M3FN, 8192x512x1>,
+       !migraphx.shaped<1x512x16xf4E2M1FN, 8192x16x1> scaled by
+       !migraphx.shaped<1x512x16xf8E8M0FNU, 8192x16x1>
+     -> !migraphx.shaped<1x16x16xf32, 256x16x1>
+  return %0 : !migraphx.shaped<1x16x16xf32, 256x16x1>
+}
+
+// -----
+
 // Test: Only scaleB provided (should fail - both scales required)
 func.func @quant_dot_only_scale_b(
   %arg0: !migraphx.shaped<1x16x512xf4E2M1FN, 8192x512x1>, 

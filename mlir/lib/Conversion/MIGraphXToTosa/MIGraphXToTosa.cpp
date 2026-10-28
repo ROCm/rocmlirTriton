@@ -642,13 +642,16 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
   // below (scales are optional in quant_dot).
   if constexpr (std::is_same_v<DotType, migraphx::QuantDotOp>) {
     if (hasScales) {
+      Type scaleAElementType = scaleA.getType().getElementType();
+      Type scaleBElementType = scaleB.getType().getElementType();
+
       // Block size for tosa.matmul_t_block_scaled. At this point scales have
       // already been broadcasted to match A/B shapes, so the block size cannot
-      // be derived from the scale tensor dimensions.
-      // At present blockSize is hardcoded to 32 for MI355 as it only supports
-      // blockSize of 32. This should be made attribute to allow for different
-      // block sizes for future architectures.
-      static constexpr int64_t blockSize = 32;
+      // be derived from the scale tensor dimensions. It is implied by the scale
+      // type instead: f8E4M3FN scales (gfx1250, NVFP4-style) use blocks of 16,
+      // f8E8M0FNU/f32 scales (MX) use blocks of 32.
+      const bool isE4M3Scale = isa<Float8E4M3FNType>(scaleAElementType);
+      const int64_t blockSize = isE4M3Scale ? 16 : 32;
       if (batchInfo.kDim % blockSize != 0)
         return op->emitError("K dimension (")
                << batchInfo.kDim << ") must be a multiple of blockSize ("
@@ -664,9 +667,6 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
       // tosa.matmul_t_block_scaled:
       //   scaleA: [batch, M, K] -> [batch, M, K/blockSize]
       //   scaleB: [batch, K, N] -> [batch, K/blockSize, N]
-
-      Type scaleAElementType = scaleA.getType().getElementType();
-      Type scaleBElementType = scaleB.getType().getElementType();
 
       // MIGraphX always broadcasts scales to match A/B shapes before sending
       // them. If MIGraphX ever sends non-broadcasted scales, this unbroadcast
@@ -686,9 +686,11 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
                            batchInfo.needsReshape, scaleA3DShape, scaleA4DShape,
                            scaleASliceSize, unbroadcastedScaleAShape);
 
-      // tosa.matmul_t_block_scaled requires scale element type f8E8M0FNU.
-      // MIGraphX may provide f32 scales, so cast if needed.
-      Type mxfpScaleType = Float8E8M0FNUType::get(rewriter.getContext());
+      // tosa.matmul_t_block_scaled requires scale element type f8E8M0FNU or
+      // f8E4M3FN. MIGraphX may provide f32 MX scales, so cast if needed.
+      Type mxfpScaleType =
+          isE4M3Scale ? scaleAElementType
+                      : Float8E8M0FNUType::get(rewriter.getContext());
       auto castScaleToMXFP = [&](Value v, Type elemTy) {
         if (elemTy == mxfpScaleType)
           return v;
@@ -732,7 +734,9 @@ LogicalResult DotConverter<DotType>::matchAndRewrite(
 
       // Create tosa.matmul_t_block_scaled
       auto blockSizeAttr = mlir::tosa::BlockSizeAttr::get(
-          rewriter.getContext(), mlir::tosa::BlockSize::BLOCK_SIZE_32);
+          rewriter.getContext(), isE4M3Scale
+                                     ? mlir::tosa::BlockSize::BLOCK_SIZE_16
+                                     : mlir::tosa::BlockSize::BLOCK_SIZE_32);
 
       auto matmulOp = tosa::MatmulTBlockScaledOp::create(
           rewriter, loc, matmulOutputType, inAReshaped, scaleAUnbroadcasted,
