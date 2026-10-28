@@ -314,6 +314,10 @@ endif()
 # in-tree as part of this build (see cmake/triton.cmake).
 #===----------------------------------------------------------------------===//
 
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
 include(cmake/triton.cmake)
 include(cmake/rocm.cmake)
 include(cmake/triton_amd_codegen.cmake)

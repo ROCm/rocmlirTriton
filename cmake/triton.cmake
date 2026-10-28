@@ -17,31 +17,33 @@ include(FetchContent)
 
 set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_TAG "rmt-core-2026-10-19"
+set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
 set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
-set(ROCMLIR_TRITON_GIT_TAG "rmt-2026-10-19"
+set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
 
-message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_TAG}")
-message(STATUS "Fetching Triton:    ${ROCMLIR_TRITON_GIT_REPOSITORY}@${ROCMLIR_TRITON_GIT_TAG}")
+message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}")
+message(STATUS "Fetching Triton:    ${ROCMLIR_TRITON_GIT_REPOSITORY}@${ROCMLIR_TRITON_GIT_BRANCH}")
 
 FetchContent_Declare(
   rocmlir_llvm_project
-  GIT_REPOSITORY "${ROCMLIR_LLVM_GIT_REPOSITORY}"
-  GIT_TAG "${ROCMLIR_LLVM_GIT_TAG}"
-  GIT_SHALLOW TRUE
-  GIT_PROGRESS TRUE
+  URL "${ROCMLIR_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_LLVM_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_LLVM_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_LLVM_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
   # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
   SOURCE_SUBDIR do-not-auto-add)
 
 FetchContent_Declare(
   rocmlir_triton
-  GIT_REPOSITORY "${ROCMLIR_TRITON_GIT_REPOSITORY}"
-  GIT_TAG "${ROCMLIR_TRITON_GIT_TAG}"
-  GIT_SHALLOW TRUE
-  GIT_PROGRESS TRUE
+  URL "${ROCMLIR_TRITON_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_TRITON_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_TRITON_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_TRITON_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
   # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
   SOURCE_SUBDIR do-not-auto-add)
 
@@ -79,7 +81,7 @@ if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
     "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt is missing.\n"
     "\n"
     "The llvm-project sources are fetched via FetchContent from "
-    "${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_TAG}; if this file is "
+	"${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}; if this file is "
     "missing the download is incomplete or the pin is wrong.\n")
 endif()
 

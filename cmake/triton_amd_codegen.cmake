@@ -27,13 +27,13 @@ endif()
 # AMD code-generation LLVM from Triton cmake/amd-llvm-build-info.json
 set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the standalone AMD code-generation LLVM")
-set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG "rmt-amd-2026-10-19"
+set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH "rmt-amd-2026-10-19"
     CACHE STRING "Git branch/tag/commit for the standalone AMD code-generation LLVM")
-set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG}-1"
+set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}-1"
     CACHE STRING
     "Revision string baked into triton_amd_codegen (triton_amdgpu_revision())")
 
-message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG}")
+message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}")
 
 set(amd_codegen_root "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen")
 
@@ -53,10 +53,11 @@ endif()
 
 # Build the AMD code-generation LLVM (AMDGPU target only, static libs).
 ExternalProject_Add(amd_codegen_llvm
-  GIT_REPOSITORY "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}"
-  GIT_TAG "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG}"
-  GIT_SHALLOW TRUE
-  GIT_PROGRESS TRUE
+  URL "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
   PREFIX "${amd_codegen_root}/llvm"
   SOURCE_SUBDIR llvm
   CMAKE_ARGS
