@@ -53,9 +53,12 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 
   PassOptions::Option<std::string> arch{
       *this, "arch", desc("AMDGPU ISA version: e.g. gfx908"), init("")};
-  /// When false (default), run `rock-allow-fast-math-flags` right after
-  /// `rock-to-ttir`, ahead of `rock-fold-clamp-to-triton`, which relies on the
-  /// `nnan` flags it attaches. Set to true to skip that pass
+  /// When false (default), run `rock-allow-fast-math-flags` twice. The first
+  /// run is before `rock-to-ttir`, so a redundant rounded cast folds away
+  /// before that pass rejects it. The second is right after `rock-to-ttir`,
+  /// ahead of `rock-fold-clamp-to-triton`, which relies on the `nnan` flags it
+  /// attaches, and it also flags the reduction combiners `rock-to-ttir`
+  /// creates. Set to true to skip both runs
   /// and to hold `rock-to-ttir` to IEEE f32 dots.
   PassOptions::Option<bool> disableFastMath{
       *this, "disable-fast-math",

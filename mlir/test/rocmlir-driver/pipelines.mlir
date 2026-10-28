@@ -86,6 +86,8 @@
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(math-extend-to-supported-types{extra-types={f16} target-type=f32}),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
+// GPU-NEXT:func.func(rock-allow-fast-math-flags),
+// GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:func.func(rock-legalize-float-types),
 // GPU-NEXT:remove-dead-values{canonicalize=true},
 // GPU-NEXT:rock-serialize-host-funcs,

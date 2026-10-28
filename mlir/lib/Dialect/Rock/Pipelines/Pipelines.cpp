@@ -525,6 +525,14 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
   }
 
+  // Fold redundant f32->f16/bf16->f32 casts before RockToTTIR. A rounded
+  // truncf cannot survive that pass: downward and upward are rejected, and
+  // toward_zero is rewritten to tt.fp_to_fp, which the round-trip fold does
+  // not match. This is after lower-stores, so a load or store no longer sits
+  // between the two casts.
+  if (!options.disableFastMath)
+    addWithDCE(rock::createRockAllowFastMathFlagsPass());
+
   // This pass converts unsupported float types to int8 and wraps fusion ops
   // with arith.bitcast (preserving original f8/f4 types inside the wrapper).
   addWithDCE(rock::createRockLegalizeFloatTypesPass());
@@ -585,10 +593,9 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   rock::RockToTTIRPassOptions rockToTTIROpts;
   rockToTTIROpts.disableFastMath = options.disableFastMath;
   funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
-  // Must run after lower-stores to catch redundant casts that cannot be
-  // flagged earlier due to loads/stores that sit between truncf/extf pairs,
-  // and after RockToTTIR so the float ops it synthesizes itself (the reduction
-  // combiners) are flagged too. One run covers everything.
+  // The run above folded casts that already existed. This one flags the float
+  // ops RockToTTIR itself creates (the reduction combiners). Ops that already
+  // carry the flags are left alone.
   if (!options.disableFastMath)
     addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
   // Needs the `nnan` flags the pass above attaches to minnumf/maxnumf.
