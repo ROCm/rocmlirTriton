@@ -31,6 +31,13 @@ if(WIN32)
   if(NOT ROCMLIR_DLFCN_TARGET)
     message(FATAL_ERROR "Unable to find dlfcn-win32 CMake target after FetchContent")
   endif()
+
+  # This in-tree FetchContent build inherits LLVM's /WX. dlfcn-win32 1.4.2
+  # compares a signed index with unsigned directory counts in dlfcn.c, and
+  # MSVC then rejects the file. The warning is in the third-party source.
+  if(MSVC AND TARGET dl)
+    target_compile_options(dl PRIVATE /WX-)
+  endif()
 endif()
 
 set(TRITON_AMD_DEVICE_LIB_DIR

@@ -38,6 +38,7 @@ config.mlir_tools_dir = "@MLIR_TOOLS_DIR@"
 config.mlir_cmake_config_dir = "@MLIR_CMAKE_CONFIG_DIR@"
 config.mlir_rock_tools_dir = "@ROCMLIR_TOOLS_DIR@"
 config.mlir_lib_dir = "@MLIR_LIB_DIR@"
+config.rocmlir_triton_amd_codegen_dir = "@ROCMLIR_TRITON_AMD_CODEGEN_DIR@"
 config.build_examples = @LLVM_BUILD_EXAMPLES@
 config.run_rocm_tests = @LLVM_HAS_AMDGPU_TARGET@
 config.enable_rocm_runner = @MLIR_ENABLE_ROCM_RUNNER@
