@@ -346,8 +346,8 @@ func.func @clamp_f32_propagate(%arg0: tensor<16xf32>) -> tensor<16xf32> attribut
 // -----
 
 // IGNORE selects the non-propagating ops. RockAllowFastMathFlags later marks
-// them nnan on kernels that promised no NaN, which is what lets RockToTTIR
-// fold the pair into a single tt.clampf.
+// them nnan on kernels that promised no NaN, which is what lets
+// RockFoldClampToTriton fold the pair into a single tt.clampf.
 
 // CHECK-LABEL: @clamp_f32_ignore
 // CHECK-NOT:   tosa.clamp

@@ -1127,8 +1127,8 @@ LogicalResult ExtractPtrOp::verify() {
 //===-----------------------------------------------------===//
 
 LogicalResult TransformOp::verify() {
-  auto inputType = cast<ShapedType>(getInput().getType());
-  auto outputType = cast<ShapedType>(getOutput().getType());
+  RankedTensorType inputType = getInput().getType();
+  RankedTensorType outputType = getOutput().getType();
 
   TransformMapAttr tmap = getTransform();
 
@@ -1164,9 +1164,9 @@ LogicalResult TransformOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   TransformOp::Adaptor adaptor(operands, attributes, properties, regions);
-  auto inputType = dyn_cast<ShapedType>(adaptor.getInput().getType());
+  auto inputType = dyn_cast<RankedTensorType>(adaptor.getInput().getType());
   if (!inputType)
-    return emitOptionalError(location, "input must be a shaped type");
+    return emitOptionalError(location, "input must be a ranked tensor type");
   TransformMapAttr transform = adaptor.getTransform();
   if (!transform)
     return emitOptionalError(location, "transform attribute is required");
@@ -1393,6 +1393,17 @@ LogicalResult GemmOp::verify() {
       failed(verifyScale(getScaleB(), /*isA=*/false)))
     return failure();
 
+  // E4M3 scales use the 16-wide WMMA scale intrinsic. TTIR accepts only 16 or
+  // 32, and a mixed E8M0/E4M3 pair is legal only when both sides share this
+  // block size. E8M0 block-32 graphs are unchanged.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(getScaleA()) || isE4M3Scale(getScaleB())) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+
   if (getParams().has_value() && getQuantBlockSize().has_value()) {
     int64_t quantBlockSize = getQuantBlockSize().value();
     auto params = cast<GemmParamsAttr>(getParams().value());
@@ -1481,6 +1492,15 @@ LogicalResult GridwiseGemmOp::verify() {
                           /*isA=*/false))) {
     return failure();
   }
+  // Same rule as GemmOp: an E4M3 scale, on either side, uses the 16-wide
+  // WMMA scale intrinsic. A mixed E8M0/E4M3 pair is legal at that block size.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(scaleA) || isE4M3Scale(scaleB)) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
   return verifyGridwiseGemm(*this);
 }
 
@@ -1649,6 +1669,16 @@ LogicalResult BlockwiseGemmOp::verify() {
   if (hasScaleA ^ hasScaleB)
     return emitOpError(
         "scaleA and scaleB must both be present or both be null.");
+
+  // Same rule as GemmOp: an E4M3 scale, on either side, uses the 16-wide
+  // WMMA scale intrinsic. i8 remains the E8M0 bitcast and keeps block 32.
+  auto isE4M3Scale = [](Value scale) {
+    return scale && isa<Float8E4M3FNType>(
+                        cast<ShapedType>(scale.getType()).getElementType());
+  };
+  if ((isE4M3Scale(getMatrixScaleA()) || isE4M3Scale(getMatrixScaleB())) &&
+      getQuantBlockSize().value_or(0) != 16)
+    return emitOpError("f8E4M3FN scales require quantBlockSize 16");
 
   return success();
 }

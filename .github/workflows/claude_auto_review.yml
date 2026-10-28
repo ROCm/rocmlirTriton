@@ -594,7 +594,7 @@ jobs:
       # upstream supply-chain compromise. See doc §8, §13.
       - name: Run Claude review
         id: claude-code
-        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc  # v1
+        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8  # v1
         timeout-minutes: 20
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}

@@ -57,7 +57,7 @@ DIRECTIONS = ['-F 1', '-F 2']
 LAYOUTS = ['NHWC', 'NCHW']
 
 DATA_TYPES_GEMM = ['f32', 'f16', 'bf16', 'i8', 'fp8', 'f4E2M1FN']
-DATA_TYPES_GEMM_SCALES = ['f32', 'f8E8M0FNU']
+DATA_TYPES_GEMM_SCALES = ['f32', 'f8E8M0FNU', 'f8E4M3FN']
 DATA_TYPES_ATTENTION = ['i8', 'f32', 'f16', 'bf16']
 DATA_TYPES_GEMM_GEMM = ['f32', 'f16', 'bf16']
 DATA_TYPES_CONV_GEMM = ['f32', 'f16', 'bf16']
@@ -1553,6 +1553,8 @@ class GemmConfiguration(PerfConfiguration):
             result += f' -transScaleA {str(self.trans_scale_a)}'
         if self.trans_scale_b:
             result += f' -transScaleB {str(self.trans_scale_b)}'
+        if self.quant_block_size is not None:
+            result += f' -quantBlockSize {self.quant_block_size}'
 
         return result
 
@@ -1575,6 +1577,7 @@ class GemmConfiguration(PerfConfiguration):
         scale_b_dtype = None
         trans_scale_a = False
         trans_scale_b = False
+        quant_block_size = None
         i = 0
         while i < len(argv):
             opt = argv[i]
@@ -1615,6 +1618,8 @@ class GemmConfiguration(PerfConfiguration):
                 trans_scale_a = (val.lower() in ["1", "true"])
             elif opt.endswith("-transScaleB"):
                 trans_scale_b = (val.lower() in ["1", "true"])
+            elif opt == '-quantBlockSize':
+                quant_block_size = int(val)
             elif opt.endswith("-perf_priority"):
                 # Tuning-order metadata, not part of the problem.
                 pass
@@ -1639,6 +1644,7 @@ class GemmConfiguration(PerfConfiguration):
                      scale_b_dtype,
                      trans_scale_a,
                      trans_scale_b,
+                     quant_block_size,
                      arch,
                      num_cu,
                      num_chiplets,
@@ -1661,6 +1667,8 @@ class GemmConfiguration(PerfConfiguration):
             result += f" -transScaleA {str(self.trans_scale_a).lower()}"
         if self.trans_scale_b:
             result += f" -transScaleB {str(self.trans_scale_b).lower()}"
+        if self.quant_block_size is not None:
+            result += f" -quantBlockSize {self.quant_block_size}"
         return f"{result} {self.tuning_key_metadata()}"
 
     def __init__(self,
@@ -1678,6 +1686,7 @@ class GemmConfiguration(PerfConfiguration):
                  scale_b_dtype: str = None,
                  trans_scale_a: bool = False,
                  trans_scale_b: bool = False,
+                 quant_block_size: int = None,
                  arch: str = '',
                  num_cu: int = 0,
                  num_chiplets: int = 0,
@@ -1694,6 +1703,13 @@ class GemmConfiguration(PerfConfiguration):
             raise ValueError(
                 f"Invalid scale_b_dtype: {scale_b_dtype}. Must be one of {DATA_TYPES_GEMM_SCALES}")
 
+        # rocmlir-gen's default block is 32, which the E4M3 verifier rejects.
+        if scale_a_dtype == 'f8E4M3FN' or scale_b_dtype == 'f8E4M3FN':
+            if quant_block_size is None:
+                quant_block_size = 16
+            elif quant_block_size != 16:
+                raise ValueError("f8E4M3FN scales require quantBlockSize 16")
+
         self.datatype = dtype
         self.out_dtype = out_dtype
         self.g = g
@@ -1709,6 +1725,7 @@ class GemmConfiguration(PerfConfiguration):
         self.scale_b_dtype = scale_b_dtype
         self.trans_scale_a = trans_scale_a
         self.trans_scale_b = trans_scale_b
+        self.quant_block_size = quant_block_size
         self.arch = arch
         self.chip = GFX_CHIP_RE.search(arch).group(0)
         self.num_cu = num_cu
@@ -3369,7 +3386,7 @@ def main(args=None):
     parser.add_argument(
         '--scale-type',
         nargs='+',
-        choices=["f32", "f8E8M0FNU"],
+        choices=["f32", "f8E8M0FNU", "f8E4M3FN"],
         default=None,
         help=
         'Force a set of scale types for scaled GEMM (only applicable when config includes -scaledGemm)'

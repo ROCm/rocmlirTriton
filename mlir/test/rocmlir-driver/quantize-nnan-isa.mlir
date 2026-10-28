@@ -7,8 +7,8 @@
 // rock::createClampedFPToInt emits a NaN -> 0 sanitization (cmpf uno + select,
 // so that arith.fptosi never sees a NaN and returns poison) ahead of the clamp
 // into the integer range. The kernel path's default no-NaN assumption makes that
-// prologue dead, leaving a bare `nnan` minnumf/maxnumf pair that RockToTTIR
-// folds into `tt.clampf`.
+// prologue dead, leaving a bare `nnan` minnumf/maxnumf pair that
+// RockFoldClampToTriton folds into `tt.clampf`.
 //
 // Only one kernel lives in this file, since every kernel in the module lands in
 // the same ISA dump; the IEEE contrast below is the same kernel compiled with
