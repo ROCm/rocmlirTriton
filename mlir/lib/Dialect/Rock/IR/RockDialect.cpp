@@ -1127,8 +1127,8 @@ LogicalResult ExtractPtrOp::verify() {
 //===-----------------------------------------------------===//
 
 LogicalResult TransformOp::verify() {
-  auto inputType = cast<ShapedType>(getInput().getType());
-  auto outputType = cast<ShapedType>(getOutput().getType());
+  RankedTensorType inputType = getInput().getType();
+  RankedTensorType outputType = getOutput().getType();
 
   TransformMapAttr tmap = getTransform();
 
@@ -1164,9 +1164,9 @@ LogicalResult TransformOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   TransformOp::Adaptor adaptor(operands, attributes, properties, regions);
-  auto inputType = dyn_cast<ShapedType>(adaptor.getInput().getType());
+  auto inputType = dyn_cast<RankedTensorType>(adaptor.getInput().getType());
   if (!inputType)
-    return emitOptionalError(location, "input must be a shaped type");
+    return emitOptionalError(location, "input must be a ranked tensor type");
   TransformMapAttr transform = adaptor.getTransform();
   if (!transform)
     return emitOptionalError(location, "transform attribute is required");

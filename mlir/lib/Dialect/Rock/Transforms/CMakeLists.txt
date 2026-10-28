@@ -50,6 +50,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RockPrepareLLVM.cpp
   RockTosaToElementwise.cpp
   RockAllowFastMathFlags.cpp
+  FoldClampToTriton.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Rock
