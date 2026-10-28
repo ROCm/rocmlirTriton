@@ -102,3 +102,23 @@ func.func @intergemm_captured_non_constant(%a: tensor<1x4x4xf32>, %b: tensor<1x4
   %stored = rock.store %result to %out by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
   return %stored : tensor<1x4x4xf32>
 }
+
+// -----
+
+#params_g0 = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 4, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 1, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+#params_g1_splitk = #rock.gemm_params<mPerBlock = 32, nPerBlock = 32, kPerBlock = 32, kpack = 4, numWaves = 1, matrixInstrNonkdim = 0, splitKFactor = 2, numStages = 2, wavesPerEU = 0, gridGroupSize = 0, numCTAs = 1>
+
+// Split-k folds each key partition into the group dimension, so a causal mask
+// would compare partition-local key indices against global query positions
+// (e.g. partition 1's first key would unmask as key 0 for every query).
+func.func @causal_rejects_splitk(%a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>, %c: tensor<1x4x4xf32>, %out: tensor<1x4x4xf32>) -> tensor<1x4x4xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // expected-error @+2 {{split-k is not supported for causal gemm-gemm}}
+  // expected-error @+1 {{failed to legalize operation 'rock.gemm_elementwise_gemm'}}
+  %result = rock.gemm_elementwise_gemm{
+    ab = %a * %b : tensor<1x4x4xf32>, tensor<1x4x4xf32>
+    causal
+    out = ab * %c : tensor<1x4x4xf32>
+  } {params0 = #params_g0, params1 = #params_g1_splitk} -> tensor<1x4x4xf32>
+  %stored = rock.store %result to %out by set : tensor<1x4x4xf32> -> tensor<1x4x4xf32> to tensor<1x4x4xf32>
+  return %stored : tensor<1x4x4xf32>
+}
