@@ -58,8 +58,6 @@ namespace rock {
 // Keep in sync with AccelerateAMDMatmul.cpp::getMfmaVersion()
 int getMfmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
-  case ISAFamily::CDNA1:
-    return 1;
   case ISAFamily::CDNA2:
     return 2;
   case ISAFamily::CDNA3:
@@ -76,13 +74,10 @@ int getWmmaVersion(ISAFamily isaFamily) {
   switch (isaFamily) {
   case ISAFamily::RDNA3:
     return 1;
-  // gfx1170 uses the gfx12/RDNA4-style 128-bit WMMA layout
-  // (FeatureWMMA128bInsts + FeatureSWMMACGfx1200Insts in LLVM), so it selects
-  // WMMA v2 like RDNA4. Keep in sync with AccelerateAMDMatmul.cpp.
-  case ISAFamily::GFX1170:
+  case ISAFamily::RDNA4m:
   case ISAFamily::RDNA4:
     return 2;
-  case ISAFamily::GFX1250:
+  case ISAFamily::CDNA5:
     return 3;
   default:
     break;

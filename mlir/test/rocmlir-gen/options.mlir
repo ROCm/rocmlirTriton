@@ -80,5 +80,5 @@
 
 // `-p` generates a fresh kernel and ignores stdin unless an input file is named.
 // Warn when upstream pipeline output is being dropped.
-// RUN: echo ignored | rocmlir-gen --arch %arch -p 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN_PIPED_STDIN
+// RUN: echo ignored | rocmlir-gen --arch %arch -p -o /dev/null 2>&1 | FileCheck %s --check-prefix=WARN_PIPED_STDIN
 // WARN_PIPED_STDIN: warning: rocmlir-gen -p is ignoring piped stdin because no input file was specified

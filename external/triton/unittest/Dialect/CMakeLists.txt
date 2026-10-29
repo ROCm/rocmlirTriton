@@ -1,2 +1,0 @@
-add_subdirectory(TritonGPU)
-add_subdirectory(TritonNvidiaGPU)

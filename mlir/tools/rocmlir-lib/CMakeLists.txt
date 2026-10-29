@@ -67,11 +67,23 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
     add_dependencies(${LIBRARY_NAME} ${__triton_libs})
     foreach(__library ${__triton_libs})
-      list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+      if(TARGET ${__library})
+        get_target_property(__target_type ${__library} TYPE)
+      else()
+        set(__target_type "")
+      endif()
+
+      # TRITON_LIBS may include INTERFACE or custom/utility targets that have no
+      # physical library artifact. Install only concrete library artifacts.
+      if(__target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY)$")
+        list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+      endif()
+
       target_link_libraries(${LIBRARY_NAME}
           INTERFACE
               $<BUILD_INTERFACE:${__library}>
               $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+      unset(__target_type)
     endforeach()
 
     rocm_install(FILES ${__mlir_libraries}
@@ -125,6 +137,8 @@ if(BUILD_FAT_LIBROCKCOMPILER)
             $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library_name}${CMAKE_STATIC_LIBRARY_SUFFIX}>)
 
     rocm_install(FILES ${full_output_path}
+            DESTINATION lib)
+	rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
             DESTINATION lib)
 
     # Backward compatibility to provide `librockCompiler` build target.

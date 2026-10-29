@@ -158,7 +158,7 @@ def clang_tidy_extra_include_args(repo_root: str) -> List[str]:
     # compile line comes from a .cpp that does not carry HIP's include path.
     include_dirs.append(os.path.join(os.environ.get('ROCM_PATH', '/opt/rocm'), 'include'))
 
-    extra_args = ['-extra-arg=-std=c++17']
+    extra_args = ['-extra-arg=-std=c++20']
     for inc in include_dirs:
         if os.path.isdir(inc):
             extra_args.append(f'-extra-arg=-I{inc}')
@@ -191,7 +191,7 @@ def run_clang_tidy(base_commit, ignore_config, ignore_external_files: bool = Fal
     cpu_count = multiprocessing.cpu_count()
     extra_args = clang_tidy_extra_include_args(repo_root)
     p = subprocess.Popen([
-        './external/llvm-project/clang-tools-extra/clang-tidy/tool/clang-tidy-diff.py', '-p0',
+        'clang-tidy-diff', '-p0',
         '-quiet', '-j',
         str(cpu_count), *extra_args
     ],

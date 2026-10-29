@@ -48,18 +48,15 @@
 // ASM1170-DAG: v_cvt_f32_fp8
 // ASM1170-DAG: v_cvt_pk_fp8_f32
 
-// RDNA4 has the same OCP instructions, but upstream Triton only routes gfx1170
-// to them, so RDNA4 stays on the software path. llvm.func prevents the
-// negative check from passing vacuously.
+// RDNA4 now routes OCP fp8 casts to hardware conversion instructions as well.
 // RUN: rocmlir-gen --clone-harness -arch gfx1200 -fut mlir_fp8_cvt %s \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=migraphx,highlevel -host-pipeline=migraphx,highlevel \
 // RUN: | rocmlir-driver -arch=gfx1200 -kernel-pipeline=gpu,triton \
 // RUN: | FileCheck %s --check-prefix=LLIR1200 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.fp8.f32 \
-// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.fp8 \
-// RUN:   --implicit-check-not=rocdl.cvt.f32.fp8
+// RUN:   --implicit-check-not=rocdl.cvt.pk.f32.fp8
 
-// LLIR1200: llvm.func
+// LLIR1200-DAG: rocdl.cvt.f32.fp8
+// LLIR1200-DAG: rocdl.cvt.pk.fp8.f32
 
 // gfx950 has the plain cvt instructions as well, but CDNA4 is routed to the
 // scaled cvt instructions, which convert the same OCP formats once the scale

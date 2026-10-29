@@ -225,7 +225,7 @@ func.func @contiguous_tile(%base: !tt.ptr<f16>) -> tensor<32x128xf16> {
 // address, and its zero fill narrows as a splat.
 
 // CHECK-LABEL: @masked_uniform_along_dim
-//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<1x128x!tt.ptr<f16>>
+//      CHECK:   %[[VAL:.*]] = tt.load %{{.*}} : tensor<1x128x!tt.ptr<f16>>
 // CHECK-NEXT:   tt.broadcast %[[VAL]] : tensor<1x128xf16> -> tensor<32x128xf16>
 func.func @masked_uniform_along_dim(%base: !tt.ptr<f16>, %n: i32) -> tensor<32x128xf16> {
   %zero = arith.constant dense<0.0> : tensor<32x128xf16>

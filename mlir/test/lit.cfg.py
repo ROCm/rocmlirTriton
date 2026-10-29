@@ -26,7 +26,7 @@ from common import apply_device_environment
 # name: The name of this test suite.
 config.name = 'RocMLIR'
 
-config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
+config.test_format = lit.formats.ShTest()
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = ['.td', '.mlir', '.toy', '.ll', '.tc', '.py']
@@ -109,6 +109,11 @@ config.test_exec_root = os.path.join(config.mlir_obj_root, 'mlir', 'test')
 llvm_config.with_environment('PATH', config.mlir_rock_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.lit_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
+# TritonToHsaco dlopen-s triton_amd_codegen by name. On Windows the loader does
+# not search the executable's sibling lib directory, so without this every
+# -triton-to-hsaco test silently produces no code object.
+llvm_config.with_environment('PATH', config.rocmlir_triton_amd_codegen_dir,
+                             append_path=True)
 
 tool_dirs = [config.mlir_rock_tools_dir, config.mlir_tools_dir, config.llvm_tools_dir]
 tools = ['rocmlir-opt', 'rocmlir-translate']

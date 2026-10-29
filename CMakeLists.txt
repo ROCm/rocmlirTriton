@@ -107,7 +107,7 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "")
 
 #===----------------------------------------------------------------------===//
@@ -263,15 +263,19 @@ endif()
 # External dependency paths for RPATH and in-tree LLVM discovery.
 # These must be set BEFORE include(cmake/triton.cmake) because the in-tree
 # LLVM path uses LLVM_EXTERNAL_BUILD_DIR to populate MLIR_INCLUDE_DIRS etc.
+#
+# The *_EXTERNAL_SRC_DIR values are placeholders: cmake/triton.cmake fetches
+# the LLVM/MLIR and Triton sources with FetchContent and overwrites them with
+# the actual fetched source directories.
 #===----------------------------------------------------------------------===//
 
 set(LLVM_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/llvm-project")
-set(LLVM_EXTERNAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
+set(LLVM_EXTERNAL_SRC_DIR "")
 set(LLVM_EXTERNAL_BIN_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/bin")
 set(LLVM_EXTERNAL_LIB_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib")
 
 set(TRITON_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(TRITON_EXTERNAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+set(TRITON_EXTERNAL_SRC_DIR "")
 set(TRITON_EXTERNAL_BIN_DIR "${TRITON_EXTERNAL_BUILD_DIR}/bin")
 set(TRITON_EXTERNAL_LIB_DIR "${TRITON_EXTERNAL_BUILD_DIR}/lib")
 
@@ -310,8 +314,13 @@ endif()
 # in-tree as part of this build (see cmake/triton.cmake).
 #===----------------------------------------------------------------------===//
 
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
 include(cmake/triton.cmake)
 include(cmake/rocm.cmake)
+include(cmake/triton_amd_codegen.cmake)
 
 # TODO: Re-enable mlir-hal when updated for newer LLVM (22+)
 # mlir-hal has API incompatibilities with LLVM 22 (getArgAttrsAttr, etc.)

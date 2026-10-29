@@ -41,6 +41,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include <triton/Dialect/Triton/IR/Types.h>
 
 namespace mlir {
 namespace rock {
@@ -285,8 +286,8 @@ LogicalResult RockTensorToTritonPtrPass::processFunction(
   SmallVector<Type> newInputTypes;
   for (Type inputType : funcType.getInputs()) {
     if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
-      newInputTypes.push_back(
-          triton::PointerType::get(tensorType.getElementType(), 1));
+      newInputTypes.push_back(triton::PointerType::get(
+          tensorType.getElementType(), PtrAddrSpace::Global));
     else
       newInputTypes.push_back(inputType);
   }
@@ -317,8 +318,8 @@ LogicalResult RockTensorToTritonPtrPass::processFunction(
         builder, module, info.constant, constantGlobals);
     auto tensorType = cast<RankedTensorType>(info.constant.getType());
     auto llvmPtrType = LLVM::LLVMPointerType::get(ctx, global.getAddrSpace());
-    auto tritonPtrType =
-        triton::PointerType::get(tensorType.getElementType(), 1);
+    auto tritonPtrType = triton::PointerType::get(tensorType.getElementType(),
+                                                  PtrAddrSpace::Global);
 
     rewriter.setInsertionPoint(info.extractPtrOp);
     Value address = LLVM::AddressOfOp::create(

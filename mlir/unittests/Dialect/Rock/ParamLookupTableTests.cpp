@@ -18,12 +18,12 @@ using namespace mlir::rock;
 
 // Architectures shipping a full set of attention quick-tuning lists.
 static constexpr StringLiteral kAttentionArchs[] = {
-    "gfx908", "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
+    "gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1151", "gfx1201"};
 
 // Of those, the ones with no gemm+gemm lists of their own, which therefore
 // still borrow attention's at every precision.
-static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx908", "gfx90a",
-                                                          "gfx942", "gfx1151"};
+static constexpr StringLiteral kUntunedGemmGemmArchs[] = {"gfx90a", "gfx942",
+                                                          "gfx1151"};
 
 // Architectures that do ship gemm+gemm lists, and the precisions they cover.
 static constexpr StringLiteral kTunedGemmGemmArchs[] = {"gfx1100", "gfx950"};
@@ -35,6 +35,26 @@ static constexpr StringLiteral kAttentionDataTypes[] = {"bf16", "f16", "f32",
 
 // Data types with dedicated gfx1100 and gfx1101 gemm and conv lists.
 static constexpr StringLiteral kNavi3TunedDataTypes[] = {"f16", "f32", "i8"};
+
+// --- normalizeArch ---
+
+// Lookup keys are built from the normalized arch, so a target modifier like
+// gfx1250-strict's "-strict" suffix has to be stripped here: strict is a
+// code-object variant of gfx1250, not a different ISA, and shares its tuning
+// entries and LDS blacklist rather than needing a duplicate set of its own.
+TEST(NormalizeArchTest, StripsTargetModifier) {
+  EXPECT_EQ(normalizeArch("gfx1250-strict"), "gfx1250");
+  EXPECT_EQ(normalizeArch("amdgcn-amd-amdhsa:gfx1250-strict:xnack-"),
+            "gfx1250");
+}
+
+TEST(NormalizeArchTest, KeepsPlainArch) {
+  EXPECT_EQ(normalizeArch("gfx1250"), "gfx1250");
+  EXPECT_EQ(normalizeArch("gfx90a"), "gfx90a");
+  EXPECT_EQ(normalizeArch("amdgcn-amd-amdhsa:gfx942:xnack-"), "gfx942");
+}
+
+// --- findFallback ---
 
 TEST(FindFallbackTest, ExactMatch) {
   // Exact match should return itself
@@ -412,7 +432,7 @@ TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
     auto configs = ParamLookupTable<GemmParamsAttr>::lookup(
         arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
-        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << "for " << arch.str() << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
   };
   auto expectGemmGemmListWithinCap = [&](StringRef arch, KernelType kernel,
@@ -420,7 +440,7 @@ TEST(LookupTest, RefreshedQuickTuningListsHaveAtMostFortyConfigs) {
     auto configs = ParamLookupTable<GemmGemmParamsAttr>::lookup(
         arch, kernel, dataType, /*supportsSplitK=*/true);
     EXPECT_LE(configs.size(), maxConfigs)
-        << "for " << arch << " " << stringifyEnum(kernel).lower() << " "
+        << "for " << arch.str() << " " << stringifyEnum(kernel).lower() << " "
         << getDataTypeString(dataType);
   };
 
@@ -543,8 +563,8 @@ TEST(LookupTest, Bf16AttentionGetsItsOwnList) {
   // Each architecture's bf16 list must stay distinct from its f16 list.
   for (StringRef arch : {"gfx942", "gfx1100", "gfx1201"}) {
     auto attentionBf16 = get(arch, bf16);
-    EXPECT_FALSE(attentionBf16.empty()) << "for " << arch;
-    EXPECT_FALSE(attentionBf16 == get(arch, f16)) << "for " << arch;
+    EXPECT_FALSE(attentionBf16.empty()) << "for " << arch.str();
+    EXPECT_FALSE(attentionBf16 == get(arch, f16)) << "for " << arch.str();
   }
 }
 
@@ -661,7 +681,8 @@ TEST(LookupTest, PerProblemHashNarrowsTheSetCover) {
   EXPECT_FALSE(perProblem.empty());
   EXPECT_LT(perProblem.size(), setCover.size());
   for (StringRef config : perProblem)
-    EXPECT_FALSE(llvm::is_contained(setCover, config)) << "for " << config;
+    EXPECT_FALSE(llvm::is_contained(setCover, config))
+        << "for " << config.str();
 }
 
 TEST(LookupTest, UnmappedProblemHashFallsThroughToTheSetCover) {

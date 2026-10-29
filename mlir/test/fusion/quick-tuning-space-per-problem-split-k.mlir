@@ -30,7 +30,7 @@
 
 // Disabling the per-problem layer selects the same no-split-K set cover without
 // trying to classify a per-problem key.
-// RUN: ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --emit-tuning-space=quick - \
+// RUN: env ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-driver -kernel-pipeline=migraphx,highlevel %s | env ROCMLIR_DISABLE_PER_PROBLEM_QUICK_TUNING=1 rocmlir-gen --emit-tuning-space=quick - \
 // RUN:   | FileCheck %s --check-prefix=SPACE-SET-COVER \
 // RUN:       --implicit-check-not='splitKFactor={{([2-9]|[1-9][0-9]+)}}'
 // SPACE-SET-COVER: gemm:mPerBlock=256,nPerBlock=128,kPerBlock=16,kpack=1,numCTAs=1,numWaves=4,matrixInstrNonkdim=16,splitKFactor=1,numStages=2,

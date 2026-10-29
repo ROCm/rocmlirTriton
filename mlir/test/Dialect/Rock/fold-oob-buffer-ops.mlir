@@ -34,7 +34,7 @@ llvm.func @plain_sentinel_magnitude_fact(%ptr: !llvm.ptr<1>, %data: i32) attribu
   %row = llvm.urem %tid, %ten : i32
   %pred = llvm.icmp "uge" %row, %ten : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -65,7 +65,7 @@ llvm.func @plain_sentinel_bit_fact(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %swizzled = llvm.xor %base, %two : i32
   %pred = llvm.icmp "ult" %swizzled, %one : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -94,7 +94,7 @@ llvm.func @readfirstlane_keeps_magnitude_fact(%ptr: !llvm.ptr<1>, %data: i32) at
   %uniform = rocdl.readfirstlane %row : i32
   %pred = llvm.icmp "uge" %uniform, %ten : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -124,7 +124,7 @@ llvm.func @readfirstlane_keeps_bit_fact(%ptr: !llvm.ptr<1>, %data: i32) attribut
   %uniform = rocdl.readfirstlane %swizzled : i32
   %pred = llvm.icmp "ult" %uniform, %one : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -154,7 +154,7 @@ llvm.func @readlane_keeps_the_descriptor_bound(%ptr: !llvm.ptr<1>, %data: i32) a
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -186,7 +186,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32}
     %tid = rocdl.workitem.id.x : i32
     %pred = llvm.icmp "uge" %tid, %blockSize : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -215,7 +215,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 8 : i32,
     %tid = rocdl.workitem.id.x : i32
     %pred = llvm.icmp "uge" %tid, %half : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -245,7 +245,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32}
     %wave = rocdl.wave.id : i32
     %pred = llvm.icmp "uge" %wave, %warps : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -273,7 +273,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 8 : i32,
     %wave = rocdl.wave.id : i32
     %pred = llvm.icmp "uge" %wave, %base : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -301,7 +301,7 @@ module attributes {"ttg.num-warps" = 8 : i32, "ttg.threads-per-warp" = 32 : i32}
     %wave = rocdl.wave.id range <i32, 0, 2> : i32
     %pred = llvm.icmp "uge" %wave, %two : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -335,7 +335,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32}
     %uniform = rocdl.readfirstlane %wave : i32
     %pred = llvm.icmp "uge" %uniform, %warps : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -360,7 +360,7 @@ llvm.func @missing_warp_metadata_declines(%ptr: !llvm.ptr<1>, %data: i32) attrib
   %tid = rocdl.workitem.id.x : i32
   %pred = llvm.icmp "uge" %tid, %blockSize : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -387,7 +387,7 @@ module attributes {"ttg.num-ctas" = 2 : i32,
     %wg = rocdl.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %wg, %gridSize : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -415,7 +415,7 @@ module attributes {"ttg.num-ctas" = 2 : i32,
     %wg = rocdl.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %wg, %programs : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -443,7 +443,7 @@ module attributes {"ttg.num-ctas" = 2 : i32,
     %cluster = rocdl.cluster.id.x : i32
     %pred = llvm.icmp "uge" %cluster, %programs : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -470,7 +470,7 @@ module attributes {"ttg.num-ctas" = 2 : i32} {
     %rank = rocdl.cluster.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %rank, %ctas : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -496,7 +496,7 @@ module attributes {rock.grid_size.missing_num_ctas_declines = 4 : i32} {
     %wg = rocdl.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %wg, %programs : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -524,7 +524,7 @@ module attributes {"ttg.num-ctas" = 1 : i32,
     %wg = rocdl.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %wg, %funcGrid : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -550,7 +550,7 @@ module attributes {"ttg.num-ctas" = 1 : i32} {
     %wg = rocdl.workgroup.id.x : i32
     %pred = llvm.icmp "uge" %wg, %programs : i32
     %voffset = llvm.select %pred, %offset, %oob : i1, i32
-    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+    rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
     llvm.return
   }
 }
@@ -585,7 +585,7 @@ llvm.func @split_soffset_sentinel(%ptr: !llvm.ptr<1>, %data: i32, %uniform: i32)
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -613,7 +613,7 @@ llvm.func @load_folds_to_zero(%ptr: !llvm.ptr<1>) -> vector<4xf32> attributes {r
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  %loaded = rocdl.raw.ptr.buffer.load %rsrc, %voffset, %zero, %zero : vector<4xf32>
+  %loaded = rocdl.raw.ptr.buffer.load %rsrc, %voffset, %zero, 0 : vector<4xf32>
   llvm.return %loaded : vector<4xf32>
 }
 
@@ -640,7 +640,7 @@ llvm.func @small_num_records_folds(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -666,7 +666,7 @@ llvm.func @num_records_beyond_offset_space_declines(%ptr: !llvm.ptr<1>, %data: i
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -721,7 +721,7 @@ llvm.func @unread_atomic_cmpswap_erased(%ptr: !llvm.ptr<1>, %val: i32, %cmp: i32
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  %old = rocdl.raw.ptr.buffer.atomic.cmpswap %val, %cmp, %rsrc, %voffset, %zero, %zero : i32
+  %old = rocdl.raw.ptr.buffer.atomic.cmpswap %val, %cmp, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -749,7 +749,7 @@ llvm.func @unread_atomic_fmax_erased(%ptr: !llvm.ptr<1>, %data: f32) attributes 
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.atomic.fmax %data, %rsrc, %voffset, %zero, %zero : f32
+  rocdl.raw.ptr.buffer.atomic.fmax %data, %rsrc, %voffset, %zero, 0 : f32
   llvm.return
 }
 
@@ -801,7 +801,7 @@ llvm.func @read_atomic_cmpswap_declines(%ptr: !llvm.ptr<1>, %val: i32, %cmp: i32
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  %old = rocdl.raw.ptr.buffer.atomic.cmpswap %val, %cmp, %rsrc, %voffset, %zero, %zero : i32
+  %old = rocdl.raw.ptr.buffer.atomic.cmpswap %val, %cmp, %rsrc, %voffset, %zero, 0 : i32
   llvm.return %old : i32
 }
 
@@ -823,7 +823,7 @@ llvm.func @live_predicate_declines(%ptr: !llvm.ptr<1>, %data: i32, %bound: i32) 
   %tid = rocdl.workitem.id.x : i32
   %pred = llvm.icmp "uge" %tid, %bound : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -849,7 +849,7 @@ llvm.func @nonzero_stride_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -875,7 +875,7 @@ llvm.func @wrong_sentinel_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %inBounds : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -903,7 +903,7 @@ llvm.func @plain_sentinel_runtime_soffset_declines(%ptr: !llvm.ptr<1>, %data: i3
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -935,7 +935,7 @@ llvm.func @split_soffset_without_sge_guard_declines(%ptr: !llvm.ptr<1>, %data: i
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -968,7 +968,7 @@ llvm.func @split_soffset_mismatched_negation_declines(%ptr: !llvm.ptr<1>, %data:
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -1003,7 +1003,7 @@ llvm.func @split_soffset_unshared_condition_declines(%ptr: !llvm.ptr<1>, %data: 
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -1036,7 +1036,7 @@ llvm.func @split_soffset_in_bounds_fallback_declines(%ptr: !llvm.ptr<1>, %data: 
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -1071,7 +1071,7 @@ llvm.func @split_soffset_num_records_past_split_declines(%ptr: !llvm.ptr<1>, %da
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }
 
@@ -1097,7 +1097,7 @@ llvm.func @oob_select_none_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1125,7 +1125,7 @@ llvm.func @cdna_flags_fold(%ptr: !llvm.ptr<1>, %data: i32) attributes {rock.arch
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1151,7 +1151,7 @@ llvm.func @tid_enable_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {rock.
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1178,7 +1178,7 @@ llvm.func @gfx1250_flags_fold(%ptr: !llvm.ptr<1>, %data: i32) attributes {rock.a
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1205,7 +1205,7 @@ llvm.func @gfx1250_swizzle_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1231,7 +1231,7 @@ llvm.func @dynamic_bound_declines(%ptr: !llvm.ptr<1>, %data: i32, %n: i64) attri
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1262,7 +1262,7 @@ llvm.func @dynamic_bounded_numrecords_folds(%ptr: !llvm.ptr<1>, %data: i32, %n16
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1288,7 +1288,7 @@ llvm.func @loaded_bound_declines(%ptr: !llvm.ptr<1>, %data: i32, %nptr: !llvm.pt
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1321,7 +1321,7 @@ llvm.func @loaded_then_narrowed_folds(%ptr: !llvm.ptr<1>, %data: i32, %nptr: !ll
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1347,7 +1347,7 @@ llvm.func @zero_num_records_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes 
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1374,7 +1374,7 @@ llvm.func @all_ones_num_records_declines(%ptr: !llvm.ptr<1>, %data: i32) attribu
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1398,7 +1398,7 @@ llvm.func @gfx1310_declines_no_modelled_descriptor(%ptr: !llvm.ptr<1>, %data: i3
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1430,7 +1430,7 @@ llvm.func @narrow_num_records_sign_extends(%ptr: !llvm.ptr<1>, %data: i32) attri
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1459,7 +1459,7 @@ llvm.func @narrow_oob_offset_sign_extends(%ptr: !llvm.ptr<1>, %data: i32) attrib
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1486,7 +1486,7 @@ llvm.func @boolean_offset_zero_extends(%ptr: !llvm.ptr<1>, %data: i32) attribute
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1513,7 +1513,7 @@ llvm.func @dynamic_range_including_zero_declines(%ptr: !llvm.ptr<1>, %data: i32,
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.return
 }
 
@@ -1531,7 +1531,6 @@ llvm.func @volatile_store_survives(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1> to <8>
 
   %zero = llvm.mlir.constant(0 : i32) : i32
-  %volatile = llvm.mlir.constant(-2147483648 : i32) : i32
   %four = llvm.mlir.constant(4 : i32) : i32
   %sixteen = llvm.mlir.constant(16 : i32) : i32
   %oob = llvm.mlir.constant(-2147483648 : i32) : i32
@@ -1541,7 +1540,7 @@ llvm.func @volatile_store_survives(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %volatile : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, pre_gfx12<volatile> : i32
   llvm.return
 }
 
@@ -1557,7 +1556,6 @@ llvm.func @volatile_load_survives(%ptr: !llvm.ptr<1>) -> i32 attributes {rock.ar
   %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1> to <8>
 
   %zero = llvm.mlir.constant(0 : i32) : i32
-  %volatile = llvm.mlir.constant(-2147483648 : i32) : i32
   %four = llvm.mlir.constant(4 : i32) : i32
   %sixteen = llvm.mlir.constant(16 : i32) : i32
   %oob = llvm.mlir.constant(-2147483648 : i32) : i32
@@ -1567,7 +1565,7 @@ llvm.func @volatile_load_survives(%ptr: !llvm.ptr<1>) -> i32 attributes {rock.ar
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  %data = rocdl.raw.ptr.buffer.load %rsrc, %voffset, %zero, %volatile : i32
+  %data = rocdl.raw.ptr.buffer.load %rsrc, %voffset, %zero, pre_gfx12<volatile> : i32
   llvm.return %data : i32
 }
 
@@ -1599,7 +1597,7 @@ llvm.func @conditional_block_folds(%ptr: !llvm.ptr<1>, %data: i32, %cond: i1) at
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.br ^exit
 
 ^exit:
@@ -1631,7 +1629,7 @@ llvm.func @unreachable_block_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, %zero : i32
+  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %zero, 0 : i32
   llvm.br ^live
 
 ^live:
@@ -1660,6 +1658,6 @@ llvm.func @load_async_lds_survives(%ptr: !llvm.ptr<1>, %lds: !llvm.ptr<3>) attri
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.load.async.lds %rsrc, %lds, %four, %voffset, %zero, %zero, %zero
+  rocdl.raw.ptr.buffer.load.async.lds %rsrc, %lds, %four, %voffset, %zero, %zero, 0
   llvm.return
 }

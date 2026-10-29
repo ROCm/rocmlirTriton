@@ -1,24 +1,74 @@
-message(STATUS "Adding Triton src dependency")
+#===----------------------------------------------------------------------===//
+# Fetch LLVM/MLIR and Triton sources
+#
+# Instead of vendoring external/llvm-project and external/triton in-tree, we
+# download them with FetchContent. Both upstreams already carry our required
+# downstream patches on the pinned branches below, so there is nothing to patch
+# at configure time.
+#
+# We only *download* here (SOURCE_SUBDIR points at a directory with no
+# CMakeLists.txt, which makes FetchContent_MakeAvailable skip the automatic
+# add_subdirectory). The actual add_subdirectory() calls happen further down:
+# LLVM is added from its llvm/ subdirectory (not the repo root) and Triton is
+# added only after a block of cache variables has been configured in between.
+#===----------------------------------------------------------------------===//
+
+include(FetchContent)
+
+set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
+    CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
+set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-10-19"
+    CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
+set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
+    CACHE STRING "Git repository for the Triton sources")
+set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-10-19"
+    CACHE STRING "Git branch/tag/commit for the Triton sources")
+
+message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}")
+message(STATUS "Fetching Triton:    ${ROCMLIR_TRITON_GIT_REPOSITORY}@${ROCMLIR_TRITON_GIT_BRANCH}")
+
+FetchContent_Declare(
+  rocmlir_llvm_project
+  URL "${ROCMLIR_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_LLVM_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_LLVM_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_LLVM_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
+  # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
+  SOURCE_SUBDIR do-not-auto-add)
+
+FetchContent_Declare(
+  rocmlir_triton
+  URL "${ROCMLIR_TRITON_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_TRITON_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_TRITON_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_TRITON_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
+  # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
+  SOURCE_SUBDIR do-not-auto-add)
+
+FetchContent_MakeAvailable(rocmlir_llvm_project rocmlir_triton)
 
 #===----------------------------------------------------------------------===//
 # Paths for building rocmlirTriton
 #===----------------------------------------------------------------------===//
 
-set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
+set(ROCMLIR_LLVM_PROJECT_DIR "${rocmlir_llvm_project_SOURCE_DIR}")
+set(TRITON_PROJECT_DIR "${rocmlir_triton_SOURCE_DIR}")
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(ROCMLIR_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
 
-# external/llvm-project and external/triton are vendored directly in this repo
-# (imported via git subtree) with our downstream patches committed on top, so
-# there are no submodules to initialize and nothing to patch at configure time.
-# The patch files are kept under llvm-patches/ and triton-patches/ for
-# provenance and to ease the next upstream bump.
+# Keep the *_EXTERNAL_SRC_DIR variables (set in the top-level CMakeLists before
+# this file is included) pointing at the fetched sources so downstream CMake
+# (e.g. mlir/lib/Translation/TritonToHsaco, mlir/CMakeLists.txt gtest lookup)
+# finds lld/third-party headers.
+set(LLVM_EXTERNAL_SRC_DIR "${ROCMLIR_LLVM_PROJECT_DIR}")
+set(TRITON_EXTERNAL_SRC_DIR "${TRITON_PROJECT_DIR}")
 
 #===----------------------------------------------------------------------===//
 # LLVM/MLIR (in-tree)
 #
-# LLVM/MLIR is always built from the vendored external/llvm-project tree as
-# part of this same CMake build via add_subdirectory.
+# LLVM/MLIR is always built from the fetched llvm-project tree as part of this
+# same CMake build via add_subdirectory.
 #
 # We manually populate the MLIR_*/LLVM_* discovery variables that
 # find_package(MLIR) would normally set, so that Triton's CMake (which we
@@ -28,14 +78,12 @@ set(ROCMLIR_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project"
 
 if(NOT EXISTS "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt")
   message(FATAL_ERROR
-    "external/llvm-project/llvm/CMakeLists.txt is missing.\n"
+    "${ROCMLIR_LLVM_PROJECT_DIR}/llvm/CMakeLists.txt is missing.\n"
     "\n"
-    "external/llvm-project is vendored via git subtree and should always be "
-    "present in a normal checkout; if it is missing the working tree is "
-    "incomplete.\n")
+    "The llvm-project sources are fetched via FetchContent from "
+	"${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}; if this file is "
+    "missing the download is incomplete or the pin is wrong.\n")
 endif()
-
-message(STATUS "Adding Triton-pinned LLVM/MLIR (external/llvm-project) src dependency")
 
 # LLVM/MLIR build flags. Must be set BEFORE add_subdirectory so they take
 # effect when LLVM processes its own CMakeLists.txt.
@@ -102,6 +150,22 @@ endif()
 add_subdirectory("${ROCMLIR_LLVM_PROJECT_DIR}/llvm"
                  "external/llvm-project/llvm"
                  EXCLUDE_FROM_ALL)
+
+# The Rock unittests (mlir/unittests, built when MLIR_INCLUDE_TESTS is ON) link
+# llvm_gtest / llvm_gtest_main. LLVM only creates those targets inside its own
+# tree when LLVM_INCLUDE_TESTS is ON, but this project is configured with
+# -DLLVM_INCLUDE_TESTS=OFF (see build_cmd.txt). Add LLVM's third-party gtest
+# subdirectory here, in the top-level directory scope, so gtest compiles with
+# LLVM's own flags rather than inheriting the strict -Werror/-Wundef/-Wshadow
+# options that mlir/ adds to its subtree (which gtest's bundled headers trip).
+if(MLIR_INCLUDE_TESTS AND NOT TARGET llvm_gtest)
+  set(_rocmlir_gtest_third_party "${ROCMLIR_LLVM_PROJECT_DIR}/third-party")
+  if(EXISTS "${_rocmlir_gtest_third_party}/unittest/googletest/include/gtest/gtest.h")
+    add_subdirectory("${_rocmlir_gtest_third_party}/unittest"
+                     "${CMAKE_BINARY_DIR}/third-party/unittest"
+                     EXCLUDE_FROM_ALL)
+  endif()
+endif()
 
 # MLIR writes its build-tree config files to ${CMAKE_BINARY_DIR} (top-level),
 # not to its own per-directory binary dir. See
@@ -450,4 +514,3 @@ function(rocmlir_add_triton_includes target)
     target_include_directories(obj.${target} SYSTEM PRIVATE ${TRITON_INCLUDE_DIRS})
   endif()
 endfunction(rocmlir_add_triton_includes)
-

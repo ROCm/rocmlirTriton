@@ -3,17 +3,17 @@
 //
 // RUN: rocmlir-opt %s -split-input-file -verify-diagnostics
 
-// COM: rocmlirTriton, unlike the rocMLIR it was forked from, works on tensors
-// COM: throughout. Every Rock op must reject a memref operand or result, so
-// COM: that nothing can build a buffer-level Rock program by accident.
-// COM:
-// COM: The custom assembly formats reject the type while parsing. The generic
-// COM: form (and any op built from C++) skips the parser, so it is exercised
-// COM: too: there the operand/result constraint of the op is what fires.
+// rocmlirTriton, unlike the rocMLIR it was forked from, works on tensors
+// throughout. Every Rock op must reject a memref operand or result, so
+// that nothing can build a buffer-level Rock program by accident.
+// 
+// The custom assembly formats reject the type while parsing. The generic
+// form (and any op built from C++) skips the parser, so it is exercised
+// too: there the operand/result constraint of the op is what fires.
 
 // -----
 
-// COM: rock.transform used to take any shaped type, memrefs included.
+// rock.transform used to take any shaped type, memrefs included.
 func.func @transform_memref_input(%arg0: memref<64xf32>) {
   // expected-error @+1 {{invalid kind of type specified: expected builtin.tensor, but found 'memref<64xf32>'}}
   %0 = rock.transform %arg0 by <affine_map<(d0) -> (d0)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>] bounds = [64] -> [64]> : memref<64xf32> to tensor<64xf32>
@@ -38,8 +38,8 @@ func.func @transform_memref_input_and_result(%arg0: memref<4x16xf32>) {
 
 // -----
 
-// COM: An unranked tensor is not a ranked one: the verifier and the type
-// COM: inference both need the shape.
+// An unranked tensor is not a ranked one: the verifier and the type
+// inference both need the shape.
 func.func @transform_unranked_input(%arg0: tensor<*xf32>) {
   // expected-error @+1 {{invalid kind of type specified: expected builtin.tensor, but found 'tensor<*xf32>'}}
   %0 = rock.transform %arg0 by <affine_map<(d0) -> (d0)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>] bounds = [64] -> [64]> : tensor<*xf32> to tensor<64xf32>
@@ -48,9 +48,9 @@ func.func @transform_unranked_input(%arg0: tensor<*xf32>) {
 
 // -----
 
-// COM: Generic form: no custom parser in the way, so the ODS constraints speak.
+// Generic form: no custom parser in the way, so the ODS constraints speak.
 func.func @transform_generic_memref_input(%arg0: memref<64xf32>) {
-  // expected-error @+1 {{'rock.transform' op operand #0 must be ranked tensor of any type values, but got 'memref<64xf32>'}}
+  // expected-error @+1 {{'rock.transform' op operand #0 must be ranked tensor of any non-token type values, but got 'memref<64xf32>'}}
   %0 = "rock.transform"(%arg0) <{transform = #rock.transform_map<affine_map<(d0) -> (d0)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>] bounds = [64] -> [64]>}> : (memref<64xf32>) -> tensor<64xf32>
   return
 }
@@ -58,7 +58,7 @@ func.func @transform_generic_memref_input(%arg0: memref<64xf32>) {
 // -----
 
 func.func @transform_generic_memref_result(%arg0: tensor<64xf32>) {
-  // expected-error @+1 {{'rock.transform' op result #0 must be ranked tensor of any type values, but got 'memref<64xf32>'}}
+  // expected-error @+1 {{'rock.transform' op result #0 must be ranked tensor of any non-token type values, but got 'memref<64xf32>'}}
   %0 = "rock.transform"(%arg0) <{transform = #rock.transform_map<affine_map<(d0) -> (d0)> by [<PassThrough ["a"] at [0] -> ["a"] at [0]>] bounds = [64] -> [64]>}> : (tensor<64xf32>) -> memref<64xf32>
   return
 }

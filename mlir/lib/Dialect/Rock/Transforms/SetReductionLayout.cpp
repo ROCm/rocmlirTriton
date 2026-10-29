@@ -270,15 +270,106 @@ bool rewriteGatherLoad(
     }
   }
 
+  // A tt.broadcast in the scope reads a source whose blocked layout matches the
+  // (retyped) result everywhere except along the broadcast dim, where its
+  // sizePerThread is smaller -- broadcasting is what fills in those registers.
+  // Redistributing warps on the result alone would leave source and result
+  // disagreeing on a non-broadcast dim and trip tt.broadcast's "matching
+  // layouts up to broadcasting" verifier. Build a per-layout remap that moves
+  // each such source onto the same reduction dim while keeping its own
+  // sizePerThread/threadsPerWarp, so source and result stay in step. The anchor
+  // old->new pair (and its #linear partner) seed the map.
+  auto redistributeWarps = [&](triton::gpu::BlockedEncodingAttr enc)
+      -> triton::gpu::BlockedEncodingAttr {
+    SmallVector<unsigned> spt(enc.getSizePerThread());
+    SmallVector<unsigned> tpw(enc.getThreadsPerWarp());
+    SmallVector<unsigned> wpc(enc.getWarpsPerCTA());
+    SmallVector<unsigned> ord(enc.getOrder());
+    unsigned total = 1;
+    for (unsigned w : wpc)
+      total *= w;
+    for (unsigned i = 0; i < wpc.size(); ++i)
+      wpc[i] = (i == kDim) ? total : 1u;
+    return triton::gpu::BlockedEncodingAttr::get(ctx, spt, tpw, wpc, ord,
+                                                 enc.getCGALayout());
+  };
+
+  llvm::MapVector<Attribute, Attribute> layoutRemap;
+  layoutRemap[oldBlocked] = newBlocked;
+  layoutRemap[oldLinear] = newLinear;
+  // A broadcast's source is pulled in only once its (pre-rewrite) result
+  // encoding is already slated for remapping; redistribute that source's warps
+  // the same way. Iterate to a fixpoint so chained broadcasts are covered.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (Operation *op : scope) {
+      auto bcast = dyn_cast<triton::BroadcastOp>(op);
+      if (!bcast)
+        continue;
+      auto resTy = dyn_cast<RankedTensorType>(bcast.getType());
+      if (!resTy || !layoutRemap.count(resTy.getEncoding()))
+        continue;
+      auto srcTy = dyn_cast<RankedTensorType>(bcast.getSrc().getType());
+      if (!srcTy)
+        continue;
+      auto srcEnc =
+          dyn_cast<triton::gpu::BlockedEncodingAttr>(srcTy.getEncoding());
+      if (!srcEnc || layoutRemap.count(srcEnc))
+        continue;
+      layoutRemap[srcEnc] = redistributeWarps(srcEnc);
+      changed = true;
+    }
+  }
+
   AttrTypeReplacer replacer;
-  replacer.addReplacement([oldBlocked, newBlocked, oldLinear, newLinear](
-                              Attribute attr) -> std::optional<Attribute> {
-    if (attr == oldBlocked)
-      return Attribute(newBlocked);
-    if (attr == oldLinear)
-      return newLinear;
-    return std::nullopt;
-  });
+  replacer.addReplacement(
+      [&layoutRemap](Attribute attr) -> std::optional<Attribute> {
+        auto it = layoutRemap.find(attr);
+        if (it != layoutRemap.end())
+          return it->second;
+        return std::nullopt;
+      });
+
+  // Multi-use conflict guard for tt.broadcast. Retyping a broadcast's source
+  // alongside its result keeps them in step only when the reduction dim is the
+  // broadcast dim (the size-1 source just broadcasts). When the reduction dim
+  // is a non-broadcast dim, source and result must agree there exactly, which a
+  // warp redistribution cannot achieve if they carry different sizePerThread
+  // (a register/non-pow2 tiling difference). The same value can also feed two
+  // broadcasts whose results demand different source layouts, so no single
+  // encoding substitution satisfies both. Both show up as a broadcast whose
+  // remapped operand/result encodings no longer form a legal broadcast; detect
+  // that with the dialect's own verifier and bail rather than emit invalid IR.
+  for (Operation *op : scope) {
+    auto bcast = dyn_cast<triton::BroadcastOp>(op);
+    if (!bcast)
+      continue;
+    auto srcTy = dyn_cast<RankedTensorType>(bcast.getSrc().getType());
+    auto resTy = dyn_cast<RankedTensorType>(bcast.getType());
+    if (!srcTy || !resTy)
+      continue;
+    auto newSrcTy = cast<RankedTensorType>(replacer.replace(srcTy));
+    auto newResTy = cast<RankedTensorType>(replacer.replace(resTy));
+    // Nothing moved for this broadcast, so it stays as valid as it was.
+    if (newSrcTy == srcTy && newResTy == resTy)
+      continue;
+    Attribute newSrcEnc = newSrcTy.getEncoding();
+    Attribute newResEnc = newResTy.getEncoding();
+    if (!newSrcEnc || !newResEnc)
+      continue;
+    auto iface =
+        dyn_cast<triton::DialectInferLayoutInterface>(&newSrcEnc.getDialect());
+    if (iface &&
+        succeeded(iface->verifyBroadcastOpEncoding(newSrcTy, newResTy)))
+      continue;
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "rock-set-reduction-layout: redistributed layout would make a "
+           "tt.broadcast's source and result disagree (reduction dim is "
+           "a non-broadcast dim, or the source feeds conflicting "
+           "broadcasts); skipping\n");
+    return false;
+  }
 
   // Correctness guard against shared producers. The in-place rewrite changes
   // the type seen by every consumer of a scoped op's result, so bail unless

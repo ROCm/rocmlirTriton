@@ -145,7 +145,7 @@
 // return an empty set, so the blacklisted config reappears -- this is what lets
 // generateLDSBlacklist.py enumerate the *unfiltered* space to (re)generate the
 // table idempotently.
-// RUN: ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
+// RUN: env ROCMLIR_DISABLE_LDS_BLACKLIST=1 rocmlir-gen --arch gfx950 --operation=gemm -t f32 -g 1 -m 16 -k 512 -n 256 --num_cu=256 --emit-tuning-space=exhaustive 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-LDS-NOBLACKLIST
 // CHECK-LDS-NOBLACKLIST: gemm:mPerBlock=16,nPerBlock=256,kPerBlock=512,kpack=1,numCTAs=1,numWaves=1,matrixInstrNonkdim=16,splitKFactor=1,numStages=3,wavesPerEU=0,gridGroupSize=0,useAsyncCopy=-1,useBlockPingpong=-1,useInThreadTranspose=-1,useBufferOps=-1,useBufferAtomics=-1,useReductionLayout=-1,useOptimizeEpilogue=-1,useBf16x3ForF32=-1
 

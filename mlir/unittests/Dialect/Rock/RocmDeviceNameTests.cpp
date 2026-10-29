@@ -47,6 +47,28 @@ TEST(RocmDeviceNameTest, ParseTripleAndFeatures) {
   EXPECT_EQ(dev.getFeatures().size(), 2u);
 }
 
+// The MI450 A0 and B0 code paths are separated by target name: A0 builds as
+// gfx1250-strict, B0 as gfx1250, and a strict code object is not loadable on
+// B0. The "-strict" suffix is therefore part of the chip name and must survive
+// parsing, including when a triple is present -- the triple is also '-'
+// separated, so splitting it must not eat the suffix.
+TEST(RocmDeviceNameTest, ParseStrictChip) {
+  RocmDeviceName dev;
+  ASSERT_TRUE(succeeded(dev.parse("gfx1250-strict")));
+  EXPECT_EQ(dev.getChip(), "gfx1250-strict");
+  EXPECT_EQ(dev.getTriple(), "amdgcn-amd-amdhsa");
+  EXPECT_TRUE(dev.getFeatures().empty());
+}
+
+TEST(RocmDeviceNameTest, ParseStrictChipWithTripleAndFeatures) {
+  RocmDeviceName dev;
+  ASSERT_TRUE(succeeded(dev.parse("amdgcn-amd-amdhsa:gfx1250-strict:xnack-")));
+  EXPECT_EQ(dev.getTriple(), "amdgcn-amd-amdhsa");
+  EXPECT_EQ(dev.getChip(), "gfx1250-strict");
+  ASSERT_EQ(dev.getFeatures().size(), 1u);
+  EXPECT_FALSE(dev.getFeatures().lookup("xnack"));
+}
+
 TEST(RocmDeviceNameTest, ParseEmptyStringFails) {
   RocmDeviceName dev;
   EXPECT_TRUE(failed(dev.parse("")));

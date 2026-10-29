@@ -48,17 +48,13 @@ import amd_arch_db  # noqa: E402
 # follow from the family: gfx906 buckets as ``'cdna'`` yet ``is_cdna`` is
 # False, which is the whole reason the bucket is keyed on ``is_rdna``.
 FAMILY_CASES = [
-    ("gcn5_1", "gfx906", 'cdna', False),  # in neither isCDNA nor isRDNA
-    ("cdna1", "gfx908", 'cdna', True),
     ("cdna2", "gfx90a", 'cdna', True),
     ("cdna3", "gfx942", 'cdna', True),
     ("cdna4", "gfx950", 'cdna', True),
-    ("rdna1", "gfx1010", 'rdna', False),
-    ("rdna2", "gfx1030", 'rdna', False),
     ("rdna3", "gfx1100", 'rdna', False),
-    ("gfx1170", "gfx1170", 'rdna', False),
+    ("rdna4m", "gfx1170", 'rdna', False),
     ("rdna4", "gfx1201", 'rdna', False),
-    ("gfx1250", "gfx1250", 'cdna', True),
+    ("cdna5", "gfx1250", 'cdna', True),
     # Decorated arch strings: HIP gcnArchName and the LLVM triple.
     ("cdna4 hip", "gfx950:sramecc+:xnack-", 'cdna', True),
     ("rdna4 llvm-triple", "amdgcn-amd-amdhsa:gfx1201", 'rdna', False),
@@ -66,18 +62,16 @@ FAMILY_CASES = [
 
 # (label, dtype, arch, expected_alpha). fp8 is amplified on the WMMA-era RDNA
 # line only, which the amplifier spells as "RDNA minus RDNA1/RDNA2" so a future
-# RDNA family needs no edit. gfx1030 pins that subtraction; gfx1250 pins the
-# other edge, since it runs WMMA but is CDNA and so stays at 1.
+# RDNA family needs no edit. gfx1250 pins the other edge,
+# since it runs WMMA but is CDNA and so stays at 1.
 AMPLIFIER_CASES = [
     ("f16 anywhere", "f16", "gfx1100", 1),
     ("fp8 cdna3", "fp8", "gfx942", 1),
     ("fp8 cdna4", "fp8", "gfx950", 1),
-    ("fp8 rdna1", "fp8", "gfx1010", 1),
-    ("fp8 rdna2", "fp8", "gfx1030", 1),
     ("fp8 rdna3", "fp8", "gfx1100", 10),
-    ("fp8 gfx1170", "fp8", "gfx1170", 10),
+    ("fp8 rdna4m", "fp8", "gfx1170", 10),
     ("fp8 rdna4", "fp8", "gfx1201", 10),
-    ("fp8 gfx1250", "fp8", "gfx1250", 1),
+    ("fp8 cdna5", "fp8", "gfx1250", 1),
 ]
 
 # Budget and timeout rate per family, keyed off _arch_family's answer.
@@ -110,27 +104,21 @@ for label, dtype, arch, expected in AMPLIFIER_CASES:
     print(f"[{status}] {label:18} arch={arch!r:34} expected=alpha{expected} got=alpha{got}")
 
 # CHECK lines run in order, so they also pin the iteration order of the cases.
-# CHECK: [OK] gcn5_1
-# CHECK: [OK] cdna1
 # CHECK: [OK] cdna2
 # CHECK: [OK] cdna3
 # CHECK: [OK] cdna4
-# CHECK: [OK] rdna1
-# CHECK: [OK] rdna2
 # CHECK: [OK] rdna3
-# CHECK: [OK] gfx1170
+# CHECK: [OK] rdna4m
 # CHECK: [OK] rdna4
-# CHECK: [OK] gfx1250
+# CHECK: [OK] cdna5
 # CHECK: [OK] cdna4 hip
 # CHECK: [OK] rdna4 llvm-triple
 # CHECK: [OK] f16 anywhere
 # CHECK: [OK] fp8 cdna3
 # CHECK: [OK] fp8 cdna4
-# CHECK: [OK] fp8 rdna1
-# CHECK: [OK] fp8 rdna2
 # CHECK: [OK] fp8 rdna3
-# CHECK: [OK] fp8 gfx1170
+# CHECK: [OK] fp8 rdna4m
 # CHECK: [OK] fp8 rdna4
-# CHECK: [OK] fp8 gfx1250
+# CHECK: [OK] fp8 cdna5
 
 sys.exit(0 if ok else 1)
