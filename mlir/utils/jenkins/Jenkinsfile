@@ -358,22 +358,43 @@ Map<String,String> dockerArgs() {
     echo "Getting Docker args from ${env.NODE_NAME}..."
     def run = { cmd -> sh(script: cmd, returnStdout: true).trim() }
     // discover devices
-    String renderFlags = run("ls -1 /dev/dri/renderD* 2>/dev/null || true")
+    List<String> renderNodes = run("ls -1 /dev/dri/renderD* 2>/dev/null || true")
                        .split()
-                       .collect { "--device=${it}" }
-                       .join(' ')
+                       .findAll { it?.trim() }
+                       .toList()
+    String renderFlags = renderNodes.collect { "--device=${it}" }.join(' ')
     // /dev/kfd appears only on GPU-enabled nodes
     boolean haveKfd = sh(script: '[ -e /dev/kfd ]', returnStatus: true) == 0
     String kfdFlg = haveKfd ? '--device=/dev/kfd' : ''
 
-    // Get the GIDs of the render and video groups
-    String renderGid = run("getent group render | cut -d':' -f3")
-    String videoGid = run("getent group video | cut -d':' -f3")
+    // render/video cover a normal host, where those groups own the devices.
+    // Also add the gid that actually owns each node. On some k8s agents
+    // /dev/kfd is a numeric gid (for example 993) while getent render/video
+    // still returns 109/44, so the container cannot open the device.
+    List<String> devicePaths = []
+    if (haveKfd) {
+        devicePaths << '/dev/kfd'
+    }
+    devicePaths.addAll(renderNodes)
+    List<String> gids = []
+    ['render', 'video'].each { group ->
+        String gid = run("getent group ${group} | cut -d':' -f3 || true")
+        if (gid && !gids.contains(gid)) {
+            gids << gid
+        }
+    }
+    devicePaths.each { path ->
+        String gid = run("stat -c %g '${path}'")
+        if (gid && !gids.contains(gid)) {
+            gids << gid
+        }
+    }
+    String groupFlags = gids.collect { "--group-add ${it}" }.join(' ')
 
     String args = """
         ${kfdFlg} \
         ${renderFlags} \
-        --group-add ${renderGid} --group-add ${videoGid}
+        ${groupFlags}
     """.trim().replaceAll(/\s+/, ' ')
 
     DOCKER_ARGS_BY_NODE[env.NODE_NAME] = args
