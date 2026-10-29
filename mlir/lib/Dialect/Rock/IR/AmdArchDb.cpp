@@ -15,6 +15,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/TypeUtilities.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
@@ -424,6 +425,91 @@ int64_t mlir::rock::inferNumChiplets(StringRef arch, int64_t numCUs) {
     return 1;
   }
   llvm_unreachable("unhandled ISAFamily in inferNumChiplets");
+}
+
+std::optional<ComputePartitionMode>
+mlir::rock::parseComputePartition(StringRef name) {
+  std::string upper = name.trim().upper();
+  int parsed = StringSwitch<int>(upper)
+                   .Case("SPX", static_cast<int>(ComputePartitionMode::SPX))
+                   .Case("DPX", static_cast<int>(ComputePartitionMode::DPX))
+                   .Case("TPX", static_cast<int>(ComputePartitionMode::TPX))
+                   .Case("QPX", static_cast<int>(ComputePartitionMode::QPX))
+                   .Case("CPX", static_cast<int>(ComputePartitionMode::CPX))
+                   .Default(-1);
+  if (parsed < 0)
+    return std::nullopt;
+  return static_cast<ComputePartitionMode>(parsed);
+}
+
+std::optional<ComputePartitionMode>
+mlir::rock::parseComputePartitionText(StringRef text) {
+  std::optional<ComputePartitionMode> found;
+  for (size_t i = 0, e = text.size(); i < e;) {
+    while (i < e && !llvm::isAlnum(text[i]))
+      ++i;
+    size_t start = i;
+    while (i < e && llvm::isAlnum(text[i]))
+      ++i;
+    if (start == i)
+      break;
+    std::optional<ComputePartitionMode> mode =
+        parseComputePartition(text.substr(start, i - start));
+    if (!mode)
+      continue;
+    if (found && *found != *mode)
+      return std::nullopt;
+    found = mode;
+  }
+  return found;
+}
+
+std::optional<int64_t>
+mlir::rock::numChipletsForPartition(StringRef arch,
+                                    ComputePartitionMode partition) {
+  auto [isaFamily, _] = getArch(arch);
+  // Per-device XCD count for a published mode. SPX is deliberately absent:
+  // it means "every XCD of this die", and the die size (MI300X 8 vs MI300A
+  // 6, or a harvested part) is not in the mode. Callers fall back to
+  // inferNumChiplets for that. gfx1250 has no published partition map.
+  if (isaFamily == ISAFamily::CDNA3) {
+    switch (partition) {
+    case ComputePartitionMode::DPX:
+      return 4; // MI300X/MI325X: two devices, 4 XCDs each
+    case ComputePartitionMode::TPX:
+      return 2; // MI300A: three devices, 2 XCDs each
+    case ComputePartitionMode::CPX:
+      return 1;
+    case ComputePartitionMode::SPX:
+    case ComputePartitionMode::QPX:
+      return std::nullopt;
+    }
+  }
+  if (isaFamily == ISAFamily::CDNA4) {
+    switch (partition) {
+    case ComputePartitionMode::DPX:
+      return 4;
+    case ComputePartitionMode::QPX:
+      return 2;
+    case ComputePartitionMode::CPX:
+      return 1;
+    case ComputePartitionMode::SPX:
+    case ComputePartitionMode::TPX:
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+int64_t
+mlir::rock::resolveNumChiplets(StringRef arch, int64_t numCUs,
+                               std::optional<ComputePartitionMode> partition) {
+  if (partition) {
+    if (std::optional<int64_t> fromPartition =
+            numChipletsForPartition(arch, *partition))
+      return *fromPartition;
+  }
+  return inferNumChiplets(arch, numCUs);
 }
 
 int64_t mlir::rock::getMinNumCU(StringRef arch) {
