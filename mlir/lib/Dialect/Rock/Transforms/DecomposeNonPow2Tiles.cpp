@@ -294,7 +294,7 @@ static LogicalResult processGridwiseGemm(GridwiseGemmOp gemm) {
         params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
         params.getUseBufferOps(), params.getUseBufferAtomics(),
         params.getUseReductionLayout(), params.getUseOptimizeEpilogue(),
-        params.getUseBf16x3ForF32());
+        params.getUseBf16x3ForF32(), params.getUseKTailPeeling());
   };
 
   SmallVector<Value> resultGrid;
