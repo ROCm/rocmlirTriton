@@ -1724,12 +1724,14 @@ struct GridwiseAttentionRewritePattern
 
         std::tie(maxRowDiffExp, sumRow, maxRow) =
             updateRowSum(rewriter, loc, softmaxSum, softmaxMax, sumRow, maxRow);
-      } else if (isCausal && !isPrefixCausal) {
-        // Causal gemm-gemm without softmax: zero out positions where the N
-        // (key) index is ahead of the M (query) index. Zero is the additive
-        // identity of the second gemm's accumulation, where softmax attention
-        // masks with -inf instead. Only the blocks crossing the diagonal have
-        // mixed validity; fully invalid blocks are skipped by the N loop.
+      } else if (isCausal) {
+        // Causal gemm-gemm without softmax (the verifier rejects prefixOffset
+        // without softmax, so this is never prefix-causal): zero out positions
+        // where the N (key) index is ahead of the M (query) index. Zero is the
+        // additive identity of the second gemm's accumulation, where softmax
+        // attention masks with -inf instead. Only the blocks crossing the
+        // diagonal have mixed validity; fully invalid blocks are skipped by
+        // the N loop.
         ArrayRef<int64_t> lowerShape = getLowerShape(gemm0OutTileViewUnPadded);
         assert(lowerShape.size() == 3);
         Value fakeTensorM =

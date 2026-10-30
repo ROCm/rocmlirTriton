@@ -1585,9 +1585,9 @@ static LogicalResult isConstantRange(TypedValue<TensorType> input,
 
   rangeResult = rangeConstantResult.value();
 
-  auto shapedType = dyn_cast<ShapedType>(rangeResult.getType());
-  if (!shapedType)
-    return failure();
+  // isConstRange only accepts elements-backed constants, whose type is
+  // always shaped.
+  auto shapedType = cast<ShapedType>(rangeResult.getType());
 
   auto shape = shapedType.getShape();
   if (nonOneDimFromEnd >= shape.size())
@@ -1685,6 +1685,22 @@ getCausalZeroSelect(Value input) {
   return std::make_pair(select, scores);
 }
 
+// True when every value from `input` down to (but not including) the select's
+// result has exactly one use. getCausalZeroSelect found the select by walking
+// operand 0 through cast/reshape ops, so retracing those links always
+// terminates at the select. Stripping the mask replaces the select globally,
+// so any other user along this path would silently lose the mask while only
+// the rewritten matmul gains the causal attribute.
+static bool singleUseChainToSelect(Value input, tosa::SelectOp select) {
+  Value v = input;
+  while (v != select.getResult()) {
+    if (!v.hasOneUse())
+      return false;
+    v = v.getDefiningOp()->getOperand(0);
+  }
+  return true;
+}
+
 struct GemmElementwiseGemmRewritePattern
     : public OpRewritePattern<tosa::MatMulOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1757,11 +1773,14 @@ struct GemmElementwiseGemmRewritePattern
     auto maybeMask = getCausalZeroSelect(op.getA());
     if (succeeded(maybeMask)) {
       auto [select, scores] = maybeMask.value();
-      // Only strip a single-use mask whose unmasked scores still reach the
-      // first gemm, so the remaining chain stays a valid fusion.
+      // Only strip a mask reachable solely through this matmul (the select
+      // and every skipped op on the way must be single-use) and whose
+      // unmasked scores still reach the first gemm, so the remaining chain
+      // stays a valid fusion.
       ElementwiseRegionFinder<tosa::MatMulOp> probe;
       probe.visit(scores);
-      if (select->hasOneUse() && succeeded(probe.getFirstGemmBasedOp())) {
+      if (select->hasOneUse() && singleUseChainToSelect(op.getA(), select) &&
+          succeeded(probe.getFirstGemmBasedOp())) {
         rewriter.replaceOp(select, scores);
         causal = true;
         elemwiseFinder = match(op);
