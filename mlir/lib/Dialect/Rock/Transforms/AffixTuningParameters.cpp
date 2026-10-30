@@ -65,6 +65,7 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       EnableSplitKForTuningAttr::getMnemonic(),
       ArchAttr::getMnemonic(),
       KernelAttr::getMnemonic(),
+      ElementwiseAttr::getMnemonic(),
       ConvKernelAttr::getMnemonic(),
       NumCUAttr::getMnemonic(),
       NumChipletsAttr::getMnemonic(),

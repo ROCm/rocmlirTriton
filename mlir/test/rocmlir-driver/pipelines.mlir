@@ -3,6 +3,7 @@
 //
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=migraphx -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=MIGRAPHX --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=gpu -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=GPU --match-full-lines --strict-whitespace
+// RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=gpu -elementwise -arch=gfx90a /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=GPU_EW --match-full-lines --strict-whitespace --implicit-check-not=rock-affix-params
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx942 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1250 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_GFX1250 --match-full-lines --strict-whitespace
 // RUN: rocmlir-driver -dump-pipelines -kernel-pipeline=triton -arch=gfx1100 /dev/null -o /dev/null 2>&1 | sed -e 's/,/,\n/g' | FileCheck %s --check-prefix=TRITON_RDNA --match-full-lines --strict-whitespace
@@ -35,6 +36,13 @@
 // NOFAST_HIGHLEVEL:rock-tosa-to-elementwise{disable-fast-math=true}
 // NOFAST_GPU:rock-to-ttir{disable-fast-math=true}
 // NOFAST_HOST:migraphx-to-tosa{disable-fast-math=true}
+
+// GPU_EW:Kernel pipeline:
+// GPU_EW-NEXT:builtin.module(func.func(rock-regularize-elementwise),
+// GPU_EW-NEXT:remove-dead-values{canonicalize=true},
+// GPU_EW-NEXT:func.func(rock-elementwise-to-gridwise),
+// GPU_EW-NEXT:remove-dead-values{canonicalize=true},
+// GPU_EW-NEXT:func.func(rock-gridwise-elementwise-to-blockwise),
 
 // COM: Do not put a leading space between the colon and the pass you're looking for
 // MIGRAPHX:Kernel MIGraphX pipeline:
