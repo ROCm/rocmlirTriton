@@ -2221,7 +2221,8 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
   }
   classifyQuickTuningAttributes(gemmGemm, out,
                                 {"aTransposed", "bTransposed", "cTransposed",
-                                 "oTransposed", "params0", "params1"});
+                                 "oTransposed", "causal", "params0",
+                                 "params1"});
   if (op->getNumOperands() !=
       3 + static_cast<unsigned>(gemmGemm.getElemwiseInputs().size()))
     out.unsupported("operand_schema");
@@ -2244,6 +2245,10 @@ getQuickTuningProblemKey(RockGemmGemmWrapperInterface gemmGemmOp,
        !llvm::hasSingleElement(
            gemmGemm.getPreSecondGemmBody().front().getOperations())))
     out.untunable("inter_gemm_fusion");
+  // Unlike attention's, this problem string does not record causal, so a
+  // causal problem must not reuse the unmasked ranking.
+  if (gemmGemm.getCausal())
+    out.untunable("causal");
 
   out.add("transA", transposedA)
       .add("transB", transposedB)

@@ -567,6 +567,14 @@ static LogicalResult commonAttentionGemmElmtGemm(
     if (enableSoftmax)
       return op.emitError("split-k is not supported for attention");
 
+    // The split folds each key partition into the group dimension, so the
+    // causal mask and N-loop bounds would treat partition-local key indices
+    // as global. Reject until the lowering offsets them by the partition
+    // base. testFusionLegalitySplitK keeps such configs out of the tuning
+    // space; this guards direct pass invocations.
+    if (causal)
+      return op.emitError("split-k is not supported for causal gemm-gemm");
+
     auto maybeSplitk = arrangeGemmGemmSplitKTransform(
         rw, op, loc, splitKFactor, a, b, c, outputViews, fusionInputMapOut,
         elementwiseInputs);
@@ -741,7 +749,7 @@ LogicalResult GemmElementwiseGemmRewritePattern::matchAndRewrite(
   return commonAttentionGemmElmtGemm(
       rw, op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
       /*lastValidKVIndex=*/nullptr, /*prefixOffset=*/nullptr,
-      /*causal=*/nullptr, splitKV, /*slidingWindowLookBack=*/nullptr,
+      adaptor.getCausalAttr(), splitKV, /*slidingWindowLookBack=*/nullptr,
       /*causalLookBack=*/nullptr, adaptor.getElemwiseInputs(),
       op.getPreSecondGemmBody(),
       /*enableSoftmax=*/false, /*softmaxType=*/nullptr, /*numHeadsQ=*/1,
