@@ -106,7 +106,8 @@ void RockElementwiseToGridwisePass::runOnOperation() {
 
   OpBuilder b(func.getContext());
   Location loc = func.getLoc();
-  func->setAttr(rock::GridSizeAttr::getMnemonic(), b.getI32IntegerAttr(gridSize));
+  func->setAttr(rock::GridSizeAttr::getMnemonic(),
+                b.getI32IntegerAttr(gridSize));
 
   llvm::SetVector<Value> elementwiseInputs = getElementwiseKernelInputs(func);
   for (Value input : elementwiseInputs) {

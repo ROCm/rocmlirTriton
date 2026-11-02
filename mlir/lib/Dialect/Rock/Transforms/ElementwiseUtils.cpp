@@ -20,14 +20,14 @@ bool mlir::rock::isStandaloneElementwiseKernel(func::FuncOp funcOp) {
 }
 
 int64_t mlir::rock::getElementwiseTileSize(func::FuncOp funcOp) {
-  if (auto blockSize =
-          funcOp->getAttrOfType<IntegerAttr>(rock::BlockSizeAttr::getMnemonic()))
+  if (auto blockSize = funcOp->getAttrOfType<IntegerAttr>(
+          rock::BlockSizeAttr::getMnemonic()))
     return blockSize.getInt();
   return 256;
 }
 
-llvm::SetVector<Value> mlir::rock::getElementwiseKernelInputs(
-    func::FuncOp funcOp) {
+llvm::SetVector<Value>
+mlir::rock::getElementwiseKernelInputs(func::FuncOp funcOp) {
   llvm::SetVector<Value> leafInputs;
   funcOp.walk([&](Operation *op) {
     if (!isFusionOp(op))

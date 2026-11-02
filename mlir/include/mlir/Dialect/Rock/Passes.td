@@ -149,14 +149,16 @@ def RockRegularizeElementwisePass
 
 def RockElementwiseToGridwisePass
     : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
-  let summary = "Compute grid size and flatten/pad standalone elementwise kernels";
+  let summary =
+      "Compute grid size and flatten/pad standalone elementwise kernels";
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "func::FuncDialect"];
 }
 
 def RockGridwiseElementwiseToBlockwisePass
     : Pass<"rock-gridwise-elementwise-to-blockwise", "::mlir::func::FuncOp"> {
-  let summary = "Insert load/store markers for tiled standalone elementwise kernels";
+  let summary =
+      "Insert load/store markers for tiled standalone elementwise kernels";
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "func::FuncDialect", "triton::TritonDialect"];
 }

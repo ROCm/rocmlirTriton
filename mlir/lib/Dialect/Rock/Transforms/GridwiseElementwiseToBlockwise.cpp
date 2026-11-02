@@ -80,9 +80,9 @@ void RockGridwiseElementwiseToBlockwisePass::runOnOperation() {
     else
       b.setInsertionPointAfter(bid.getDefiningOp());
 
-    auto loadMarker = LoadMarkerOp::create(b, loc, tileType, input, tilingViews,
-                                           ValueRange{bid},
-                                           rock::CacheModifier::CS);
+    auto loadMarker =
+        LoadMarkerOp::create(b, loc, tileType, input, tilingViews,
+                             ValueRange{bid}, rock::CacheModifier::CS);
     propagateOutputType(input, loadMarker.getResult());
   }
 
