@@ -3243,6 +3243,24 @@ def get_num_cu(chip):
     raise RuntimeError(f"Cannot find number of CUs for {chip}")
 
 
+def query_compute_partition():
+    """Compute-partition mode of the visible GPU, or '' when it cannot be read.
+
+    rocm-smi is absent on a cross-compile host and on devices with no
+    partition mode. Callers then keep the CU-count table.
+    """
+    try:
+        out = subprocess.check_output(
+            ["rocm-smi", "--showcomputepartition"],
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return amd_arch_db.parse_compute_partition_text(out)
+
+
 def found_external_tool(paths: Paths,
                         optype: Operation,
                         gemm_library: Optional[GEMMLibrary] = None):
@@ -3279,7 +3297,7 @@ def main(args=None):
     arch = get_arch()
     chip = get_chip()
     num_cu = get_num_cu(chip)
-    num_chiplets = amd_arch_db.infer_num_chiplets(chip, num_cu)
+    num_chiplets = amd_arch_db.resolve_num_chiplets(chip, num_cu, query_compute_partition())
 
     root_dir = str(
         subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())

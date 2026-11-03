@@ -1880,6 +1880,35 @@ static LogicalResult runTuningLoop(ModuleOp source) {
   return success();
 }
 
+// rocm-smi --showcomputepartition, when the tool is on PATH. Empty when it is
+// missing, times out, or the output does not name exactly one mode. The CU
+// table then stays the answer, which is the cross-compile case.
+static std::optional<rock::ComputePartitionMode> queryComputePartitionMode() {
+  llvm::ErrorOr<std::string> program = llvm::sys::findProgramByName("rocm-smi");
+  if (!program)
+    return std::nullopt;
+
+  llvm::SmallString<128> outPath;
+  if (llvm::sys::fs::createTemporaryFile("rocmlir-xcd", "txt", outPath))
+    return std::nullopt;
+  llvm::scope_exit removeOut([&] { llvm::sys::fs::remove(outPath); });
+
+  std::optional<llvm::StringRef> redirects[] = {
+      std::nullopt, llvm::StringRef(outPath), llvm::StringRef("")};
+  llvm::StringRef args[] = {*program, "--showcomputepartition"};
+  std::string errMsg;
+  bool failed = false;
+  int rc = llvm::sys::ExecuteAndWait(*program, args, std::nullopt, redirects,
+                                     /*SecondsToWait=*/10, /*MemoryLimit=*/0,
+                                     &errMsg, &failed);
+  if (failed || rc != 0)
+    return std::nullopt;
+  auto buf = llvm::MemoryBuffer::getFile(outPath);
+  if (!buf)
+    return std::nullopt;
+  return rock::parseComputePartitionText((*buf)->getBuffer());
+}
+
 // Benchmark a previously compiled kernel bundle (--benchmark-artifacts). Runs
 // the commit / runtime-version / target-identity guardrails, then the shared
 // timing path with just-in-time HSACO decompression and per-config crash
@@ -1917,7 +1946,8 @@ static LogicalResult runBenchmarkFromArtifacts(StringRef dir) {
   HIPCHECK(hipGetDeviceProperties(&props, 0));
   StringRef liveArch(props.gcnArchName);
   int64_t liveCU = props.multiProcessorCount;
-  int64_t liveChiplets = rock::inferNumChiplets(liveArch, liveCU);
+  int64_t liveChiplets =
+      rock::resolveNumChiplets(liveArch, liveCU, queryComputePartitionMode());
 
   RocmDeviceName manifestDev, liveDev;
   bool archMismatch = false;
