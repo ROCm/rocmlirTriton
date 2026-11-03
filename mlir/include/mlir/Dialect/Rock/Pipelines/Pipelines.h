@@ -67,8 +67,12 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
       init(false)};
 };
 
-/// Adds the `kernel` pipeline to the `OpPassManager`.
+/// Adds the GEMM/conv/attention `kernel` pipeline to the `OpPassManager`.
 void buildKernelPipeline(OpPassManager &pm, const KernelOptions &options = {});
+
+/// Adds the standalone elementwise pipeline to the `OpPassManager`.
+void buildElementwisePipeline(OpPassManager &pm,
+                              const KernelOptions &options = {});
 
 //===--- Triton Pipeline --------------------------------------------------===//
 struct TritonOptions : public PassPipelineOptions<TritonOptions> {

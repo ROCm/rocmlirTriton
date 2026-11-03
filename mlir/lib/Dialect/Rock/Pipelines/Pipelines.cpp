@@ -602,6 +602,83 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   ttFuncPm.addPass(createCSEPass());
 }
 
+void rock::buildElementwisePipeline(OpPassManager &pm,
+                                    const rock::KernelOptions &options) {
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
+
+  addWithDCE(rock::createRockRegularizeElementwisePass());
+  addWithDCE(rock::createRockElementwiseToGridwisePass());
+  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
+  addWithDCE(rock::createRockRegularizeInputPass());
+  addWithDCE(rock::createRockLowerLoadsPass());
+  addWithDCE(rock::createRockLowerStoresPass());
+
+  {
+    rock::RockLegalizeMathForTritonPassOptions legalizeMathOpts;
+    legalizeMathOpts.disableFastMath = options.disableFastMath;
+    addWithDCE(rock::createRockLegalizeMathForTritonPass(legalizeMathOpts));
+  }
+
+  {
+    math::MathExtendToSupportedTypesOptions mathExtendOptions;
+    mathExtendOptions.extraTypeStrs = {"f16"};
+    mathExtendOptions.targetTypeStr = "f32";
+    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
+  }
+
+  if (!options.disableFastMath)
+    addWithDCE(rock::createRockAllowFastMathFlagsPass());
+
+  addWithDCE(rock::createRockLegalizeFloatTypesPass());
+
+  pm.addPass(rock::createRockSerializeHostFuncsPass());
+
+  {
+    arith::ArithEmulateUnsupportedFloatsOptions emulateOpts;
+    emulateOpts.sourceTypeStrs = {"f4E2M1FN",   "f8E4M3FN", "f8E4M3FNUZ",
+                                  "f8E5M2FNUZ", "f8E5M2",   "f8E8M0FNU"};
+    emulateOpts.targetTypeStr = "f32";
+    pm.addPass(arith::createArithEmulateUnsupportedFloats(emulateOpts));
+  }
+
+  {
+    arith::ArithExpandOpsPassOptions expandOpts;
+    expandOpts.includeF8E8M0 = true;
+    expandOpts.includeF4E2M1 = true;
+    expandOpts.includeMinMaxF = false;
+    expandOpts.includeMinMaxI = false;
+    pm.addPass(arith::createArithExpandOpsPass(expandOpts));
+  }
+
+  auto &funcPm2 = pm.nest<func::FuncOp>();
+  funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
+  funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
+  funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
+  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
+  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
+  funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
+  funcPm2.addPass(createCanonicalizerPass());
+
+  rock::RockToTTIRPassOptions rockToTTIROpts;
+  rockToTTIROpts.disableFastMath = options.disableFastMath;
+  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
+
+  if (!options.disableFastMath)
+    addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
+
+  pm.addPass(rock::createRockTensorToTritonPtrPass());
+  auto &ttFuncPm = pm.nest<triton::FuncOp>();
+  ttFuncPm.addPass(createCanonicalizerPass());
+  ttFuncPm.addPass(createCSEPass());
+}
+
 void rock::buildTritonPipeline(OpPassManager &pm,
                                const rock::TritonOptions &options) {
   validateTritonOptionsKnobs(options);
@@ -811,6 +888,10 @@ void rock::registerPipelines() {
       "rock-kernel-pipeline",
       " representations and algorithms for sparse tensors.",
       buildKernelPipeline);
+  PassPipelineRegistration<rock::KernelOptions>(
+      "rock-elementwise-pipeline",
+      "Lower standalone elementwise Rock kernels to TTIR-ready form.",
+      buildElementwisePipeline);
   PassPipelineRegistration<rock::TritonOptions>(
       "rock-triton-pipeline", "Convert Triton IR to TritonGPU IR.",
       buildTritonPipeline);

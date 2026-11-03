@@ -143,6 +143,12 @@ static cl::opt<bool> disableFastMath(
         "themselves are worth: the quick tuning list is tuned with the "
         "3xBF16 dot decomposition enabled on gfx950"));
 
+static cl::opt<bool> elementwiseKernelMode(
+    "elementwise", cl::init(false),
+    cl::desc("Use the standalone elementwise GPU pipeline "
+             "(rock-elementwise-pipeline) instead of the default "
+             "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu"));
+
 /// Values copied out of the `cl::opt`s above before any pipeline runs.
 ///
 /// The binary stage links with in-process LLD, which calls
@@ -296,12 +302,14 @@ runKernelPipeline(StringRef archName, ModuleOp m,
 
   // Set up lowering pipeline.
   if (kernelPipelineSet.contains("gpu")) {
-    // Set up the default lowering pipeline which goes down to GPU dialect.
     rock::KernelOptions opts;
     opts.arch = archName.str();
     opts.disableFastMath = noFastMath;
 
-    rock::buildKernelPipeline(pm, opts);
+    if (elementwiseKernelMode)
+      rock::buildElementwisePipeline(pm, opts);
+    else
+      rock::buildKernelPipeline(pm, opts);
   }
   if (kernelPipelineSet.contains("triton")) {
     rock::buildTritonPipeline(pm, tritonOpts);
