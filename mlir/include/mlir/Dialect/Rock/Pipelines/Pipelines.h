@@ -77,6 +77,10 @@ void buildKernelPipeline(OpPassManager &pm, const KernelOptions &options = {});
 void buildElementwisePipeline(OpPassManager &pm,
                               const KernelOptions &options = {});
 
+/// Adds final passes common to kernel pipelines
+void buildKernelPipelineTail(OpPassManager &pm,
+                             const KernelOptions &options = {});
+
 //===--- Triton Pipeline --------------------------------------------------===//
 struct TritonOptions : public PassPipelineOptions<TritonOptions> {
 
