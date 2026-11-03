@@ -1814,8 +1814,9 @@ LogicalResult GridwiseAttentionOp::verify() {
   if (!getEnableSoftmax() && getPrefixOffset())
     return emitError("prefixOffset only works for attention.");
 
-  if (!getEnableSoftmax() && getCausal())
-    return emitError("causal only works for attention.");
+  // causal is legal without softmax: gemm_elementwise_gemm masks gemm0's
+  // upper triangle with zeros (the additive identity of the second gemm)
+  // where attention masks with -inf.
 
   if (!getEnableSoftmax() && getSlidingWindowLookBack())
     return emitError("slidingWindowLookBack only works for attention.");
