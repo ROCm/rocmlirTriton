@@ -12,6 +12,7 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace rock {
@@ -33,56 +34,50 @@ struct RockRegularizeElementwisePass
 
 } // namespace
 
+class ReorderTransforms : public OpRewritePattern<TransformOp> {
+public:
+  using OpRewritePattern<TransformOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TransformOp tOp,
+                                PatternRewriter &rewriter) const override {
+    Operation *fusionOp = tOp.getInput().getDefiningOp();
+    if (!fusionOp || !isFusionOp(fusionOp))
+      return rewriter.notifyMatchFailure(tOp, "not defined by fusion op");
+
+    TransformMapAttr transformAttr = tOp.getTransform();
+    auto transformedType = cast<RankedTensorType>(tOp.getResult().getType());
+
+    SmallVector<Value> newOperands;
+    for (Value operand : fusionOp->getOperands()) {
+      auto operandType = dyn_cast<RankedTensorType>(operand.getType());
+      if (!operandType) {
+        newOperands.push_back(operand);
+        continue;
+      }
+      auto newType = RankedTensorType::get(transformedType.getShape(),
+                                           operandType.getElementType());
+      Value transformed = TransformOp::create(rewriter, tOp.getLoc(), newType,
+                                              operand, transformAttr);
+      newOperands.push_back(transformed);
+    }
+
+    Operation *cloned = rewriter.clone(*fusionOp);
+    for (auto [idx, operand] : llvm::enumerate(newOperands))
+      cloned->setOperand(idx, operand);
+    cloned->getResult(0).setType(transformedType);
+    rewriter.replaceOp(tOp, cloned);
+    return success();
+  }
+};
+
 void RockRegularizeElementwisePass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
   if (!isStandaloneElementwiseKernel(funcOp))
     return;
 
-  bool changed = true;
-  while (changed) {
-    changed = false;
-
-    SmallVector<TransformOp> toProcess;
-    funcOp.walk([&](TransformOp tOp) {
-      if (Operation *def = tOp.getInput().getDefiningOp();
-          def && isFusionOp(def))
-        toProcess.push_back(tOp);
-    });
-
-    for (TransformOp tOp : toProcess) {
-      Operation *fusionOp = tOp.getInput().getDefiningOp();
-      if (!fusionOp || !isFusionOp(fusionOp))
-        continue;
-
-      TransformMapAttr transformAttr = tOp.getTransform();
-      auto transformedType = cast<RankedTensorType>(tOp.getResult().getType());
-      OpBuilder builder(fusionOp);
-      Location loc = fusionOp->getLoc();
-
-      SmallVector<Value> newOperands;
-      for (Value operand : fusionOp->getOperands()) {
-        auto operandType = dyn_cast<RankedTensorType>(operand.getType());
-        if (!operandType) {
-          newOperands.push_back(operand);
-          continue;
-        }
-        auto newType = RankedTensorType::get(transformedType.getShape(),
-                                             operandType.getElementType());
-        Value transformed =
-            TransformOp::create(builder, loc, newType, operand, transformAttr);
-        newOperands.push_back(transformed);
-      }
-
-      Operation *cloned = builder.clone(*fusionOp);
-      for (auto [idx, operand] : llvm::enumerate(newOperands))
-        cloned->setOperand(idx, operand);
-      cloned->getResult(0).setType(transformedType);
-
-      tOp.getResult().replaceAllUsesWith(cloned->getResult(0));
-      tOp->erase();
-      if (fusionOp->use_empty())
-        fusionOp->erase();
-      changed = true;
-    }
-  }
+  MLIRContext *ctx = &getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.add<ReorderTransforms>(ctx);
+  if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
+    signalPassFailure();
 }

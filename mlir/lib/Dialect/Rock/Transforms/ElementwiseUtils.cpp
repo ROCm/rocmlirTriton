@@ -37,10 +37,9 @@ mlir::rock::getElementwiseKernelInputs(func::FuncOp funcOp) {
         continue;
       SmallVector<TransformMapAttr> transforms;
       auto [underlying, _] = rock::untransform(operand, transforms);
-      if (!isa<BlockArgument>(underlying) &&
-          !underlying.getDefiningOp<arith::ConstantOp>())
-        continue;
-      leafInputs.insert(operand);
+      if (isa<BlockArgument>(underlying) ||
+          underlying.getDefiningOp<arith::ConstantOp>())
+        leafInputs.insert(operand);
     }
   });
   return leafInputs;
