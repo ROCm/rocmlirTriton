@@ -306,7 +306,8 @@ defvar kRockCommonPerfConfigFields =
      RockPerfConfigField<"useBufferAtomics", kRockKnobDefault>,
      RockPerfConfigField<"useReductionLayout", kRockKnobDefault>,
      RockPerfConfigField<"useOptimizeEpilogue", kRockKnobDefault>,
-     RockPerfConfigField<"useBf16x3ForF32", kRockKnobDefault>];
+     RockPerfConfigField<"useBf16x3ForF32", kRockKnobDefault>,
+     RockPerfConfigField<"useKTailPeeling", kRockKnobDefault>];
 
 // Derives the whole named-perfConfig surface of a tuning-param attribute from a
 // single field list: the `getPerfConfigStr()` emitter, the key/default schema
@@ -417,7 +418,8 @@ defvar kRockGemmParams = (ins "int64_t":$mPerBlock, "int64_t":$nPerBlock,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32,
+    RockKnobParameter:$useKTailPeeling);
 
 def Rock_GemmParamsSchema
     : Rock_PerfConfigSchema<"gemm", kRockGemmParams,
@@ -466,6 +468,15 @@ def Rock_GemmParamsAttr
       on dots whose operands are not both f32. Being a precision relaxation, the
       decomposition additionally requires fast math: `-disable-fast-math` pins
       the IEEE path even at `1`.
+    - useKTailPeeling: Gate for leaving `gemmK` unpadded and peeling the
+      leftover K tile, instead of padding K up to a multiple of `kPerBlock` and
+      masking the loads in the K loop. `0` and `-1` both pad; `1` peels where
+      that is legal (see `rock::canPeelKTail`) and pads where it is not.
+      Whether peeling is faster depends on the tile config in ways no static
+      rule predicts -- on gfx1151 the same shape swings from -10% to +47%
+      across configs -- which is why `-1` pads rather than guessing, and why
+      this is the one knob the tuner does explore. It only does so for
+      problems that could benefit at all; see `createGemmTuningRangeBF`.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -481,6 +492,10 @@ def Rock_GemmParamsAttr
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
     - `useBf16x3ForF32`                  (set to -1)
+
+    `useKTailPeeling` is the exception: it is tuned, but only for the problems
+    where peeling is legal and the K loop's loads are degraded by the operand
+    row stride. Every other problem gets `-1`.
   }];
 
   let parameters = kRockGemmParams;
@@ -505,7 +520,8 @@ defvar kRockGemmGemmParams = (ins "int64_t":$mPerBlockG0,
     RockKnobParameter:$useAsyncCopy, RockKnobParameter:$useBlockPingpong,
     RockKnobParameter:$useInThreadTranspose, RockKnobParameter:$useBufferOps,
     RockKnobParameter:$useBufferAtomics, RockKnobParameter:$useReductionLayout,
-    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32);
+    RockKnobParameter:$useOptimizeEpilogue, RockKnobParameter:$useBf16x3ForF32,
+    RockKnobParameter:$useKTailPeeling);
 
 // `nPerBlockG1` defaults to 0 ("untiled"), matching how pre-v6 positional
 // configs, which have no such field, decode.
@@ -564,6 +580,9 @@ def Rock_GemmGemmParamsAttr
       both GEMMs and has no effect on dots whose operands are not both f32.
       Being a precision relaxation, the decomposition additionally requires fast
       math: `-disable-fast-math` pins the IEEE path even at `1`.
+    - useKTailPeeling: Carried so that both tuning-param schemas share one
+      field list, but inert here: K tail peeling is applied in
+      rock-gemm-to-gridwise, which the attention path does not go through.
 
     NOTE: The following fields are serialized into the perfConfig but they are
     not actually tuned. Instead, they are always set to `0` (use the backend heuristic)
@@ -579,6 +598,7 @@ def Rock_GemmGemmParamsAttr
     - `useReductionLayout`               (set to -1)
     - `useOptimizeEpilogue`              (set to -1)
     - `useBf16x3ForF32`                  (set to -1)
+    - `useKTailPeeling`                  (set to -1)
   }];
 
   let parameters = kRockGemmGemmParams;
