@@ -921,16 +921,28 @@ static OobShape classifyOobOffset(Value voffset, Value soffset,
 /// The descriptor, offsets and cache policy a buffer access presents to the
 /// hardware, which the atomics spell three different ways.
 struct BufferAccess {
-  Value rsrc, voffset, soffset, aux;
+  Value rsrc, voffset, soffset;
+  /// The cache policy bits, or nullopt when they are not a known constant.
+  std::optional<APInt> aux;
 };
+
+/// The cache policy bits of a typed ROCDL buffer op, whose `aux` is an
+/// intrinsic-integer attribute rather than an SSA value.
+static std::optional<APInt> getCachePolicyBits(Attribute aux) {
+  if (auto intAttr = dyn_cast_if_present<IntegerAttr>(aux))
+    return intAttr.getValue();
+  if (auto policy =
+          dyn_cast_if_present<LLVM::IntrinsicIntegerAttrInterface>(aux))
+    return policy.getIntegerAttr().getValue();
+  return std::nullopt;
+}
 
 /// Whether the cache policy `aux` could carry `CPol::VOLATILE`. That bit is not
 /// a hardware one: LLVM turns it into `MOVolatile`, which has to reach the
 /// hardware as written however the offset compares. A policy this cannot read
 /// counts as volatile, since the alternative is dropping such an access.
-static bool mayBeVolatile(Value aux) {
+static bool mayBeVolatile(const std::optional<APInt> &bits) {
   constexpr unsigned volatileBit = 31;
-  std::optional<APInt> bits = matchConstantInt(aux);
   if (!bits)
     return true;
   return bits->getBitWidth() > volatileBit && (*bits)[volatileBit];
@@ -954,7 +966,8 @@ static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
             ROCDL::RawPtrBufferAtomicFmaxOp, ROCDL::RawPtrBufferAtomicSmaxOp,
             ROCDL::RawPtrBufferAtomicUminOp>([](auto atomic) {
         return BufferAccess{atomic.getRsrc(), atomic.getOffset(),
-                            atomic.getSoffset(), atomic.getAux()};
+                            atomic.getSoffset(),
+                            getCachePolicyBits(atomic.getAux())};
       })
       .Case<LLVM::CallIntrinsicOp>(
           [](LLVM::CallIntrinsicOp call) -> std::optional<BufferAccess> {
@@ -967,7 +980,8 @@ static std::optional<BufferAccess> getUnreadAtomic(Operation *op) {
             if (args.size() < 4)
               return std::nullopt;
             return BufferAccess{args[args.size() - 4], args[args.size() - 3],
-                                args[args.size() - 2], args[args.size() - 1]};
+                                args[args.size() - 2],
+                                matchConstantInt(args[args.size() - 1])};
           })
       .Default([](auto) { return std::nullopt; });
 }
@@ -1023,13 +1037,15 @@ void RockFoldOobBufferOpsPass::runOnOperation() {
   func.walk([&](Operation *op) {
     if (auto store = dyn_cast<ROCDL::RawPtrBufferStoreOp>(op)) {
       OobShape shape = classifyAccess({store.getRsrc(), store.getOffset(),
-                                       store.getSoffset(), store.getAux()},
+                                       store.getSoffset(),
+                                       getCachePolicyBits(store.getAux())},
                                       isaFamily, oracle);
       if (shape != OobShape::None)
         deadStores.emplace_back(store, shape);
     } else if (auto load = dyn_cast<ROCDL::RawPtrBufferLoadOp>(op)) {
       OobShape shape = classifyAccess(
-          {load.getRsrc(), load.getOffset(), load.getSoffset(), load.getAux()},
+          {load.getRsrc(), load.getOffset(), load.getSoffset(),
+           getCachePolicyBits(load.getAux())},
           isaFamily, oracle);
       if (shape != OobShape::None)
         deadLoads.emplace_back(load, shape);

@@ -44,7 +44,8 @@
 namespace py = pybind11;
 
 namespace llvm {
-struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
+struct BreakStructPhiNodesPass
+    : OptionalPassInfoMixin<BreakStructPhiNodesPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
   static StringRef name() { return "BreakStructPhiNodesPass"; }
 };

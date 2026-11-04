@@ -34,6 +34,18 @@ bool isZero(Value v) {
   return false;
 }
 
+// Typed ROCDL buffer ops take the cache policy as an `aux` attribute, while
+// the raw intrinsic calls take it as a trailing i32 operand. The arg builders
+// emit the operand form, so pop it and convert it for the typed ops.
+NamedAttribute takeAuxAttr(RewriterBase &rewriter, SmallVectorImpl<Value> &args) {
+  auto constant = args.pop_back_val().getDefiningOp<LLVM::ConstantOp>();
+  assert(constant && "buffer op cache policy must be a constant");
+  auto aux = cast<IntegerAttr>(constant.getValue());
+  if (constant->use_empty())
+    rewriter.eraseOp(constant);
+  return rewriter.getNamedAttr("aux", aux);
+}
+
 } // namespace
 
 namespace mlir::LLVM::AMD {
@@ -129,8 +141,9 @@ Value BufferEmitter::emitLoad(Type type, Value rsrcDesc, Value offset,
   fillCommonArgs(type, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/true, args,
                  splitSoffsetSafe);
   Type bufferType = getBufferOpType(type, false);
-  Value data = ROCDL::RawPtrBufferLoadOp::create(
-      rewriter, loc, bufferType, args, ArrayRef<NamedAttribute>());
+  NamedAttribute aux = takeAuxAttr(rewriter, args);
+  Value data =
+      ROCDL::RawPtrBufferLoadOp::create(rewriter, loc, bufferType, args, aux);
   data = b.bitcast(data, type);
   if (!isZero(falseVal))
     data = b.select(pred, data, falseVal);
@@ -152,6 +165,7 @@ BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
   // asyncmark. Emit the async intrinsic so LLVM's SIInsertWaitcnts tracks
   // these operations via asyncmark/wait_asyncmark.
   //
+  NamedAttribute aux = takeAuxAttr(rewriter, commonArgs);
   return ROCDL::RawPtrBufferLoadAsyncLdsOp::create(
       rewriter, loc, TypeRange{},
       ValueRange{
@@ -161,8 +175,8 @@ BufferEmitter::emitLoadToLds(Type type, Value byteWidth, Value rsrcDesc,
           commonArgs[1], // ArgIndex 3: voffset (per-lane VGPR)
           commonArgs[2], // ArgIndex 4: soffset (split scalar or 0)
           b.i32_val(0),  // ArgIndex 5: imm offset (immarg, always 0 here)
-          commonArgs[3], // ArgIndex 6: aux (immarg)
-      });
+      },
+      aux); // ArgIndex 6: aux (immarg)
 }
 
 Value BufferEmitter::emitAtomicCAS(Type type, Value rsrcDesc, Value offset,
@@ -183,8 +197,9 @@ Value BufferEmitter::emitAtomicCAS(Type type, Value rsrcDesc, Value offset,
   SmallVector<Value, 6> args{casStoreVal, casCmpVal};
   fillCommonArgsAtomics(type, rsrcDesc, offset, pred, hasUsers, args);
 
-  Value data = ROCDL::RawPtrBufferAtomicCmpSwap::create(
-      rewriter, loc, bufferType, args, ArrayRef<NamedAttribute>());
+  NamedAttribute aux = takeAuxAttr(rewriter, args);
+  Value data = ROCDL::RawPtrBufferAtomicCmpSwap::create(rewriter, loc,
+                                                        bufferType, args, aux);
   data = b.bitcast(data, type);
   return data;
 }
@@ -233,8 +248,8 @@ void BufferEmitter::emitStore(Value rsrcDesc, Value offset, Value data,
   SmallVector<Value, 6> args{data};
   fillCommonArgs(vecTy, rsrcDesc, offset, pred, cm, /*isBufferLoad=*/false,
                  args, splitSoffsetSafe);
-  ROCDL::RawPtrBufferStoreOp::create(rewriter, loc, TypeRange{}, args,
-                                     ArrayRef<NamedAttribute>());
+  NamedAttribute aux = takeAuxAttr(rewriter, args);
+  ROCDL::RawPtrBufferStoreOp::create(rewriter, loc, TypeRange{}, args, aux);
 }
 
 Type BufferEmitter::getBufferOpType(Type type, bool atomicsOp) {

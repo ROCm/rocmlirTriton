@@ -1062,9 +1062,9 @@ struct AsyncCopyGlobalToLocalOpConversion
                      Value shmemAddr, triton::CacheModifier cacheMod,
                      Value multicastMask) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    int32_t cacheModifiers =
+    Attribute cacheModifiers = rewriter.getI32IntegerAttr(
         mlir::LLVM::AMD::getCtrlBitsForCacheModifierOnTarget(
-            cacheMod, /*isLoad=*/true, targetInfo);
+            cacheMod, /*isLoad=*/true, targetInfo));
 
     if (targetInfo.useAsyncMarks()) {
       // Use the async intrinsic so LLVM tracks these via asyncmark
@@ -2369,7 +2369,8 @@ struct AtomicRMWOpConversion
           /*asm_string=*/"",
           /*constraints=*/"~{memory}",
           /*has_side_effects=*/true,
-          /*is_align_stack=*/false, LLVM::TailCallKind::None, asmDialectAttr,
+          /*is_align_stack=*/false, LLVM::TailCallKind::None,
+          /*convergent=*/false, asmDialectAttr,
           /*operand_attrs=*/ArrayAttr::get(rewriter.getContext(), {}));
     }
 

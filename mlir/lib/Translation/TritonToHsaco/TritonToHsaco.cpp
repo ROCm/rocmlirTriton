@@ -103,7 +103,8 @@ LLD_HAS_DRIVER(elf)
 // Forward declaration for Triton's BreakStructPhiNodesPass (same as llvm.cc)
 // Implementation is in lib/Target/LLVMIR/LLVMIRBreakPhiStruct.cpp
 namespace llvm {
-struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
+struct BreakStructPhiNodesPass
+    : OptionalPassInfoMixin<BreakStructPhiNodesPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
   static StringRef name() { return "BreakStructPhiNodesPass"; }
 };

@@ -12,7 +12,7 @@ using namespace std;
 
 namespace {
 
-struct GpuHello : public PassInfoMixin<GpuHello> {
+struct GpuHello : public RequiredPassInfoMixin<GpuHello> {
   PreservedAnalyses run(Module &module, ModuleAnalysisManager &) {
     bool modifiedCodeGen = runOnModule(module);
 

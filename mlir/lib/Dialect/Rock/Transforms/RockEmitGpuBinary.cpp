@@ -319,7 +319,8 @@ LogicalResult RockEmitGpuBinaryPass::createGpuBinaryAndLaunchFuncs(
         gpu::KernelDim3{blockX, one, one}, // block dimensions
         /*dynamicSharedMemorySize=*/nullptr, launchArgs,
         /*asyncTokenType=*/nullptr,
-        /*asyncDependencies=*/ValueRange{}, clusterSize);
+        /*asyncDependencies=*/ValueRange{}, /*asyncObject=*/nullptr,
+        clusterSize);
 
     // gpu.launch_func doesn't return values - it modifies buffers in-place.
     // Replace uses of the func.call results with the corresponding output
