@@ -24,6 +24,13 @@ if(BUILD_FAT_LIBROCKCOMPILER)
          "Install rocmlirTriton public headers as part of the fat-library package" ON)
 
   include(librockcompiler_deps.cmake)
+  # With LLVM_LINK_LLVM_DYLIB the LLVM component archives are already inside
+  # the LLVM DLL; bundling them as well would give consumers a second, static
+  # LLVM with its own copy of LLVM's global state.
+  if(WIN32 AND LLVM_LINK_LLVM_DYLIB)
+    list(FILTER __mlir_libs EXCLUDE REGEX "^LLVM")
+    get_target_property(__llvm_dylib_name LLVM OUTPUT_NAME)
+  endif()
   set(__rocmlir_targets ${__rocmlir_libs})
   # Capture the LLVM/MLIR member target names before the Linux branch below
   # rewrites __mlir_libs into archive file paths. The fat-library archive step
@@ -72,6 +79,17 @@ if(BUILD_FAT_LIBROCKCOMPILER)
               $<BUILD_INTERFACE:${__library}>
               $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
     endforeach()
+
+    if(__llvm_dylib_name)
+      add_dependencies(${LIBRARY_NAME} LLVM)
+      target_link_libraries(${LIBRARY_NAME}
+          INTERFACE
+              $<BUILD_INTERFACE:LLVM>
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__llvm_dylib_name}.lib>)
+      list(APPEND __mlir_libraries $<TARGET_LINKER_FILE:LLVM>)
+      rocm_install(FILES $<TARGET_FILE:LLVM>
+              DESTINATION bin)
+    endif()
 
     rocm_install(FILES ${__mlir_libraries}
             DESTINATION lib/llvm)
