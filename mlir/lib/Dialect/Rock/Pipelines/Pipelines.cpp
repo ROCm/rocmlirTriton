@@ -520,6 +520,7 @@ void rock::buildElementwisePipeline(OpPassManager &pm,
 void rock::buildReducePipeline(OpPassManager &pm,
                                const rock::KernelOptions &options) {
   pm.addPass(rock::createRockRegularizeReducePass());
+  pm.addPass(createCSEPass());
 }
 
 void rock::buildKernelPipelineTail(OpPassManager &pm,

@@ -65,7 +65,6 @@ MoveTransformsToInput::matchAndRewrite(TransformOp tOp,
   rewriter.modifyOpInPlace(newFusionOp,
                            [&] { newFusionOp->getResult(0).setType(outType); });
   rewriter.replaceOp(tOp, newFusionOp);
-  rewriter.eraseOp(fusionOp);
 
   return success();
 }

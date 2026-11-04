@@ -1,7 +1,7 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// RUN: rocmlir-opt %s -rock-regularize-reduce | FileCheck %s
+// RUN: rocmlir-opt %s -rock-regularize-reduce -cse | FileCheck %s
 
 #map_merge_3x4_to_12 = affine_map<(d0) -> (d0 floordiv 4, d0 mod 4)>
 #tf_merge_3x4_to_12 = #rock.transform_map<#map_merge_3x4_to_12 by [<Merge{3, 4} ["dim0"] at [0] -> ["row", "col"] at [0, 1]>] bounds = [12] -> [3, 4]>
@@ -47,4 +47,22 @@ module {
   // CHECK-DAG: rock.transform %arg1
   // CHECK: arith.addf
   // CHECK: arith.extf
+
+
+  // CHECK-LABEL: func.func @elementwise_multi_use
+  func.func @elementwise_multi_use(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.reduce} {
+    %add = arith.addf %arg0, %arg1 : tensor<3x4xf32>
+    %flat = rock.transform %add by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
+    %mul = arith.mulf %add, %arg2 : tensor<3x4xf32>
+    %flat_mul = rock.transform %mul by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
+    %result = arith.addf %flat, %flat_mul : tensor<12xf32>
+    %reduced = rock.reduce sum %result {axis = 0 : index} : tensor<12xf32> -> tensor<1xf32>
+    return %reduced : tensor<1xf32>
+  }
+  // CHECK-DAG: rock.transform %arg0
+  // CHECK-DAG: rock.transform %arg1
+  // CHECK: arith.addf
+  // CHECK: rock.transform %arg2
+  // CHECK: arith.mulf
+  // CHECK: arith.addf
 }
