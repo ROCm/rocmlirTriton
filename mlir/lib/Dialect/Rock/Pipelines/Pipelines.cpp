@@ -517,6 +517,11 @@ void rock::buildElementwisePipeline(OpPassManager &pm,
   buildKernelPipelineTail(pm, options);
 }
 
+void rock::buildReducePipeline(OpPassManager &pm,
+                               const rock::KernelOptions &options) {
+  pm.addPass(rock::createRockRegularizeReducePass());
+}
+
 void rock::buildKernelPipelineTail(OpPassManager &pm,
                                    const rock::KernelOptions &options) {
   auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {

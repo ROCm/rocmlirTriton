@@ -77,6 +77,9 @@ void buildKernelPipeline(OpPassManager &pm, const KernelOptions &options = {});
 void buildElementwisePipeline(OpPassManager &pm,
                               const KernelOptions &options = {});
 
+/// Adds the standalone reduce kernel pipeline
+void buildReducePipeline(OpPassManager &pm, const KernelOptions &options = {});
+
 /// Adds final passes common to kernel pipelines
 void buildKernelPipelineTail(OpPassManager &pm,
                              const KernelOptions &options = {});

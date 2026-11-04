@@ -147,6 +147,10 @@ def RockRegularizeElementwisePass
                            "math::MathDialect"];
 }
 
+def RockRegularizeReducePass : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
+  let summary = "Push rock.transform ops to input";
+}
+
 def RockElementwiseToGridwisePass
     : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
   let summary =

@@ -49,6 +49,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   LowerStores.cpp
   RegularizeInterGemmFusion.cpp
   RegularizeElementwise.cpp
+  RegularizeReduce.cpp
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
   RockPrepareLLVM.cpp
