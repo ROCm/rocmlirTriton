@@ -856,6 +856,10 @@ void rock::registerPipelines() {
       "rock-elementwise-pipeline",
       "Lower standalone elementwise Rock kernels to TTIR-ready form.",
       buildElementwisePipeline);
+  PassPipelineRegistration<rock::KernelOptions>(
+      "rock-reduce-pipeline",
+      "Lower reduce rock kernels to Triton kernels",
+      buildReducePipeline);
   PassPipelineRegistration<rock::TritonOptions>(
       "rock-triton-pipeline", "Convert Triton IR to TritonGPU IR.",
       buildTritonPipeline);
