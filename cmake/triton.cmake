@@ -6,7 +6,7 @@ message(STATUS "Adding Triton src dependency")
 
 set(TRITON_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/triton")
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(ROCMLIR_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
+set(ROCMLIR_LLVM_PROJECT_DIR "${TRITON_LLVM_PROJECT_DIR}")
 
 # external/llvm-project and external/triton are vendored directly in this repo
 # (imported via git subtree) with our downstream patches committed on top, so

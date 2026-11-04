@@ -224,7 +224,9 @@ endif()
 #===----------------------------------------------------------------------===//
 
 set(LLVM_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/llvm-project")
-set(LLVM_EXTERNAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project")
+set(TRITON_LLVM_PROJECT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/llvm-project"
+    CACHE PATH "llvm-project source tree to build in-tree (defaults to the vendored subtree)")
+set(LLVM_EXTERNAL_SRC_DIR "${TRITON_LLVM_PROJECT_DIR}")
 set(LLVM_EXTERNAL_BIN_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/bin")
 set(LLVM_EXTERNAL_LIB_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib")
 
