@@ -519,8 +519,28 @@ void rock::buildElementwisePipeline(OpPassManager &pm,
 
 void rock::buildReducePipeline(OpPassManager &pm,
                                const rock::KernelOptions &options) {
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
+
   pm.addPass(rock::createRockRegularizeReducePass());
   pm.addPass(createCSEPass());
+
+  // The tile this pass picks is the whole schedule: `tritongpu-coalesce`
+  // derives the blocked layout of the load from it, and that layout decides
+  // whether the resulting `tt.reduce` combines in registers, across the lanes
+  // of a wave, or through LDS. Its `numWaves` has to match the `numWarps` the
+  // Triton pipeline is later run with, which is why both default to 4.
+  rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
+  lowerReduceOpts.arch = options.arch;
+  addWithDCE(rock::createRockLowerReduceToBlockwisePass(lowerReduceOpts));
+
+  addWithDCE(rock::createRockRegularizeInputPass());
+  addWithDCE(rock::createRockLowerLoadsPass());
+  addWithDCE(rock::createRockLowerStoresPass());
+
+  buildKernelPipelineTail(pm, options);
 }
 
 void rock::buildKernelPipelineTail(OpPassManager &pm,
