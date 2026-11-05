@@ -218,7 +218,9 @@ alongside the elementwise ones and driven the same way: `rocmlir-gen
 --clone-harness` emits a CPU twin of the kernel, the highlevel pipeline lowers
 the TOSA, and `rocmlir-driver -c --reduce` compiles the kernel through this
 pipeline before `rocm-run` compares the two. Between them they cover a distinct
-schedule each:
+schedule each; the shapes below are the ones they take on gfx942, and differ on
+a 32-lane architecture, where a workgroup is 128 threads rather than 256 and
+the heuristic spends the difference on rows:
 
 | test | grid | tile | loop |
 | --- | --- | --- | --- |
