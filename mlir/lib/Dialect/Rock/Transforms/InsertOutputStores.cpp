@@ -207,10 +207,13 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
       fusionRoots.push_back(op);
   });
 
-  bool isElementwiseKernel =
-      funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic());
+  // Standalone elementwise and reduce kernels have no op carrying the
+  // FusionRoot trait, so their returned values are what has to be stored.
+  bool isStandaloneKernel =
+      funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic()) ||
+      funcOp->hasAttr(rock::ReduceAttr::getMnemonic());
 
-  if (fusionRoots.empty() && !isElementwiseKernel)
+  if (fusionRoots.empty() && !isStandaloneKernel)
     return success();
 
   // This pass must run before any rock.store ops are inserted.
@@ -226,8 +229,8 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
 
   SmallVector<ReturnStoreInfo> storeInfos;
   if (fusionRoots.empty()) {
-    // Standalone elementwise kernels have no FusionRoot trait. Store every
-    // returned tensor into a newly-added output argument.
+    // Standalone elementwise and reduce kernels have no FusionRoot trait.
+    // Store every returned tensor into a newly-added output argument.
     for (unsigned i = 0, e = returnOp.getNumOperands(); i < e; ++i) {
       ReturnStoreInfo info;
       info.returnIndex = i;
