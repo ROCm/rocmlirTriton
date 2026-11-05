@@ -116,8 +116,9 @@ large `R` (lane/wave-like), long rows drive `R` to 1 (block-like).
 
 A pre-existing `params` is validated instead of recomputed; it is rejected when
 it is not a power of two, when `rowsPerBlock > nextPow2(M)`, when `numWaves`
-disagrees with the option, or when `colsPerBlock < nextPow2(N)` (which implies
-the Phase B loop). Phase A also rejects `nextPow2(N) > maxTileCols`.
+disagrees with the option, or when `colsPerBlock` exceeds `maxTileCols`, which
+is the register budget the loop exists to respect. A `colsPerBlock` below the
+reduced extent is legal and asks for the loop explicitly.
 
 A small `M` that leaves `R*C < T` is accepted: it is correct but underutilizes
 the device, and fixing it needs the split-reduce work deferred to Phase C.
@@ -202,26 +203,62 @@ rock-lower-stores
 
 - `lowering_rock_lower_reduce_to_blockwise.mlir`: long `N` (`R == 1`), short
   `N` (large `R`), f16 (`vecWidth == 8`), both axes padded, a rank-3 input,
-  pre-reduce fusion, a pinned `params`, and a function without the marker.
+  pre-reduce fusion, a pinned `params`, a function without the marker, and the
+  looped forms: one with fusion, one whose reduced extent is not a multiple of
+  the tile, and one where a pinned `params` forces the loop.
 - `lowering_rock_lower_reduce_to_blockwise_invalid.mlir`: non-last axis, a
-  `max` reduction, post-reduce fusion, `N` over `maxTileCols`, a pinned
-  `params` that is too narrow or disagrees on `numWaves`, and a transposed
-  input.
-- `rock-reduce-pipeline.mlir`: end to end, checking `tt.load` / `tt.reduce` /
-  `tt.store` and the `rock.grid_size.<name>` module attribute.
+  `max` reduction, post-reduce fusion, a pinned `params` that is too wide or
+  disagrees on `numWaves`, and a transposed input.
+- `rock-reduce-pipeline.mlir`: end to end for both the single-tile and the
+  looped form, checking `tt.load` / `tt.reduce` / `tt.store` and the
+  `rock.grid_size.<name>` module attribute.
 
 ## Phase B: loop over the reduction axis
 
-Lifts `maxTileCols`. When `nextPow2(N) > maxTileCols`, set `C = maxTileCols`
-and `K = ceil(N / C)`, then clone the leaf-to-reduce chain into an `scf.for`
-with a `tensor<RxC>` accumulator `iter_arg` and `%k` as an extra index on each
-`load_marker`. One `rock.blockwise_reduce` still runs after the loop, so there
-is a single cross-lane reduction regardless of `N`, no atomics, and ownership
-is preserved. This is the same structure as MIGraphX's `local_stride`
-accumulate-then-combine, and as the Rock GEMM K loop, which already puts a
-`rock.load_marker` with a loop-varying index inside an `scf.for`.
+A reduction wider than `maxTileCols` is summed a tile at a time. The tile keeps
+the shape Phase A chose, `colsPerBlock` stays at the limit, and the reduced axis
+is cut into `numIters = ceil(N / colsPerBlock)` chunks:
 
-Phase A is the `K == 1` case, so this is strictly additive.
+```mlir
+%acc = scf.for %iter = 0 to numIters step 1 iter_args(%a = %zero) -> tensor<RxC> {
+  %tile = rock.load_marker %in views [#view] [%bid, %iter] : ... -> tensor<RxC>
+  ...                                        // the elementwise ops, moved in
+  %next = arith.addf %a, %fused : tensor<RxC>
+  scf.yield %next
+}
+%sum = rock.blockwise_reduce sum %acc {axis = 1}   // once, after the loop
+```
+
+Each lane keeps a running sum in registers and the workgroup combines once, so
+the register footprint is set by the tile rather than by `N`, there is still a
+single cross-lane reduction, and each output still has one writer. This is the
+same accumulate-then-combine shape as MIGraphX's `local_stride`, and as the
+Rock GEMM K loop, which already puts a `rock.load_marker` with a loop-varying
+index inside an `scf.for`.
+
+Measured on gfx942: a reduction of 3000 elements and one of 1048576 compile to
+the same 7 LDS operations and 8 cross-lane shuffles, and the loop body holds
+nothing but the loads and the `addf` -- no LDS, no shuffles. Only the trip
+count differs.
+
+Phase A is the `numIters == 1` case and its output is unchanged.
+
+Two details the loop form needs beyond Phase A:
+
+- **The elementwise ops move into the loop.** They read a tile that only exists
+  inside it. They are collected during the same backward walk that finds the
+  leaves, sorted back into program order, and moved to the top of the loop body
+  after the markers. Without a loop they stay where they are, and each marker
+  is instead placed next to the view it reads so that it dominates them.
+- **The reduced axis is padded to `numIters * colsPerBlock`**, which is a
+  multiple of the tile but not generally a power of two. That is fine: only the
+  tile becomes a Triton tensor, the padded extent is just a view, and the tail
+  lanes of the last iteration read as zero.
+
+The accumulation happens in the element type of the reduction, which is what a
+single `tt.reduce` over the same values would use too. It is a sequential sum
+over chunks rather than a tree, though, so a long `f16` reduction loses more
+precision than the same reduction would in one tile.
 
 ## Phase C: deferred
 
@@ -276,11 +313,13 @@ Three consequences for the implementation:
   stride of the reduced axis by folding the composed map at two points, and
   currently only compares it against one. Returning the number instead of
   failing is all the analysis this needs.
-- **It depends on Phase B.** A thread holds `vecWidth * colsPerBlock`
+- **It leans on the Phase B loop.** A thread holds `vecWidth * colsPerBlock`
   elements, so with `rowsPerBlock` pinned at `numThreads * vecWidth` the
   register footprint is set entirely by the reduced extent. Anything but a
-  short reduction has to be cut into chunks, which is the loop Phase B adds.
-  Phase C1 should not be attempted first.
+  short reduction has to be cut into chunks, which the loop already does; the
+  strided path needs a `colsPerBlock` budget of its own, since the limit that
+  suits a contiguous tile is far too generous when every thread holds whole
+  rows.
 - **Inputs can disagree.** With several leaf inputs, one may be contiguous
   along the reduced axis and another strided, and no single tile suits both.
   MIGraphX settles this by byte dominance: it only consults inputs whose size

@@ -169,3 +169,77 @@ func.func @not_a_reduce_kernel(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> {
   %0 = rock.reduce sum %arg0 {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   return %0 : tensor<8x1xf32>
 }
+
+// -----
+
+// A reduction wider than a workgroup can hold in registers is summed a tile at
+// a time, so the accumulator and the number of cross-lane reductions stay the
+// same whatever the reduced extent is. The elementwise ops move into the loop,
+// since the tile they read is only defined there.
+#wide_view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 8192 + d1)> by [<Unmerge{4, 8192} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [4, 8192] -> [32768]>
+#wide_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{4, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [4] -> [4, 1]>
+
+// CHECK-LABEL: func.func @looped
+// CHECK-SAME: rock.grid_size = 4 : i32
+// CHECK-DAG: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<1x2048xf32>
+// CHECK-DAG: %[[LB:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[UB:.*]] = arith.constant 4 : i32
+// CHECK-DAG: %[[STEP:.*]] = arith.constant 1 : i32
+// CHECK: %[[LOOP:.*]] = scf.for %[[IV:.*]] = %[[LB]] to %[[UB]] step %[[STEP]] iter_args(%[[ACC:.*]] = %[[ZERO]]) -> (tensor<1x2048xf32>)
+// CHECK:   %[[A:.*]] = rock.load_marker {{.*}}[%{{.*}}, %[[IV]]] {{.*}} -> tensor<1x2048xf32>
+// CHECK:   %[[B:.*]] = rock.load_marker {{.*}}[%{{.*}}, %[[IV]]] {{.*}} -> tensor<1x2048xf32>
+// CHECK:   %[[FUSED:.*]] = arith.addf {{.*}} : tensor<1x2048xf32>
+// CHECK:   %[[NEXT:.*]] = arith.addf %[[ACC]], %[[FUSED]] : tensor<1x2048xf32>
+// CHECK:   scf.yield %[[NEXT]]
+// CHECK: rock.blockwise_reduce sum %[[LOOP]] {axis = 1 : index} : tensor<1x2048xf32> -> tensor<1xf32>
+// CHECK-NOT: rock.blockwise_reduce
+func.func @looped(%arg0: tensor<32768xf32>, %arg1: tensor<32768xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
+    attributes {rock.kernel, rock.reduce} {
+  %a = rock.transform %arg0 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
+  %b = rock.transform %arg1 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
+  %s = arith.addf %a, %b : tensor<4x8192xf32>
+  %0 = rock.reduce sum %s {axis = 1 : index} : tensor<4x8192xf32> -> tensor<4x1xf32>
+  %1 = rock.transform %0 by #wide_drop : tensor<4x1xf32> to tensor<4xf32>
+  %2 = rock.store %1 to %out by set : tensor<4xf32> -> tensor<4xf32> to tensor<4xf32>
+  return %2 : tensor<4xf32>
+}
+
+// -----
+
+// The loop count does not have to divide the reduced extent: the axis is
+// padded out to a whole number of tiles, and the tail lanes read as zero.
+#odd_view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 5000 + d1)> by [<Unmerge{2, 5000} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [2, 5000] -> [10000]>
+#odd_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{2, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [2] -> [2, 1]>
+
+// CHECK-LABEL: func.func @looped_padded
+// CHECK: rock.transform {{.*}}Pad{0, 0, 0, 1144}{{.*}} to tensor<2x6144xf32>
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step
+// CHECK-SAME: iter_args(%{{.*}} = %{{.*}}) -> (tensor<1x2048xf32>)
+func.func @looped_padded(%arg0: tensor<10000xf32>, %out: tensor<2xf32>) -> tensor<2xf32>
+    attributes {rock.kernel, rock.reduce} {
+  %a = rock.transform %arg0 by #odd_view : tensor<10000xf32> to tensor<2x5000xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<2x5000xf32> -> tensor<2x1xf32>
+  %1 = rock.transform %0 by #odd_drop : tensor<2x1xf32> to tensor<2xf32>
+  %2 = rock.store %1 to %out by set : tensor<2xf32> -> tensor<2xf32> to tensor<2xf32>
+  return %2 : tensor<2xf32>
+}
+
+// -----
+
+// A pinned tile narrower than the reduction asks for the loop explicitly,
+// even though the whole reduction would have fitted in one tile.
+#pin_view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 1024 + d1)> by [<Unmerge{8, 1024} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [8, 1024] -> [8192]>
+#pin_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{8, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [8] -> [8, 1]>
+
+// CHECK-LABEL: func.func @pinned_params_force_loop
+// CHECK: %[[UB:.*]] = arith.constant 4 : i32
+// CHECK: scf.for %{{.*}} to %[[UB]]
+// CHECK-SAME: -> (tensor<1x256xf32>)
+func.func @pinned_params_force_loop(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
+    attributes {rock.kernel, rock.reduce} {
+  %a = rock.transform %arg0 by #pin_view : tensor<8192xf32> to tensor<8x1024xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 256, numWaves = 4>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %1 = rock.transform %0 by #pin_drop : tensor<8x1xf32> to tensor<8xf32>
+  %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
+  return %2 : tensor<8xf32>
+}

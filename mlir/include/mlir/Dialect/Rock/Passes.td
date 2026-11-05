@@ -167,13 +167,20 @@ def RockLowerReduceToBlockwisePass
     fills `params` in when the op does not carry one, and validates rather than
     overrides one that it does.
 
+    A reduction wider than one tile is summed a tile at a time in an `scf.for`
+    that carries the running sum in registers, with a single
+    `rock.blockwise_reduce` after the loop. The register footprint is therefore
+    set by the tile rather than by the length of the reduction, and there is
+    still exactly one cross-lane reduction and one writer per output.
+
     This pass only accepts what it can lower correctly and emits an error for
     everything else: a single `sum` reduction over the last axis, static
     shapes, no elementwise op between the reduction and its `rock.store`, and
     inputs that are contiguous along the reduced axis.
   }];
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "func::FuncDialect", "triton::TritonDialect"];
+                           "func::FuncDialect", "scf::SCFDialect",
+                           "triton::TritonDialect"];
   let options = [
     Option<"arch", "arch", "std::string", /*default=*/"\"\"",
            "The GPU architecture, which fixes the wave size">,
@@ -182,7 +189,8 @@ def RockLowerReduceToBlockwisePass
            "pipeline runs with, which sets the real launch block size">,
     Option<"maxTileCols", "maxTileCols", "int64_t", /*default=*/"2048",
            "Upper bound on the reduced-axis extent of a tile, which caps the "
-           "register footprint of one workgroup">,
+           "register footprint of one workgroup. A longer reduction is summed "
+           "a tile at a time in a loop">,
   ];
 }
 

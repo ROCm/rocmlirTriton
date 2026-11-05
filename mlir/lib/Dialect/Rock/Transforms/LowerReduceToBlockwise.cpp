@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 
 #include "ReduceUtils.h"
@@ -152,13 +153,27 @@ static Value viewDestAsPaddedRows(OpBuilder &b, Location loc, Value dest,
 }
 
 /// The view from a workgroup's tile coordinates to the padded 2-D input.
+/// When the reduction is cut into `numIters` chunks, the iteration number
+/// joins the workgroup id as a second index, supplied by the loop.
 static ArrayAttr buildInputTileView(OpBuilder &b, Location loc,
-                                    int64_t gridSize, int64_t rowsPerBlock,
+                                    int64_t gridSize, int64_t numIters,
+                                    int64_t rowsPerBlock,
                                     int64_t colsPerBlock) {
-  TopDownTMBuilder builder(b, {"bid", "row_iter", "col_iter"},
-                           {gridSize, rowsPerBlock, colsPerBlock}, loc);
+  SmallVector<StringRef> upperNames{"bid"};
+  SmallVector<int64_t> upperBounds{gridSize};
+  if (numIters > 1) {
+    upperNames.push_back("iter");
+    upperBounds.push_back(numIters);
+  }
+  upperNames.append({"row_iter", "col_iter"});
+  upperBounds.append({rowsPerBlock, colsPerBlock});
+
+  TopDownTMBuilder builder(b, upperNames, upperBounds, loc);
   builder.unmerge("row", 0, {"bid", "row_iter"}, {gridSize, rowsPerBlock});
-  builder.passThrough({"col"}, {1}, {"col_iter"});
+  if (numIters > 1)
+    builder.unmerge("col", 1, {"iter", "col_iter"}, {numIters, colsPerBlock});
+  else
+    builder.passThrough({"col"}, {1}, {"col_iter"});
   return b.getArrayAttr({builder.get()});
 }
 
@@ -172,10 +187,12 @@ static ArrayAttr buildOutputTileView(OpBuilder &b, Location loc,
 }
 
 /// Walk back from `root` through the fusion ops feeding the reduction and
-/// collect the top of each input's transform chain. These are the values that
-/// become `rock.load_marker`s.
+/// collect the top of each input's transform chain, which is what becomes a
+/// `rock.load_marker`, along with the fusion ops themselves, which the loop
+/// form has to move into the loop body.
 static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
-                                         llvm::SetVector<Value> &leaves) {
+                                         llvm::SetVector<Value> &leaves,
+                                         llvm::SetVector<Operation *> &chain) {
   SmallVector<Value> worklist{root};
   DenseSet<Value> seen;
   while (!worklist.empty()) {
@@ -190,6 +207,7 @@ static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
       continue;
     }
     if (isFusionOp(def)) {
+      chain.insert(def);
       worklist.append(def->getOperands().begin(), def->getOperands().end());
       continue;
     }
@@ -198,6 +216,14 @@ static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
                "elementwise ops and views, got: ")
            << def->getName();
   }
+  // The walk runs backwards from the reduction, so put the ops back into
+  // program order before anything moves them.
+  SmallVector<Operation *> ordered(chain.begin(), chain.end());
+  llvm::sort(ordered, [](Operation *lhs, Operation *rhs) {
+    return lhs->isBeforeInBlock(rhs);
+  });
+  chain.clear();
+  chain.insert(ordered.begin(), ordered.end());
   return success();
 }
 
@@ -422,7 +448,9 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
     return failure();
 
   llvm::SetVector<Value> leaves;
-  if (failed(collectReduceInputs(reduceOp.getIn(), reduceOp, leaves)))
+  llvm::SetVector<Operation *> chainOps;
+  if (failed(
+          collectReduceInputs(reduceOp.getIn(), reduceOp, leaves, chainOps)))
     return failure();
   for (Value leaf : leaves) {
     auto leafType = cast<RankedTensorType>(leaf.getType());
@@ -455,19 +483,11 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
       return reduceOp.emitError("rock.reduce_params has rowsPerBlock ")
              << params.getRowsPerBlock() << ", more rows than the "
              << numRows << " the reduction has";
-    if (params.getColsPerBlock() < numCols)
+    if (params.getColsPerBlock() > maxCols)
       return reduceOp.emitError("rock.reduce_params has colsPerBlock ")
-             << params.getColsPerBlock() << ", which is short of the "
-             << numCols
-             << "-element reduction; looping over the reduced axis is not "
-                "implemented yet";
+             << params.getColsPerBlock() << ", wider than the " << maxCols
+             << "-element limit on what one workgroup holds in registers";
   } else {
-    if (static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numCols))) >
-        maxCols)
-      return reduceOp.emitError("reduction over ")
-             << numCols << " elements needs a tile wider than the " << maxCols
-             << "-element limit; looping over the reduced axis is not "
-                "implemented yet";
     params = chooseReduceParams(reduceOp, numRows, numCols, waveSize, waves,
                                 maxCols);
     reduceOp.setParamsAttr(params);
@@ -475,8 +495,12 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
   int64_t rowsPerBlock = params.getRowsPerBlock();
   int64_t colsPerBlock = params.getColsPerBlock();
+  // A reduction wider than one tile is summed a tile at a time in a loop, so
+  // the register footprint stays put however long the reduction is.
+  int64_t numIters = llvm::divideCeil(numCols, colsPerBlock);
   int64_t gridSize = llvm::divideCeil(numRows, rowsPerBlock);
   int64_t paddedRows = gridSize * rowsPerBlock;
+  int64_t paddedCols = numIters * colsPerBlock;
 
   OpBuilder b(func.getContext());
   Location loc = reduceOp.getLoc();
@@ -488,39 +512,87 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
   Value bid = triton::GetProgramIdOp::create(b, loc, triton::ProgramIDDim::X);
   Operation *bidOp = bid.getDefiningOp();
 
-  // Inputs: view as 2-D, pad to the grid, then mark the tile each workgroup
-  // loads. `propagateOutputType` retypes the elementwise ops in between onto
-  // the tile.
-  ArrayAttr inputView =
-      buildInputTileView(b, loc, gridSize, rowsPerBlock, colsPerBlock);
-  Value newReduceInput;
-  for (Value leaf : leaves) {
-    auto leafType = cast<RankedTensorType>(leaf.getType());
-    Value padded = padTo(b, loc, viewAs2D(b, loc, leaf, bidOp), paddedRows,
-                         colsPerBlock, bidOp);
+  // Inputs: view as 2-D and pad out to what the grid and the loop cover.
+  ArrayAttr inputView = buildInputTileView(b, loc, gridSize, numIters,
+                                           rowsPerBlock, colsPerBlock);
+  SmallVector<Value> paddedLeaves;
+  for (Value leaf : leaves)
+    paddedLeaves.push_back(padTo(b, loc, viewAs2D(b, loc, leaf, bidOp),
+                                 paddedRows, paddedCols, bidOp));
+
+  auto tileTypeOf = [&](Value v) {
+    return RankedTensorType::get(
+        {rowsPerBlock, colsPerBlock},
+        cast<RankedTensorType>(v.getType()).getElementType());
+  };
+
+  // Mark the tile each workgroup loads and retype the elementwise ops in
+  // between onto it. A reduction straight off an input has no elementwise op
+  // for `propagateOutputType` to walk, so the caller is told which marker
+  // replaced the reduction's own operand.
+  //
+  // Without a loop the elementwise ops stay where they are, so each marker is
+  // placed next to the view it reads in order to dominate them. Inside a loop
+  // the markers come first and the elementwise ops move down to follow them.
+  auto markTiles = [&](ValueRange extraIndices,
+                       bool anchorAtEachLeaf) -> Value {
+    Value directInput;
+    for (auto [leaf, padded] : llvm::zip(leaves, paddedLeaves)) {
+      OpBuilder::InsertionGuard guard(b);
+      if (anchorAtEachLeaf)
+        setInsertionPointForViewOf(b, padded, bidOp);
+      auto loadMarker =
+          LoadMarkerOp::create(b, loc, tileTypeOf(leaf), padded, inputView,
+                               extraIndices, rock::CacheModifier::CS);
+      if (leaf == reduceOp.getIn())
+        directInput = loadMarker.getResult();
+      propagateOutputType(leaf, loadMarker.getResult());
+    }
+    return directInput ? directInput : reduceOp.getIn();
+  };
+
+  Value tile;
+  if (numIters == 1) {
+    tile = markTiles(ValueRange{bid}, /*anchorAtEachLeaf=*/true);
+  } else {
+    auto tileType = tileTypeOf(reduceOp.getIn());
+    Type elemType = tileType.getElementType();
 
     OpBuilder::InsertionGuard guard(b);
-    setInsertionPointForViewOf(b, padded, bidOp);
-    auto tileType = RankedTensorType::get({rowsPerBlock, colsPerBlock},
-                                          leafType.getElementType());
-    auto loadMarker =
-        LoadMarkerOp::create(b, loc, tileType, padded, inputView,
-                             ValueRange{bid}, rock::CacheModifier::CS);
-    if (leaf == reduceOp.getIn())
-      newReduceInput = loadMarker.getResult();
-    propagateOutputType(leaf, loadMarker.getResult());
+    b.setInsertionPoint(reduceOp);
+    // Each lane keeps a running sum in registers and the whole workgroup
+    // combines once, after the loop, so there is still only one cross-lane
+    // reduction however long the reduction is.
+    Value zero = arith::ConstantOp::create(b, loc, tileType,
+                                           b.getZeroAttr(tileType));
+    Value lower = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 0);
+    Value upper =
+        arith::ConstantIntOp::create(b, loc, b.getI32Type(), numIters);
+    Value step = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 1);
+    auto loop = scf::ForOp::create(b, loc, lower, upper, step, ValueRange{zero});
+
+    b.setInsertionPointToStart(loop.getBody());
+    Value chunk = markTiles(ValueRange{bid, loop.getInductionVar()},
+                            /*anchorAtEachLeaf=*/false);
+    // The elementwise ops still sit where they were, ahead of the loop; the
+    // tile they now read is only defined inside it.
+    for (Operation *op : chainOps)
+      op->moveBefore(b.getInsertionBlock(), b.getInsertionPoint());
+
+    Value acc = loop.getRegionIterArg(0);
+    Value sum = isa<FloatType>(elemType)
+                    ? arith::AddFOp::create(b, loc, acc, chunk).getResult()
+                    : arith::AddIOp::create(b, loc, acc, chunk).getResult();
+    scf::YieldOp::create(b, loc, ValueRange{sum});
+    tile = loop.getResult(0);
   }
-  // A reduction straight off an input has no elementwise op for
-  // `propagateOutputType` to walk, so rewire it here.
-  if (newReduceInput)
-    reduceOp.getInMutable().assign(newReduceInput);
 
   // The reduction itself. `rock.blockwise_reduce` drops the reduced axis,
   // which is what the flattened output view below expects.
   b.setInsertionPoint(reduceOp);
-  Value tileSum = BlockwiseReduceOp::create(
-      b, loc, reduceOp.getIn(), b.getIndexAttr(1),
-      b.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
+  Value tileSum =
+      BlockwiseReduceOp::create(b, loc, tile, b.getIndexAttr(1),
+                                b.getAttr<ReduceMethodAttr>(ReduceMethod::Sum));
 
   // Output: both sides of the store move into one flat, padded row space, the
   // same shape the elementwise pipeline settles on. The views that used to
