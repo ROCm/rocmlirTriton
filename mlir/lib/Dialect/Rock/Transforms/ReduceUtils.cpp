@@ -20,18 +20,16 @@ bool mlir::rock::isStandaloneReduceKernel(func::FuncOp funcOp) {
          funcOp->hasAttr(rock::ReduceAttr::getMnemonic());
 }
 
-ReduceParamsAttr mlir::rock::chooseReduceParams(ReduceOp reduceOp,
-                                                int64_t numRows,
-                                                int64_t numCols,
-                                                int64_t waveSize,
-                                                int64_t numWaves,
-                                                int64_t maxTileCols) {
+ReduceParamsAttr
+mlir::rock::chooseReduceParams(ReduceOp reduceOp, int64_t numRows,
+                               int64_t numCols, int64_t waveSize,
+                               int64_t numWaves, int64_t maxTileCols) {
   Type elemType = getElementTypeOrSelf(reduceOp.getIn().getType());
   // The widest load a lane can issue is 128 bits. Expressed in elements, this
   // is how many of them a thread wants to hold for the load to be a single
   // `dwordx4` rather than a string of narrower ones.
-  int64_t vecWidth =
-      std::max<int64_t>(1, 128 / std::max<unsigned>(1, elemType.getIntOrFloatBitWidth()));
+  int64_t vecWidth = std::max<int64_t>(
+      1, 128 / std::max<unsigned>(1, elemType.getIntOrFloatBitWidth()));
   int64_t threads = numWaves * waveSize;
 
   int64_t colsPerBlock =

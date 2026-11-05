@@ -239,7 +239,8 @@ static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
 static LogicalResult checkLastAxisIsContiguous(Value leaf, Operation *errorOp) {
   SmallVector<TransformMapAttr> transforms;
   auto [underlying, _] = untransform(leaf, transforms);
-  if (!isa<BlockArgument>(underlying) && !matchPattern(underlying, m_Constant()))
+  if (!isa<BlockArgument>(underlying) &&
+      !matchPattern(underlying, m_Constant()))
     return errorOp->emitError(
         "reduction input does not trace back to a kernel argument");
   // An untransformed input is the buffer itself, so it is contiguous.
@@ -287,7 +288,8 @@ static LogicalResult checkLastAxisIsContiguous(Value leaf, Operation *errorOp) {
 }
 
 /// Row-major index of `coords` in a tensor of `shape`.
-static int64_t rowMajorIndex(ArrayRef<int64_t> coords, ArrayRef<int64_t> shape) {
+static int64_t rowMajorIndex(ArrayRef<int64_t> coords,
+                             ArrayRef<int64_t> shape) {
   int64_t index = 0;
   for (auto [coord, extent] : llvm::zip(coords, shape))
     index = index * extent + coord;
@@ -372,8 +374,9 @@ static LogicalResult checkViewsAreRowMajorReshapes(
 /// there. Views are expected: `rock-flatten-tosa-func-args` reshapes the
 /// kernel's results, so a reduction is usually followed by one. An elementwise
 /// op is post-reduce fusion, which this pipeline does not support.
-static FailureOr<StoreOp> findTerminalStore(Value reduced, Operation *errorOp,
-                                            SmallVectorImpl<TransformOp> &views) {
+static FailureOr<StoreOp>
+findTerminalStore(Value reduced, Operation *errorOp,
+                  SmallVectorImpl<TransformOp> &views) {
   StoreOp found;
   Value current = reduced;
   while (true) {
@@ -414,9 +417,8 @@ static FailureOr<StoreOp> findTerminalStore(Value reduced, Operation *errorOp,
   return found;
 }
 
-LogicalResult
-RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
-                                            ReduceOp reduceOp) {
+LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
+                                                          ReduceOp reduceOp) {
   if (reduceOp.getReduceMethod() != ReduceMethod::Sum)
     return reduceOp.emitError(
         "only sum reductions are supported by the reduce pipeline");
@@ -449,8 +451,7 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
   llvm::SetVector<Value> leaves;
   llvm::SetVector<Operation *> chainOps;
-  if (failed(
-          collectReduceInputs(reduceOp.getIn(), reduceOp, leaves, chainOps)))
+  if (failed(collectReduceInputs(reduceOp.getIn(), reduceOp, leaves, chainOps)))
     return failure();
   for (Value leaf : leaves) {
     auto leafType = cast<RankedTensorType>(leaf.getType());
@@ -481,8 +482,8 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
     if (params.getRowsPerBlock() >
         static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numRows))))
       return reduceOp.emitError("rock.reduce_params has rowsPerBlock ")
-             << params.getRowsPerBlock() << ", more rows than the "
-             << numRows << " the reduction has";
+             << params.getRowsPerBlock() << ", more rows than the " << numRows
+             << " the reduction has";
     if (params.getColsPerBlock() > maxCols)
       return reduceOp.emitError("rock.reduce_params has colsPerBlock ")
              << params.getColsPerBlock() << ", wider than the " << maxCols
@@ -563,13 +564,14 @@ RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
     // Each lane keeps a running sum in registers and the whole workgroup
     // combines once, after the loop, so there is still only one cross-lane
     // reduction however long the reduction is.
-    Value zero = arith::ConstantOp::create(b, loc, tileType,
-                                           b.getZeroAttr(tileType));
+    Value zero =
+        arith::ConstantOp::create(b, loc, tileType, b.getZeroAttr(tileType));
     Value lower = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 0);
     Value upper =
         arith::ConstantIntOp::create(b, loc, b.getI32Type(), numIters);
     Value step = arith::ConstantIntOp::create(b, loc, b.getI32Type(), 1);
-    auto loop = scf::ForOp::create(b, loc, lower, upper, step, ValueRange{zero});
+    auto loop =
+        scf::ForOp::create(b, loc, lower, upper, step, ValueRange{zero});
 
     b.setInsertionPointToStart(loop.getBody());
     Value chunk = markTiles(ValueRange{bid, loop.getInductionVar()},

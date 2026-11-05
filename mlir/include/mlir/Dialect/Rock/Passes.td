@@ -147,7 +147,8 @@ def RockRegularizeElementwisePass
                            "math::MathDialect"];
 }
 
-def RockRegularizeReducePass : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
+def RockRegularizeReducePass
+    : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
   let summary = "Push rock.transform ops to input";
 }
 
@@ -172,6 +173,7 @@ def RockLowerReduceToBlockwisePass
     `rock.blockwise_reduce` after the loop. The register footprint is therefore
     set by the tile rather than by the length of the reduction, and there is
     still exactly one cross-lane reduction and one writer per output.
+    `maxTileCols` is the register budget that decides when the loop appears.
 
     This pass only accepts what it can lower correctly and emits an error for
     everything else: a single `sum` reduction over the last axis, static
@@ -181,16 +183,15 @@ def RockLowerReduceToBlockwisePass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "func::FuncDialect", "scf::SCFDialect",
                            "triton::TritonDialect"];
-  let options = [
-    Option<"arch", "arch", "std::string", /*default=*/"\"\"",
-           "The GPU architecture, which fixes the wave size">,
-    Option<"numWaves", "numWaves", "int64_t", /*default=*/"4",
-           "Waves per workgroup. Must match the `numWarps` the Triton "
-           "pipeline runs with, which sets the real launch block size">,
-    Option<"maxTileCols", "maxTileCols", "int64_t", /*default=*/"2048",
-           "Upper bound on the reduced-axis extent of a tile, which caps the "
-           "register footprint of one workgroup. A longer reduction is summed "
-           "a tile at a time in a loop">,
+  let options =
+      [Option<"arch", "arch", "std::string", /*default=*/"\"\"",
+              "The GPU architecture, which fixes the wave size">,
+       Option<"numWaves", "numWaves", "int64_t", /*default=*/"4",
+              "Waves per workgroup. Must match the `numWarps` the Triton "
+              "pipeline runs with, which sets the real launch block size">,
+       Option<"maxTileCols", "maxTileCols", "int64_t", /*default=*/"2048",
+              "Largest reduced-axis extent of one tile; a reduction longer "
+              "than this is summed a tile at a time in a loop">,
   ];
 }
 
