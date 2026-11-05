@@ -147,6 +147,51 @@ def RockRegularizeElementwisePass
                            "math::MathDialect"];
 }
 
+def RockRegularizeReducePass
+    : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
+  let summary = "Push rock.transform ops to input";
+}
+
+def RockLowerReduceToBlockwisePass
+    : Pass<"rock-lower-reduce-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "Tile a standalone rock.reduce and lower it to a blockwise "
+                "reduction";
+  let description = [{
+    Lowers the `rock.reduce` of a standalone reduce kernel into a tiled
+    `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
+
+    The schedule is the tile shape `rowsPerBlock x colsPerBlock` recorded in
+    the op's `rock.reduce_params`. There is no algorithm choice beyond it:
+    `tritongpu-coalesce` derives the blocked layout of the load from the tile,
+    and that layout is what decides whether the reduction combines inside a
+    thread, across the lanes of a wave, or across waves through LDS. The pass
+    fills `params` in when the op does not carry one, and validates rather than
+    overrides one that it does.
+
+    A reduction wider than one tile is summed a tile at a time in an `scf.for`
+    that carries the running sum in registers, with a single
+    `rock.blockwise_reduce` after the loop. The register footprint is therefore
+    set by the tile rather than by the length of the reduction, and there is
+    still exactly one cross-lane reduction and one writer per output.
+    `maxTileCols` is the register budget that decides when the loop appears.
+
+    This pass only accepts what it can lower correctly and emits an error for
+    everything else: a single `sum` reduction over the last axis, static
+    shapes, no elementwise op between the reduction and its `rock.store`, and
+    inputs that are contiguous along the reduced axis.
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
+                           "func::FuncDialect", "scf::SCFDialect",
+                           "triton::TritonDialect"];
+  let options =
+      [Option<"arch", "arch", "std::string", /*default=*/"\"\"",
+              "The GPU architecture, which fixes the wave size">,
+       Option<"maxTileCols", "maxTileCols", "int64_t", /*default=*/"2048",
+              "Largest reduced-axis extent of one tile; a reduction longer "
+              "than this is summed a tile at a time in a loop">,
+  ];
+}
+
 def RockElementwiseToGridwisePass
     : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
   let summary =
