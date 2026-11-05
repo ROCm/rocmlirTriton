@@ -530,8 +530,9 @@ void rock::buildReducePipeline(OpPassManager &pm,
   // The tile this pass picks is the whole schedule: `tritongpu-coalesce`
   // derives the blocked layout of the load from it, and that layout decides
   // whether the resulting `tt.reduce` combines in registers, across the lanes
-  // of a wave, or through LDS. Its `numWaves` has to match the `numWarps` the
-  // Triton pipeline is later run with, which is why both default to 4.
+  // of a wave, or through LDS. The tile is chosen against a workgroup of
+  // `kReduceNumWaves` waves, which has to be the `numWarps` the Triton
+  // pipeline is later run with; see that constant for why nothing enforces it.
   rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
   lowerReduceOpts.arch = options.arch;
   addWithDCE(rock::createRockLowerReduceToBlockwisePass(lowerReduceOpts));

@@ -81,12 +81,12 @@ func.func @pinned_params_too_wide(%arg0: tensor<16384xf32>, %out: tensor<2xf32>)
 #view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 1024 + d1)> by [<Unmerge{8, 1024} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [8, 1024] -> [8192]>
 #drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{8, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [8] -> [8, 1]>
 
-// `numWaves` also fixes the launch block size, so a schedule chosen for a
-// different one cannot be honoured.
+// `numWaves` is not a knob: it has to be the number of waves the kernel is
+// actually launched with, which this pipeline does not get to choose.
 func.func @pinned_params_wrong_waves(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
     attributes {rock.kernel, rock.reduce} {
   %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
-  // expected-error @+1 {{rock.reduce_params has numWaves 8 but the pass was given 4}}
+  // expected-error @+1 {{rock.reduce_params has numWaves 8, but a reduce kernel is launched 4 waves to a workgroup}}
   %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 1024, numWaves = 8>} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>

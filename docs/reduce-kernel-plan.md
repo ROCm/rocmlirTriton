@@ -50,15 +50,23 @@ Picking the tile therefore *is* picking the algorithm, so the pass has no
 and gather patterns (no reduce rewrite), and `rock-set-reduction-layout` only
 fires on conv kernels.
 
-## Invariant: `numWaves` must match `TritonOptions::numWarps`
+## Invariant: the thread count is not ours to pick
 
 `numWarps` sets both the real launch block size
 (`compileUtils.cpp`: `info.blockSize = numWarps * warpSize`) and the layout
 math above. It is never filled from a perf config for a kernel with no GEMM op,
-so it keeps its `init(4)` default. The pass takes a `numWaves` option with the
-same default and records it in the op's params. Running the reduce pipeline and
-then `rock-triton-pipeline{numWarps=8}` silently mis-tunes the tile; threading
-this through properly is deferred to Phase C.
+so it keeps the `init(4)` default of `TritonOptions::numWarps`.
+
+The tile has to be chosen against the thread count that implies, so
+`kReduceNumWaves` in `ReduceUtils.h` is a constant tracking that default rather
+than an option: offering a knob the pass cannot actually make the Triton
+pipeline honour would only invite a tile tuned for a workgroup that never
+runs. A pinned `rock.reduce_params` is checked against the same constant for
+the same reason.
+
+Nothing enforces the correspondence: running the reduce pipeline and then
+`rock-triton-pipeline{numWarps=8}` still silently mis-tunes the tile.
+Connecting the two is Phase C3.
 
 ## Schedule on the op, launch config on the func
 
@@ -68,7 +76,10 @@ op while the derived `rock.grid_size` lands on the function.
 
 - `Rock_ReduceParamsAttr` (`rock.reduce_params`) with
   `{rowsPerBlock, colsPerBlock, numWaves}`, attached to `rock.reduce` as
-  `OptionalAttr<...>:$params`. Its verifier checks only structural facts
+  `OptionalAttr<...>:$params`. `numWaves` is part of the schedule because a
+  tile shape means nothing without the thread count it was chosen against, and
+  because it is what Phase C3 would hand to `TritonOptions`; it is recorded,
+  never taken as input. Its verifier checks only structural facts
   (positive, powers of two); anything arch-dependent is checked in the pass.
 - The grid size is a launch parameter and must be a function attribute:
   `rock.grid_size`, which `RockTensorToTritonPtr` promotes to the module
@@ -85,9 +96,9 @@ later is a mechanical move.
 ## Phase A: `rock-lower-reduce-to-blockwise`, single tile
 
 Runs on `func::FuncOp`, gated on `rock.kernel` + `rock.reduce`. Options:
-`arch` (for the wave size), `numWaves` (default 4), `maxTileCols`
-(default 2048). Everything below hard-fails with a diagnostic rather than
-silently bailing out.
+`arch` (for the wave size) and `maxTileCols` (default 2048); the waves per
+workgroup is the fixed `kReduceNumWaves`, for the reason above. Everything
+below hard-fails with a diagnostic rather than silently bailing out.
 
 ### Legality
 
@@ -104,7 +115,7 @@ silently bailing out.
 ### Schedule
 
 ```
-T    = numWaves * getWaveSize(arch)
+T    = kReduceNumWaves * getWaveSize(arch)
 vmax = 128 / elementBitWidth
 C    = min(nextPow2(N), maxTileCols)
 R    = clamp(nextPow2(T * vmax / C), 1, nextPow2(M))
@@ -116,7 +127,7 @@ large `R` (lane/wave-like), long rows drive `R` to 1 (block-like).
 
 A pre-existing `params` is validated instead of recomputed; it is rejected when
 it is not a power of two, when `rowsPerBlock > nextPow2(M)`, when `numWaves`
-disagrees with the option, or when `colsPerBlock` exceeds `maxTileCols`, which
+is not `kReduceNumWaves`, or when `colsPerBlock` exceeds `maxTileCols`, which
 is the register budget the loop exists to respect. A `colsPerBlock` below the
 reduced extent is legal and asks for the loop explicitly.
 

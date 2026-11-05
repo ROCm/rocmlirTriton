@@ -466,7 +466,6 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
   // Copied out of the pass options because an `Option<int64_t>` does not
   // stream into a diagnostic.
-  int64_t waves = numWaves;
   int64_t maxCols = maxTileCols;
 
   // Validate a schedule the IR already carries rather than overriding it: a
@@ -474,11 +473,15 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
   int64_t waveSize = rock::getWaveSize(arch);
   ReduceParamsAttr params = reduceOp.getParamsAttr();
   if (params) {
-    if (params.getNumWaves() != waves)
+    // A tile only means anything against a thread count, and the thread count
+    // is not ours to pick: it follows the `numWarps` the Triton pipeline runs
+    // with, which this pass cannot set.
+    if (params.getNumWaves() != kReduceNumWaves)
       return reduceOp.emitError("rock.reduce_params has numWaves ")
-             << params.getNumWaves() << " but the pass was given " << waves
-             << "; the two must agree, since numWaves also sets the launch "
-                "block size";
+             << params.getNumWaves() << ", but a reduce kernel is launched "
+             << kReduceNumWaves
+             << " waves to a workgroup; a tile chosen for any other thread "
+                "count would not be the one that runs";
     if (params.getRowsPerBlock() >
         static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numRows))))
       return reduceOp.emitError("rock.reduce_params has rowsPerBlock ")
@@ -489,8 +492,7 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
              << params.getColsPerBlock() << ", wider than the " << maxCols
              << "-element limit on what one workgroup holds in registers";
   } else {
-    params = chooseReduceParams(reduceOp, numRows, numCols, waveSize, waves,
-                                maxCols);
+    params = chooseReduceParams(reduceOp, numRows, numCols, waveSize, maxCols);
     reduceOp.setParamsAttr(params);
   }
 
