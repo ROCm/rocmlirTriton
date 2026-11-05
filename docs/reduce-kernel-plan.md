@@ -213,6 +213,26 @@ rock-lower-stores
   looped form, checking `tt.load` / `tt.reduce` / `tt.store` and the
   `rock.grid_size.<name>` module attribute.
 
+Numerical tests live in `mlir/test/fusion/pr-e2e/reduce-only-*.e2e.mlir`,
+alongside the elementwise ones and driven the same way: `rocmlir-gen
+--clone-harness` emits a CPU twin of the kernel, the highlevel pipeline lowers
+the TOSA, and `rocmlir-driver -c --reduce` compiles the kernel through this
+pipeline before `rocm-run` compares the two. Between them they cover a distinct
+schedule each:
+
+| test | grid | tile | loop |
+| --- | --- | --- | --- |
+| `sum-long-rows` | 8 | `1 x 1024` | no |
+| `sum-short-rows` | 8 | `64 x 16` | no |
+| `add-sum` | 2 | `2 x 512` | no |
+| `sum-wide` | 4 | `1 x 2048` | yes |
+| `sum-padded` | 50 | `2 x 512` | no |
+
+They all run with `-rand 1`, which draws integers in `[-5, 5)`. Every element
+differs, so a tile that reads the wrong one is caught, and every sum is exact
+in f32, so the fact that the GPU does not add in the CPU verifier's order
+cannot make the comparison flaky.
+
 ## Phase B: loop over the reduction axis
 
 A reduction wider than `maxTileCols` is summed a tile at a time. The tile keeps

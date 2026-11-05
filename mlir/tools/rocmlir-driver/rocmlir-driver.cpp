@@ -149,6 +149,12 @@ static cl::opt<bool> elementwiseKernelMode(
              "(rock-elementwise-pipeline) instead of the default "
              "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu"));
 
+static cl::opt<bool> reduceKernelMode(
+    "reduce", cl::init(false),
+    cl::desc("Use the standalone reduce GPU pipeline "
+             "(rock-reduce-pipeline) instead of the default "
+             "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu"));
+
 /// Values copied out of the `cl::opt`s above before any pipeline runs.
 ///
 /// The binary stage links with in-process LLD, which calls
@@ -306,8 +312,15 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     opts.arch = archName.str();
     opts.disableFastMath = noFastMath;
 
+    if (elementwiseKernelMode && reduceKernelMode) {
+      llvm::errs() << "--elementwise and --reduce select different pipelines; "
+                      "pass at most one\n";
+      return failure();
+    }
     if (elementwiseKernelMode)
       rock::buildElementwisePipeline(pm, opts);
+    else if (reduceKernelMode)
+      rock::buildReducePipeline(pm, opts);
     else
       rock::buildKernelPipeline(pm, opts);
   }
